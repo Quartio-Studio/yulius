@@ -1,0 +1,51 @@
+# Agentic engineering workflow
+
+The goal is a verified user outcome, with enough durable context for the next
+engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry point.
+
+1. **Orient:** inspect Git, relevant code/specs and observed behavior. State the
+   authorized outcome and unknowns. Load one matching skill, not the whole catalog.
+2. **Specify:** attach stable requirement IDs, input/output and lifecycle contracts,
+   acceptance scenarios and affected boundaries. Record assumptions and unresolved
+   product choices; use the [spec template](../../.ai/templates/spec.md).
+3. **Implement:** build a complete slice, preserving existing behavior. Keep an
+   affected boundary's types, implementation and tests together. New architecture
+   deserves a short ADR with alternatives and consequences.
+4. **Verify:** demonstrate the reported behavior and failure cases. Run targeted
+   checks during iteration, then `scripts/dev ci` before handoff of Rust/tooling
+   changes. Documentation-only changes need the repository check, not redundant
+   compilation unless tooling/contracts changed.
+5. **Review:** examine the diff against each requirement, security boundary and
+   existing default behavior. Classify findings with concrete failure scenarios.
+   Green tests do not establish untested product acceptance.
+6. **Handoff:** report changed behavior, exact evidence and unresolved limits. Update
+   the spec state only when its scope is proven. Use the handoff template for
+   sustained work; keep private logs in ignored `.ai/runs/`.
+
+A failing check is either a product defect, test defect, infrastructure failure or
+known nondeterminism. Name it, reproduce it, and fix the cause. Do not rerun until
+green without explanation, disable the test, broaden licenses or silently omit a
+missing tool. If external infrastructure blocks one check, finish independent
+work and state what remains unverified.
+
+## Definition of ready
+
+An authorized outcome, enough input/output detail to test, named affected boundaries
+and no unresolved decision that would materially change implementation. A routine
+bug may already meet this via its reproduction and existing contract. Reversible
+implementation details do not need fresh permission.
+
+## Definition of done
+
+All acceptance items have direct evidence; tests exercise failure/recovery where
+applicable; required gates pass; diff and generated artifacts are inspected; specs
+and rules reflect the result. A UI flow also needs browser verification. An external
+publish/merge/deploy requires its own user authorization and is not implied by this
+workflow. Record unrun hosted checks separately from local equivalents.
+
+## Review output
+
+For each finding: severity, path/location, concrete trigger, impact, and recommended
+change. Report no findings if none were discovered, plus validation scope and gaps.
+Do not invent issues for balance. For changes to existing mechanisms, identify the
+old guarantee and test it under the new default configuration.

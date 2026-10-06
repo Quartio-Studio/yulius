@@ -1,0 +1,6 @@
+---
+description: Canonical Yulius repository context
+alwaysApply: true
+---
+Read AGENTS.md at the repository root. Follow its task context router and load the
+matching .agents/skills/*/SKILL.md. Keep rules in their canonical documents.

@@ -1,0 +1,87 @@
+# Development environment
+
+## Bootstrap
+
+Supported development hosts: macOS and Linux. Python 3.11+, rustup, Git and a C linker
+are required. GitHub CI is configured on Ubuntu and macOS. Windows support for a
+future process supervisor is undecided; the shell entry point is not a Windows promise.
+
+```sh
+python3 scripts/bootstrap.py
+scripts/dev doctor
+scripts/dev ci
+```
+
+The compiler/components are pinned in `rust-toolchain.toml`. Exact Cargo tool
+versions are in `.config/tools.toml`. Bootstrap installs tools from locked crates.io
+packages into ignored `.tools/`, skips matching installed versions and can be rerun
+after failure. It does not change `rustup default`. First installation can take
+several minutes and requires network access. Inspect the script before executing it.
+
+`scripts/dev` invokes `rustup run <pin> cargo xtask`, so a Homebrew compiler earlier
+in PATH cannot override the project. Direct `cargo xtask` is equivalent only when
+Cargo is the selected rustup toolchain and `.tools/bin` is on PATH. Prefer the wrapper.
+Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
+
+## Gates
+
+| Command | Actual work |
+| --- | --- |
+| `scripts/dev doctor` | Compiler/tool versions and Python prerequisite |
+| `scripts/dev check` | Local Markdown links, skills, Cargo inheritance/layers; checker regression tests; locked all-target compilation |
+| `scripts/dev fmt` | Rust formatting mutation |
+| `scripts/dev lint` | Formatting verification and Clippy with warnings denied |
+| `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets |
+| `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-machete |
+| `scripts/dev ci` | doctor, check, lint, test, deps, then rustdoc with warnings denied |
+
+Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
+Use the full gate after implementation stabilizes.
+No provider login, database, Docker daemon or paid model call is part of ordinary CI.
+The project intentionally contains only an engineering harness until the brief.
+Its binary-only workspace has no doctest targets; the gate reports this as not
+applicable and automatically runs doctests when library targets are added.
+
+`cargo-deny` fetches RustSec advisory data; fresh evidence requires network access.
+If a network failure prevents that, report it as unverified rather than suppressing
+advisories. The JUnit report is under `target/nextest/ci/junit.xml`. Rustdoc output
+is under `target/doc`. Build artifacts and local tools are ignored by Git.
+
+## Add a crate
+
+Add its path to workspace members, inherit `edition`, `rust-version`, `license`
+and `[lints] workspace = true`, mark internal packages `publish = false`, and set
+`[package.metadata.yulius] layer` to the layer in [dependency boundaries](architecture.md). Define its boundary and
+acceptance tests first. The repository checker uses Cargo metadata, including
+renamed and target-specific path dependencies; missing classifications fail closed.
+Keep module-local AGENTS.md short and specific only when module complexity warrants it.
+
+## Update tools or dependencies
+
+Update the exact pins, rerun bootstrap, generate/review Cargo.lock if dependencies
+changed and pass the full gate. Tool installation uses `--locked`; application
+commands use `--locked`. No wildcard dependencies or unreviewed Git sources.
+An advisory exception must name the advisory, affected dependency, rationale,
+owner and expiry; prefer upgrading. Do not replace a broad license allowlist to
+make one dependency pass. New feature combinations require an explicit test matrix.
+
+## Editors and CI
+
+VS Code settings recommend rust-analyzer, Clippy and format-on-save. Other editors
+can use the same rust-analyzer component and toolchain. No global editor settings
+or agent permission overrides are installed.
+
+GitHub Actions uses full-commit action pins, read-only permissions and the same
+bootstrap/CI commands. It runs on pull requests and main pushes, plus a weekly
+advisory refresh. The workflow is committed configuration; hosted execution is
+only proven when GitHub actually runs it. No deployment or release job is present.
+
+## Troubleshooting
+
+- Wrong compiler: use `scripts/dev`, then `rustup run 1.99.0 rustc --version`.
+- Missing tool/version drift: rerun bootstrap; do not replace the command with a no-op.
+- Build cache lock: another Cargo command may be installing/building; poll the live
+  process rather than starting duplicate installers.
+- Missing linker on macOS: install Xcode Command Line Tools; on Ubuntu install
+  `build-essential`, `pkg-config` and `libssl-dev` if a tooling dependency needs them.
+- Deliberately skipped work: record the exact failed command and its prerequisite.

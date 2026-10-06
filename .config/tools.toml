@@ -1,0 +1,5 @@
+# Exact versions resolved against crates.io on 2026-10-06.
+[tools]
+cargo-nextest = "0.9.146"
+cargo-deny = "0.20.2"
+cargo-machete = "0.9.2"

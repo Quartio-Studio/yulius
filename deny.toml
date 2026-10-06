@@ -1,0 +1,19 @@
+[advisories]
+version = 2
+ignore = []
+
+[licenses]
+version = 2
+# Extend deliberately when an actual dependency needs another reviewed license.
+allow = ["MIT"]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

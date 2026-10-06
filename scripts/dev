@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Enter the pinned toolchain even when Homebrew Cargo precedes rustup in PATH."""
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tomllib
+
+root = Path(__file__).resolve().parent.parent
+channel = tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
+rustup = shutil.which("rustup")
+if rustup is None:
+    sys.exit("rustup is required: install it from https://rustup.rs, then run scripts/bootstrap.py")
+os.chdir(root)
+compiler = subprocess.check_output([rustup, "which", "--toolchain", channel, "rustc"], text=True).strip()
+toolchain_bin = Path(compiler).parent
+os.environ["PATH"] = os.pathsep.join([str(root / ".tools/bin"), str(toolchain_bin), os.environ.get("PATH", "")])
+os.environ["RUSTC"] = compiler
+os.environ["RUSTDOC"] = str(toolchain_bin / "rustdoc")
+os.execv(rustup, [rustup, "run", channel, "cargo", "xtask", *sys.argv[1:]])

@@ -1,0 +1,5 @@
+[alias]
+xtask = "run --locked --package xtask --"
+
+[build]
+rustdocflags = ["-D", "warnings"]
