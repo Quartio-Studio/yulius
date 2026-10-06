@@ -8,6 +8,7 @@ description: Implement a specified Yulius Rust feature or bug fix across its dom
 Read `AGENTS.md`, the applicable spec and `docs/engineering/rust.md`. Read
 `docs/engineering/architecture.md` when adding/changing boundaries.
 
+Follow `docs/engineering/git.md` for feature branching and authorized delivery.
 Orient from the current worktree, not a prior handoff alone. Map the authorized
 outcome to requirement IDs; if a material behavior lacks a contract, use the
 repository's spec workflow first. Preserve other contributors' changes.

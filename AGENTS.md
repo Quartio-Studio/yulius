@@ -26,6 +26,16 @@ screenshot or turn a proposed architecture into an accepted product requirement.
 | Tests, tooling, CI | [Development](docs/engineering/development.md), `.agents/skills/yulius-verify/SKILL.md` |
 | Review | [Engineering workflow](docs/engineering/workflow.md), `.agents/skills/yulius-review/SKILL.md` |
 
+## Git delivery
+
+Read [Git workflow](docs/engineering/git.md) before changing branches, publishing or
+merging. Start a typed short-lived branch from `origin/dev`; never work directly on
+`dev` or `main`. Author self-review + passing checks → squash PR to dev → verify
+post-merge dev CI → merge-commit promotion PR to main → verify post-merge main CI.
+No external reviewer approval is required. Delete merged task branches, keep dev
+and main. Use `.agents/skills/yulius-git/SKILL.md` for authorized delivery.
+Existing user authorization carries through these stages; local-only requests stay local.
+
 ## Commands
 
 Python 3.11+, rustup, Git and a platform C linker are prerequisites.

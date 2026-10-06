@@ -26,3 +26,7 @@ and update evidence/state. Report passed, failed and unrun checks separately.
 Hosted CI is unrun until a real workflow result exists; local equivalence is not
 a claim that GitHub checks passed. Leave product acceptance open if its evidence
 is absent, even when the harness passes.
+
+For published delivery, also verify the required PR checks and exact post-merge
+push runs on dev and main per `docs/engineering/git.md`. Local green checks do
+not replace either post-merge gate.

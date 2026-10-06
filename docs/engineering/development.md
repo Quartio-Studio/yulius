@@ -72,9 +72,10 @@ can use the same rust-analyzer component and toolchain. No global editor setting
 or agent permission overrides are installed.
 
 GitHub Actions uses full-commit action pins, read-only permissions and the same
-bootstrap/CI commands. It runs on pull requests and main pushes, plus a weekly
+bootstrap/CI commands. It runs on pull requests and dev/main pushes, plus a weekly
 advisory refresh. The workflow is committed configuration; hosted execution is
-only proven when GitHub actually runs it. No deployment or release job is present.
+only proven when GitHub actually runs it. No deployment job is present. [Git delivery](git.md) defines promotion checks and
+post-merge evidence. Pinned tool binaries are cached per OS/architecture/tool pin.
 
 ## Troubleshooting
 

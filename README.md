@@ -21,6 +21,7 @@ Pinned tools install into ignored `.tools/`; the default Rust toolchain is uncha
 See [development instructions](docs/engineering/development.md) for commands and CI.
 
 - [AGENTS.md](AGENTS.md): coding-agent entry point.
+- [Git delivery](docs/engineering/git.md): feature → dev → main, self-merges and cleanup.
 - [Engineering workflow](docs/engineering/workflow.md): specify, implement, verify and review.
 - [Rust rules](docs/engineering/rust.md) and [dependency boundaries](docs/engineering/architecture.md).
 - [Repository skills](.agents/skills): specification, Rust implementation, runners, verification and review.

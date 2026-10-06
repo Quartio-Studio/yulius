@@ -2,6 +2,7 @@
 
 The goal is a verified user outcome, with enough durable context for the next
 engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry point.
+[Git delivery](git.md) defines dev/main branches, author self-merges and post-merge gates.
 
 1. **Orient:** inspect Git, relevant code/specs and observed behavior. State the
    authorized outcome and unknowns. Load one matching skill, not the whole catalog.
@@ -18,7 +19,9 @@ engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry poi
 5. **Review:** examine the diff against each requirement, security boundary and
    existing default behavior. Classify findings with concrete failure scenarios.
    Green tests do not establish untested product acceptance.
-6. **Handoff:** report changed behavior, exact evidence and unresolved limits. Update
+6. **Deliver and hand off:** for authorized delivery, follow the Git sequence through
+   verified dev and main merges, without waiting for reviewer approval. Report
+   changed behavior, exact evidence and unresolved limits. Update
    the spec state only when its scope is proven. Use the handoff template for
    sustained work; keep private logs in ignored `.ai/runs/`.
 
