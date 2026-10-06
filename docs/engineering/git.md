@@ -6,7 +6,7 @@ These rules apply to features, fixes, documentation, tooling and policy changes.
 
 ## Delivery sequence
 
-1. Fetch and create a short-lived branch from the current `origin/dev`.
+1. Fetch and create a short-lived branch **with its own worktree** from current `origin/dev`.
 2. Implement the change in as many useful commits as needed. Run relevant tests
    during development and `scripts/dev ci` before publishing the completed PR.
 3. Open a PR into `dev`. CI tests the proposed merge; keep the branch up to date
@@ -29,6 +29,40 @@ No environments are configured yet. Until they are, complete the full sequence
 through `main` after each finished feature instead of stopping after integration.
 If several tested features accumulate on `dev`, the promotion includes all of them;
 list the included PRs. Do not silently omit a feature by cherry-picking to `main`.
+
+## One branch, one worktree
+
+Every local branch MUST have its own registered Git worktree, including `dev` and
+`main`. Create a branch and its worktree together with `git worktree add -b`.
+Never switch a worktree between branches or create a branch without its worktree.
+All edits, commits and local checks for a branch run inside that branch's worktree.
+
+Keep the original checkout assigned to `dev`. Put linked worktrees in the sibling
+`<repo>-worktrees/<branch>` directory, preserving the slash in typed branch names:
+
+```text
+yulius/                                  dev (permanent)
+yulius-worktrees/main/                    main (permanent)
+yulius-worktrees/feat/task-cancellation/   feat/task-cancellation (temporary)
+```
+
+Before starting work, inspect `git worktree list` and
+`git for-each-ref --format='%(refname:short) %(worktreepath)' refs/heads/`.
+Reuse a branch's existing worktree if it already exists; do not duplicate or force
+its checkout. Attach any existing local branch with a blank worktree path before
+using it. For example, `git worktree add ../yulius-worktrees/main main` attaches an
+existing main branch; if only `origin/main` exists, use
+`git worktree add --track -b main ../yulius-worktrees/main origin/main` instead.
+
+Remote-tracking refs are not additional local branches. Detached CI checkouts have
+no branch to assign. This is a local working-directory rule; GitHub cannot inspect
+an author's worktree layout. Verify it locally, not with a pretend hosted check.
+
+Worktrees share Git objects and refs, but keep source, indexes and working files
+separate. Do not share a mutable build directory, `.env`, secrets or runtime data
+between branches. A verified, identically pinned tool-binary cache may be reused.
+Keep permanent worktrees for their lifetime; remove a task worktree only after its
+branch merges and the cleanup checks below pass.
 
 ## Names
 
@@ -69,27 +103,34 @@ preserves common ancestry across repeated promotions, while retaining the alread
 squashed feature commits. `main` has those feature commits plus promotion commits.
 Do not merge `main` back into `dev` just to copy promotion-only merge commits.
 
-`git stash` is a temporary **local** shelf, not history cleanup or a backup. Prefer
-an isolated worktree when switching tasks. If a stash is necessary, name it, include
+`git stash` is a temporary **local** shelf, not history cleanup or a backup. Change
+tasks by moving to their existing worktree, not by switching its branch. If a stash
+is necessary, name it, include
 only your own intended paths, and inspect it before applying. Use `stash apply`
 first; drop that exact entry only after verifying restoration. Never auto-stash,
 clear stashes, or stash another contributor's work.
 
 ## Working commands
 
-Start with a clean working tree or use a separate worktree. Do not overwrite changes.
+Run creation from the permanent dev worktree. Existing changes there stay untouched.
+Work in the new directory; never repurpose the dev or main checkout.
 
 ```sh
 git fetch origin --prune
-git switch -c feat/task-cancellation origin/dev
+git worktree add -b feat/task-cancellation ../yulius-worktrees/feat/task-cancellation origin/dev
+cd ../yulius-worktrees/feat/task-cancellation
 # edit, test and make commits
 scripts/dev ci
 git push -u origin HEAD
 gh pr create --base dev --title 'feat(tasks): add cancellation' --body-file /path/to/pr.md
 gh pr checks <number> --required --watch
 # Read the final diff, verify checks match the current head, then:
-gh pr merge <number> --squash --match-head-commit <verified-head-sha> --delete-branch
+gh pr merge <number> --squash --match-head-commit <verified-head-sha>
 ```
+
+Do not use `gh pr merge --delete-branch` from a linked worktree: its local cleanup
+may try to switch to dev, which already has its own worktree. Repository auto-deletion
+removes the remote task branch; perform local cleanup explicitly as described below.
 
 The named author performs the merge. An agent acting on that author's authorized
 request follows the same steps; it does not wait for an unsolicited reviewer.
@@ -118,10 +159,30 @@ that exact push succeeds, rerun the failed promotion job (not a failed test blin
 
 ## Cleanup, concurrency and recovery
 
-- Repository auto-deletion removes merged short-lived heads; deletion rules protect
-  `dev` and `main`. After merge, fetch with `--prune` and remove only your task's local
-  branch/worktree. Squashed heads may fail `git branch -d`: verify the PR is merged,
-  its head equals your local branch tip and no later commits exist before using `-D`.
+After verifying the PR is merged and its recorded head matches the local branch
+exactly, stop branch-owned processes. Inspect tracked, untracked and ignored files
+in that worktree; preserve user data and unpublished work. From the permanent dev
+worktree, remove the task worktree **before** deleting the local branch:
+
+```sh
+git fetch origin --prune
+git worktree remove ../yulius-worktrees/feat/task-cancellation
+git branch -d feat/task-cancellation
+```
+
+Do not force-remove a dirty/locked worktree. If Git refuses removal, inspect the
+reason and preserve the data. If only known disposable build/cache artifacts block
+removal, remove those specific artifacts first. Squash merging may make `branch -d`
+refuse deletion even though the PR was merged; only after the checks above, use
+`git branch -D <exact-merged-task-branch>`. If remote auto-deletion did not occur,
+verify the same merged-head evidence before `git push origin --delete <task-branch>`.
+Never delete either primary branch or its worktree.
+
+Update each clean permanent worktree in place after merges, using
+`git -C <dev-worktree> merge --ff-only origin/dev` and
+`git -C <main-worktree> merge --ff-only origin/main` after fetching. Do not switch
+branches or use forced ref updates to refresh a checked-out branch.
+
 - Do not delete a shared or dirty worktree. Never use `git reset --hard`, `git clean`,
   force pushes or branch deletion as a routine way to resolve conflicts.
 - Bring a feature up to date by merging `origin/dev`, resolving conflicts, and rerunning

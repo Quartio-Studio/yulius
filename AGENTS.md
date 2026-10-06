@@ -29,11 +29,14 @@ screenshot or turn a proposed architecture into an accepted product requirement.
 ## Git delivery
 
 Read [Git workflow](docs/engineering/git.md) before changing branches, publishing or
-merging. Start a typed short-lived branch from `origin/dev`; never work directly on
+merging. Every local branch, including `dev` and `main`, must have its own worktree.
+Create a typed branch and worktree together from `origin/dev` with `git worktree add -b`;
+never switch an existing worktree to another branch. Never work directly on
 `dev` or `main`. Author self-review + passing checks → squash PR to dev → verify
 post-merge dev CI → merge-commit promotion PR to main → verify post-merge main CI.
-No external reviewer approval is required. Delete merged task branches, keep dev
-and main. Use `.agents/skills/yulius-git/SKILL.md` for authorized delivery.
+No external reviewer approval is required. After merge, safely remove the task
+worktree before deleting its local branch; keep dev/main and their worktrees.
+Use `.agents/skills/yulius-git/SKILL.md` for authorized delivery.
 Existing user authorization carries through these stages; local-only requests stay local.
 
 ## Commands

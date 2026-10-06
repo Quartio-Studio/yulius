@@ -9,11 +9,17 @@ Read `AGENTS.md` and `docs/engineering/git.md`; that document owns branch names,
 merge methods and commands. Inspect current local/remote state before each stage.
 Preserve unrelated edits and never auto-stash someone else's work.
 
-Use a short-lived typed branch from current `origin/dev`. Implement and verify,
-then push and open its PR into dev when the task authorizes delivery. The author
+Every local branch must own a worktree, including dev and main. Inspect the existing
+mapping first. Create a typed branch and worktree together from current `origin/dev`
+with `git worktree add -b`, and do all task work there. Never switch a worktree to
+another branch. Implement and verify, then push and open its PR into dev when the
+task authorizes delivery. The author
 self-reviews and squash-merges after all required checks pass, with the verified
 head SHA; no external approval or waiting period is required. Delete only the
-merged task branch, preserving unpublished commits and dirty worktrees.
+merged task branch after safely removing its worktree, preserving unpublished
+commits and tracked/untracked/ignored user data. Keep permanent dev/main worktrees.
+Avoid `gh pr merge --delete-branch` in a linked worktree; use repository remote
+auto-deletion and explicit local worktree-then-branch cleanup from the dev worktree.
 
 Require successful push CI on the exact resulting dev SHA before promotion. Open
 dev → main with a release title; after promotion checks pass, author-merge with a
