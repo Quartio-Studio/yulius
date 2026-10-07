@@ -1,18 +1,21 @@
 //! Route tables.
 
 mod admin;
+mod browser;
+mod editor;
 mod events;
 mod internal;
 mod mcp;
 mod sandboxes;
 mod setup_auth;
+mod shells;
 mod tasks;
 mod terminal;
 
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::{get, patch, post};
+use axum::routing::{any, get, patch, post};
 use yulius_app::context::App;
 
 use crate::AppState;
@@ -59,6 +62,12 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
+        .route("/api/sandboxes/{sid}/browser", get(browser::browser))
+        .route("/api/sandboxes/{sid}/shells", post(shells::create))
+        .route("/api/shells/{id}/terminal", get(shells::terminal))
+        .route("/s/{sid}/editor", any(editor::redirect_root))
+        .route("/s/{sid}/editor/", any(editor::proxy))
+        .route("/s/{sid}/editor/{*rest}", any(editor::proxy))
 }
 
 /// Internal (loopback) routes.

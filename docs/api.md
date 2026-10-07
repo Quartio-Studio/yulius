@@ -14,7 +14,8 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
 - Errors: HTTP status plus `{"error": {"code": "snake_case", "message": "human text"}}`. Codes:
   `unauthenticated` (401), `forbidden` (403), `not_found` (404; also for invisible sandboxes),
   `conflict` (409; racing state changes), `invalid` (422), `capacity` (429), `upstream` (502,
-  GitHub/provider failure), `internal` (500).
+  GitHub/provider failure), `unavailable` (503; a local prerequisite such as openvscode-server
+  is missing or disabled, the message says which), `internal` (500).
 - Access levels: `read`, `write`, `admin` (SPEC-001 ACC-007). Endpoints note the minimum level.
 
 ## Setup and session
@@ -202,9 +203,33 @@ Secrets are write-only: create/update bodies may include `"env": {"KEY": "value"
   `{"type":"key","tab_id","event":"down|up|char","key","code","text","modifiers"}`,
   `{"type":"viewport","width","height"}`; server `{"type":"tabs","tabs":[{"id","title","url",
   "active","action_requested":{"reason","task_id"}|null}]}`, binary JPEG frames prefixed by
-  `u8 3` + 32-byte tab id (ASCII, space padded) + image, `{"type":"action_requested",…}`.
-- `GET /s/{sid}/editor/` (write): reverse-proxied VS Code (iframe in the editor panel).
-- `POST /api/sandboxes/{sid}/shells` (write) → `{"id"}`; `WS /api/shells/{id}/terminal`.
+  `u8 3` + 32-byte tab id (ASCII, space padded) + image, `{"type":"action_requested",
+  "tab_id","reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|
+  capacity|upstream|internal","message"}`. One browser per sandbox, started on first use;
+  frames are those of the active tab. A slow client loses frames (never the browser); a client
+  that stops reading JSON messages is closed with 4008. Access is re-checked every 60 s (close
+  4003). When Chromium is missing or the browser stops, the server sends an `upstream` error
+  with the reason and closes with 1011.
+- Agents print `<public_url>/s/<slug>/browser?tab=<tab_id>` (returned by the
+  `browser_request_user_action` MCP tool, which also marks the task `needs_attention` and
+  publishes `browser.action_requested`); the web UI opens the browser panel on that tab.
+- `/s/{sid}/editor/*` (write; any method, WebSocket upgrades included): reverse-proxied VS Code
+  (iframe in the editor panel). `/s/{sid}/editor` redirects to `/s/{sid}/editor/`. The editor
+  opens the sandbox repository; `?folder=<path>` is VS Code's own folder selection and
+  `GET /s/{sid}/editor/?worktree=<task id>` answers 302 to `?folder=<that task's worktree>`
+  (tasks of the same sandbox only: 404 otherwise, 409 without a worktree). Cookie sessions
+  need a same-origin `Origin` (or `Sec-Fetch-Site: same-origin`) for non-GET requests and
+  upgrades instead of the CSRF header. The editor's connection token stays on the server (it
+  is added to forwarded requests, never sent to the browser); Yulius credentials are not
+  forwarded. Request bodies ≤ 8 MiB (413). 503 `unavailable` when openvscode-server is missing
+  or disabled (contained mode without `--editor-uncontained`), 409 before the repository is
+  cloned.
+- `POST /api/sandboxes/{sid}/shells` (write) `{"task_id?"}` (or an empty body) → 201 `{"id"}`:
+  a login shell in the sandbox repository or that task's worktree, with the sandbox HOME and
+  the containment of task runs. At most 4 live shells per sandbox (429). `WS
+  /api/shells/{id}/terminal` (write users of that sandbox) speaks the terminal protocol
+  (`state` has `attempt_seq` and `harness` `null`); a shell ends when its process exits (the
+  server sends `exit` and closes) or after 30 min without viewers. Shells never change tasks.
 
 ## Administration, analytics, status
 

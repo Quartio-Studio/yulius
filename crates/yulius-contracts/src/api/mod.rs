@@ -10,6 +10,7 @@ pub mod common;
 pub mod git;
 pub mod mcp;
 pub mod sandboxes;
+pub mod shells;
 pub mod skills;
 pub mod status;
 pub mod tasks;
