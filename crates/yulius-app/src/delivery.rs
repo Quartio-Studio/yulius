@@ -571,6 +571,56 @@ fn section_text(markdown: &str, name: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// Pull request body: the caller's text, or the spec's Goal, path and Plan checklist and the
+/// task steps; always ending with `link` back to the task. Bounded to [`MAX_PR_BODY_BYTES`].
+fn pull_request_body(
+    link: &str,
+    spec: &SpecCheck,
+    steps: &[StepRecord],
+    custom: Option<&str>,
+) -> String {
+    let mut body = String::new();
+    match custom.map(str::trim).filter(|b| !b.is_empty()) {
+        Some(custom) => body.push_str(custom),
+        None => {
+            if let Some(goal) = &spec.goal {
+                body.push_str("## Goal\n\n");
+                body.push_str(&clip_chars(goal, GOAL_EXCERPT_CHARS));
+                body.push_str("\n\n");
+            }
+            if let Some(path) = &spec.path {
+                body.push_str(&format!("**Spec:** `{path}`\n\n"));
+            }
+            if let Some(report) = &spec.report
+                && !report.plan.is_empty()
+            {
+                body.push_str("## Plan\n\n");
+                for item in &report.plan {
+                    body.push_str(&format!(
+                        "{}- [{}] {}\n",
+                        "  ".repeat(item.depth.min(4)),
+                        if item.checked { "x" } else { " " },
+                        item.text
+                    ));
+                }
+                body.push('\n');
+            }
+            if !steps.is_empty() {
+                body.push_str("## Steps\n\n");
+                for step in steps {
+                    body.push_str(&format!("- {} ({})\n", step.title, step.status));
+                }
+                body.push('\n');
+            }
+        }
+    }
+    let room = MAX_PR_BODY_BYTES.saturating_sub(link.len() + 8);
+    let mut out = clip_bytes(&body, room).trim_end().to_owned();
+    out.push_str("\n\n---\n");
+    out.push_str(link);
+    out
+}
+
 // ---------------------------------------------------------------- observations
 
 /// Result of reading and validating the task spec.
@@ -1385,7 +1435,15 @@ impl App {
                     head: branch.clone(),
                     base: profile.integration_branch.clone(),
                     title: clip_chars(&title, MAX_PR_TITLE_CHARS),
-                    body: self.dlv_pr_body(&sandbox, &task, &observed, req.body.as_deref()),
+                    body: pull_request_body(
+                        &format!(
+                            "Delivered with Yulius task #{}: {}/s/{}/t/{}",
+                            task.number, self.config.public_url, sandbox.slug, task.number
+                        ),
+                        &observed.spec,
+                        &observed.steps,
+                        req.body.as_deref(),
+                    ),
                 },
             )
             .await?;
@@ -1423,59 +1481,6 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         self.delivery_view(&task, Some(&ctx.user)).await
-    }
-
-    fn dlv_pr_body(
-        &self,
-        sandbox: &SandboxRecord,
-        task: &TaskRecord,
-        observed: &Observed,
-        custom: Option<&str>,
-    ) -> String {
-        let link = format!(
-            "Delivered with Yulius task #{}: {}/s/{}/t/{}",
-            task.number, self.config.public_url, sandbox.slug, task.number
-        );
-        let mut body = String::new();
-        match custom.map(str::trim).filter(|b| !b.is_empty()) {
-            Some(custom) => body.push_str(custom),
-            None => {
-                if let Some(goal) = &observed.spec.goal {
-                    body.push_str("## Goal\n\n");
-                    body.push_str(&clip_chars(goal, GOAL_EXCERPT_CHARS));
-                    body.push_str("\n\n");
-                }
-                if let Some(path) = &observed.spec.path {
-                    body.push_str(&format!("**Spec:** `{path}`\n\n"));
-                }
-                if let Some(report) = &observed.spec.report
-                    && !report.plan.is_empty()
-                {
-                    body.push_str("## Plan\n\n");
-                    for item in &report.plan {
-                        body.push_str(&format!(
-                            "{}- [{}] {}\n",
-                            "  ".repeat(item.depth.min(4)),
-                            if item.checked { "x" } else { " " },
-                            item.text
-                        ));
-                    }
-                    body.push('\n');
-                }
-                if !observed.steps.is_empty() {
-                    body.push_str("## Steps\n\n");
-                    for step in &observed.steps {
-                        body.push_str(&format!("- {} ({})\n", step.title, step.status));
-                    }
-                    body.push('\n');
-                }
-            }
-        }
-        let room = MAX_PR_BODY_BYTES.saturating_sub(link.len() + 8);
-        let mut out = clip_bytes(&body, room).trim_end().to_owned();
-        out.push_str("\n\n---\n");
-        out.push_str(&link);
-        out
     }
 
     // ---------------------------------------------------------------- merge
@@ -2733,6 +2738,40 @@ mod tests {
             &profile,
             &rollout
         ));
+    }
+
+    #[test]
+    fn pull_request_body_summarizes_the_spec_and_links_back() -> TestResult {
+        let text = "---\nyulius-task: t1\nstatus: draft\n---\n## Goal\nCustomers pay.\n## Context\nc\n## Requirements\nr\n## Plan\n- [x] Spec\n  - [ ] Nested\n## Acceptance criteria\na\n## Test plan\nt\n## Decisions\nd\n";
+        let report = spec_format::validate_spec_for(text, &TaskId::parse("t1")?);
+        let spec = SpecCheck {
+            path: Some("docs/specs/x.md".into()),
+            valid: report.is_valid(),
+            problems: Vec::new(),
+            goal: section_text(text, "Goal"),
+            report: Some(report),
+        };
+        let steps = vec![StepRecord {
+            id: yulius_domain::ids::StepId::parse("s1")?,
+            task_id: TaskId::parse("t1")?,
+            ordinal: 1,
+            title: "Implement".into(),
+            status: "in_progress".into(),
+            note: None,
+            updated_by: None,
+            updated_at: None,
+        }];
+        let body = pull_request_body("LINK", &spec, &steps, None);
+        assert!(body.starts_with("## Goal\n\nCustomers pay."), "{body}");
+        assert!(body.contains("**Spec:** `docs/specs/x.md`"));
+        assert!(body.contains("- [x] Spec\n  - [ ] Nested"));
+        assert!(body.contains("- Implement (in_progress)"));
+        assert!(body.ends_with("---\nLINK"));
+        let custom = pull_request_body("LINK", &spec, &steps, Some("  Mine  "));
+        assert_eq!(custom, "Mine\n\n---\nLINK");
+        let huge = "x".repeat(MAX_PR_BODY_BYTES * 2);
+        assert!(pull_request_body("LINK", &spec, &[], Some(&huge)).len() <= MAX_PR_BODY_BYTES);
+        Ok(())
     }
 
     #[test]
