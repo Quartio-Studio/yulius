@@ -2460,9 +2460,11 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "yulius-app",
  "yulius-contracts",
  "yulius-domain",
+ "yulius-harness",
  "yulius-server",
  "yulius-store",
 ]

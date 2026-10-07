@@ -463,7 +463,7 @@ mod tests {
             model: Some("m".into()),
             ..MetricsRecord::default()
         };
-        let sum = sum_metrics(&[unknown.clone()]);
+        let sum = sum_metrics(std::slice::from_ref(&unknown));
         assert_eq!(sum.input_tokens, None);
         let sum = sum_metrics(&[unknown, known.clone(), known]);
         assert_eq!(sum.input_tokens, Some(20));

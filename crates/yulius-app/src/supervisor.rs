@@ -855,12 +855,12 @@ impl App {
                                 .attempt(&aid)
                                 .await
                                 .map(|a| a.map(|a| a.run_dir))
-                            {
-                                if let Ok(again) = app
+                                && let Ok(again) = app
                                     .deps
                                     .session_host
                                     .attach(Path::new(&run_dir), &token)
                                     .await
+                            {
                                 {
                                     let rt = app.runtime(&tid);
                                     rt.hub.reset(

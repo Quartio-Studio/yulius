@@ -117,7 +117,10 @@ impl Hub {
     /// Resizes the screen model.
     pub fn resize(&self, cols: u16, rows: u16) {
         if let Ok(mut screen) = self.screen.lock() {
-            screen.parser.screen_mut().set_size(rows.max(1), cols.max(1));
+            screen
+                .parser
+                .screen_mut()
+                .set_size(rows.max(1), cols.max(1));
         }
         let _ = self.tx.send(HubFrame::State);
     }

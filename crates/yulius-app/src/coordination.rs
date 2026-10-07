@@ -104,7 +104,7 @@ impl App {
             "recent" => !t.status.is_live(),
             _ => true,
         });
-        tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        tasks.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
         let mut out = Vec::new();
         for t in tasks.iter().take(usize::try_from(limit).unwrap_or(30)) {
             out.push(self.task_brief(t).await?);

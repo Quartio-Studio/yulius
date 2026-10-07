@@ -235,6 +235,12 @@ pub fn harness() -> Result<Harness, Box<dyn std::error::Error>> {
         clock: clock.clone(),
         crypto: Arc::new(MasterKeyCrypto::from_key(&[9u8; 32])?),
         github: github.clone(),
+        session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+        harness: Arc::new(yulius::wiring::harness::HarnessAdapter {
+            yulius_exe: "/bin/false".into(),
+            yulius_url: "http://127.0.0.1:1".into(),
+        }),
+        git: Arc::new(yulius::wiring::pending::UnavailableGit),
     };
     let app = App::new(config, deps);
     let router = yulius_server::public_router(app.clone())

@@ -12,6 +12,8 @@ use yulius_store::crypto::{MasterKeyCrypto, write_private};
 
 use crate::wiring::clock::SystemClock;
 use crate::wiring::github::UnavailableGitHub;
+use crate::wiring::harness::HarnessAdapter;
+use crate::wiring::pending::{UnavailableGit, UnavailableSessionHost};
 
 /// Server options (flags or environment variables).
 #[derive(Debug, Args)]
@@ -65,6 +67,12 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
         clock: Arc::new(SystemClock),
         crypto: Arc::new(crypto),
         github: Arc::new(UnavailableGitHub),
+        session_host: Arc::new(UnavailableSessionHost),
+        harness: Arc::new(HarnessAdapter {
+            yulius_exe: config.yulius_exe.clone(),
+            yulius_url: config.internal_url.clone(),
+        }),
+        git: Arc::new(UnavailableGit),
     };
     Ok(App::new(config, deps))
 }
