@@ -10,7 +10,9 @@ use yulius_app::context::{App, AppConfig, Deps};
 use yulius_store::SqliteStore;
 use yulius_store::crypto::{MasterKeyCrypto, write_private};
 
+use crate::wiring::browser::ChromiumBrowsers;
 use crate::wiring::clock::SystemClock;
+use crate::wiring::editor::{UnavailableEditor, VsCodeEditors};
 use crate::wiring::git::GitAdapter;
 use crate::wiring::github_client::GitHubAdapter;
 use crate::wiring::harness::HarnessAdapter;
@@ -41,6 +43,78 @@ pub struct ServeArgs {
     /// Run sandboxes inside bubblewrap containment (Linux).
     #[arg(long, env = "YULIUS_CONTAINED", default_value_t = false)]
     pub contained: bool,
+    /// Chromium executable for sandbox browsers (default: found on PATH or in the usual
+    /// install locations).
+    #[arg(long, env = "YULIUS_CHROMIUM")]
+    pub chromium: Option<PathBuf>,
+    /// Pass `--no-sandbox` to Chromium (only where Chromium's own sandbox cannot run).
+    #[arg(long, env = "YULIUS_CHROMIUM_NO_SANDBOX", default_value_t = false)]
+    pub chromium_no_sandbox: bool,
+    /// openvscode-server executable for the sandbox editor.
+    #[arg(
+        long,
+        env = "YULIUS_OPENVSCODE_SERVER",
+        default_value = "openvscode-server"
+    )]
+    pub openvscode_server: PathBuf,
+    /// Loopback port range for editors, `first-last`.
+    #[arg(long, env = "YULIUS_EDITOR_PORTS", default_value = "45000-45999")]
+    pub editor_ports: String,
+    /// Allow the editor in contained mode although openvscode-server (and its integrated
+    /// terminal) runs outside the containment boundary.
+    #[arg(long, env = "YULIUS_EDITOR_UNCONTAINED", default_value_t = false)]
+    pub editor_uncontained: bool,
+    /// Login shell for sandbox shells (default: $SHELL, /bin/bash, /bin/sh).
+    #[arg(long, env = "YULIUS_SHELL")]
+    pub shell: Option<PathBuf>,
+}
+
+/// Parses `first-last` into an inclusive port range.
+pub fn parse_port_range(text: &str) -> Result<std::ops::RangeInclusive<u16>, String> {
+    let (first, last) = text
+        .split_once('-')
+        .ok_or_else(|| format!("invalid port range {text:?}: expected first-last"))?;
+    let first: u16 = first
+        .trim()
+        .parse()
+        .map_err(|_| format!("invalid port range {text:?}"))?;
+    let last: u16 = last
+        .trim()
+        .parse()
+        .map_err(|_| format!("invalid port range {text:?}"))?;
+    if first == 0 || first > last {
+        return Err(format!(
+            "invalid port range {text:?}: first must be 1..=last"
+        ));
+    }
+    Ok(first..=last)
+}
+
+/// The browser adapter for the data directory (profiles live in each sandbox directory).
+fn browser_port(args: &ServeArgs) -> Arc<dyn yulius_app::ports::browser::BrowserPort> {
+    let exe = args.chromium.clone().unwrap_or_else(|| {
+        // An undiscoverable Chromium surfaces as a typed "not found" error on first use.
+        yulius_browser::discover_chromium().unwrap_or_else(|_| PathBuf::from("chromium"))
+    });
+    let mut config = yulius_browser::BrowserConfig::new(exe, args.data_dir.join("sandboxes"));
+    config.no_sandbox = args.chromium_no_sandbox;
+    Arc::new(ChromiumBrowsers::new(config))
+}
+
+/// The editor adapter, or a placeholder explaining why the editor is disabled.
+fn editor_port(args: &ServeArgs) -> Result<Arc<dyn yulius_app::ports::editor::EditorPort>, String> {
+    if args.contained && !args.editor_uncontained {
+        return Ok(Arc::new(UnavailableEditor::new(
+            "the editor is disabled in contained mode because openvscode-server would run outside the sandbox containment; start yulius with --editor-uncontained to accept that",
+        )));
+    }
+    let ports = parse_port_range(&args.editor_ports)?;
+    let config = yulius_editor::EditorConfig::new(
+        args.openvscode_server.clone(),
+        args.data_dir.join("editors"),
+        ports,
+    );
+    Ok(Arc::new(VsCodeEditors::new(config)))
 }
 
 /// Prepares the data directory with owner-only permissions.
@@ -96,8 +170,14 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
             yulius_url: config.internal_url.clone(),
         }),
         git: Arc::new(GitAdapter::new("git")),
+        browser: browser_port(args),
+        editor: editor_port(args)?,
     };
-    Ok(App::new(config, deps))
+    let app = App::new(config, deps);
+    if let Some(shell) = &args.shell {
+        app.set_shell_program(shell.clone());
+    }
+    Ok(app)
 }
 
 /// Runs the server until SIGINT/SIGTERM.
@@ -131,6 +211,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         .map_err(|e| format!("cannot bind {}: {e}", args.internal_bind))?;
     tracing::info!(public = %args.bind, internal = %args.internal_bind, "yulius listening");
     app.start_background();
+    let workspace_reaper = app.start_workspace_services();
     let public_router = yulius_server::public_router(app.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
     let internal_router = yulius_server::internal_router(app.clone())
@@ -139,6 +220,9 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let internal_task =
         axum::serve(internal, internal_router).with_graceful_shutdown(shutdown_signal());
     let (a, b) = tokio::join!(public_task, internal_task);
+    // Browsers, editors and shells do not outlive the server (agent sessions do).
+    drop(workspace_reaper);
+    app.stop_workspace_services().await;
     a.map_err(|e| e.to_string())?;
     b.map_err(|e| e.to_string())?;
     tracing::info!("yulius stopped; detached sessions keep running");

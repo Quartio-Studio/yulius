@@ -249,6 +249,8 @@ pub fn harness_with_git(
             yulius_url: "http://127.0.0.1:1".into(),
         }),
         git,
+        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
+        editor: Arc::new(yulius::wiring::editor::UnavailableEditor::default()),
     };
     let app = App::new(config, deps);
     let router = yulius_server::public_router(app.clone())

@@ -40,6 +40,8 @@ yulius-ptyhost = { workspace = true }
 yulius-git = { workspace = true }
 yulius-github = { workspace = true }
 yulius-import = { workspace = true }
+yulius-browser = { workspace = true }
+yulius-editor = { workspace = true }
 rustls = { workspace = true }
 uuid = { workspace = true }
 

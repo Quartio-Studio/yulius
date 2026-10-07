@@ -138,6 +138,8 @@ fn build(data: &Path, fake: &Path) -> Result<Arc<App>, Box<dyn std::error::Error
             fake: fake.to_path_buf(),
         }),
         git: Arc::new(GitAdapter::new("git")),
+        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
+        editor: Arc::new(yulius::wiring::editor::UnavailableEditor::default()),
     };
     Ok(App::new(config, deps))
 }

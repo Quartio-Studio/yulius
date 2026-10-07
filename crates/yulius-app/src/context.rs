@@ -84,6 +84,10 @@ pub struct Deps {
     pub harness: Arc<dyn HarnessPort>,
     /// Git.
     pub git: Arc<dyn GitPort>,
+    /// Per-sandbox shared browser (SPEC-001 BRW-001..004).
+    pub browser: Arc<dyn crate::ports::browser::BrowserPort>,
+    /// Per-sandbox VS Code server (SPEC-001 EDT-001/002).
+    pub editor: Arc<dyn crate::ports::editor::EditorPort>,
 }
 
 /// The application.
@@ -100,6 +104,8 @@ pub struct App {
     pub message_waker: OnceLock<Arc<dyn crate::coordination::MessageWaker>>,
     /// Session supervisor runtime state.
     pub(crate) supervisor: crate::supervisor::SupervisorState,
+    /// Sandbox shell sessions (SPEC-001 UI-015).
+    pub(crate) shells: crate::shells::ShellState,
 }
 
 impl App {
@@ -113,6 +119,7 @@ impl App {
             login_attempts: Mutex::new(HashMap::new()),
             message_waker: OnceLock::new(),
             supervisor: crate::supervisor::SupervisorState::default(),
+            shells: crate::shells::ShellState::default(),
         })
     }
 
