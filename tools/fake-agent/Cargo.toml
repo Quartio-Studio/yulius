@@ -1,0 +1,17 @@
+[package]
+name = "fake-agent"
+version = "0.1.0"
+description = "Deterministic fake coding-agent CLI for Yulius supervisor and failure tests."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[package.metadata.yulius]
+layer = "tooling"
+
+[dependencies]

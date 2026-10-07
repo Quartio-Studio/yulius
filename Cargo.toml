@@ -1,5 +1,21 @@
 [workspace]
-members = ["tools/xtask"]
+members = [
+    "crates/yulius-domain",
+    "crates/yulius-contracts",
+    "crates/yulius-app",
+    "crates/yulius-store",
+    "crates/yulius-ptyhost",
+    "crates/yulius-harness",
+    "crates/yulius-github",
+    "crates/yulius-git",
+    "crates/yulius-browser",
+    "crates/yulius-editor",
+    "crates/yulius-import",
+    "crates/yulius-server",
+    "crates/yulius",
+    "tools/xtask",
+    "tools/fake-agent",
+]
 resolver = "3"
 
 [workspace.package]
@@ -7,6 +23,46 @@ edition = "2024"
 rust-version = "1.99"
 license = "MIT"
 repository = "https://github.com/Quartio-Studio/yulius-v2"
+
+[workspace.dependencies]
+# Internal crates
+yulius-domain = { path = "crates/yulius-domain" }
+yulius-contracts = { path = "crates/yulius-contracts" }
+yulius-app = { path = "crates/yulius-app" }
+yulius-store = { path = "crates/yulius-store" }
+yulius-ptyhost = { path = "crates/yulius-ptyhost" }
+yulius-harness = { path = "crates/yulius-harness" }
+yulius-github = { path = "crates/yulius-github" }
+yulius-git = { path = "crates/yulius-git" }
+yulius-browser = { path = "crates/yulius-browser" }
+yulius-editor = { path = "crates/yulius-editor" }
+yulius-import = { path = "crates/yulius-import" }
+yulius-server = { path = "crates/yulius-server" }
+# External crates: exact minor pins; the lockfile holds exact versions.
+thiserror = "2.0.21"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process", "signal", "fs"] }
+async-trait = "0.1"
+futures = "0.3.34"
+axum = { version = "0.8.9", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.7.1", features = ["trace", "limit"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+argon2 = "0.6.0"
+rand = "0.10.3"
+uuid = { version = "1.27.0", features = ["v4"] }
+portable-pty = "0.9.0"
+vt100 = "0.16.2"
+nix = { version = "0.31.3", features = ["signal", "process", "fs", "user"] }
+clap = { version = "4.6.7", features = ["derive"] }
+toml = "1.1.6"
+sha2 = "0.11.0"
+hex = "0.4.3"
+base64 = "0.23.1"
+tempfile = "3.27.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

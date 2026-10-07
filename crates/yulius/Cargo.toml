@@ -1,0 +1,22 @@
+[package]
+name = "yulius"
+version = "0.1.0"
+description = "The yulius binary: configuration, wiring and subcommands."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "yulius"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[package.metadata.yulius]
+layer = "composition"
+
+[dependencies]
+clap = { workspace = true }

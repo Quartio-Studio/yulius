@@ -5,7 +5,9 @@ ignore = []
 [licenses]
 version = 2
 # Extend deliberately when an actual dependency needs another reviewed license.
-allow = ["MIT"]
+# Unicode-3.0: unicode-ident (via proc-macro2, required by thiserror/clap derives); OSI approved,
+# permissive data license. Added 2026-10-07 for the product workspace (SPEC-002).
+allow = ["MIT", "Unicode-3.0"]
 confidence-threshold = 0.93
 
 [bans]
