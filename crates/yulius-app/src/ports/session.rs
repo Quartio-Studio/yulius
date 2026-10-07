@@ -41,7 +41,33 @@ pub enum Containment {
         writable: Vec<PathBuf>,
         /// Extra read-only paths (e.g. the yulius executable).
         readonly: Vec<PathBuf>,
+        /// Mounts at another path inside the sandbox (user home, identity files).
+        binds: Vec<Bind>,
+        /// Identity in a new user namespace (user shells and editors); `None` for agents.
+        identity: Option<Identity>,
     },
+}
+
+/// A bind mount at a different path inside the sandbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bind {
+    /// Host path.
+    pub source: PathBuf,
+    /// Path inside the sandbox.
+    pub dest: PathBuf,
+    /// Writable (otherwise read-only).
+    pub writable: bool,
+}
+
+/// Process identity inside its own user namespace (SPEC-002 ADR-12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    /// User id inside the namespace.
+    pub uid: u32,
+    /// Group id inside the namespace.
+    pub gid: u32,
+    /// Host name inside the namespace.
+    pub hostname: String,
 }
 
 /// Everything needed to start one process run.

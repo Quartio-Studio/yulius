@@ -125,6 +125,8 @@ pub struct App {
     pub(crate) logins: crate::accounts::LoginRegistry,
     /// Sandbox shell sessions (SPEC-001 UI-015).
     pub(crate) shells: crate::shells::ShellState,
+    /// Workspace tokens of user processes (SPEC-002 ADR-12).
+    pub(crate) workspace_grants: crate::identity::WorkspaceGrants,
 }
 
 impl App {
@@ -140,6 +142,7 @@ impl App {
             supervisor: crate::supervisor::SupervisorState::default(),
             logins: crate::accounts::LoginRegistry::default(),
             shells: crate::shells::ShellState::default(),
+            workspace_grants: crate::identity::WorkspaceGrants::default(),
         })
     }
 

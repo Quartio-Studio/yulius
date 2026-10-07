@@ -169,7 +169,9 @@ export function createBrowserPanel(ctx, sandbox) {
       lastError = { code: message.code, message: message.message || '' };
       // `upstream` precedes a 1011 close when Chromium is missing or the browser stopped:
       // the overlay explains it, so no toast.
-      if (message.code !== 'upstream') toast(message.message || 'Browser error', { kind: 'error', detail: message.code ? `code: ${message.code}` : null });
+      // A tab that vanished (browser restarted) is not the user's problem: the tab list
+      // that follows selects another tab.
+      if (message.code !== 'upstream' && message.code !== 'not_found') toast(message.message || 'Browser error', { kind: 'error', detail: message.code ? `code: ${message.code}` : null });
     }
   }
 

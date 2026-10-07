@@ -18,6 +18,7 @@ pub mod events;
 pub mod github_admin;
 pub mod hooks;
 pub mod hub;
+pub mod identity;
 pub mod imports;
 pub mod lifecycle;
 pub mod mcp;

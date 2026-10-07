@@ -392,6 +392,37 @@ pub struct BubblewrapSpec {
     /// Keep the host network namespace (agents need network); `false` unshares it.
     #[serde(default)]
     pub share_net: bool,
+    /// Bind mounts whose path inside the sandbox differs from the host path, applied after
+    /// the same-path binds (a bind whose destination is `home` replaces the home bind).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binds: Vec<BindMount>,
+    /// Run as this identity in a new user namespace (user shells and editors, SPEC-002
+    /// ADR-12); `None` keeps the caller's identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<SandboxIdentity>,
+}
+
+/// A bind mount at a different path inside the sandbox.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BindMount {
+    /// Host path.
+    pub source: String,
+    /// Path inside the sandbox.
+    pub dest: String,
+    /// Writable (otherwise read-only).
+    #[serde(default)]
+    pub writable: bool,
+}
+
+/// Identity of the contained process in its own user namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxIdentity {
+    /// User id inside the namespace (0: root of the sandbox).
+    pub uid: u32,
+    /// Group id inside the namespace.
+    pub gid: u32,
+    /// Host name inside the namespace (the sandbox slug).
+    pub hostname: String,
 }
 
 /// Process containment of the child.
@@ -633,6 +664,30 @@ fn validate_bubblewrap(spec: &BubblewrapSpec) -> Result<(), LaunchSpecError> {
     }
     if !spec.readonly.iter().all(|p| valid_abs_path(p)) {
         return Err(spec_err("containment.readonly", "paths must be absolute"));
+    }
+    if spec.binds.len() > MAX_PATHS
+        || !spec
+            .binds
+            .iter()
+            .all(|b| valid_abs_path(&b.source) && valid_abs_path(&b.dest) && b.dest != "/")
+    {
+        return Err(spec_err(
+            "containment.binds",
+            "sources and destinations must be absolute; the destination is not /",
+        ));
+    }
+    if let Some(identity) = &spec.identity {
+        let host_ok = (1..=63).contains(&identity.hostname.len())
+            && identity
+                .hostname
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+        if !host_ok {
+            return Err(spec_err(
+                "containment.identity.hostname",
+                "must be 1..=63 letters, digits or dashes",
+            ));
+        }
     }
     Ok(())
 }
@@ -1555,6 +1610,16 @@ mod tests {
             writable: vec!["/data/sandboxes/s1/worktrees/t1".into()],
             readonly: vec!["/opt/tools".into()],
             share_net: true,
+            binds: vec![BindMount {
+                source: "/data/users/u1/home".into(),
+                dest: "/home/alice".into(),
+                writable: true,
+            }],
+            identity: Some(SandboxIdentity {
+                uid: 0,
+                gid: 0,
+                hostname: "s1".into(),
+            }),
         });
         spec.validate()?;
         let json = serde_json::to_string(&spec)?;
@@ -1613,6 +1678,8 @@ mod tests {
                         writable: vec![],
                         readonly: vec![],
                         share_net: false,
+                        binds: vec![],
+                        identity: None,
                     });
                 },
                 "containment.sandbox_root",

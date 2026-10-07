@@ -184,6 +184,8 @@ function createApp(root, transport) {
     const backdrop = h('div', { class: 'drawer-backdrop', onClick: () => document.body.classList.remove('drawer-open') });
     appEl.append(tabRow.el, sidebar.el, center, panels.panel, panels.rail);
     setChildren(root, appEl, backdrop);
+    ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
+    panels.mounted();
     shell = { el: appEl, tabRow, sidebar, center, panels };
     tabRow.renderMe();
 

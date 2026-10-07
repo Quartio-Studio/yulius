@@ -151,6 +151,30 @@ fn credential_helper(exe: &Path) -> String {
     format!("!'{quoted}' git-credential")
 }
 
+/// Git configuration (environment form) that makes Git ask Yulius for GitHub credentials
+/// through the helper (never stored on disk): agents get installation tokens, user processes
+/// the user's own token (SPEC-002 ADR-12).
+pub(crate) fn git_credential_env(exe: &Path) -> Vec<(String, String)> {
+    vec![
+        ("GIT_CONFIG_COUNT".into(), "3".into()),
+        (
+            "GIT_CONFIG_KEY_0".into(),
+            "credential.https://github.com.helper".into(),
+        ),
+        ("GIT_CONFIG_VALUE_0".into(), String::new()),
+        (
+            "GIT_CONFIG_KEY_1".into(),
+            "credential.https://github.com.helper".into(),
+        ),
+        ("GIT_CONFIG_VALUE_1".into(), credential_helper(exe)),
+        (
+            "GIT_CONFIG_KEY_2".into(),
+            "credential.https://github.com.useHttpPath".into(),
+        ),
+        ("GIT_CONFIG_VALUE_2".into(), "true".into()),
+    ]
+}
+
 /// Branch name for a task: `feat/<number>-<slug>`.
 #[must_use]
 pub fn branch_for(number: u32, title: &str) -> String {
@@ -671,6 +695,8 @@ impl App {
                     .chain(self.config.contained_readonly.iter().cloned())
                     .chain(run_files)
                     .collect(),
+                binds: Vec::new(),
+                identity: None,
             }
         } else {
             Containment::None
@@ -794,7 +820,7 @@ impl App {
 
     fn base_env(&self, sandbox: &SandboxRecord, home: &Path) -> Vec<(String, String)> {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
-        vec![
+        let mut env = vec![
             ("HOME".into(), home.to_string_lossy().into_owned()),
             ("PATH".into(), path),
             ("TERM".into(), "xterm-256color".into()),
@@ -805,27 +831,9 @@ impl App {
             ("YULIUS_PORT_COUNT".into(), sandbox.port_count.to_string()),
             ("PORT".into(), sandbox.port_base.to_string()),
             ("YULIUS_SANDBOX".into(), sandbox.slug.clone()),
-            // Git asks Yulius for a short-lived installation token (never stored on disk).
-            ("GIT_CONFIG_COUNT".into(), "3".into()),
-            (
-                "GIT_CONFIG_KEY_0".into(),
-                "credential.https://github.com.helper".into(),
-            ),
-            ("GIT_CONFIG_VALUE_0".into(), String::new()),
-            (
-                "GIT_CONFIG_KEY_1".into(),
-                "credential.https://github.com.helper".into(),
-            ),
-            (
-                "GIT_CONFIG_VALUE_1".into(),
-                credential_helper(&self.config.yulius_exe),
-            ),
-            (
-                "GIT_CONFIG_KEY_2".into(),
-                "credential.https://github.com.useHttpPath".into(),
-            ),
-            ("GIT_CONFIG_VALUE_2".into(), "true".into()),
-        ]
+        ];
+        env.extend(git_credential_env(&self.config.yulius_exe));
+        env
     }
 
     async fn record_lineage(

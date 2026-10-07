@@ -94,6 +94,8 @@ impl SessionHost for PtySessionHost {
                 home,
                 writable,
                 readonly,
+                binds,
+                identity,
             } => wire::Containment::Bubblewrap(BubblewrapSpec {
                 sandbox_root: sandbox_root.to_string_lossy().into_owned(),
                 home: home.to_string_lossy().into_owned(),
@@ -106,6 +108,19 @@ impl SessionHost for PtySessionHost {
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect(),
                 share_net: true,
+                binds: binds
+                    .iter()
+                    .map(|b| wire::BindMount {
+                        source: b.source.to_string_lossy().into_owned(),
+                        dest: b.dest.to_string_lossy().into_owned(),
+                        writable: b.writable,
+                    })
+                    .collect(),
+                identity: identity.as_ref().map(|i| wire::SandboxIdentity {
+                    uid: i.uid,
+                    gid: i.gid,
+                    hostname: i.hostname.clone(),
+                }),
             }),
         };
         let launch = LaunchSpec {

@@ -74,10 +74,15 @@ pub async fn git_credential(
     if request.protocol != "https" {
         return StatusCode::FORBIDDEN.into_response();
     }
-    match app
-        .agent_git_credential(token, &request.host, request.path.as_deref())
-        .await
-    {
+    // User shells and editors carry workspace tokens; agents carry task tokens.
+    let credential = if token.starts_with("ws_") {
+        app.workspace_git_credential(token, &request.host, request.path.as_deref())
+            .await
+    } else {
+        app.agent_git_credential(token, &request.host, request.path.as_deref())
+            .await
+    };
+    match credential {
         Ok(credential) => {
             Json(serde_json::json!({"token": credential.token.expose()})).into_response()
         }

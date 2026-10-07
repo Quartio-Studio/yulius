@@ -336,6 +336,15 @@ p { margin: 0; }
 .center.paper { background: var(--bg); }
 
 /* right rail + panel (UI-002, UI-015) */
+/* Tools rail hidden by default; a maximized panel covers the center. */
+.app.rail-hidden { --rail-w: 0px; }
+.app.rail-hidden .rail { display: none; }
+.app.panel-max { grid-template-columns: var(--sidebar-w) 0 minmax(0, 1fr) var(--rail-w); }
+.app.panel-max.sidebar-collapsed { grid-template-columns: var(--sidebar-mini-w) 0 minmax(0, 1fr) var(--rail-w); }
+.app.panel-max .center { visibility: hidden; overflow: hidden; }
+.app.panel-max .panel { width: auto !important; }
+.app.panel-max .panel-resize { display: none; }
+.tools-toggle.active { background: var(--accent-soft); color: var(--text); }
 .rail { grid-area: rail; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 0; background: var(--surface); border-left: 1px solid var(--border); }
 .rail-btn { position: relative; width: 30px; height: 30px; }
 .rail-btn.active { background: var(--accent-soft); color: var(--text); }

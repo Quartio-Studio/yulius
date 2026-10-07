@@ -37,6 +37,18 @@ export function createTabRow(ctx) {
   const eventDot = h('span', { class: 'ev-dot', title: 'Live updates connected' });
   const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and account usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), icon('down', { size: 12 }));
   const avatar = h('button', { type: 'button', class: 'avatar', 'aria-label': 'User menu', 'aria-haspopup': 'menu' }, '?');
+  // Shows/hides the right tool rail (browser, editor, shell, messages); hidden by default.
+  const toolsButton = iconButton('tools', 'Show tools (browser, editor, shell, messages)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
+  const toolsDot = h('span', { class: 'rail-dot', hidden: true });
+  toolsButton.append(toolsDot);
+  toolsButton.style.position = 'relative';
+  ctx.onToolsAttention = (attention) => { toolsDot.hidden = !attention; };
+  ctx.onRailChange = (visible) => {
+    toolsButton.classList.toggle('active', visible);
+    toolsButton.setAttribute('aria-pressed', String(visible));
+    toolsButton.title = visible ? 'Hide tools' : 'Show tools (browser, editor, shell, messages)';
+    toolsButton.setAttribute('aria-label', toolsButton.title);
+  };
   const statusPanel = createStatusPanel(ctx, statusButton);
   statusButton.addEventListener('click', () => statusPanel.toggle());
   avatar.addEventListener('click', () => openUserMenu(ctx, avatar));
@@ -47,7 +59,7 @@ export function createTabRow(ctx) {
     tabs,
     select,
     addButton,
-    h('div', { class: 'tabrow-right' }, contained, statusButton, avatar),
+    h('div', { class: 'tabrow-right' }, contained, statusButton, toolsButton, avatar),
   );
 
   let currentSlug = null;

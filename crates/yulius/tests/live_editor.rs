@@ -55,6 +55,7 @@ async fn start_chrome(
             "--disable-gpu",
             "--no-first-run",
             "--remote-debugging-port=0",
+            "--ignore-certificate-errors",
             "--window-size=1400,900",
         ])
         .arg(format!("--user-data-dir={}", profile.display()))
@@ -78,6 +79,134 @@ async fn start_chrome(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Opens `url` in a fresh browser context with the session cookie, optionally runs `setup`
+/// in the page, and waits until `probe` is true; on failure reports network events and the
+/// editor's server log.
+async fn boots(
+    cdp: &CdpClient,
+    origin: &str,
+    cookie: &str,
+    url: &str,
+    setup: Option<&str>,
+    probe: &str,
+    data: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let context = cdp.call("Target.createBrowserContext", json!({})).await?;
+    let context_id = context["browserContextId"].as_str().ok_or("context id")?;
+    let target = cdp
+        .call(
+            "Target.createTarget",
+            json!({ "url": "about:blank", "browserContextId": context_id }),
+        )
+        .await?;
+    let target_id = target["targetId"].as_str().ok_or("target id")?;
+    let attached = cdp
+        .call(
+            "Target.attachToTarget",
+            json!({ "targetId": target_id, "flatten": true }),
+        )
+        .await?;
+    let session = attached["sessionId"]
+        .as_str()
+        .ok_or("session id")?
+        .to_owned();
+    let mut events = cdp.subscribe_events();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&seen);
+    let watched = session.clone();
+    let diagnostics = tokio::spawn(async move {
+        while let Ok(event) = events.recv().await {
+            if event.session_id.as_deref() != Some(watched.as_str()) {
+                continue;
+            }
+            let p = &event.params;
+            let line = match event.method.as_str() {
+                "Network.webSocketCreated" => format!("ws created {}", p["url"]),
+                "Network.webSocketHandshakeResponseReceived" => {
+                    format!("ws handshake {}", p["response"]["status"])
+                }
+                "Network.webSocketClosed" => "ws closed".to_owned(),
+                "Network.responseReceived" if p["response"]["status"].as_u64() >= Some(400) => {
+                    format!("http {} {}", p["response"]["status"], p["response"]["url"])
+                }
+                "Network.loadingFailed" => format!("failed {} {}", p["errorText"], p["type"]),
+                "Log.entryAdded" => format!("log {} {}", p["entry"]["level"], p["entry"]["text"]),
+                "Runtime.exceptionThrown" => format!(
+                    "exception {}",
+                    p["exceptionDetails"]["exception"]["description"]
+                ),
+                _ => continue,
+            };
+            if let Ok(mut lines) = sink.lock()
+                && lines.len() < 200
+            {
+                lines.push(line);
+            }
+        }
+    });
+    let session = session.as_str();
+    cdp.call_session(session, "Network.enable", json!({}))
+        .await?;
+    cdp.call_session(session, "Log.enable", json!({})).await?;
+    cdp.call_session(session, "Runtime.enable", json!({}))
+        .await?;
+    let set = cdp
+        .call_session(
+            session,
+            "Network.setCookie",
+            json!({ "name": "yulius_session", "value": cookie, "url": format!("{origin}/") }),
+        )
+        .await?;
+    assert_eq!(set["success"], Value::Bool(true), "cookie set");
+    cdp.call_session(session, "Page.navigate", json!({ "url": url }))
+        .await?;
+    if let Some(setup) = setup {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        cdp.call_session(session, "Runtime.evaluate", json!({ "expression": setup }))
+            .await?;
+    }
+    let deadline = Instant::now() + BOOT;
+    let mut booted = false;
+    while Instant::now() < deadline {
+        let value = cdp
+            .call_session(
+                session,
+                "Runtime.evaluate",
+                json!({ "expression": format!("!!({probe})"), "returnByValue": true }),
+            )
+            .await?;
+        if value["result"]["value"] == Value::Bool(true) {
+            booted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    diagnostics.abort();
+    let _ = cdp
+        .call(
+            "Target.disposeBrowserContext",
+            json!({ "browserContextId": context_id }),
+        )
+        .await;
+    if booted {
+        return Ok(());
+    }
+    let mut seen = seen.lock().map(|lines| lines.clone()).unwrap_or_default();
+    for log in glob_logs(&data.join("editors/s1/user-data/logs")) {
+        seen.push(format!("--- {}", log.display()));
+        seen.extend(
+            std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned),
+        );
+    }
+    Err(
+        format!("{url}: the workbench did not list {MARKER} within {BOOT:?}; events: {seen:#?}")
+            .into(),
+    )
 }
 
 /// `remoteagent.log` files below the editor's log directory.
@@ -110,9 +239,16 @@ async fn the_real_editor_boots_through_the_proxy_in_chrome() -> TestResult {
     };
     let dir = tempfile::tempdir()?;
     let data = dir.path().canonicalize()?;
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    // Optional fixed port and public URL, to run the checks through a reverse proxy (TLS,
+    // HTTP/2) in front of the test server.
+    let port: u16 = std::env::var("YULIUS_LIVE_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let addr = listener.local_addr()?;
-    let origin = format!("http://{addr}");
+    let origin =
+        std::env::var("YULIUS_LIVE_PUBLIC_URL").unwrap_or_else(|_| format!("http://{addr}"));
     let editors = VsCodeEditors::new(EditorConfig::new(
         PathBuf::from(editor_exe),
         data.join("editors"),
@@ -156,109 +292,22 @@ async fn the_real_editor_boots_through_the_proxy_in_chrome() -> TestResult {
         let profile = tempfile::tempdir()?;
         let (_chrome, ws_url) = start_chrome(&chrome_exe, profile.path()).await?;
         let cdp = CdpClient::connect(&ws_url, CdpConfig::default()).await?;
-        let target = cdp
-            .call("Target.createTarget", json!({ "url": "about:blank" }))
-            .await?;
-        let target_id = target["targetId"].as_str().ok_or("target id")?;
-        let attached = cdp
-            .call(
-                "Target.attachToTarget",
-                json!({ "targetId": target_id, "flatten": true }),
-            )
-            .await?;
-        let session = attached["sessionId"].as_str().ok_or("session id")?;
-        let mut events = cdp.subscribe_events();
-        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let sink = Arc::clone(&seen);
-        let diagnostics = tokio::spawn(async move {
-            while let Ok(event) = events.recv().await {
-                let p = &event.params;
-                let line = match event.method.as_str() {
-                    "Network.webSocketCreated" => format!("ws created {}", p["url"]),
-                    "Network.webSocketHandshakeResponseReceived" => {
-                        format!("ws handshake {}", p["response"]["status"])
-                    }
-                    "Network.webSocketClosed" => "ws closed".to_owned(),
-                    "Network.webSocketFrameSent" | "Network.webSocketFrameReceived" => format!(
-                        "{} opcode={} len={}",
-                        if event.method.ends_with("Sent") { "sent" } else { "recv" },
-                        p["response"]["opcode"],
-                        p["response"]["payloadData"].as_str().map_or(0, str::len)
-                    ),
-                    "Network.webSocketFrameError" => format!("ws frame error {}", p["errorMessage"]),
-                    "Network.responseReceived" if p["response"]["status"].as_u64() >= Some(400) => {
-                        format!("http {} {}", p["response"]["status"], p["response"]["url"])
-                    }
-                    "Network.loadingFailed" => format!("failed {} {}", p["errorText"], p["type"]),
-                    "Log.entryAdded" => format!("log {} {}", p["entry"]["level"], p["entry"]["text"]),
-                    "Runtime.exceptionThrown" => {
-                        format!("exception {}", p["exceptionDetails"]["exception"]["description"])
-                    }
-                    _ => continue,
-                };
-                if let Ok(mut lines) = sink.lock()
-                    && lines.len() < 200
-                {
-                    lines.push(line);
-                }
-            }
-        });
-        cdp.call_session(session, "Network.enable", json!({})).await?;
-        cdp.call_session(session, "Log.enable", json!({})).await?;
-        cdp.call_session(session, "Runtime.enable", json!({})).await?;
-        let set = cdp
-            .call_session(
-                session,
-                "Network.setCookie",
-                json!({ "name": "yulius_session", "value": cookie, "url": format!("{origin}/") }),
-            )
-            .await?;
-        assert_eq!(set["success"], Value::Bool(true), "cookie set");
-        cdp.call_session(
-            session,
-            "Page.navigate",
-            json!({ "url": format!("{origin}/s/s1/editor/") }),
-        )
-        .await?;
-        let probe = format!(
-            "!!document.querySelector('.monaco-workbench') && document.body.innerText.includes('{MARKER}')"
+        // 1. The editor as a page of its own.
+        // The icon font must load too: without it every icon renders as an empty square.
+        let icons = "[...d.fonts].some(f => f.family.replace(/\"/g, '') === 'codicon' && f.status === 'loaded')";
+        let direct = format!("(() => {{ const d = document; return !!(d.querySelector('.monaco-workbench') && d.body.innerText.includes('{MARKER}') && {icons}); }})()");
+        boots(&cdp, &origin, cookie, &format!("{origin}/s/s1/editor/"), None, &direct, &data).await?;
+        // 2. The editor in a same-origin iframe, as the workspace panel embeds it, in a fresh
+        //    browser context (no cookies from the first check).
+        let framed = format!(
+            "(() => {{ const d = document.querySelector('iframe')?.contentDocument; return !!(d && d.querySelector('.monaco-workbench') && d.body.innerText.includes('{MARKER}') && {icons}); }})()"
         );
-        let deadline = Instant::now() + BOOT;
-        let mut booted = false;
-        while Instant::now() < deadline {
-            let value = cdp
-                .call_session(
-                    session,
-                    "Runtime.evaluate",
-                    json!({ "expression": probe, "returnByValue": true }),
-                )
-                .await?;
-            if value["result"]["value"] == Value::Bool(true) {
-                booted = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+        let embed = "document.body.innerHTML = '<iframe src=\"/s/s1/editor/\" style=\"width:1200px;height:800px\" allow=\"clipboard-read; clipboard-write\" referrerpolicy=\"same-origin\"></iframe>'";
+        boots(&cdp, &origin, cookie, &format!("{origin}/healthz"), Some(embed), &framed, &data).await?;
+        if let Some(hold) = std::env::var("YULIUS_LIVE_HOLD_SECS").ok().and_then(|v| v.parse::<u64>().ok()) {
+            eprintln!("serving {origin} with cookie yulius_session={cookie} for {hold}s");
+            tokio::time::sleep(Duration::from_secs(hold)).await;
         }
-        let text = cdp
-            .call_session(
-                session,
-                "Runtime.evaluate",
-                json!({ "expression": "document.body ? document.body.innerText.slice(0, 400) : ''", "returnByValue": true }),
-            )
-            .await?;
-        diagnostics.abort();
-        let mut seen = seen.lock().map(|lines| lines.clone()).unwrap_or_default();
-        if !booted {
-            for log in glob_logs(&data.join("editors/s1/user-data/logs")) {
-                seen.push(format!("--- {}", log.display()));
-                seen.extend(std::fs::read_to_string(&log).unwrap_or_default().lines().map(str::to_owned));
-            }
-        }
-        assert!(
-            booted,
-            "events: {seen:#?}\nthe workbench did not list {MARKER} within {BOOT:?}; page text: {}",
-            text["result"]["value"]
-        );
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;

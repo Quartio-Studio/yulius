@@ -1,6 +1,8 @@
-// Right rail (Browser, Editor, Shell, Messages) and its resizable panel, collapsed by
-// default (UI-002, UI-015). Sandbox-scoped panels stay alive while hidden so the
-// browser stream, VS Code and shell sessions are not torn down on every toggle.
+// Right rail (Browser, Editor, Shell, Messages) and its resizable panel. The whole rail is
+// hidden by default (F 2026-10-07) and shown with the top-bar Tools toggle, remembered per
+// browser; opening a panel from a link shows it. Sandbox-scoped panels stay alive while hidden
+// so the browser stream, VS Code and shell sessions are not torn down on every toggle. A panel
+// can be maximized over the center.
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, errorToast, placeholder } from './dom.js';
@@ -11,6 +13,10 @@ import { allows } from './status.js';
 import { readJson, writeJson } from './store.js';
 
 const WIDTH_KEY = 'yulius.panelWidth';
+const RAIL_KEY = 'yulius.railVisible';
+const MAX_KEY = 'yulius.panelMaximized';
+/** Default panel width per kind (fraction of the window); VS Code needs room. */
+const DEFAULT_FRACTION = { editor: 0.62 };
 const KINDS = [
   ['browser', 'globe', 'Browser'],
   ['editor', 'code', 'Editor'],
@@ -36,10 +42,39 @@ export function createPanelHost(ctx) {
   const headExtra = h('div', { class: 'row' });
   const body = h('div', { class: 'panel-body' });
   const handle = h('div', { class: 'panel-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize panel', tabindex: '0' });
+  const maximizeButton = iconButton('maximize', 'Maximize panel', () => setMaximized(!maximized));
   const panel = h('section', { class: 'panel', hidden: true, 'aria-label': 'Tool panel' },
     handle,
-    h('div', { class: 'panel-head' }, title, headExtra, iconButton('x', 'Close panel', () => close())),
+    h('div', { class: 'panel-head' }, title, headExtra, maximizeButton, iconButton('x', 'Close panel', () => close())),
     body);
+  let maximized = false;
+  let railVisible = Boolean(readJson(RAIL_KEY, false));
+
+  /** Shows or hides the whole rail (and closes the panel when hiding). */
+  function setRailVisible(visible, { persist = true } = {}) {
+    railVisible = visible;
+    rail.hidden = !visible;
+    const app = rail.closest('.app');
+    if (app) app.classList.toggle('rail-hidden', !visible);
+    if (!visible && !panel.hidden) close();
+    if (persist) writeJson(RAIL_KEY, visible);
+    if (ctx.onRailChange) ctx.onRailChange(visible);
+  }
+
+  function setMaximized(value) {
+    maximized = value;
+    const app = rail.closest('.app');
+    if (app) app.classList.toggle('panel-max', value && !panel.hidden);
+    maximizeButton.replaceChildren(icon(value ? 'minimize' : 'maximize'));
+    maximizeButton.title = value ? 'Restore panel size' : 'Maximize panel';
+    maximizeButton.setAttribute('aria-label', maximizeButton.title);
+    if (kind) {
+      const saved = readJson(MAX_KEY, {}) || {};
+      saved[kind] = value;
+      writeJson(MAX_KEY, saved);
+    }
+    window.dispatchEvent(new Event('resize'));
+  }
 
   let kind = null;
   let sandbox = null;
@@ -47,9 +82,10 @@ export function createPanelHost(ctx) {
   const views = new Map(); // key → view
 
   // ---- width (default 45 % of the window, resizable, remembered per browser)
-  function defaultWidth() {
+  function defaultWidth(k) {
     const saved = Number(readJson(WIDTH_KEY, 0));
-    const fraction = saved > 0.15 && saved < 0.85 ? saved : 0.45;
+    const fallback = DEFAULT_FRACTION[k] || 0.45;
+    const fraction = saved > 0.15 && saved < 0.85 ? Math.max(saved, fallback) : fallback;
     return Math.round(window.innerWidth * fraction);
   }
   function applyWidth(px) {
@@ -111,10 +147,13 @@ export function createPanelHost(ctx) {
     const label = KINDS.find(([name]) => name === k)[2];
     title.textContent = k === 'messages' && task ? `Messages · #${task.number}` : label;
     setChildren(headExtra, view.headExtra ? view.headExtra() : null);
+    if (!railVisible) setRailVisible(true);
     if (panel.hidden) {
       panel.hidden = false;
-      if (!panel.style.width) applyWidth(defaultWidth());
+      applyWidth(Math.max(defaultWidth(k), panel.getBoundingClientRect().width || 0));
     }
+    const savedMax = readJson(MAX_KEY, {}) || {};
+    setMaximized(Boolean(savedMax[k]));
     for (const [name, button] of buttons) {
       button.classList.toggle('active', name === k);
       button.setAttribute('aria-pressed', String(name === k));
@@ -125,6 +164,8 @@ export function createPanelHost(ctx) {
 
   function close() {
     panel.hidden = true;
+    const app = rail.closest('.app');
+    if (app) app.classList.remove('panel-max');
     kind = null;
     for (const button of buttons.values()) {
       button.classList.remove('active');
@@ -156,6 +197,7 @@ export function createPanelHost(ctx) {
     msgBadge.textContent = unread ? String(unread) : '';
     const requests = sandbox ? ctx.store.state.actionRequests.get(sandbox.id) : null;
     badges.get('browser').hidden = !(requests && requests.size);
+    if (ctx.onToolsAttention) ctx.onToolsAttention(Boolean(requests && requests.size) || Boolean(unread));
     buttons.get('browser').title = requests && requests.size ? 'Browser — an agent needs your action' : 'Browser';
     const write = sandbox && allows(sandbox.access, 'write');
     for (const k of ['browser', 'editor', 'shell']) {
@@ -172,6 +214,10 @@ export function createPanelHost(ctx) {
   return {
     rail,
     panel,
+    get railVisible() { return railVisible; },
+    setRailVisible,
+    /** Applies the remembered rail visibility once the rail is in the document. */
+    mounted() { setRailVisible(railVisible, { persist: false }); },
     get kind() { return panel.hidden ? null : kind; },
     setContext(nextSandbox, nextTask) {
       const sandboxChanged = (nextSandbox && nextSandbox.id) !== (sandbox && sandbox.id);
@@ -179,7 +225,10 @@ export function createPanelHost(ctx) {
       sandbox = nextSandbox;
       task = nextTask;
       if (sandboxChanged) destroyWhere(() => true);
-      else if (taskChanged) destroyWhere((key) => key.startsWith('messages:') || key.startsWith('editor:'));
+      else if (taskChanged) {
+        destroyWhere((key) => key.startsWith('messages:'));
+        for (const [key, view] of views) if (key.startsWith('editor:') && view.taskChanged) view.taskChanged();
+      }
       if (!sandbox && !panel.hidden) close();
       else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind);
       updateBadges();
@@ -212,12 +261,19 @@ function createEditorView(ctx, sandbox, getTask) {
   }
   let frame = null;
   let checking = false;
-  const task = getTask();
   const base = `/s/${enc(sandbox.id)}/editor/`;
-  const target = h('select', { class: 'select', style: { height: '24px', width: 'auto', fontSize: '12px' }, 'aria-label': 'Folder' },
-    h('option', { value: '' }, 'Sandbox'),
-    task ? h('option', { value: 'task' }, `Task #${task.number} worktree`) : null);
-  const src = () => (target.value === 'task' && task ? `${base}?worktree=${encodeURIComponent(task.id)}` : base);
+  const target = h('select', { class: 'select', style: { height: '24px', width: 'auto', fontSize: '12px' }, 'aria-label': 'Folder' });
+  // The folder list follows the selected task; VS Code itself is not reloaded on task switches.
+  function taskOptions() {
+    const task = getTask();
+    const current = target.value;
+    setChildren(target,
+      h('option', { value: '' }, 'Sandbox'),
+      task ? h('option', { value: `task:${task.id}` }, `Task #${task.number} worktree`) : null);
+    target.value = [...target.options].some((o) => o.value === current) ? current : '';
+  }
+  taskOptions();
+  const src = () => (target.value.startsWith('task:') ? `${base}?worktree=${encodeURIComponent(target.value.slice(5))}` : base);
   target.addEventListener('change', () => { if (frame) frame.src = src(); });
   const reload = iconButton('refresh', 'Reload editor', () => { if (frame) frame.src = src(); else load(); });
   const external = iconButton('external', 'Open editor in a new tab', () => window.open(src(), '_blank', 'noopener'));
@@ -255,6 +311,7 @@ function createEditorView(ctx, sandbox, getTask) {
     el,
     headExtra: () => [target, reload, external],
     show() { load(); },
+    taskChanged: taskOptions,
   };
 }
 

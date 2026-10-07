@@ -17,6 +17,25 @@ use crate::token::{ConnectionToken, write_token_file};
 
 /// File name of the connection token inside `<data_root>/<sandbox>/`.
 pub const TOKEN_FILE: &str = "connection-token";
+/// Settings of a new VS Code profile (written once; the user's later changes win): Yulius'
+/// dark look, no walkthrough or AI chat side bar, and the sandbox trusted (it is the user's
+/// own workspace; the sandbox containment is the boundary).
+pub const DEFAULT_SETTINGS: &str = r#"{
+  "workbench.colorTheme": "Default Dark Modern",
+  "workbench.startupEditor": "none",
+  "workbench.secondarySideBar.defaultVisibility": "hidden",
+  "workbench.welcomePage.walkthroughs.openOnInstall": false,
+  "workbench.tips.enabled": false,
+  "chat.disableAIFeatures": true,
+  "security.workspace.trust.enabled": false,
+  "telemetry.telemetryLevel": "off",
+  "update.mode": "none",
+  "extensions.ignoreRecommendations": true,
+  "git.openRepositoryInParentFolders": "always",
+  "editor.fontSize": 13,
+  "terminal.integrated.fontSize": 13
+}
+"#;
 /// Spawn attempts on different ports when the editor exits during startup (port races).
 const START_ATTEMPTS: usize = 3;
 /// Interval between health probes during startup.
@@ -242,6 +261,17 @@ async fn create_private_dir(path: &Path) -> std::io::Result<()> {
     tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).await
 }
 
+/// Writes [`DEFAULT_SETTINGS`] as `<user_data>/User/settings.json` unless it exists.
+async fn write_default_settings(user_data: &Path) -> std::io::Result<()> {
+    let dir = user_data.join("User");
+    create_private_dir(&dir).await?;
+    let settings = dir.join("settings.json");
+    if tokio::fs::try_exists(&settings).await? {
+        return Ok(());
+    }
+    tokio::fs::write(&settings, DEFAULT_SETTINGS).await
+}
+
 impl EditorManager {
     /// A manager with no running editors.
     #[must_use]
@@ -361,6 +391,9 @@ impl EditorManager {
                 .await
                 .map_err(EditorError::Prepare)?;
         }
+        write_default_settings(&user_data)
+            .await
+            .map_err(EditorError::Prepare)?;
         // The token outlives restarts so an open workbench can reconnect after an idle stop.
         let token_file = root.join(TOKEN_FILE);
         let token = match ConnectionToken::read(&token_file) {
@@ -589,6 +622,15 @@ mod tests {
             assert!(validate_base_path(invalid).is_err(), "{invalid}");
         }
         assert!(validate_base_path(&format!("/{}", "a".repeat(BASE_PATH_MAX))).is_err());
+    }
+
+    #[test]
+    fn default_settings_are_valid_json_with_a_dark_theme() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let settings: serde_json::Value = serde_json::from_str(DEFAULT_SETTINGS)?;
+        assert_eq!(settings["workbench.colorTheme"], "Default Dark Modern");
+        assert_eq!(settings["security.workspace.trust.enabled"], false);
+        Ok(())
     }
 
     #[test]

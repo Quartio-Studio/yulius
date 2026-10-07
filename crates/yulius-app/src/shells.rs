@@ -339,6 +339,8 @@ impl App {
                 readonly: std::iter::once(self.config.yulius_exe.clone())
                     .chain(self.config.contained_readonly.iter().cloned())
                     .collect(),
+                binds: Vec::new(),
+                identity: None,
             }
         } else {
             Containment::None
