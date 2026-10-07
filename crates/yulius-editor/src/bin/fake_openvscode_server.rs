@@ -7,6 +7,13 @@
 //! otherwise. Behaviour switches are files in the user-data directory:
 //! `fake-fail-bind-once` (deleted, then exit 98 as if the port were taken) and `fake-forbid`
 //! (always answer 403, so health checks never pass).
+//!
+//! For reverse-proxy tests (authorized requests only): `GET <base>/fake-headers` answers with
+//! the request head it received; `GET <base>/fake-cookies` sets a `vscode-tkn` and a
+//! `fake-pref` cookie; a request with `Upgrade: websocket` gets `101 Switching Protocols`
+//! (`Sec-WebSocket-Accept: fake-<key>`) and every byte sent afterwards is echoed back. Every
+//! response carries the hop-by-hop header `X-Fake-Hop` (listed in `Connection`). Each
+//! connection is served on its own thread.
 
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
@@ -76,37 +83,88 @@ fn main() -> ExitCode {
     };
     let expected_cookie = format!("vscode-tkn={}", token.trim());
     for stream in listener.incoming() {
-        let Ok(mut stream) = stream else {
+        let Ok(stream) = stream else {
             continue;
         };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-        let mut request = Vec::new();
-        let mut buf = [0_u8; 1024];
-        while !request.windows(4).any(|w| w == b"\r\n\r\n") && request.len() < 16 * 1024 {
-            match stream.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => request.extend_from_slice(&buf[..n]),
-            }
-        }
-        let text = String::from_utf8_lossy(&request);
-        let path = text.split_whitespace().nth(1).unwrap_or_default();
-        let has_token = text.lines().any(|line| {
-            line.to_ascii_lowercase().starts_with("cookie:")
-                && line
-                    .split([':', ';'])
-                    .any(|part| part.trim() == expected_cookie)
-        });
-        let allowed = !forbid && path.starts_with(&format!("{base}/")) && has_token;
-        let (status, body) = if allowed {
-            ("200 OK", "fake editor")
-        } else {
-            ("403 Forbidden", "Forbidden")
-        };
-        let response = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let _ = stream.write_all(response.as_bytes());
+        let expected_cookie = expected_cookie.clone();
+        let base = base.clone();
+        std::thread::spawn(move || serve(stream, &expected_cookie, &base, forbid));
     }
     ExitCode::SUCCESS
+}
+
+fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines().skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim().eq_ignore_ascii_case(name).then(|| value.trim())
+    })
+}
+
+fn serve(mut stream: std::net::TcpStream, expected_cookie: &str, base: &str, forbid: bool) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let mut request = Vec::new();
+    let mut buf = [0_u8; 1024];
+    while !request.windows(4).any(|w| w == b"\r\n\r\n") && request.len() < 16 * 1024 {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => request.extend_from_slice(&buf[..n]),
+        }
+    }
+    let end = request
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map_or(request.len(), |at| at + 4);
+    let head = String::from_utf8_lossy(&request[..end]).into_owned();
+    let path = head.split_whitespace().nth(1).unwrap_or_default();
+    let has_token = head.lines().any(|line| {
+        line.to_ascii_lowercase().starts_with("cookie:")
+            && line
+                .split([':', ';'])
+                .any(|part| part.trim() == expected_cookie)
+    });
+    let allowed = !forbid && path.starts_with(&format!("{base}/")) && has_token;
+    let upgrade =
+        header(&head, "upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket"));
+    if allowed && upgrade {
+        let key = header(&head, "sec-websocket-key").unwrap_or_default();
+        let response = format!(
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: fake-{key}\r\n\r\n"
+        );
+        if stream.write_all(response.as_bytes()).is_err() {
+            return;
+        }
+        // Bytes that arrived with the head belong to the upgraded stream.
+        if stream.write_all(&request[end..]).is_err() {
+            return;
+        }
+        let _ = stream.set_read_timeout(None);
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => {
+                    if stream.write_all(&buf[..n]).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    let mut extra = String::new();
+    let (status, body) = if !allowed {
+        ("403 Forbidden", "Forbidden".to_owned())
+    } else if path.starts_with(&format!("{base}/fake-headers")) {
+        ("200 OK", head.clone())
+    } else if path.starts_with(&format!("{base}/fake-cookies")) {
+        extra = format!(
+            "Set-Cookie: {expected_cookie}; Path=/\r\nSet-Cookie: fake-pref=1; Path={base}\r\n"
+        );
+        ("200 OK", "cookies".to_owned())
+    } else {
+        ("200 OK", "fake editor".to_owned())
+    };
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n{extra}X-Fake-Hop: 1\r\nConnection: close, X-Fake-Hop\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
 }
