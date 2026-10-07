@@ -8,6 +8,8 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+build = "build.rs"
+
 [lints]
 workspace = true
 
@@ -15,3 +17,11 @@ workspace = true
 layer = "interface"
 
 [dependencies]
+yulius-app = { workspace = true }
+yulius-contracts = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }

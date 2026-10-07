@@ -162,10 +162,10 @@ fn prepare(conn: &mut Connection) -> Result<(), OpenError> {
 
 /// Maps a SQLite error to an application error (constraint violations become conflicts).
 pub(crate) fn db(err: rusqlite::Error) -> AppError {
-    if let rusqlite::Error::SqliteFailure(code, _) = &err {
-        if code.code == rusqlite::ErrorCode::ConstraintViolation {
-            return AppError::Conflict("conflicting record".into());
-        }
+    if let rusqlite::Error::SqliteFailure(code, _) = &err
+        && code.code == rusqlite::ErrorCode::ConstraintViolation
+    {
+        return AppError::Conflict("conflicting record".into());
     }
     AppError::internal(err)
 }

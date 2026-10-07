@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "yulius"
 path = "src/main.rs"
@@ -19,4 +22,21 @@ workspace = true
 layer = "composition"
 
 [dependencies]
+yulius-domain = { workspace = true }
+yulius-contracts = { workspace = true }
+yulius-app = { workspace = true }
+yulius-store = { workspace = true }
+yulius-server = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
 clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+http-body-util = "0.1.5"
