@@ -127,6 +127,8 @@ impl GitPort for LocalGit {
         !name.starts_with('-')
             && Command::new("git")
                 .args(["check-ref-format", "--branch", name])
+                // Outside any repository: `--branch` must not depend on the test's cwd.
+                .current_dir(std::env::temp_dir())
                 .output()
                 .is_ok_and(|o| o.status.success())
     }
