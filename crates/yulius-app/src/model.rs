@@ -611,6 +611,25 @@ pub struct MetricsRecord {
     pub active_ms: Option<u64>,
 }
 
+/// Token totals of one account's runs since a time (ROT-009).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AccountTokens {
+    /// Account.
+    pub account_id: String,
+    /// Runs started since the time.
+    pub runs: u32,
+    /// Distinct tasks.
+    pub tasks: u32,
+    /// Input tokens (`None` when no run reported usage).
+    pub input: Option<u64>,
+    /// Output tokens.
+    pub output: Option<u64>,
+    /// Cache-read tokens.
+    pub cache_read: Option<u64>,
+    /// Cache-write tokens.
+    pub cache_write: Option<u64>,
+}
+
 /// Feedback of one user on one task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeedbackRecord {

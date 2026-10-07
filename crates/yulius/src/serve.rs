@@ -162,6 +162,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
         git: Arc::new(GitAdapter::new("git")),
         system: Arc::new(SysinfoProbe::new()),
         browser: browser_port(args),
+        usage: Arc::new(crate::wiring::usage::ProviderUsage::new()?),
     };
     let app = App::new(config, deps);
     if let Some(shell) = &args.shell {

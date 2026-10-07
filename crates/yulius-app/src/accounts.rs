@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use tokio::sync::Notify;
 use yulius_contracts::api::admin::{
-    AccountLoginStarted, AccountUsageView, AccountView, CreateAccount, UpdateAccount,
-    UsageWindowView,
+    AccountLoginStarted, AccountUsageView, AccountView, CreateAccount, TokenTotalsView,
+    UpdateAccount, UsageWindowView,
 };
 use yulius_contracts::events::UiEvent;
 use yulius_contracts::terminal::TerminalServerMsg;
@@ -284,8 +284,24 @@ pub fn account_view(account: &AccountRecord, live: &[AttemptRecord]) -> AccountV
         usage: usage_view(&account_usage(account)),
         last_error: account.last_error.clone(),
         in_use_by: in_use_count(&account.id, live),
+        tokens_24h: None,
+        tokens_7d: None,
     }
 }
+
+fn totals_view(tokens: Option<&crate::model::AccountTokens>) -> TokenTotalsView {
+    tokens.map_or_else(TokenTotalsView::default, |t| TokenTotalsView {
+        runs: t.runs,
+        tasks: t.tasks,
+        input: t.input,
+        output: t.output,
+        cache_read: t.cache_read,
+        cache_write: t.cache_write,
+    })
+}
+
+/// One day in milliseconds.
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 fn validate_label(label: &str) -> AppResult<String> {
     let label = label.trim();
@@ -459,12 +475,84 @@ impl App {
         self.require_instance_admin(ctx)?;
         let store = &self.deps.store;
         let live = store.live_attempts().await?;
+        let now = self.now();
+        let day = store.account_tokens(now.plus_millis(-DAY_MS)).await?;
+        let week = store.account_tokens(now.plus_millis(-7 * DAY_MS)).await?;
+        let find = |list: &[crate::model::AccountTokens], id: &str| {
+            list.iter().find(|t| t.account_id == id).cloned()
+        };
         Ok(store
             .accounts()
             .await?
             .iter()
-            .map(|a| account_view(a, &live))
+            .map(|a| {
+                let mut view = account_view(a, &live);
+                view.tokens_24h = Some(totals_view(find(&day, a.id.as_str()).as_ref()));
+                view.tokens_7d = Some(totals_view(find(&week, a.id.as_str()).as_ref()));
+                view
+            })
             .collect())
+    }
+
+    /// Asks the provider for the account's current usage windows and stores them (ROT-009).
+    /// A failure is recorded as the account's last error and returned.
+    ///
+    /// # Errors
+    /// `Forbidden` for non-admins, `NotFound`, `Conflict` without a credential, `Upstream` when
+    /// the provider does not answer usefully.
+    pub async fn refresh_account_usage(
+        &self,
+        ctx: &AuthContext,
+        id: &str,
+    ) -> AppResult<AccountView> {
+        self.require_instance_admin(ctx)?;
+        let id = AccountId::parse(id).map_err(|_| AppError::NotFound)?;
+        let store = &self.deps.store;
+        let account = store.account(&id).await?.ok_or(AppError::NotFound)?;
+        let sealed = account
+            .credential
+            .as_ref()
+            .ok_or_else(|| AppError::Conflict("the account is not signed in yet".into()))?;
+        let credential =
+            Secret(String::from_utf8(self.deps.crypto.open(sealed)?).map_err(AppError::internal)?);
+        match self.deps.usage.fetch(account.provider, &credential).await {
+            Ok(mut usage) => {
+                usage.observed_at = Some(self.now());
+                // Keep a reached limit that the provider still reports through the windows.
+                self.record_account_usage(&id, &usage).await;
+            }
+            Err(problem) => {
+                let message = format!("usage: {problem}");
+                let _ = store
+                    .set_account_state(
+                        &id,
+                        account.status,
+                        account.usage_json.as_deref(),
+                        Some(&message),
+                        self.now(),
+                    )
+                    .await;
+                return Err(AppError::Upstream(message));
+            }
+        }
+        let updated = store.account(&id).await?.ok_or(AppError::NotFound)?;
+        let mut view = account_view(&updated, &store.live_attempts().await?);
+        let now = self.now();
+        view.tokens_24h = Some(totals_view(
+            store
+                .account_tokens(now.plus_millis(-DAY_MS))
+                .await?
+                .iter()
+                .find(|t| t.account_id == id.as_str()),
+        ));
+        view.tokens_7d = Some(totals_view(
+            store
+                .account_tokens(now.plus_millis(-7 * DAY_MS))
+                .await?
+                .iter()
+                .find(|t| t.account_id == id.as_str()),
+        ));
+        Ok(view)
     }
 
     /// Creates an account in `pending_login` and starts its login terminal (ROT-001/002).

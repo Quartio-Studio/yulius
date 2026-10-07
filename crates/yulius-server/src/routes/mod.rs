@@ -132,6 +132,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/admin/accounts/{id}/relogin", post(accounts::relogin))
         .route(
+            "/api/admin/accounts/{id}/usage",
+            post(accounts::refresh_usage),
+        )
+        .route(
             "/api/admin/accounts/login/{lid}/terminal",
             get(accounts::login_terminal),
         )

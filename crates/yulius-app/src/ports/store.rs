@@ -373,6 +373,9 @@ pub trait AccountStore: Send + Sync {
     ) -> AppResult<()>;
     /// Deletes an account.
     async fn delete_account(&self, id: &AccountId) -> AppResult<()>;
+    /// Token totals per account of the runs started at or after `since`.
+    async fn account_tokens(&self, since: Timestamp)
+    -> AppResult<Vec<crate::model::AccountTokens>>;
 }
 
 /// Steps, messages and scope claims.

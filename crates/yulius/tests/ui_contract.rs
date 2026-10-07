@@ -30,6 +30,8 @@ const PUBLIC_PATHS: &[&str] = &[
     "/api/setup/status",
     "/api/setup",
     "/api/auth/password",
+    "/api/auth/recovery",
+    "/api/auth/recover",
     "/api/auth/github/start",
     "/api/auth/github/callback",
     "/api/device/start",

@@ -593,6 +593,7 @@ impl World {
             git: git.clone(),
             system: Arc::new(super::FixedSystem),
             browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
+            usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
         };
         let app = App::new(config, deps);
         let router = yulius_server::public_router(app.clone()).layer(MockConnectInfo(

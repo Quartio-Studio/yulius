@@ -86,6 +86,29 @@ pub struct AccountView {
     pub last_error: Option<String>,
     /// Live tasks using it.
     pub in_use_by: u32,
+    /// Tokens Yulius observed on this account in the last 24 hours (ROT-009).
+    #[serde(default)]
+    pub tokens_24h: Option<TokenTotalsView>,
+    /// Tokens Yulius observed on this account in the last 7 days.
+    #[serde(default)]
+    pub tokens_7d: Option<TokenTotalsView>,
+}
+
+/// Token totals of an account's runs; `None` values are unknown (runs without usage data).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TokenTotalsView {
+    /// Runs started in the window.
+    pub runs: u32,
+    /// Distinct tasks of those runs.
+    pub tasks: u32,
+    /// Input tokens.
+    pub input: Option<u64>,
+    /// Output tokens.
+    pub output: Option<u64>,
+    /// Cache-read tokens.
+    pub cache_read: Option<u64>,
+    /// Cache-write tokens.
+    pub cache_write: Option<u64>,
 }
 
 /// `POST /api/admin/accounts`.

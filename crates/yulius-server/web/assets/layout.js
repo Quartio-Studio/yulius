@@ -280,7 +280,7 @@ export function accountUsage(account) {
       h('span', { class: 'spacer' }),
       account.in_use_by ? h('span', { class: 'muted xs' }, `${account.in_use_by} in use`) : null),
     h('div', { class: 'status-grid' }, windowMeter(usage.primary, 'Primary'), windowMeter(usage.secondary, 'Secondary')),
-    usage.observed_at ? h('div', { class: 'muted xs' }, `observed ${relLong(usage.observed_at)}`) : h('div', { class: 'muted xs' }, 'usage not observed yet'),
+    usage.observed_at ? h('div', { class: 'muted xs' }, `provider usage as of ${relLong(usage.observed_at)}`) : h('div', { class: 'muted xs' }, 'provider usage not known yet'),
     account.last_error ? h('div', { class: 'field-error' }, account.last_error) : null,
   );
 }

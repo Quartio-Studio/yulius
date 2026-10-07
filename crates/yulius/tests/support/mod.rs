@@ -779,6 +779,8 @@ pub struct HarnessOptions {
     pub configure: Option<ConfigureFn>,
     /// Harness port (default: the real adapter with `/bin/false` hooks).
     pub harness: Option<Arc<dyn yulius_app::ports::harness::HarnessPort>>,
+    /// Provider usage probe (default: unavailable).
+    pub usage: Option<Arc<dyn yulius_app::ports::usage::UsageProbe>>,
 }
 
 /// Like [`harness`] with the given adapters. The data directory path is canonical.
@@ -820,6 +822,9 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         browser: options
             .browser
             .unwrap_or_else(|| Arc::new(yulius::wiring::browser::UnavailableBrowser)),
+        usage: options
+            .usage
+            .unwrap_or_else(|| Arc::new(yulius_app::ports::usage::NoUsageProbe)),
         system: Arc::new(FixedSystem),
     };
     let app = App::new(config, deps);

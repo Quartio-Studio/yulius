@@ -2,7 +2,7 @@
 // with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, badge, openModal, field, toast, confirmDialog, errorToast, toggle } from '../dom.js';
+import { h, badge, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren } from '../dom.js';
 import { createTerminalView } from '../terminal.js';
 import { accountUsage } from '../layout.js';
 import { pageFrame, loader, dataTable } from './common.js';
@@ -74,6 +74,22 @@ export function mountUsersPage(ctx) {
     });
   }
   return { el: frame.el, key: 'admin:users' };
+}
+
+/** Tokens Yulius observed on an account (24 h, 7 d); unknown stays unknown. */
+function tokenTotals(account) {
+  const fmt = (n) => (n == null ? 'unknown' : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
+  const row = (label, t) => {
+    if (!t) return null;
+    const total = [t.input, t.output, t.cache_read, t.cache_write].some((v) => v != null)
+      ? (t.input || 0) + (t.output || 0) + (t.cache_read || 0) + (t.cache_write || 0)
+      : null;
+    return h('div', { class: 'kv-line' }, h('span', { class: 'muted' }, label),
+      h('span', null, `${fmt(total)} tokens · ${t.runs} run${t.runs === 1 ? '' : 's'} · ${t.tasks} task${t.tasks === 1 ? '' : 's'}`),
+      total != null ? h('span', { class: 'muted xs' }, `in ${fmt(t.input)} · out ${fmt(t.output)} · cache ${fmt((t.cache_read || 0) + (t.cache_write || 0))}`) : null);
+  };
+  const rows = [row('Last 24 h', account.tokens_24h), row('Last 7 days', account.tokens_7d)].filter(Boolean);
+  return rows.length ? h('div', { class: 'stack-sm token-totals' }, h('div', { class: 'muted xs' }, 'Observed by Yulius'), rows) : null;
 }
 
 /** Superadmin recovery code (ACC-011): status and a password-confirmed regeneration. */
@@ -200,9 +216,25 @@ export function mountAccountsPage(ctx) {
         if (await patch(account, { priority: value })) toast(`${account.label}: priority ${value}`, { kind: 'ok' });
         else priority.value = String(account.priority ?? 0);
       });
+      // Provider windows (refreshed from the provider) and what Yulius observed (ROT-009).
+      const usageHost = h('div', null, accountUsage(account), tokenTotals(account));
+      const refreshUsage = async (quiet) => {
+        try {
+          const fresh = await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`);
+          Object.assign(account, fresh);
+          if (!quiet) toast(`${account.label}: usage refreshed`, { kind: 'ok' });
+        } catch (error) {
+          if (!quiet) errorToast(error, `Could not refresh ${account.label}`);
+          account.last_error = error.message || account.last_error;
+        }
+        setChildren(usageHost, accountUsage(account), tokenTotals(account));
+      };
+      const stale = !account.usage || !account.usage.observed_at || Date.now() - Date.parse(account.usage.observed_at) > 10 * 60 * 1000;
+      if (account.enabled !== false && account.status !== 'pending_login' && stale) refreshUsage(true);
       return h('div', { class: 'card card-pad stack' },
-        accountUsage(account),
+        usageHost,
         h('div', { class: 'row-wrap' },
+          h('button', { type: 'button', class: 'btn btn-sm', onClick: () => refreshUsage(false) }, 'Refresh usage'),
           h('label', { class: 'row small' }, toggle({ checked: account.enabled, label: `${account.enabled ? 'Disable' : 'Enable'} ${account.label}`, onChange: async (checked, input) => {
             if (!(await patch(account, { enabled: checked }))) input.checked = !checked;
             else toast(`${account.label} ${checked ? 'enabled' : 'disabled'}`, { kind: 'ok' });

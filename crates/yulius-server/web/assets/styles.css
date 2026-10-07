@@ -660,3 +660,5 @@ body.resizing iframe { pointer-events: none; }
 .card-warn { border-color: var(--warn); }
 .recovery-card { box-shadow: none; border: 0; padding: 0; max-width: none; }
 .modal .recovery-card .auth-logo { display: none; }
+.token-totals { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px; }
+.kv-line { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: var(--fs-sm); }

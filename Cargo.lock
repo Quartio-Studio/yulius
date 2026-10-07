@@ -2839,6 +2839,7 @@ dependencies = [
  "futures",
  "http-body-util",
  "nix 0.31.3",
+ "reqwest",
  "rustls",
  "serde_json",
  "sysinfo",

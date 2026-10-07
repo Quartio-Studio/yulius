@@ -103,6 +103,8 @@ pub struct Deps {
     pub system: Arc<dyn SystemProbe>,
     /// Per-sandbox shared browser (SPEC-001 BRW-001..004).
     pub browser: Arc<dyn crate::ports::browser::BrowserPort>,
+    /// Provider usage windows of accounts (ROT-009).
+    pub usage: Arc<dyn crate::ports::usage::UsageProbe>,
 }
 
 /// The application.

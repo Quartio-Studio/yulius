@@ -9,3 +9,4 @@ pub mod harness;
 pub mod pending;
 pub mod session;
 pub mod system;
+pub mod usage;
