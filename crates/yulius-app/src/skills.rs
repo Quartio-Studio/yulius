@@ -38,6 +38,8 @@ pub const SKILLS_DIR: &str = "skills";
 pub const MAX_SKILLS_PER_SOURCE: usize = 200;
 /// Largest `SKILL.md` read (content view and frontmatter).
 pub const MAX_SKILL_MD_BYTES: u64 = 512 * 1024;
+/// Most directory entries examined per skill source directory.
+const MAX_DIR_ENTRIES: usize = 10_000;
 /// Largest prefix of a `SKILL.md` read to parse its frontmatter.
 pub const MAX_FRONTMATTER_BYTES: u64 = 64 * 1024;
 /// Longest description kept for listing.
@@ -308,8 +310,12 @@ pub fn parse_frontmatter(text: &str) -> SkillMeta {
     meta
 }
 
-/// Reads at most `limit` bytes of a file as lossy UTF-8.
+/// Reads at most `limit` bytes of a regular file as lossy UTF-8 (special files such as FIFOs
+/// are refused so a hostile repository cannot block the reader).
 fn read_bounded(path: &Path, limit: u64) -> io::Result<String> {
+    if !fs::metadata(path)?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
     let mut bytes = Vec::new();
     fs::File::open(path)?.take(limit).read_to_end(&mut bytes)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -327,6 +333,7 @@ fn scan_dir(
         return Vec::new();
     };
     let mut names: Vec<String> = entries
+        .take(MAX_DIR_ENTRIES)
         .filter_map(Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|n| valid_skill_name(n) && !skip.contains(&n.as_str()))
@@ -527,8 +534,18 @@ pub fn render_om_config(base_branch: &str, commands: &Commands, specs_dir: &str)
 /// What the Open Mercato configuration needs from the repository.
 fn om_repo_facts(repo: &Path) -> (bool, Commands, DocsLayout) {
     let has_config = fs::symlink_metadata(repo.join(OM_CONFIG_PATH)).is_ok();
-    let toml = repo.join("yulius.toml");
-    let parsed = match read_bounded(&toml, MAX_CONFIG_BYTES) {
+    // Only a `yulius.toml` that resolves inside the repository is read.
+    let toml = repo.canonicalize().and_then(|root| {
+        let file = repo.join("yulius.toml").canonicalize()?;
+        if file.starts_with(&root) {
+            Ok(file)
+        } else {
+            Err(io::Error::other(
+                "yulius.toml resolves outside the repository",
+            ))
+        }
+    });
+    let parsed = match toml.and_then(|path| read_bounded(&path, MAX_CONFIG_BYTES)) {
         Ok(text) => match parse_yulius_toml(&text) {
             Ok(config) => Some(config),
             Err(err) => {
@@ -883,6 +900,31 @@ mod tests {
         assert!(embedded.contains("LICENSE") && embedded.contains("README.md"));
         let readme = fs::read_to_string(catalog.join("README.md"))?;
         assert!(readme.contains(pack::UPSTREAM_COMMIT));
+        Ok(())
+    }
+
+    /// Hostile repositories: special files and links leaving the repository are ignored.
+    #[test]
+    fn hostile_repository_files_are_ignored() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let skill = repo.join(".agents/skills/pipe");
+        fs::create_dir_all(&skill)?;
+        nix::unistd::mkfifo(&skill.join("SKILL.md"), nix::sys::stat::Mode::S_IRWXU)?;
+        let outside = temp.path().join("outside.toml");
+        fs::write(&outside, "[commands]\ntest = \"curl evil\"\n")?;
+        std::os::unix::fs::symlink(&outside, repo.join("yulius.toml"))?;
+        let catalog = scan_catalog(&repo, &temp.path().join("skills"));
+        assert!(catalog.is_empty(), "{catalog:?}");
+        let (has_config, commands, _) = om_repo_facts(&repo);
+        assert!(!has_config);
+        assert_eq!(commands, Commands::default());
+        fs::remove_file(repo.join("yulius.toml"))?;
+        fs::write(
+            repo.join("yulius.toml"),
+            "[commands]\ntest = \"make test\"\n",
+        )?;
+        assert_eq!(om_repo_facts(&repo).1.test.as_deref(), Some("make test"));
         Ok(())
     }
 
