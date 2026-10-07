@@ -42,7 +42,7 @@ export function mountTasksPage(ctx, sandbox) {
     const rows = tasks.filter((t) => (!group.value || statusGroup(t) === group.value)
       && (!harness.value || t.harness === harness.value)
       && (!origin.value || t.origin === origin.value)
-      && (!q || `${t.number} ${t.title} ${t.branch} ${t.created_by && t.created_by.login}`.toLowerCase().includes(q)));
+      && (!q || `${t.number} ${t.title} ${t.branch || ''} ${(t.created_by && t.created_by.login) || ''}`.toLowerCase().includes(q)));
     frame.sub.textContent = `${sandbox.name} · ${rows.length} of ${tasks.length}`;
     setChildren(tableHost, dataTable([
       { label: 'Status', render: statusCell },
