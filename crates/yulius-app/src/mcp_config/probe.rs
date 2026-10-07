@@ -244,7 +244,81 @@ impl HttpSession {
     }
 }
 
-async fn http_tools(url: &str, headers: &[(String, String)]) -> Result<Vec<String>, String> {
+/// Where a connection test may connect (SSRF guard, SPEC-002 R-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AddressClass {
+    /// A public address: any write user may test it.
+    Public,
+    /// Loopback or private network: instance administrators only.
+    Private,
+    /// Link-local (cloud metadata), unspecified, multicast or broadcast: never.
+    Forbidden,
+}
+
+/// Classifies an IP address for the connection test.
+#[must_use]
+pub fn classify(ip: std::net::IpAddr) -> AddressClass {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            if v4.is_link_local() || v4.is_unspecified() || v4.is_multicast() || v4.is_broadcast() {
+                AddressClass::Forbidden
+            } else if v4.is_loopback()
+                || v4.is_private()
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+            {
+                AddressClass::Private
+            } else {
+                AddressClass::Public
+            }
+        }
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return classify(IpAddr::V4(mapped));
+            }
+            let first = v6.segments()[0];
+            if v6.is_unspecified() || v6.is_multicast() || (first & 0xffc0) == 0xfe80 {
+                AddressClass::Forbidden
+            } else if v6.is_loopback() || (first & 0xfe00) == 0xfc00 {
+                AddressClass::Private
+            } else {
+                AddressClass::Public
+            }
+        }
+    }
+}
+
+/// Resolves the host of an `http`/`https` URL; returns the host name and its addresses.
+///
+/// # Errors
+/// A human-readable reason for invalid URLs or failed lookups.
+pub async fn resolve_target(url: &str) -> Result<(String, Vec<std::net::SocketAddr>), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| "invalid server URL".to_owned())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("the server URL must use http or https".into());
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "the server URL has no host".to_owned())?
+        .trim_matches(['[', ']'])
+        .to_owned();
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|_| format!("cannot resolve {host}"))?
+        .take(16)
+        .collect();
+    if addrs.is_empty() {
+        return Err(format!("cannot resolve {host}"));
+    }
+    Ok((host, addrs))
+}
+
+async fn http_tools(
+    url: &str,
+    headers: &[(String, String)],
+    pinned: Option<(&str, &[std::net::SocketAddr])>,
+) -> Result<Vec<String>, String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut map = reqwest::header::HeaderMap::new();
     for (name, value) in headers {
@@ -255,11 +329,14 @@ async fn http_tools(url: &str, headers: &[(String, String)]) -> Result<Vec<Strin
         value.set_sensitive(true);
         map.insert(name, value);
     }
-    let client = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(http_error)?;
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some((host, addrs)) = pinned {
+        // Connect only to the addresses that were checked (no DNS rebinding in between).
+        builder = builder.resolve_to_addrs(host, addrs);
+    }
+    let client = builder.build().map_err(http_error)?;
     let mut session = HttpSession {
         client,
         url: url.to_owned(),
@@ -299,12 +376,17 @@ async fn http_tools(url: &str, headers: &[(String, String)]) -> Result<Vec<Strin
     Ok(tools)
 }
 
-/// Tests a Streamable HTTP server within [`HTTP_TIMEOUT`] (no redirects followed).
+/// Tests a Streamable HTTP server within [`HTTP_TIMEOUT`] (no redirects followed). With
+/// `pinned`, connections go only to those addresses of that host.
 ///
 /// # Errors
 /// A redacted, human-readable reason.
-pub async fn probe_http(url: &str, headers: &[(String, String)]) -> Result<Vec<String>, String> {
-    match tokio::time::timeout(HTTP_TIMEOUT, http_tools(url, headers)).await {
+pub async fn probe_http(
+    url: &str,
+    headers: &[(String, String)],
+    pinned: Option<(&str, &[std::net::SocketAddr])>,
+) -> Result<Vec<String>, String> {
+    match tokio::time::timeout(HTTP_TIMEOUT, http_tools(url, headers, pinned)).await {
         Ok(result) => result,
         Err(_) => Err(format!(
             "the server did not answer within {} s",
@@ -444,6 +526,30 @@ pub async fn probe_stdio(spec: &StdioSpec<'_>, timeout: Duration) -> Result<Vec<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn classify_blocks_metadata_and_gates_private_networks() {
+        use super::{AddressClass, classify};
+        let ip = |text: &str| {
+            text.parse::<std::net::IpAddr>()
+                .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        };
+        assert_eq!(classify(ip("169.254.169.254")), AddressClass::Forbidden);
+        assert_eq!(classify(ip("0.0.0.0")), AddressClass::Forbidden);
+        assert_eq!(classify(ip("fe80::1")), AddressClass::Forbidden);
+        assert_eq!(
+            classify(ip("::ffff:169.254.169.254")),
+            AddressClass::Forbidden
+        );
+        assert_eq!(classify(ip("127.0.0.1")), AddressClass::Private);
+        assert_eq!(classify(ip("10.1.2.3")), AddressClass::Private);
+        assert_eq!(classify(ip("192.168.1.1")), AddressClass::Private);
+        assert_eq!(classify(ip("100.64.0.1")), AddressClass::Private);
+        assert_eq!(classify(ip("::1")), AddressClass::Private);
+        assert_eq!(classify(ip("fd00::1")), AddressClass::Private);
+        assert_eq!(classify(ip("140.82.112.3")), AddressClass::Public);
+        assert_eq!(classify(ip("2606:4700::1111")), AddressClass::Public);
+    }
+
     use super::*;
 
     #[test]

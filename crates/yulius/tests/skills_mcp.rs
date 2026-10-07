@@ -611,7 +611,14 @@ async fn mcp_test_endpoint_probes_http_and_stdio_servers() -> TestResult {
     )
     .await?;
     let http_id = created.body["id"].as_str().ok_or("id")?.to_owned();
-    let (status, ok) = test_server(&w, &w.alice, &http_id).await?;
+    // SSRF guard (R-10): loopback/private targets are for instance administrators only.
+    let (status, _) = test_server(&w, &w.alice, &http_id).await?;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "loopback needs an instance admin"
+    );
+    let (status, ok) = test_server(&w, &w.root, &http_id).await?;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         ok,
@@ -630,10 +637,31 @@ async fn mcp_test_endpoint_probes_http_and_stdio_servers() -> TestResult {
         &w.alice,
     )
     .await?;
-    let (_, unauthorized) = test_server(&w, &w.alice, &http_id).await?;
+    let (_, unauthorized) = test_server(&w, &w.root, &http_id).await?;
     assert_eq!(unauthorized["ok"], false);
     let error = unauthorized["error"].as_str().unwrap_or("");
     assert!(error.contains("401") && !error.contains("bad"), "{error}");
+
+    // Link-local (cloud metadata) targets are refused for everyone, before any connection.
+    let metadata =
+        json!({"name": "metadata", "transport": "http", "url": "http://169.254.169.254/latest"});
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/mcp",
+        Some(metadata),
+        &w.alice,
+    )
+    .await?;
+    let (_, refused) = test_server(&w, &w.root, created.body["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(refused["ok"], false);
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("link-local"),
+        "{refused}"
+    );
 
     let script = concat!(
         "read a; ",

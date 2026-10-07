@@ -476,7 +476,30 @@ impl App {
                     .open_secrets(record.headers.as_ref())?
                     .into_iter()
                     .collect();
-                probe::probe_http(record.url.as_deref().unwrap_or(""), &headers).await
+                let url = record.url.as_deref().unwrap_or("");
+                match probe::resolve_target(url).await {
+                    Err(reason) => Err(reason),
+                    Ok((host, addrs)) => {
+                        let class = addrs
+                            .iter()
+                            .map(|a| probe::classify(a.ip()))
+                            .max()
+                            .unwrap_or(probe::AddressClass::Forbidden);
+                        match class {
+                            probe::AddressClass::Forbidden => Err(
+                                "link-local, metadata and broadcast addresses cannot be tested"
+                                    .to_owned(),
+                            ),
+                            probe::AddressClass::Private => {
+                                self.require_instance_admin(ctx)?;
+                                probe::probe_http(url, &headers, Some((&host, &addrs))).await
+                            }
+                            probe::AddressClass::Public => {
+                                probe::probe_http(url, &headers, Some((&host, &addrs))).await
+                            }
+                        }
+                    }
+                }
             }
             McpTransport::Stdio => {
                 if self.config.contained {
