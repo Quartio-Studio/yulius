@@ -2853,7 +2853,6 @@ dependencies = [
  "yulius-browser",
  "yulius-contracts",
  "yulius-domain",
- "yulius-editor",
  "yulius-git",
  "yulius-github",
  "yulius-harness",
@@ -2916,19 +2915,6 @@ name = "yulius-domain"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "yulius-editor"
-version = "0.1.0"
-dependencies = [
- "nix 0.31.3",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "yulius-domain",
 ]
 
 [[package]]

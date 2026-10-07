@@ -44,7 +44,7 @@ pub const MAX_SHELL_VIEWERS: u64 = 16;
 pub const SHELL_IDLE_MS: i64 = 30 * 60 * 1000;
 /// Largest accepted input frame.
 pub const MAX_SHELL_INPUT_BYTES: usize = 64 * 1024;
-/// Interval of the idle reaper for shells, browsers and editors.
+/// Interval of the idle reaper for shells and browsers.
 pub const REAP_INTERVAL: Duration = Duration::from_secs(60);
 /// Grace per escalation step of a shutdown request (Ctrl-C, then SIGTERM, then SIGKILL;
 /// interactive shells ignore SIGTERM, so ending a shell takes about two steps).
@@ -154,7 +154,7 @@ impl Drop for ShellAttach {
     }
 }
 
-/// Background reaper of idle shells, browsers and editors; aborted on drop.
+/// Background reaper of idle shells and browsers; aborted on drop.
 pub struct WorkspaceReaper {
     task: JoinHandle<()>,
 }
@@ -602,7 +602,7 @@ impl App {
     }
 
     /// Removes shells orphaned by a previous server process, then starts the periodic reaper of
-    /// idle shells, browsers and editors; call once at startup, before serving requests. The
+    /// idle shells and browsers; call once at startup, before serving requests. The
     /// reaper stops when the handle is dropped or the app is gone.
     #[must_use]
     pub fn start_workspace_services(self: &Arc<Self>) -> WorkspaceReaper {
@@ -625,15 +625,12 @@ impl App {
                 for sandbox in app.deps.browser.reap_idle().await {
                     tracing::info!(sandbox = %sandbox, "stopped an idle sandbox browser");
                 }
-                for editor in app.deps.editor.reap_idle().await {
-                    tracing::info!(%editor, "stopped an idle editor");
-                }
             }
         });
         WorkspaceReaper { task }
     }
 
-    /// Server shutdown: ends every shell and stops every browser and editor (their processes
+    /// Server shutdown: ends every shell and stops every browser (their processes
     /// are reaped; unlike agent sessions they are not meant to outlive the server).
     pub async fn stop_workspace_services(&self) {
         let shells: Vec<Arc<ShellRuntime>> = self
@@ -644,13 +641,8 @@ impl App {
             .unwrap_or_default();
         self.end_shells(&shells).await;
         let browsers = self.deps.browser.shutdown_all().await;
-        let editors = self.deps.editor.shutdown_all().await;
-        if !browsers.is_empty() || !editors.is_empty() {
-            tracing::error!(
-                ?browsers,
-                ?editors,
-                "some browser or editor processes could not be reaped"
-            );
+        if !browsers.is_empty() {
+            tracing::error!(?browsers, "some browser processes could not be reaped");
         }
     }
 }

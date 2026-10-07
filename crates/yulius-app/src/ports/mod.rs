@@ -1,7 +1,6 @@
 //! Ports implemented by adapters and injected at composition.
 
 pub mod browser;
-pub mod editor;
 pub mod git;
 pub mod github;
 pub mod harness;

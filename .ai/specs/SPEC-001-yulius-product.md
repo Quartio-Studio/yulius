@@ -170,8 +170,8 @@ defaults that implementation may refine without changing user-visible intent.
 | AC-ROT-8 | With only the other provider available, rotation proposes instead of switching; approving switches; a manual harness change without approval is refused (409); with automatic switching enabled, rotation switches as before. | int |
 | AC-BRW-4 | A page served on the VM's localhost (fixture with a stylesheet and image) is mirrored as DOM in the client (text present in the mirror iframe, image loaded through Yulius), a click in the mirror reaches the server page, and a canvas-only page offers the screencast fallback. | int, live (Chromium) |
 | AC-BRW-5 | A new tab shows the welcome page with the sandbox name and a link to a listening sandbox port. | int, live (Chromium) |
-| AC-EDT-2 | Two users get separate editor instances with separate settings directories; the editor process runs inside containment as the user's identity (Linux). | int |
-| AC-EDT-3 | Opt-in live test: real openvscode-server behind the proxy in headless Chrome lists the repository. | live |
+| AC-EDT-2 | The file API serves write users only, keeps every path (symbolic links included) inside the folder, hides `.git`, writes atomically and refuses a stale save with 409. | int |
+| AC-EDT-3 | Opt-in browser test: the real UI in headless Chrome opens the editor panel, colors JavaScript, suggests `console` members, saves with Cmd/Ctrl+S, and suggests words in a Python file. | live (Chrome) |
 | AC-PRJ-1 |
 | ACC-007 | Project permissions mirror GitHub repository permissions: no access → the sandbox is invisible (as if nonexistent); read → can view tasks, terminals (read-only), steps and history but not act; write → can create/continue/steer tasks and use browser/editor; admin → sandbox configuration. | T 9:00–9:39, T 31:11–31:44, P(4) | E | AC-ACC-4 |
 | ACC-008 | Permission changes on GitHub take effect in Yulius within 5 minutes without user action, and immediately after the user signs in again; revocation closes the user's live terminal connections to that sandbox. | T 31:38 ("consistent") | A | AC-ACC-5 |
@@ -217,7 +217,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-014 | Visual direction: dark, dense, terminal-first, following the reference's compactness; one consistent design system. | V 2:30–6:50 | A | AC-UI-1 |
 | UI-015 | A general sandbox shell (contained, write permission) is available from the right rail, hidden by default; it is separate from the agent terminal and never replaces it. The VS Code editor's integrated terminal is also available. | T 11:13 ("a separate terminal is here, of course"), V 11:12 (reference Terminal tab) vs T 6:42 (Terminal/Logs tabs replaced by sandbox tabs) | U-12 | "Every user gets root access": root inside an unprivileged user namespace cannot write host system directories, and overlay mounts in user namespaces are refused on the Ubuntu 24.04 host (AppArmor userns restriction; verified 2026-10-07). | F 2026-10-07 | Users are uid 0 with `sudo` in their sandbox; homes, the sandbox and `/tmp` are writable; system packages are installed by the operator; per-user tools install into the home (e.g. `npm -g` with a home prefix, `pip --user`, `cargo install`) | A writable system layer becomes available (newer bubblewrap with `--overlay`, or a container runtime) |
 | U-11 | AC-UI-7 |
-| UI-016 | Shells are user-scoped: only the user who opened a shell can list, see or type into it (administrators included). Inside the sandbox every user is a separate user with root access: their own login name and prompt, root privileges in the sandbox (`id -u` is 0, `sudo` works), and a private home that persists across their sandboxes and sessions. The same identity is used by the user's editor terminals (EDT-003). | F 2026-10-07 | C (system-directory writes U-12) | AC-UI-8 |
+| UI-016 | Shells are user-scoped: only the user who opened a shell can list, see or type into it (administrators included). Inside the sandbox every user is a separate user with root access: their own login name and prompt, root privileges in the sandbox (`id -u` is 0, `sudo` works), and a private home that persists across their sandboxes and sessions. | F 2026-10-07 | C (system-directory writes U-12) | AC-UI-8 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -346,10 +346,10 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 
 | ID | Requirement | Source | Class | Acceptance |
 | --- | --- | --- | --- | --- |
-| EDT-001 | The editor is a normal VS Code, hidden by default. | T 8:21–8:31, T 5:56, WA 13:09 | E | AC-EDT-1 |
+| EDT-001 | The editor is a simple, VS Code-styled editor built into Yulius (not a full VS Code), hidden by default: an explorer, tabs and VS Code's editor component (Monaco) with syntax colors for popular languages, type-aware suggestions for JavaScript/TypeScript, JSON, CSS and HTML, and keyword and project-word suggestions for other popular languages; new file, new folder, delete and save. It is meant for quick changes and reviews. | T 8:21–8:31, T 5:56, WA 13:09, F 2026-10-07 ("not VS Code but much simpler … without 90% of the features"; supersedes "normal VS Code") | C | AC-EDT-1 |
 | EDT-002 | The editor opens the sandbox (task worktree selectable); access requires write permission. | — | A | AC-EDT-1 |
-| EDT-003 | The editor is personal: each user has their own VS Code (settings, keybindings, extensions and profiles, which they can import) that follows them across sandboxes. It runs inside the sandbox containment as the user's sandbox identity (UI-016), and Git in the editor and the user's shells authenticates as the user's own GitHub account. | F 2026-10-07 | C | AC-EDT-2 |
-| EDT-004 | The editor works end to end through the Yulius proxy in a real browser: the workbench loads and its remote connection lists the folder. | F 2026-10-07 ("coding editor still doesn't work") | C | AC-EDT-3 |
+| EDT-003 | Every user gets a clean editor view of their own: open files and unsaved text live only in that user's browser tab and are neither stored nor shared; saving writes the file into the sandbox. A file changed on disk since it was opened (for example by an agent) is reloaded when unchanged in the editor and never overwritten silently. Git in the user's shells authenticates as the user's own GitHub account. | F 2026-10-07 (per-user VS Code profiles dropped by the founder) | C | AC-EDT-2 |
+| EDT-004 | The editor works end to end in a real browser: it lists the folder, opens a file with syntax colors and suggestions, and saves an edit. | F 2026-10-07 ("coding editor still doesn't work") | C | AC-EDT-3 |
 
 ### 5.15 Import and migration (IMP)
 
@@ -619,7 +619,7 @@ instance — out of scope).
 | AC-BRW-1 | Per-sandbox browser: typing a URL navigates; another sandbox has a separate profile. | int (fake CDP), ui (real Chromium, manual) |
 | AC-BRW-2 | Agent browser tools navigate/click/type/read the same tab the user sees. | int (fake CDP) |
 | AC-BRW-3 | `browser_request_user_action` highlights the tab, notifies the user and produces a clickable link. | int, ui |
-| AC-EDT-1 | Editor panel proxies an authenticated VS Code server for the sandbox; read-only users cannot open it. | int (fake server), ui (manual with openvscode-server) |
+| AC-EDT-1 | The editor panel lists, opens and saves files of the sandbox repository or a task worktree; read-only users cannot open it. | int, live (Chrome) |
 | AC-IMP-1 | `yulius import` uploads bundle + snapshot resumably; interrupted upload resumes. | int |
 | AC-IMP-2 | Import of a non-GitHub or foreign-owner repository is refused with guidance. | int |
 | AC-IMP-3 | Only sessions whose cwd/repository match, within the chosen window, are offered. | unit (fixtures) |
@@ -651,7 +651,7 @@ observed. Live provider compatibility and deployment are reported separately fro
   changed, ACC-011), user-scoped shells with per-user root identity (UI-016, U-12), clean-exit UI
   (HRN-002), task deletion (TSK-009), goal mode (TSK-010), harness changes need approval (ROT-004
   changed, ROT-012), account usage (ROT-009), DOM-mirrored browser and welcome page (BRW-005/006),
-  personal contained editor and the editor connection fix (EDT-003/004).
+  a built-in VS Code-styled editor replacing openvscode-server (EDT-001 changed, EDT-003/004).
 
 - 2026-10-07: initial specification from the full transcript, video review, morning notes, draft
   prompt, user clarifications and Product/Studio inspection; self-reviewed (SPEC-003).

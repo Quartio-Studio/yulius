@@ -2,7 +2,6 @@
 
 pub mod browser;
 pub mod clock;
-pub mod editor;
 pub mod git;
 pub mod github;
 pub mod github_client;

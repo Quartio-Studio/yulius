@@ -15,7 +15,6 @@ been performed or verified** as part of the implementation work.
 | Codex CLI (`codex`) | Codex tasks and Codex account login | verified flags with 0.160.1; releases without `--no-daemon` (e.g. 0.154) are detected and warned about. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. |
-| `openvscode-server` | editor panel | optional; disabled in contained mode unless `--editor-uncontained`. |
 
 Inside containment an agent sees only `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/opt`, its own
 sandbox directory and the `yulius` binary. Install the agent CLIs (and Node.js for Codex' npm
@@ -82,7 +81,7 @@ journalctl -u yulius -f
 
 Only the public listener (`YULIUS_BIND`) is proxied. The internal listener (`YULIUS_INTERNAL_BIND`)
 serves agents' MCP, hooks and Git credentials; it must stay on loopback and is never proxied.
-WebSockets are used for terminals, the event stream, the browser panel and the editor; import
+WebSockets are used for terminals, the event stream and the browser panel; import
 chunks are up to 8 MiB.
 
 Caddy:
@@ -171,4 +170,4 @@ never respawns). Queued tasks start when capacity allows.
 - Agents receive per-run task tokens (MCP, hooks) and GitHub tokens restricted to their sandbox
   repository; provider credentials reach the agent process only through its environment.
 - Known open risks are listed in SPEC-002 §12 (notably R-07: Chromium's DevTools port is
-  unauthenticated on loopback; R-09: environment commands and the editor run outside containment).
+  unauthenticated on loopback; R-09: environment commands run outside containment).

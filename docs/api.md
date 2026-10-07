@@ -331,21 +331,24 @@ the harnesses.
 - Agents print `<public_url>/s/<slug>/browser?tab=<tab_id>` (returned by the
   `browser_request_user_action` MCP tool, which also marks the task `needs_attention` and
   publishes `browser.action_requested`); the web UI opens the browser panel on that tab.
-- `/s/{sid}/editor/*` (write; any method, WebSocket upgrades included): reverse-proxied VS Code
-  (iframe in the editor panel). `/s/{sid}/editor` redirects to `/s/{sid}/editor/`. The editor
-  opens the sandbox repository; `?folder=<path>` is VS Code's own folder selection and
-  `GET /s/{sid}/editor/?worktree=<task id>` answers 302 to `?folder=<that task's worktree>`
-  (tasks of the same sandbox only: 404 otherwise, 409 without a worktree). Cookie sessions
-  need a same-origin `Origin` (or `Sec-Fetch-Site: same-origin`) for non-GET requests and
-  upgrades instead of the CSRF header. The editor's connection token stays on the server (it
-  is added to forwarded requests, never sent to the browser); Yulius credentials are not
-  forwarded. Request bodies ≤ 8 MiB (413). 503 `unavailable` when openvscode-server is missing
-  or disabled (contained mode without `--editor-uncontained`), 409 before the repository is
-  cloned.
+- Built-in editor (write; EDT-001..004). `root` is `sandbox` (default, the repository) or
+  `task:<task id>` (that task's worktree); `path` is relative (normal components only; `.git`
+  is refused, 403; a path leading outside the folder, also through symbolic links, is 403).
+  `GET /api/sandboxes/{sid}/files?root&path` → `{"path","entries":[{"name","path",
+  "kind":"file|dir|symlink","size"}],"truncated"}` (directories first; `.git` hidden; at most
+  2000 entries). `GET /api/sandboxes/{sid}/files/content?root&path` → `{"path","content":
+  "…|null","binary","too_large","size","sha256"}` (UTF-8 text up to 2 MiB). `PUT
+  /api/sandboxes/{sid}/files/content` `{"root?","path","content","base_sha256?"}` →
+  `{"path","sha256","size"}`: atomic; 409 when the file changed since `base_sha256` or, without
+  a base, when it exists. `POST /api/sandboxes/{sid}/files` `{"root?","path","kind":"file|dir"}`
+  → 201 entry (409 when it exists). `DELETE /api/sandboxes/{sid}/files?root&path` → 204 (files,
+  links and directory trees; never the folder itself). 409 before the repository is cloned.
+  The editor UI (Monaco) keeps each user's open files and unsaved text in their browser only.
 - `POST /api/sandboxes/{sid}/shells` (write) `{"task_id?"}` (or an empty body) → 201 `{"id"}`:
-  a login shell in the sandbox repository or that task's worktree, with the sandbox HOME and
-  the containment of task runs. At most 4 live shells per sandbox (429). `WS
-  /api/shells/{id}/terminal` (write users of that sandbox) speaks the terminal protocol
+  a login shell in the sandbox repository or that task's worktree, as the caller's sandbox
+  identity (their home; uid 0 with `sudo` when contained; UI-016). At most 4 live shells per
+  user and sandbox (429). `WS /api/shells/{id}/terminal` (only the shell's creator; 404 for
+  everybody else) speaks the terminal protocol
   (`state` has `attempt_seq` and `harness` `null`); a shell ends when its process exits (the
   server sends `exit` and closes) or after 30 min without viewers. Shells never change tasks.
 

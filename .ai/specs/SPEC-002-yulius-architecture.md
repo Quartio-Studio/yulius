@@ -35,7 +35,7 @@ flowchart LR
       PH2["yulius ptyhost"] --> AG2["claude / codex TUI"]
     end
     CR["Chromium per sandbox (CDP)"]
-    VS["openvscode-server per sandbox"]
+    VS["Built-in editor (Monaco) over the file API"]
   end
   GH["GitHub (App + OAuth + REST)"]
   PR["Anthropic / OpenAI (via the CLIs)"]
@@ -77,8 +77,8 @@ Principles:
 | ADR-07 | Yulius MCP (Streamable HTTP, JSON-RPC) on a loopback listener with per-run bearer tokens; hooks call the same listener through `yulius hook`. | Per-harness plugins; injecting text into the TUI only | One protocol for both CLIs; least privilege (task tokens reach only task-scoped tools). |
 | ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. |
 | ADR-09 | Per-sandbox headless Chromium; the user's view is a live DOM mirror (rrweb recorder injected through CDP in an isolated world, replayed in a script-free iframe in the UI; page resources fetched through Yulius by the server browser), with the CDP screencast as labelled fallback; input is dispatched with CDP `Input.*`. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; canvas/plugins/internal pages need the fallback. |
-| ADR-10 | openvscode-server per (user, sandbox) on demand, inside the sandbox containment as the user's identity, with user data and extensions in the user's home; reverse-proxied with Yulius auth. The connection token is persisted per editor and given to the browser as a cookie scoped to `/s/<sandbox>/editor` (VS Code's client must read it); it only works through the loopback listener behind the proxy. | One shared, uncontained editor per sandbox (original; broke the remote connection because the token was hidden, and exposed the data directory) ; code-server | Personal VS Code (EDT-003); contained like shells; binary is an external prerequisite on the VM; one process per active user and sandbox (idle-stopped). |
-| ADR-12 | Sandbox identity for user processes (shells, editors): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
+| ADR-10 | Built-in editor: Monaco (VS Code's editor component, vendored AMD build without its translations) in the web UI over a small file API (`/api/sandboxes/{sid}/files…`) on the sandbox repository or a task worktree; per-user view state stays in the browser. | openvscode-server per sandbox (original: needed a token cookie fix, ran outside containment, too heavy); per-user contained openvscode-server (built, then dropped by the founder: "much simpler, without 90% of the features"); CodeMirror (needs a bundler) | No editor process or prerequisite on the VM; 14 MB of static assets (the TypeScript worker is 7 MB, loaded only for JS/TS); no extensions, debugging or integrated terminal (shells cover that). |
+| ADR-12 | Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
 | ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 
@@ -97,7 +97,6 @@ Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
 | `crates/yulius-github` | adapter | GitHub REST, App JWT, OAuth, installation tokens. |
 | `crates/yulius-git` | adapter | Git CLI wrapper: clone/fetch, worktrees, branches, bundles, diff stats, hooks install. |
 | `crates/yulius-browser` | adapter | Chromium lifecycle, CDP client, screencast, browser tools. |
-| `crates/yulius-editor` | adapter | openvscode-server lifecycle and proxy target. |
 | `crates/yulius-server` | interface | axum routes, auth middleware, WS endpoints, MCP and hook endpoints, embedded web UI (`web/`). |
 | `crates/yulius-cli` | interface | `import`, `login`, admin client commands (HTTP client, argument parsing). |
 | `crates/yulius` | composition | Configuration, wiring, subcommand dispatch, signal handling. |
@@ -117,9 +116,8 @@ sandboxes/<sandbox>/home/           sandbox HOME inside containment (caches, .cl
 sandboxes/<sandbox>/codex/<account>/    CODEX_HOME per account; sessions -> ../sessions
 sandboxes/<sandbox>/codex/sessions/     shared Codex rollouts for the sandbox
 sandboxes/<sandbox>/browser/        Chromium profile
-users/<user>/home/                  user's home in their shells and editors (bound at /home/<login>; ADR-12)
+users/<user>/home/                  user's home in their shells (bound at /home/<login>; ADR-12)
 users/<user>/identity/              generated passwd/group files of the user's sandbox identity
-editors/<sandbox>/<user>/           editor connection token (0600) of the user's editor in that sandbox
 runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
 runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files
@@ -424,12 +422,13 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   merges or deployments (SEC-003). Deployment commands run only on explicit user action with an
   audit entry.
 
-- User processes (UI-016, EDT-003): shells and editors run contained as the user's identity
-  (ADR-12). A user's home is bound only into that user's processes; agent runs never see it.
-  Shells are attachable only by their creator. The editor's connection token reaches the user's
-  browser as a path-scoped cookie; it is useless without the proxy because editors listen on
-  loopback and contained agents cannot read other users' cookies. Git in user processes asks the
-  internal listener with a per-process workspace token and receives the user's own GitHub token.
+- User processes (UI-016): shells run contained as the user's identity (ADR-12). A user's home
+  is bound only into that user's processes; agent runs never see it. Shells are attachable only
+  by their creator. Git in user processes asks the internal listener with a workspace token and
+  receives the user's own GitHub token.
+- Editor file API (ADR-10): write users only; relative paths of normal components, every
+  existing path resolved and kept inside the folder (symbolic links cannot escape), `.git`
+  refused, 2 MiB text limit, atomic writes with an optimistic SHA-256 check.
 - Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
   Argon2; the failure counter and permanent lock are persisted before the response is sent.
 - Browser mirror (ADR-09): the recorder runs in an isolated world, so page scripts cannot tamper
@@ -523,7 +522,7 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
 | R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; sandboxes share the loopback network, so any local process (including other sandboxes' agents) can drive a sandbox browser and its logged-in sessions; in contained mode CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's containment/network namespace. |
 | R-08 | An unrestricted GitHub installation token works for every repository of the installation. | Mitigated: agents receive tokens restricted to their sandbox repository (`repositories` parameter), only for live task tokens and only for `github.com/<owner>/<repo>`; unrestricted tokens stay server-side (delivery pushes, repository creation). |
-| R-09 | Delivery environment commands and openvscode-server run with the server's privileges outside containment, in a clone whose `.git` and the sandbox home are agent-writable (repository-local Git config such as filter drivers, tools reading `HOME`). | Hooks, fsmonitor and global/system Git config disabled for the checkout; editor disabled by default in contained mode (`--editor-uncontained` to accept). Open: run environment commands inside the sandbox containment. |
+| R-09 | Delivery environment commands run with the server's privileges outside containment, in a clone whose `.git` and the sandbox home are agent-writable (repository-local Git config such as filter drivers, tools reading `HOME`). | Hooks, fsmonitor and global/system Git config disabled for the checkout (the editor is now a file API, no process). Open: run environment commands inside the sandbox containment. |
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
 | R-12 | Codex releases without `--no-daemon` may host sessions in a shared app-server daemon outside the spawned process (containment, ownership). | Probe and prefer releases with the flag; live verification pending (no dedicated Codex account). |
@@ -567,12 +566,13 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Real adapters | `tests/git_adapter.rs` (real git); GitHub adapter unit-tested against recorded HTTP (no real App configured). |
 | Areas | `accounts.rs`, `analytics.rs`, `automations.rs`, `skills_mcp.rs`, `delivery.rs`, `projects.rs`, `import_server.rs`, `browser.rs`, `editor.rs`, `shells.rs`, `http_auth.rs`, `mcp_coordination.rs`. |
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
-| Not exercised | Real GitHub App/OAuth, real Chromium (as sandbox browser), openvscode-server, Codex sessions, cross-provider resume with real CLIs, deployment (out of scope). Linux results: see the container runs below. |
+| Not exercised | Real GitHub App/OAuth, real Chromium (as sandbox browser), Codex sessions, cross-provider resume with real CLIs, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
 
-- 2026-10-07 (F 2026-10-07): ADR-09 DOM mirror, ADR-10 personal contained editor and token
-  cookie, ADR-12 sandbox identity, ADR-13 recovery code; data directory additions; security notes.
+- 2026-10-07 (F 2026-10-07): ADR-09 DOM mirror, ADR-10 built-in Monaco editor (replacing
+  openvscode-server), ADR-12 sandbox identity, ADR-13 recovery code; data directory additions;
+  security notes.
 
 - 2026-10-07: initial architecture and runtime contracts.
 - 2026-10-07: implementation findings — socket path bound, ptyhost orphan watchdog, Claude config

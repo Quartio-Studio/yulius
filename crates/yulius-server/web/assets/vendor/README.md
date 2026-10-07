@@ -1,13 +1,14 @@
 # Vendored third-party code
 
-Only xterm.js is vendored. The files are the unmodified ES module builds from the npm
-tarballs; nothing else from the packages is copied. All three packages are MIT licensed; the
-license texts are kept next to the files.
+xterm.js and the Monaco editor are vendored. The files are unmodified builds from the npm
+tarballs; nothing else from the packages is copied. All packages are MIT licensed; the license
+texts (and Monaco's third-party notices) are kept next to the files.
 
 | Package | Version | Files | License | Tarball SHA-256 |
 | --- | --- | --- | --- | --- |
 | `@xterm/xterm` | 6.0.0 | `xterm/xterm.mjs` (from `lib/xterm.mjs`), `xterm/xterm.css` (from `css/xterm.css`) | `xterm/LICENSE.xterm` | `908e66e04af6c8dc6b00dd3b54de088e2e81e5ed866284fd6c2fb3c2d1c7a3f6` |
 | `@xterm/addon-fit` | 0.11.0 | `xterm/addon-fit.mjs` (from `lib/addon-fit.mjs`) | `xterm/LICENSE.addon-fit` | `26003b4517a132b64e4ff228fd88a5fda3fff5e606c76093f6dcff772e9ecec0` |
+| `monaco-editor` | 0.57.0 | `monaco/vs/**` (from `min/vs`, without `min/vs/language` and `min/vs/nls/lang`, which the build does not load) | `monaco/LICENSE.monaco-editor`, `monaco/ThirdPartyNotices.monaco-editor.txt` | `3ea1712fbacd3290cf4751007e3a5b57cc279767607812d4c3e57925fb0b05c2` |
 | `@xterm/addon-web-links` | 0.12.0 | `xterm/addon-web-links.mjs` (from `lib/addon-web-links.mjs`) | `xterm/LICENSE.addon-web-links` | `bf463cfff1af4bb1903509830c62ed06bcd0589039f15ea5fba71d7bae5a86da` |
 
 The `.mjs` builds are self-contained (no bare imports), so the browser loads them directly
@@ -26,3 +27,9 @@ shasum -a 256 *.tgz
 
 Copy `lib/*.mjs`, `css/xterm.css` and each `LICENSE` over the files above, update this
 table, and check the terminal in mock mode (see the web UI README).
+
+Monaco (the built-in editor, SPEC-001 EDT-001): download `monaco-editor@<v>` from the npm
+registry, verify the tarball's `dist.integrity`, copy `package/min/vs` to `monaco/vs`,
+delete `monaco/vs/language` and `monaco/vs/nls/lang`, then check in headless Chrome that the
+editor loads, colors JavaScript and suggests `console.` members (the TypeScript worker) with no
+failed requests.

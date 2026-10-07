@@ -6,8 +6,8 @@ mod analytics;
 mod automations;
 mod browser;
 mod delivery;
-mod editor;
 mod events;
+mod files;
 mod git;
 mod imports;
 mod internal;
@@ -26,7 +26,8 @@ mod workflows;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::{any, get, patch, post, put};
+use axum::extract::DefaultBodyLimit;
+use axum::routing::{get, patch, post, put};
 use yulius_app::context::App;
 
 use crate::AppState;
@@ -174,10 +175,18 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/sandboxes/{sid}/browser", get(browser::browser))
         .route("/api/sandboxes/{sid}/shells", post(shells::create))
+        .route(
+            "/api/sandboxes/{sid}/files",
+            get(files::list).post(files::create).delete(files::delete),
+        )
+        .route(
+            "/api/sandboxes/{sid}/files/content",
+            // JSON-escaped file content up to yulius_app::files::MAX_FILE_BYTES.
+            get(files::read)
+                .put(files::write)
+                .layer(DefaultBodyLimit::max(6 << 20)),
+        )
         .route("/api/shells/{id}/terminal", get(shells::terminal))
-        .route("/s/{sid}/editor", any(editor::redirect_root))
-        .route("/s/{sid}/editor/", any(editor::proxy))
-        .route("/s/{sid}/editor/{*rest}", any(editor::proxy))
 }
 
 /// Internal (loopback) routes.

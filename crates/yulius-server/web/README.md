@@ -8,8 +8,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 ## Serving contract (for the Rust server)
 
 - Serve `index.html` at `/` **and** for every UI path (history API routing): `/setup`,
-  `/signin`, `/device`, `/archived`, `/admin/*` and `/s/*` — except the reverse-proxied
-  editor under `/s/{sid}/editor/` and anything under `/api/`.
+  `/signin`, `/device`, `/archived`, `/admin/*` and `/s/*` — except anything under `/api/`.
 - Serve `assets/**` at `/assets/...` with the usual content types (`.js` and `.mjs` as
   `text/javascript`, `.css`, `.png`). Assets are referenced by absolute `/assets/` paths.
 - Nothing is loaded from other origins: no CDNs, fonts or external images. A strict
@@ -89,8 +88,7 @@ The source of truth for paths and methods is the route table in
 `crates/yulius-contracts/src/api/` (documented in [docs/api.md](../../../docs/api.md)).
 
 - **Checked automatically.** `crates/yulius/tests/ui_contract.rs` reads these sources at test
-  time: every `/api/...` literal (HTTP calls, WebSocket `path:`s, links) and the editor iframe
-  path must reach a real route with the method used (`api.get|post|put|patch|del`; WebSocket
+  time: every `/api/...` literal (HTTP calls, WebSocket `path:`s, links) must reach a real route with the method used (`api.get|post|put|patch|del`; WebSocket
   paths and links are `GET`), every route `assets/mock.js` fakes must exist on the server,
   every imported module must be embedded, and UI routes must fall back to `index.html`.
   Keep API paths **literal** at the call site (``ctx.api.post(`/api/tasks/${enc(id)}/stop`)``):
@@ -105,9 +103,8 @@ The source of truth for paths and methods is the route table in
 - **Unknown is not zero.** Usage, token and VM figures that the server reports as `null` render
   as "—" or "unknown"; analytics show runs without usage separately.
 - **Errors.** `{"error": {code, message}}` becomes `ApiError` (`status`, `code`); bodies without
-  it fall back to the status (`503` → `unavailable`). The editor panel probes
-  `HEAD /s/{sid}/editor/` first so a 503 (openvscode-server missing or disabled in contained
-  mode) or 409 (repository not cloned yet) shows a message instead of a JSON page.
+  it fall back to the status (`503` → `unavailable`). The editor panel (`editorview.js`, Monaco
+  from `assets/vendor/monaco`) shows the 409 of an uncloned repository as a message.
 - **Terminals.** Task terminals, sandbox shells and account logins share one protocol client
   (`termsocket.js`). Writers are controllers (the server sets `controller = can_write`); a
   4003 close (access revoked) is final; the login terminal renders the fixed 500-column PTY and

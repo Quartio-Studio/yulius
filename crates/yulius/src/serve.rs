@@ -12,7 +12,6 @@ use yulius_store::crypto::{MasterKeyCrypto, write_private};
 
 use crate::wiring::browser::ChromiumBrowsers;
 use crate::wiring::clock::SystemClock;
-use crate::wiring::editor::VsCodeEditors;
 use crate::wiring::git::GitAdapter;
 use crate::wiring::github_client::GitHubAdapter;
 use crate::wiring::harness::HarnessAdapter;
@@ -56,20 +55,6 @@ pub struct ServeArgs {
     /// Pass `--no-sandbox` to Chromium (only where Chromium's own sandbox cannot run).
     #[arg(long, env = "YULIUS_CHROMIUM_NO_SANDBOX", default_value_t = false)]
     pub chromium_no_sandbox: bool,
-    /// openvscode-server executable for the sandbox editor.
-    #[arg(
-        long,
-        env = "YULIUS_OPENVSCODE_SERVER",
-        default_value = "openvscode-server"
-    )]
-    pub openvscode_server: PathBuf,
-    /// Loopback port range for editors, `first-last`.
-    #[arg(long, env = "YULIUS_EDITOR_PORTS", default_value = "45000-45999")]
-    pub editor_ports: String,
-    /// Run user editors outside the containment boundary even in contained mode (editors are
-    /// contained as the user's sandbox identity by default).
-    #[arg(long, env = "YULIUS_EDITOR_UNCONTAINED", default_value_t = false)]
-    pub editor_uncontained: bool,
     /// Extra host paths visible read-only inside containment, colon-separated (for example agent
     /// CLI install directories outside /usr and /opt).
     #[arg(long, env = "YULIUS_CONTAINED_READONLY", value_delimiter = ':')]
@@ -119,17 +104,6 @@ fn browser_port(args: &ServeArgs) -> Arc<dyn yulius_app::ports::browser::Browser
     Arc::new(ChromiumBrowsers::new(config))
 }
 
-/// The editor adapter, or a placeholder explaining why the editor is disabled.
-fn editor_port(args: &ServeArgs) -> Result<Arc<dyn yulius_app::ports::editor::EditorPort>, String> {
-    let ports = parse_port_range(&args.editor_ports)?;
-    let config = yulius_editor::EditorConfig::new(
-        args.openvscode_server.clone(),
-        args.data_dir.join("editors"),
-        ports,
-    );
-    Ok(Arc::new(VsCodeEditors::new(config)))
-}
-
 /// Prepares the data directory with owner-only permissions.
 fn prepare_data_dir(dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
@@ -170,7 +144,6 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     let mut config = AppConfig::new(args.data_dir.clone(), &args.public_url, &internal_url, exe);
     config.max_live_sessions = args.max_live_sessions;
     config.contained = args.contained;
-    config.editor_uncontained = args.editor_uncontained;
     config
         .contained_readonly
         .clone_from(&args.contained_readonly);
@@ -189,7 +162,6 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
         git: Arc::new(GitAdapter::new("git")),
         system: Arc::new(SysinfoProbe::new()),
         browser: browser_port(args),
-        editor: editor_port(args)?,
     };
     let app = App::new(config, deps);
     if let Some(shell) = &args.shell {
@@ -252,7 +224,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let internal_task =
         axum::serve(internal, internal_router).with_graceful_shutdown(shutdown_signal());
     let (a, b) = tokio::join!(public_task, internal_task);
-    // Browsers, editors and shells do not outlive the server (agent sessions do).
+    // Browsers and shells do not outlive the server (agent sessions do).
     drop(workspace_reaper);
     app.stop_workspace_services().await;
     a.map_err(|e| e.to_string())?;

@@ -221,14 +221,6 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
         ),
     });
     checks.extend(containment_visibility(contained, extra));
-    checks.push(match which("openvscode-server") {
-        Some(path) => check("openvscode-server", Level::Ok, path.display().to_string()),
-        None => check(
-            "openvscode-server",
-            Level::Warn,
-            "not found; the editor panel is unavailable",
-        ),
-    });
     checks
 }
 

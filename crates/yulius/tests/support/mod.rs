@@ -766,13 +766,12 @@ pub fn perms(level: &str) -> GitHubPermissions {
 pub type ConfigureFn = Box<dyn FnOnce(&mut AppConfig)>;
 
 /// Adapters and data directory for [`harness_with`]; unset fields keep the [`harness`]
-/// defaults (browser and editor "unavailable", no process host, no git).
+/// defaults (browser "unavailable", no process host, no git).
 #[derive(Default)]
 pub struct HarnessOptions {
     pub git: Option<Arc<dyn yulius_app::ports::git::GitPort>>,
     pub session_host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
     pub browser: Option<Arc<dyn yulius_app::ports::browser::BrowserPort>>,
-    pub editor: Option<Arc<dyn yulius_app::ports::editor::EditorPort>>,
     /// Data directory (default: a new temporary directory). Unix socket paths are short, so
     /// tests with real session hosts pass a directory under `/tmp`.
     pub dir: Option<tempfile::TempDir>,
@@ -821,9 +820,6 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         browser: options
             .browser
             .unwrap_or_else(|| Arc::new(yulius::wiring::browser::UnavailableBrowser)),
-        editor: options
-            .editor
-            .unwrap_or_else(|| Arc::new(yulius::wiring::editor::UnavailableEditor::default())),
         system: Arc::new(FixedSystem),
     };
     let app = App::new(config, deps);

@@ -78,7 +78,6 @@ fn build_tuned(
         git: Arc::new(GitAdapter::new("git")),
         system: Arc::new(support::FixedSystem),
         browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-        editor: Arc::new(yulius::wiring::editor::UnavailableEditor::default()),
     };
     Ok(App::new(config, deps))
 }

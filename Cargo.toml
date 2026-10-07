@@ -9,7 +9,6 @@ members = [
     "crates/yulius-github",
     "crates/yulius-git",
     "crates/yulius-browser",
-    "crates/yulius-editor",
     "crates/yulius-import",
     "crates/yulius-server",
     "crates/yulius",
@@ -35,7 +34,6 @@ yulius-harness = { path = "crates/yulius-harness", version = "0.1.0" }
 yulius-github = { path = "crates/yulius-github", version = "0.1.0" }
 yulius-git = { path = "crates/yulius-git", version = "0.1.0" }
 yulius-browser = { path = "crates/yulius-browser", version = "0.1.0" }
-yulius-editor = { path = "crates/yulius-editor", version = "0.1.0" }
 yulius-import = { path = "crates/yulius-import", version = "0.1.0" }
 yulius-server = { path = "crates/yulius-server", version = "0.1.0" }
 # External crates: exact minor pins; the lockfile holds exact versions.

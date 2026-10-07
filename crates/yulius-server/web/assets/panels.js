@@ -8,6 +8,7 @@ import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, errorToast, placeholder } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { createBrowserPanel } from './browser.js';
+import { createEditorView } from './editorview.js';
 import { messageView } from './actions.js';
 import { allows } from './status.js';
 import { readJson, writeJson } from './store.js';
@@ -242,88 +243,6 @@ export function createPanelHost(ctx) {
 
 function simpleView(el) {
   return { el };
-}
-
-// ---------------------------------------------------------------- editor
-
-/**
- * VS Code iframe (/s/{sid}/editor/), lazily loaded, task worktree selectable (EDT-002).
- * `?worktree=<task id>` makes the server redirect to that task's worktree folder. A HEAD
- * preflight turns the server's 503 `unavailable` (openvscode-server missing or disabled in
- * contained mode) and 409 (repository not cloned yet) into a readable message instead of a
- * JSON error page inside the iframe.
- */
-function createEditorView(ctx, sandbox, getTask) {
-  const el = h('div', { class: 'panel-view' });
-  if (!allows(sandbox.access, 'write')) {
-    setChildren(el, h('div', { class: 'panel-msg' }, icon('lock', { size: 20 }), h('p', null, 'The editor requires write access on GitHub.')));
-    return { el };
-  }
-  let frame = null;
-  let checking = false;
-  const base = `/s/${enc(sandbox.id)}/editor/`;
-  const target = h('select', { class: 'select', style: { height: '24px', width: 'auto', fontSize: '12px' }, 'aria-label': 'Folder' });
-  // The folder list follows the selected task; VS Code itself is not reloaded on task switches.
-  function taskOptions() {
-    const task = getTask();
-    const current = target.value;
-    setChildren(target,
-      h('option', { value: '' }, 'Sandbox'),
-      task ? h('option', { value: `task:${task.id}` }, `Task #${task.number} worktree`) : null);
-    target.value = [...target.options].some((o) => o.value === current) ? current : '';
-  }
-  taskOptions();
-  const src = () => (target.value.startsWith('task:') ? `${base}?worktree=${encodeURIComponent(target.value.slice(5))}` : base);
-  target.addEventListener('change', () => { if (frame) frame.src = src(); });
-  const reload = iconButton('refresh', 'Reload editor', () => { if (frame) frame.src = src(); else load(); });
-  const external = iconButton('external', 'Open editor in a new tab', () => window.open(src(), '_blank', 'noopener'));
-
-  async function preflight() {
-    try {
-      const response = await window.fetch(base, { method: 'HEAD', credentials: 'same-origin', cache: 'no-store', redirect: 'manual' });
-      if (response.status === 503) return 'The editor is not available on this server (openvscode-server is missing, or disabled in contained mode unless the server runs with --editor-uncontained).';
-      if (response.status === 409) return 'The editor opens once the sandbox repository has been cloned.';
-      if (response.status === 401 || response.status === 403) return 'You do not have access to the editor of this sandbox.';
-      return null;
-    } catch {
-      return null; // network hiccup: let the iframe try
-    }
-  }
-
-  async function load() {
-    if (frame || checking) return;
-    checking = true;
-    setChildren(el, placeholder('Opening the editor…', 'loading'));
-    const problem = ctx.mock ? null : await preflight();
-    checking = false;
-    if (problem) {
-      setChildren(el, h('div', { class: 'panel-msg stack', style: { alignItems: 'center' } }, icon('warn', { size: 20 }), h('p', null, problem),
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: load }, 'Try again')));
-      return;
-    }
-    frame = h('iframe', { class: 'editor-frame', title: `VS Code — ${sandbox.name}`, allow: 'clipboard-read; clipboard-write', referrerpolicy: 'same-origin' });
-    if (ctx.mock) frame.srcdoc = mockEditorDoc(sandbox);
-    else frame.src = src();
-    setChildren(el, frame);
-  }
-
-  return {
-    el,
-    headExtra: () => [target, reload, external],
-    show() { load(); },
-    taskChanged: taskOptions,
-  };
-}
-
-function mockEditorDoc(sandbox) {
-  const name = String(sandbox.name).replace(/[^\w .-]/g, '');
-  return `<!doctype html><meta charset="utf-8"><body style="margin:0;font:13px system-ui;background:#1e1e1e;color:#ccc;display:grid;grid-template-columns:48px 220px 1fr;height:100vh">
-<div style="background:#333"></div><div style="background:#252526;padding:10px"><div style="opacity:.7;font-size:11px;text-transform:uppercase">Explorer — ${name}</div>
-<div style="margin-top:8px;line-height:1.9">▸ docs<br>▸ src<br>&nbsp;&nbsp;main.rs<br>Cargo.toml<br>AGENTS.md</div></div>
-<div style="padding:16px;font-family:ui-monospace,Menlo,monospace;white-space:pre;color:#9cdcfe">// Mock mode: openvscode-server is served at /s/{sandbox}/editor/ by the real server.
-<span style="color:#c586c0">fn</span> <span style="color:#dcdcaa">main</span>() {
-    println!(<span style="color:#ce9178">"hello from ${name}"</span>);
-}</div></body>`;
 }
 
 // ---------------------------------------------------------------- shell
