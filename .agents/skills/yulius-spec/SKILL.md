@@ -7,7 +7,7 @@ description: Write or refine Yulius feature specifications with traceable requir
 
 Read `AGENTS.md`, `docs/engineering/specifications.md` and the relevant existing spec from the
 repository root. Use `.ai/templates/spec.md`; preserve its evidence discipline,
-not irrelevant sections. The current product brief is pending: distinguish
+not irrelevant sections. The product brief is SPEC-001 in `.ai/specs`: distinguish
 reference observations, user requirements and proposed defaults.
 
 1. Inspect the affected behavior/code and scope authorized by the user. Record

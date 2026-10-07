@@ -1,0 +1,514 @@
+# SPEC-002: Yulius architecture and runtime contracts
+
+Status: accepted (design; implementation authorized with SPEC-001)
+Date: 2026-10-07
+Owner: implementing agent; founders for product decisions
+Scope authorization: user goal of 2026-10-07 (design robust architecture for concurrency,
+isolation, cancellation, reconnect, process failure and recovery; implement in Rust).
+
+This document holds engineering decisions. Unless a row cites SPEC-001, choices here are
+implementation assumptions (class **A**) that serve SPEC-001 requirements; they are not user
+requirements and may be revised with a recorded reason. Engineering invariants from
+[runtime contracts](../../docs/engineering/runtime-contracts.md) (RUN, EVT, DATA, GIT, SEC) apply.
+
+## 1. System overview
+
+```mermaid
+flowchart LR
+  subgraph Browser["Browser / phone / future desktop shell"]
+    UI["Web UI (xterm.js, panels)"]
+  end
+  subgraph VM["Instance VM (Linux)"]
+    RP["Reverse proxy (TLS)"]
+    subgraph Server["yulius serve (one process)"]
+      API["Public HTTP + WS API"]
+      INT["Internal loopback listener: MCP, hooks, git credentials"]
+      APP["Application services"]
+      SUP["Session supervisor + hubs"]
+      SCH["Scheduler (automations, polling)"]
+      DB[("SQLite WAL")]
+    end
+    subgraph SB1["Sandbox A (bubblewrap namespace)"]
+      PH1["yulius ptyhost"] --> AG1["claude / codex TUI"]
+    end
+    subgraph SB2["Sandbox B"]
+      PH2["yulius ptyhost"] --> AG2["claude / codex TUI"]
+    end
+    CR["Chromium per sandbox (CDP)"]
+    VS["openvscode-server per sandbox"]
+  end
+  GH["GitHub (App + OAuth + REST)"]
+  PR["Anthropic / OpenAI (via the CLIs)"]
+  UI <--> RP <--> API
+  API --- APP --- DB
+  APP --- SUP
+  SUP <-->|"Unix socket"| PH1
+  SUP <-->|"Unix socket"| PH2
+  AG1 -->|"MCP + hooks (task token)"| INT
+  AG2 -->|"MCP + hooks"| INT
+  APP <--> GH
+  AG1 <--> PR
+  APP --- CR
+  APP --- VS
+```
+
+Principles:
+
+1. **Agents are real CLIs in PTYs.** Yulius never re-implements an agent; it launches, observes,
+   resumes and translates native sessions (SPEC-001 HRN-001, P(5)).
+2. **Sessions outlive the web server.** Each run is owned by a detached `ptyhost` process; the
+   server reattaches after restart (NFR-001).
+3. **GitHub is the authority** for repositories and permissions (ACC-007).
+4. **Harness-independent coordination** through one Yulius MCP server and the hook protocol both
+   CLIs implement (COM-002, STP-001, DSC-003).
+5. **Everything bounded and owned**: each queue, stream, retry and wait has a limit and an owner
+   (§9).
+
+## 2. Decision records
+
+| ADR | Decision | Alternatives considered | Consequences |
+| --- | --- | --- | --- |
+| ADR-01 | One Rust binary `yulius` (axum/tokio) with subcommands `serve`, `ptyhost`, `hook`, `git-credential`, `import`, `login`, `backup`, `doctor`. Static web UI (vanilla ES modules + vendored xterm.js) embedded in the binary. | Leptos/Yew WASM UI; Node SPA build | One artifact to deploy; no Node toolchain for Yulius; UI is plain JS so a desktop shell can load it (OPS-002). JS UI lacks Rust type checking — mitigated by contracts-generated docs and UI checks. |
+| ADR-02 | Detached `ptyhost` per run, Unix-socket protocol, vt100 screen state, exit record files. | tmux/dtach; in-server PTYs | Survives server restart (NFR-001); explicit ownership and identity; more code to test (fake agent suite). Requires the systemd unit to use `KillMode=process`. |
+| ADR-03 | Linux containment per sandbox with bubblewrap (`--unshare-pid --die-with-parent`, private /tmp, only the sandbox directory writable, per-sandbox HOME). Host mode for development/tests, visibly flagged "not contained". | Docker per sandbox; gVisor; separate VMs | Cheap, fast, kills whole tree on SIGKILL of bwrap; no daemon. Network is shared (agents need it). Not a defense against kernel exploits — documented trust model §8. |
+| ADR-04 | SQLite (rusqlite, bundled) in WAL mode, one write connection behind an async actor, versioned SQL migrations via `user_version`. | Postgres; sled; files | Single-VM product, simple backup (`VACUUM INTO`); write throughput ample for 2–5 users. |
+| ADR-05 | Accounts are org secrets in Yulius; provider homes are per sandbox. Claude uses long-lived OAuth tokens from `claude setup-token` passed by environment; Codex uses per-(sandbox, account) `CODEX_HOME` with shared session storage and auth write-back. | One global home per account; copying credentials per task | Prevents cross-sandbox transcript leakage via shared homes; account switch needs no file copy for Claude. Codex refresh-token sharing is a live-verification risk (R-02). |
+| ADR-06 | Cross-provider switch by synthesizing the target CLI's native transcript from a provider-neutral IR, then native resume; fallback to a handoff bootstrap when native resume is rejected. | Always summarize into a fresh session; API-level context replay | Keeps "same session" feel (ROT-005); depends on undocumented formats — pinned, fixture-tested, live-smoked; fallback guarantees continuity. |
+| ADR-07 | Yulius MCP (Streamable HTTP, JSON-RPC) on a loopback listener with per-run bearer tokens; hooks call the same listener through `yulius hook`. | Per-harness plugins; injecting text into the TUI only | One protocol for both CLIs; least privilege (task tokens reach only task-scoped tools). |
+| ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. |
+| ADR-09 | Per-sandbox headless Chromium with a CDP screencast viewer; agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. | noVNC desktop; Playwright server | Real browser, shared by users and agents (BRW-002/003); screencast is efficient and works on phones. |
+| ADR-10 | openvscode-server per sandbox on demand, reverse-proxied with Yulius auth. | code-server; Monaco-only editor | "Normal VS Code" (EDT-001); binary is an external prerequisite on the VM. |
+| ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
+
+## 3. Code organization
+
+Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
+
+| Crate | Layer | Responsibility |
+| --- | --- | --- |
+| `crates/yulius-domain` | domain | IDs, task/attempt/switch state machines, permission mapping, rotation policy, spec/format validator, cron evaluation, delivery profile model, transcript IR and translation planning, briefing assembly. Only `thiserror`. |
+| `crates/yulius-contracts` | contracts | Versioned DTOs: HTTP API, UI event stream, terminal WS frames, ptyhost wire protocol, MCP tool schemas, hook payloads, import manifest. |
+| `crates/yulius-app` | application | Use cases and ports: `Store`, `GitHubPort`, `GitPort`, `SessionHostPort`, `HarnessPort`, `BrowserPort`, `EditorPort`, `Clock`, `Ids`, `SecretBox`, event bus. Authorization decisions. |
+| `crates/yulius-store` | adapter | SQLite schema, migrations, repositories, backup. |
+| `crates/yulius-ptyhost` | adapter | ptyhost process (PTY, containment, vt100, socket server) and client. |
+| `crates/yulius-harness` | adapter | Claude/Codex launch specs, home layout, hook/MCP config rendering, transcript tailers and wire parsers, usage extraction, native transcript writers, login flows. |
+| `crates/yulius-github` | adapter | GitHub REST, App JWT, OAuth, installation tokens. |
+| `crates/yulius-git` | adapter | Git CLI wrapper: clone/fetch, worktrees, branches, bundles, diff stats, hooks install. |
+| `crates/yulius-browser` | adapter | Chromium lifecycle, CDP client, screencast, browser tools. |
+| `crates/yulius-editor` | adapter | openvscode-server lifecycle and proxy target. |
+| `crates/yulius-server` | interface | axum routes, auth middleware, WS endpoints, MCP and hook endpoints, embedded web UI (`web/`). |
+| `crates/yulius-cli` | interface | `import`, `login`, admin client commands (HTTP client, argument parsing). |
+| `crates/yulius` | composition | Configuration, wiring, subcommand dispatch, signal handling. |
+| `tools/fake-agent` | tooling | Deterministic fake harness for failure tests (prints TUI-like output, writes fake transcripts, floods, ignores SIGTERM, forks descendants, simulates limits). |
+
+## 4. Data directory and files
+
+`$YULIUS_DATA` (default `/var/lib/yulius`), owner-only (0700):
+
+```text
+yulius.db, yulius.db-wal            SQLite (DATA-001)
+master.key                          32 random bytes, 0600; encrypts secrets (XChaCha20-Poly1305)
+setup.token                         one-time setup token until superadmin exists
+sandboxes/<sandbox>/repo/           primary clone; tracks the integration branch; tasks never edit it
+sandboxes/<sandbox>/worktrees/<task>/   one worktree + branch per task
+sandboxes/<sandbox>/home/           sandbox HOME inside containment (caches, .claude config dir)
+sandboxes/<sandbox>/codex/<account>/    CODEX_HOME per account; sessions -> ../sessions
+sandboxes/<sandbox>/codex/sessions/     shared Codex rollouts for the sandbox
+sandboxes/<sandbox>/browser/        Chromium profile
+sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
+runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files
+transcripts/<task>/                 archived/imported provider transcripts (immutable copies)
+skills/                             instance skill catalog (vendored Open Mercato pack)
+```
+
+Atomic file writes: write to `*.tmp` in the same directory, `fsync`, rename, `fsync` the directory.
+
+## 5. Persistence model
+
+Schema version 1 (tables; columns abbreviated):
+
+| Table | Key columns |
+| --- | --- |
+| `users` | id, github_login (unique), github_id, display_name, is_superadmin, is_instance_admin, disabled_at, password_hash (superadmin only, Argon2id) |
+| `web_sessions` | id_hash, user_id, csrf_token, created_at, expires_at, revoked_at |
+| `api_tokens` | id, user_id, token_hash, label, created_at, last_used_at, revoked_at |
+| `device_grants` | user_code, device_code_hash, status, user_id, expires_at |
+| `instance` | singleton: owner_login, owner_kind (org/user), public_url, github_app (encrypted blob), setup_completed_at |
+| `github_tokens` | user_id, access (enc), refresh (enc), expires_at |
+| `permission_cache` | user_id, sandbox_id, level (none/read/write/admin), checked_at |
+| `sandboxes` | id, slug, repo_owner, repo_name, github_repo_id, default_branch, profile (json), port_base, created_by, onboarding_state, removed_at |
+| `tasks` | id, sandbox_id, number (per sandbox), title, harness, workflow_id, status, activity, branch, worktree_path, spec_path, created_by, created_at, closed_at, archived_at, origin (ui/automation/import/onboarding), automation_run_id |
+| `attempts` | id, task_id, seq, harness, account_id, provider_session_id, launch_kind (new/resume/translated/handoff), state, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason; partial unique index: one attempt per task in (spawning, live) |
+| `provider_sessions` | id, task_id, harness, session_id, transcript_ref, first_seen, last_seen, origin |
+| `accounts` | id, provider, label, credential (enc), priority, enabled, status, last_usage (json), last_error |
+| `usage_samples` | account_id, at, window, used_percent, resets_at, source |
+| `switch_decisions` | id, task_id, at, reason, inputs (json), outcome |
+| `steps` | id, task_id, ordinal, title, status, note, updated_by, updated_at |
+| `step_events` | step_id, at, actor, from_status, to_status, note |
+| `messages` | id, sandbox_id, from_task, to_task (null = broadcast), kind, subject, body, created_at |
+| `message_receipts` | message_id, task_id, delivered_at, read_at |
+| `scope_claims` | id, task_id, pattern, note, created_at, released_at |
+| `workflows` | id, sandbox_id (null = instance), name, description, steps (json), instructions, gates (json) |
+| `automations` | id, sandbox_id, name, cron, timezone, prompt, workflow_id, harness, enabled, created_by, created_via (ui/agent) |
+| `automation_runs` | automation_id, scheduled_for (unique pair), state, task_id, error |
+| `skills` | id, scope (instance/sandbox/repo), name, source, enabled, digest |
+| `mcp_servers` | id, scope, sandbox_id, name, transport, command/url, args (json), env (enc json), headers (enc json), enabled |
+| `metrics` | attempt_id, input_tokens, output_tokens, cache_read, cache_write, model, turns, tool_calls, active_ms (nullable = unknown) |
+| `feedback` | task_id, user_id, verdict, comment, at |
+| `import_jobs` | id, sandbox_id, user_id, state, manifest (json), received (json), created_at |
+| `audit_log` | id, at, actor, action, target, detail |
+
+Versioning: each migration is one transaction; startup refuses a database from a newer schema.
+Backup: `VACUUM INTO` plus copy of files excluding `runs/`.
+
+## 6. State machines
+
+For every nonterminal state: owner, exit trigger, timeout and behavior if the trigger never comes.
+
+### 6.1 Task
+
+| State | Owner | Exit trigger | Timeout / missing trigger |
+| --- | --- | --- | --- |
+| `queued` | scheduler | capacity available → `starting`; cancel → `stopped` | Queue bound 32; position shown; no timeout. |
+| `starting` | supervisor | ptyhost Welcome + child running → `running`; spawn error → `failed` | 30 s → kill ptyhost tree, `failed(start_timeout)`. |
+| `running` | supervisor | child exit 0/normal → `closed`; abnormal exit → `stopped(crashed)`; cancel → `stopping`; switch decision → `switching`; limit with no capacity → `waiting_capacity` | Liveness ping every 10 s; 3 missed pings + no process → `stopped(lost)`. |
+| `switching` | rotation controller | new attempt `live` → `running`; failure → `stopped(switch_failed)` with retry offered | 120 s total; on expiry the old process is confirmed dead and the task becomes `stopped(switch_timeout)`. |
+| `waiting_capacity` | rotation controller | an account becomes available (reset time passes or admin adds/enables) → `switching`; cancel → `stopped` | Re-evaluated at earliest reset and every 5 min. |
+| `stopping` | supervisor | child and descendants reaped → `stopped(cancelled)` | Interrupt → 5 s → SIGTERM → 5 s → SIGKILL (bwrap: namespace dies) → 10 s; if still not reaped: `stopped(lost)` + audit alert; capacity released only after reaping or `lost`. |
+| `closed`, `stopped`, `failed` | — (terminal for the run) | Continue → `starting` (new attempt, resume) | — |
+
+`activity` (when `running`): `working` (UserPromptSubmit / output after input), `waiting` (Stop hook /
+turn complete), `needs_attention` (permission request hook, browser action request, discipline gate
+exhausted, waiting for capacity). `archived_at` is allowed only in non-live states.
+
+### 6.2 Attempt (one process run)
+
+`spawning → live → exited(code|signal) | killed | lost`. Exactly one terminal outcome is
+persisted (compare-and-set on `state`). A process exit racing a cancel records the first durable
+observation; the other is ignored (RUN-002).
+
+### 6.3 Switch (account or provider)
+
+1. Decide (domain policy, inputs persisted in `switch_decisions`).
+2. Quiesce: proactive → wait for turn end (Stop hook) up to 10 min; reactive → turn already ended.
+3. Stop old attempt (as `stopping`, but final state `exited(switched)`).
+4. Prepare target: same provider → nothing to copy for Claude (shared home) / ensure rollout visible
+   for Codex; other provider → translate transcript (§7.3).
+5. Launch new attempt with native resume and a continuation prompt when the last turn failed.
+6. Bridge viewers to the new attempt; write a one-line notice into the terminal stream.
+
+Idempotency: a task has at most one in-flight switch (row lock via task status CAS).
+
+### 6.4 Automation run
+
+`scheduled (unique automation_id+scheduled_for) → task_created | skipped(previous_active|disabled)
+| failed(error)`. Owner: scheduler. The run row is inserted before the task is created; restart
+finds rows without a task and either links the task created with `automation_run_id` or creates it
+once (DATA-002). Catch-up after downtime: at most one missed run per automation, if missed by less
+than one interval.
+
+### 6.5 Import job
+
+`created → receiving → received → applying → completed | failed`. Chunks are idempotent by
+(job, file, offset, sha256). `applying` creates sandbox (if needed), local import branches,
+snapshot worktree and archived tasks inside one store transaction per session; reapplying skips
+sessions already recorded (`provider_sessions` unique on harness+session_id+sandbox).
+
+### 6.6 Sandbox onboarding
+
+`not_needed | pending → preparing (task id) → ready | skipped(by admin)`. New tasks in an imported
+sandbox are rejected with an explanatory error while `pending/preparing`, unless skipped (U-08).
+
+### 6.7 Delivery (per task)
+
+`none → pr_open (#n) → merged_integration → env_<name>_done … → promoted → env_production_done`.
+Each transition is a user action (or profile auto-promotion) verified against GitHub state; stale
+heads are refused (GIT-002).
+
+## 7. Runtime contracts
+
+### 7.1 ptyhost protocol (`yulius-contracts::ptyhost`, version 1)
+
+Frame: `u32 big-endian length` + `u8 type` + payload. Max frame 1 MiB; output frames ≤ 64 KiB.
+
+| Direction | Type | Payload |
+| --- | --- | --- |
+| C→H | `Hello` | protocol version, token (32 bytes), want_snapshot |
+| C→H | `Input` | bytes (≤ 64 KiB) |
+| C→H | `Resize` | cols, rows (1..=1000) |
+| C→H | `Signal` | interrupt / terminate / kill |
+| C→H | `Shutdown` | grace milliseconds |
+| C→H | `Ping` | nonce |
+| H→C | `Welcome` | attempt id, child pid, current seq, cols, rows |
+| H→C | `Snapshot` | seq, formatted screen bytes |
+| H→C | `Output` | seq (monotonic per attempt), bytes |
+| H→C | `Exit` | exit code or signal, ended_at |
+| H→C | `Pong` | nonce |
+| H→C | `Error` | code, message |
+
+Rules: the host authenticates the first frame within 5 s or drops the connection; one controlling
+client (the server) at a time — a new authenticated connection replaces the old one; the PTY reader
+never blocks on clients (bounded 8 MiB client queue; overflow drops the client, which reconnects
+and receives a fresh snapshot). `status.json` = {version, attempt, ptyhost_pid, child_pid,
+started_at, boot_id, token_sha256}; `exit.json` written atomically before the `Exit` frame.
+
+Launch: the server writes `launch.json` (argv, cwd, non-secret env, containment, size) and spawns
+`yulius ptyhost --run-dir <dir>` in its own process group with secret variables only in the
+spawned environment (never on disk or argv). The host creates the PTY, spawns the child (session
+leader) — inside `bwrap` when contained — and serves the socket.
+
+Cancellation: `Signal(interrupt)` writes the harness' interrupt sequence; `terminate`/`kill` signal
+the child's process group; contained runs kill `bwrap`, which tears down the PID namespace. The host
+reaps the child before writing `exit.json`.
+
+Restart reconciliation (server start): for each attempt in `spawning|live`: connect + Hello
+(2 s). Success with matching token → reattach. Else if `exit.json` exists → record exit. Else if
+`status.json` pid is alive with matching start time and boot id but socket unusable → kill it,
+record `lost`. Else record `lost`. Never respawn automatically (DATA-002); the task becomes
+`stopped(server_lost)` and is continuable.
+
+### 7.2 Harness adapters
+
+Common launch environment: `YULIUS_URL` (internal listener), `YULIUS_TASK_TOKEN`, `HOME` (sandbox
+home), `TERM=xterm-256color`, `COLORTERM=truecolor`, git author identity of the acting user,
+`GIT_CONFIG_*` credential helper `yulius git-credential`, `YULIUS_PORT_BASE`/`YULIUS_PORT_COUNT`
+(per-sandbox range of 20 ports from 20000 upward, persisted on the sandbox row; SPEC-001 PRJ-010)
+and `PORT` (first port of the range). Provider secrets are environment-only.
+
+Sandbox shell sessions (SPEC-001 UI-015) reuse the same ptyhost machinery with the user's login
+shell in the contained sandbox; they are not tasks, have no harness hooks or MCP token, are
+limited to 2 per user per sandbox, and end when their process exits or after 12 h idle.
+
+| Concern | Claude Code (verified 2.1.292 flags) | Codex CLI (verified 0.160.1 flags) |
+| --- | --- | --- |
+| New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json [--model m] [--effort e] [--dangerously-skip-permissions when contained] "<prompt>"` | `codex --no-daemon -C <worktree> -c mcp_servers…  [--dangerously-bypass-approvals-and-sandbox when contained] [--dangerously-bypass-hook-trust] "<prompt>"`; session id read from the new rollout's `session_meta` |
+| Resume | `claude --resume <uuid> … ["<continuation>"]` | `codex resume <uuid> … ["<continuation>"]` |
+| Credentials | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`); `CLAUDE_CONFIG_DIR=<sandbox>/home/.claude` | `CODEX_HOME=<sandbox>/codex/<account>` with `auth.json` from the vault; written back after the run if refreshed (newest `last_refresh` wins) |
+| Transcript | `<config>/projects/<cwd-slug>/<session>.jsonl` | `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-*.jsonl` (shared dir) |
+| Usage | `message.usage` per assistant message (dedupe by message id + request id); limit errors from synthetic API error messages | `token_count.info.total_token_usage` (cumulative; last wins); `rate_limits.primary/secondary.used_percent`, `resets_at`, `rate_limit_reached_type` |
+| Hooks | `--settings` JSON `hooks` for SessionStart, UserPromptSubmit, Stop, Notification | `hooks.json` in CODEX_HOME for SessionStart, UserPromptSubmit, Stop, PermissionRequest (location verified live, R-03) |
+| Skills | `<config>/skills/<name>/SKILL.md` + repository `.claude/skills` | `<CODEX_HOME>/skills/<name>/SKILL.md` + repository `.agents/skills` |
+| Login (account add) | `claude setup-token` in a server-owned PTY; token captured from output and masked before display | `codex login --device-auth` in a server-owned PTY with temporary CODEX_HOME; `auth.json` moved into the vault |
+| Session-id drift | new `.jsonl` for the same worktree slug → adopt into lineage (HRN-004) | new rollout whose `session_meta.cwd` is the worktree → adopt |
+
+Transcript tailing: poll size every 1 s; parse only complete lines; max line 4 MiB (longer lines
+skipped with a diagnostic); unknown record types ignored; malformed lines counted, never fatal.
+
+### 7.3 Translation (ADR-06)
+
+IR (`yulius-domain::transcript`): ordered turns `{role: user|assistant, blocks: [text | tool_call{name,
+input_summary} | tool_result{summary, is_error}], at}` plus metadata (cwd, model, original ids).
+Writers: Claude JSONL (user/assistant records with uuid chain, sessionId, cwd, version, timestamps,
+text content blocks) and Codex rollout (`session_meta`, `turn_context`, `response_item` messages with
+`input_text`/`output_text`). Tool activity is rendered as assistant text (`[tool Bash] …`, outputs
+truncated to 2 KiB) because cross-provider tool-call pairing is not portable; reasoning and images
+are dropped with a marker. Size bound: last 400 KiB or 300 messages, prefixed by a note pointing to
+the task spec and Yulius context. The continuation prompt includes task goal, current step, spec
+path, branch and `git status` summary. Acceptance requires live verification per CLI version;
+when a resume of the synthesized transcript fails (exit within 15 s or explicit error), the
+adapter falls back to a new session bootstrapped with a handoff file in the run directory.
+
+### 7.4 Yulius MCP (internal listener `/mcp`, Streamable HTTP, JSON-RPC 2.0)
+
+Authentication: `Authorization: Bearer <task token>`; token → (task, attempt). Protocol versions
+accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
+
+| Tool | Purpose (requirements) |
+| --- | --- |
+| `project_context` | Project summary, architecture/decision index, recent changes, delivery rules (COM-004, DSC-009) |
+| `tasks_list`, `task_get` | Previous and parallel tasks: status, harness, branch, spec, steps, summary (COM-001) |
+| `message_send`, `messages_inbox` | Harness-independent messages, direct or broadcast (COM-002) |
+| `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
+| `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002) |
+| `spec_check` | Run the format validator on the task spec and docs (DSC-003) |
+| `automation_create`, `automations_list`, `automation_update` | Prompt-created automations (AUT-002) |
+| `workflows_list` | Workflows available (AUT-004) |
+| `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
+| `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
+
+### 7.5 Hooks (`yulius hook <harness> <event>`)
+
+The hook binary reads the CLI's JSON from stdin (≤ 1 MiB), forwards it to `/hooks/<event>` with the
+task token (timeout 5 s) and prints the response. Failure to reach Yulius is fail-open (exit 0, no
+output) and is recorded. Responses:
+
+- `SessionStart` → `hookSpecificOutput.additionalContext` = briefing (≤ 12 KiB; §7.6).
+- `UserPromptSubmit` → additionalContext with unread message digests (marks delivered); activity
+  `working`.
+- `Stop` → activity `waiting`; discipline gate: if the worktree has changes and the task spec is
+  missing/invalid, or there are unread urgent messages, return `{"decision":"block","reason":…}`;
+  at most 3 consecutive blocks per turn, then `needs_attention`. Also the turn boundary for
+  proactive rotation.
+- `Notification` / `PermissionRequest` → `needs_attention`.
+
+Waking idle tasks (COM-005): when a direct message arrives for a `running` task with activity
+`waiting` for ≥ 30 s and no viewer typed in the last 30 s, the supervisor types a short notice and
+Enter into the PTY (configurable per task; never during `needs_attention`).
+
+### 7.6 Briefing
+
+Assembled in domain from store data and repository files, in this order, truncating each part to
+its budget: role and discipline rules (format, branch/profile rules, Yulius tools), task (goal,
+spec path, steps), project summary (`docs/product.md` head), architecture pointer, decision index
+(titles), recent changes (last 10 delivered tasks + `docs/changes.md` head), parallel tasks and
+scope claims, unread messages count.
+
+### 7.7 Terminal WebSocket (`/api/tasks/{id}/terminal`)
+
+Binary frames mirror §7.1 (Output/Snapshot/Exit) plus JSON text control frames: client `hello
+{last_seq}`, `input`, `resize`, `take_control`; server `state {attempt, harness, controller}`,
+`notice`. Joining viewers get a snapshot from the server's own vt100 copy, then live output. Per
+viewer queue 512 frames / 8 MiB; overflow closes with code 4008; client reconnects with backoff
+(0.5 s → 10 s). Input requires write permission and is applied in arrival order; each input frame
+carries a client sequence for duplicate suppression after reconnect. At most 16 viewers per task.
+
+### 7.8 UI event stream (`/api/events`, WS)
+
+Server-pushed JSON events (task status/activity, steps, messages, usage, automation runs,
+browser action requests) filtered by permission. Bounded per-connection queue (256); lag →
+`resync` event → client refetches lists.
+
+### 7.9 Public HTTP API (selected)
+
+`/api/setup`, `/api/auth/*` (GitHub OAuth, device approval, logout), `/api/me`, `/api/sandboxes`
+(+ create/import/remove), `/api/sandboxes/{id}/tasks` (create, list), `/api/tasks/{id}` (get, stop,
+continue, switch, archive, restore, feedback, steps), `/api/sandboxes/{id}/git/*`,
+`/api/sandboxes/{id}/delivery/*`, `/api/sandboxes/{id}/{skills,workflows,automations,mcp}`,
+`/api/admin/{users,accounts,github,mcp,skills}`, `/api/analytics/*`, `/api/status`,
+`/api/import/*` (CLI), `/s/{sandbox}/editor/*` (proxy), `/api/sandboxes/{id}/browser` (WS).
+All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
+
+## 8. Security and trust model
+
+- Users with **write** permission can make agents run arbitrary code in that sandbox; that is the
+  product's purpose. Containment (ADR-03) protects the host and other sandboxes from such code on
+  Linux. Host mode provides no containment and is labelled in the UI and logs (SEC-001).
+- Public listener: HTTPS terminated by the reverse proxy; cookies HttpOnly, Secure, SameSite=Lax;
+  CSRF header on state-changing requests; WebSocket Origin must equal the public URL (or an
+  allowlisted desktop origin); login rate limits; Argon2id for the superadmin password.
+- Internal listener binds 127.0.0.1 only; accepts task tokens only; tokens are per attempt, random
+  256-bit, stored hashed, revoked when the attempt ends.
+- Secrets (provider credentials, GitHub App key, MCP env/headers) are encrypted at rest with the
+  master key, never returned by the API, never logged (`Secret<T>` with redacted Debug), passed to
+  children only via environment (SEC-002). Account login output is masked before reaching viewers.
+- GitHub tokens: installation tokens (1 h) fetched on demand; user tokens refreshed; git transport
+  uses the credential helper over the internal listener; task worktrees get a `pre-push` hook that
+  rejects pushes to the profile's integration/production branches; scaffolded repositories get
+  GitHub rulesets (DSC-007).
+- Repository content, skills and MCP output are untrusted input; they cannot grant permissions,
+  merges or deployments (SEC-003). Deployment commands run only on explicit user action with an
+  audit entry.
+
+## 8a. Imported repository specifics (Product, Studio)
+
+- Sandboxes clone from GitHub; local machine state arrives only through `yulius import` uploads.
+  Local agent worktrees on a developer machine (e.g., Product's `.claude/worktrees/*`) are not
+  imported except as unpublished commits in the bundle.
+- git-crypt (Studio `secrets/`): sandboxes stay **locked**; encrypted files remain ciphertext for
+  agents. Unlocking would require an admin-provided key copied into each worktree's Git directory
+  before checkout (Studio's own procedure) and is not offered in this version.
+- Repository hooks (Studio `.githooks/pre-commit` mass-delete guard): worktrees honor the
+  repository's `core.hooksPath` when the preparation task configures it per the repo's AGENTS.md;
+  Yulius adds its own `pre-push` guard without replacing repository hooks.
+- Instructions: repositories' `AGENTS.md`/`CLAUDE.md`/`.agents/skills`/`.claude/skills`/`.codex`
+  remain authoritative inside the sandbox; the Yulius briefing points to them instead of
+  overriding them.
+- Product: integration branch `quartio`, `main` fast-forwarded, CI `node scripts/test-all.mjs`,
+  deployments via its Deployer only with explicit authorization → `product` profile.
+- Studio: integration branch `quartio` (actor branch), `main` fast-forwarded promptly, no general CI,
+  knowledge compile lane → `studio` profile; Yulius routes all task changes through task branches
+  and PRs, which satisfies both of Studio's lanes.
+
+## 9. Limits and bounds
+
+| Resource | Default | At the bound |
+| --- | --- | --- |
+| Live sessions per instance | 8 | queue (FIFO) |
+| Queue length | 32 | reject with error |
+| Viewers per task | 16 | reject join |
+| Output frame | 64 KiB | split |
+| ptyhost client queue | 8 MiB | drop client; reconnect + snapshot |
+| Viewer queue | 512 frames / 8 MiB | close 4008; client resyncs |
+| Event stream queue | 256 events | `resync` |
+| Spawn timeout | 30 s | fail start |
+| Stop escalation | 5 s + 5 s + 10 s | `lost` + alert |
+| Switch total | 120 s | `stopped(switch_timeout)` |
+| Hook call | 5 s | fail-open |
+| Discipline blocks per turn | 3 | `needs_attention` |
+| MCP request / result | 1 MiB / 256 KiB | error |
+| Transcript line | 4 MiB | skip + diagnostic |
+| Import total / chunk | 2 GiB / 8 MiB | reject |
+| GitHub retries | 3 attempts, ≤ 30 s total, honoring `Retry-After` | surface error |
+| Permission cache | 5 min | refetch |
+
+## 10. Failure and recovery matrix
+
+| Failure | Detection | Behavior |
+| --- | --- | --- |
+| Browser disconnect | WS close | Session continues; reconnect → snapshot (AC-NFR-1). |
+| Slow viewer | queue bound | Viewer dropped, others unaffected (AC-NFR-4). |
+| Server crash/restart/upgrade | startup reconciliation | Reattach live ptyhosts; record exits; no respawn (AC-NFR-2). |
+| ptyhost crash | socket EOF + no exit.json + pid gone | Child is in ptyhost's session → receives SIGHUP; contained runs die with bwrap; attempt `lost`, task `stopped`. |
+| Agent crash | exit frame non-zero | Task `stopped(crashed)`; Continue offered. |
+| VM reboot | boot id mismatch | All live attempts `lost`; tasks continuable; automations resume schedule. |
+| Usage limit | transcript/rate-limit events | Rotation (§6.3). |
+| Provider outage/auth failure | spawn exits early / auth error text | Account marked `error`; rotation excludes it; admin notified. |
+| GitHub outage | HTTP errors | Bounded retries; permission cache serves stale-but-recent (≤ 30 min) for read-only views; writes needing GitHub fail visibly. |
+| Disk full | write errors | Refuse new tasks/imports; live sessions continue; status panel warns. |
+| DB busy/corrupt | busy timeout / integrity check at start | Retry busy; refuse start on integrity failure with restore guidance. |
+| Partial import upload | missing chunks | Resume by checksum (AC-IMP-1). |
+| Concurrent Continue/Switch/Cancel | CAS on task status, unique live attempt | One wins; others get conflict errors. |
+| Automation during downtime | scheduler startup | ≤ 1 catch-up run; unique run key prevents duplicates. |
+| Worktree conflicts / dirty cleanup | git status before removal | Never delete dirty or foreign worktrees; surface for review (GIT-002). |
+
+## 11. Testing and evidence plan
+
+| Level | What | Notes |
+| --- | --- | --- |
+| Unit | state machines, rotation policy, validator, cron, permission mapping, briefing budgets, frame codecs, transcript parsers, translation writers | pure, fast |
+| Contract fixtures | Claude 2.1.292 / Codex 0.160.1 transcript shapes (synthetic content, real structure) | fixtures labeled with version and date |
+| Integration (fake agent) | ptyhost spawn/flood/ignore-SIGTERM/descendant/early-exit/cancel races, reconnect, server restart reattach, rotation with fake usage, hooks & MCP end-to-end | `tools/fake-agent` |
+| Integration (fake GitHub) | OAuth, permissions, repo creation, PR/checks/merge/ff | axum fake server |
+| Linux-only | bubblewrap containment escape attempts | CI ubuntu job |
+| UI | browser verification of layout, terminal, panels, phone viewport | manual with recorded evidence |
+| Live (opt-in, never CI) | real Claude/Codex: launch, hooks, MCP, resume, synthesized-transcript resume both directions | uses local credentials; minimal prompts |
+| Deploy | VM install | **out of scope**; packaging reviewed only |
+
+## 12. Risks
+
+| ID | Risk | Mitigation |
+| --- | --- | --- |
+| R-01 | Undocumented transcript formats change. | Version-pinned parsers, unknown-record tolerance, fallback handoff, live smoke per CLI upgrade. |
+| R-02 | Codex refresh-token rotation when one account is used in several homes. | Write-back newest auth; mark account `relogin` on auth failure; live check. |
+| R-03 | Codex hook configuration location/trust semantics. | Verify live; fallback to idle-time prompt injection for discipline/messages. |
+| R-04 | Claude usage percentage not available for setup tokens. | Reactive switching on limit errors; proactive only where usage is known. |
+| R-05 | Browser screencast performance on phones. | Adaptive frame rate/quality; snapshot mode. |
+| R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
+
+## 13. Delivery checkpoints
+
+Tracked as GitHub issues (one per checkpoint) with evidence comments.
+
+| CP | Scope | Main requirements |
+| --- | --- | --- |
+| CP0 | Specification and architecture | all (this document, SPEC-001, SPEC-003) |
+| CP1 | Workspace, store, server bootstrap, setup, auth skeleton, UI shell | ACC-001..005, ACC-010, UI-001..003 |
+| CP2 | ptyhost, fake agent, terminal streaming, reconnect, restart reconciliation, cancellation | HRN-001/002, TSK-004, NFR-001..005 |
+| CP3 | Harness adapters: launch, hooks, transcript tailing, usage, accounts and login | TSK-001..003, HRN-003/004, ROT-001/002/009 |
+| CP4 | GitHub App/OAuth, permission mirroring, sandboxes, worktrees, task lifecycle, workspace UI | ACC-006..009, PRJ-*, TSK-005..008, UI-* |
+| CP5 | Rotation and provider translation | ROT-003..011 |
+| CP6 | Yulius MCP, messages, scopes, steps, briefing, discipline gates, format validator | COM-*, STP-*, DSC-001..006, DSC-009 |
+| CP7 | Skills catalog, MCP management, workflows, automations | SKL-*, MCP-*, AUT-* |
+| CP8 | Git page and delivery profiles (standard/product/studio) | GIT-*, DLV-*, DSC-007/008 |
+| CP9 | Browser and editor | BRW-*, EDT-* |
+| CP10 | Import CLI, session migration, onboarding meta-task | IMP-*, DSC-010 |
+| CP11 | Analytics, feedback, status panel, archive, phone UI | ANL-*, UI-005..007, UI-012, ARC |
+| CP12 | Hardening: failure tests, security review, live compatibility smoke, packaging docs | NFR-*, OPS-* |
+
+## 14. Implementation evidence
+
+Pending; updated per checkpoint with commands, results and gaps.
+
+## 15. Changelog
+
+- 2026-10-07: initial architecture and runtime contracts.

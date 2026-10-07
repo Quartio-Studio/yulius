@@ -2,7 +2,7 @@
 import unittest
 from check_git_policy import validate_pr, validate_dev_run
 
-REPO = "Quartio-Studio/yulius"
+REPO = "Quartio-Studio/yulius-v2"
 
 
 def pr(head="feat/42-task-cancellation", base="dev", title="feat(tasks): add cancellation", repo=REPO):

@@ -38,7 +38,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
 Use the full gate after implementation stabilizes.
 No provider login, database, Docker daemon or paid model call is part of ordinary CI.
-The project intentionally contains only an engineering harness until the brief.
+Product crates are added per the SPEC-002 delivery checkpoints.
 Its binary-only workspace has no doctest targets; the gate reports this as not
 applicable and automatically runs doctests when library targets are added.
 
