@@ -15,7 +15,8 @@ export class ApiError extends Error {
 
 const REQUEST_TIMEOUT_MS = 30000;
 
-const STATUS_CODES = { 400: 'invalid', 401: 'unauthenticated', 403: 'forbidden', 404: 'not_found', 409: 'conflict', 422: 'invalid', 429: 'capacity', 502: 'upstream' };
+// Fallback codes when a response has no `{"error"}` body (docs/api.md "Conventions").
+const STATUS_CODES = { 400: 'invalid', 401: 'unauthenticated', 403: 'forbidden', 404: 'not_found', 409: 'conflict', 413: 'invalid', 422: 'invalid', 429: 'capacity', 502: 'upstream', 503: 'unavailable' };
 
 /** Transport talking to the Yulius server that served this page. */
 export function realTransport() {

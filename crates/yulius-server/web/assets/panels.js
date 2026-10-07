@@ -92,7 +92,7 @@ export function createPanelHost(ctx) {
     if (!sandbox) return simpleView(h('div', { class: 'panel-msg' }, 'Open a sandbox first.'));
     if (k === 'browser') return createBrowserPanel(ctx, sandbox);
     if (k === 'editor') return createEditorView(ctx, sandbox, () => task);
-    if (k === 'shell') return createShellView(ctx, sandbox);
+    if (k === 'shell') return createShellView(ctx, sandbox, () => task);
     if (k === 'messages') return task ? createMessagesView(ctx, sandbox, task) : simpleView(h('div', { class: 'panel-msg' }, 'Select a task to see its messages.'));
     return simpleView(h('div'));
   }
@@ -197,7 +197,13 @@ function simpleView(el) {
 
 // ---------------------------------------------------------------- editor
 
-/** VS Code iframe (/s/{sid}/editor/), lazily loaded, task worktree selectable (EDT-002). */
+/**
+ * VS Code iframe (/s/{sid}/editor/), lazily loaded, task worktree selectable (EDT-002).
+ * `?worktree=<task id>` makes the server redirect to that task's worktree folder. A HEAD
+ * preflight turns the server's 503 `unavailable` (openvscode-server missing or disabled in
+ * contained mode) and 409 (repository not cloned yet) into a readable message instead of a
+ * JSON error page inside the iframe.
+ */
 function createEditorView(ctx, sandbox, getTask) {
   const el = h('div', { class: 'panel-view' });
   if (!allows(sandbox.access, 'write')) {
@@ -205,31 +211,50 @@ function createEditorView(ctx, sandbox, getTask) {
     return { el };
   }
   let frame = null;
+  let checking = false;
   const task = getTask();
+  const base = `/s/${enc(sandbox.id)}/editor/`;
   const target = h('select', { class: 'select', style: { height: '24px', width: 'auto', fontSize: '12px' }, 'aria-label': 'Folder' },
     h('option', { value: '' }, 'Sandbox'),
     task ? h('option', { value: 'task' }, `Task #${task.number} worktree`) : null);
-  let worktree = null;
-  if (task) {
-    ctx.api.get(`/api/tasks/${enc(task.id)}`).then((detail) => { worktree = detail && detail.worktree; }).catch(() => {});
-  }
-  const src = () => {
-    const base = `/s/${enc(sandbox.id)}/editor/`;
-    return target.value === 'task' && worktree ? `${base}?folder=${encodeURIComponent(worktree)}` : base;
-  };
+  const src = () => (target.value === 'task' && task ? `${base}?worktree=${encodeURIComponent(task.id)}` : base);
   target.addEventListener('change', () => { if (frame) frame.src = src(); });
-  const reload = iconButton('refresh', 'Reload editor', () => { if (frame) frame.src = src(); });
+  const reload = iconButton('refresh', 'Reload editor', () => { if (frame) frame.src = src(); else load(); });
   const external = iconButton('external', 'Open editor in a new tab', () => window.open(src(), '_blank', 'noopener'));
+
+  async function preflight() {
+    try {
+      const response = await window.fetch(base, { method: 'HEAD', credentials: 'same-origin', cache: 'no-store', redirect: 'manual' });
+      if (response.status === 503) return 'The editor is not available on this server (openvscode-server is missing, or disabled in contained mode unless the server runs with --editor-uncontained).';
+      if (response.status === 409) return 'The editor opens once the sandbox repository has been cloned.';
+      if (response.status === 401 || response.status === 403) return 'You do not have access to the editor of this sandbox.';
+      return null;
+    } catch {
+      return null; // network hiccup: let the iframe try
+    }
+  }
+
+  async function load() {
+    if (frame || checking) return;
+    checking = true;
+    setChildren(el, placeholder('Opening the editor…', 'loading'));
+    const problem = ctx.mock ? null : await preflight();
+    checking = false;
+    if (problem) {
+      setChildren(el, h('div', { class: 'panel-msg stack', style: { alignItems: 'center' } }, icon('warn', { size: 20 }), h('p', null, problem),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: load }, 'Try again')));
+      return;
+    }
+    frame = h('iframe', { class: 'editor-frame', title: `VS Code — ${sandbox.name}`, allow: 'clipboard-read; clipboard-write', referrerpolicy: 'same-origin' });
+    if (ctx.mock) frame.srcdoc = mockEditorDoc(sandbox);
+    else frame.src = src();
+    setChildren(el, frame);
+  }
+
   return {
     el,
     headExtra: () => [target, reload, external],
-    show() {
-      if (frame) return;
-      frame = h('iframe', { class: 'editor-frame', title: `VS Code — ${sandbox.name}`, allow: 'clipboard-read; clipboard-write', referrerpolicy: 'same-origin' });
-      if (ctx.mock) frame.srcdoc = mockEditorDoc(sandbox);
-      else frame.src = src();
-      setChildren(el, frame);
-    },
+    show() { load(); },
   };
 }
 
@@ -246,8 +271,12 @@ function mockEditorDoc(sandbox) {
 
 // ---------------------------------------------------------------- shell
 
-/** General sandbox shell (UI-015): separate from the agent terminal, write access only. */
-function createShellView(ctx, sandbox) {
+/**
+ * General sandbox shell (UI-015): separate from the agent terminal, write access only.
+ * `POST /api/sandboxes/{sid}/shells` with an empty body opens it in the sandbox repository,
+ * `{"task_id"}` in that task's worktree; at most 4 live shells per sandbox (429).
+ */
+function createShellView(ctx, sandbox, getTask) {
   const el = h('div', { class: 'panel-view' });
   if (!allows(sandbox.access, 'write')) {
     setChildren(el, h('div', { class: 'panel-msg' }, icon('lock', { size: 20 }), h('p', null, 'The sandbox shell requires write access on GitHub.')));
@@ -255,18 +284,33 @@ function createShellView(ctx, sandbox) {
   }
   let terminal = null;
   let starting = false;
+  let where = '';
   const startButton = h('button', { type: 'button', class: 'btn btn-primary' }, 'Open shell');
   const idle = h('div', { class: 'panel-msg stack', style: { alignItems: 'center' } },
-    h('p', null, 'A contained shell in this sandbox. It never replaces the agent terminal.'),
+    h('p', null, 'A login shell in this sandbox with the containment of task runs. It never changes tasks or replaces the agent terminal.'),
     startButton);
   setChildren(el, idle);
+
+  function folderSelect() {
+    const task = getTask();
+    if (!task && where === 'task') where = '';
+    const select = h('select', { class: 'select', style: { height: '24px', width: 'auto', fontSize: '12px' }, 'aria-label': 'Shell folder' },
+      h('option', { value: '' }, 'Sandbox repository'),
+      task ? h('option', { value: 'task' }, `Task #${task.number} worktree`) : null);
+    select.value = where;
+    select.addEventListener('change', () => { where = select.value; });
+    return select;
+  }
 
   async function open() {
     if (starting) return;
     starting = true;
     startButton.classList.add('busy');
     try {
-      const shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/shells`);
+      const task = where === 'task' ? getTask() : null;
+      const shell = task
+        ? await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/shells`, { task_id: task.id })
+        : await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/shells`);
       if (terminal) terminal.destroy();
       terminal = createTerminalView({
         transport: ctx.transport,
@@ -279,7 +323,7 @@ function createShellView(ctx, sandbox) {
       terminal.start();
       terminal.focus();
     } catch (error) {
-      errorToast(error, 'Could not open a shell');
+      errorToast(error, error.status === 429 ? 'Too many shells' : 'Could not open a shell');
     } finally {
       starting = false;
       startButton.classList.remove('busy');
@@ -288,7 +332,7 @@ function createShellView(ctx, sandbox) {
   startButton.addEventListener('click', open);
   return {
     el,
-    headExtra: () => [iconButton('plus', 'New shell', open)],
+    headExtra: () => [folderSelect(), iconButton('plus', 'New shell', open)],
     show() { if (terminal) setTimeout(() => terminal.refit(), 0); },
     destroy() { if (terminal) terminal.destroy(); },
   };

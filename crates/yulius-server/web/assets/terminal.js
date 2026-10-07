@@ -5,7 +5,7 @@
 import { Terminal } from './vendor/xterm/xterm.mjs';
 import { FitAddon } from './vendor/xterm/addon-fit.mjs';
 import { WebLinksAddon } from './vendor/xterm/addon-web-links.mjs';
-import { TerminalSocket } from './termsocket.js';
+import { TerminalSocket, isEndedStatus, CLOSE_REVOKED } from './termsocket.js';
 import { h, setChildren } from './dom.js';
 
 const THEME = {
@@ -29,12 +29,15 @@ const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberat
  *   readOnlyLabel()            banner text when the server says can_write=false
  *   onState(state), onExit(exit), onNotice(text)
  *   exitActions(exit)          optional [{label, run}] shown in the exit banner
+ *   followServerSize           render at the PTY size from `state` and never ask the server
+ *                              to resize (account login terminals: fixed 500 columns so
+ *                              tokens and URLs never wrap; the view scrolls horizontally)
  * Call start() after the element is in the document; destroy() when done.
  */
-export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, fontSize }) {
+export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, fontSize, followServerSize = false }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
-  const host = h('div', { class: 'term-host' });
+  const host = h('div', { class: 'term-host', style: followServerSize ? { overflowX: 'auto' } : null });
   const el = h('div', { class: 'term' }, banner, noticeEl, host);
 
   const size = fontSize || (window.matchMedia('(max-width: 767px)').matches ? 12 : 13);
@@ -83,7 +86,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       onNotice: (text) => { showNotice(text); if (onNotice) onNotice(text); },
       onExit: (message) => { exited = message; render(); if (onExit) onExit(message); },
       onError: (message) => {
-        if (['unauthenticated', 'forbidden', 'not_found'].includes(message.code)) fatal = message;
+        if (['unauthenticated', 'not_found'].includes(message.code)) fatal = message;
         else showNotice(message.message || message.code || 'Terminal error');
         render();
       },
@@ -93,10 +96,6 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
 
   term.onData((data) => send(data));
   term.onBinary((data) => send(data));
-
-  function isEndedStatus(status) {
-    return status === 'closed' || status.startsWith('stopped') || status.startsWith('failed');
-  }
 
   function proposed() {
     if (!opened) return null;
@@ -112,6 +111,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // The controlling viewer's size drives the PTY (TSK-006: the last to type controls
   // the size). Other viewers render at the PTY size reported in state frames.
   function applySize() {
+    if (followServerSize) {
+      if (state.cols && state.rows && (term.cols !== state.cols || term.rows !== state.rows)) term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
+      return;
+    }
     const fitted = proposed();
     if (state.controller || !state.cols || !state.rows) {
       if (!fitted) return;
@@ -133,7 +136,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       showNotice('Not connected — input was not sent');
       return false;
     }
-    if (!state.controller) {
+    if (!state.controller && !followServerSize) {
       // The server makes the last typist the controller; mirror it until the next state frame.
       state = { ...state, controller: true };
       lastSent = null;
@@ -163,6 +166,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     } else if (conn === 'reconnecting') {
       const secs = connDetail.delay ? Math.max(1, Math.round(connDetail.delay / 1000)) : null;
       rows.push(bannerRow('warn', connDetail.code === 4008 ? 'Catching up with the session…' : `Connection lost — reconnecting${secs ? ` in ${secs}s` : ''}…`, [{ label: 'Retry now', run: () => socket.retry() }]));
+    } else if (conn === 'failed' && connDetail.code === CLOSE_REVOKED) {
+      rows.push(bannerRow('error', 'Your access to this terminal was revoked.', [{ label: 'Reconnect', run: () => socket.retry() }]));
     } else if (conn === 'failed') {
       rows.push(bannerRow('error', 'Disconnected from the terminal.', [{ label: 'Reconnect', run: () => socket.retry() }]));
     } else if (conn === 'connecting') {
@@ -173,7 +178,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       rows.push(bannerRow('info', `Session ended: ${exited.status || 'closed'}${code}.`, exitActions ? exitActions(exited) : []));
     } else if (conn === 'open' && !state.can_write) {
       rows.push(bannerRow('readonly', readOnlyLabel ? readOnlyLabel() : 'Read-only'));
-    } else if (conn === 'open' && state.can_write && !state.controller && state.cols) {
+    } else if (conn === 'open' && state.can_write && !state.controller && state.cols && !followServerSize) {
       rows.push(bannerRow('info', 'Someone else controls this terminal; you see it at their size.', [{ label: 'Take control', run: () => { if (socket.takeControl()) { state = { ...state, controller: true }; lastSent = null; applySize(); render(); term.focus(); } } }]));
     }
     setChildren(banner, rows);

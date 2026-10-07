@@ -8,6 +8,22 @@ export const FRAME_BROWSER = 3;
 
 /** Lag close code: the server dropped a slow viewer; reconnect with last_seq. */
 export const CLOSE_LAGGED = 4008;
+/** Access revoked (permission re-check every 60 s): reconnecting cannot succeed. */
+export const CLOSE_REVOKED = 4003;
+/** The server-side resource failed (e.g. the sandbox browser could not start). */
+export const CLOSE_SERVER_ERROR = 1011;
+
+/** Close codes after which reconnecting is pointless; the socket reports `failed`. */
+const FINAL_CLOSE_CODES = new Set([CLOSE_REVOKED]);
+
+/**
+ * True for a status that means the session is over: task end states (closed, stopped_*,
+ * failed_*), the login terminal's ok/error/cancelled and a finished shell (closed).
+ */
+export function isEndedStatus(status) {
+  const s = String(status || '');
+  return s === 'closed' || s === 'ok' || s === 'error' || s === 'cancelled' || s.startsWith('stopped') || s.startsWith('failed');
+}
 
 /** Decode a terminal binary frame: u8 kind + u64 big-endian seq + bytes. */
 export function parseTerminalFrame(buffer) {
@@ -134,6 +150,11 @@ export class ReconnectingSocket {
         return;
       }
       if (event.code === CLOSE_LAGGED) this.backoff.reset();
+      if (FINAL_CLOSE_CODES.has(event.code)) {
+        this.stopped = true;
+        this.setStatus('failed', { code: event.code, reason: event.reason || '' });
+        return;
+      }
       this.scheduleReconnect(event.code);
     };
   }
@@ -180,7 +201,10 @@ export class ReconnectingSocket {
   }
 }
 
-const FATAL_ERRORS = new Set(['unauthenticated', 'forbidden', 'not_found']);
+// In-band error frames that end the session for this viewer. The server refuses
+// unauthorized connections during the HTTP handshake; an in-band `forbidden` is a refused
+// input (e.g. write access withdrawn) and only produces a notice.
+const FATAL_ERRORS = new Set(['unauthenticated', 'not_found']);
 
 /**
  * Terminal protocol client shared by task terminals, sandbox shells and the account
@@ -246,7 +270,7 @@ export class TerminalSocket {
     if (!message || typeof message !== 'object') return;
     switch (message.type) {
       case 'state':
-        if (message.status && message.status !== 'closed' && !String(message.status).startsWith('stopped') && !String(message.status).startsWith('failed')) this.ended = false;
+        if (message.status && !isEndedStatus(message.status)) this.ended = false;
         if (this.h.onState) this.h.onState(message);
         break;
       case 'notice':

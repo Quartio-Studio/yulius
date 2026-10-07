@@ -26,9 +26,10 @@ export function mountDashboardPage(ctx, sandbox) {
   const host = h('div', { class: 'stack' });
   frame.body.append(h('div', { class: 'toolbar' }, h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Date range' }, rangeInputs)), host);
 
+  // Inclusive UTC days: "last 7 days" is today and the 6 days before.
   function range() {
     const to = new Date();
-    const from = new Date(to.getTime() - days * 86400000);
+    const from = new Date(to.getTime() - (days - 1) * 86400000);
     return { from: isoDay(from), to: isoDay(to) };
   }
 
@@ -49,8 +50,9 @@ export function mountDashboardPage(ctx, sandbox) {
   return { el: frame.el, key: `dashboard:${sandbox.id}` };
 }
 
+/** Known input + output tokens of a `Tokens` group; null when neither was reported. */
 function sumTokens(row) {
-  const parts = [row.input, row.output, row.input_tokens, row.output_tokens].filter((v) => Number.isFinite(v));
+  const parts = [row.input, row.output].filter((v) => Number.isFinite(v));
   return parts.length ? parts.reduce((a, b) => a + b, 0) : null;
 }
 
@@ -62,7 +64,7 @@ function card(title, ...content) {
   return h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, title)), h('div', { class: 'card-body' }, content));
 }
 
-/** Render the summary payload (shape documented in web/README.md). */
+/** Render `AnalyticsSummary` (docs/api.md "Administration, analytics, status"). */
 export function renderSummary(data) {
   const tasks = data.tasks || {};
   const tokens = data.tokens || {};
@@ -76,14 +78,17 @@ export function renderSummary(data) {
   const byStatus = Object.entries(tasks.by_status || {}).map(([status, count]) => ({ label: statusInfo({ status, activity: null }).label, value: count }));
   const byModel = (Array.isArray(data.tokens_by_model) ? data.tokens_by_model : []).map((r) => ({ label: r.model, value: sumTokens(r) }));
   const byHarness = (Array.isArray(data.tokens_by_harness) ? data.tokens_by_harness : []).map((r) => ({ label: harnessInfo(r.harness).name, value: sumTokens(r) }));
-  const byAccount = (Array.isArray(data.tokens_by_account) ? data.tokens_by_account : []).map((r) => ({ label: r.account_label || r.account_id || 'unknown', value: sumTokens(r) }));
+  const byAccount = (Array.isArray(data.tokens_by_account) ? data.tokens_by_account : []).map((r) => ({ label: r.account_label || (r.account_id ? 'deleted account' : 'no account'), value: sumTokens(r) }));
+  const byOrigin = Object.entries(tasks.by_origin || {}).map(([origin, count]) => ({ label: origin, value: count }));
+  const unknownRuns = Number.isFinite(tokens.unknown_usage_runs) ? tokens.unknown_usage_runs : 0;
 
   return [
+    data.truncated ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, 'This range has more than 50 000 tasks; the figures describe the newest 50 000.')) : null,
     h('div', { class: 'stat-grid' },
-      stat('Tasks', int(tasks.total), tasks.by_harness ? Object.entries(tasks.by_harness).map(([k, v]) => `${harnessInfo(k).name} ${v}`).join(' · ') : null),
+      stat('Tasks', int(tasks.total), [Number.isFinite(tasks.closed) ? `${tasks.closed} closed` : null, ...Object.entries(tasks.by_harness || {}).map(([k, v]) => `${harnessInfo(k).name} ${v}`)].filter(Boolean).join(' · ') || null),
       stat('Median duration', duration(durationStats.median ?? null), durationStats.p90 !== undefined ? `p90 ${duration(durationStats.p90)}` : null),
       stat('Active agent time', duration(durationStats.total_active ?? null), durationStats.total_wall !== undefined ? `wall ${duration(durationStats.total_wall)}` : null),
-      stat('Tokens', compact(totalTokens), `in ${compact(tokens.input)} · out ${compact(tokens.output)}${Number.isFinite(tokens.cache_read) ? ` · cache ${compact(tokens.cache_read)}` : ''}`),
+      stat('Tokens', compact(totalTokens), `in ${compact(tokens.input)} · out ${compact(tokens.output)}${Number.isFinite(tokens.cache_read) ? ` · cache read ${compact(tokens.cache_read)}` : ''}${unknownRuns ? ` · ${unknownRuns} run${unknownRuns === 1 ? '' : 's'} without usage` : ''}`),
       stat('Switches', int(switches.total), Number.isFinite(switches.provider) ? `${switches.account ?? 0} account · ${switches.provider} provider` : null),
       stat('Feedback correct', fbTotal ? `${Math.round(((feedback.correct || 0) / fbTotal) * 100)}%` : '—', fbTotal ? `${feedback.correct || 0} of ${fbTotal} rated` : 'no feedback yet')),
     card('Tasks per day', columnChart(perDay.map((d) => ({ label: d.date, value: d.count })), { unit: 'tasks' })),
@@ -92,6 +97,7 @@ export function renderSummary(data) {
       card('Tokens by harness', hbars(byHarness, { format: compact })),
       card('Tokens by account', hbars(byAccount, { format: compact })),
       card('Tasks by status', hbars(byStatus, { format: int })),
+      card('Tasks by origin', hbars(byOrigin, { format: int })),
       card('Feedback', feedbackRatio(feedback))),
   ];
 }

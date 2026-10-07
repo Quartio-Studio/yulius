@@ -3,7 +3,6 @@
 
 import { enc } from '../api.js';
 import { h, badge, openModal, field, toast, confirmDialog, errorToast, toggle } from '../dom.js';
-import { relLong, dateTime } from '../format.js';
 import { createTerminalView } from '../terminal.js';
 import { accountUsage } from '../layout.js';
 import { pageFrame, loader, dataTable } from './common.js';
@@ -34,18 +33,20 @@ export function mountUsersPage(ctx) {
     }
   };
 
+  // AdminUser = {id, github_login, display_name, is_instance_admin, disabled, github_linked};
+  // the superadmin is not listed.
   const reload = loader(host, () => ctx.api.get('/api/admin/users'), (list) => dataTable([
-    { label: 'GitHub login', render: (u) => h('span', { class: 'row' }, h('strong', null, `@${u.github_login || u.login || '?'}`), u.is_superadmin ? badge('superadmin', 'danger') : null) },
+    { label: 'GitHub login', render: (u) => h('strong', null, `@${u.github_login || '?'}`) },
     { label: 'Name', render: (u) => u.display_name || '—', phoneHide: true },
-    { label: 'Instance admin', render: (u) => toggle({ checked: Boolean(u.is_instance_admin), disabled: u.is_superadmin, label: `Instance admin for ${u.github_login}`, onChange: async (checked, input) => {
+    { label: 'Instance admin', render: (u) => toggle({ checked: Boolean(u.is_instance_admin), label: `Instance admin for ${u.github_login}`, onChange: async (checked, input) => {
       if (!(await patch(u, { is_instance_admin: checked }, checked ? `@${u.github_login} is now an instance admin` : `@${u.github_login} is no longer an instance admin`))) input.checked = !checked;
     } }) },
-    { label: 'Access', render: (u) => toggle({ checked: !u.disabled, disabled: u.is_superadmin, label: `${u.disabled ? 'Enable' : 'Disable'} ${u.github_login}`, onChange: async (checked, input) => {
+    { label: 'Access', render: (u) => toggle({ checked: !u.disabled, label: `${u.disabled ? 'Enable' : 'Disable'} ${u.github_login}`, onChange: async (checked, input) => {
       if (!checked && !(await confirmDialog({ title: `Disable @${u.github_login}?`, message: 'They are signed out everywhere and their live terminal connections close.', confirmLabel: 'Disable', danger: true }))) { input.checked = true; return; }
       if (!(await patch(u, { disabled: !checked }, checked ? `@${u.github_login} enabled` : `@${u.github_login} disabled`))) input.checked = !checked;
       else u.disabled = !checked;
     } }) },
-    { label: 'Last seen', class: 'num', render: (u) => (u.last_seen_at ? h('span', { title: dateTime(u.last_seen_at) }, relLong(u.last_seen_at)) : '—'), phoneHide: true },
+    { label: 'GitHub sign-in', render: (u) => (u.github_linked ? badge('signed in before', 'ok') : badge('never signed in')), phoneHide: true },
   ], Array.isArray(list) ? list : [], { empty: 'No users yet. Admit teammates by their GitHub login.' }));
 
   function add() {
@@ -88,14 +89,22 @@ export function openLoginTerminal(ctx, loginId, label, onFinish) {
     actions: [{ label: 'Close' }],
     onClose: () => { if (terminal) terminal.destroy(); onFinish(); },
   });
+  // The login PTY is a fixed 500 columns so tokens and URLs never wrap; the view scrolls
+  // horizontally instead of resizing it. state.status: running → ok | error | cancelled.
   terminal = createTerminalView({
     transport: ctx.transport,
     path: `/api/admin/accounts/login/${enc(loginId)}/terminal`,
     onLink: (uri, event) => ctx.openLink(uri, event),
-    readOnlyLabel: () => 'Read-only',
+    readOnlyLabel: () => 'The login has finished.',
+    followServerSize: true,
     onExit: (exit) => {
-      const ok = exit.code === 0 || exit.status === 'closed' || exit.status === 'ok';
-      status.textContent = ok ? 'Sign-in finished. You can close this window.' : `The login process ended (${exit.status}${exit.code !== undefined && exit.code !== null ? `, code ${exit.code}` : ''}).`;
+      const ok = exit.status === 'ok';
+      const code = exit.code !== undefined && exit.code !== null ? `, exit code ${exit.code}` : '';
+      status.textContent = ok
+        ? 'Signed in: the credential is stored encrypted for this account. You can close this window.'
+        : exit.status === 'cancelled'
+          ? `The login was cancelled${code}.`
+          : `The login ended without a credential (${exit.status}${code}). See the account's last error.`;
       status.className = ok ? 'small' : 'field-error';
     },
   });
@@ -126,10 +135,10 @@ export function mountAccountsPage(ctx) {
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.provider || '').localeCompare(b.provider || '') || (a.priority ?? 0) - (b.priority ?? 0));
     if (accounts.length === 0) return h('div', { class: 'card placeholder' }, 'No accounts yet. Add a Claude or Codex subscription; you complete the provider’s own sign-in.');
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
-      const priority = h('input', { class: 'input', type: 'number', min: 0, max: 999, value: String(account.priority ?? 0), style: { width: '70px', height: '24px' }, 'aria-label': `Priority of ${account.label}` });
+      const priority = h('input', { class: 'input', type: 'number', min: 0, max: 10000, value: String(account.priority ?? 0), style: { width: '80px', height: '24px' }, 'aria-label': `Priority of ${account.label}` });
       priority.addEventListener('change', async () => {
         const value = Number(priority.value);
-        if (!Number.isInteger(value) || value < 0) { priority.value = String(account.priority ?? 0); return; }
+        if (!Number.isInteger(value) || value < 0 || value > 10000) { priority.value = String(account.priority ?? 0); toast('Priority is a whole number from 0 to 10000.', { kind: 'warn' }); return; }
         if (await patch(account, { priority: value })) toast(`${account.label}: priority ${value}`, { kind: 'ok' });
         else priority.value = String(account.priority ?? 0);
       });
@@ -151,7 +160,7 @@ export function mountAccountsPage(ctx) {
             }
           } }, 'Re-login'),
           h('button', { type: 'button', class: 'btn btn-sm btn-danger', onClick: async () => {
-            if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: account.in_use_by ? `${account.in_use_by} running task(s) use it; they switch to another account at their next turn.` : 'Its stored credentials are deleted.', confirmLabel: 'Remove', danger: true }))) return;
+            if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: account.in_use_by ? `${account.in_use_by} live task(s) use it: removal is refused until they stop or switch away.` : 'Its stored credentials are deleted and a running login is cancelled.', confirmLabel: 'Remove', danger: true }))) return;
             try {
               await ctx.api.del(`/api/admin/accounts/${enc(account.id)}`);
               toast(`${account.label} removed`, { kind: 'ok' });
@@ -165,10 +174,10 @@ export function mountAccountsPage(ctx) {
 
   function add() {
     const provider = h('select', { class: 'select' }, h('option', { value: 'anthropic' }, 'Claude (Anthropic)'), h('option', { value: 'openai' }, 'Codex (OpenAI)'));
-    const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 60, autofocus: true });
+    const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 80, autofocus: true });
     openModal({
       title: 'Add account',
-      body: h('div', { class: 'stack' }, field('Provider', provider), field('Label', label, 'Shown in usage bars and task details.'), h('p', { class: 'muted small' }, 'Next, a login terminal opens with the provider’s own sign-in (no long CLI typing).')),
+      body: h('div', { class: 'stack' }, field('Provider', provider), field('Label', label, 'Shown in usage bars and task details.'), h('p', { class: 'muted small' }, 'Next, a login terminal opens with the provider’s own sign-in (claude setup-token or codex login). Nothing is created when the login cannot start.')),
       actions: [
         { label: 'Cancel', value: false },
         { label: 'Continue to sign-in', kind: 'primary', run: async () => {
@@ -194,7 +203,14 @@ export function mountGithubPage(ctx) {
   const frame = pageFrame({ title: 'GitHub connection', sub: 'the instance is bound to one GitHub organization or personal account' });
   const host = h('div');
   frame.body.append(host);
-  loader(host, () => ctx.api.get('/api/admin/github'), (config) => {
+  // GET /api/admin/github is documented but this server build does not route it yet: on a
+  // 404 the page shows what /api/me knows about the connection instead of an error.
+  const fetchConfig = () => ctx.api.get('/api/admin/github').catch((error) => {
+    if (error.status === 404) return { unsupported: true };
+    throw error;
+  });
+  loader(host, fetchConfig, (config) => {
+    if (config && config.unsupported) return instanceSummary(ctx);
     if (config && config.configured) {
       return h('div', { class: 'card card-pad stack', style: { maxWidth: '640px' } },
         h('div', { class: 'row' }, badge('connected', 'ok'), h('strong', null, config.owner_login || '?')),
@@ -205,6 +221,18 @@ export function mountGithubPage(ctx) {
     return manifestForm(ctx);
   });
   return { el: frame.el, key: 'admin:github' };
+}
+
+/** Connection facts from `/api/me` when the GitHub admin endpoints are not available. */
+function instanceSummary(ctx) {
+  const instance = (ctx.store.state.me && ctx.store.state.me.instance) || {};
+  const connected = instance.github_configured === true;
+  return h('div', { class: 'card card-pad stack', style: { maxWidth: '640px' } },
+    h('div', { class: 'row' }, connected ? badge('connected', 'ok') : badge('not connected', 'warn'), instance.owner_login ? h('strong', null, instance.owner_login) : null, instance.owner_kind ? badge(instance.owner_kind) : null),
+    connected
+      ? h('p', { class: 'text-2' }, 'This instance has a GitHub App. Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and connect provider accounts.')
+      : h('p', { class: 'text-2' }, 'This instance has no GitHub App yet, so projects cannot be imported or created.'),
+    h('p', { class: 'muted small' }, 'GitHub App setup (the manifest flow) is not available in this server version: GET /api/admin/github answered 404.'));
 }
 
 function manifestForm(ctx) {

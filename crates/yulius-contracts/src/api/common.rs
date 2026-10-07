@@ -13,7 +13,7 @@ pub struct ErrorBody {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorDetail {
     /// Stable snake_case code (`unauthenticated`, `forbidden`, `not_found`, `conflict`,
-    /// `invalid`, `capacity`, `upstream`, `internal`).
+    /// `invalid`, `capacity`, `upstream`, `unavailable`, `internal`).
     pub code: String,
     /// Human-readable explanation without secrets.
     pub message: String,
