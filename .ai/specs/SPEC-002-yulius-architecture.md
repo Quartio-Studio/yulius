@@ -548,7 +548,8 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Live Codex | Help-level flag check of 0.160.1 and 0.154.0 only; no live session (no dedicated account). |
 | Real adapters | `tests/git_adapter.rs` (real git); GitHub adapter unit-tested against recorded HTTP (no real App configured). |
 | Areas | `accounts.rs`, `analytics.rs`, `automations.rs`, `skills_mcp.rs`, `delivery.rs`, `projects.rs`, `import_server.rs`, `browser.rs`, `editor.rs`, `shells.rs`, `http_auth.rs`, `mcp_coordination.rs`. |
-| Not exercised | Real GitHub App/OAuth, real Chromium, openvscode-server, bubblewrap on Linux, Codex sessions, cross-provider resume with real CLIs, deployment (out of scope). |
+| UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
+| Not exercised | Real GitHub App/OAuth, real Chromium (as sandbox browser), openvscode-server, Codex sessions, cross-provider resume with real CLIs, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
 
