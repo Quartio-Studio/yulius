@@ -47,6 +47,10 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 yulius-ptyhost = { workspace = true, features = ["test-support"] }
+yulius-browser = { workspace = true, features = ["fake"] }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+nix = { workspace = true }
 tempfile = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1.5"
