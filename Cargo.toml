@@ -70,6 +70,7 @@ rustls = { version = "0.23.45", default-features = false, features = ["ring", "s
 # Uncommitted-state snapshot archive (tar.gz) for `yulius import`.
 tar = { version = "0.4.46", default-features = false }
 flate2 = "1.1.10"
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
