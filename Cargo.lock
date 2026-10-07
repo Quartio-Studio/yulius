@@ -2531,8 +2531,12 @@ name = "yulius-app"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "flate2",
  "serde",
  "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

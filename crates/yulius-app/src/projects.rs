@@ -1,0 +1,983 @@
+//! Sandbox (project) creation, import and removal, plus the repository and template listings
+//! (SPEC-001 §5.2 PRJ-001..010, J2, J4, IMP-002; SPEC-002 §4, §8a).
+//!
+//! Import links an existing repository of the instance owner: the caller needs `admin` or
+//! `maintain` on GitHub, the repository is cloned with an installation token into
+//! `<data_dir>/sandboxes/<id>/repo`, a delivery profile is chosen (the repository's
+//! `yulius.toml` `[delivery]`, else a preset for the known Quartio repositories, else
+//! `standard`) and the documentation format is validated; a failing project gets the onboarding
+//! meta-task (see `onboarding`). Create makes a new private repository, pushes the scaffold of a
+//! template to `main` and `dev`, protects both with rulesets and clones it. Removal stops live
+//! tasks and keeps the GitHub repository and all files (PRJ-009).
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use yulius_contracts::api::sandboxes::{
+    AvailableRepo, CreateSandbox, Environment, Profile, Sandbox, Template,
+};
+use yulius_contracts::events::UiEvent;
+use yulius_domain::delivery::{DeliveryProfile, MergeMethod, Preset, PromoteMethod};
+use yulius_domain::ids::SandboxId;
+use yulius_domain::permission::{AccessLevel, Action};
+use yulius_domain::spec_format::{
+    ProjectFiles, TemplateKind, parse_yulius_toml, scaffold_files, validate_project,
+};
+
+use crate::auth::AuthContext;
+use crate::context::App;
+use crate::error::{AppError, AppResult};
+use crate::model::{SandboxRecord, Secret, UserRecord};
+use crate::ports::github::{GitHubAppConfig, RepoAccess, RulesetRequest};
+
+/// First port of the first sandbox range (PRJ-010).
+pub const PORT_RANGE_START: u16 = 20_000;
+/// Ports per sandbox (PRJ-010).
+pub const PORT_RANGE_SIZE: u16 = 20;
+/// Longest GitHub repository name accepted.
+pub const MAX_REPO_NAME_BYTES: usize = 100;
+/// Most installation repositories examined by one listing (each needs a permission lookup).
+pub const MAX_LISTED_REPOS: usize = 300;
+/// Longest generated slug.
+const MAX_SLUG_BYTES: usize = 40;
+/// Slug candidates tried before giving up (`name`, `name-2`, …).
+const MAX_SLUG_ATTEMPTS: u32 = 20;
+/// Longest repository description passed to GitHub.
+const MAX_DESCRIPTION_CHARS: usize = 350;
+
+/// Contracts view of a domain delivery profile. `require_checks` has no contracts field yet and
+/// is implied by the preset.
+#[must_use]
+pub fn profile_view(profile: &DeliveryProfile) -> Profile {
+    Profile {
+        preset: profile.preset.as_str().to_owned(),
+        integration_branch: profile.integration_branch.clone(),
+        production_branch: profile.production_branch.clone(),
+        merge: profile.merge.as_str().to_owned(),
+        promote: profile.promote.as_str().to_owned(),
+        auto_promote: profile.auto_promote,
+        environments: profile
+            .environments
+            .iter()
+            .map(|env| Environment {
+                name: env.name.clone(),
+                after: env.after.as_str().to_owned(),
+                command: env.command.clone(),
+                verify: env.verify.as_str().to_owned(),
+            })
+            .collect(),
+    }
+}
+
+fn has_delivery_section(yulius_toml: &str) -> bool {
+    yulius_toml.lines().any(|line| {
+        line.trim()
+            .strip_prefix("[delivery]")
+            .is_some_and(|rest| rest.trim().is_empty() || rest.trim_start().starts_with('#'))
+    })
+}
+
+/// The preset of a known repository (per the founders' clarifications): Quartio Product uses
+/// `product`, Quartio Studio uses `studio`; everything else starts as `standard`.
+#[must_use]
+pub fn known_preset(owner: &str, name: &str) -> Preset {
+    if !owner.eq_ignore_ascii_case("Quartio-Studio") {
+        return Preset::Standard;
+    }
+    if name.eq_ignore_ascii_case("product") {
+        Preset::Product
+    } else if name.eq_ignore_ascii_case("studio") {
+        Preset::Studio
+    } else {
+        Preset::Standard
+    }
+}
+
+/// Delivery profile of an imported repository: the `[delivery]` table of a valid `yulius.toml`
+/// when present, else [`known_preset`]. The result is stored on the sandbox and editable later.
+#[must_use]
+pub fn import_profile(owner: &str, name: &str, yulius_toml: Option<&str>) -> DeliveryProfile {
+    if let Some(text) = yulius_toml
+        && has_delivery_section(text)
+        && let Ok(config) = parse_yulius_toml(text)
+    {
+        return config.delivery;
+    }
+    DeliveryProfile::for_preset(known_preset(owner, name))
+}
+
+/// URL slug for a repository name: lowercase ASCII letters and digits separated by single `-`,
+/// at most 40 bytes, `project` when nothing remains.
+#[must_use]
+pub fn slug_base(name: &str) -> String {
+    let mut slug = String::new();
+    for c in name.chars() {
+        if slug.len() >= MAX_SLUG_BYTES {
+            break;
+        }
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        "project".to_owned()
+    } else {
+        slug.to_owned()
+    }
+}
+
+/// Whether `name` is a repository name GitHub accepts and Yulius can use in paths and URLs:
+/// 1–100 ASCII letters, digits, `-`, `_` or `.`, not starting with `.` and not ending in `.git`.
+#[must_use]
+pub fn valid_repo_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_REPO_NAME_BYTES
+        && !name.starts_with('.')
+        && !name.to_ascii_lowercase().ends_with(".git")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+/// Whether `login` is a GitHub owner login (ASCII letters, digits and `-`, 1–39 bytes).
+#[must_use]
+pub fn valid_owner(login: &str) -> bool {
+    !login.is_empty()
+        && login.len() <= 39
+        && !login.starts_with('-')
+        && login
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// HTTPS clone URL of a GitHub repository.
+#[must_use]
+pub fn clone_url(owner: &str, name: &str) -> String {
+    format!("https://github.com/{owner}/{name}.git")
+}
+
+/// Branch rulesets protecting a profile's integration and production branches (DSC-007):
+/// pull requests required, merge methods per the profile.
+#[must_use]
+pub fn rulesets_for(profile: &DeliveryProfile) -> Vec<RulesetRequest> {
+    let promote = match profile.promote {
+        PromoteMethod::MergeCommit => MergeMethod::Merge,
+        PromoteMethod::FastForward => profile.merge,
+    };
+    vec![
+        RulesetRequest {
+            name: format!("yulius-integration-{}", profile.integration_branch),
+            branch: profile.integration_branch.clone(),
+            require_pr: true,
+            merge_methods: vec![profile.merge.as_str().to_owned()],
+        },
+        RulesetRequest {
+            name: format!("yulius-production-{}", profile.production_branch),
+            branch: profile.production_branch.clone(),
+            require_pr: true,
+            merge_methods: vec![promote.as_str().to_owned()],
+        },
+    ]
+}
+
+/// Runs blocking file-system work off the async executor (RUST-009).
+pub(crate) async fn blocking<T, F>(work: F) -> AppResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> AppResult<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(AppError::internal)?
+}
+
+/// Removes a directory tree Yulius created, ignoring failures (best-effort cleanup).
+pub(crate) async fn remove_tree(path: PathBuf) {
+    let _ = blocking(move || {
+        if path.exists() {
+            std::fs::remove_dir_all(&path).map_err(AppError::internal)?;
+        }
+        Ok(())
+    })
+    .await;
+}
+
+/// Commit identity for a user: display name and GitHub no-reply address.
+pub(crate) fn identity(user: &UserRecord) -> (String, String) {
+    match &user.github_login {
+        Some(login) => (
+            if user.display_name.trim().is_empty() {
+                login.clone()
+            } else {
+                user.display_name.clone()
+            },
+            format!("{login}@users.noreply.github.com"),
+        ),
+        None => (
+            "Yulius".to_owned(),
+            "yulius@users.noreply.github.com".to_owned(),
+        ),
+    }
+}
+
+fn foreign_owner(owner: &str, name: &str, instance_owner: &str) -> AppError {
+    AppError::Invalid(format!(
+        "{owner}/{name} belongs to {owner}, but this Yulius instance hosts only repositories of \
+         {instance_owner}; transfer or fork the repository to {instance_owner} on GitHub first"
+    ))
+}
+
+impl App {
+    /// The instance owner login and whether it is an organization.
+    ///
+    /// # Errors
+    /// `Conflict` before the GitHub App is configured.
+    pub(crate) async fn instance_owner(&self) -> AppResult<(String, bool)> {
+        let instance = self
+            .deps
+            .store
+            .instance()
+            .await?
+            .ok_or_else(|| AppError::Conflict("instance not initialized".into()))?;
+        let owner = instance.owner_login.ok_or_else(|| {
+            AppError::Conflict("the GitHub owner of this instance is not configured yet".into())
+        })?;
+        Ok((owner, instance.owner_kind.as_deref() == Some("org")))
+    }
+
+    /// The GitHub App and its installation on the instance owner; a missing installation id is
+    /// looked up and stored.
+    ///
+    /// # Errors
+    /// `Conflict` when the App is not configured or not installed on the owner.
+    pub(crate) async fn installation(&self) -> AppResult<(GitHubAppConfig, u64)> {
+        let app = self.github_app().await?;
+        let store = &self.deps.store;
+        let instance = store
+            .instance()
+            .await?
+            .ok_or_else(|| AppError::Conflict("instance not initialized".into()))?;
+        if let Some(id) = instance.installation_id {
+            return Ok((app, id));
+        }
+        let owner = instance.owner_login.ok_or_else(|| {
+            AppError::Conflict("the GitHub owner of this instance is not configured yet".into())
+        })?;
+        let id = self
+            .deps
+            .github
+            .find_installation(&app, &owner)
+            .await?
+            .ok_or_else(|| {
+                AppError::Conflict(format!(
+                    "the Yulius GitHub App is not installed on {owner}; install it from \
+                     Administration → GitHub"
+                ))
+            })?;
+        store.set_installation(Some(id)).await?;
+        Ok((app, id))
+    }
+
+    /// A short-lived installation token for Git transport and App-level API calls.
+    ///
+    /// # Errors
+    /// Installation lookup or GitHub failures.
+    pub(crate) async fn installation_token(&self) -> AppResult<Secret> {
+        let (app, id) = self.installation().await?;
+        self.deps.github.installation_token(&app, id).await
+    }
+
+    /// The caller's GitHub user token; users without a GitHub identity get a clear refusal.
+    async fn github_identity_token(&self, user: &UserRecord) -> AppResult<Secret> {
+        if user.github_login.is_none() {
+            return Err(AppError::Forbidden(
+                "sign in with GitHub to work with repositories".into(),
+            ));
+        }
+        self.user_github_token(user).await
+    }
+
+    /// Notifies viewers to refetch (`resync`): scoped to a sandbox's viewers, or everyone.
+    /// Sandbox views are per-user (access level), so no view is broadcast.
+    pub(crate) fn publish_resync(&self, sandbox: Option<SandboxId>) {
+        self.events.publish(sandbox, false, UiEvent::Resync);
+    }
+
+    /// `GET /api/github/repositories`: repositories of the instance owner that the App
+    /// installation can access and the caller can at least read, with the caller's level and
+    /// whether each is already a sandbox.
+    ///
+    /// # Errors
+    /// `Forbidden` without a GitHub identity, `Conflict` when the App is missing, `Upstream`.
+    pub async fn github_repositories(&self, ctx: &AuthContext) -> AppResult<Vec<AvailableRepo>> {
+        let token = self.github_identity_token(&ctx.user).await?;
+        let (owner, _) = self.instance_owner().await?;
+        let (app, installation) = self.installation().await?;
+        let mut repos = self
+            .deps
+            .github
+            .installation_repos(&app, installation)
+            .await?;
+        repos.retain(|repo| repo.owner.eq_ignore_ascii_case(&owner));
+        repos.sort_by_key(|repo| repo.name.to_ascii_lowercase());
+        repos.truncate(MAX_LISTED_REPOS);
+        let mut out = Vec::new();
+        for repo in repos {
+            let existing = self
+                .deps
+                .store
+                .sandbox_by_repo(&repo.owner, &repo.name)
+                .await?;
+            let level = match &existing {
+                Some(sandbox) => self
+                    .access_level(&ctx.user, sandbox)
+                    .await
+                    .unwrap_or(AccessLevel::None),
+                None => match self
+                    .deps
+                    .github
+                    .repo_access(&token, &repo.owner, &repo.name)
+                    .await
+                {
+                    Ok(RepoAccess::Access { permissions, .. }) => {
+                        AccessLevel::from_github(permissions)
+                    }
+                    Ok(RepoAccess::NoAccess) => AccessLevel::None,
+                    Err(err) => {
+                        tracing::warn!(error = %err, repo = %repo.name, "permission lookup failed");
+                        AccessLevel::None
+                    }
+                },
+            };
+            if level == AccessLevel::None {
+                continue;
+            }
+            out.push(AvailableRepo {
+                owner: repo.owner,
+                name: repo.name,
+                private: repo.private,
+                access: level.as_str().to_owned(),
+                already_sandbox: existing.is_some(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// `GET /api/templates` (PRJ-008).
+    #[must_use]
+    pub fn templates(&self) -> Vec<Template> {
+        TemplateKind::ALL
+            .iter()
+            .map(|kind| Template {
+                id: kind.id().to_owned(),
+                name: kind.name().to_owned(),
+                description: kind.description().to_owned(),
+            })
+            .collect()
+    }
+
+    /// `POST /api/sandboxes`: import an existing repository or create one from a template.
+    ///
+    /// # Errors
+    /// `Invalid` input or foreign repositories, `Forbidden` without the needed permission,
+    /// `Conflict` for repositories that are already sandboxes, `Upstream` GitHub/Git failures.
+    pub async fn create_sandbox(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        req: &CreateSandbox,
+    ) -> AppResult<Sandbox> {
+        let record = match req {
+            CreateSandbox::Import { repo } => {
+                let (owner, name) = repo
+                    .trim()
+                    .split_once('/')
+                    .ok_or_else(|| AppError::Invalid("repo must be owner/name".into()))?;
+                self.import_repository(&ctx.user, owner.trim(), name.trim())
+                    .await?
+            }
+            CreateSandbox::Create {
+                name,
+                template,
+                description,
+            } => {
+                self.create_repository(ctx, name.trim(), template, description)
+                    .await?
+            }
+        };
+        let level = self
+            .access_level(&ctx.user, &record)
+            .await
+            .unwrap_or(AccessLevel::None);
+        self.sandbox_view(&record, level).await
+    }
+
+    /// Links an existing repository of the instance owner as a new sandbox (import mode,
+    /// IMP-002): requires `admin` or `maintain` on GitHub; clones it, chooses the profile,
+    /// validates the documentation format and creates the onboarding task when it fails.
+    ///
+    /// # Errors
+    /// See [`App::create_sandbox`].
+    pub(crate) async fn import_repository(
+        self: &Arc<Self>,
+        user: &UserRecord,
+        owner: &str,
+        name: &str,
+    ) -> AppResult<SandboxRecord> {
+        if !valid_owner(owner) || !valid_repo_name(name) {
+            return Err(AppError::Invalid(format!(
+                "{owner}/{name} is not a GitHub repository name"
+            )));
+        }
+        let (instance_owner, _) = self.instance_owner().await?;
+        if !owner.eq_ignore_ascii_case(&instance_owner) {
+            return Err(foreign_owner(owner, name, &instance_owner));
+        }
+        let store = &self.deps.store;
+        if let Some(existing) = store.sandbox_by_repo(owner, name).await? {
+            return Err(AppError::Conflict(format!(
+                "{owner}/{name} is already the sandbox /s/{}",
+                existing.slug
+            )));
+        }
+        let token = self.github_identity_token(user).await?;
+        let repo = match self.deps.github.repo_access(&token, owner, name).await? {
+            RepoAccess::NoAccess => {
+                return Err(AppError::Invalid(format!(
+                    "{owner}/{name} does not exist on GitHub or you cannot see it; every project \
+                     needs a GitHub repository of {instance_owner}"
+                )));
+            }
+            RepoAccess::Access { permissions, repo } => {
+                if !(permissions.admin || permissions.maintain) {
+                    return Err(AppError::Forbidden(format!(
+                        "adding {owner}/{name} needs admin or maintain permission on GitHub; you have {}",
+                        AccessLevel::from_github(permissions).as_str()
+                    )));
+                }
+                repo
+            }
+        };
+        let owner = if repo.owner.is_empty() {
+            owner.to_owned()
+        } else {
+            repo.owner.clone()
+        };
+        let name = if repo.name.is_empty() {
+            name.to_owned()
+        } else {
+            repo.name.clone()
+        };
+        if !owner.eq_ignore_ascii_case(&instance_owner) {
+            return Err(foreign_owner(&owner, &name, &instance_owner));
+        }
+        let install_token = self.installation_token().await?;
+        let id = SandboxId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
+        let dir = self.sandbox_dir(&id);
+        let repo_dir = self.sandbox_repo(&id);
+        let prepared = self
+            .clone_and_inspect(&owner, &name, &repo_dir, &install_token)
+            .await;
+        let (default_branch, report, yulius_toml) = match prepared {
+            Ok(found) => found,
+            Err(err) => {
+                remove_tree(dir).await;
+                return Err(err);
+            }
+        };
+        let default_branch = if default_branch.is_empty() {
+            repo.default_branch.clone()
+        } else {
+            default_branch
+        };
+        let profile = import_profile(&owner, &name, yulius_toml.as_deref());
+        let onboarding = if report.is_valid() {
+            "not_needed"
+        } else {
+            "pending"
+        };
+        let record = SandboxRecord {
+            id: id.clone(),
+            slug: String::new(),
+            repo_owner: owner.clone(),
+            repo_name: name.clone(),
+            github_repo_id: (repo.id > 0).then_some(repo.id),
+            default_branch,
+            profile_json: serde_json::to_string(&profile_view(&profile))
+                .map_err(AppError::internal)?,
+            port_base: 0,
+            port_count: PORT_RANGE_SIZE,
+            onboarding_state: onboarding.to_owned(),
+            onboarding_task_id: None,
+            created_by: user.id.clone(),
+            created_at: self.now(),
+            removed_at: None,
+        };
+        let mut record = match self.insert_sandbox_unique(record).await {
+            Ok(record) => record,
+            Err(err) => {
+                remove_tree(dir).await;
+                return Err(err);
+            }
+        };
+        if onboarding == "pending" {
+            let task = self.create_onboarding_task(&record, user, &report).await?;
+            store
+                .set_onboarding(&record.id, "pending", Some(&task.id))
+                .await?;
+            record.onboarding_task_id = Some(task.id);
+        }
+        store
+            .audit(
+                self.now(),
+                &self.login_of(&user.id).await,
+                "sandbox.imported",
+                Some(record.id.as_str()),
+                Some(&format!("{owner}/{name} onboarding={onboarding}")),
+            )
+            .await?;
+        self.publish_resync(Some(record.id.clone()));
+        Ok(record)
+    }
+
+    /// Clones a repository and reads what import needs: default branch, documentation report
+    /// and `yulius.toml` text.
+    async fn clone_and_inspect(
+        &self,
+        owner: &str,
+        name: &str,
+        repo_dir: &Path,
+        token: &Secret,
+    ) -> AppResult<(
+        String,
+        yulius_domain::spec_format::ProjectReport,
+        Option<String>,
+    )> {
+        if let Some(parent) = repo_dir.parent() {
+            let parent = parent.to_path_buf();
+            blocking(move || std::fs::create_dir_all(&parent).map_err(AppError::internal)).await?;
+        }
+        self.deps
+            .git
+            .sync_clone(&clone_url(owner, name), repo_dir, token)
+            .await?;
+        let default_branch = match self.deps.git.default_branch(repo_dir).await {
+            Ok(branch) => branch,
+            Err(err) => {
+                tracing::warn!(error = %err, "default branch detection failed");
+                String::new()
+            }
+        };
+        let root = repo_dir.to_path_buf();
+        let (report, yulius_toml) =
+            blocking(move || Ok(crate::onboarding::validate_checkout(&root))).await?;
+        Ok((default_branch, report, yulius_toml))
+    }
+
+    /// Inserts a new sandbox, allocating a unique slug and the next free port range; retries
+    /// with `name-2`, `name-3`, … on conflicts (slugs stay reserved by removed sandboxes).
+    async fn insert_sandbox_unique(&self, mut record: SandboxRecord) -> AppResult<SandboxRecord> {
+        let store = &self.deps.store;
+        let base = slug_base(&record.repo_name);
+        for attempt in 0..MAX_SLUG_ATTEMPTS {
+            let slug = if attempt == 0 {
+                base.clone()
+            } else {
+                format!("{base}-{}", attempt + 1)
+            };
+            if store.sandbox_by_slug(&slug).await?.is_some() {
+                continue;
+            }
+            record.slug = slug;
+            record.port_base = store
+                .next_port_base(PORT_RANGE_START, PORT_RANGE_SIZE)
+                .await?;
+            match store.insert_sandbox(&record).await {
+                Ok(()) => return Ok(record),
+                Err(AppError::Conflict(_)) => {
+                    if let Some(existing) = store
+                        .sandbox_by_repo(&record.repo_owner, &record.repo_name)
+                        .await?
+                    {
+                        return Err(AppError::Conflict(format!(
+                            "{}/{} is already the sandbox /s/{}",
+                            record.repo_owner, record.repo_name, existing.slug
+                        )));
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(AppError::Conflict(
+            "could not allocate a unique sandbox name; remove unused sandboxes or rename the repository".into(),
+        ))
+    }
+
+    /// Creates a repository from a template (PRJ-003/004/005/008, J2): GitHub repository,
+    /// scaffold pushed to the production and integration branches, rulesets, clone.
+    async fn create_repository(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        name: &str,
+        template: &str,
+        description: &str,
+    ) -> AppResult<SandboxRecord> {
+        self.require_instance_admin(ctx)?;
+        let template = TemplateKind::parse(template).ok_or_else(|| {
+            AppError::Invalid(format!(
+                "unknown template {template}; choose one of {}",
+                TemplateKind::ALL
+                    .iter()
+                    .map(|kind| kind.id())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+        if !valid_repo_name(name) {
+            return Err(AppError::Invalid(
+                "the repository name must be 1-100 letters, digits, '-', '_' or '.'".into(),
+            ));
+        }
+        let description: String = description
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_DESCRIPTION_CHARS)
+            .collect();
+        let (owner, is_org) = self.instance_owner().await?;
+        let store = &self.deps.store;
+        if let Some(existing) = store.sandbox_by_repo(&owner, name).await? {
+            return Err(AppError::Conflict(format!(
+                "{owner}/{name} is already the sandbox /s/{}",
+                existing.slug
+            )));
+        }
+        let files = scaffold_files(name, template);
+        let report = validate_project(&ProjectFiles::from_files(&files));
+        if !report.is_valid() {
+            return Err(AppError::Internal(format!(
+                "template {} produced an invalid scaffold",
+                template.id()
+            )));
+        }
+        let install_token = self.installation_token().await?;
+        let admin_token = if is_org {
+            install_token.clone()
+        } else {
+            let owner_user = store.user_by_login(&owner).await?.ok_or_else(|| {
+                AppError::Conflict(format!(
+                    "{owner} must sign in to Yulius with GitHub once before projects can be created in their account"
+                ))
+            })?;
+            self.user_github_token(&owner_user).await?
+        };
+        let repo = self
+            .deps
+            .github
+            .create_repo(&admin_token, &owner, is_org, name, &description)
+            .await?;
+        let repo_owner = if repo.owner.is_empty() {
+            owner.clone()
+        } else {
+            repo.owner.clone()
+        };
+        let repo_name = if repo.name.is_empty() {
+            name.to_owned()
+        } else {
+            repo.name.clone()
+        };
+        let profile = DeliveryProfile::standard();
+        let id = SandboxId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
+        let dir = self.sandbox_dir(&id);
+        let pushed = self
+            .push_scaffold(
+                &id,
+                &Scaffold {
+                    owner: &repo_owner,
+                    name: &repo_name,
+                    files: &files,
+                    template,
+                    profile: &profile,
+                    user: &ctx.user,
+                },
+                &install_token,
+            )
+            .await;
+        if let Err(err) = pushed {
+            remove_tree(dir).await;
+            return Err(err);
+        }
+        for ruleset in rulesets_for(&profile) {
+            self.deps
+                .github
+                .create_ruleset(&admin_token, &repo_owner, &repo_name, &ruleset)
+                .await?;
+        }
+        let repo_dir = self.sandbox_repo(&id);
+        if let Err(err) = self
+            .deps
+            .git
+            .sync_clone(
+                &clone_url(&repo_owner, &repo_name),
+                &repo_dir,
+                &install_token,
+            )
+            .await
+        {
+            remove_tree(dir).await;
+            return Err(err);
+        }
+        let record = SandboxRecord {
+            id: id.clone(),
+            slug: String::new(),
+            repo_owner: repo_owner.clone(),
+            repo_name: repo_name.clone(),
+            github_repo_id: (repo.id > 0).then_some(repo.id),
+            default_branch: profile.production_branch.clone(),
+            profile_json: serde_json::to_string(&profile_view(&profile))
+                .map_err(AppError::internal)?,
+            port_base: 0,
+            port_count: PORT_RANGE_SIZE,
+            onboarding_state: "not_needed".into(),
+            onboarding_task_id: None,
+            created_by: ctx.user.id.clone(),
+            created_at: self.now(),
+            removed_at: None,
+        };
+        let record = match self.insert_sandbox_unique(record).await {
+            Ok(record) => record,
+            Err(err) => {
+                remove_tree(dir).await;
+                return Err(err);
+            }
+        };
+        store
+            .audit(
+                self.now(),
+                &self.login_of(&ctx.user.id).await,
+                "sandbox.created",
+                Some(record.id.as_str()),
+                Some(&format!(
+                    "{repo_owner}/{repo_name} template={}",
+                    template.id()
+                )),
+            )
+            .await?;
+        self.publish_resync(Some(record.id.clone()));
+        Ok(record)
+    }
+
+    /// Clones the new (empty) repository into a scratch directory, commits the scaffold on the
+    /// production branch, pushes it there and to the integration branch, then deletes the
+    /// scratch clone.
+    async fn push_scaffold(
+        &self,
+        id: &SandboxId,
+        scaffold: &Scaffold<'_>,
+        token: &Secret,
+    ) -> AppResult<()> {
+        let Scaffold {
+            owner,
+            name,
+            files,
+            template,
+            profile,
+            user,
+        } = *scaffold;
+        let scratch = self.sandbox_dir(id).join("scaffold");
+        if let Some(parent) = scratch.parent() {
+            let parent = parent.to_path_buf();
+            blocking(move || std::fs::create_dir_all(&parent).map_err(AppError::internal)).await?;
+        }
+        self.deps
+            .git
+            .sync_clone(&clone_url(owner, name), &scratch, token)
+            .await?;
+        let production = profile.production_branch.clone();
+        let files = files.to_vec();
+        let root = scratch.clone();
+        blocking(move || write_scaffold(&root, &production, &files)).await?;
+        let (author, email) = identity(user);
+        let committed = self
+            .deps
+            .git
+            .commit_all(
+                &scratch,
+                &format!(
+                    "chore: scaffold {name} from the {} template\n\nCreated by Yulius with the enforced documentation format.",
+                    template.id()
+                ),
+                &author,
+                &email,
+            )
+            .await?;
+        if !committed {
+            return Err(AppError::Internal("the scaffold produced no commit".into()));
+        }
+        self.deps
+            .git
+            .push(
+                &scratch,
+                &profile.production_branch,
+                &profile.production_branch,
+                token,
+            )
+            .await?;
+        self.deps
+            .git
+            .push(
+                &scratch,
+                &profile.production_branch,
+                &profile.integration_branch,
+                token,
+            )
+            .await?;
+        remove_tree(scratch).await;
+        Ok(())
+    }
+
+    /// `DELETE /api/sandboxes/{sid}` (admin, PRJ-009): stops live and queued tasks and marks
+    /// the sandbox removed. The GitHub repository, the clone, worktrees, transcripts and task
+    /// records are kept.
+    ///
+    /// # Errors
+    /// `NotFound` without access, `Forbidden` without admin.
+    pub async fn delete_sandbox(self: &Arc<Self>, ctx: &AuthContext, sid: &str) -> AppResult<()> {
+        let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
+        let (record, _) = self.require(&ctx.user, &id, Action::Administer).await?;
+        let store = &self.deps.store;
+        let mut tasks = store.tasks(&id, false).await?;
+        tasks.extend(store.tasks(&id, true).await?);
+        let mut stopped = 0_u32;
+        for task in tasks.iter().filter(|t| !t.status.is_resting()) {
+            match self.stop_task_now(&task.id).await {
+                Ok(()) => stopped += 1,
+                Err(AppError::Conflict(_)) => {}
+                Err(err) => {
+                    tracing::warn!(error = %err, task = %task.id, "could not stop task of removed sandbox");
+                }
+            }
+        }
+        store.remove_sandbox(&id, self.now()).await?;
+        store
+            .audit(
+                self.now(),
+                &self.login_of(&ctx.user.id).await,
+                "sandbox.removed",
+                Some(id.as_str()),
+                Some(&format!(
+                    "{}/{} stopped={stopped}; GitHub repository and files kept",
+                    record.repo_owner, record.repo_name
+                )),
+            )
+            .await?;
+        self.publish_resync(None);
+        Ok(())
+    }
+}
+
+/// What to push as the first commit of a new repository.
+#[derive(Clone, Copy)]
+struct Scaffold<'a> {
+    owner: &'a str,
+    name: &'a str,
+    files: &'a [(String, String)],
+    template: TemplateKind,
+    profile: &'a DeliveryProfile,
+    user: &'a UserRecord,
+}
+
+/// Points the unborn `HEAD` of a fresh clone at `branch` and writes the scaffold files.
+fn write_scaffold(root: &Path, branch: &str, files: &[(String, String)]) -> AppResult<()> {
+    let git_dir = root.join(".git");
+    if !git_dir.is_dir() {
+        return Err(AppError::Internal(
+            "the scaffold clone has no .git directory".into(),
+        ));
+    }
+    std::fs::write(git_dir.join("HEAD"), format!("ref: refs/heads/{branch}\n"))
+        .map_err(AppError::internal)?;
+    for (path, contents) in files {
+        let target = root.join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(AppError::internal)?;
+        }
+        std::fs::write(&target, contents).map_err(AppError::internal)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugs_and_names() {
+        assert_eq!(slug_base("Online Shop.v2"), "online-shop-v2");
+        assert_eq!(slug_base("---"), "project");
+        assert_eq!(slug_base(&"a".repeat(60)).len(), MAX_SLUG_BYTES);
+        assert!(valid_repo_name("shop_v2.web"));
+        for bad in ["", ".hidden", "a b", "x.git", "a/b", "ü"] {
+            assert!(!valid_repo_name(bad), "{bad:?}");
+        }
+        assert!(!valid_repo_name(&"a".repeat(101)));
+        assert!(valid_owner("Quartio-Studio"));
+        assert!(!valid_owner("-x") && !valid_owner("a_b") && !valid_owner(""));
+    }
+
+    #[test]
+    fn profiles_follow_yulius_toml_then_known_repositories() {
+        assert_eq!(
+            import_profile("Quartio-Studio", "product", None).preset,
+            Preset::Product
+        );
+        assert_eq!(
+            import_profile("quartio-studio", "Studio", None).preset,
+            Preset::Studio
+        );
+        assert_eq!(
+            import_profile("Quartio-Studio", "other", None).preset,
+            Preset::Standard
+        );
+        assert_eq!(
+            import_profile("someone", "product", None).preset,
+            Preset::Standard
+        );
+        let toml = "[delivery]\npreset = \"studio\"\n";
+        assert_eq!(
+            import_profile("Quartio-Studio", "x", Some(toml)).preset,
+            Preset::Studio
+        );
+        // A yulius.toml without [delivery] (or an invalid one) falls back to the heuristic.
+        let docs_only = "[docs]\nproduct = \"README.md\"\n";
+        assert_eq!(
+            import_profile("Quartio-Studio", "product", Some(docs_only)).preset,
+            Preset::Product
+        );
+        assert_eq!(
+            import_profile(
+                "Quartio-Studio",
+                "product",
+                Some("[delivery]\npreset = 7\n")
+            )
+            .preset,
+            Preset::Product
+        );
+        let view = profile_view(&DeliveryProfile::product());
+        assert_eq!(view.integration_branch, "quartio");
+        assert_eq!(view.promote, "fast_forward");
+        assert_eq!(view.environments.len(), 2);
+    }
+
+    #[test]
+    fn rulesets_protect_both_branches_with_pull_requests() {
+        let rules = rulesets_for(&DeliveryProfile::standard());
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].branch, "dev");
+        assert_eq!(rules[0].merge_methods, vec!["squash".to_owned()]);
+        assert_eq!(rules[1].branch, "main");
+        assert_eq!(rules[1].merge_methods, vec!["merge".to_owned()]);
+        assert!(rules.iter().all(|r| r.require_pr));
+    }
+}
