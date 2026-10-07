@@ -659,3 +659,101 @@ fn messages_wake_idle_tasks_and_a_normal_exit_closes_the_task() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// AC-ROT-2 (proactive path) on Codex: rate limits observed in the rollout reach the 99 %
+/// threshold; at the next turn boundary the session moves to the next OpenAI account with a
+/// native resume of the same Codex session.
+#[test]
+fn codex_usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: None,
+        };
+        let app = build_full(&data, Some(&fake), agent, 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        for (id, priority) in [("o-1", 0), ("o-2", 1)] {
+            app.deps
+                .store
+                .insert_account(&AccountRecord {
+                    id: AccountId::parse(id)?,
+                    provider: Provider::OpenAi,
+                    label: format!("Codex {id}"),
+                    credential: Some(
+                        app.deps
+                            .crypto
+                            .seal(br#"{"auth_mode":"chatgpt","tokens":{"access_token":"fake"}}"#)?,
+                    ),
+                    priority,
+                    enabled: true,
+                    status: AccountStatus::Ok,
+                    usage_json: None,
+                    last_error: None,
+                    created_at: Timestamp(1),
+                    updated_at: Timestamp(1),
+                })
+                .await?;
+        }
+        seed_repo(&data, &sandbox)?;
+        let record = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Codex rotation".into(),
+                harness: Harness::Codex,
+                title: Some("Codex rotation".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+            })
+            .await?;
+        let id = record.id;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        // Usage grows 10 % per turn and reaches 99 % on the tenth.
+        for n in 1..=10 {
+            app.send_input(&id, format!("turn {n}\r").as_bytes())
+                .await?;
+            let echo = format!("ECHO: turn {n}");
+            wait_for("the echo", Duration::from_secs(15), || {
+                screen_contains(&app, &id, &echo)
+            })
+            .await?;
+        }
+        wait_for("the proactive switch", Duration::from_secs(90), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() >= 2 && attempts.last().is_some_and(|a| !a.state.is_terminal())
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let (first, second) = (&attempts[0], &attempts[1]);
+        assert_eq!(first.harness, Harness::Codex);
+        assert_eq!(second.harness, Harness::Codex, "same provider first");
+        assert_ne!(first.account_id, second.account_id);
+        assert_eq!(second.launch_kind, LaunchKind::Resume);
+        assert!(
+            first.provider_session_id.is_some(),
+            "Codex session discovered from the rollout"
+        );
+        assert_eq!(first.provider_session_id, second.provider_session_id);
+        assert!(!app.deps.store.switches(&id).await?.is_empty());
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

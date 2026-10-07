@@ -20,6 +20,16 @@ pub struct FakeAgentOptions {
     pub limit_after: Option<u32>,
 }
 
+/// The session id a fake Codex run uses: the resumed id, or a new id derived from the run
+/// directory (the attempt id) so Yulius can discover it from the rollout's `session_meta`.
+fn codex_session(plan_session: Option<&String>, run_dir: &Path) -> String {
+    plan_session.cloned().unwrap_or_else(|| {
+        run_dir
+            .file_name()
+            .map_or_else(|| "fake-codex".into(), |n| n.to_string_lossy().into_owned())
+    })
+}
+
 /// See the module docs.
 pub struct FakeAgentHarness {
     pub inner: HarnessAdapter,
@@ -56,15 +66,40 @@ impl HarnessPort for FakeAgentHarness {
             "YULIUS_TASK_TOKEN".into(),
         ];
         if self.options.transcript {
-            let path =
-                self.inner
-                    .claude_transcript(&launch.sandbox_home, &launch.worktree, &session);
-            argv.extend([
-                "--transcript".into(),
-                path.to_string_lossy().into_owned(),
-                "--transcript-kind".into(),
-                "claude".into(),
-            ]);
+            match (launch.harness, launch.codex_home.as_ref()) {
+                (Harness::Codex, Some(home)) => {
+                    let session = codex_session(plan.session_id.as_ref(), &launch.run_dir);
+                    argv[4].clone_from(&session);
+                    let path = match self
+                        .inner
+                        .find_codex_rollout(&home.join("sessions"), &session)
+                    {
+                        Ok(Some(existing)) => existing,
+                        _ => home
+                            .join("sessions/2026/01/01")
+                            .join(format!("rollout-2026-01-01T00-00-00-{session}.jsonl")),
+                    };
+                    argv.extend([
+                        "--transcript".into(),
+                        path.to_string_lossy().into_owned(),
+                        "--transcript-kind".into(),
+                        "codex".into(),
+                    ]);
+                }
+                _ => {
+                    let path = self.inner.claude_transcript(
+                        &launch.sandbox_home,
+                        &launch.worktree,
+                        &session,
+                    );
+                    argv.extend([
+                        "--transcript".into(),
+                        path.to_string_lossy().into_owned(),
+                        "--transcript-kind".into(),
+                        "claude".into(),
+                    ]);
+                }
+            }
         }
         if let Some(n) = self.options.limit_after {
             argv.extend(["--limit-after".into(), n.to_string()]);
