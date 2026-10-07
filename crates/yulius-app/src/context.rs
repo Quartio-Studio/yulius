@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::events::EventBus;
+use crate::ports::git::GitPort;
 use crate::ports::github::GitHubPort;
+use crate::ports::harness::HarnessPort;
+use crate::ports::session::SessionHost;
 use crate::ports::store::Store;
 use crate::ports::{Clock, Crypto};
 
@@ -75,6 +78,12 @@ pub struct Deps {
     pub crypto: Arc<dyn Crypto>,
     /// GitHub.
     pub github: Arc<dyn GitHubPort>,
+    /// Detached process hosts.
+    pub session_host: Arc<dyn SessionHost>,
+    /// Claude Code / Codex adapters.
+    pub harness: Arc<dyn HarnessPort>,
+    /// Git.
+    pub git: Arc<dyn GitPort>,
 }
 
 /// The application.
@@ -89,6 +98,8 @@ pub struct App {
     pub(crate) login_attempts: Mutex<HashMap<String, Vec<i64>>>,
     /// Wakes idle tasks on new messages (set once by the supervisor).
     pub message_waker: OnceLock<Arc<dyn crate::coordination::MessageWaker>>,
+    /// Session supervisor runtime state.
+    pub(crate) supervisor: crate::supervisor::SupervisorState,
 }
 
 impl App {
@@ -101,6 +112,7 @@ impl App {
             events: EventBus::new(1024),
             login_attempts: Mutex::new(HashMap::new()),
             message_waker: OnceLock::new(),
+            supervisor: crate::supervisor::SupervisorState::default(),
         })
     }
 
