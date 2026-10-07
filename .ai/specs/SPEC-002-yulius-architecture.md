@@ -119,6 +119,7 @@ sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
 runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files
 shells/<shell>/                     ptyhost run directories of sandbox shells (UI-015)
 logins/<login>/                     temporary provider login (config dir + run dir); zero-filled and removed after the login
+exports/sandbox-<slug>-<ms>.json    task export written when a sandbox is removed (PRJ-009), 0600
 transcripts/<task>/                 archived/imported provider transcripts (immutable copies)
 skills/open-mercato/                instance skill catalog extracted from the binary (vendored Open Mercato pack)
 ```
@@ -537,7 +538,11 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 | Area | Evidence |
 | --- | --- |
-| Process supervision (NFR-001..005) | `crates/yulius/tests/supervision.rs`: real detached ptyhost + fake agent + real git worktrees; a server runtime is dropped and a new one reconciles and reattaches the same child pid, snapshot restores the screen, crash exit code recorded, stop escalation; `crates/yulius-ptyhost/tests/*` (13 + orphan watchdog). |
+| Process supervision (NFR-001..005, AC-TSK-3, AC-NFR-3) | `crates/yulius/tests/supervision.rs`: real detached ptyhost + fake agent + real git worktrees; a server runtime is dropped and a new one reconciles and reattaches the same child pid, snapshot restores the screen, crash exit code recorded, stop escalation, queueing at the session limit, normal exit closes the task; `crates/yulius-ptyhost/tests/*` (13 + orphan watchdog). |
+| Rotation (AC-ROT-2 reactive, AC-ROT-6) | `supervision.rs`: a provider usage limit at turn end moves the same session to the next account with a native resume and a recorded decision; with no capacity the task waits. Proactive (99 %) rotation and cross-provider translation: unit/fixture tests only. |
+| Terminal and permissions (AC-TSK-2, AC-TSK-6, AC-ACC-5) | `terminal_ws.rs`: task created via the public API, two WebSocket viewers, read-only input refused, writer input reaches the agent, a GitHub downgrade turns an open socket read-only and revocation closes it (4003). |
+| Messages and steps (AC-COM-2, AC-STP-3) | `supervision.rs` wake test (notice typed into the idle recipient only); `agent_hooks.rs` plan-checklist → steps sync. |
+| Operator CLI (AC-OPS-3) | `cli.rs`: `yulius backup` consistent copy, refuses an existing destination; `yulius doctor` fails on a too-long data dir. |
 | Hooks, briefing, discipline (COM-004, DSC-003) | `crates/yulius/tests/agent_hooks.rs` over the internal HTTP listener. |
 | Live Claude Code 2.1.292 | `tests/live_claude.rs` (opt-in): hooks fire, Yulius MCP `steps_set` with the task bearer token, session id and transcript path as predicted. `supervision.rs::real_claude_tui_reaches_the_prompt_inside_ptyhost` (opt-in): the real TUI in the real ptyhost reaches its prompt without first-run screens. |
 | Live Codex | Help-level flag check of 0.160.1 and 0.154.0 only; no live session (no dedicated account). |
