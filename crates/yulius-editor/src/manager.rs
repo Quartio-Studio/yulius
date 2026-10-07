@@ -265,7 +265,7 @@ impl EditorManager {
 
     /// Returns the sandbox's running editor or starts one serving `workspace_dir` under
     /// `base_path` (see [`default_base_path`]). A running editor is reused as is; a crashed
-    /// one is reaped and replaced (with a new token).
+    /// one is reaped and replaced (reusing its persisted token).
     ///
     /// # Errors
     /// Invalid inputs, missing executable, no free port, spawn failure, early exit or a failed
@@ -361,11 +361,18 @@ impl EditorManager {
                 .await
                 .map_err(EditorError::Prepare)?;
         }
-        let token = ConnectionToken::generate()
-            .await
-            .map_err(EditorError::Prepare)?;
+        // The token outlives restarts so an open workbench can reconnect after an idle stop.
         let token_file = root.join(TOKEN_FILE);
-        write_token_file(&token_file, &token).map_err(EditorError::Prepare)?;
+        let token = match ConnectionToken::read(&token_file) {
+            Some(token) => token,
+            None => {
+                let token = ConnectionToken::generate()
+                    .await
+                    .map_err(EditorError::Prepare)?;
+                write_token_file(&token_file, &token).map_err(EditorError::Prepare)?;
+                token
+            }
+        };
 
         let mut tried = HashSet::new();
         let mut last_exit = None;

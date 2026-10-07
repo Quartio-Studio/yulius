@@ -4,9 +4,13 @@
 //! - Only users with write access pass; the session cookie or bearer token is checked per
 //!   request and open WebSockets are re-checked every 60 s. State-changing requests and
 //!   upgrades must be same-origin (VS Code cannot send the Yulius CSRF header).
-//! - The connection token is added as a cookie to every forwarded request. The browser never
-//!   sees it: client `vscode-tkn` cookies are replaced, upstream `Set-Cookie` for it is dropped.
-//!   Yulius credentials (session cookie, `Authorization`, CSRF header) are not forwarded.
+//! - The connection token is added as a cookie to every forwarded request (client `vscode-tkn`
+//!   cookies are replaced, upstream `Set-Cookie` for it is dropped). VS Code's client must read
+//!   the token itself (it sends it in its first WebSocket message), so responses to a browser
+//!   without the current token carry it as a cookie scoped to the sandbox's editor path, not
+//!   HttpOnly (EDT-004, SPEC-002 ADR-10). It is useless without this proxy: editors listen on
+//!   loopback only. Yulius credentials (session cookie, `Authorization`, CSRF header) are not
+//!   forwarded.
 //! - Hop-by-hop headers are stripped both ways; request bodies are capped at
 //!   [`MAX_REQUEST_BODY`]; connecting and waiting for the response head are bounded.
 //! - `?worktree=<task id>` on the editor root redirects to `?folder=<worktree>` (only worktrees
@@ -232,6 +236,29 @@ fn upstream_headers(source: &HeaderMap, endpoint: &EditorEndpoint, upgrade: bool
     headers
 }
 
+/// Whether the browser already sent the editor's current token cookie.
+fn client_has_token(headers: &HeaderMap, endpoint: &EditorEndpoint) -> bool {
+    let expected = endpoint.cookie.expose();
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|raw| raw.split(';'))
+        .any(|pair| pair.trim() == expected)
+}
+
+/// The `Set-Cookie` that hands the connection token to VS Code's client: readable by script
+/// (no HttpOnly), limited to the sandbox's editor path, same-site only.
+fn token_set_cookie(endpoint: &EditorEndpoint, secure: bool) -> Option<HeaderValue> {
+    let secure = if secure { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{}; Path={}; SameSite=Strict{secure}",
+        endpoint.cookie.expose(),
+        endpoint.base_path
+    ))
+    .ok()
+}
+
 /// Response headers for the client: hop-by-hop removed (kept for a 101), token cookies dropped.
 fn client_headers(source: &HeaderMap, switching: bool) -> HeaderMap {
     let mut headers = source.clone();
@@ -307,6 +334,7 @@ pub async fn proxy(
             format!("request body exceeds {MAX_REQUEST_BODY} bytes"),
         );
     }
+    let hand_out_token = !client_has_token(&parts.headers, &endpoint);
     let client_upgrade = parts.extensions.remove::<OnUpgrade>();
     let slot = if upgrade {
         match UpgradeSlot::acquire() {
@@ -346,7 +374,13 @@ pub async fn proxy(
                 return out;
             }
             let status = response.status();
-            let headers = client_headers(response.headers(), false);
+            let mut headers = client_headers(response.headers(), false);
+            if hand_out_token
+                && let Some(cookie) =
+                    token_set_cookie(&endpoint, app.config.public_url.starts_with("https://"))
+            {
+                headers.append(header::SET_COOKIE, cookie);
+            }
             let mut out = Response::new(Body::new(response.into_body()));
             *out.status_mut() = status;
             *out.headers_mut() = headers;

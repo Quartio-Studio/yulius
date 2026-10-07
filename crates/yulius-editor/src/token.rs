@@ -27,7 +27,16 @@ impl ConnectionToken {
         Ok(Self(bytes.iter().map(|b| format!("{b:02x}")).collect()))
     }
 
-    /// The token text (send only to the editor, e.g. in the proxy's cookie header).
+    /// A token previously written to `path` (64 hex characters), if any.
+    #[must_use]
+    pub fn read(path: &Path) -> Option<Self> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let token = text.trim();
+        (token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| Self(token.to_owned()))
+    }
+
+    /// The token text (the proxy's upstream cookie and the editor-path browser cookie).
     #[must_use]
     pub fn expose_secret(&self) -> &str {
         &self.0

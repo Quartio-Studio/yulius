@@ -247,7 +247,7 @@ async fn port_collisions_are_skipped_retried_or_reported() -> TestResult {
 }
 
 #[tokio::test]
-async fn crash_restarts_on_next_use_with_a_new_token() -> TestResult {
+async fn crash_restarts_on_next_use_keeping_the_token() -> TestResult {
     let fx = fixture()?;
     let manager = EditorManager::new(config(Path::new(FAKE), &fx.root, port_range(40)?));
     let sandbox = SandboxId::parse("sbx-crash")?;
@@ -260,7 +260,8 @@ async fn crash_restarts_on_next_use_with_a_new_token() -> TestResult {
     assert!(manager.get(&sandbox).await.is_none(), "crash detected");
     let second = ensure(&manager, &sandbox, &fx.workspace).await?;
     assert_ne!(second.pid(), first.pid());
-    assert_ne!(second.connection_token(), first.connection_token());
+    // Open workbenches reconnect after a restart: the token is reused.
+    assert_eq!(second.connection_token(), first.connection_token());
     let ok = get(
         second.port(),
         "/s/sbx-crash/editor/",

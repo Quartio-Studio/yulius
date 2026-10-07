@@ -1,5 +1,5 @@
 //! The sandbox editor reverse proxy end to end against the fake openvscode-server: write
-//! access, connection-token cookie injection without exposing the token, header hygiene,
+//! access, connection-token cookie injection and its path-scoped hand-out, header hygiene,
 //! WebSocket upgrades, worktree selection and the missing-binary 503 (SPEC-001 EDT-001/002,
 //! AC-EDT-1).
 
@@ -184,7 +184,7 @@ async fn wait_dead(pid: i32) -> bool {
 }
 
 #[tokio::test]
-async fn the_editor_proxy_serves_write_users_with_the_token_kept_server_side() -> TestResult {
+async fn the_editor_proxy_serves_write_users_and_scopes_the_token_cookie() -> TestResult {
     let f = fixture(&fake_editor()?).await?;
     let result = proxy_scenario(&f).await;
     f.h.app.stop_workspace_services().await;
@@ -260,15 +260,42 @@ async fn proxy_scenario(f: &Fixture) -> TestResult {
         );
     }
 
-    // The token never reaches the browser, other editor cookies do.
+    // VS Code's client must read the token: a browser without it gets it as a cookie scoped
+    // to the editor path (never the editor's own token cookie); other editor cookies pass.
     let (head, _) = raw_request(
         addr,
         &get_request(addr, "/s/s1/editor/fake-cookies", &bearer(&f.writer)),
     )
     .await?;
     assert!(head.contains("set-cookie: fake-pref=1"), "{head}");
-    assert!(!head.contains("vscode-tkn"), "{head}");
-    assert!(!head.contains(token.trim()));
+    let token_cookies: Vec<&str> = head
+        .lines()
+        .filter(|line| line.starts_with("set-cookie: vscode-tkn="))
+        .collect();
+    assert_eq!(
+        token_cookies,
+        [format!(
+            "set-cookie: vscode-tkn={}; path=/s/s1/editor; samesite=strict; secure",
+            token.trim()
+        )
+        .as_str()],
+        "{head}"
+    );
+    // A browser that already has the current token gets no new cookie.
+    let (head, _) = raw_request(
+        addr,
+        &get_request(
+            addr,
+            "/s/s1/editor/fake-cookies",
+            &format!(
+                "{}Cookie: vscode-tkn={}\r\n",
+                bearer(&f.writer),
+                token.trim()
+            ),
+        ),
+    )
+    .await?;
+    assert!(!head.contains("set-cookie: vscode-tkn"), "{head}");
 
     // `/s/{sid}/editor` gains its trailing slash.
     let (head, _) = raw_request(addr, &get_request(addr, "/s/s1/editor?x=1", "")).await?;
