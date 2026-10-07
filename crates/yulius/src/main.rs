@@ -85,6 +85,9 @@ enum Command {
         /// Require bubblewrap containment.
         #[arg(long, env = "YULIUS_CONTAINED")]
         contained: bool,
+        /// Extra paths visible inside containment (as for `serve`).
+        #[arg(long, env = "YULIUS_CONTAINED_READONLY", value_delimiter = ':')]
+        contained_readonly: Vec<PathBuf>,
     },
     /// Print build information.
     Version,
@@ -126,7 +129,11 @@ fn main() -> ExitCode {
             since,
             yes,
         } => yulius::cli::import(path, &server, since, yes),
-        Command::Doctor { data, contained } => yulius::doctor::doctor(&data, contained),
+        Command::Doctor {
+            data,
+            contained,
+            contained_readonly,
+        } => yulius::doctor::doctor(&data, contained, &contained_readonly),
         Command::Version => {
             println!("yulius {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

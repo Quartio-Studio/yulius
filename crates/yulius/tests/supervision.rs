@@ -933,3 +933,92 @@ fn a_session_change_inside_claude_is_adopted_into_the_task_lineage() -> TestResu
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// AC-NFR-6 / PRJ-007 (Linux): a contained task sees its own sandbox but neither another
+/// sandbox's files nor the Yulius data directory. Skipped with a message where bubblewrap cannot
+/// create namespaces.
+#[cfg(target_os = "linux")]
+#[test]
+fn contained_tasks_cannot_read_other_sandboxes_or_the_data_directory() -> TestResult {
+    let probe = Command::new("bwrap")
+        .args([
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--",
+            "/bin/true",
+        ])
+        .output();
+    match probe {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            eprintln!(
+                "SKIPPED contained_tasks_cannot_read_other_sandboxes: bwrap cannot create namespaces: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            return Ok(());
+        }
+        Err(err) => {
+            eprintln!(
+                "SKIPPED contained_tasks_cannot_read_other_sandboxes: bwrap not runnable: {err}"
+            );
+            return Ok(());
+        }
+    }
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let fake_dir = fake.parent().ok_or("fake-agent dir")?.to_path_buf();
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_tuned(&data, Some(&fake), FakeAgentOptions::default(), move |c| {
+            c.contained = true;
+            c.contained_readonly = vec![fake_dir];
+        })?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let other = data.join("sandboxes").join("s-other").join("repo");
+        std::fs::create_dir_all(&other)?;
+        std::fs::write(other.join("secret.txt"), "another sandbox's secret\n")?;
+        let id = new_task(&app, &sandbox, &user, "Contained").await?;
+        wait_for("the contained banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let worktree = PathBuf::from(task(&app, &id).await?.worktree_path.ok_or("worktree")?);
+        let probes = [
+            (worktree.join("README.md"), "READ README.md OK"),
+            (other.join("secret.txt"), "READ secret.txt ERR"),
+            (data.join("yulius.db"), "READ yulius.db ERR"),
+        ];
+        for (path, expected) in probes {
+            app.send_input(&id, format!("/read {}\r", path.display()).as_bytes())
+                .await?;
+            let screen = app.runtime(&id).hub.screen_text();
+            let expected = expected.to_owned();
+            let ok = wait_for(&expected, Duration::from_secs(10), || {
+                screen_contains(&app, &id, &expected)
+            })
+            .await;
+            if ok.is_err() {
+                eprintln!(
+                    "screen before: {screen}\nscreen now: {}",
+                    app.runtime(&id).hub.screen_text()
+                );
+            }
+            ok?;
+        }
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

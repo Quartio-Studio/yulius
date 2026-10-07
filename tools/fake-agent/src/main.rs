@@ -15,6 +15,8 @@
 //! - `echo` (default): prints `FAKE-AGENT READY session=<id>`, then answers each input line with
 //!   `ECHO: <line>`. `/exit` exits 0, `/crash` exits 3, `/later <ms> <text>` prints `<text>` after
 //!   a delay (≤ 60 s), `/size` prints `SIZE <rows> <cols>` of its terminal (via `stty size`),
+//!   `/read <path>` prints `READ <file name> OK <n>` or `READ <file name> ERR <kind>` (containment
+//!   probe; never the contents),
 //!   `/flood <n>` floods like `--mode flood` on demand.
 //! - `flood --bytes N`: writes N bytes to stdout and N bytes to stderr, prints `FLOOD DONE`, then
 //!   behaves like `echo`.
@@ -498,6 +500,18 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                     .unwrap_or(0)
                     .min(MAX_FLOOD_BYTES);
                 flood(bytes)?;
+            }
+            _ if line.starts_with("/read ") => {
+                // Containment probe: reports whether a path is readable, never its contents.
+                let path = line["/read ".len()..].trim();
+                let name = std::path::Path::new(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                match std::fs::read(path) {
+                    Ok(bytes) => say(&format!("READ {name} OK {}", bytes.len()))?,
+                    Err(err) => say(&format!("READ {name} ERR {:?}", err.kind()))?,
+                }
             }
             _ if line.starts_with("/later ") => {
                 let mut parts = line.splitn(3, ' ').skip(1);

@@ -70,6 +70,10 @@ pub struct ServeArgs {
     /// terminal) runs outside the containment boundary.
     #[arg(long, env = "YULIUS_EDITOR_UNCONTAINED", default_value_t = false)]
     pub editor_uncontained: bool,
+    /// Extra host paths visible read-only inside containment, colon-separated (for example agent
+    /// CLI install directories outside /usr and /opt).
+    #[arg(long, env = "YULIUS_CONTAINED_READONLY", value_delimiter = ':')]
+    pub contained_readonly: Vec<PathBuf>,
     /// Login shell for sandbox shells (default: $SHELL, /bin/bash, /bin/sh).
     #[arg(long, env = "YULIUS_SHELL")]
     pub shell: Option<PathBuf>,
@@ -163,6 +167,9 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     let mut config = AppConfig::new(args.data_dir.clone(), &args.public_url, &internal_url, exe);
     config.max_live_sessions = args.max_live_sessions;
     config.contained = args.contained;
+    config
+        .contained_readonly
+        .clone_from(&args.contained_readonly);
     let deps = Deps {
         store: Arc::new(store),
         clock: Arc::new(SystemClock),

@@ -336,7 +336,9 @@ impl App {
                 sandbox_root: self.sandbox_dir(&record.id),
                 home: home.clone(),
                 writable: Vec::new(),
-                readonly: vec![self.config.yulius_exe.clone()],
+                readonly: std::iter::once(self.config.yulius_exe.clone())
+                    .chain(self.config.contained_readonly.iter().cloned())
+                    .collect(),
             }
         } else {
             Containment::None

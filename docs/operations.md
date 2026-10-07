@@ -17,6 +17,12 @@ been performed or verified** as part of the implementation work.
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. |
 | `openvscode-server` | editor panel | optional; disabled in contained mode unless `--editor-uncontained`. |
 
+Inside containment an agent sees only `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/opt`, its own
+sandbox directory and the `yulius` binary. Install the agent CLIs (and Node.js for Codex' npm
+wrapper) system-wide under `/usr/local` or `/opt`; a per-user install such as Claude Code's
+default `~/.local/bin/claude` is invisible to contained runs unless its directories are added with
+`--contained-readonly <dir>[:<dir>…]` (`YULIUS_CONTAINED_READONLY`).
+
 Run `yulius doctor --data-dir /var/lib/yulius [--contained]` to check all of these, the data directory
 permissions and the session socket path budget (the data directory path must be short enough that
 `<data>/logins/<uuid>/pty.sock` fits the 103-byte Unix socket path limit).

@@ -121,9 +121,41 @@ fn data_dir_checks(data_dir: &Path) -> Vec<Check> {
     checks
 }
 
-/// Runs every check. `contained` requires bubblewrap.
+/// Whether `path` (resolved) is visible inside containment.
+fn visible_when_contained(path: &Path, extra: &[PathBuf]) -> bool {
+    let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    yulius_ptyhost::SYSTEM_READONLY_DIRS
+        .iter()
+        .map(Path::new)
+        .chain(extra.iter().map(PathBuf::as_path))
+        .any(|root| real.starts_with(root))
+}
+
+fn containment_visibility(contained: bool, extra: &[PathBuf]) -> Vec<Check> {
+    if !contained {
+        return Vec::new();
+    }
+    ["claude", "codex", "git"]
+        .into_iter()
+        .filter_map(|program| which(program).map(|path| (program, path)))
+        .filter(|(_, path)| !visible_when_contained(path, extra))
+        .map(|(program, path)| {
+            check(
+                "contained visibility",
+                Level::Warn,
+                format!(
+                    "`{program}` resolves to {} which contained runs cannot see; install it under /usr/local or /opt or add its directories with --contained-readonly",
+                    path.canonicalize().unwrap_or(path).display()
+                ),
+            )
+        })
+        .collect()
+}
+
+/// Runs every check. `contained` requires bubblewrap; `extra` are the configured
+/// `--contained-readonly` paths.
 #[must_use]
-pub fn run_checks(data_dir: &Path, contained: bool) -> Vec<Check> {
+pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Check> {
     let mut checks = data_dir_checks(data_dir);
     checks.push(match version_of(Path::new("git"), &["--version"]) {
         Some(v) => check("git", Level::Ok, v),
@@ -188,6 +220,7 @@ pub fn run_checks(data_dir: &Path, contained: bool) -> Vec<Check> {
             "not found; the sandbox browser is unavailable",
         ),
     });
+    checks.extend(containment_visibility(contained, extra));
     checks.push(match which("openvscode-server") {
         Some(path) => check("openvscode-server", Level::Ok, path.display().to_string()),
         None => check(
@@ -207,8 +240,8 @@ fn which(program: &str) -> Option<PathBuf> {
 }
 
 /// `yulius doctor`: prints the checks; exits 1 when any check fails.
-pub fn doctor(data_dir: &Path, contained: bool) -> ExitCode {
-    let checks = run_checks(data_dir, contained);
+pub fn doctor(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> ExitCode {
+    let checks = run_checks(data_dir, contained, extra);
     for c in &checks {
         let tag = match c.level {
             Level::Ok => "ok  ",
@@ -226,13 +259,26 @@ pub fn doctor(data_dir: &Path, contained: bool) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Level, run_checks, version_of};
-    use std::path::Path;
+    use super::{Level, run_checks, version_of, visible_when_contained};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn containment_visibility_follows_system_dirs_and_extra_paths() {
+        assert!(visible_when_contained(Path::new("/usr/bin/env"), &[]));
+        assert!(!visible_when_contained(
+            Path::new("/home/u/.local/bin/claude"),
+            &[]
+        ));
+        assert!(visible_when_contained(
+            Path::new("/home/u/.local/bin/claude"),
+            &[PathBuf::from("/home/u/.local")]
+        ));
+    }
 
     #[test]
     fn reports_a_too_long_data_dir_and_missing_programs() {
         let long = Path::new("/tmp").join("x".repeat(80));
-        let checks = run_checks(&long, false);
+        let checks = run_checks(&long, false, &[]);
         let sockets = checks.iter().find(|c| c.name == "session socket paths");
         assert_eq!(sockets.map(|c| c.level), Some(Level::Fail));
         assert_eq!(

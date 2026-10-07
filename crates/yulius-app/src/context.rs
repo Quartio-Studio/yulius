@@ -44,6 +44,9 @@ pub struct AppConfig {
     pub viewer_recheck_ms: u64,
     /// Idle time before a message wakes a waiting task (COM-005).
     pub wake_idle_ms: i64,
+    /// Extra host paths visible read-only inside containment (for example agent CLI install
+    /// directories outside `/usr` and `/opt`).
+    pub contained_readonly: Vec<PathBuf>,
 }
 
 impl AppConfig {
@@ -61,6 +64,7 @@ impl AppConfig {
             secure_cookies: public_url.starts_with("https://"),
             viewer_recheck_ms: 60_000,
             wake_idle_ms: crate::background::WAKE_IDLE_MS,
+            contained_readonly: Vec::new(),
             public_url,
             internal_url: internal_url.trim_end_matches('/').to_owned(),
             yulius_exe,
