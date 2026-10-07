@@ -6,7 +6,7 @@ narrative. Use [the template](../../.ai/templates/spec.md); omit irrelevant sect
 
 Keep product research and speculative notes local unless the user requests them
 in the repository. A future accepted feature spec can live in `.ai/specs` when
-that feature work is authorized. There are no product specs in this scaffold.
+that feature work is authorized. The accepted product specs are SPEC-001 to SPEC-003.
 
 Use stable requirement IDs and acceptance scenarios. Separate user requirements,
 source observations and proposed defaults. Mark decisions blocking or nonblocking.

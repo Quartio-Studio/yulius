@@ -6,7 +6,7 @@ resolver = "3"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
-repository = "https://github.com/Quartio-Studio/yulius"
+repository = "https://github.com/Quartio-Studio/yulius-v2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

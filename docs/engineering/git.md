@@ -214,7 +214,7 @@ source rule or allowing other writes requires revisiting that assumption.
 GitHub settings: default branch `dev`; squash and merge enabled; rebase disabled;
 automatic merged-head deletion enabled; squash subject/body from PR title/body.
 The JSON files are the desired ruleset configuration, not proof of the live setting.
-After authorized settings changes, read back `gh api repos/Quartio-Studio/yulius/rulesets`
+After authorized settings changes, read back `gh api repos/Quartio-Studio/yulius-v2/rulesets`
 and the individual ruleset IDs, and compare to these files. No workflow auto-merges
 or holds write credentials. The author drives delivery with `gh`.
 

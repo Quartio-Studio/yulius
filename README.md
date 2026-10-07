@@ -3,9 +3,10 @@
 A coding sandbox for the Quartio team, inspired by
 [Cezar](https://github.com/open-mercato/cezar), to be built in Rust.
 
-This checkout currently contains the engineering foundation: repository rules,
-agent skills, templates and reproducible development checks. Product implementation
-will follow the detailed brief. The only Rust executable is the development task runner.
+The product is specified in [SPEC-001](.ai/specs/SPEC-001-yulius-product.md) (product),
+[SPEC-002](.ai/specs/SPEC-002-yulius-architecture.md) (architecture and runtime contracts) and
+[SPEC-003](.ai/specs/SPEC-003-traceability.md) (source traceability). Implementation progress is
+tracked per checkpoint in GitHub issues; each spec's evidence section records what is verified.
 
 ## Start
 
