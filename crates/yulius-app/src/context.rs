@@ -12,6 +12,7 @@ use crate::ports::github::GitHubPort;
 use crate::ports::harness::HarnessPort;
 use crate::ports::session::SessionHost;
 use crate::ports::store::Store;
+use crate::ports::system::SystemProbe;
 use crate::ports::{Clock, Crypto};
 
 /// Static configuration.
@@ -84,6 +85,8 @@ pub struct Deps {
     pub harness: Arc<dyn HarnessPort>,
     /// Git.
     pub git: Arc<dyn GitPort>,
+    /// Machine metrics for the status panel.
+    pub system: Arc<dyn SystemProbe>,
 }
 
 /// The application.
@@ -100,6 +103,8 @@ pub struct App {
     pub message_waker: OnceLock<Arc<dyn crate::coordination::MessageWaker>>,
     /// Session supervisor runtime state.
     pub(crate) supervisor: crate::supervisor::SupervisorState,
+    /// Account login terminals.
+    pub(crate) logins: crate::accounts::LoginRegistry,
 }
 
 impl App {
@@ -113,6 +118,7 @@ impl App {
             login_attempts: Mutex::new(HashMap::new()),
             message_waker: OnceLock::new(),
             supervisor: crate::supervisor::SupervisorState::default(),
+            logins: crate::accounts::LoginRegistry::default(),
         })
     }
 

@@ -143,6 +143,7 @@ fn build_with(data: &Path, fake: Option<&Path>) -> Result<Arc<App>, Box<dyn std:
             None => Arc::new(HarnessAdapter::new(exe, "http://127.0.0.1:9")),
         },
         git: Arc::new(GitAdapter::new("git")),
+        system: Arc::new(support::FixedSystem),
     };
     Ok(App::new(config, deps))
 }

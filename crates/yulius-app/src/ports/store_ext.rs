@@ -28,9 +28,17 @@ pub trait DeliveryStore: Send + Sync {}
 #[async_trait]
 pub trait ImportStore: Send + Sync {}
 
-/// Analytics queries (CP11).
+/// Analytics queries (CP11): read-only views over tasks, attempts, metrics, feedback and
+/// switch decisions.
 #[async_trait]
-pub trait AnalyticsStore: Send + Sync {}
+pub trait AnalyticsStore: Send + Sync {
+    /// Tasks of `query.sandboxes` created in `[from, to)` (newest `limit`, returned oldest
+    /// first) with their attempts and metrics, switch decisions and feedback, read consistently.
+    async fn analytics_data(
+        &self,
+        query: &crate::analytics::AnalyticsQuery,
+    ) -> crate::error::AppResult<crate::analytics::AnalyticsData>;
+}
 
 /// All extension areas.
 pub trait ExtensionStores:
