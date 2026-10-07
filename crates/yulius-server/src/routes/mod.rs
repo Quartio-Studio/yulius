@@ -1,16 +1,20 @@
 //! Route tables.
 
 mod admin;
+mod automations;
 mod events;
 mod mcp;
+mod mcp_servers;
 mod sandboxes;
 mod setup_auth;
+mod skills;
 mod tasks;
+mod workflows;
 
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use yulius_app::context::App;
 
 use crate::AppState;
@@ -56,6 +60,38 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             get(tasks::messages).post(tasks::post_message),
         )
         .route("/api/events", get(events::events))
+        .route(
+            "/api/sandboxes/{sid}/workflows",
+            get(workflows::list).post(workflows::create),
+        )
+        .route(
+            "/api/workflows/{id}",
+            put(workflows::update).delete(workflows::delete),
+        )
+        .route(
+            "/api/sandboxes/{sid}/automations",
+            get(automations::list).post(automations::create),
+        )
+        .route(
+            "/api/automations/{id}",
+            put(automations::update).delete(automations::delete),
+        )
+        .route("/api/automations/{id}/run", post(automations::run_now))
+        .route("/api/automations/{id}/runs", get(automations::runs))
+        .route("/api/sandboxes/{sid}/skills", get(skills::list))
+        .route(
+            "/api/sandboxes/{sid}/skills/{name}",
+            get(skills::content).put(skills::set_enabled),
+        )
+        .route(
+            "/api/sandboxes/{sid}/mcp",
+            get(mcp_servers::list).post(mcp_servers::create),
+        )
+        .route(
+            "/api/mcp/{id}",
+            put(mcp_servers::update).delete(mcp_servers::delete),
+        )
+        .route("/api/mcp/{id}/test", post(mcp_servers::test))
 }
 
 /// Internal (loopback) routes.
