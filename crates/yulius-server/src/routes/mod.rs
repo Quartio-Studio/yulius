@@ -1,10 +1,13 @@
 //! Route tables.
 
+mod accounts;
 mod admin;
+mod analytics;
 mod events;
 mod mcp;
 mod sandboxes;
 mod setup_auth;
+mod status;
 mod tasks;
 
 use std::sync::Arc;
@@ -56,6 +59,22 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             get(tasks::messages).post(tasks::post_message),
         )
         .route("/api/events", get(events::events))
+        .route(
+            "/api/admin/accounts",
+            get(accounts::list).post(accounts::create),
+        )
+        .route(
+            "/api/admin/accounts/{id}",
+            patch(accounts::update).delete(accounts::delete),
+        )
+        .route("/api/admin/accounts/{id}/relogin", post(accounts::relogin))
+        .route(
+            "/api/admin/accounts/login/{lid}/terminal",
+            get(accounts::login_terminal),
+        )
+        .route("/api/analytics/summary", get(analytics::summary))
+        .route("/api/analytics/tasks", get(analytics::tasks))
+        .route("/api/status", get(status::status))
 }
 
 /// Internal (loopback) routes.

@@ -14,6 +14,7 @@ use crate::wiring::clock::SystemClock;
 use crate::wiring::github::UnavailableGitHub;
 use crate::wiring::harness::HarnessAdapter;
 use crate::wiring::pending::{UnavailableGit, UnavailableSessionHost};
+use crate::wiring::system::SysinfoProbe;
 
 /// Server options (flags or environment variables).
 #[derive(Debug, Args)]
@@ -73,6 +74,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
             yulius_url: config.internal_url.clone(),
         }),
         git: Arc::new(UnavailableGit),
+        system: Arc::new(SysinfoProbe::new()),
     };
     Ok(App::new(config, deps))
 }
@@ -88,6 +90,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         return Err("the internal listener must bind a loopback address".into());
     }
     let app = build_app(&args)?;
+    app.cleanup_stale_logins().await;
     if let Some(token) = app.prepare_setup().await.map_err(|e| e.to_string())? {
         let path = args.data_dir.join("setup.token");
         let _ = std::fs::remove_file(&path);

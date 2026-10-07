@@ -37,8 +37,11 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 yulius-harness = { workspace = true }
 uuid = { workspace = true }
+sysinfo = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1.5"
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
