@@ -9,6 +9,7 @@ pub mod coordination;
 pub mod error;
 pub mod events;
 pub mod hub;
+pub mod lifecycle;
 pub mod mcp;
 pub mod mcp_config;
 pub mod model;

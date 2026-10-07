@@ -39,7 +39,13 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/admin/users/{id}", patch(admin::update_user))
         .route("/api/sandboxes", get(sandboxes::list))
         .route("/api/sandboxes/{sid}", get(sandboxes::get_one))
-        .route("/api/sandboxes/{sid}/tasks", get(tasks::list))
+        .route(
+            "/api/sandboxes/{sid}/tasks",
+            get(tasks::list).post(tasks::create),
+        )
+        .route("/api/tasks/{tid}/stop", post(tasks::stop))
+        .route("/api/tasks/{tid}/continue", post(tasks::resume))
+        .route("/api/tasks/{tid}/switch", post(tasks::switch))
         .route("/api/archived-tasks", get(tasks::archived))
         .route("/api/tasks/{tid}", get(tasks::detail))
         .route("/api/tasks/{tid}/archive", post(tasks::archive))

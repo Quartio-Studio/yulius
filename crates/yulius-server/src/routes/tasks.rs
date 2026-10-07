@@ -85,3 +85,43 @@ pub async fn post_message(
 ) -> ApiResult<Json<MessageView>> {
     Ok(Json(app.post_user_message(&ctx, &tid, &req.body).await?))
 }
+
+pub async fn create(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(req): Json<yulius_contracts::api::tasks::CreateTask>,
+) -> ApiResult<(StatusCode, Json<TaskSummary>)> {
+    Ok((
+        StatusCode::CREATED,
+        Json(app.create_task(&ctx, &sid, &req).await?),
+    ))
+}
+
+pub async fn stop(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.stop_task(&ctx, &tid).await?))
+}
+
+pub async fn resume(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+    body: Option<Json<yulius_contracts::api::tasks::ContinueTask>>,
+) -> ApiResult<Json<TaskSummary>> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    Ok(Json(app.continue_task(&ctx, &tid, &req).await?))
+}
+
+pub async fn switch(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+    body: Option<Json<yulius_contracts::api::tasks::ContinueTask>>,
+) -> ApiResult<Json<TaskSummary>> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    Ok(Json(app.switch_task(&ctx, &tid, &req).await?))
+}
