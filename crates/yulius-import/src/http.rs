@@ -363,7 +363,8 @@ mod tests {
     #[test]
     fn endpoints_percent_encode_segments_and_keep_base_path() -> Result<(), ApiError> {
         let client = ApiClient::new(url("https://y.example/base/")?, None)?;
-        let endpoint = client.endpoint(&["api", "import", "j1", "files", "sessions/claude/a.jsonl"])?;
+        let endpoint =
+            client.endpoint(&["api", "import", "j1", "files", "sessions/claude/a.jsonl"])?;
         assert_eq!(
             endpoint.as_str(),
             "https://y.example/base/api/import/j1/files/sessions%2Fclaude%2Fa.jsonl"
@@ -374,9 +375,18 @@ mod tests {
     #[test]
     fn backoff_is_exponential_and_bounded() {
         let policy = RetryPolicy::default();
-        assert_eq!(policy.delay(0, None, Duration::ZERO), Duration::from_secs(1));
-        assert_eq!(policy.delay(1, None, Duration::from_secs(1)), Duration::from_secs(2));
-        assert_eq!(policy.delay(5, None, Duration::ZERO), Duration::from_secs(5));
+        assert_eq!(
+            policy.delay(0, None, Duration::ZERO),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            policy.delay(1, None, Duration::from_secs(1)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            policy.delay(5, None, Duration::ZERO),
+            Duration::from_secs(5)
+        );
         assert_eq!(
             policy.delay(0, Some(Duration::from_secs(60)), Duration::ZERO),
             Duration::from_secs(5)
@@ -391,7 +401,10 @@ mod tests {
             ..RetryPolicy::default()
         };
         assert_eq!(greedy.attempts(), MAX_ATTEMPTS);
-        assert_eq!(greedy.delay(2, None, Duration::from_secs(10)), Duration::ZERO);
+        assert_eq!(
+            greedy.delay(2, None, Duration::from_secs(10)),
+            Duration::ZERO
+        );
         assert_eq!(RetryPolicy::immediate(0).attempts(), 1);
     }
 }

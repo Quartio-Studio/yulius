@@ -14,7 +14,9 @@ const MAX_PROMPT_ATTEMPTS: usize = 3;
 #[derive(Debug, thiserror::Error)]
 pub enum SinceError {
     /// Not `<positive integer><h|d|w>`.
-    #[error("invalid window {0:?}: use a whole number followed by h, d or w (for example 14d, 36h, 2w)")]
+    #[error(
+        "invalid window {0:?}: use a whole number followed by h, d or w (for example 14d, 36h, 2w)"
+    )]
     Invalid(String),
     /// Longer than [`MAX_SINCE_DAYS`].
     #[error("window {0:?} is longer than {MAX_SINCE_DAYS} days")]
@@ -40,7 +42,9 @@ pub fn parse_since(text: &str) -> Result<Duration, SinceError> {
     if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
         return Err(invalid());
     }
-    let value: u64 = number.parse().map_err(|_| SinceError::TooLong(trimmed.to_owned()))?;
+    let value: u64 = number
+        .parse()
+        .map_err(|_| SinceError::TooLong(trimmed.to_owned()))?;
     let hours_per_unit = match unit.to_ascii_lowercase() {
         'h' => 1,
         'd' => 24,
@@ -107,11 +111,24 @@ mod tests {
 
     #[test]
     fn rejects_bad_windows() {
-        for bad in ["", "d", "14", "14m", "1.5d", "-2d", "0d", "14 d", "x14d", "14dd", "１d"] {
-            assert!(matches!(parse_since(bad), Err(SinceError::Invalid(_))), "{bad:?}");
+        for bad in [
+            "", "d", "14", "14m", "1.5d", "-2d", "0d", "14 d", "x14d", "14dd", "１d",
+        ] {
+            assert!(
+                matches!(parse_since(bad), Err(SinceError::Invalid(_))),
+                "{bad:?}"
+            );
         }
-        for long in ["3651d", "522w", "99999999999999999999999d", "18446744073709551615w"] {
-            assert!(matches!(parse_since(long), Err(SinceError::TooLong(_))), "{long:?}");
+        for long in [
+            "3651d",
+            "522w",
+            "99999999999999999999999d",
+            "18446744073709551615w",
+        ] {
+            assert!(
+                matches!(parse_since(long), Err(SinceError::TooLong(_))),
+                "{long:?}"
+            );
         }
     }
 

@@ -89,7 +89,11 @@ impl TokenStore {
     /// query or fragment.
     #[must_use]
     pub fn server_key(server: &Url) -> String {
-        let mut key = format!("{}://{}", server.scheme(), server.host_str().unwrap_or_default());
+        let mut key = format!(
+            "{}://{}",
+            server.scheme(),
+            server.host_str().unwrap_or_default()
+        );
         if let Some(port) = server.port() {
             key.push_str(&format!(":{port}"));
         }
@@ -199,7 +203,10 @@ impl TokenStore {
 #[cfg(unix)]
 fn create_private_dir(dir: &Path) -> io::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
-    fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
 }
 
 #[cfg(not(unix))]
@@ -247,7 +254,10 @@ mod tests {
         store.save(&prod, &Secret::new("yul_prod"))?;
         store.save(&local, &Secret::new("yul_local"))?;
         store.save(&prod, &Secret::new("yul_prod_2"))?;
-        assert_eq!(store.load(&Url::parse("https://yulius.quartio.ai")?)?, Some(Secret::new("yul_prod_2")));
+        assert_eq!(
+            store.load(&Url::parse("https://yulius.quartio.ai")?)?,
+            Some(Secret::new("yul_prod_2"))
+        );
         assert_eq!(store.load(&local)?, Some(Secret::new("yul_local")));
         assert!(store.remove(&local)?);
         assert!(!store.remove(&local)?);
@@ -265,7 +275,13 @@ mod tests {
         let store = TokenStore::new(path.clone());
         store.save(&Url::parse("https://y.example")?, &Secret::new("yul_x"))?;
         assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
-        assert_eq!(fs::metadata(dir.path().join("yulius"))?.permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::metadata(dir.path().join("yulius"))?
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
         let leftovers: Vec<_> = fs::read_dir(dir.path().join("yulius"))?
             .flatten()
             .filter(|entry| entry.file_name().to_string_lossy().contains("tmp"))
@@ -285,7 +301,11 @@ mod tests {
             Err(TokenStoreError::Corrupt(_)) => {}
             other => return Err(format!("expected Corrupt, got {other:?}").into()),
         }
-        assert!(store.save(&Url::parse("https://y.example")?, &Secret::new("t")).is_err());
+        assert!(
+            store
+                .save(&Url::parse("https://y.example")?, &Secret::new("t"))
+                .is_err()
+        );
         Ok(())
     }
 

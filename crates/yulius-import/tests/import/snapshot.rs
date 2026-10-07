@@ -26,7 +26,12 @@ fn read_archive(path: &Path) -> TestResult<BTreeMap<String, Archived>> {
         assert_eq!(header.mtime()?, 0, "{name}");
         assert_eq!(header.uid()?, 0, "{name}");
         let archived = if header.entry_type().is_symlink() {
-            Archived::Link(entry.link_name()?.ok_or("link without target")?.into_owned())
+            Archived::Link(
+                entry
+                    .link_name()?
+                    .ok_or("link without target")?
+                    .into_owned(),
+            )
         } else {
             let mode = header.mode()?;
             let mut content = Vec::new();
@@ -105,11 +110,23 @@ fn captures_changes_and_excludes_ignored_large_and_escaping_paths() -> TestResul
             mode: 0o644
         })
     );
-    assert!(matches!(entries.get("files/run.sh"), Some(Archived::File { mode: 0o755, .. })));
-    assert_eq!(entries.get("files/link-inside"), Some(&Archived::Link(PathBuf::from("README.md"))));
+    assert!(matches!(
+        entries.get("files/run.sh"),
+        Some(Archived::File { mode: 0o755, .. })
+    ));
+    assert_eq!(
+        entries.get("files/link-inside"),
+        Some(&Archived::Link(PathBuf::from("README.md")))
+    );
     // Links are recorded, never followed: the outside content is not archived.
-    assert_eq!(entries.get("files/link-outside"), Some(&Archived::Link(outside.join("passwd"))));
-    assert_eq!(entries.get("files/dir"), Some(&Archived::Link(outside.clone())));
+    assert_eq!(
+        entries.get("files/link-outside"),
+        Some(&Archived::Link(outside.join("passwd")))
+    );
+    assert_eq!(
+        entries.get("files/dir"),
+        Some(&Archived::Link(outside.clone()))
+    );
     for archived in entries.values() {
         if let Archived::File { content, .. } = archived {
             assert!(!String::from_utf8_lossy(content).contains("OUTSIDE SECRET"));
@@ -129,7 +146,12 @@ fn captures_changes_and_excludes_ignored_large_and_escaping_paths() -> TestResul
     let mut skipped: Vec<(String, SkipReason)> = snapshot
         .skipped
         .iter()
-        .map(|skip| (skip.path.to_string_lossy().into_owned(), skip.reason.clone()))
+        .map(|skip| {
+            (
+                skip.path.to_string_lossy().into_owned(),
+                skip.reason.clone(),
+            )
+        })
         .collect();
     skipped.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
@@ -148,7 +170,10 @@ fn captures_changes_and_excludes_ignored_large_and_escaping_paths() -> TestResul
     // Identical state, identical archive digest (IMP-006).
     let again = fixture.temp.path().join("again.tar.gz");
     let second = snapshot_uncommitted(&repo.join("notes"), &again, 1024 * 1024 * 1024)?;
-    assert_eq!(second.file.map(|file| file.sha256), Some(file.sha256.clone()));
+    assert_eq!(
+        second.file.map(|file| file.sha256),
+        Some(file.sha256.clone())
+    );
     Ok(())
 }
 
@@ -169,6 +194,9 @@ fn refuses_snapshots_over_the_budget() -> TestResult {
     write(&fixture.repo.join("big.txt"), &"x".repeat(4096))?;
     let out = fixture.temp.path().join("snapshot.tar.gz");
     let result = snapshot_uncommitted(&fixture.repo, &out, 1000);
-    assert!(matches!(result, Err(SnapshotError::TooLarge { limit: 1000 })));
+    assert!(matches!(
+        result,
+        Err(SnapshotError::TooLarge { limit: 1000 })
+    ));
     Ok(())
 }

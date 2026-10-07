@@ -30,7 +30,8 @@ pub(crate) fn copy_into_hasher<R: Read>(
     let mut buffer = vec![0_u8; BUFFER_BYTES];
     let mut total = 0_u64;
     while total < limit {
-        let want = usize::try_from((limit - total).min(BUFFER_BYTES as u64)).unwrap_or(BUFFER_BYTES);
+        let want =
+            usize::try_from((limit - total).min(BUFFER_BYTES as u64)).unwrap_or(BUFFER_BYTES);
         let read = reader.read(&mut buffer[..want])?;
         if read == 0 {
             break;

@@ -105,8 +105,7 @@ pub(crate) fn parse_rfc3339_millis(text: &str) -> Option<i64> {
 fn digits(bytes: &[u8], start: usize, len: usize) -> Option<i64> {
     let slice = bytes.get(start..start + len)?;
     slice.iter().try_fold(0_i64, |value, b| {
-        b.is_ascii_digit()
-            .then(|| value * 10 + i64::from(b - b'0'))
+        b.is_ascii_digit().then(|| value * 10 + i64::from(b - b'0'))
     })
 }
 

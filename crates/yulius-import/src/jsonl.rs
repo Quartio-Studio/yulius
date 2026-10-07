@@ -104,10 +104,7 @@ pub(crate) fn tail_lines(path: &Path, window: u64) -> io::Result<Vec<Vec<u8>>> {
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::new();
     file.take(window).read_to_end(&mut bytes)?;
-    let mut lines: Vec<Vec<u8>> = bytes
-        .split(|b| *b == b'\n')
-        .map(<[u8]>::to_vec)
-        .collect();
+    let mut lines: Vec<Vec<u8>> = bytes.split(|b| *b == b'\n').map(<[u8]>::to_vec).collect();
     if start > 0 && !lines.is_empty() {
         lines.remove(0);
     }

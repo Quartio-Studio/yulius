@@ -73,9 +73,8 @@ pub fn device_login(
     let mut api = ApiClient::new(server.clone(), None)?;
     api.set_retry(options.retry);
     let start_url = api.endpoint(&["api", "device", "start"])?;
-    let start: DeviceStart = api.execute(&|client| {
-        client.post(start_url.clone()).timeout(JSON_TIMEOUT)
-    })?;
+    let start: DeviceStart =
+        api.execute(&|client| client.post(start_url.clone()).timeout(JSON_TIMEOUT))?;
     if start.device_code.is_empty() {
         return Err(ApiError::Protocol("empty device code".to_owned()).into());
     }
@@ -103,7 +102,10 @@ pub fn device_login(
         thread::sleep(interval);
         polls += 1;
         let poll: DevicePoll = api.execute(&|client| {
-            client.post(poll_url.clone()).timeout(JSON_TIMEOUT).json(&body)
+            client
+                .post(poll_url.clone())
+                .timeout(JSON_TIMEOUT)
+                .json(&body)
         })?;
         match poll.status {
             DeviceStatus::Pending => {}

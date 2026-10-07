@@ -9,12 +9,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use reqwest::Url;
 use yulius_contracts::import::{
-    FileRef, IMPORT_MANIFEST_VERSION, ImportHarness, ImportManifest, ImportResult,
-    MAX_CHUNK_BYTES, MAX_IMPORT_TOTAL_BYTES, ManifestError, SessionRef,
+    FileRef, IMPORT_MANIFEST_VERSION, ImportHarness, ImportManifest, ImportResult, MAX_CHUNK_BYTES,
+    MAX_IMPORT_TOTAL_BYTES, ManifestError, SessionRef,
 };
 
 use crate::device::{DeviceError, DeviceLoginOptions, device_login};
-use crate::git::{BUNDLE_NAME, RepoError, RepoInfo, create_bundle, discover_repo, unpublished_refs};
+use crate::git::{
+    BUNDLE_NAME, RepoError, RepoInfo, create_bundle, discover_repo, unpublished_refs,
+};
 use crate::hash::file_ref;
 use crate::http::{ApiError, RetryPolicy};
 use crate::process::GitError;
@@ -322,12 +324,14 @@ fn discover_sessions(
     let paths = repo.checkout_paths();
     let mut sessions = Vec::new();
     if let Some(dir) = &sources.claude_dir {
-        sessions.extend(discover_claude_sessions(dir, &paths, since).map_err(|source| {
-            ImportError::Sessions {
-                path: dir.clone(),
-                source,
-            }
-        })?);
+        sessions.extend(
+            discover_claude_sessions(dir, &paths, since).map_err(|source| {
+                ImportError::Sessions {
+                    path: dir.clone(),
+                    source,
+                }
+            })?,
+        );
     }
     if let Some(home) = &sources.codex_home {
         sessions.extend(
@@ -457,15 +461,21 @@ fn upload_one(
     }
     let mut next_report = resume_from.saturating_add(total / 4);
     let mut write_failure = None;
-    let result = uploader.upload_file(job, &file.reference, &file.path, resume_from, &mut |done, size| {
-        if size > 0 && done < size && done >= next_report {
-            next_report = done.saturating_add(size / 4);
-            let (_, output) = io.streams();
-            if let Err(error) = writeln!(output, "    {}%", done.saturating_mul(100) / size) {
-                write_failure.get_or_insert(error);
+    let result = uploader.upload_file(
+        job,
+        &file.reference,
+        &file.path,
+        resume_from,
+        &mut |done, size| {
+            if size > 0 && done < size && done >= next_report {
+                next_report = done.saturating_add(size / 4);
+                let (_, output) = io.streams();
+                if let Err(error) = writeln!(output, "    {}%", done.saturating_mul(100) / size) {
+                    write_failure.get_or_insert(error);
+                }
             }
-        }
-    });
+        },
+    );
     result?;
     if let Some(error) = write_failure {
         return Err(error.into());
@@ -512,11 +522,18 @@ fn summary_text(
     let mut text = String::new();
     let branch = repo.head_branch.as_deref().unwrap_or("detached HEAD");
     let short_sha: String = repo.head_sha.chars().take(10).collect();
-    let _ = writeln!(text, "Repository   {}/{} ({branch} @ {short_sha})", repo.owner, repo.name);
+    let _ = writeln!(
+        text,
+        "Repository   {}/{} ({branch} @ {short_sha})",
+        repo.owner, repo.name
+    );
     let _ = writeln!(text, "GitHub       {}", repo.remote_url);
     match &manifest.bundle {
         Some(bundle) => {
-            let names: Vec<&str> = refs.iter().map(|reference| reference.branch.as_str()).collect();
+            let names: Vec<&str> = refs
+                .iter()
+                .map(|reference| reference.branch.as_str())
+                .collect();
             let _ = writeln!(
                 text,
                 "Unpublished  {} branch(es): {} -> bundle {}",
@@ -526,7 +543,10 @@ fn summary_text(
             );
         }
         None => {
-            let _ = writeln!(text, "Unpublished  none (all local commits are on a remote)");
+            let _ = writeln!(
+                text,
+                "Unpublished  none (all local commits are on a remote)"
+            );
         }
     }
     match &snapshot.file {
@@ -636,7 +656,10 @@ impl ImportIo for TerminalIo {
         if let Some(token) = self.store.load(server)? {
             return Ok(token);
         }
-        writeln!(self.output, "Not signed in to {server}; starting device login.")?;
+        writeln!(
+            self.output,
+            "Not signed in to {server}; starting device login."
+        )?;
         let output = &mut self.output;
         let mut write_failure = None;
         let token = device_login(
@@ -687,7 +710,10 @@ mod tests {
         ] {
             fs::write(&path, content)?;
             let mut file = File::open(&path)?;
-            assert_eq!(complete_lines_len(&mut file, content.len() as u64)?, expected);
+            assert_eq!(
+                complete_lines_len(&mut file, content.len() as u64)?,
+                expected
+            );
         }
         Ok(())
     }

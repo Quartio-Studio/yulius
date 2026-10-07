@@ -15,7 +15,9 @@ workspace = true
 layer = "adapter"
 
 [dependencies]
-yulius-contracts = { workspace = true }
+# Explicit version: cargo-deny `wildcards = "deny"` rejects version-less path dependencies. Switch
+# back to `{ workspace = true }` once deny.toml sets `allow-wildcard-paths = true` for private crates.
+yulius-contracts = { path = "../yulius-contracts", version = "0.1.0" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -324,11 +324,9 @@ fn write_archive(
     let encoder = archive.into_inner().map_err(io_error(out))?;
     let mut writer = encoder.finish().map_err(io_error(out))?;
     writer.flush().map_err(io_error(out))?;
-    let file = writer
-        .into_inner()
-        .map_err(|error| SnapshotError::Io {
-            path: out.to_path_buf(),
-            source: error.into_error(),
-        })?;
+    let file = writer.into_inner().map_err(|error| SnapshotError::Io {
+        path: out.to_path_buf(),
+        source: error.into_error(),
+    })?;
     file.sync_all().map_err(io_error(out))
 }

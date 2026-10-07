@@ -17,9 +17,9 @@ use axum::routing::{post, put};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use yulius_contracts::import::{
-    CHUNK_SHA256_HEADER, CreateImportRequest, CreateImportResponse, DevicePoll,
-    DevicePollRequest, DeviceStart, DeviceStatus, FileProgress, FileRef, ImportManifest,
-    ImportResult, MAX_CHUNK_BYTES,
+    CHUNK_SHA256_HEADER, CreateImportRequest, CreateImportResponse, DevicePoll, DevicePollRequest,
+    DeviceStart, DeviceStatus, FileProgress, FileRef, ImportManifest, ImportResult,
+    MAX_CHUNK_BYTES,
 };
 use yulius_import::Url;
 
@@ -168,7 +168,11 @@ async fn create_job(
         return unauthorized();
     }
     if let Err(problem) = request.manifest.validate() {
-        return error(StatusCode::UNPROCESSABLE_ENTITY, "invalid", &problem.to_string());
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid",
+            &problem.to_string(),
+        );
     }
     let Some(mut state) = lock(&state) else {
         return poisoned();
@@ -228,7 +232,12 @@ async fn put_chunk(
         record(&mut state, StatusCode::SERVICE_UNAVAILABLE);
         return error(StatusCode::SERVICE_UNAVAILABLE, "capacity", "down");
     }
-    let Some(file) = state.jobs.get(&job).and_then(|files| files.get(&name)).cloned() else {
+    let Some(file) = state
+        .jobs
+        .get(&job)
+        .and_then(|files| files.get(&name))
+        .cloned()
+    else {
         record(&mut state, StatusCode::NOT_FOUND);
         return error(StatusCode::NOT_FOUND, "not_found", "unknown job or file");
     };
@@ -237,22 +246,44 @@ async fn put_chunk(
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_owned();
-    if std::mem::take(&mut state.reject_next_chunk) || declared != sha256_hex(&body) || len > MAX_CHUNK_BYTES {
+    if std::mem::take(&mut state.reject_next_chunk)
+        || declared != sha256_hex(&body)
+        || len > MAX_CHUNK_BYTES
+    {
         record(&mut state, StatusCode::UNPROCESSABLE_ENTITY);
-        return error(StatusCode::UNPROCESSABLE_ENTITY, "invalid", "chunk digest mismatch");
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid",
+            "chunk digest mismatch",
+        );
     }
     if state.content.contains_key(&file.sha256) {
         record(&mut state, StatusCode::OK);
-        return Json(FileProgress { name, received_bytes: file.size }).into_response();
+        return Json(FileProgress {
+            name,
+            received_bytes: file.size,
+        })
+        .into_response();
     }
-    let received = state.partial.get(&file.sha256).map_or(0, |partial| partial.len() as u64);
+    let received = state
+        .partial
+        .get(&file.sha256)
+        .map_or(0, |partial| partial.len() as u64);
     if offset > received {
         record(&mut state, StatusCode::CONFLICT);
-        return error(StatusCode::CONFLICT, "conflict", "offset beyond received bytes");
+        return error(
+            StatusCode::CONFLICT,
+            "conflict",
+            "offset beyond received bytes",
+        );
     }
     if offset + len <= received && len > 0 {
         record(&mut state, StatusCode::OK);
-        return Json(FileProgress { name, received_bytes: received }).into_response();
+        return Json(FileProgress {
+            name,
+            received_bytes: received,
+        })
+        .into_response();
     }
     let skip = usize::try_from(received - offset).unwrap_or(usize::MAX);
     let fresh = &body[skip.min(body.len())..];
@@ -264,7 +295,11 @@ async fn put_chunk(
     if total > file.size {
         state.partial.remove(&file.sha256);
         record(&mut state, StatusCode::UNPROCESSABLE_ENTITY);
-        return error(StatusCode::UNPROCESSABLE_ENTITY, "invalid", "more bytes than declared");
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid",
+            "more bytes than declared",
+        );
     }
     state.stored_bytes += fresh.len() as u64;
     state.accepted_chunks += 1;
@@ -272,20 +307,35 @@ async fn put_chunk(
         let data = state.partial.remove(&file.sha256).unwrap_or_default();
         if sha256_hex(&data) != file.sha256 {
             record(&mut state, StatusCode::UNPROCESSABLE_ENTITY);
-            return error(StatusCode::UNPROCESSABLE_ENTITY, "invalid", "file digest mismatch");
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid",
+                "file digest mismatch",
+            );
         }
         state.content.insert(file.sha256.clone(), data);
     }
-    if state.down_after_chunks.is_some_and(|limit| state.accepted_chunks >= limit) {
+    if state
+        .down_after_chunks
+        .is_some_and(|limit| state.accepted_chunks >= limit)
+    {
         state.down = true;
     }
     if state.lose_response_after_chunk == Some(state.accepted_chunks) {
         state.lose_response_after_chunk = None;
         record(&mut state, StatusCode::INTERNAL_SERVER_ERROR);
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "internal", "response lost");
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "response lost",
+        );
     }
     record(&mut state, StatusCode::OK);
-    Json(FileProgress { name, received_bytes: total }).into_response()
+    Json(FileProgress {
+        name,
+        received_bytes: total,
+    })
+    .into_response()
 }
 
 async fn complete(
@@ -302,7 +352,10 @@ async fn complete(
     let Some(files) = state.jobs.get(&job) else {
         return error(StatusCode::NOT_FOUND, "not_found", "unknown job");
     };
-    if files.values().any(|file| !state.content.contains_key(&file.sha256)) {
+    if files
+        .values()
+        .any(|file| !state.content.contains_key(&file.sha256))
+    {
         return error(StatusCode::CONFLICT, "conflict", "files incomplete");
     }
     let Some(manifest) = state.manifests.last().cloned() else {
@@ -343,7 +396,10 @@ async fn device_start(State(state): State<Shared>) -> Response {
     .into_response()
 }
 
-async fn device_poll(State(state): State<Shared>, Json(request): Json<DevicePollRequest>) -> Response {
+async fn device_poll(
+    State(state): State<Shared>,
+    Json(request): Json<DevicePollRequest>,
+) -> Response {
     if request.device_code != DEVICE_CODE {
         return error(StatusCode::NOT_FOUND, "not_found", "unknown device code");
     }
@@ -351,7 +407,10 @@ async fn device_poll(State(state): State<Shared>, Json(request): Json<DevicePoll
         return poisoned();
     };
     state.device_polls += 1;
-    let status = state.device_script.pop_front().unwrap_or(DeviceStatus::Pending);
+    let status = state
+        .device_script
+        .pop_front()
+        .unwrap_or(DeviceStatus::Pending);
     let token = (status == DeviceStatus::Approved).then(|| TOKEN.to_owned());
     Json(DevicePoll { status, token }).into_response()
 }

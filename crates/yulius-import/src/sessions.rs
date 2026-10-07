@@ -706,7 +706,9 @@ fn scan_codex(
 
 /// Title from an `event_msg` `user_message` record (the user's typed prompt).
 fn codex_event_title(line: &[u8]) -> Option<String> {
-    let payload = serde_json::from_slice::<CodexPayloadLine>(line).ok()?.payload?;
+    let payload = serde_json::from_slice::<CodexPayloadLine>(line)
+        .ok()?
+        .payload?;
     if payload.kind.as_deref() != Some("user_message") {
         return None;
     }
@@ -715,7 +717,9 @@ fn codex_event_title(line: &[u8]) -> Option<String> {
 
 /// Fallback title from a user `response_item` message (skipping injected context).
 fn codex_response_title(line: &[u8]) -> Option<String> {
-    let payload = serde_json::from_slice::<CodexPayloadLine>(line).ok()?.payload?;
+    let payload = serde_json::from_slice::<CodexPayloadLine>(line)
+        .ok()?
+        .payload?;
     if payload.kind.as_deref() != Some("message") || payload.role.as_deref() != Some("user") {
         return None;
     }
@@ -733,9 +737,15 @@ mod tests {
 
     #[test]
     fn titles_skip_wrappers_and_collapse_whitespace() {
-        assert_eq!(clean_title("  Fix the\n\nlogin   bug "), Some("Fix the login bug".to_owned()));
+        assert_eq!(
+            clean_title("  Fix the\n\nlogin   bug "),
+            Some("Fix the login bug".to_owned())
+        );
         assert_eq!(clean_title("<command-name>/clear</command-name>"), None);
-        assert_eq!(clean_title("<local-command-stdout></local-command-stdout>"), None);
+        assert_eq!(
+            clean_title("<local-command-stdout></local-command-stdout>"),
+            None
+        );
         assert_eq!(clean_title("[Request interrupted by user]"), None);
         assert_eq!(
             clean_title("<system-reminder>internal</system-reminder>\nReal ask"),
@@ -763,10 +773,15 @@ mod tests {
             Some(Some("crates/app".to_owned()))
         );
         assert_eq!(
-            matcher.locate(Path::new("/nonexistent-yulius/repo/.claude/worktrees/feat/src")),
+            matcher.locate(Path::new(
+                "/nonexistent-yulius/repo/.claude/worktrees/feat/src"
+            )),
             Some(Some("src".to_owned()))
         );
-        assert_eq!(matcher.locate(Path::new("/nonexistent-yulius/repo-other")), None);
+        assert_eq!(
+            matcher.locate(Path::new("/nonexistent-yulius/repo-other")),
+            None
+        );
         assert_eq!(
             matcher.locate(Path::new("/nonexistent-yulius/repo/../elsewhere")),
             None

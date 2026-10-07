@@ -3,9 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use yulius_contracts::import::{
-    FileRef, IMPORT_MANIFEST_VERSION, ImportManifest, RepoDescriptor,
-};
+use yulius_contracts::import::{FileRef, IMPORT_MANIFEST_VERSION, ImportManifest, RepoDescriptor};
 use yulius_import::{ApiError, RetryPolicy, Secret, UploadError, Uploader};
 
 use crate::support::TestResult;
@@ -80,9 +78,15 @@ fn interrupted_upload_resumes_from_the_server_offset_without_resending() -> Test
     assert_eq!(job.missing.len(), 1);
     assert_eq!(job.missing[0].received_bytes, 0);
     let mut reported = Vec::new();
-    let first = client.upload_file(&job.job_id, &prepared.file, &prepared.path, 0, &mut |done, _| {
-        reported.push(done);
-    });
+    let first = client.upload_file(
+        &job.job_id,
+        &prepared.file,
+        &prepared.path,
+        0,
+        &mut |done, _| {
+            reported.push(done);
+        },
+    );
     let Err(UploadError::Api(ApiError::Unavailable { attempts: 3, .. })) = first else {
         return Err(format!("expected Unavailable after 3 attempts, got {first:?}").into());
     };
@@ -106,11 +110,21 @@ fn interrupted_upload_resumes_from_the_server_offset_without_resending() -> Test
     assert_eq!(sent, prepared.file.size - 4 * CHUNK);
 
     server.with(|state| {
-        let after: Vec<u64> = state.puts[puts_before..].iter().map(|put| put.offset).collect();
-        assert_eq!(after.first(), Some(&(4 * CHUNK)), "resume must not resend the prefix");
+        let after: Vec<u64> = state.puts[puts_before..]
+            .iter()
+            .map(|put| put.offset)
+            .collect();
+        assert_eq!(
+            after.first(),
+            Some(&(4 * CHUNK)),
+            "resume must not resend the prefix"
+        );
         assert!(after.iter().all(|offset| *offset >= 4 * CHUNK));
         assert_eq!(state.stored_bytes, prepared.file.size);
-        assert_eq!(state.content.get(&prepared.file.sha256), Some(&prepared.data));
+        assert_eq!(
+            state.content.get(&prepared.file.sha256),
+            Some(&prepared.data)
+        );
     })?;
 
     // Everything is stored now: a further run has nothing to upload (IMP-006).
@@ -126,17 +140,37 @@ fn lost_responses_are_retried_idempotently() -> TestResult {
     server.with(|state| state.lose_response_after_chunk = Some(2))?;
 
     let job = client.create_job(&prepared.manifest)?;
-    let sent = client.upload_file(&job.job_id, &prepared.file, &prepared.path, 0, &mut |_, _| {})?;
+    let sent = client.upload_file(
+        &job.job_id,
+        &prepared.file,
+        &prepared.path,
+        0,
+        &mut |_, _| {},
+    )?;
 
     assert_eq!(sent, prepared.file.size);
     server.with(|state| {
-        let statuses: Vec<(u64, u16)> = state.puts.iter().map(|put| (put.offset, put.status)).collect();
+        let statuses: Vec<(u64, u16)> = state
+            .puts
+            .iter()
+            .map(|put| (put.offset, put.status))
+            .collect();
         assert_eq!(
             statuses,
-            [(0, 200), (CHUNK, 500), (CHUNK, 200), (2 * CHUNK, 200), (3 * CHUNK, 200), (4 * CHUNK, 200)]
+            [
+                (0, 200),
+                (CHUNK, 500),
+                (CHUNK, 200),
+                (2 * CHUNK, 200),
+                (3 * CHUNK, 200),
+                (4 * CHUNK, 200)
+            ]
         );
         assert_eq!(state.stored_bytes, prepared.file.size);
-        assert_eq!(state.content.get(&prepared.file.sha256), Some(&prepared.data));
+        assert_eq!(
+            state.content.get(&prepared.file.sha256),
+            Some(&prepared.data)
+        );
     })?;
     Ok(())
 }
@@ -148,7 +182,13 @@ fn rejected_chunks_are_not_retried() -> TestResult {
     let client = uploader(&server, 3)?;
     server.with(|state| state.reject_next_chunk = true)?;
     let job = client.create_job(&prepared.manifest)?;
-    let result = client.upload_file(&job.job_id, &prepared.file, &prepared.path, 0, &mut |_, _| {});
+    let result = client.upload_file(
+        &job.job_id,
+        &prepared.file,
+        &prepared.path,
+        0,
+        &mut |_, _| {},
+    );
     assert!(matches!(
         result,
         Err(UploadError::Api(ApiError::Rejected { status: 422, .. }))
@@ -164,7 +204,13 @@ fn local_changes_are_detected_before_sending() -> TestResult {
     let client = uploader(&server, 3)?;
     let job = client.create_job(&prepared.manifest)?;
     fs::write(&prepared.path, b"grown and different")?;
-    let result = client.upload_file(&job.job_id, &prepared.file, &prepared.path, 0, &mut |_, _| {});
+    let result = client.upload_file(
+        &job.job_id,
+        &prepared.file,
+        &prepared.path,
+        0,
+        &mut |_, _| {},
+    );
     assert!(matches!(result, Err(UploadError::LocalFileChanged { .. })));
     assert_eq!(server.with(|state| state.puts.len())?, 0);
 
@@ -172,10 +218,17 @@ fn local_changes_are_detected_before_sending() -> TestResult {
     let mut tampered = prepared.data.clone();
     tampered[0] ^= 0xff;
     fs::write(&prepared.path, &tampered)?;
-    let result = client.upload_file(&job.job_id, &prepared.file, &prepared.path, 0, &mut |_, _| {});
+    let result = client.upload_file(
+        &job.job_id,
+        &prepared.file,
+        &prepared.path,
+        0,
+        &mut |_, _| {},
+    );
     assert!(matches!(
         result,
-        Err(UploadError::LocalFileChanged { .. } | UploadError::Api(ApiError::Rejected { status: 422, .. }))
+        Err(UploadError::LocalFileChanged { .. }
+            | UploadError::Api(ApiError::Rejected { status: 422, .. }))
     ));
     Ok(())
 }
@@ -196,11 +249,17 @@ fn bad_tokens_and_invalid_manifests_fail_before_upload() -> TestResult {
         bundle.name = "../escape".to_owned();
     }
     let client = uploader(&server, 3)?;
-    assert!(matches!(client.create_job(&invalid), Err(UploadError::Manifest(_))));
+    assert!(matches!(
+        client.create_job(&invalid),
+        Err(UploadError::Manifest(_))
+    ));
     assert_eq!(server.with(|state| state.manifests.len())?, 0);
 
     let completion = client.complete("job-unknown");
-    assert!(matches!(completion, Err(UploadError::Api(ApiError::NotFound(_)))));
+    assert!(matches!(
+        completion,
+        Err(UploadError::Api(ApiError::NotFound(_)))
+    ));
     Ok(())
 }
 
@@ -214,7 +273,13 @@ fn completion_is_refused_until_files_are_complete() -> TestResult {
         client.complete(&job.job_id),
         Err(UploadError::Api(ApiError::Conflict(_)))
     ));
-    client.upload_file(&job.job_id, &prepared.file, &prepared.path, 0, &mut |_, _| {})?;
+    client.upload_file(
+        &job.job_id,
+        &prepared.file,
+        &prepared.path,
+        0,
+        &mut |_, _| {},
+    )?;
     let result = client.complete(&job.job_id)?;
     assert_eq!(result.sandbox_id, "sbx-demo");
     Ok(())

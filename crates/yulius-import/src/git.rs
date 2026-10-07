@@ -124,8 +124,12 @@ pub fn parse_github_remote(url: &str) -> Option<GitHubRemote> {
             return None;
         }
         let (authority, path) = rest.split_once('/')?;
-        let host_port = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
-        let host = host_port.split_once(':').map_or(host_port, |(host, _)| host);
+        let host_port = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        let host = host_port
+            .split_once(':')
+            .map_or(host_port, |(host, _)| host);
         if !is_github_host(host) {
             return None;
         }
@@ -136,7 +140,9 @@ pub fn parse_github_remote(url: &str) -> Option<GitHubRemote> {
         if authority.contains('/') {
             return None;
         }
-        let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
         if !is_github_host(host) {
             return None;
         }
@@ -161,7 +167,9 @@ fn is_valid_owner(owner: &str) -> bool {
     !owner.is_empty()
         && owner.len() <= 39
         && !owner.starts_with('-')
-        && owner.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && owner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 fn is_valid_repo_name(name: &str) -> bool {
@@ -205,7 +213,9 @@ pub fn discover_repo(path: &Path) -> Result<RepoInfo, RepoError> {
         QUERY_TIMEOUT,
     ) {
         Ok(output) => bytes_to_path(trim_newline(&output.stdout)),
-        Err(GitError::Failed { .. }) => return Err(RepoError::NotGitRepository(path.to_path_buf())),
+        Err(GitError::Failed { .. }) => {
+            return Err(RepoError::NotGitRepository(path.to_path_buf()));
+        }
         Err(other) => return Err(other.into()),
     };
     if toplevel.as_os_str().is_empty() {
@@ -260,7 +270,11 @@ fn find_github_remote(root: &Path) -> Result<GitHubRemote, RepoError> {
         let configured = config_value(root, &format!("remote.{remote}.url"))?;
         let expanded = git_status(
             root,
-            &[OsStr::new("remote"), OsStr::new("get-url"), OsStr::new(remote)],
+            &[
+                OsStr::new("remote"),
+                OsStr::new("get-url"),
+                OsStr::new(remote),
+            ],
             SMALL_OUTPUT,
             QUERY_TIMEOUT,
         )?;
@@ -487,7 +501,11 @@ pub fn create_bundle(
     args.push(OsStr::new("--remotes"));
     match git(repo, &args, SMALL_OUTPUT, BUNDLE_TIMEOUT) {
         Ok(_) => {}
-        Err(error) if error.stderr().is_some_and(|text| text.contains("empty bundle")) => {
+        Err(error)
+            if error
+                .stderr()
+                .is_some_and(|text| text.contains("empty bundle")) =>
+        {
             return Ok(None);
         }
         Err(error) => return Err(error),

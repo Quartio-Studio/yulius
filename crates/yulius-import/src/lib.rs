@@ -43,8 +43,7 @@ pub use sessions::{
 };
 pub use since::{DEFAULT_SINCE, MAX_SINCE_DAYS, SinceError, parse_since, prompt_since};
 pub use snapshot::{
-    MAX_SNAPSHOT_FILE_BYTES, SkipReason, SkippedPath, Snapshot, SnapshotError,
-    snapshot_uncommitted,
+    MAX_SNAPSHOT_FILE_BYTES, SkipReason, SkippedPath, Snapshot, SnapshotError, snapshot_uncommitted,
 };
 pub use time::format_rfc3339;
 pub use token_store::{TokenStore, TokenStoreError};

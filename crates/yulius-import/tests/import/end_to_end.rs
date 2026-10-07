@@ -12,8 +12,8 @@ use flate2::read::GzDecoder;
 use serde_json::json;
 use yulius_contracts::import::ImportHarness;
 use yulius_import::{
-    ApiError, ImportError, ImportIo, ImportOptions, RepoError, RetryPolicy, Secret,
-    SessionSources, UploadError, UploadTuning, Url, run_import,
+    ApiError, ImportError, ImportIo, ImportOptions, RepoError, RetryPolicy, Secret, SessionSources,
+    UploadError, UploadTuning, Url, run_import,
 };
 
 use crate::support::server::{FakeServer, TOKEN};
@@ -93,7 +93,10 @@ fn scenario() -> TestResult<Scenario> {
         .collect();
     fixture.commit_file("feature.txt", &hex::encode(noise), "local feature")?;
     git(&fixture.repo, &["checkout", "-q", "main"])?;
-    write(&fixture.repo.join("README.md"), "# demo, uncommitted edit\n")?;
+    write(
+        &fixture.repo.join("README.md"),
+        "# demo, uncommitted edit\n",
+    )?;
     let root = fixture.root()?;
     let claude = fixture.temp.path().join("claude");
     let codex = fixture.temp.path().join("codex");
@@ -110,7 +113,10 @@ fn scenario() -> TestResult<Scenario> {
         "bbbbbbbb-codex",
         &root.join("dir"),
         "",
-        &[codex_user(RECENT, "Speed up the build"), json!({"timestamp": RECENT_LATER, "type": "event_msg", "payload": {"type": "token_count"}})],
+        &[
+            codex_user(RECENT, "Speed up the build"),
+            json!({"timestamp": RECENT_LATER, "type": "event_msg", "payload": {"type": "token_count"}}),
+        ],
     )?;
     Ok(Scenario {
         fixture,
@@ -122,7 +128,12 @@ fn scenario() -> TestResult<Scenario> {
     })
 }
 
-fn options(scenario: &Scenario, server: &FakeServer, since: Option<&str>, assume_yes: bool) -> ImportOptions {
+fn options(
+    scenario: &Scenario,
+    server: &FakeServer,
+    since: Option<&str>,
+    assume_yes: bool,
+) -> ImportOptions {
     ImportOptions {
         path: scenario.fixture.repo.clone(),
         server: server.url.clone(),
@@ -143,19 +154,36 @@ fn imports_everything_then_uploads_nothing_on_rerun() -> TestResult {
     assert_eq!(result.sessions_skipped_existing, 0);
     assert_eq!(result.onboarding, "pending");
     let output = io.output();
-    assert!(output.contains("Repository   Quartio-Studio/demo (main @"), "{output}");
-    assert!(output.contains("Unpublished  1 branch(es): feature"), "{output}");
-    assert!(output.contains("Uploading 4 of 4 files (0 already on the server)."), "{output}");
-    assert!(output.contains("Sandbox: https://yulius.example/s/demo"), "{output}");
+    assert!(
+        output.contains("Repository   Quartio-Studio/demo (main @"),
+        "{output}"
+    );
+    assert!(
+        output.contains("Unpublished  1 branch(es): feature"),
+        "{output}"
+    );
+    assert!(
+        output.contains("Uploading 4 of 4 files (0 already on the server)."),
+        "{output}"
+    );
+    assert!(
+        output.contains("Sandbox: https://yulius.example/s/demo"),
+        "{output}"
+    );
     assert_eq!(io.token_calls, 1);
 
-    let (manifest, puts_after_first) = server.with(|state| (state.manifests[0].clone(), state.puts.len()))?;
+    let (manifest, puts_after_first) =
+        server.with(|state| (state.manifests[0].clone(), state.puts.len()))?;
     assert_eq!(manifest.repo.owner, "Quartio-Studio");
     assert_eq!(manifest.repo.name, "demo");
     assert_eq!(manifest.repo.head_branch.as_deref(), Some("main"));
     assert_eq!(manifest.since, "2026-09-21T14:13:20.000Z");
     assert!(manifest.bundle.is_some());
-    let harnesses: Vec<ImportHarness> = manifest.sessions.iter().map(|session| session.harness).collect();
+    let harnesses: Vec<ImportHarness> = manifest
+        .sessions
+        .iter()
+        .map(|session| session.harness)
+        .collect();
     assert_eq!(harnesses, [ImportHarness::Claude, ImportHarness::Codex]);
     assert_eq!(manifest.sessions[1].cwd_relative.as_deref(), Some("dir"));
     assert_eq!(manifest.sessions[1].title, "Speed up the build");
@@ -166,12 +194,23 @@ fn imports_everything_then_uploads_nothing_on_rerun() -> TestResult {
     server.with(|state| -> TestResult {
         assert_eq!(state.stored_bytes, manifest.total_bytes());
         for file in manifest.files() {
-            assert!(state.content.contains_key(&file.sha256), "{} not stored", file.name);
+            assert!(
+                state.content.contains_key(&file.sha256),
+                "{} not stored",
+                file.name
+            );
         }
         // The uploaded transcript is the local session file; the snapshot holds the edit.
         let transcript = &manifest.sessions[0].files[0];
-        assert_eq!(state.content.get(&transcript.sha256), Some(&fs::read(&scenario.claude_transcript)?));
-        let archive_bytes = state.content.get(&snapshot.sha256).cloned().unwrap_or_default();
+        assert_eq!(
+            state.content.get(&transcript.sha256),
+            Some(&fs::read(&scenario.claude_transcript)?)
+        );
+        let archive_bytes = state
+            .content
+            .get(&snapshot.sha256)
+            .cloned()
+            .unwrap_or_default();
         let mut archive = tar::Archive::new(GzDecoder::new(&archive_bytes[..]));
         let mut readme = None;
         for entry in archive.entries()? {
@@ -191,7 +230,11 @@ fn imports_everything_then_uploads_nothing_on_rerun() -> TestResult {
     let again = run_import(&options(&scenario, &server, Some("14d"), true), &mut rerun)?;
     assert_eq!(again.tasks_created, 0);
     assert_eq!(again.sessions_skipped_existing, 2);
-    assert!(rerun.output().contains("Uploading 0 of 4 files (4 already on the server)."));
+    assert!(
+        rerun
+            .output()
+            .contains("Uploading 0 of 4 files (4 already on the server).")
+    );
     assert_eq!(server.with(|state| state.puts.len())?, puts_after_first);
     Ok(())
 }
@@ -205,7 +248,12 @@ fn interrupted_import_resumes_on_the_next_run() -> TestResult {
     let mut io = TestIo::new("", scenario.sources.clone());
     let first = run_import(&options(&scenario, &server, Some("14d"), true), &mut io);
     assert!(
-        matches!(first, Err(ImportError::Upload(UploadError::Api(ApiError::Unavailable { .. })))),
+        matches!(
+            first,
+            Err(ImportError::Upload(UploadError::Api(
+                ApiError::Unavailable { .. }
+            )))
+        ),
         "{first:?}"
     );
 
@@ -246,8 +294,14 @@ fn declining_the_confirmation_uploads_nothing() -> TestResult {
     assert!(matches!(result, Err(ImportError::Cancelled)), "{result:?}");
     let output = io.output();
     assert!(output.contains("[14d]"), "{output}");
-    assert!(output.contains("since 2026-09-28T14:13:20.000Z"), "{output}");
-    assert!(output.contains("[claude] 2026-10-02 Implement checkout details"), "{output}");
+    assert!(
+        output.contains("since 2026-09-28T14:13:20.000Z"),
+        "{output}"
+    );
+    assert!(
+        output.contains("[claude] 2026-10-02 Implement checkout details"),
+        "{output}"
+    );
     assert!(output.contains("Upload to http://127.0.0.1:"), "{output}");
     assert_eq!(server.with(|state| state.manifests.len())?, 0);
     Ok(())
@@ -256,11 +310,22 @@ fn declining_the_confirmation_uploads_nothing() -> TestResult {
 #[test]
 fn non_github_repositories_are_refused_before_authentication() -> TestResult {
     let scenario = scenario()?;
-    git(&scenario.fixture.repo, &["remote", "set-url", "origin", "https://gitlab.com/team/demo.git"])?;
+    git(
+        &scenario.fixture.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://gitlab.com/team/demo.git",
+        ],
+    )?;
     let server = FakeServer::start()?;
     let mut io = TestIo::new("", scenario.sources.clone());
     let result = run_import(&options(&scenario, &server, Some("14d"), true), &mut io);
-    assert!(matches!(result, Err(ImportError::Repo(RepoError::NotGitHub { .. }))), "{result:?}");
+    assert!(
+        matches!(result, Err(ImportError::Repo(RepoError::NotGitHub { .. }))),
+        "{result:?}"
+    );
     assert_eq!(io.token_calls, 0);
     assert_eq!(server.with(|state| state.manifests.len())?, 0);
     Ok(())

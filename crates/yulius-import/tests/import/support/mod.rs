@@ -129,26 +129,52 @@ pub fn claude_line(kind: &str, cwd: &Path, timestamp: &str, content: serde_json:
 }
 
 /// Writes a Claude session file under `<claude>/projects/<slug>/<id>.jsonl`.
-pub fn write_claude_session(claude: &Path, cwd: &Path, id: &str, lines: &[String]) -> TestResult<PathBuf> {
+pub fn write_claude_session(
+    claude: &Path,
+    cwd: &Path,
+    id: &str,
+    lines: &[String],
+) -> TestResult<PathBuf> {
     let slug: String = cwd
         .to_string_lossy()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
-    let path = claude.join("projects").join(slug).join(format!("{id}.jsonl"));
+    let path = claude
+        .join("projects")
+        .join(slug)
+        .join(format!("{id}.jsonl"));
     write(&path, &(lines.join("\n") + "\n"))?;
     Ok(path)
 }
 
 /// A minimal Claude session: one real prompt and one assistant reply.
-pub fn simple_claude_session(claude: &Path, cwd: &Path, id: &str, prompt: &str, start: &str, end: &str) -> TestResult<PathBuf> {
+pub fn simple_claude_session(
+    claude: &Path,
+    cwd: &Path,
+    id: &str,
+    prompt: &str,
+    start: &str,
+    end: &str,
+) -> TestResult<PathBuf> {
     write_claude_session(
         claude,
         cwd,
         id,
         &[
             claude_line("user", cwd, start, serde_json::json!(prompt)),
-            claude_line("assistant", cwd, end, serde_json::json!([{"type": "text", "text": "ok"}])),
+            claude_line(
+                "assistant",
+                cwd,
+                end,
+                serde_json::json!([{"type": "text", "text": "ok"}]),
+            ),
         ],
     )
 }

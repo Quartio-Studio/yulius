@@ -20,10 +20,19 @@ fn options(max_wait_s: u64) -> DeviceLoginOptions {
 fn polls_until_approved_and_returns_the_token() -> TestResult {
     let server = FakeServer::start()?;
     server.with(|state| {
-        state.device_script = [DeviceStatus::Pending, DeviceStatus::Pending, DeviceStatus::Approved].into();
+        state.device_script = [
+            DeviceStatus::Pending,
+            DeviceStatus::Pending,
+            DeviceStatus::Approved,
+        ]
+        .into();
     })?;
     let mut shown = Vec::new();
-    let token = device_login(&server.url, &mut |start| shown.push(start.user_code.clone()), &options(600))?;
+    let token = device_login(
+        &server.url,
+        &mut |start| shown.push(start.user_code.clone()),
+        &options(600),
+    )?;
     assert_eq!(token.expose(), TOKEN);
     assert!(!format!("{token:?}").contains(TOKEN));
     assert_eq!(shown, [USER_CODE]);
@@ -34,7 +43,8 @@ fn polls_until_approved_and_returns_the_token() -> TestResult {
 #[test]
 fn denied_and_expired_requests_end_the_login() -> TestResult {
     let server = FakeServer::start()?;
-    server.with(|state| state.device_script = [DeviceStatus::Pending, DeviceStatus::Denied].into())?;
+    server
+        .with(|state| state.device_script = [DeviceStatus::Pending, DeviceStatus::Denied].into())?;
     let denied = device_login(&server.url, &mut |_| {}, &options(600));
     assert!(matches!(denied, Err(DeviceError::Denied)));
 
@@ -60,7 +70,9 @@ fn insecure_servers_are_refused_before_any_request() -> TestResult {
     let result = device_login(&url, &mut |_| {}, &options(1));
     assert!(matches!(
         result,
-        Err(DeviceError::Api(yulius_import::ApiError::InsecureServerUrl(_)))
+        Err(DeviceError::Api(
+            yulius_import::ApiError::InsecureServerUrl(_)
+        ))
     ));
     Ok(())
 }

@@ -314,10 +314,11 @@ pub enum ManifestError {
 impl ImportManifest {
     /// Every file in the manifest: bundle, snapshot, then session files in order.
     pub fn files(&self) -> impl Iterator<Item = &FileRef> {
-        self.bundle
-            .iter()
-            .chain(self.snapshot.iter())
-            .chain(self.sessions.iter().flat_map(|session| session.files.iter()))
+        self.bundle.iter().chain(self.snapshot.iter()).chain(
+            self.sessions
+                .iter()
+                .flat_map(|session| session.files.iter()),
+        )
     }
 
     /// Sum of all file sizes (saturating).
@@ -347,7 +348,9 @@ impl ImportManifest {
                 return Err(ManifestError::InvalidSessionId(session.session_id.clone()));
             }
             if session.files.is_empty() {
-                return Err(ManifestError::SessionWithoutFiles(session.session_id.clone()));
+                return Err(ManifestError::SessionWithoutFiles(
+                    session.session_id.clone(),
+                ));
             }
             if let Some(cwd) = &session.cwd_relative
                 && !is_safe_relative_dir(cwd)
@@ -514,7 +517,10 @@ mod tests {
 
         let mut bad = manifest();
         bad.sessions[0].files[0].sha256 = "A".repeat(64);
-        assert!(matches!(bad.validate(), Err(ManifestError::InvalidSha256(_))));
+        assert!(matches!(
+            bad.validate(),
+            Err(ManifestError::InvalidSha256(_))
+        ));
 
         let mut bad = manifest();
         bad.sessions[0].session_id = "a/b".to_owned();
@@ -529,7 +535,10 @@ mod tests {
 
         let mut bad = manifest();
         bad.sessions[0].title = "x".repeat(81);
-        assert!(matches!(bad.validate(), Err(ManifestError::TitleTooLong(_))));
+        assert!(matches!(
+            bad.validate(),
+            Err(ManifestError::TitleTooLong(_))
+        ));
 
         let mut bad = manifest();
         bad.sessions[0].files.clear();
@@ -542,7 +551,10 @@ mod tests {
         if let Some(bundle) = bad.bundle.as_mut() {
             bundle.size = MAX_IMPORT_TOTAL_BYTES;
         }
-        assert!(matches!(bad.validate(), Err(ManifestError::TooLarge { .. })));
+        assert!(matches!(
+            bad.validate(),
+            Err(ManifestError::TooLarge { .. })
+        ));
     }
 
     #[test]
@@ -556,17 +568,7 @@ mod tests {
             assert!(is_safe_file_name(good), "{good}");
         }
         for bad in [
-            "",
-            "/abs",
-            "a//b",
-            "a/",
-            "..",
-            "a/../b",
-            ".hidden",
-            "a\\b",
-            "sp ace",
-            "nul\0",
-            "ü",
+            "", "/abs", "a//b", "a/", "..", "a/../b", ".hidden", "a\\b", "sp ace", "nul\0", "ü",
         ] {
             assert!(!is_safe_file_name(bad), "{bad:?}");
         }

@@ -11,8 +11,28 @@ fn discovers_github_remote_head_and_worktrees_from_a_subdirectory() -> TestResul
     let fixture = RepoFixture::new()?;
     let claude_worktree = fixture.repo.join(".claude").join("worktrees").join("feat");
     let outside_worktree = fixture.temp.path().join("work").join("demo-wt");
-    git(&fixture.repo, &["worktree", "add", "-q", "-b", "feat", &claude_worktree.to_string_lossy()])?;
-    git(&fixture.repo, &["worktree", "add", "-q", "-b", "other", &outside_worktree.to_string_lossy()])?;
+    git(
+        &fixture.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat",
+            &claude_worktree.to_string_lossy(),
+        ],
+    )?;
+    git(
+        &fixture.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "other",
+            &outside_worktree.to_string_lossy(),
+        ],
+    )?;
     let subdir = fixture.repo.join("dir");
 
     let info = discover_repo(&subdir)?;
@@ -25,7 +45,10 @@ fn discovers_github_remote_head_and_worktrees_from_a_subdirectory() -> TestResul
     assert_eq!(info.head_sha, git(&fixture.repo, &["rev-parse", "HEAD"])?);
     let mut worktrees = info.worktrees.clone();
     worktrees.sort();
-    let mut expected = vec![fs::canonicalize(&claude_worktree)?, fs::canonicalize(&outside_worktree)?];
+    let mut expected = vec![
+        fs::canonicalize(&claude_worktree)?,
+        fs::canonicalize(&outside_worktree)?,
+    ];
     expected.sort();
     assert_eq!(worktrees, expected);
     assert_eq!(info.checkout_paths().len(), 3);
@@ -42,7 +65,10 @@ fn discovers_github_remote_head_and_worktrees_from_a_subdirectory() -> TestResul
 #[test]
 fn refuses_non_git_directories() -> TestResult {
     let temp = tempfile::tempdir()?;
-    assert!(matches!(discover_repo(temp.path()), Err(RepoError::NotGitRepository(_))));
+    assert!(matches!(
+        discover_repo(temp.path()),
+        Err(RepoError::NotGitRepository(_))
+    ));
     assert!(matches!(
         discover_repo(&temp.path().join("missing")),
         Err(RepoError::NotGitRepository(_))
@@ -57,7 +83,10 @@ fn refuses_repositories_without_a_remote() -> TestResult {
     write(&temp.path().join("a.txt"), "a")?;
     git(temp.path(), &["add", "a.txt"])?;
     git(temp.path(), &["commit", "-q", "-m", "a"])?;
-    assert!(matches!(discover_repo(temp.path()), Err(RepoError::NoRemote)));
+    assert!(matches!(
+        discover_repo(temp.path()),
+        Err(RepoError::NoRemote)
+    ));
     Ok(())
 }
 
@@ -65,7 +94,15 @@ fn refuses_repositories_without_a_remote() -> TestResult {
 fn refuses_non_github_remotes_without_echoing_credentials() -> TestResult {
     let temp = tempfile::tempdir()?;
     git(temp.path(), &["init", "-q", "-b", "main"])?;
-    git(temp.path(), &["remote", "add", "origin", "https://deploy:hunter2@gitlab.com/team/app.git"])?;
+    git(
+        temp.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://deploy:hunter2@gitlab.com/team/app.git",
+        ],
+    )?;
     let error = discover_repo(temp.path());
     let Err(error @ RepoError::NotGitHub { .. }) = error else {
         return Err(format!("expected NotGitHub, got {error:?}").into());
@@ -80,8 +117,19 @@ fn refuses_non_github_remotes_without_echoing_credentials() -> TestResult {
 fn prefers_a_github_remote_when_origin_is_elsewhere() -> TestResult {
     let temp = tempfile::tempdir()?;
     git(temp.path(), &["init", "-q", "-b", "main"])?;
-    git(temp.path(), &["remote", "add", "origin", "git@gitlab.com:team/app.git"])?;
-    git(temp.path(), &["remote", "add", "github", "git@github.com:Quartio-Studio/app.git"])?;
+    git(
+        temp.path(),
+        &["remote", "add", "origin", "git@gitlab.com:team/app.git"],
+    )?;
+    git(
+        temp.path(),
+        &[
+            "remote",
+            "add",
+            "github",
+            "git@github.com:Quartio-Studio/app.git",
+        ],
+    )?;
     write(&temp.path().join("a.txt"), "a")?;
     git(temp.path(), &["add", "a.txt"])?;
     git(temp.path(), &["commit", "-q", "-m", "a"])?;
@@ -94,8 +142,14 @@ fn prefers_a_github_remote_when_origin_is_elsewhere() -> TestResult {
 fn refuses_repositories_without_commits_and_reports_detached_head() -> TestResult {
     let temp = tempfile::tempdir()?;
     git(temp.path(), &["init", "-q", "-b", "main"])?;
-    git(temp.path(), &["remote", "add", "origin", "https://github.com/o/r.git"])?;
-    assert!(matches!(discover_repo(temp.path()), Err(RepoError::NoCommits)));
+    git(
+        temp.path(),
+        &["remote", "add", "origin", "https://github.com/o/r.git"],
+    )?;
+    assert!(matches!(
+        discover_repo(temp.path()),
+        Err(RepoError::NoCommits)
+    ));
 
     let fixture = RepoFixture::new()?;
     git(&fixture.repo, &["checkout", "-q", "--detach", "HEAD"])?;
@@ -133,11 +187,27 @@ fn bundles_only_unpublished_branches_deterministically() -> TestResult {
 
     // A clone of the remote (what the sandbox has) can verify and fetch the bundle.
     let clone = fixture.temp.path().join("sandbox-clone");
-    git(fixture.temp.path(), &["clone", "-q", &fixture.bare.to_string_lossy(), &clone.to_string_lossy()])?;
+    git(
+        fixture.temp.path(),
+        &[
+            "clone",
+            "-q",
+            &fixture.bare.to_string_lossy(),
+            &clone.to_string_lossy(),
+        ],
+    )?;
     git(&clone, &["bundle", "verify", "-q", &out.to_string_lossy()])?;
     let heads = git(&clone, &["bundle", "list-heads", &out.to_string_lossy()])?;
     assert_eq!(heads, format!("{feature_head} refs/heads/feature"));
-    git(&clone, &["fetch", "-q", &out.to_string_lossy(), "refs/heads/feature:refs/heads/imported"])?;
+    git(
+        &clone,
+        &[
+            "fetch",
+            "-q",
+            &out.to_string_lossy(),
+            "refs/heads/feature:refs/heads/imported",
+        ],
+    )?;
     assert_eq!(git(&clone, &["rev-parse", "imported"])?, feature_head);
 
     // Same input, same bytes: a re-run would not upload the bundle again (IMP-006).

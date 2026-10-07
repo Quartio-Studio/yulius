@@ -93,9 +93,9 @@ impl Uploader {
         let body = CreateImportRequest {
             manifest: manifest.clone(),
         };
-        let response: CreateImportResponse = self.api.execute(&|client| {
-            client.post(url.clone()).timeout(JSON_TIMEOUT).json(&body)
-        })?;
+        let response: CreateImportResponse = self
+            .api
+            .execute(&|client| client.post(url.clone()).timeout(JSON_TIMEOUT).json(&body))?;
         if response.job_id.is_empty() {
             return Err(ApiError::Protocol("empty job id".to_owned()).into());
         }
@@ -141,7 +141,8 @@ impl Uploader {
             .into());
         }
         let mut hasher = Sha256::new();
-        if copy_into_hasher(&mut handle, &mut hasher, resume_from).map_err(local_io)? != resume_from {
+        if copy_into_hasher(&mut handle, &mut hasher, resume_from).map_err(local_io)? != resume_from
+        {
             return Err(changed());
         }
         let url = self
@@ -185,7 +186,9 @@ impl Uploader {
             }
             // The server may already hold more (an earlier attempt's chunks); follow it.
             let skip = received.received_bytes - chunk_end;
-            if skip > 0 && copy_into_hasher(&mut handle, &mut hasher, skip).map_err(local_io)? != skip {
+            if skip > 0
+                && copy_into_hasher(&mut handle, &mut hasher, skip).map_err(local_io)? != skip
+            {
                 return Err(changed());
             }
             sent += len;
