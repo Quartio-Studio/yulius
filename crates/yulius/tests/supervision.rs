@@ -841,3 +841,95 @@ fn provider_exhaustion_translates_the_session_to_codex() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// AC-TSK-4: when Claude starts another session inside the same TUI (`/clear`, `/resume`), the
+/// new session id is adopted into the task's lineage and becomes the attempt's session.
+#[test]
+fn a_session_change_inside_claude_is_adopted_into_the_task_lineage() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: None,
+        };
+        let app = build_full(&data, Some(&fake), agent, 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_task(&app, &sandbox, &user, "Drift").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        app.send_input(&id, b"first turn\r").await?;
+        wait_for("the echo", Duration::from_secs(15), || {
+            screen_contains(&app, &id, "ECHO: first turn")
+        })
+        .await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let original = attempt.provider_session_id.clone().ok_or("session id")?;
+        let worktree = PathBuf::from(task(&app, &id).await?.worktree_path.ok_or("worktree")?);
+        let home = data.join("sandboxes").join(sandbox.as_str()).join("home");
+        let transcript = app
+            .deps
+            .harness
+            .claude_transcript(&home, &worktree, &original);
+        let project = transcript.parent().ok_or("project dir")?;
+        assert!(
+            transcript.is_file(),
+            "the fake agent writes the transcript Yulius watches"
+        );
+
+        // What `/clear` does: Claude continues in a new session file of the same project.
+        let new_session = "5f0c2d4e-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+        let record = serde_json::json!({
+            "type": "user", "sessionId": new_session, "cwd": worktree.to_string_lossy(),
+            "uuid": "drift-1", "parentUuid": null, "timestamp": "2026-10-07T12:00:00.000Z",
+            "message": {"role": "user", "content": "after clear"}, "version": "2.1.292",
+        });
+        std::fs::write(
+            project.join(format!("{new_session}.jsonl")),
+            format!("{record}\n"),
+        )?;
+
+        wait_for("the adopted session", Duration::from_secs(20), || async {
+            app.deps
+                .store
+                .live_attempt(&id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|a| a.provider_session_id)
+                .as_deref()
+                == Some(new_session)
+        })
+        .await?;
+        let lineage: Vec<String> = app
+            .deps
+            .store
+            .provider_sessions(&id)
+            .await?
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        assert!(
+            lineage.contains(&original) && lineage.contains(&new_session.to_owned()),
+            "{lineage:?}"
+        );
+        assert_eq!(
+            app.deps.store.attempts(&id).await?.len(),
+            1,
+            "same attempt, no respawn"
+        );
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
