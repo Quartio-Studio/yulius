@@ -32,12 +32,13 @@ mod status;
 mod validate;
 mod worktree;
 
-pub use bundle::{BundleHead, BundleSpec, ImportRef};
-pub use commit::Author;
+pub use bundle::{BundleHead, BundleSpec, IMPORT_PREFIX, ImportRef};
+pub use commit::{Author, MAX_COMMIT_MESSAGE};
 pub use credential::run_credential_helper;
 pub use error::GitError;
+pub use hooks::HOOKS_DIR_NAME;
 pub use redact::redact;
-pub use status::{AheadBehind, Commit, DiffStat, StatusEntry};
+pub use status::{AheadBehind, Commit, DiffStat, MAX_LOG_ENTRIES, StatusEntry};
 pub use validate::{MAX_BRANCH_LEN, validate_branch_name, validate_relative_path};
 pub use worktree::{RemovalRefusal, Worktree, WorktreeRemoval};
 

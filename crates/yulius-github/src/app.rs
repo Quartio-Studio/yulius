@@ -31,7 +31,11 @@ impl GitHubClient {
     }
 
     fn app(&self) -> Result<&AppCredentials, GitHubError> {
-        self.inner.config.app.as_ref().ok_or(GitHubError::NotConfigured)
+        self.inner
+            .config
+            .app
+            .as_ref()
+            .ok_or(GitHubError::NotConfigured)
     }
 
     /// A fresh App JWT (RS256, `iat` = now − 60 s, `exp` = now + 9 min, `iss` = client id).
@@ -126,7 +130,12 @@ impl GitHubClient {
         let url = self.api_url(&["installation", "repositories"])?;
         self.get_pages(url, Some(&token.token), |value| {
             serde_json::from_value::<WireInstallationRepos>(value)
-                .map(|page| page.repositories.into_iter().map(|r| r.into_repo()).collect())
+                .map(|page| {
+                    page.repositories
+                        .into_iter()
+                        .map(|r| r.into_repo())
+                        .collect()
+                })
                 .map_err(|e| GitHubError::Decode(e.to_string()))
         })
         .await
@@ -147,7 +156,10 @@ impl GitHubClient {
         owner_kind: OwnerKind,
     ) -> Result<serde_json::Value, GitHubError> {
         validate::owner(owner_login)?;
-        let loopback = matches!(public_url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
+        let loopback = matches!(
+            public_url.host_str(),
+            Some("127.0.0.1" | "localhost" | "[::1]")
+        );
         if !(public_url.scheme() == "https" || (public_url.scheme() == "http" && loopback)) {
             return Err(GitHubError::InvalidInput {
                 what: "public URL",
@@ -217,10 +229,12 @@ impl GitHubClient {
         state: &str,
     ) -> Result<String, GitHubError> {
         validate::opaque("state", state)?;
-        let mut url = Url::parse(&self.manifest_post_url(owner_login, owner_kind)?)
-            .map_err(|e| GitHubError::InvalidInput {
-                what: "manifest URL",
-                reason: e.to_string(),
+        let mut url =
+            Url::parse(&self.manifest_post_url(owner_login, owner_kind)?).map_err(|e| {
+                GitHubError::InvalidInput {
+                    what: "manifest URL",
+                    reason: e.to_string(),
+                }
             })?;
         url.query_pairs_mut().append_pair("state", state);
         Ok(url.into())

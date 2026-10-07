@@ -18,7 +18,11 @@ pub(crate) fn owner(login: &str) -> Result<(), GitHubError> {
         && login
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if ok { Ok(()) } else { Err(invalid("owner login", login)) }
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid("owner login", login))
+    }
 }
 
 /// Repository name: 1–100 of `[A-Za-z0-9._-]`, not `.` or `..`.
@@ -30,7 +34,11 @@ pub(crate) fn repo_name(name: &str) -> Result<(), GitHubError> {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
-    if ok { Ok(()) } else { Err(invalid("repository name", name)) }
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid("repository name", name))
+    }
 }
 
 /// Branch name with `git check-ref-format --branch` equivalent rules.
@@ -49,7 +57,11 @@ pub(crate) fn branch(name: &str) -> Result<(), GitHubError> {
         && name
             .split('/')
             .all(|c| !c.is_empty() && !c.starts_with('.') && !c.ends_with(".lock"));
-    if ok { Ok(()) } else { Err(invalid("branch name", name)) }
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid("branch name", name))
+    }
 }
 
 /// Full SHA-1 or SHA-256 commit id in lowercase hex.
@@ -58,7 +70,11 @@ pub(crate) fn sha(value: &str) -> Result<(), GitHubError> {
         && value
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    if ok { Ok(()) } else { Err(invalid("commit sha", value)) }
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid("commit sha", value))
+    }
 }
 
 /// A branch name or a full commit id.
@@ -72,7 +88,11 @@ pub(crate) fn branch_or_sha(value: &str) -> Result<(), GitHubError> {
 /// Opaque one-line value (OAuth code, state): non-empty, bounded, no control characters.
 pub(crate) fn opaque(what: &'static str, value: &str) -> Result<(), GitHubError> {
     let ok = !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control);
-    if ok { Ok(()) } else { Err(invalid(what, "<rejected>")) }
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid(what, "<rejected>"))
+    }
 }
 
 #[cfg(test)]

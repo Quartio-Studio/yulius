@@ -267,18 +267,33 @@ mod tests {
     fn aggregation_rules() {
         assert_eq!(aggregate_checks(&[], &[]), ChecksSummary::None);
         assert_eq!(
-            aggregate_checks(&[run("completed", Some("success")), run("completed", Some("skipped"))], &[status("success")]),
+            aggregate_checks(
+                &[
+                    run("completed", Some("success")),
+                    run("completed", Some("skipped"))
+                ],
+                &[status("success")]
+            ),
             ChecksSummary::Success
         );
         assert_eq!(
-            aggregate_checks(&[run("in_progress", None), run("completed", Some("neutral"))], &[]),
+            aggregate_checks(
+                &[run("in_progress", None), run("completed", Some("neutral"))],
+                &[]
+            ),
             ChecksSummary::Pending
         );
         assert_eq!(
-            aggregate_checks(&[run("queued", None), run("completed", Some("timed_out"))], &[]),
+            aggregate_checks(
+                &[run("queued", None), run("completed", Some("timed_out"))],
+                &[]
+            ),
             ChecksSummary::Failure
         );
-        assert_eq!(aggregate_checks(&[], &[status("pending")]), ChecksSummary::Pending);
+        assert_eq!(
+            aggregate_checks(&[], &[status("pending")]),
+            ChecksSummary::Pending
+        );
         assert_eq!(
             aggregate_checks(&[run("completed", Some("success"))], &[status("error")]),
             ChecksSummary::Failure

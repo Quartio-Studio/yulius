@@ -11,7 +11,9 @@ use crate::types::{
     PullRequest,
 };
 use crate::validate;
-use crate::wire::{WireCheckRun, WireCheckRuns, WireCombinedStatus, WireCompare, WireMerge, WirePull};
+use crate::wire::{
+    WireCheckRun, WireCheckRuns, WireCombinedStatus, WireCompare, WireMerge, WirePull,
+};
 
 /// Most check-run pages read for one commit.
 const MAX_CHECK_PAGES: u32 = 5;

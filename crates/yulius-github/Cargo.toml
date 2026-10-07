@@ -19,7 +19,8 @@ layer = "adapter"
 fake = ["dep:axum"]
 
 [dependencies]
-yulius-domain = { workspace = true }
+# Path + version (not `workspace = true`): cargo-deny `wildcards = "deny"` rejects versionless path deps.
+yulius-domain = { path = "../yulius-domain", version = "0.1.0" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

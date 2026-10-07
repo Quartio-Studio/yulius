@@ -112,7 +112,13 @@ mod tests {
 
     #[test]
     fn rejects_garbage() {
-        for bad in ["", "2016-13-01T00:00:00Z", "yesterday", "2016-07-11", "2016-07-11T25:00:00Z"] {
+        for bad in [
+            "",
+            "2016-13-01T00:00:00Z",
+            "yesterday",
+            "2016-07-11",
+            "2016-07-11T25:00:00Z",
+        ] {
             assert_eq!(parse_rfc3339(bad), None, "{bad}");
         }
     }

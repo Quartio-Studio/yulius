@@ -14,7 +14,11 @@ use crate::wire::WireUser;
 
 impl GitHubClient {
     fn oauth_app(&self) -> Result<&AppCredentials, GitHubError> {
-        self.inner.config.app.as_ref().ok_or(GitHubError::NotConfigured)
+        self.inner
+            .config
+            .app
+            .as_ref()
+            .ok_or(GitHubError::NotConfigured)
     }
 
     /// The GitHub authorization page for signing in (`{web}/login/oauth/authorize`).

@@ -126,11 +126,16 @@ impl Transport {
         loop {
             attempt += 1;
             let remaining = self.retry.max_total.saturating_sub(started.elapsed());
-            let timeout = self.request_timeout.min(remaining).max(Duration::from_millis(1));
+            let timeout = self
+                .request_timeout
+                .min(remaining)
+                .max(Duration::from_millis(1));
             let outcome = self.attempt(call, timeout).await;
             let delay = match &outcome {
                 Ok(reply) if reply.is_success() => return outcome,
-                Ok(reply) if is_retryable(reply) => retry_delay(reply, attempt, &self.retry, self.clock.now()),
+                Ok(reply) if is_retryable(reply) => {
+                    retry_delay(reply, attempt, &self.retry, self.clock.now())
+                }
                 Ok(_) => return outcome,
                 Err(GitHubError::Transport(_)) => backoff(self.retry.base_delay, attempt),
                 Err(_) => return outcome,
@@ -149,7 +154,10 @@ impl Transport {
             .request(call.method.clone(), call.url.clone())
             .timeout(timeout)
             .header(ACCEPT, HeaderValue::from_static(call.accept))
-            .header("X-GitHub-Api-Version", HeaderValue::from_static(API_VERSION));
+            .header(
+                "X-GitHub-Api-Version",
+                HeaderValue::from_static(API_VERSION),
+            );
         if let Some(token) = call.bearer {
             let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| {
                 GitHubError::InvalidInput {
@@ -229,7 +237,10 @@ fn transport_error(error: &reqwest::Error, known: &[&str]) -> GitHubError {
 }
 
 fn header<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
-    headers.get(name).and_then(|value| value.to_str().ok()).map(str::trim)
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
 }
 
 fn is_rate_limited(status: u16, headers: &HeaderMap) -> bool {

@@ -159,7 +159,10 @@ mod tests {
         assert!(!clean.contains("ghs_16C7"), "{clean}");
         assert!(!clean.contains("eyJhbGci"), "{clean}");
         assert!(!clean.contains("custom-token-xyz"), "{clean}");
-        assert!(clean.starts_with("Bad credentials for [redacted]"), "{clean}");
+        assert!(
+            clean.starts_with("Bad credentials for [redacted]"),
+            "{clean}"
+        );
     }
 
     #[test]

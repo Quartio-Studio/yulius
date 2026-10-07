@@ -6,7 +6,7 @@ use crate::client::GitHubClient;
 use crate::error::GitHubError;
 use crate::http::Call;
 use crate::secret::Secret;
-use crate::types::{CreateRepo, RepoAccess, Repo, RulesetSpec};
+use crate::types::{CreateRepo, Repo, RepoAccess, RulesetSpec};
 use crate::validate;
 use crate::wire::{WireId, WireRepo};
 
@@ -93,7 +93,12 @@ impl GitHubClient {
     ///
     /// # Errors
     /// [`GitHubError::NotFound`] or other typed errors.
-    pub async fn get_repo(&self, token: &Secret, owner: &str, repo: &str) -> Result<Repo, GitHubError> {
+    pub async fn get_repo(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Repo, GitHubError> {
         validate::owner(owner)?;
         validate::repo_name(repo)?;
         let url = self.api_url(&["repos", owner, repo])?;
