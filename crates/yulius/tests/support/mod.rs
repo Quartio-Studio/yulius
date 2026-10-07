@@ -44,6 +44,14 @@ pub struct FakeGitHub {
     pub users_by_code: Mutex<HashMap<String, GhUser>>,
     pub perms: Mutex<HashMap<(String, String), GitHubPermissions>>,
     pub fail_permissions: std::sync::atomic::AtomicBool,
+    /// Pull requests (delivery tests).
+    pub pulls: Mutex<Vec<GhPull>>,
+    /// Check state per commit SHA (default `None`).
+    pub check_states: Mutex<HashMap<String, ChecksState>>,
+    /// Repository side of PRs and refs; without it PR heads are unknown.
+    pub remote: Mutex<Option<Arc<dyn FakeRemote>>>,
+    /// Recorded state-changing calls (`create_pull …`, `merge_pull …`, `fast_forward …`).
+    pub writes: Mutex<Vec<String>>,
 }
 
 impl FakeGitHub {
@@ -172,40 +180,147 @@ impl GitHubPort for FakeGitHub {
     async fn convert_manifest(&self, _: &str) -> AppResult<GitHubAppConfig> {
         Err(AppError::Upstream("n/a".into()))
     }
-    async fn create_pull(&self, _: &Secret, _: &str, _: &str, _: &NewPull) -> AppResult<GhPull> {
-        Err(AppError::Upstream("n/a".into()))
+    async fn create_pull(
+        &self,
+        _: &Secret,
+        owner: &str,
+        repo: &str,
+        pull: &NewPull,
+    ) -> AppResult<GhPull> {
+        let head_sha = self
+            .remote()
+            .and_then(|r| r.branch_sha(&pull.head))
+            .ok_or_else(|| AppError::Upstream("head branch not found".into()))?;
+        let mut pulls = self.pulls.lock().map_err(AppError::internal)?;
+        if pulls
+            .iter()
+            .any(|p| p.state == "open" && p.head == pull.head && p.base == pull.base)
+        {
+            return Err(AppError::Upstream("a pull request already exists".into()));
+        }
+        let number = u64::try_from(pulls.len()).unwrap_or(0) + 1;
+        let created = GhPull {
+            number,
+            html_url: format!("https://github.test/{owner}/{repo}/pull/{number}"),
+            title: pull.title.clone(),
+            state: "open".into(),
+            merged: false,
+            base: pull.base.clone(),
+            head: pull.head.clone(),
+            head_sha,
+        };
+        pulls.push(created.clone());
+        self.record(format!(
+            "create_pull #{number} {}<-{}",
+            pull.base, pull.head
+        ));
+        Ok(created)
     }
-    async fn get_pull(&self, _: &Secret, _: &str, _: &str, _: u64) -> AppResult<GhPull> {
-        Err(AppError::Upstream("n/a".into()))
+    async fn get_pull(&self, _: &Secret, _: &str, _: &str, number: u64) -> AppResult<GhPull> {
+        self.refresh_heads();
+        self.pulls
+            .lock()
+            .map_err(AppError::internal)?
+            .iter()
+            .find(|p| p.number == number)
+            .cloned()
+            .ok_or(AppError::NotFound)
     }
     async fn list_pulls(
         &self,
         _: &Secret,
         _: &str,
         _: &str,
-        _: Option<&str>,
+        head: Option<&str>,
     ) -> AppResult<Vec<GhPull>> {
-        Ok(Vec::new())
+        self.refresh_heads();
+        Ok(self
+            .pulls
+            .lock()
+            .map_err(AppError::internal)?
+            .iter()
+            .filter(|p| p.state == "open" && head.is_none_or(|h| p.head == h))
+            .cloned()
+            .collect())
     }
-    async fn checks(&self, _: &Secret, _: &str, _: &str, _: &str) -> AppResult<ChecksState> {
-        Ok(ChecksState::None)
+    async fn checks(&self, _: &Secret, _: &str, _: &str, sha: &str) -> AppResult<ChecksState> {
+        Ok(self
+            .check_states
+            .lock()
+            .map_err(AppError::internal)?
+            .get(sha)
+            .copied()
+            .unwrap_or(ChecksState::None))
     }
     async fn merge_pull(
         &self,
         _: &Secret,
         _: &str,
         _: &str,
-        _: u64,
-        _: &str,
-        _: &str,
+        number: u64,
+        method: &str,
+        expected_head: &str,
     ) -> AppResult<String> {
-        Err(AppError::Upstream("n/a".into()))
+        self.refresh_heads();
+        let pull = self
+            .pulls
+            .lock()
+            .map_err(AppError::internal)?
+            .iter()
+            .find(|p| p.number == number)
+            .cloned()
+            .ok_or(AppError::NotFound)?;
+        if pull.state != "open" {
+            return Err(AppError::Conflict("pull request is not open".into()));
+        }
+        if pull.head_sha != expected_head {
+            return Err(AppError::Conflict("head branch was modified".into()));
+        }
+        let remote = self
+            .remote()
+            .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        let sha = remote
+            .merge(
+                &pull.base,
+                &pull.head_sha,
+                method,
+                &format!("Merge pull request #{number}"),
+            )
+            .map_err(AppError::Upstream)?;
+        if let Ok(mut pulls) = self.pulls.lock()
+            && let Some(p) = pulls.iter_mut().find(|p| p.number == number)
+        {
+            p.state = "closed".into();
+            p.merged = true;
+        }
+        self.record(format!("merge_pull #{number} {method}"));
+        Ok(sha)
     }
-    async fn fast_forward(&self, _: &Secret, _: &str, _: &str, _: &str, _: &str) -> AppResult<()> {
-        Err(AppError::Upstream("n/a".into()))
+    async fn fast_forward(
+        &self,
+        _: &Secret,
+        _: &str,
+        _: &str,
+        branch: &str,
+        sha: &str,
+    ) -> AppResult<()> {
+        let remote = self
+            .remote()
+            .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        remote
+            .fast_forward(branch, sha)
+            .map_err(|_| AppError::Conflict("update is not a fast forward".into()))?;
+        self.record(format!("fast_forward {branch} {sha}"));
+        Ok(())
     }
-    async fn branch_sha(&self, _: &Secret, _: &str, _: &str, _: &str) -> AppResult<Option<String>> {
-        Ok(None)
+    async fn branch_sha(
+        &self,
+        _: &Secret,
+        _: &str,
+        _: &str,
+        branch: &str,
+    ) -> AppResult<Option<String>> {
+        Ok(self.remote().and_then(|r| r.branch_sha(branch)))
     }
 }
 
@@ -321,4 +436,102 @@ pub fn session_from(set_cookie: &Option<String>) -> Option<String> {
     let raw = set_cookie.as_ref()?;
     let first = raw.split(';').next()?;
     first.strip_prefix("yulius_session=").map(str::to_owned)
+}
+
+/// Repository side of the fake GitHub's pull request and ref endpoints (delivery tests back it
+/// with a real bare repository).
+pub trait FakeRemote: Send + Sync {
+    /// Head SHA of a branch.
+    fn branch_sha(&self, branch: &str) -> Option<String>;
+    /// Merges `head_sha` into `base` with `method` (`merge`, `squash`, `rebase`); returns the
+    /// new head of `base`.
+    fn merge(
+        &self,
+        base: &str,
+        head_sha: &str,
+        method: &str,
+        message: &str,
+    ) -> Result<String, String>;
+    /// Moves `branch` to `sha` only as a fast-forward.
+    fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String>;
+}
+
+impl FakeGitHub {
+    pub fn set_remote(&self, remote: Arc<dyn FakeRemote>) {
+        if let Ok(mut slot) = self.remote.lock() {
+            *slot = Some(remote);
+        }
+    }
+    fn remote(&self) -> Option<Arc<dyn FakeRemote>> {
+        self.remote.lock().ok().and_then(|r| r.clone())
+    }
+    fn record(&self, call: String) {
+        if let Ok(mut writes) = self.writes.lock() {
+            writes.push(call);
+        }
+    }
+    /// Open pull requests follow their head branch, as on GitHub.
+    fn refresh_heads(&self) {
+        let Some(remote) = self.remote() else { return };
+        if let Ok(mut pulls) = self.pulls.lock() {
+            for pull in pulls.iter_mut().filter(|p| p.state == "open") {
+                if let Some(sha) = remote.branch_sha(&pull.head) {
+                    pull.head_sha = sha;
+                }
+            }
+        }
+    }
+    pub fn set_checks(&self, sha: &str, state: ChecksState) {
+        if let Ok(mut m) = self.check_states.lock() {
+            m.insert(sha.into(), state);
+        }
+    }
+    pub fn writes(&self) -> Vec<String> {
+        self.writes.lock().map(|w| w.clone()).unwrap_or_default()
+    }
+    pub fn pull(&self, number: u64) -> Option<GhPull> {
+        self.pulls
+            .lock()
+            .ok()
+            .and_then(|p| p.iter().find(|p| p.number == number).cloned())
+    }
+}
+
+/// [`harness`] with a custom Git port (for example a test-local adapter over real `git`).
+pub fn harness_with_git(
+    git: Arc<dyn yulius_app::ports::git::GitPort>,
+) -> Result<Harness, Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open_in_memory()?;
+    let github = Arc::new(FakeGitHub::default());
+    let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
+    let config = AppConfig::new(
+        dir.path().to_path_buf(),
+        "https://yulius.test",
+        "http://127.0.0.1:1",
+        "/bin/false".into(),
+    );
+    let deps = Deps {
+        store: Arc::new(store.clone()),
+        clock: clock.clone(),
+        crypto: Arc::new(MasterKeyCrypto::from_key(&[9u8; 32])?),
+        github: github.clone(),
+        session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+        harness: Arc::new(yulius::wiring::harness::HarnessAdapter {
+            yulius_exe: "/bin/false".into(),
+            yulius_url: "http://127.0.0.1:1".into(),
+        }),
+        git,
+    };
+    let app = App::new(config, deps);
+    let router = yulius_server::public_router(app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5000))));
+    Ok(Harness {
+        app,
+        github,
+        clock,
+        store,
+        router,
+        _dir: dir,
+    })
 }
