@@ -15,3 +15,20 @@ workspace = true
 layer = "adapter"
 
 [dependencies]
+# Explicit version: cargo-deny `wildcards = "deny"` rejects version-less path dependencies. Switch
+# back to `{ workspace = true }` once deny.toml sets `allow-wildcard-paths = true` for private crates.
+yulius-contracts = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+tempfile = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+rustls = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
