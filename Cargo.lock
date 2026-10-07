@@ -759,7 +759,6 @@ dependencies = [
  "base64",
  "futures",
  "nix",
- "serde",
  "serde_json",
  "tempfile",
  "thiserror",

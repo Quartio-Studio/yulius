@@ -19,7 +19,9 @@ layer = "adapter"
 fake = []
 
 [dependencies]
-yulius-domain = { workspace = true }
+# Internal crates as versioned path dependencies: `workspace = true` entries carry no version,
+# which cargo-deny's `wildcards = "deny"` rejects (see the WP-E report).
+yulius-domain = { path = "../yulius-domain", version = "0.1.0" }
 nix = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
