@@ -19,7 +19,8 @@ layer = "adapter"
 test-support = []
 
 [dependencies]
-yulius-contracts.workspace = true
+# Explicit version: cargo-deny `wildcards = "deny"` rejects versionless path dependencies.
+yulius-contracts = { path = "../yulius-contracts", version = "0.1.0" }
 nix.workspace = true
 portable-pty.workspace = true
 serde.workspace = true
@@ -30,5 +31,5 @@ tokio.workspace = true
 vt100.workspace = true
 
 [dev-dependencies]
-yulius-ptyhost = { path = ".", features = ["test-support"] }
+yulius-ptyhost = { path = ".", version = "0.1.0", features = ["test-support"] }
 tempfile.workspace = true
