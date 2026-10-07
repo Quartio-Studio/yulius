@@ -23,7 +23,11 @@
 //! checked out at the head of the stage's branch, with a minimal environment (`PATH`,
 //! `HOME` = sandbox home, `LANG`), the output bounded to the last
 //! [`ENVIRONMENT_OUTPUT_BYTES`], and a [`ENVIRONMENT_TIMEOUT`] after which the process group is
-//! killed and reaped ([`runner`]). It runs with the server's privileges (no containment).
+//! killed and reaped ([`runner`]). It runs with the server's privileges (no containment), in a
+//! directory whose `.git` and `HOME` the sandbox's agents can write: the checkout ignores
+//! global/system Git config and disables hooks and fsmonitor, but repository-local config (for
+//! example filter drivers) and tools reading `HOME` remain agent-influenced. Commands are
+//! visible to everyone with read access, so they must not contain secrets.
 
 pub mod runner;
 
@@ -2358,11 +2362,24 @@ impl App {
             ("LANG".to_owned(), "C.UTF-8".to_owned()),
         ];
         ring.push_str(&format!("[yulius] checking out {branch} at {head}\n"));
+        // The clone's `.git` and the sandbox home are writable by the sandbox's agents: ignore
+        // global/system config and disable hooks and fsmonitor for this server-side checkout.
         let mut checkout_env = env_vars.clone();
-        checkout_env.push(("GIT_TERMINAL_PROMPT".into(), "0".into()));
+        checkout_env.extend(
+            [
+                ("GIT_TERMINAL_PROMPT", "0"),
+                ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                ("GIT_CONFIG_NOSYSTEM", "1"),
+            ]
+            .map(|(k, v)| (k.to_owned(), v.to_owned())),
+        );
         let checkout = CommandSpec {
             argv: [
                 "git",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
                 "checkout",
                 "--quiet",
                 "--force",

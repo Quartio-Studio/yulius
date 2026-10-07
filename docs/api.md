@@ -228,8 +228,11 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 ยง6.7, ย
   production`), with only `PATH`, `HOME` (the sandbox home), `LANG`, `YULIUS_ENVIRONMENT`,
   `YULIUS_BRANCH` and `YULIUS_COMMIT` set, stdin closed, the last 1 MiB of combined output kept,
   and a 30-minute limit after which the whole process group is killed and the shell reaped
-  (`state: "failed"`). It runs with the server's privileges, without sandbox containment.
-  Runs left `running` by a server restart become `error`.
+  (`state: "failed"`). It runs with the server's privileges, without sandbox containment; the
+  clone's `.git` and the sandbox home are writable by the sandbox's agents, so the checkout
+  ignores global/system Git config and disables hooks and fsmonitor (repository-local config
+  such as filter drivers is still read). Commands are visible to every reader of the sandbox:
+  keep secrets out of them. Runs left `running` by a server restart become `error`.
 
 ## Skills, workflows, automations, MCP
 

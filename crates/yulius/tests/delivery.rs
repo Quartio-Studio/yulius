@@ -1111,7 +1111,13 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
         early.body
     );
 
-    // The confirmed run checks out the integration head and records the command output.
+    // The confirmed run checks out the integration head and records the command output. A hook
+    // an agent planted in the shared clone's `.git` is not executed by the server's checkout.
+    let marker = f.repo.join("hook-ran");
+    let hook = f.repo.join(".git/hooks/post-checkout");
+    std::fs::create_dir_all(hook.parent().ok_or("hooks dir")?)?;
+    std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display()))?;
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
     let started = f
         .req(
             Method::POST,
@@ -1140,6 +1146,7 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
         "{run}"
     );
     assert_eq!(run["commit"], f.origin_sha("quartio")?.as_str());
+    assert!(!marker.exists(), "planted post-checkout hook must not run");
     let d = f.delivery("t1").await?;
     assert_eq!(d["stage"], "env_done");
     assert_eq!(d["environment"], "dev-vm");
