@@ -5,9 +5,25 @@ ignore = []
 [licenses]
 version = 2
 # Extend deliberately when an actual dependency needs another reviewed license.
-# Unicode-3.0: unicode-ident (via proc-macro2, required by thiserror/clap derives); OSI approved,
-# permissive data license. Added 2026-10-07 for the product workspace (SPEC-002).
-allow = ["MIT", "Unicode-3.0"]
+# Reviewed 2026-10-07 against the SPEC-002 dependency set (cargo-deny probe of the planned crates):
+# - Unicode-3.0: unicode-ident (proc-macro2, required by every derive macro).
+# - Apache-2.0: sync_wrapper (axum), ring (with ISC), ryu (or BSL-1.0), serial2 (or BSD-2-Clause).
+# - ISC: ring, untrusted, rustls-webpki (TLS for GitHub/import HTTPS clients).
+# - BSD-3-Clause: subtle, curve25519-dalek, ed25519-dalek (crypto), encoding_rs, matchit (axum router).
+# - BSD-2-Clause: alternative grant on serial2 (portable-pty).
+# - Zlib: foldhash (hashbrown).
+# - CDLA-Permissive-2.0: webpki-root-certs (root certificate data via rustls-platform-verifier).
+# All are permissive; copyleft licenses remain disallowed.
+allow = [
+    "MIT",
+    "Unicode-3.0",
+    "Apache-2.0",
+    "ISC",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+]
 confidence-threshold = 0.93
 
 [bans]
