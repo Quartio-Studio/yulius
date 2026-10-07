@@ -91,10 +91,10 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
             yulius_github::GitHubConfig::github_com().map_err(|e| e.to_string())?,
         )?),
         session_host: Arc::new(PtySessionHost::new(config.yulius_exe.clone())),
-        harness: Arc::new(HarnessAdapter {
-            yulius_exe: config.yulius_exe.clone(),
-            yulius_url: config.internal_url.clone(),
-        }),
+        harness: Arc::new(HarnessAdapter::new(
+            config.yulius_exe.clone(),
+            config.internal_url.clone(),
+        )),
         git: Arc::new(GitAdapter::new("git")),
     };
     Ok(App::new(config, deps))

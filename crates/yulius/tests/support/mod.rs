@@ -244,10 +244,10 @@ pub fn harness_with_git(
         crypto: Arc::new(MasterKeyCrypto::from_key(&[9u8; 32])?),
         github: github.clone(),
         session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
-        harness: Arc::new(yulius::wiring::harness::HarnessAdapter {
-            yulius_exe: "/bin/false".into(),
-            yulius_url: "http://127.0.0.1:1".into(),
-        }),
+        harness: Arc::new(yulius::wiring::harness::HarnessAdapter::new(
+            "/bin/false".into(),
+            "http://127.0.0.1:1",
+        )),
         git,
     };
     let app = App::new(config, deps);

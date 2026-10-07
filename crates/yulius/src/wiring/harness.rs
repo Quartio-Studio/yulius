@@ -25,6 +25,31 @@ pub struct HarnessAdapter {
     pub yulius_exe: PathBuf,
     /// Internal listener URL.
     pub yulius_url: String,
+    /// Capabilities of the installed Codex CLI, probed on first Codex launch.
+    codex_features: std::sync::OnceLock<yulius_harness::probe::CodexFeatures>,
+}
+
+impl HarnessAdapter {
+    /// Adapter for hooks calling `yulius_exe` and MCP at `yulius_url`.
+    #[must_use]
+    pub fn new(yulius_exe: PathBuf, yulius_url: impl Into<String>) -> Self {
+        Self {
+            yulius_exe,
+            yulius_url: yulius_url.into(),
+            codex_features: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn codex_features(&self, scratch: &std::path::Path) -> yulius_harness::probe::CodexFeatures {
+        *self.codex_features.get_or_init(|| {
+            let features = yulius_harness::probe::probe_codex(
+                std::path::Path::new(yulius_harness::launch::CODEX_PROGRAM),
+                scratch,
+            );
+            tracing::info!(no_daemon = features.no_daemon, "probed the Codex CLI");
+            features
+        })
+    }
 }
 
 fn to_system(ts: Timestamp) -> SystemTime {
@@ -109,6 +134,11 @@ impl HarnessPort for HarnessAdapter {
             yulius_url: self.yulius_url.clone(),
             mcp_servers,
             credential,
+            codex_features: if l.harness == Harness::Codex {
+                self.codex_features(&l.run_dir.join("codex-probe"))
+            } else {
+                yulius_harness::probe::CodexFeatures::default()
+            },
         };
         let plan = launch::plan_launch(&request).map_err(|e| AppError::Invalid(e.to_string()))?;
         let mut secret_env = plan.secret_env;

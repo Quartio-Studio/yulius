@@ -137,6 +137,8 @@ pub struct LaunchRequest {
     pub mcp_servers: Vec<McpServerSpec>,
     /// Provider credential.
     pub credential: Credential,
+    /// Optional flags of the installed Codex CLI (ignored for Claude Code).
+    pub codex_features: crate::probe::CodexFeatures,
 }
 
 /// A config file the supervisor writes before spawning.
@@ -538,12 +540,11 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     }
     let hooks_json = json!({ "hooks": hooks });
 
-    let mut argv = vec![
-        CODEX_PROGRAM.to_owned(),
-        "--no-daemon".into(),
-        "-C".into(),
-        utf8(&request.worktree, "worktree")?.to_owned(),
-    ];
+    let mut argv = vec![CODEX_PROGRAM.to_owned()];
+    if request.codex_features.no_daemon {
+        argv.push("--no-daemon".into());
+    }
+    argv.extend(["-C".into(), utf8(&request.worktree, "worktree")?.to_owned()]);
     let mut config = |key: String, value: String| {
         argv.extend(["-c".into(), format!("{key}={value}")]);
     };

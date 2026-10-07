@@ -131,10 +131,7 @@ fn build(data: &Path, fake: &Path) -> Result<Arc<App>, Box<dyn std::error::Error
         github: Arc::new(FakeGitHub::default()),
         session_host: Arc::new(PtySessionHost::new(exe.clone())),
         harness: Arc::new(FakeAgentHarness {
-            inner: HarnessAdapter {
-                yulius_exe: exe,
-                yulius_url: "http://127.0.0.1:9".into(),
-            },
+            inner: HarnessAdapter::new(exe, "http://127.0.0.1:9"),
             fake: fake.to_path_buf(),
         }),
         git: Arc::new(GitAdapter::new("git")),
