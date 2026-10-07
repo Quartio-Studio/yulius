@@ -1,0 +1,529 @@
+//! Launch-plan contracts: argv snapshots, configuration files and secret placement
+//! (SPEC-002 §7.2, SEC-002, AC-MCP-1, AC-NFR-7).
+
+use std::path::PathBuf;
+
+use serde_json::{Value, json};
+use yulius_domain::harness::Harness;
+use yulius_harness::launch::{
+    Credential, LaunchError, LaunchMode, LaunchPlan, LaunchRequest, McpServerSpec, McpTransport,
+    PRIVATE_FILE_MODE, PlannedFile, plan_launch,
+};
+use yulius_harness::secret::Secret;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+const CLAUDE_TOKEN: &str = "sk-ant-oat01-SYNTHETIC_token_value_for_tests_only_0123456789";
+const CODEX_AUTH: &str = r#"{"tokens":{"access_token":"SYNTHETIC-ACCESS","refresh_token":"SYNTHETIC-REFRESH"},"last_refresh":"2026-10-07T08:00:00Z"}"#;
+const SESSION: &str = "3f2b1c9e-aaaa-4bbb-8ccc-0123456789ab";
+
+fn servers() -> Vec<McpServerSpec> {
+    vec![
+        McpServerSpec {
+            name: "apify".into(),
+            transport: McpTransport::Stdio {
+                command: "npx".into(),
+                args: vec!["-y".into(), "@apify/actors-mcp-server".into()],
+                env_names: vec!["APIFY_TOKEN".into()],
+            },
+        },
+        McpServerSpec {
+            name: "quartio".into(),
+            transport: McpTransport::Http {
+                url: "https://mcp.example.test/mcp".into(),
+                bearer_env: Some("QUARTIO_MCP_TOKEN".into()),
+            },
+        },
+    ]
+}
+
+fn claude_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
+    LaunchRequest {
+        harness: Harness::ClaudeCode,
+        mode,
+        worktree: PathBuf::from("/data/sandboxes/s1/worktrees/t1"),
+        sandbox_home: PathBuf::from("/data/sandboxes/s1/home"),
+        run_dir: PathBuf::from("/data/runs/a1"),
+        codex_home: None,
+        model: Some("claude-opus-4-1".into()),
+        effort: Some("high".into()),
+        contained,
+        yulius_exe: PathBuf::from("/opt/yulius/bin/yulius"),
+        yulius_url: "http://127.0.0.1:7801/".into(),
+        mcp_servers: servers(),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+    }
+}
+
+fn codex_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
+    LaunchRequest {
+        harness: Harness::Codex,
+        codex_home: Some(PathBuf::from("/data/sandboxes/s1/codex/acc1")),
+        model: Some("gpt-5.1-codex".into()),
+        credential: Credential::CodexAuthJson(Secret::new(CODEX_AUTH.as_bytes().to_vec())),
+        ..claude_request(mode, contained)
+    }
+}
+
+fn file<'a>(plan: &'a LaunchPlan, name: &str) -> Result<&'a PlannedFile, String> {
+    plan.files
+        .iter()
+        .find(|f| f.path.ends_with(name))
+        .ok_or_else(|| format!("missing planned file {name}"))
+}
+
+fn json_of(file: &PlannedFile) -> Result<Value, serde_json::Error> {
+    serde_json::from_slice(&file.contents)
+}
+
+fn assert_secret_absent(plan: &LaunchPlan, secret: &str) {
+    assert!(
+        !plan.argv.iter().any(|a| a.contains(secret)),
+        "secret in argv"
+    );
+    assert!(
+        !plan
+            .env
+            .iter()
+            .any(|(k, v)| k.contains(secret) || v.contains(secret)),
+        "secret in non-secret env"
+    );
+    assert!(
+        !format!("{plan:?}").contains(secret),
+        "secret in Debug output"
+    );
+}
+
+#[test]
+fn claude_new_session_argv_snapshot_and_files() -> TestResult {
+    let plan = plan_launch(&claude_request(
+        LaunchMode::New {
+            session_id: Some(SESSION.into()),
+            prompt: Some("Build the login page".into()),
+        },
+        true,
+    ))?;
+    assert_eq!(
+        plan.argv,
+        [
+            "claude",
+            "--session-id",
+            SESSION,
+            "--settings",
+            "/data/runs/a1/claude-settings.json",
+            "--mcp-config",
+            "/data/runs/a1/mcp.json",
+            "--strict-mcp-config",
+            "--model",
+            "claude-opus-4-1",
+            "--effort",
+            "high",
+            "--dangerously-skip-permissions",
+            "Build the login page",
+        ]
+    );
+    assert_eq!(plan.cwd, PathBuf::from("/data/sandboxes/s1/worktrees/t1"));
+    assert_eq!(plan.session_id.as_deref(), Some(SESSION));
+    assert_eq!(
+        plan.env,
+        [
+            (
+                "CLAUDE_CONFIG_DIR".to_owned(),
+                "/data/sandboxes/s1/home/.claude".to_owned()
+            ),
+            ("YULIUS_URL".to_owned(), "http://127.0.0.1:7801".to_owned()),
+        ]
+    );
+    assert_eq!(
+        plan.secret_env,
+        [(
+            "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            CLAUDE_TOKEN.to_owned()
+        )]
+    );
+    assert_secret_absent(&plan, CLAUDE_TOKEN);
+    for planned in &plan.files {
+        assert_eq!(planned.mode, PRIVATE_FILE_MODE);
+        assert!(!String::from_utf8_lossy(&planned.contents).contains(CLAUDE_TOKEN));
+    }
+
+    let settings = json_of(file(&plan, "claude-settings.json")?)?;
+    for event in ["SessionStart", "UserPromptSubmit", "Stop", "Notification"] {
+        assert_eq!(
+            settings["hooks"][event],
+            json!([{ "hooks": [{
+                "type": "command",
+                "command": format!("'/opt/yulius/bin/yulius' hook claude {event}"),
+                "timeout": 15
+            }] }])
+        );
+    }
+    let mcp = json_of(file(&plan, "mcp.json")?)?;
+    assert_eq!(
+        mcp,
+        json!({ "mcpServers": {
+            "yulius": {
+                "type": "http",
+                "url": "http://127.0.0.1:7801/mcp",
+                "headers": { "Authorization": "Bearer ${YULIUS_TASK_TOKEN}" }
+            },
+            "apify": {
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@apify/actors-mcp-server"],
+                "env": { "APIFY_TOKEN": "${APIFY_TOKEN}" }
+            },
+            "quartio": {
+                "type": "http",
+                "url": "https://mcp.example.test/mcp",
+                "headers": { "Authorization": "Bearer ${QUARTIO_MCP_TOKEN}" }
+            }
+        }})
+    );
+    Ok(())
+}
+
+#[test]
+fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
+    let mut request = claude_request(
+        LaunchMode::Resume {
+            session_id: SESSION.into(),
+            prompt: Some("--continue after the limit".into()),
+        },
+        false,
+    );
+    request.model = None;
+    request.effort = None;
+    request.mcp_servers.clear();
+    let plan = plan_launch(&request)?;
+    assert_eq!(
+        plan.argv,
+        [
+            "claude",
+            "--resume",
+            SESSION,
+            "--settings",
+            "/data/runs/a1/claude-settings.json",
+            "--mcp-config",
+            "/data/runs/a1/mcp.json",
+            "--strict-mcp-config",
+            "--",
+            "--continue after the limit",
+        ]
+    );
+    assert_eq!(plan.session_id.as_deref(), Some(SESSION));
+    let mcp = json_of(file(&plan, "mcp.json")?)?;
+    assert_eq!(
+        mcp["mcpServers"].as_object().map(|m| m.len()),
+        Some(1),
+        "the yulius server is always attached"
+    );
+    Ok(())
+}
+
+#[test]
+fn claude_new_session_without_id_or_prompt() -> TestResult {
+    let plan = plan_launch(&claude_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: Some(String::new()),
+        },
+        false,
+    ))?;
+    assert_eq!(plan.session_id, None);
+    assert!(!plan.argv.iter().any(|a| a == "--session-id"));
+    assert_eq!(plan.argv.last().map(String::as_str), Some("high"));
+    Ok(())
+}
+
+#[test]
+fn codex_new_session_argv_snapshot_and_files() -> TestResult {
+    let plan = plan_launch(&codex_request(
+        LaunchMode::New {
+            session_id: Some(SESSION.into()),
+            prompt: Some("Build the login page".into()),
+        },
+        true,
+    ))?;
+    assert_eq!(
+        plan.argv,
+        [
+            "codex",
+            "--no-daemon",
+            "-C",
+            "/data/sandboxes/s1/worktrees/t1",
+            "-c",
+            "mcp_servers.yulius.url=\"http://127.0.0.1:7801/mcp\"",
+            "-c",
+            "mcp_servers.yulius.bearer_token_env_var=\"YULIUS_TASK_TOKEN\"",
+            "-c",
+            "mcp_servers.apify.command=\"npx\"",
+            "-c",
+            "mcp_servers.apify.args=[\"-y\",\"@apify/actors-mcp-server\"]",
+            "-c",
+            "mcp_servers.apify.env_vars=[\"APIFY_TOKEN\"]",
+            "-c",
+            "mcp_servers.quartio.url=\"https://mcp.example.test/mcp\"",
+            "-c",
+            "mcp_servers.quartio.bearer_token_env_var=\"QUARTIO_MCP_TOKEN\"",
+            "-c",
+            "model_reasoning_effort=\"high\"",
+            "-m",
+            "gpt-5.1-codex",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-bypass-hook-trust",
+            "Build the login page",
+        ]
+    );
+    // Codex assigns its own session id; it is discovered from the new rollout.
+    assert_eq!(plan.session_id, None);
+    assert_eq!(
+        plan.env,
+        [
+            (
+                "CODEX_HOME".to_owned(),
+                "/data/sandboxes/s1/codex/acc1".to_owned()
+            ),
+            ("YULIUS_URL".to_owned(), "http://127.0.0.1:7801".to_owned()),
+        ]
+    );
+    assert!(plan.secret_env.is_empty());
+    for secret in ["SYNTHETIC-ACCESS", "SYNTHETIC-REFRESH"] {
+        assert_secret_absent(&plan, secret);
+    }
+    let auth = file(&plan, "auth.json")?;
+    assert_eq!(
+        auth.path,
+        PathBuf::from("/data/sandboxes/s1/codex/acc1/auth.json")
+    );
+    assert_eq!(auth.mode, 0o600);
+    assert_eq!(auth.contents, CODEX_AUTH.as_bytes());
+    let hooks = json_of(file(&plan, "hooks.json")?)?;
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+        "PermissionRequest",
+    ] {
+        assert_eq!(
+            hooks["hooks"][event],
+            json!([{ "hooks": [{
+                "type": "command",
+                "command": format!("'/opt/yulius/bin/yulius' hook codex {event}")
+            }] }])
+        );
+    }
+    assert_eq!(file(&plan, "hooks.json")?.mode, 0o600);
+    Ok(())
+}
+
+#[test]
+fn codex_resume_uses_subcommand_and_never_bypasses_when_uncontained() -> TestResult {
+    let mut request = codex_request(
+        LaunchMode::Resume {
+            session_id: SESSION.into(),
+            prompt: Some("Continue the task.".into()),
+        },
+        false,
+    );
+    request.mcp_servers.clear();
+    request.effort = None;
+    let plan = plan_launch(&request)?;
+    assert_eq!(
+        plan.argv,
+        [
+            "codex",
+            "--no-daemon",
+            "-C",
+            "/data/sandboxes/s1/worktrees/t1",
+            "-c",
+            "mcp_servers.yulius.url=\"http://127.0.0.1:7801/mcp\"",
+            "-c",
+            "mcp_servers.yulius.bearer_token_env_var=\"YULIUS_TASK_TOKEN\"",
+            "-m",
+            "gpt-5.1-codex",
+            "--dangerously-bypass-hook-trust",
+            "resume",
+            SESSION,
+            "Continue the task.",
+        ]
+    );
+    assert_eq!(plan.session_id.as_deref(), Some(SESSION));
+    Ok(())
+}
+
+#[test]
+fn toml_values_are_escaped_not_interpolated() -> TestResult {
+    let mut request = codex_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        false,
+    );
+    request.mcp_servers = vec![McpServerSpec {
+        name: "odd".into(),
+        transport: McpTransport::Stdio {
+            command: "/opt/my \"tool\"".into(),
+            args: vec!["a\\b".into(), "$(rm -rf /)".into()],
+            env_names: vec![],
+        },
+    }];
+    let plan = plan_launch(&request)?;
+    assert!(
+        plan.argv
+            .contains(&"mcp_servers.odd.command=\"/opt/my \\\"tool\\\"\"".to_owned())
+    );
+    assert!(
+        plan.argv
+            .contains(&"mcp_servers.odd.args=[\"a\\\\b\",\"$(rm -rf /)\"]".to_owned())
+    );
+    assert!(!plan.argv.iter().any(|a| a.contains("env_vars")));
+    Ok(())
+}
+
+#[test]
+fn hook_command_quotes_the_executable_path() -> TestResult {
+    let mut request = claude_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        false,
+    );
+    request.yulius_exe = PathBuf::from("/opt/it's here/yulius");
+    let plan = plan_launch(&request)?;
+    let settings = json_of(file(&plan, "claude-settings.json")?)?;
+    assert_eq!(
+        settings["hooks"]["Stop"][0]["hooks"][0]["command"],
+        "'/opt/it'\\''s here/yulius' hook claude Stop"
+    );
+    Ok(())
+}
+
+#[test]
+fn invalid_requests_are_rejected_without_echoing_values() {
+    let new = || LaunchMode::New {
+        session_id: None,
+        prompt: None,
+    };
+    let mismatch = LaunchRequest {
+        credential: Credential::CodexAuthJson(Secret::new(b"{}".to_vec())),
+        ..claude_request(new(), false)
+    };
+    assert_eq!(
+        plan_launch(&mismatch),
+        Err(LaunchError::CredentialMismatch(Harness::ClaudeCode))
+    );
+    let no_home = LaunchRequest {
+        codex_home: None,
+        ..codex_request(new(), false)
+    };
+    assert_eq!(plan_launch(&no_home), Err(LaunchError::MissingCodexHome));
+
+    let bad_session = claude_request(
+        LaunchMode::Resume {
+            session_id: "--help".into(),
+            prompt: None,
+        },
+        false,
+    );
+    assert_eq!(
+        plan_launch(&bad_session),
+        Err(LaunchError::Invalid("session_id"))
+    );
+    let bad_prompt = claude_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: Some("a\0b".into()),
+        },
+        false,
+    );
+    assert_eq!(
+        plan_launch(&bad_prompt),
+        Err(LaunchError::Invalid("prompt"))
+    );
+    let bad_model = LaunchRequest {
+        model: Some("--dangerously-skip-permissions".into()),
+        ..claude_request(new(), false)
+    };
+    assert_eq!(plan_launch(&bad_model), Err(LaunchError::Invalid("model")));
+    let bad_url = LaunchRequest {
+        yulius_url: "file:///etc/passwd".into(),
+        ..claude_request(new(), false)
+    };
+    assert_eq!(
+        plan_launch(&bad_url),
+        Err(LaunchError::Invalid("yulius_url"))
+    );
+
+    let mut reserved = claude_request(new(), false);
+    reserved.mcp_servers.push(McpServerSpec {
+        name: "yulius".into(),
+        transport: McpTransport::Http {
+            url: "http://evil.test/mcp".into(),
+            bearer_env: None,
+        },
+    });
+    assert_eq!(
+        plan_launch(&reserved),
+        Err(LaunchError::DuplicateMcpServer("yulius".into()))
+    );
+    let mut duplicate = claude_request(new(), false);
+    duplicate.mcp_servers.push(servers()[0].clone());
+    assert_eq!(
+        plan_launch(&duplicate),
+        Err(LaunchError::DuplicateMcpServer("apify".into()))
+    );
+    let mut bad_name = claude_request(new(), false);
+    bad_name.mcp_servers[0].name = "a.b".into();
+    assert_eq!(
+        plan_launch(&bad_name),
+        Err(LaunchError::Invalid("mcp server name"))
+    );
+    let mut bad_env = claude_request(new(), false);
+    bad_env.mcp_servers[0] = McpServerSpec {
+        name: "x".into(),
+        transport: McpTransport::Stdio {
+            command: "x".into(),
+            args: vec![],
+            env_names: vec!["BAD-NAME".into()],
+        },
+    };
+    assert_eq!(
+        plan_launch(&bad_env),
+        Err(LaunchError::Invalid("mcp env name"))
+    );
+    let error = format!("{:?}", plan_launch(&bad_prompt));
+    assert!(!error.contains("a\\0b"));
+}
+
+#[test]
+fn planned_file_write_is_private_and_replaces_atomically() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("auth.json");
+    std::fs::write(&path, b"old")?;
+    let planned = PlannedFile {
+        path: path.clone(),
+        contents: CODEX_AUTH.as_bytes().to_vec(),
+        mode: PRIVATE_FILE_MODE,
+    };
+    planned.write()?;
+    assert_eq!(std::fs::read(&path)?, CODEX_AUTH.as_bytes());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&path)?.permissions().mode() & 0o777;
+        // The replacement file is created with the planned mode, not the old file's mode.
+        assert_eq!(mode, 0o600);
+    }
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())?.collect::<Result<_, _>>()?;
+    assert_eq!(leftovers.len(), 1, "no temporary file left behind");
+    let missing_parent = PlannedFile {
+        path: dir.path().join("no/such/dir/file"),
+        ..planned
+    };
+    assert!(missing_parent.write().is_err());
+    assert!(!format!("{missing_parent:?}").contains("SYNTHETIC"));
+    Ok(())
+}

@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":"ok"},"sessionId":"s","uuid":"a"
+[1,2,3]
+{"no_type":true}
+{"type":"future-record","data":1}
+{"type":"assistant"}
+not json at all

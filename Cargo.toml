@@ -26,7 +26,7 @@ repository = "https://github.com/Quartio-Studio/yulius-v2"
 
 [workspace.dependencies]
 # Internal crates
-yulius-domain = { path = "crates/yulius-domain" }
+yulius-domain = { path = "crates/yulius-domain", version = "0.1.0" }
 yulius-contracts = { path = "crates/yulius-contracts" }
 yulius-app = { path = "crates/yulius-app" }
 yulius-store = { path = "crates/yulius-store" }
