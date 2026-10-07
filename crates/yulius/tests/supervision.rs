@@ -814,33 +814,23 @@ fn provider_exhaustion_translates_the_session_to_codex() -> TestResult {
         let second = &attempts[1];
         assert_eq!(attempts[0].harness, Harness::ClaudeCode);
         assert_eq!(second.harness, Harness::Codex, "switched provider");
-        eprintln!("cross-provider launch kind: {:?}", second.launch_kind);
+        assert_eq!(second.launch_kind, LaunchKind::Translated);
+        // The synthesized rollout carries the Claude conversation.
+        let session = second
+            .provider_session_id
+            .clone()
+            .ok_or("codex session id")?;
+        let sessions = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex/sessions");
+        let rollout = yulius_harness::paths::find_codex_rollout(&sessions, &session)?
+            .ok_or("synthesized rollout")?;
+        let text = std::fs::read_to_string(rollout)?;
         assert!(
-            matches!(
-                second.launch_kind,
-                LaunchKind::Translated | LaunchKind::Handoff
-            ),
-            "{:?}",
-            second.launch_kind
+            text.contains("remember the blue widget"),
+            "user turn translated"
         );
-        if second.launch_kind == LaunchKind::Translated {
-            // The synthesized rollout carries the Claude conversation.
-            let session = second
-                .provider_session_id
-                .clone()
-                .ok_or("codex session id")?;
-            let sessions = data
-                .join("sandboxes")
-                .join(sandbox.as_str())
-                .join("codex/sessions");
-            let rollout = yulius_harness::paths::find_codex_rollout(&sessions, &session)?
-                .ok_or("synthesized rollout")?;
-            let text = std::fs::read_to_string(rollout)?;
-            assert!(
-                text.contains("remember the blue widget"),
-                "user turn translated"
-            );
-        }
         app.stop_task_now(&id).await?;
         wait_for("the stop", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
