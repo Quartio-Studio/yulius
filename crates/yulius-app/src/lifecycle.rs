@@ -210,16 +210,19 @@ impl App {
         self.task_summary(&task).await
     }
 
-    /// Initial steps of a workflow (CP7 provides workflows; none yet → no steps).
+    /// Initial steps of a workflow usable in `sandbox` (no workflow → no steps; AUT-004).
     ///
     /// # Errors
-    /// Store failures.
+    /// `Invalid` for an unknown workflow or one of another sandbox; store failures.
     pub async fn workflow_steps(
         &self,
-        _sandbox: &SandboxId,
-        _workflow: Option<&str>,
+        sandbox: &SandboxId,
+        workflow: Option<&str>,
     ) -> AppResult<Vec<String>> {
-        Ok(Vec::new())
+        match workflow.map(str::trim).filter(|w| !w.is_empty()) {
+            None => Ok(Vec::new()),
+            Some(id) => Ok(self.visible_workflow(sandbox, id).await?.steps),
+        }
     }
 
     /// `POST /api/tasks/{tid}/stop`.

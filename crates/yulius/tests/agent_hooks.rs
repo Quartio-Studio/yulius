@@ -482,3 +482,16 @@ async fn git_credentials_are_scoped_to_the_project_repository() -> TestResult {
     assert_eq!(anon.status, 401);
     Ok(())
 }
+
+#[tokio::test]
+async fn briefing_includes_the_task_workflow_instructions() -> TestResult {
+    let f = fixture().await?;
+    f.h.app.ensure_builtin_workflows().await?;
+    let mut task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    task.workflow_id = Some("wf-feature".into());
+    let briefing = f.h.app.briefing(&task, Agent::ClaudeCode).await?;
+    assert!(briefing.contains("## Workflow instructions"), "{briefing}");
+    assert!(briefing.contains("Implement only what the spec describes"));
+    assert!(briefing.len() <= 12 * 1024 + 64);
+    Ok(())
+}

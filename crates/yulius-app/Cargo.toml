@@ -24,6 +24,9 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 vt100 = { workspace = true }
+# MCP server connection test (Streamable HTTP and stdio process-group kill).
+reqwest = { workspace = true }
+rustls = { workspace = true }
 # Import server (CP10): chunk digests and snapshot archives.
 sha2 = { workspace = true }
 tar = { workspace = true }

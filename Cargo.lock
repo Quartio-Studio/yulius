@@ -2849,6 +2849,8 @@ dependencies = [
  "async-trait",
  "flate2",
  "nix 0.31.3",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

@@ -142,6 +142,11 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         .map_err(|e| format!("cannot bind {}: {e}", args.internal_bind))?;
     tracing::info!(public = %args.bind, internal = %args.internal_bind, "yulius listening");
     app.start_background();
+    match app.install_skill_catalog().await {
+        Ok(files) => tracing::debug!(files, "skill catalog ready"),
+        Err(err) => tracing::error!(error = %err, "cannot install the skill catalog"),
+    }
+    let scheduler = app.start_automation_scheduler();
     let public_router = yulius_server::public_router(app.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
     let internal_router = yulius_server::internal_router(app.clone())
@@ -152,6 +157,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let (a, b) = tokio::join!(public_task, internal_task);
     a.map_err(|e| e.to_string())?;
     b.map_err(|e| e.to_string())?;
+    scheduler.abort();
     tracing::info!("yulius stopped; detached sessions keep running");
     Ok(())
 }

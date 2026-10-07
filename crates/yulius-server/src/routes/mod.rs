@@ -3,23 +3,27 @@
 mod accounts;
 mod admin;
 mod analytics;
+mod automations;
 mod delivery;
 mod events;
 mod git;
 mod imports;
 mod internal;
 mod mcp;
+mod mcp_servers;
 mod projects;
 mod sandboxes;
 mod setup_auth;
+mod skills;
 mod status;
 mod tasks;
 mod terminal;
+mod workflows;
 
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use yulius_app::context::App;
 
 use crate::AppState;
@@ -66,6 +70,38 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
+        .route(
+            "/api/sandboxes/{sid}/workflows",
+            get(workflows::list).post(workflows::create),
+        )
+        .route(
+            "/api/workflows/{id}",
+            put(workflows::update).delete(workflows::delete),
+        )
+        .route(
+            "/api/sandboxes/{sid}/automations",
+            get(automations::list).post(automations::create),
+        )
+        .route(
+            "/api/automations/{id}",
+            put(automations::update).delete(automations::delete),
+        )
+        .route("/api/automations/{id}/run", post(automations::run_now))
+        .route("/api/automations/{id}/runs", get(automations::runs))
+        .route("/api/sandboxes/{sid}/skills", get(skills::list))
+        .route(
+            "/api/sandboxes/{sid}/skills/{name}",
+            get(skills::content).put(skills::set_enabled),
+        )
+        .route(
+            "/api/sandboxes/{sid}/mcp",
+            get(mcp_servers::list).post(mcp_servers::create),
+        )
+        .route(
+            "/api/mcp/{id}",
+            put(mcp_servers::update).delete(mcp_servers::delete),
+        )
+        .route("/api/mcp/{id}/test", post(mcp_servers::test))
         .route(
             "/api/admin/accounts",
             get(accounts::list).post(accounts::create),

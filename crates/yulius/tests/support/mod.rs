@@ -668,3 +668,150 @@ impl FakeGitHub {
             .and_then(|p| p.iter().find(|p| p.number == number).cloned())
     }
 }
+
+/// Like [`harness`] but lets a test adjust the configuration first (for example
+/// `max_live_sessions = 0`, which keeps created tasks queued without a process host).
+pub fn harness_with(
+    configure: impl FnOnce(&mut AppConfig),
+) -> Result<Harness, Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open_in_memory()?;
+    let github = Arc::new(FakeGitHub::default());
+    let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
+    let mut config = AppConfig::new(
+        dir.path().to_path_buf(),
+        "https://yulius.test",
+        "http://127.0.0.1:1",
+        "/bin/false".into(),
+    );
+    configure(&mut config);
+    let deps = Deps {
+        store: Arc::new(store.clone()),
+        clock: clock.clone(),
+        crypto: Arc::new(MasterKeyCrypto::from_key(&[9u8; 32])?),
+        github: github.clone(),
+        session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+        harness: Arc::new(yulius::wiring::harness::HarnessAdapter::new(
+            "/bin/false".into(),
+            "http://127.0.0.1:1",
+        )),
+        git: Arc::new(yulius::wiring::pending::UnavailableGit),
+        system: Arc::new(FixedSystem),
+    };
+    let app = App::new(config, deps);
+    let router = yulius_server::public_router(app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5000))));
+    let internal = yulius_server::internal_router(app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5001))));
+    Ok(Harness {
+        app,
+        internal,
+        github,
+        clock,
+        store,
+        router,
+        _dir: dir,
+    })
+}
+
+/// Inserts a GitHub-linked user (fake GitHub token `token-<login>`) with a CLI token and
+/// returns bearer credentials for it.
+pub async fn user_with_token(
+    h: &Harness,
+    id: &str,
+    login: &str,
+    instance_admin: bool,
+) -> Result<Creds, Box<dyn std::error::Error>> {
+    use yulius_app::model::{ApiTokenRecord, GitHubTokenRecord, UserRecord};
+    use yulius_app::ports::store::{SessionStore, UserStore};
+    use yulius_domain::ids::UserId;
+    let user_id = UserId::parse(id)?;
+    h.store
+        .insert_user(&UserRecord {
+            id: user_id.clone(),
+            github_login: Some(login.into()),
+            github_id: None,
+            display_name: login.into(),
+            avatar_url: None,
+            is_superadmin: false,
+            is_instance_admin: instance_admin,
+            password_hash: None,
+            created_at: Timestamp(1),
+            disabled_at: None,
+        })
+        .await?;
+    let access = h
+        .app
+        .deps
+        .crypto
+        .seal(format!("token-{login}").as_bytes())?;
+    h.store
+        .save_github_token(
+            &GitHubTokenRecord {
+                user_id: user_id.clone(),
+                access,
+                refresh: None,
+                expires_at: None,
+                refresh_expires_at: None,
+            },
+            Timestamp(1),
+        )
+        .await?;
+    let token = format!("yul_test_{login}");
+    h.store
+        .insert_api_token(&ApiTokenRecord {
+            id: format!("tok-{id}"),
+            user_id,
+            token_hash: h.app.deps.crypto.sha256_hex(token.as_bytes()),
+            label: "test".into(),
+            created_at: Timestamp(1),
+            revoked_at: None,
+        })
+        .await?;
+    Ok(Creds {
+        bearer: Some(token),
+        ..Creds::default()
+    })
+}
+
+/// Inserts an active sandbox for repository `Quartio-Studio/<slug>`.
+pub async fn add_sandbox(
+    h: &Harness,
+    id: &str,
+    slug: &str,
+    port_base: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use yulius_app::model::SandboxRecord;
+    use yulius_app::ports::store::SandboxStore;
+    use yulius_domain::ids::{SandboxId, UserId};
+    h.store
+        .insert_sandbox(&SandboxRecord {
+            id: SandboxId::parse(id)?,
+            slug: slug.into(),
+            repo_owner: "Quartio-Studio".into(),
+            repo_name: slug.into(),
+            github_repo_id: None,
+            default_branch: "main".into(),
+            profile_json: r#"{"preset":"studio","integration_branch":"quartio","production_branch":"main","merge":"squash","promote":"fast_forward","auto_promote":true,"environments":[]}"#.into(),
+            port_base,
+            port_count: 20,
+            onboarding_state: "not_needed".into(),
+            onboarding_task_id: None,
+            created_by: UserId::parse("u-owner")?,
+            created_at: Timestamp(1),
+            removed_at: None,
+        })
+        .await?;
+    Ok(())
+}
+
+/// GitHub permissions for an access level name (`read`, `write`, `admin`).
+pub fn perms(level: &str) -> GitHubPermissions {
+    GitHubPermissions {
+        admin: level == "admin",
+        maintain: false,
+        push: level == "write",
+        triage: false,
+        pull: true,
+    }
+}

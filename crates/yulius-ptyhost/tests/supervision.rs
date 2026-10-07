@@ -919,3 +919,22 @@ async fn reconciliation_classifies_run_dirs_and_terminates_live_hosts() -> TestR
     assert!(!gone(i32::try_from(me)?));
     Ok(())
 }
+
+#[tokio::test]
+async fn deleting_the_run_directory_ends_the_orphaned_run() -> TestResult {
+    let mut run = start(&[]).await?;
+    let child = i32::try_from(run.host.status().child_pid)?;
+    assert!(kill(Pid::from_raw(child), None).is_ok(), "agent running");
+    std::fs::remove_dir_all(&run.run_dir)?;
+    // Two missed checks (2 s apart) start the shutdown; the echo agent obeys the interrupt.
+    let exit = within("the orphaned host to exit", run.host.wait()).await?;
+    eprintln!("host exit: {exit:?}");
+    let deadline = Instant::now() + WAIT;
+    while kill(Pid::from_raw(child), None) != Err(Errno::ESRCH) {
+        if Instant::now() > deadline {
+            return Err("the orphaned agent is still running".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(())
+}

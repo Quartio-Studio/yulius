@@ -147,6 +147,14 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
         abort_child(child_pid);
         return Err(fail(ExitReason::HostError, error));
     }
+    if let Some(identity) = dir_identity(run_dir) {
+        let watcher = Arc::clone(&shared);
+        let dir = run_dir.to_path_buf();
+        // Without the watchdog the run is still fully functional; it only loses orphan cleanup.
+        let _ = spawn_thread("ptyhost-orphan", move || {
+            orphan_watch(&watcher, &dir, &socket_path, identity);
+        });
+    }
     let linger = Duration::from_millis(u64::from(launch.linger_ms));
     wait_for_completion(&shared, linger)
 }
@@ -632,6 +640,43 @@ fn wait_for_completion(shared: &Shared, linger: Duration) -> Result<(), HostErro
             source: io::Error::other(message),
         }),
         None => Ok(()),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Orphan watchdog
+
+/// Interval between run-directory checks.
+const ORPHAN_CHECK: Duration = Duration::from_secs(2);
+/// Grace for the shutdown of an orphaned run.
+const ORPHAN_GRACE_MS: u32 = 5_000;
+
+/// `(device, inode)` of a directory.
+fn dir_identity(dir: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(dir).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// Shuts the run down when its run directory is removed or replaced, or its socket is gone, on
+/// two consecutive checks: nobody can reach the run or read its outcome any more, so it would
+/// otherwise run unmanaged forever (for example after a test's temporary directory is deleted
+/// or an operator removes a run directory).
+fn orphan_watch(shared: &Arc<Shared>, run_dir: &Path, socket: &Path, identity: (u64, u64)) {
+    let mut misses = 0u8;
+    loop {
+        if shared.wait_until(ORPHAN_CHECK, |s| s.reaped) {
+            return;
+        }
+        let intact = dir_identity(run_dir) == Some(identity)
+            && fs::symlink_metadata(socket).is_ok_and(|m| {
+                use std::os::unix::fs::FileTypeExt;
+                m.file_type().is_socket()
+            });
+        misses = if intact { 0 } else { misses + 1 };
+        if misses >= 2 {
+            start_shutdown(shared, ORPHAN_GRACE_MS);
+            return;
+        }
     }
 }
 

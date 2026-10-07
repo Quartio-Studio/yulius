@@ -346,6 +346,69 @@ impl App {
         Ok(worktree)
     }
 
+    /// Installs the enabled skills into the agent homes and, for Open Mercato skills, writes a
+    /// compatible `.ai/agentic.config.json` into the worktree (git-excluded so it never counts as
+    /// a change). Failures are logged; a run never fails because of them.
+    async fn prepare_run_extras(
+        &self,
+        sandbox: &SandboxRecord,
+        worktree: &Path,
+        home: &Path,
+        codex_home: Option<&Path>,
+    ) {
+        match self.skills_for_run(sandbox).await {
+            Ok(skills) if !skills.is_empty() => {
+                let claude_dir = home.join(".claude").join("skills");
+                let codex_dir = codex_home.map_or_else(
+                    || self.sandbox_dir(&sandbox.id).join("codex-skills"),
+                    |h| h.join("skills"),
+                );
+                if let Err(err) = self
+                    .deps
+                    .harness
+                    .install_skills(&skills, &claude_dir, &codex_dir)
+                {
+                    tracing::warn!(error = %err, sandbox = %sandbox.id, "skill installation failed");
+                }
+            }
+            Ok(_) => {}
+            Err(err) => tracing::warn!(error = %err, "cannot list skills for the run"),
+        }
+        match self.om_config_for(sandbox).await {
+            Ok(Some(config)) => {
+                let rel = ".ai/agentic.config.json";
+                let target = worktree.join(rel);
+                let exclude = self.sandbox_repo(&sandbox.id).join(".git/info/exclude");
+                let written = (|| -> std::io::Result<()> {
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    if !target.exists() {
+                        std::fs::write(&target, config.as_bytes())?;
+                    }
+                    let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+                    if !current.lines().any(|l| l.trim() == format!("/{rel}")) {
+                        if let Some(parent) = exclude.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        let mut text = current;
+                        if !text.is_empty() && !text.ends_with('\n') {
+                            text.push('\n');
+                        }
+                        text.push_str(&format!("/{rel}\n"));
+                        std::fs::write(&exclude, text)?;
+                    }
+                    Ok(())
+                })();
+                if let Err(err) = written {
+                    tracing::warn!(error = %err, "cannot write the Open Mercato agent config");
+                }
+            }
+            Ok(None) => {}
+            Err(err) => tracing::warn!(error = %err, "cannot render the Open Mercato agent config"),
+        }
+    }
+
     pub(crate) fn profile_of(
         &self,
         sandbox: &SandboxRecord,
@@ -485,6 +548,8 @@ impl App {
         } else {
             None
         };
+        self.prepare_run_extras(&sandbox, &worktree, &home, codex_home.as_deref())
+            .await;
 
         // Decide new / resume / translated.
         let (mode, launch_kind) = match (&start, &previous) {

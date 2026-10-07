@@ -258,7 +258,16 @@ impl App {
             port_count: sandbox.port_count,
             repo_instructions: repo.instructions.clone(),
         };
-        Ok(build_briefing(&input, DEFAULT_BUDGET_BYTES))
+        let workflow = self.workflow_instructions(task).await.map(|text| {
+            let clipped: String = text.chars().take(3_000).collect();
+            format!("\n\n## Workflow instructions\n\n{clipped}\n")
+        });
+        let budget = DEFAULT_BUDGET_BYTES - workflow.as_ref().map_or(0, String::len);
+        let mut briefing = build_briefing(&input, budget);
+        if let Some(workflow) = workflow {
+            briefing.push_str(&workflow);
+        }
+        Ok(briefing)
     }
 
     async fn hook_prompt_submit(&self, ctx: &AgentContext) -> AppResult<HookOutput> {
