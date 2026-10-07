@@ -155,6 +155,12 @@ impl Hub {
             .unwrap_or_default()
     }
 
+    /// Sequence number of the latest output (0 before any).
+    #[must_use]
+    pub fn output_seq(&self) -> u64 {
+        self.screen.lock().map(|s| s.seq).unwrap_or(0)
+    }
+
     /// Whether any output reached this hub since it was created or reset.
     #[must_use]
     pub fn has_output(&self) -> bool {

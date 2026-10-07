@@ -298,6 +298,7 @@ impl App {
                 origin: TaskOrigin::Onboarding,
                 automation_run: None,
                 start: false,
+                mode: crate::model::TaskMode::Prompt,
             })
             .await?;
         // Tasks created without a run start archived; the preparation task must stay visible.

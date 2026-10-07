@@ -880,6 +880,7 @@ impl App {
                 origin: TaskOrigin::Import,
                 automation_run: None,
                 start: false,
+                mode: crate::model::TaskMode::Prompt,
             })
             .await?;
         let final_dir = self

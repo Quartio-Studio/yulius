@@ -578,6 +578,7 @@ async fn restarts_and_races_never_duplicate_a_run() -> TestResult {
                 origin: TaskOrigin::Automation,
                 automation_run: Some(run_key(&b, b_slot)),
                 start: true,
+                mode: yulius_app::model::TaskMode::Prompt,
             })
             .await?;
 

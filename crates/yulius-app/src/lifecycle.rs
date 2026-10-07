@@ -12,7 +12,7 @@ use yulius_domain::task::TaskStatus;
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::{StepRecord, TaskOrigin, TaskRecord};
+use crate::model::{StepRecord, TaskMode, TaskOrigin, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
 use crate::supervisor::{RunStart, branch_for};
 use crate::tasks::title_from_prompt;
@@ -47,6 +47,8 @@ pub struct NewTask {
     pub automation_run: Option<String>,
     /// Start a run immediately (false for imported/archived tasks).
     pub start: bool,
+    /// Goal or prompt mode (TSK-010).
+    pub mode: TaskMode,
 }
 
 fn parse_harness(text: &str) -> AppResult<Harness> {
@@ -116,7 +118,7 @@ impl App {
             queued_at: req.start.then_some(now),
             gate_blocks: 0,
             wake_enabled: true,
-            mode: crate::model::TaskMode::Prompt,
+            mode: req.mode,
             harness_proposal: None,
         };
         let task = store.insert_task(&record).await?;
@@ -190,6 +192,12 @@ impl App {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require(&ctx.user, &sid, Action::Work).await?;
         let harness = parse_harness(&req.harness)?;
+        // New tasks run in goal mode unless the user picks prompt mode (TSK-010).
+        let mode = match req.mode.as_deref().map(str::trim) {
+            None | Some("") => TaskMode::Goal,
+            Some(text) => TaskMode::parse(text)
+                .ok_or_else(|| AppError::Invalid("mode must be goal or prompt".into()))?,
+        };
         let steps = self
             .workflow_steps(&sid, req.workflow_id.as_deref())
             .await?;
@@ -207,6 +215,7 @@ impl App {
                 origin: TaskOrigin::Ui,
                 automation_run: None,
                 start: true,
+                mode,
             })
             .await?;
         self.task_summary(&task).await

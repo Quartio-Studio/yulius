@@ -31,7 +31,7 @@ use crate::error::{AppError, AppResult};
 use crate::hub::Hub;
 use crate::model::{
     AccountRecord, AccountStatus, AttemptRecord, HarnessProposal, LaunchKind, MetricsRecord,
-    ProviderSessionRecord, SandboxRecord, Secret, SwitchDecisionRecord, TaskRecord,
+    ProviderSessionRecord, SandboxRecord, Secret, SwitchDecisionRecord, TaskMode, TaskRecord,
 };
 use crate::ports::harness::{
     HarnessLaunch, Observation, SessionMode, TranslationTarget, UsageSnapshot,
@@ -173,6 +173,33 @@ pub(crate) fn git_credential_env(exe: &Path) -> Vec<(String, String)> {
         ),
         ("GIT_CONFIG_VALUE_2".into(), "true".into()),
     ]
+}
+
+/// Quiet time after the TUI's first output before the goal is typed.
+const GOAL_QUIET: Duration = Duration::from_millis(1500);
+/// Upper bound for waiting until the TUI is ready for the goal.
+const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(45);
+/// Longest prompt used as the goal itself (Claude Code caps goal conditions at 500 characters).
+const GOAL_INLINE_MAX: usize = 450;
+/// The goal of a task whose prompt is too long to be the goal: the prompt is the first message.
+const GOAL_FOR_LONG_PROMPTS: &str =
+    "Everything requested in the first message of this session is done and verified.";
+/// Codex's answer to a goal set before its session started.
+const GOAL_NOT_READY: &str = "must start before you can";
+/// Tries to set the goal (Codex may need its session first).
+const GOAL_ATTEMPTS: usize = 3;
+
+/// The prompt as a one-line goal (control characters and runs of whitespace become single
+/// spaces), or `None` when it is too long to be the goal.
+pub(crate) fn goal_text(prompt: &str) -> Option<String> {
+    let line = prompt
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (line.chars().count() <= GOAL_INLINE_MAX).then_some(line)
 }
 
 /// Branch name for a task: `feat/<number>-<slug>`.
@@ -611,6 +638,17 @@ impl App {
         self.prepare_run_extras(&sandbox, &worktree, &home, codex_home.as_deref())
             .await;
 
+        // Goal mode (TSK-010): the prompt is set as the session goal through the harness's
+        // `/goal` command once the TUI is ready; Claude's goal is per session, so a resumed
+        // Claude session and any session on another harness get it again.
+        let goal_mode = task.mode == TaskMode::Goal;
+        let reapply_goal = goal_mode
+            && match &previous {
+                Some(prev) => {
+                    prev.harness != target_harness || target_harness == Harness::ClaudeCode
+                }
+                None => true,
+            };
         // Decide new / resume / translated.
         let (mode, launch_kind) = match (&start, &previous) {
             (RunStart::Resume { prompt }, Some(prev)) if prev.harness == target_harness => (
@@ -650,7 +688,11 @@ impl App {
                 }
             }
             (RunStart::Resume { prompt }, None) | (RunStart::Fresh { prompt }, _) => {
-                let prompt = prompt.clone().or_else(|| Some(task.prompt.clone()));
+                // In goal mode a short task prompt arrives as the goal itself; a long one is the
+                // first message and the goal refers to it (Claude caps goal conditions).
+                let prompt = prompt.clone().or_else(|| {
+                    (!goal_mode || goal_text(&task.prompt).is_none()).then(|| task.prompt.clone())
+                });
                 (
                     SessionMode::New {
                         session_id: Some(self.deps.crypto.new_id()),
@@ -813,7 +855,61 @@ impl App {
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
+        if reapply_goal {
+            self.spawn_goal(&task.id, &attempt_id, &task.prompt);
+        }
         Ok(())
+    }
+
+    /// Types `/goal <prompt>` into the attempt once its TUI is ready: after the first output
+    /// and [`GOAL_QUIET`] without new output, or at most [`GOAL_READY_TIMEOUT`] after the start.
+    fn spawn_goal(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId, prompt: &str) {
+        let app = Arc::clone(self);
+        let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
+        let command = format!(
+            "/goal {}",
+            goal_text(prompt).unwrap_or_else(|| GOAL_FOR_LONG_PROMPTS.to_owned())
+        );
+        tokio::spawn(async move {
+            let runtime = app.runtime(&task_id);
+            let started = tokio::time::Instant::now();
+            let mut last = runtime.hub.output_seq();
+            let mut quiet_since = started;
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let live = matches!(
+                    app.deps.store.live_attempt(&task_id).await,
+                    Ok(Some(a)) if a.id == attempt_id
+                );
+                if !live {
+                    return;
+                }
+                let seq = runtime.hub.output_seq();
+                if seq != last {
+                    last = seq;
+                    quiet_since = tokio::time::Instant::now();
+                }
+                let ready = last > 0 && quiet_since.elapsed() >= GOAL_QUIET;
+                if ready || started.elapsed() >= GOAL_READY_TIMEOUT {
+                    break;
+                }
+            }
+            // Codex refuses a goal until its session has started: retry a few times.
+            for _ in 0..GOAL_ATTEMPTS {
+                if let Err(err) = app.send_input(&task_id, command.as_bytes()).await {
+                    tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
+                    return;
+                }
+                // A separate Enter, so the TUI sees typed text first and then a submit.
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let _ = app.send_input(&task_id, b"\r").await;
+                tokio::time::sleep(Duration::from_millis(2500)).await;
+                if !runtime.hub.screen_text().contains(GOAL_NOT_READY) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        });
     }
 
     fn open_credential(&self, account: &AccountRecord) -> AppResult<Secret> {
@@ -1996,6 +2092,20 @@ mod tests {
     }
 
     use super::branch_for;
+
+    #[test]
+    fn goals_are_one_line_and_short() {
+        assert_eq!(
+            super::goal_text("Build the\n  widget\tnow").as_deref(),
+            Some("Build the widget now")
+        );
+        assert_eq!(super::goal_text("a\u{1b}[31mb").as_deref(), Some("a [31mb"));
+        assert!(super::goal_text(&"x".repeat(450)).is_some());
+        assert!(
+            super::goal_text(&"x".repeat(451)).is_none(),
+            "long prompts go first"
+        );
+    }
 
     #[test]
     fn branch_names_are_safe_and_bounded() {

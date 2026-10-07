@@ -220,6 +220,7 @@ async fn new_task(
             origin: TaskOrigin::Ui,
             automation_run: None,
             start: true,
+            mode: yulius_app::model::TaskMode::Prompt,
         })
         .await?;
     Ok(record.id)
@@ -439,6 +440,51 @@ async fn add_account(
         })
         .await?;
     Ok(account)
+}
+
+/// AC-TSK-9: a goal-mode task gets its prompt as `/goal <prompt>` typed into the session once
+/// the TUI is ready, not as a first message.
+#[test]
+fn goal_mode_types_the_goal_once_the_session_is_ready() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let record = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Ship the widget\nwith tests".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Goal".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: yulius_app::model::TaskMode::Goal,
+            })
+            .await?;
+        let id = record.id;
+        wait_for("the goal command", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "ECHO: /goal Ship the widget with tests")
+        })
+        .await?;
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
 }
 
 /// AC-ROT-2 (reactive path): the provider reports a usage limit at the end of a turn; Yulius moves
@@ -723,6 +769,7 @@ fn codex_usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
                 origin: TaskOrigin::Ui,
                 automation_run: None,
                 start: true,
+                mode: yulius_app::model::TaskMode::Prompt,
             })
             .await?;
         let id = record.id;

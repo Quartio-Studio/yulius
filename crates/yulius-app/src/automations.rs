@@ -859,6 +859,7 @@ impl App {
                 origin: TaskOrigin::Automation,
                 automation_run: Some(key.to_owned()),
                 start: true,
+                mode: crate::model::TaskMode::Prompt,
             })
             .await?;
         Ok(task.id)

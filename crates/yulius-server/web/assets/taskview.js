@@ -124,6 +124,7 @@ export function mountTaskView(ctx, sandbox, task) {
       h('span', { class: `glyph tone-${info.tone}`, 'aria-hidden': 'true' }, info.glyph),
       h('span', null, info.label),
       h('span', { class: `task-harness ${current.harness}`, title: hi.name }, hi.glyph),
+      current.mode === 'goal' ? h('span', { class: 'chip', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       current.account_label ? h('span', { class: 'muted xs' }, current.account_label) : null);
   }
 
@@ -208,6 +209,16 @@ export function mountComposer(ctx, sandbox) {
   const prompt = h('textarea', { class: 'textarea composer-prompt', placeholder: 'Describe what you want to build or change — e.g. “make me an online store”…', 'aria-label': 'Task prompt', maxlength: 100000 });
   const lastHarness = readJson(HARNESS_KEY, 'claude');
   const harnessInputs = ['claude', 'codex'].map((value) => h('input', { type: 'radio', name: 'composer-harness', value, checked: value === lastHarness }));
+  // Goal mode is the default (TSK-010): the prompt becomes the session's /goal.
+  const modeInputs = [['goal', 'Goal'], ['prompt', 'Prompt']].map(([value]) => h('input', { type: 'radio', name: 'composer-mode', value, checked: value === 'goal' }));
+  const modeHint = h('span', { class: 'muted xs' });
+  const renderModeHint = () => {
+    modeHint.textContent = modeInputs[0].checked
+      ? 'The agent keeps working until the goal is met (the harness\u2019s /goal).'
+      : 'Sent as a normal first message.';
+  };
+  modeInputs.forEach((input) => input.addEventListener('change', renderModeHint));
+  renderModeHint();
   const workflow = h('select', { class: 'select', 'aria-label': 'Workflow' }, h('option', { value: '' }, 'No workflow'));
   const model = h('input', { class: 'input', placeholder: 'default', autocomplete: 'off', 'aria-label': 'Model' });
   const effort = h('select', { class: 'select', 'aria-label': 'Effort' }, h('option', { value: '' }, 'default'), ['low', 'medium', 'high'].map((v) => h('option', { value: v }, v)));
@@ -222,6 +233,7 @@ export function mountComposer(ctx, sandbox) {
       banner,
       prompt,
       h('div', { class: 'composer-row' },
+        field('Mode', h('div', { class: 'stack-sm' }, h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Mode' }, modeInputs.map((input) => h('label', null, input, input.value === 'goal' ? 'Goal' : 'Prompt'))), modeHint)),
         field('Harness', h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Harness' }, harnessInputs.map((input) => h('label', null, input, harnessInfo(input.value).name)))),
         field('Workflow', workflow)),
       h('details', null,
@@ -294,7 +306,7 @@ export function mountComposer(ctx, sandbox) {
     if (!text) { prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
     const harness = harnessInputs.find((i) => i.checked).value;
     writeJson(HARNESS_KEY, harness);
-    const body = { prompt: text, harness };
+    const body = { prompt: text, harness, mode: modeInputs.find((i) => i.checked).value };
     if (workflow.value) body.workflow_id = workflow.value;
     if (model.value.trim()) body.model = model.value.trim();
     if (effort.value) body.effort = effort.value;
