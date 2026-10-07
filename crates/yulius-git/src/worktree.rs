@@ -81,6 +81,35 @@ impl Git {
         Ok(base_sha)
     }
 
+    /// Checks out the existing local branch `branch` in a new worktree at `path` (absolute).
+    /// Returns the branch head.
+    ///
+    /// # Errors
+    /// Invalid names, a missing branch, or Git failures (for example a branch already checked
+    /// out elsewhere).
+    pub fn worktree_add_existing(
+        &self,
+        repo: &Path,
+        path: &Path,
+        branch: &str,
+    ) -> Result<String, GitError> {
+        validate_branch_name(branch)?;
+        require_absolute("worktree path", path)?;
+        if !self.branch_exists(repo, branch)? {
+            return Err(GitError::InvalidInput {
+                what: "branch",
+                reason: format!("{branch} does not exist"),
+            });
+        }
+        self.run_ok(
+            Invocation::new(self, "worktree add", Some(repo))
+                .args(["worktree", "add", "--quiet", "--"])
+                .arg(path)
+                .arg(branch),
+        )?;
+        self.rev_parse(path, "HEAD")
+    }
+
     /// Lists the repository's worktrees; the main worktree comes first.
     pub fn worktree_list(&self, repo: &Path) -> Result<Vec<Worktree>, GitError> {
         let output = self.run_ok(Invocation::new(self, "worktree list", Some(repo)).args([

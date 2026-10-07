@@ -65,7 +65,8 @@ impl App {
             .await?
             .filter(|s| s.removed_at.is_none())
             .ok_or(AppError::NotFound)?;
-        if matches!(sandbox.onboarding_state.as_str(), "pending" | "preparing")
+        let onboarding = self.refresh_onboarding(&sandbox.id).await?;
+        if matches!(onboarding.as_str(), "pending" | "preparing")
             && req.origin != TaskOrigin::Onboarding
             && req.origin != TaskOrigin::Import
         {

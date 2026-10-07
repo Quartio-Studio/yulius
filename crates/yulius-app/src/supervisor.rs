@@ -465,6 +465,10 @@ impl App {
             }
             self.publish_task(&task.id).await;
         }
+        if matches!(start, RunStart::Resume { .. }) {
+            // Imported sessions get a native transcript and a worktree from the imported state.
+            self.prepare_imported_resume(&task.id).await?;
+        }
         let worktree = self.ensure_worktree(&sandbox, task).await?;
         let task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         let lineage = store.provider_sessions(&task.id).await?;
@@ -1047,6 +1051,11 @@ impl App {
             .map_or_else(|| "stopped_lost".into(), |t| t.status.as_str().to_owned());
         runtime.hub.exit(&status, exit.code);
         self.publish_task(task_id).await;
+        if let Ok(Some(task)) = self.deps.store.task(task_id).await
+            && let Err(err) = self.refresh_onboarding(&task.sandbox_id).await
+        {
+            tracing::warn!(error = %err, task = %task_id, "onboarding refresh failed");
+        }
         self.drain_queue().await;
     }
 

@@ -134,7 +134,14 @@ impl GitPort for GitAdapter {
             branch.to_owned(),
             base.to_owned(),
         );
-        blocking(move || git.worktree_add(&repo, &path, &branch, &base).map(|_| ())).await
+        blocking(move || {
+            if git.branch_exists(&repo, &branch)? {
+                git.worktree_add_existing(&repo, &path, &branch).map(|_| ())
+            } else {
+                git.worktree_add(&repo, &path, &branch, &base).map(|_| ())
+            }
+        })
+        .await
     }
 
     async fn remove_worktree(

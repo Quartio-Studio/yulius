@@ -491,3 +491,6 @@ pub async fn insert_sandbox(
         .await?;
     Ok(())
 }
+
+/// Repository fixtures (real Git over local remotes) for project and import tests.
+pub mod repos;

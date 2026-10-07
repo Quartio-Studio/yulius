@@ -4,8 +4,10 @@ mod accounts;
 mod admin;
 mod analytics;
 mod events;
+mod imports;
 mod internal;
 mod mcp;
+mod projects;
 mod sandboxes;
 mod setup_auth;
 mod status;
@@ -78,6 +80,24 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/analytics/summary", get(analytics::summary))
         .route("/api/analytics/tasks", get(analytics::tasks))
         .route("/api/status", get(status::status))
+        .route("/api/github/repositories", get(projects::repositories))
+        .route("/api/templates", get(projects::templates))
+        .route("/api/sandboxes", post(projects::create))
+        .route(
+            "/api/sandboxes/{sid}",
+            axum::routing::delete(projects::remove),
+        )
+        .route(
+            "/api/sandboxes/{sid}/onboarding/skip",
+            post(projects::skip_onboarding),
+        )
+        .route(
+            "/api/sandboxes/{sid}/onboarding/approve",
+            post(projects::approve_onboarding),
+        )
+        .route("/api/import", post(imports::create))
+        .route("/api/import/{job}/files/{name}", imports::chunk_route())
+        .route("/api/import/{job}/complete", post(imports::complete))
 }
 
 /// Internal (loopback) routes.

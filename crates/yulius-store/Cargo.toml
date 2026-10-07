@@ -18,6 +18,7 @@ layer = "adapter"
 yulius-domain = { workspace = true }
 yulius-app = { workspace = true }
 thiserror = { workspace = true }
+serde_json = { workspace = true }
 rusqlite = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
