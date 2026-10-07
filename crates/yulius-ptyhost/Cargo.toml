@@ -14,4 +14,21 @@ workspace = true
 [package.metadata.yulius]
 layer = "adapter"
 
+[features]
+# Helpers for tests in this and other crates (fake agent discovery).
+test-support = []
+
 [dependencies]
+yulius-contracts.workspace = true
+nix.workspace = true
+portable-pty.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+vt100.workspace = true
+
+[dev-dependencies]
+yulius-ptyhost = { path = ".", features = ["test-support"] }
+tempfile.workspace = true
