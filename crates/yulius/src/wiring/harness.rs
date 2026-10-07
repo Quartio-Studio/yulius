@@ -141,6 +141,16 @@ impl HarnessPort for HarnessAdapter {
             },
         };
         let plan = launch::plan_launch(&request).map_err(|e| AppError::Invalid(e.to_string()))?;
+        if l.harness == Harness::ClaudeCode {
+            yulius_harness::claude_config::ensure_claude_config(
+                &l.sandbox_home.join(".claude"),
+                &l.worktree,
+                l.contained,
+            )
+            .map_err(|e| {
+                AppError::Upstream(format!("cannot prepare the Claude Code config: {e}"))
+            })?;
+        }
         let mut secret_env = plan.secret_env;
         secret_env.extend(extra_secrets);
         Ok(HarnessPlan {

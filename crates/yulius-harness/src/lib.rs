@@ -7,6 +7,7 @@
 //! fatal (SPEC-002 R-01, EVT-002).
 
 pub mod claude;
+pub mod claude_config;
 pub mod codex;
 pub mod hook_client;
 pub mod launch;

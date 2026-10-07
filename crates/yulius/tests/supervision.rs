@@ -115,6 +115,11 @@ impl HarnessPort for FakeAgentHarness {
 }
 
 fn build(data: &Path, fake: &Path) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_with(data, Some(fake))
+}
+
+/// `fake = None` launches the real agent CLIs (live checks only).
+fn build_with(data: &Path, fake: Option<&Path>) -> Result<Arc<App>, Box<dyn std::error::Error>> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let store = SqliteStore::open(&data.join("yulius.db"))?;
     let mut config = AppConfig::new(
@@ -130,10 +135,13 @@ fn build(data: &Path, fake: &Path) -> Result<Arc<App>, Box<dyn std::error::Error
         crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
         github: Arc::new(FakeGitHub::default()),
         session_host: Arc::new(PtySessionHost::new(exe.clone())),
-        harness: Arc::new(FakeAgentHarness {
-            inner: HarnessAdapter::new(exe, "http://127.0.0.1:9"),
-            fake: fake.to_path_buf(),
-        }),
+        harness: match fake {
+            Some(fake) => Arc::new(FakeAgentHarness {
+                inner: HarnessAdapter::new(exe, "http://127.0.0.1:9"),
+                fake: fake.to_path_buf(),
+            }),
+            None => Arc::new(HarnessAdapter::new(exe, "http://127.0.0.1:9")),
+        },
         git: Arc::new(GitAdapter::new("git")),
     };
     Ok(App::new(config, deps))
@@ -418,5 +426,53 @@ fn runs_survive_a_server_restart_and_stop_cleanly() -> TestResult {
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Live: the real Claude Code TUI inside the real ptyhost with the launch plan Yulius generates
+/// (isolated config dir, hooks, MCP config) reaches its prompt without first-run or folder-trust
+/// screens. The credential is a dummy, so no provider request is made.
+#[test]
+#[ignore = "launches the real Claude Code CLI; set YULIUS_LIVE_CLAUDE=1"]
+fn real_claude_tui_reaches_the_prompt_inside_ptyhost() -> TestResult {
+    if std::env::var("YULIUS_LIVE_CLAUDE").as_deref() != Ok("1") {
+        return Err("set YULIUS_LIVE_CLAUDE=1 to run this live check".into());
+    }
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_with(&data, None)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_task(&app, &sandbox, &user, "Live TUI").await?;
+        let ready = wait_for(
+            "the Claude Code prompt",
+            Duration::from_secs(60),
+            || async {
+                let screen = app.runtime(&id).hub.screen_text();
+                screen.contains("Claude Code") && screen.contains("\u{276f}")
+            },
+        )
+        .await;
+        let screen = app.runtime(&id).hub.screen_text();
+        eprintln!("--- screen ---\n{screen}\n--------------");
+        ready?;
+        assert!(
+            !screen.contains("trust this folder"),
+            "folder-trust prompt shown"
+        );
+        assert!(
+            !screen.contains("Choose the text style"),
+            "onboarding shown"
+        );
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
