@@ -126,6 +126,8 @@ CREATE TABLE tasks (
 );
 CREATE INDEX tasks_sandbox ON tasks(sandbox_id, archived_at);
 CREATE INDEX tasks_status ON tasks(status);
+-- One task per automation run key (SPEC-002 §6.4, AUT-005).
+CREATE UNIQUE INDEX tasks_automation_run ON tasks(automation_run) WHERE automation_run IS NOT NULL;
 
 CREATE TABLE attempts (
     id TEXT PRIMARY KEY,

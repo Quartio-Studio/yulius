@@ -45,15 +45,20 @@ pub struct McpServerInput {
     /// URL for HTTP servers.
     #[serde(default)]
     pub url: Option<String>,
-    /// Environment secrets (replace stored values for given keys).
+    /// Environment secrets (stdio). Omitted on update: keep the stored values; given: replace
+    /// all stored values (an empty object clears them).
     #[serde(default)]
-    pub env: BTreeMap<String, String>,
-    /// Header secrets.
+    pub env: Option<BTreeMap<String, String>>,
+    /// Header secrets (HTTP), with the same update rule as `env`.
     #[serde(default)]
-    pub headers: BTreeMap<String, String>,
-    /// Enabled.
+    pub headers: Option<BTreeMap<String, String>>,
+    /// Enabled (create: default true; update: default unchanged).
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// `instance` or `sandbox` (create only; default `sandbox`; instance needs an instance
+    /// administrator).
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// `POST /api/mcp/{id}/test`.

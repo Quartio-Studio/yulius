@@ -69,6 +69,41 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             description: "Get this task's steps and progress.".into(),
             input_schema: schema(json!({}), &[]),
         },
+        ToolDescriptor {
+            name: "automation_create".into(),
+            description: "Create a scheduled automation in this project: on a five-field cron schedule (minute hour day-of-month month day-of-week, evaluated at utc_offset_minutes from UTC) Yulius creates and starts a new task with the given prompt. Use it when the user asks for recurring work, e.g. \"every day at 9 implement yesterday's customer feedback\". The automation appears on the project's Automations page.".into(),
+            input_schema: schema(json!({
+                "name": {"type": "string", "description": "Short name; also the title of created tasks"},
+                "cron": {"type": "string", "description": "Five-field cron expression, e.g. \"0 9 * * *\" (daily at 09:00) or \"0 9 * * MON-FRI\""},
+                "utc_offset_minutes": {"type": "integer", "description": "UTC offset of the user's time zone in minutes (e.g. 120 for UTC+2); default 0"},
+                "prompt": {"type": "string", "description": "What each created task should do"},
+                "harness": {"type": "string", "enum": ["claude", "codex"], "description": "Agent for created tasks; default: this task's agent"},
+                "workflow": {"type": "string", "description": "Workflow id or name from workflows_list (optional)"},
+                "enabled": {"type": "boolean", "description": "Default true"}
+            }), &["name", "cron", "prompt"]),
+        },
+        ToolDescriptor {
+            name: "automations_list".into(),
+            description: "List this project's automations with schedule, next run and last run.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "automation_update".into(),
+            description: "Change an automation of this project: enable/disable it, or change its cron schedule, UTC offset, prompt or name.".into(),
+            input_schema: schema(json!({
+                "automation_id": {"type": "string"},
+                "enabled": {"type": "boolean"},
+                "cron": {"type": "string"},
+                "utc_offset_minutes": {"type": "integer"},
+                "prompt": {"type": "string"},
+                "name": {"type": "string"}
+            }), &["automation_id"]),
+        },
+        ToolDescriptor {
+            name: "workflows_list".into(),
+            description: "List the workflows (reusable task recipes with initial steps, instructions and gates) available in this project.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
     ]
 }
 
@@ -136,6 +171,10 @@ impl App {
             "steps_set" => self.tool_steps_set(ctx, &args).await,
             "step_update" => self.tool_step_update(ctx, &args).await,
             "steps_get" => self.tool_steps_get(ctx).await,
+            "automation_create" => self.tool_automation_create(ctx, &args).await,
+            "automations_list" => self.tool_automations_list(ctx).await,
+            "automation_update" => self.tool_automation_update(ctx, &args).await,
+            "workflows_list" => self.tool_workflows_list(ctx).await,
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         };
         match outcome {

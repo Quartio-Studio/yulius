@@ -4,6 +4,7 @@
 pub mod access;
 pub mod admin;
 pub mod auth;
+pub mod automations;
 pub mod context;
 pub mod coordination;
 pub mod error;
@@ -15,6 +16,8 @@ pub mod mcp_config;
 pub mod model;
 pub mod ports;
 pub mod sandboxes;
+pub mod skills;
 pub mod supervisor;
 pub mod tasks;
 pub mod usage_json;
+pub mod workflows;

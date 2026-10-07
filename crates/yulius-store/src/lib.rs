@@ -6,14 +6,18 @@
 
 mod accounts;
 mod audit;
+mod automations;
 mod coordination;
 pub mod crypto;
 mod ext;
 mod instance;
+mod mcp;
 mod sandboxes;
 mod sessions;
+mod skills;
 mod tasks;
 mod users;
+mod workflows;
 
 use std::path::Path;
 use std::sync::mpsc;
