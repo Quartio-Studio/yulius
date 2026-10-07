@@ -465,9 +465,20 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the limit", Duration::from_secs(15), || {
-            screen_contains(&app, &id, "LIMIT REACHED")
-        })
+        // The switch may replace the screen before a poll sees the limit message.
+        wait_for(
+            "the limit or the switch",
+            Duration::from_secs(30),
+            || async {
+                screen_contains(&app, &id, "LIMIT REACHED").await
+                    || app
+                        .deps
+                        .store
+                        .attempts(&id)
+                        .await
+                        .is_ok_and(|a| a.len() >= 2)
+            },
+        )
         .await?;
         wait_for(
             "the switch to another account",
@@ -720,8 +731,9 @@ fn codex_usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
-        // Usage grows 10 % per turn and reaches 99 % on the tenth.
-        for n in 1..=10 {
+        // Usage grows 10 % per turn and reaches 99 % on the tenth. The tenth turn's echo is not
+        // awaited: the switch at its turn boundary may replace the screen before a poll sees it.
+        for n in 1..=9 {
             app.send_input(&id, format!("turn {n}\r").as_bytes())
                 .await?;
             let echo = format!("ECHO: turn {n}");
@@ -742,6 +754,7 @@ fn codex_usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
             }
             seen?;
         }
+        app.send_input(&id, b"turn 10\r").await?;
         wait_for("the proactive switch", Duration::from_secs(90), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() >= 2 && attempts.last().is_some_and(|a| !a.state.is_terminal())
@@ -813,9 +826,20 @@ fn provider_exhaustion_translates_the_session_to_codex() -> TestResult {
         })
         .await?;
         app.send_input(&id, b"remember the blue widget\r").await?;
-        wait_for("the limit", Duration::from_secs(15), || {
-            screen_contains(&app, &id, "LIMIT REACHED")
-        })
+        // The switch may replace the screen before a poll sees the limit message.
+        wait_for(
+            "the limit or the switch",
+            Duration::from_secs(30),
+            || async {
+                screen_contains(&app, &id, "LIMIT REACHED").await
+                    || app
+                        .deps
+                        .store
+                        .attempts(&id)
+                        .await
+                        .is_ok_and(|a| a.len() >= 2)
+            },
+        )
         .await?;
         wait_for("the Codex attempt", Duration::from_secs(90), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
