@@ -1013,7 +1013,6 @@ pub async fn seed_task(
         gate_blocks: 0,
         wake_enabled: true,
         mode: yulius_app::model::TaskMode::Prompt,
-        harness_proposal: None,
     };
     Ok(h.store.insert_task(&task).await?)
 }

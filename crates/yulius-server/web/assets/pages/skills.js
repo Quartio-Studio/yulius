@@ -11,7 +11,7 @@ const SOURCE_TONE = { repository: '', instance: 'violet', 'open-mercato': 'accen
 /** Mount the Skills page; ?source=instance pre-filters (admin "Instance skills" entry). */
 export function mountSkillsPage(ctx, sandbox, route) {
   const write = allows(sandbox.access, 'write');
-  const frame = pageFrame({ title: 'Skills', sub: 'one catalog for Claude Code and Codex — activated automatically by relevance' });
+  const frame = pageFrame({ title: 'Skills', sub: 'one catalog for Claude Code — activated automatically by relevance' });
   const source = h('select', { class: 'select', 'aria-label': 'Source filter' }, SOURCES.map(([v, l]) => h('option', { value: v }, l)));
   source.value = route.query.get('source') || '';
   const search = h('input', { class: 'input', type: 'search', placeholder: 'Search skills…', 'aria-label': 'Search skills' });
@@ -22,7 +22,7 @@ export function mountSkillsPage(ctx, sandbox, route) {
   function render() {
     const q = search.value.trim().toLowerCase();
     const shown = skills.filter((s) => (!source.value || s.source === source.value) && (!q || `${s.name} ${s.description}`.toLowerCase().includes(q)));
-    frame.sub.textContent = `${shown.length} of ${skills.length} · activated automatically by relevance in both harnesses`;
+    frame.sub.textContent = `${shown.length} of ${skills.length} · activated automatically by relevance`;
     if (shown.length === 0) return h('div', { class: 'card placeholder' }, skills.length ? 'No skill matches.' : 'No skills found. Repository skills live in .agents/skills or .claude/skills.');
     return h('div', { class: 'card list' }, shown.map((skill) => {
       // Repository skills are always available inside the repository (PUT → 422);

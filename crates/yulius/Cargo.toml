@@ -42,7 +42,6 @@ yulius-import = { workspace = true }
 yulius-browser = { workspace = true }
 rustls = { workspace = true }
 reqwest = { workspace = true }
-uuid = { workspace = true }
 sysinfo = { workspace = true }
 
 [dev-dependencies]

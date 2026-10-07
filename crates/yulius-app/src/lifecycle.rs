@@ -52,7 +52,9 @@ pub struct NewTask {
 }
 
 fn parse_harness(text: &str) -> AppResult<Harness> {
-    Harness::parse(text).map_err(|_| AppError::Invalid("harness must be claude or codex".into()))
+    Harness::parse(text).map_err(|_| {
+        AppError::Invalid("harness must be claude (Yulius runs Claude Code only)".into())
+    })
 }
 
 impl App {
@@ -119,7 +121,6 @@ impl App {
             gate_blocks: 0,
             wake_enabled: true,
             mode: req.mode,
-            harness_proposal: None,
         };
         let task = store.insert_task(&record).await?;
         let branch = branch_for(task.number, &task.title);
@@ -169,7 +170,7 @@ impl App {
             let id = task.id.clone();
             tokio::spawn(async move {
                 if let Err(err) = app
-                    .start_run(&id, RunStart::Fresh { prompt: None }, None, None)
+                    .start_run(&id, RunStart::Fresh { prompt: None }, None)
                     .await
                 {
                     tracing::warn!(error = %err, task = %id, "task failed to start");
@@ -257,7 +258,7 @@ impl App {
     }
 
     /// `POST /api/tasks/{tid}/continue`: resumes the latest session (optionally on another
-    /// harness or account) — TSK-007, IMP-004.
+    /// account) — TSK-007, IMP-004.
     ///
     /// # Errors
     /// `Conflict` when the task is live.
@@ -274,17 +275,7 @@ impl App {
                 task.status.as_str()
             )));
         }
-        let harness = req.harness.as_deref().map(parse_harness).transpose()?;
-        require_harness_approval(&task, harness, req)?;
-        let account = req
-            .account_id
-            .as_deref()
-            .map(AccountId::parse)
-            .transpose()
-            .map_err(|_| AppError::Invalid("invalid account".into()))?;
-        if task.harness_proposal.is_some() {
-            self.clear_harness_proposal(&task.id).await;
-        }
+        let account = parse_account(req)?;
         if task.archived_at.is_some() {
             let now = self.now();
             self.deps
@@ -299,13 +290,8 @@ impl App {
                 )
                 .await?;
         }
-        self.start_run(
-            &task.id,
-            RunStart::Resume { prompt: None },
-            harness,
-            account,
-        )
-        .await?;
+        self.start_run(&task.id, RunStart::Resume { prompt: None }, account)
+            .await?;
         let task = self
             .deps
             .store
@@ -315,7 +301,7 @@ impl App {
         self.task_summary(&task).await
     }
 
-    /// `POST /api/tasks/{tid}/switch`: manual account/harness switch of a running task (ROT-007).
+    /// `POST /api/tasks/{tid}/switch`: manual account switch of a running task (ROT-007).
     ///
     /// # Errors
     /// `Conflict` when not running.
@@ -326,17 +312,9 @@ impl App {
         req: &ContinueTask,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
-        let harness = req.harness.as_deref().map(parse_harness).transpose()?;
-        require_harness_approval(&task, harness, req)?;
-        let account = req
-            .account_id
-            .as_deref()
-            .map(AccountId::parse)
-            .transpose()
-            .map_err(|_| AppError::Invalid("invalid account".into()))?;
+        let account = parse_account(req)?;
         self.switch_task_now(
             &task.id,
-            harness,
             account,
             "manual",
             Some("Continue the task exactly where you left off.".into()),
@@ -352,20 +330,11 @@ impl App {
     }
 }
 
-/// A change to another harness needs the caller's explicit approval (ROT-012).
-fn require_harness_approval(
-    task: &TaskRecord,
-    harness: Option<Harness>,
-    req: &ContinueTask,
-) -> AppResult<()> {
-    match harness {
-        Some(target) if target != task.harness && !req.approve_harness_change => {
-            Err(AppError::Conflict(format!(
-                "moving this task from {} to {} translates its session; confirm the harness change (approve_harness_change)",
-                task.harness.display_name(),
-                target.display_name()
-            )))
-        }
-        _ => Ok(()),
-    }
+/// The requested account of a Continue or Switch, if any.
+fn parse_account(req: &ContinueTask) -> AppResult<Option<AccountId>> {
+    req.account_id
+        .as_deref()
+        .map(AccountId::parse)
+        .transpose()
+        .map_err(|_| AppError::Invalid("invalid account".into()))
 }

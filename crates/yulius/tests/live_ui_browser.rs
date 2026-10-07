@@ -357,7 +357,7 @@ async fn the_browser_panel_mirrors_pages_as_dom() -> TestResult {
 }
 
 /// The terminal as the UI builds it: the real xterm and mouse filter, fed output that turns on
-/// mouse tracking (as Claude Code and Codex do).
+/// mouse tracking (as Claude Code does).
 const TERMINAL_FIXTURE: &str = r"(async () => {
   const { Terminal } = await import('/assets/vendor/xterm/xterm.mjs');
   const { createMouseFilter } = await import('/assets/mousefilter.js');

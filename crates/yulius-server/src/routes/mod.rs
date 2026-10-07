@@ -61,10 +61,6 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/admin/users/{id}", patch(admin::update_user))
         .route("/api/admin/github", get(admin::github))
-        .route(
-            "/api/admin/settings",
-            get(admin::settings).patch(admin::update_settings),
-        )
         .route("/api/admin/github/manifest", post(admin::github_manifest))
         .route(
             "/api/admin/github/manifest/callback",

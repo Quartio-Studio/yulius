@@ -74,7 +74,7 @@ pub fn prompt_since(
     for _ in 0..MAX_PROMPT_ATTEMPTS {
         write!(
             output,
-            "Import Claude and Codex sessions from how far back? (e.g. 14d, 36h, 2w) [{default}]: "
+            "Import Claude Code sessions from how far back? (e.g. 14d, 36h, 2w) [{default}]: "
         )?;
         output.flush()?;
         let mut answer = String::new();

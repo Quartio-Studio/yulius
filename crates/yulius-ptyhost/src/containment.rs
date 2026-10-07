@@ -125,7 +125,7 @@ mod tests {
         BubblewrapSpec {
             sandbox_root: "/data/sandboxes/s1".into(),
             home: "/data/sandboxes/s1/home".into(),
-            writable: vec!["/data/sandboxes/s1/codex/acct".into()],
+            writable: vec!["/data/sandboxes/s1/cache".into()],
             readonly: vec!["/data/sandboxes/s1/repo/.git/hooks".into()],
             share_net: true,
             binds: Vec::new(),
@@ -230,7 +230,7 @@ mod tests {
             &argv,
             &["--bind", "/data/sandboxes/s1", "/data/sandboxes/s1"],
         );
-        let writable = position(&argv, &["--bind", "/data/sandboxes/s1/codex/acct"]);
+        let writable = position(&argv, &["--bind", "/data/sandboxes/s1/cache"]);
         let readonly = position(&argv, &["--ro-bind", "/data/sandboxes/s1/repo/.git/hooks"]);
         assert!(root < writable && writable < readonly && root.is_some());
         assert!(position(&argv, &["--setenv", "HOME", "/data/sandboxes/s1/home"]).is_some());

@@ -44,8 +44,6 @@ pub trait InstanceStore: Send + Sync {
     async fn set_installation(&self, installation_id: Option<u64>) -> AppResult<()>;
     /// Updates the public URL.
     async fn set_public_url(&self, url: &str) -> AppResult<()>;
-    /// Enables or disables automatic harness switches (ROT-012).
-    async fn set_auto_harness_switch(&self, enabled: bool) -> AppResult<()>;
     /// Replaces the recovery code hash, clearing failures and the lock (ACC-011).
     async fn set_recovery_code(&self, hash: &str) -> AppResult<()>;
     /// Counts a wrong recovery code atomically; at `max_failures` the code is erased and
@@ -218,8 +216,6 @@ pub struct TaskFieldUpdate {
     pub gate_blocks: Option<u32>,
     /// Idle wake flag.
     pub wake_enabled: Option<bool>,
-    /// Pending harness-change proposal (`Some(None)` clears it).
-    pub harness_proposal: Option<Option<String>>,
 }
 
 /// Field updates for an attempt's terminal transition or pids.

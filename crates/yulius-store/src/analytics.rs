@@ -246,7 +246,7 @@ mod tests {
                     number: 0,
                     title: task.into(),
                     prompt: String::new(),
-                    harness: Harness::Codex,
+                    harness: Harness::ClaudeCode,
                     model: None,
                     effort: None,
                     workflow_id: None,
@@ -266,7 +266,6 @@ mod tests {
                     gate_blocks: 0,
                     wake_enabled: true,
                     mode: yulius_app::model::TaskMode::Prompt,
-                    harness_proposal: None,
                 })
                 .await?;
             let attempt = AttemptId::parse(&format!("a-{task}"))?;
@@ -275,7 +274,7 @@ mod tests {
                     id: attempt.clone(),
                     task_id: TaskId::parse(task)?,
                     seq: 1,
-                    harness: Harness::Codex,
+                    harness: Harness::ClaudeCode,
                     account_id: Some(AccountId::parse("gone")?),
                     provider_session_id: None,
                     launch_kind: LaunchKind::New,

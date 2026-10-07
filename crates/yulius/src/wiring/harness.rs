@@ -1,4 +1,4 @@
-//! [`HarnessPort`] over `yulius-harness` (Claude Code 2.1.292 / Codex 0.160.1 structures).
+//! [`HarnessPort`] over `yulius-harness` (Claude Code 2.1.292 structures).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -6,18 +6,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::harness::{
     HarnessLaunch, HarnessPlan, HarnessPort, McpAttachment, Observation, OutputMasker, SessionMode,
-    TranscriptWatch, TranslationTarget, UsageSnapshot,
+    TranscriptWatch, UsageSnapshot,
 };
 use yulius_app::ports::session::{Containment, LaunchPlan, PlannedFile};
 use yulius_domain::harness::Harness;
 use yulius_domain::time::Timestamp;
-use yulius_domain::transcript::{TranslationLimits, plan_translation};
 use yulius_harness::launch::{
     self, Credential, LaunchMode, LaunchRequest, McpServerSpec, McpTransport,
 };
 use yulius_harness::observe::{Observed, UsageAccumulator};
 use yulius_harness::secret::Secret as HSecret;
-use yulius_harness::{claude, codex, login, paths, skills, tail};
+use yulius_harness::{claude, login, paths, skills, tail};
 
 /// Harness adapter.
 pub struct HarnessAdapter {
@@ -25,8 +24,6 @@ pub struct HarnessAdapter {
     pub yulius_exe: PathBuf,
     /// Internal listener URL.
     pub yulius_url: String,
-    /// Capabilities of the installed Codex CLI, probed on first Codex launch.
-    codex_features: std::sync::OnceLock<yulius_harness::probe::CodexFeatures>,
 }
 
 impl HarnessAdapter {
@@ -36,19 +33,7 @@ impl HarnessAdapter {
         Self {
             yulius_exe,
             yulius_url: yulius_url.into(),
-            codex_features: std::sync::OnceLock::new(),
         }
-    }
-
-    fn codex_features(&self, scratch: &std::path::Path) -> yulius_harness::probe::CodexFeatures {
-        *self.codex_features.get_or_init(|| {
-            let features = yulius_harness::probe::probe_codex(
-                std::path::Path::new(yulius_harness::launch::CODEX_PROGRAM),
-                scratch,
-            );
-            tracing::info!(no_daemon = features.no_daemon, "probed the Codex CLI");
-            features
-        })
     }
 }
 
@@ -106,9 +91,6 @@ impl HarnessPort for HarnessAdapter {
             Harness::ClaudeCode => {
                 Credential::ClaudeOauthToken(HSecret::new(l.credential.expose().to_owned()))
             }
-            Harness::Codex => {
-                Credential::CodexAuthJson(HSecret::new(l.credential.expose().as_bytes().to_vec()))
-            }
         };
         let mode = match &l.mode {
             SessionMode::New { session_id, prompt } => LaunchMode::New {
@@ -126,7 +108,6 @@ impl HarnessPort for HarnessAdapter {
             worktree: l.worktree.clone(),
             sandbox_home: l.sandbox_home.clone(),
             run_dir: l.run_dir.clone(),
-            codex_home: l.codex_home.clone(),
             model: l.model.clone(),
             effort: l.effort.clone(),
             contained: l.contained,
@@ -134,11 +115,6 @@ impl HarnessPort for HarnessAdapter {
             yulius_url: self.yulius_url.clone(),
             mcp_servers,
             credential,
-            codex_features: if l.harness == Harness::Codex {
-                self.codex_features(&l.run_dir.join("codex-probe"))
-            } else {
-                yulius_harness::probe::CodexFeatures::default()
-            },
         };
         let plan = launch::plan_launch(&request).map_err(|e| AppError::Invalid(e.to_string()))?;
         if l.harness == Harness::ClaudeCode {
@@ -178,43 +154,6 @@ impl HarnessPort for HarnessAdapter {
         paths::claude_transcript_path(&sandbox_home.join(".claude"), worktree, session_id)
     }
 
-    fn find_codex_rollout(
-        &self,
-        sessions_dir: &Path,
-        session_id: &str,
-    ) -> AppResult<Option<PathBuf>> {
-        paths::find_codex_rollout(sessions_dir, session_id).map_err(io)
-    }
-
-    fn discover_codex_session(
-        &self,
-        sessions_dir: &Path,
-        worktree: &Path,
-        since: Timestamp,
-    ) -> AppResult<Option<(String, PathBuf)>> {
-        let wanted = worktree.to_string_lossy();
-        for path in paths::recent_codex_rollouts(sessions_dir, to_system(since)).map_err(io)? {
-            let Ok(file) = std::fs::File::open(&path) else {
-                continue;
-            };
-            let mut first = String::new();
-            let mut reader = std::io::BufReader::new(std::io::Read::take(file, 4 << 20));
-            let _ = std::io::BufRead::read_line(&mut reader, &mut first);
-            for observed in codex::observe_line(first.trim_end()) {
-                if let Observed::SessionMeta {
-                    session_id,
-                    cwd: Some(cwd),
-                    ..
-                } = observed
-                    && cwd.trim_end_matches('/') == wanted.trim_end_matches('/')
-                {
-                    return Ok(Some((session_id, path.clone())));
-                }
-            }
-        }
-        Ok(None)
-    }
-
     fn newest_claude_session(
         &self,
         sandbox_home: &Path,
@@ -246,84 +185,9 @@ impl HarnessPort for HarnessAdapter {
         }))
     }
 
-    fn translate(
-        &self,
-        from: Harness,
-        source: &Path,
-        to: Harness,
-        target: &TranslationTarget,
-    ) -> AppResult<PathBuf> {
-        let text = std::fs::read_to_string(source).map_err(io)?;
-        let lines = text.lines();
-        let transcript = match from {
-            Harness::ClaudeCode => claude::read_transcript(lines),
-            Harness::Codex => codex::read_transcript(lines),
-        };
-        let planned = plan_translation(&transcript, TranslationLimits::default());
-        // Record the model the resumed session will use; fall back to the source's model.
-        let model = target
-            .model
-            .clone()
-            .or_else(|| transcript.meta.model.clone())
-            .unwrap_or_else(|| "default".to_owned());
-        let (path, contents) = match to {
-            Harness::ClaudeCode => {
-                let mut ids = || uuid::Uuid::new_v4().to_string();
-                let contents = claude::write_transcript(
-                    &planned,
-                    claude::WriteParams {
-                        session_id: &target.session_id,
-                        cwd: &target.cwd.to_string_lossy(),
-                        version: "2.1.292",
-                        start_ms: target.now.0,
-                        model: &model,
-                        git_branch: target.git_branch.as_deref().unwrap_or(""),
-                        ids: &mut ids,
-                    },
-                );
-                (
-                    paths::claude_transcript_path(
-                        &target.sandbox_home.join(".claude"),
-                        &target.cwd,
-                        &target.session_id,
-                    ),
-                    contents,
-                )
-            }
-            Harness::Codex => {
-                let contents = codex::write_rollout(
-                    &planned,
-                    &codex::RolloutParams {
-                        session_id: &target.session_id,
-                        cwd: &target.cwd.to_string_lossy(),
-                        cli_version: "0.160.1",
-                        start_ms: target.now.0,
-                        model: &model,
-                        effort: target.effort.as_deref(),
-                    },
-                );
-                let dir = target
-                    .codex_sessions
-                    .join(codex::rollout_relative_dir(target.now.0));
-                (
-                    dir.join(codex::rollout_file_name(target.now.0, &target.session_id)),
-                    contents,
-                )
-            }
-        };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(io)?;
-        }
-        let tmp = path.with_extension("jsonl.tmp");
-        std::fs::write(&tmp, contents).map_err(io)?;
-        std::fs::rename(&tmp, &path).map_err(io)?;
-        Ok(path)
-    }
-
     fn login_argv(&self, harness: Harness) -> Vec<String> {
         match harness {
             Harness::ClaudeCode => login::claude_setup_token_argv(),
-            Harness::Codex => login::codex_device_login_argv(),
         }
     }
 
@@ -335,12 +199,7 @@ impl HarnessPort for HarnessAdapter {
         Box::new(Masker(login::TokenMasker::new()))
     }
 
-    fn install_skills(
-        &self,
-        skill_dirs: &[(String, PathBuf)],
-        claude_dir: &Path,
-        codex_dir: &Path,
-    ) -> AppResult<()> {
+    fn install_skills(&self, skill_dirs: &[(String, PathBuf)], claude_dir: &Path) -> AppResult<()> {
         let dirs: Vec<skills::SkillDir> = skill_dirs
             .iter()
             .map(|(name, path)| skills::SkillDir {
@@ -348,7 +207,7 @@ impl HarnessPort for HarnessAdapter {
                 path: path.clone(),
             })
             .collect();
-        skills::install_skills(&dirs, claude_dir, codex_dir)
+        skills::install_skills(&dirs, claude_dir)
             .map(|_| ())
             .map_err(AppError::internal)
     }
@@ -378,7 +237,6 @@ impl TranscriptWatch for Watch {
         for line in lines {
             let observed = match self.harness {
                 Harness::ClaudeCode => claude::observe_line(&line),
-                Harness::Codex => codex::observe_line(&line),
             };
             self.acc.observe_all(observed.iter());
             for o in observed {
@@ -388,14 +246,10 @@ impl TranscriptWatch for Watch {
                     } => out.push(Observation::Session { session_id, cwd }),
                     Observed::UserTurn => out.push(Observation::UserTurn),
                     Observed::TurnComplete { .. } => out.push(Observation::TurnComplete),
-                    Observed::RateLimits(usage) => out.push(Observation::RateLimits(usage)),
                     Observed::LimitReached { resets_at, message } => {
                         out.push(Observation::LimitReached { resets_at, message })
                     }
-                    Observed::TurnContext { .. }
-                    | Observed::AssistantMessage { .. }
-                    | Observed::CumulativeUsage(_)
-                    | Observed::Malformed => {}
+                    Observed::AssistantMessage { .. } | Observed::Malformed => {}
                 }
             }
         }

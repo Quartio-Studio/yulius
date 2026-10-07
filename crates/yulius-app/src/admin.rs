@@ -1,6 +1,6 @@
 //! Superadmin user administration (SPEC-001 ACC-004, ACC-009).
 
-use yulius_contracts::api::admin::{AdminUser, AdmitUser, InstanceSettings, UpdateUser};
+use yulius_contracts::api::admin::{AdminUser, AdmitUser, UpdateUser};
 use yulius_domain::ids::UserId;
 
 use crate::auth::AuthContext;
@@ -129,61 +129,6 @@ impl App {
             .await?;
         let updated = store.user(&id).await?.ok_or(AppError::NotFound)?;
         Ok(view(&updated))
-    }
-}
-
-impl App {
-    /// Instance behavior settings (instance administrators).
-    ///
-    /// # Errors
-    /// `Forbidden` for other users.
-    pub async fn instance_settings(&self, ctx: &AuthContext) -> AppResult<InstanceSettings> {
-        self.require_instance_admin(ctx)?;
-        let instance = self
-            .deps
-            .store
-            .instance()
-            .await?
-            .ok_or(AppError::NotFound)?;
-        Ok(InstanceSettings {
-            auto_harness_switch: instance.auto_harness_switch,
-        })
-    }
-
-    /// Updates instance behavior settings (audited).
-    ///
-    /// # Errors
-    /// `Forbidden` for other users.
-    pub async fn update_instance_settings(
-        &self,
-        ctx: &AuthContext,
-        settings: &InstanceSettings,
-    ) -> AppResult<InstanceSettings> {
-        self.require_instance_admin(ctx)?;
-        self.deps
-            .store
-            .set_auto_harness_switch(settings.auto_harness_switch)
-            .await?;
-        let actor = ctx
-            .user
-            .github_login
-            .clone()
-            .unwrap_or_else(|| "superadmin".into());
-        let _ = self
-            .deps
-            .store
-            .audit(
-                self.now(),
-                &actor,
-                "settings.updated",
-                None,
-                Some(&format!(
-                    "auto_harness_switch={}",
-                    settings.auto_harness_switch
-                )),
-            )
-            .await;
-        self.instance_settings(ctx).await
     }
 }
 

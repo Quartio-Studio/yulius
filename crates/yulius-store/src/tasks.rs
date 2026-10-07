@@ -17,7 +17,7 @@ use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
 
 const TASK_COLS: &str = "id, sandbox_id, number, title, prompt, harness, model, effort, workflow_id, \
     status, activity, branch, worktree_path, spec_path, origin, automation_run, created_by, created_at, \
-    updated_at, closed_at, archived_at, queued_at, gate_blocks, wake_enabled, mode, harness_proposal";
+    updated_at, closed_at, archived_at, queued_at, gate_blocks, wake_enabled, mode";
 
 const ATTEMPT_COLS: &str = "id, task_id, seq, harness, account_id, provider_session_id, launch_kind, \
     state, run_dir, token_hash, host_token, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason";
@@ -71,7 +71,6 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
             let mode: String = row.get("mode")?;
             TaskMode::parse(&mode).ok_or_else(|| bad_column("mode", &mode))?
         },
-        harness_proposal: row.get("harness_proposal")?,
     })
 }
 
@@ -167,7 +166,7 @@ impl TaskStore for SqliteStore {
                 )
                 .map_err(db)?;
             tx.execute(
-                &format!("INSERT INTO tasks ({TASK_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)"),
+                &format!("INSERT INTO tasks ({TASK_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)"),
                 params![
                     t.id.as_str(),
                     t.sandbox_id.as_str(),
@@ -194,7 +193,6 @@ impl TaskStore for SqliteStore {
                     i64::from(t.gate_blocks),
                     t.wake_enabled,
                     t.mode.as_str(),
-                    t.harness_proposal,
                 ],
             )
             .map_err(db)?;
@@ -392,9 +390,6 @@ impl TaskStore for SqliteStore {
             }
             if let Some(v) = u.gate_blocks {
                 set("gate_blocks", V::Integer(i64::from(v)))?;
-            }
-            if let Some(v) = &u.harness_proposal {
-                set("harness_proposal", v.clone().map_or(V::Null, V::Text))?;
             }
             if let Some(v) = u.wake_enabled {
                 set("wake_enabled", V::Integer(i64::from(v)))?;

@@ -4,10 +4,7 @@ use std::fs::{self, File};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use yulius_harness::paths::{
-    claude_project_dir, claude_transcript_path, find_codex_rollout, newest_claude_session,
-    recent_codex_rollouts,
-};
+use yulius_harness::paths::{claude_project_dir, claude_transcript_path, newest_claude_session};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -35,75 +32,6 @@ fn claude_paths_follow_the_slug_rule() {
         claude_transcript_path(Path::new("/h/.claude"), Path::new("/w/t_1"), "abc"),
         Path::new("/h/.claude/projects/-w-t-1/abc.jsonl")
     );
-}
-
-#[test]
-fn finds_codex_rollout_by_session_id() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let sessions = dir.path().join("sessions");
-    let wanted = "0199c1d2-3e4f-7a8b-9c0d-1e2f3a4b5c6d";
-    touch(
-        &sessions.join(
-            "2026/10/06/rollout-2026-10-06T10-00-00-0199aaaa-0000-7000-8000-000000000000.jsonl",
-        ),
-        0,
-    )?;
-    let target = sessions.join(format!(
-        "2026/10/07/rollout-2026-10-07T09-00-00-{wanted}.jsonl"
-    ));
-    touch(&target, 1)?;
-    touch(
-        &sessions.join(format!("2026/10/07/notes-{wanted}.jsonl")),
-        2,
-    )?;
-    assert_eq!(find_codex_rollout(&sessions, wanted)?, Some(target));
-    assert_eq!(
-        find_codex_rollout(&sessions, "0199bbbb-0000-7000-8000-000000000000")?,
-        None
-    );
-    assert_eq!(
-        find_codex_rollout(&dir.path().join("absent"), wanted)?,
-        None
-    );
-    assert!(find_codex_rollout(&sessions, "../../etc/passwd").is_err());
-    assert!(find_codex_rollout(&sessions, "").is_err());
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn codex_walk_does_not_follow_symlinked_directories() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let sessions = dir.path().join("sessions");
-    let outside = dir.path().join("outside/10/07");
-    let id = "0199c1d2-3e4f-7a8b-9c0d-1e2f3a4b5c6d";
-    touch(
-        &outside.join(format!("rollout-2026-10-07T09-00-00-{id}.jsonl")),
-        0,
-    )?;
-    fs::create_dir_all(&sessions)?;
-    std::os::unix::fs::symlink(dir.path().join("outside"), sessions.join("2026"))?;
-    assert_eq!(find_codex_rollout(&sessions, id)?, None);
-    Ok(())
-}
-
-#[test]
-fn recent_codex_rollouts_are_newest_first_and_filtered_by_time() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let sessions = dir.path().join("sessions");
-    let old = sessions.join("2026/10/06/rollout-2026-10-06T10-00-00-a.jsonl");
-    let newer = sessions.join("2026/10/07/rollout-2026-10-07T09-00-00-b.jsonl");
-    let newest = sessions.join("2026/10/07/rollout-2026-10-07T09-05-00-c.jsonl");
-    touch(&old, 0)?;
-    touch(&newer, 100)?;
-    touch(&newest, 200)?;
-    touch(&sessions.join("2026/10/07/other.txt"), 300)?;
-    assert_eq!(
-        recent_codex_rollouts(&sessions, at(50))?,
-        vec![newest, newer]
-    );
-    assert!(recent_codex_rollouts(&dir.path().join("absent"), at(0))?.is_empty());
-    Ok(())
 }
 
 #[test]

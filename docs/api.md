@@ -108,7 +108,7 @@ in `crates/yulius-contracts/src/import.rs`.
 Applying: bundle branches become `import/<login>/<branch>`; the snapshot is committed on
 `import/<login>/snapshot-<YYYY-MM-DD>[-n]` created from the client's `HEAD`; each new session
 becomes an archived task (`origin: "import"`) whose transcript is kept immutably and resumed
-natively on Continue (same or other harness).
+natively on Continue. Only Claude Code sessions are imported.
 
 `PATCH /api/sandboxes/{sid}` validates the profile (branch names, distinct branches, environment
 names, single-line commands ≤ 2000 bytes, `verify: command` needs a command, ≤ 8 environments) and
@@ -124,11 +124,11 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness":"claude|codex","mode?":"goal|prompt","workflow_id?","model?","effort?","title?"}` → 201 `TaskSummary`; `mode` defaults to `goal` (TSK-010) |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt","workflow_id?","model?","effort?","title?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010) |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary` |
-| POST | `/api/tasks/{tid}/continue` | write | `{"harness?","account_id?","approve_harness_change?"}` → `TaskSummary`; a harness other than the task's needs `"approve_harness_change": true`, else 409 (ROT-012) |
-| POST | `/api/tasks/{tid}/switch` | write | `{"harness?","account_id?","approve_harness_change?"}` → `TaskSummary`; approval as for continue |
+| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the given Claude account or the best one |
+| POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; moves a running task to another Claude account (the best one when absent) with a native resume |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
@@ -140,14 +140,13 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 ```json
 TaskSummary = {
   "id": "…", "sandbox_id": "…", "number": 12, "title": "Checkout API",
-  "harness": "claude|codex", "status": "running|…(see domain wire names)",
+  "harness": "claude", "status": "running|…(see domain wire names)",
   "activity": "working|waiting|needs_attention|null",
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null"},
   "unread_messages": 0, "archived": false, "account_label": "Claude #2|null",
-  "mode": "goal|prompt",
-  "harness_proposal": {"harness": "codex", "account_id", "account_label|null", "proposed_at"} | null
+  "mode": "goal|prompt"
 }
 TaskDetail = TaskSummary + {
   "spec_path": "docs/specs/2026-10-07-checkout-api.md|null",
@@ -292,7 +291,7 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 Workflow = {"id","name","description","steps":["Write spec","Implement","Test","Open PR"],
             "instructions":"…","gates":{"require_spec":true,"require_tests":true},"scope":"instance|sandbox"}
 Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","workflow_id|null",
-              "harness":"claude|codex","enabled":true,"created_via":"ui|agent",
+              "harness":"claude","enabled":true,"created_via":"ui|agent",
               "next_run_at":"…|null","last_run":AutomationRun|null}
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
                  "task_id|null","error|null"}
@@ -314,7 +313,7 @@ keeps the stored values; a given map replaces all values of that map (`{}` clear
 for the always-attached Yulius tool server. A sandbox server overrides an instance server of the
 same name for that sandbox (also when disabled). Agent runs receive HTTP secrets only as an
 `Authorization: Bearer` token; other headers are used by the test endpoint but not yet passed to
-the harnesses.
+Claude Code.
 
 ## Browser, editor, shell
 
@@ -384,13 +383,12 @@ the harnesses.
 | GET/POST | `/api/admin/users` | superadmin | GET → `[AdminUser]` (the superadmin is not listed); POST `{"github_login","display_name?","is_instance_admin?"}` → 201 `AdminUser` |
 | PATCH | `/api/admin/users/{id}` | superadmin | `{"disabled?","is_instance_admin?"}` → `AdminUser` |
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
-| POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic|openai","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
+| POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
 | PATCH | `/api/admin/accounts/{id}` | instance admin | `{"enabled?","priority?" (0–10000),"label?" (1–80 chars)}` → `Account` |
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
-| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks the provider for the account's usage windows (Claude `/api/oauth/usage`, Codex `/backend-api/wham/usage`) and stores them; 502 with the reason (also kept as `last_error`) when the provider refuses or fails. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) |
-| GET · PATCH | `/api/admin/settings` | instance admin | `{"auto_harness_switch": bool}` (off by default, ROT-012) |
+| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 99 % its tasks move to the next account at their next turn boundary; 502 with the reason (also kept as `last_error`) when the provider refuses or fails. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
 | GET | `/api/admin/github/manifest/callback?code&state` | superadmin | converts the code, stores the sealed App credentials and owner, 303 to the App's installation page; failures 303 to `/admin/github?error=…` |
@@ -410,14 +408,14 @@ Account = {"id","provider","label","enabled","priority",
 
 Unknown usage is `null`, never zero. Credentials are never returned.
 
-**Login terminal.** Each login runs the provider CLI's own sign-in (`claude setup-token`;
-`codex login --device-auth` with a temporary `CODEX_HOME`) in a server-owned PTY 500 columns
+**Login terminal.** Each login runs Claude Code's own sign-in (`claude setup-token`) with a
+temporary config directory in a server-owned PTY 500 columns
 wide so tokens and URLs never wrap. It uses the terminal protocol above: `resize` and
 `take_control` only re-send `state` (the size is fixed), `input` is forwarded while the login
 runs. `state.status` is `running`, then `ok|error|cancelled`; the `exit` frame carries the same
 status and the CLI's exit code. Output is masked before it reaches any viewer (Claude tokens
-become `sk-ant-oat01-[REDACTED]`). On exit the credential (Claude token from the output, Codex
-`auth.json`) is sealed into the account (`ok`, `account.updated`), and the temporary directory
+become `sk-ant-oat01-[REDACTED]`). On exit the credential (the Claude token from the output) is sealed
+into the account (`ok`, `account.updated`), and the temporary directory
 is overwritten and removed. A login that ends without a credential sets `error` with a message;
 an account that still holds a working credential keeps its status and records
 `re-login failed: …`. Bounds: one login per account, 8 at once (`capacity`), 16 viewers per
@@ -441,7 +439,7 @@ AnalyticsSummary = {
   "tokens_by_model": [{"model": "claude-opus|unknown", …Tokens}],
   "tokens_by_harness": [{"harness": "claude", …Tokens}],
   "tokens_by_account": [{"account_id": "…|null", "account_label": "…|null", …Tokens}],
-  "switches": {"total": 2, "account": 1, "provider": 1},
+  "switches": {"total": 2},
   "feedback": {"correct": 1, "incorrect": 1},
   "truncated": false
 }

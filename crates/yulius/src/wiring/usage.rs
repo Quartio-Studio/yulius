@@ -1,11 +1,8 @@
-//! [`UsageProbe`] over HTTPS (SPEC-001 ROT-009): the endpoints the official CLIs read their plan
-//! usage from — Claude Code `GET https://api.anthropic.com/api/oauth/usage` (OAuth token,
+//! [`UsageProbe`] over HTTPS (SPEC-001 ROT-009): the endpoint Claude Code reads its plan usage
+//! from — `GET https://api.anthropic.com/api/oauth/usage` (OAuth token,
 //! `anthropic-beta: oauth-2025-04-20`; windows `five_hour` and `seven_day` with `utilization`
-//! in percent and `resets_at`) and Codex `GET https://chatgpt.com/backend-api/wham/usage`
-//! (`ChatGPT-Account-Id`; `rate_limit.primary_window` / `secondary_window` with `used_percent`,
-//! `limit_window_seconds` and `reset_at` in epoch seconds). Read-only: tokens are never
-//! refreshed here (Codex refresh tokens rotate; runs refresh them). Errors carry the status,
-//! never the credential or the response body.
+//! in percent and `resets_at`). Read-only: tokens are never refreshed here. Errors carry the
+//! status, never the credential or the response body.
 
 use std::time::Duration;
 
@@ -14,16 +11,14 @@ use serde_json::Value;
 use yulius_app::model::Secret;
 use yulius_app::ports::usage::UsageProbe;
 use yulius_domain::harness::Provider;
-use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
 
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
-const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// Largest usage response accepted.
 const MAX_BODY: usize = 256 * 1024;
 
-/// Usage of Claude and Codex accounts from the providers.
+/// Usage of Claude accounts from the provider.
 pub struct ProviderUsage {
     http: reqwest::Client,
 }
@@ -94,65 +89,6 @@ pub fn parse_claude(body: &Value) -> Result<AccountUsage, String> {
     Ok(usage)
 }
 
-/// Codex's `{"rate_limit": {"primary_window": {...}, "secondary_window": {...}}}`.
-pub fn parse_codex(body: &Value, now: Timestamp) -> Result<AccountUsage, String> {
-    let limits = body
-        .get("rate_limit")
-        .ok_or("the provider reported no rate limits")?;
-    let window = |key: &str| -> Option<UsageWindow> {
-        let w = limits.get(key).filter(|w| w.is_object())?;
-        let resets_at = w
-            .get("reset_at")
-            .and_then(Value::as_i64)
-            .map(|secs| Timestamp(secs.saturating_mul(1000)))
-            .or_else(|| {
-                w.get("reset_after_seconds")
-                    .and_then(Value::as_i64)
-                    .map(|secs| now.plus_millis(secs.saturating_mul(1000)))
-            });
-        Some(UsageWindow {
-            used_percent: w.get("used_percent").and_then(Value::as_f64),
-            window_minutes: w
-                .get("limit_window_seconds")
-                .and_then(Value::as_u64)
-                .and_then(|s| u32::try_from(s / 60).ok()),
-            resets_at,
-        })
-    };
-    let usage = AccountUsage {
-        primary: window("primary_window"),
-        secondary: window("secondary_window"),
-        limit_reached: limits
-            .get("limit_reached")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        ..AccountUsage::default()
-    };
-    if usage.primary.is_none() && usage.secondary.is_none() {
-        return Err("the provider reported no usage windows".into());
-    }
-    Ok(usage)
-}
-
-/// Access token and ChatGPT account id from a Codex `auth.json`.
-fn codex_identity(auth_json: &str) -> Result<(String, Option<String>), String> {
-    let auth: Value =
-        serde_json::from_str(auth_json).map_err(|_| "the stored Codex sign-in is not readable")?;
-    let tokens = auth
-        .get("tokens")
-        .ok_or("the Codex sign-in has no tokens")?;
-    let access = tokens
-        .get("access_token")
-        .and_then(Value::as_str)
-        .filter(|t| !t.is_empty())
-        .ok_or("the Codex sign-in has no access token")?;
-    let account = tokens
-        .get("account_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    Ok((access.to_owned(), account))
-}
-
 #[async_trait]
 impl UsageProbe for ProviderUsage {
     async fn fetch(&self, provider: Provider, credential: &Secret) -> Result<AccountUsage, String> {
@@ -165,21 +101,6 @@ impl UsageProbe for ProviderUsage {
                     .header("anthropic-beta", "oauth-2025-04-20")
                     .header("accept", "application/json");
                 parse_claude(&self.get_json(request).await?)
-            }
-            Provider::OpenAi => {
-                let (access, account) = codex_identity(credential.expose())?;
-                let mut request = self
-                    .http
-                    .get(CODEX_USAGE_URL)
-                    .bearer_auth(access)
-                    .header("accept", "application/json");
-                if let Some(account) = account {
-                    request = request.header("ChatGPT-Account-Id", account);
-                }
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-                parse_codex(&self.get_json(request).await?, Timestamp(now_ms))
             }
         }
     }
@@ -204,36 +125,6 @@ mod tests {
         assert!(primary.resets_at.is_some());
         assert_eq!(usage.secondary.ok_or("secondary")?.used_percent, Some(12.5));
         assert!(parse_claude(&json!({})).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn codex_windows_parse_with_epoch_or_relative_resets() -> Result<(), String> {
-        let usage = parse_codex(
-            &json!({"plan_type": "plus", "rate_limit": {
-                "limit_reached": false,
-                "primary_window": {"used_percent": 61, "limit_window_seconds": 18000, "reset_at": 1_791_410_000},
-                "secondary_window": {"used_percent": 9.5, "limit_window_seconds": 604800, "reset_after_seconds": 3600}
-            }}),
-            Timestamp(1_000),
-        )?;
-        let primary = usage.primary.ok_or("primary")?;
-        assert_eq!(primary.used_percent, Some(61.0));
-        assert_eq!(primary.window_minutes, Some(300));
-        assert_eq!(primary.resets_at, Some(Timestamp(1_791_410_000_000)));
-        let secondary = usage.secondary.ok_or("secondary")?;
-        assert_eq!(secondary.resets_at, Some(Timestamp(3_601_000)));
-        assert!(parse_codex(&json!({"rate_limit": {}}), Timestamp(0)).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn codex_identity_reads_the_access_token_and_account() -> Result<(), String> {
-        let (token, account) = codex_identity(
-            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"at","refresh_token":"rt","account_id":"acc-1"}}"#,
-        )?;
-        assert_eq!((token.as_str(), account.as_deref()), ("at", Some("acc-1")));
-        assert!(codex_identity("{}").is_err());
         Ok(())
     }
 }

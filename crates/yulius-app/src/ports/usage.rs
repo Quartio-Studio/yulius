@@ -1,5 +1,5 @@
 //! Provider usage probe (SPEC-001 ROT-009): the account's current usage windows as the provider
-//! reports them (Claude: `/api/oauth/usage`; Codex: `/backend-api/wham/usage`).
+//! reports them (Claude: `/api/oauth/usage`).
 
 use async_trait::async_trait;
 use yulius_domain::harness::Provider;
@@ -10,8 +10,8 @@ use crate::model::Secret;
 /// Asks providers for an account's usage.
 #[async_trait]
 pub trait UsageProbe: Send + Sync {
-    /// Usage windows of the account behind `credential` (the stored credential: a Claude OAuth
-    /// token or a Codex `auth.json`). The error is a short, secret-free explanation.
+    /// Usage windows of the account behind `credential` (the stored Claude OAuth token). The
+    /// error is a short, secret-free explanation.
     async fn fetch(&self, provider: Provider, credential: &Secret) -> Result<AccountUsage, String>;
 }
 

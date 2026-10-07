@@ -16,5 +16,4 @@ pub mod spec_format;
 pub mod steps;
 pub mod task;
 pub mod time;
-pub mod transcript;
 pub mod usage;

@@ -3,7 +3,7 @@
 import { enc } from '../api.js';
 import { h, badge, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, placeholder } from '../dom.js';
 import { relLong, dateTime, describeCron, cronValid, utcOffset } from '../format.js';
-import { allows, harnessInfo } from '../status.js';
+import { allows } from '../status.js';
 import { href } from '../router.js';
 import { pageFrame, loader, dataTable } from './common.js';
 
@@ -56,7 +56,7 @@ export function mountAutomationsPage(ctx, sandbox) {
         }
       } }),
       h('div', { class: 'list-main' },
-        h('div', { class: 'list-title' }, a.name, badge(harnessInfo(a.harness).name), a.created_via === 'agent' ? badge('created by agent', 'violet') : null),
+        h('div', { class: 'list-title' }, a.name, a.created_via === 'agent' ? badge('created by agent', 'violet') : null),
         h('div', { class: 'list-sub' }, `${describeCron(a.cron)} · ${utcOffset(a.utc_offset_minutes)} · `, h('code', null, a.cron)),
         h('div', { class: 'list-sub' },
           a.enabled && a.next_run_at ? h('span', { title: dateTime(a.next_run_at) }, `next ${relLong(a.next_run_at)}`) : h('span', null, a.enabled ? 'not scheduled' : 'paused'),
@@ -69,7 +69,7 @@ export function mountAutomationsPage(ctx, sandbox) {
   });
 
   function editable(a) {
-    return { name: a.name, cron: a.cron, utc_offset_minutes: a.utc_offset_minutes, prompt: a.prompt, workflow_id: a.workflow_id || null, harness: a.harness, enabled: a.enabled };
+    return { name: a.name, cron: a.cron, utc_offset_minutes: a.utc_offset_minutes, prompt: a.prompt, workflow_id: a.workflow_id || null, enabled: a.enabled };
   }
 
   /** One run now, also when disabled; the response is the AutomationRun. */
@@ -119,8 +119,6 @@ export function mountAutomationsPage(ctx, sandbox) {
     const prompt = h('textarea', { class: 'textarea', rows: 6, placeholder: 'What the created task should do, e.g. “Implement yesterday’s customer feedback from the Quartio MCP.”', value: a ? a.prompt : '' });
     const workflow = h('select', { class: 'select' }, h('option', { value: '' }, 'No workflow'), workflows.map((w) => h('option', { value: w.id }, w.name)));
     workflow.value = a && a.workflow_id ? a.workflow_id : '';
-    const harness = h('select', { class: 'select' }, h('option', { value: 'claude' }, 'Claude Code'), h('option', { value: 'codex' }, 'Codex'));
-    harness.value = a ? a.harness : 'claude';
     const enabled = h('input', { type: 'checkbox', checked: a ? a.enabled : true });
     const updateHint = () => {
       const ok = cronValid(cron.value);
@@ -134,7 +132,7 @@ export function mountAutomationsPage(ctx, sandbox) {
       title: a ? `Edit automation · ${a.name}` : 'New automation',
       wide: true,
       body: h('div', { class: 'stack' },
-        h('div', { class: 'form-grid' }, field('Name', name), field('Harness', harness), field('Workflow', workflow)),
+        h('div', { class: 'form-grid' }, field('Name', name), field('Workflow', workflow)),
         h('div', { class: 'form-grid' }, h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Cron schedule'), cron, cronHint), field('Time zone (UTC offset)', offset)),
         field('Prompt', prompt),
         h('label', { class: 'check' }, enabled, h('span', null, 'Enabled'))),
@@ -143,7 +141,7 @@ export function mountAutomationsPage(ctx, sandbox) {
         { label: a ? 'Save' : 'Create', kind: 'primary', run: async () => {
           if (!name.value.trim() || !prompt.value.trim()) { toast('Name and prompt are required.', { kind: 'warn' }); return false; }
           if (!cronValid(cron.value)) { cron.focus(); toast('The cron expression needs five fields.', { kind: 'warn' }); return false; }
-          const body = { name: name.value.trim(), cron: cron.value.trim().split(/\s+/).join(' '), utc_offset_minutes: Number(offset.value), prompt: prompt.value.trim(), workflow_id: workflow.value || null, harness: harness.value, enabled: enabled.checked };
+          const body = { name: name.value.trim(), cron: cron.value.trim().split(/\s+/).join(' '), utc_offset_minutes: Number(offset.value), prompt: prompt.value.trim(), workflow_id: workflow.value || null, enabled: enabled.checked };
           if (a) await ctx.api.put(`/api/automations/${enc(a.id)}`, body);
           else await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/automations`, body);
           toast(a ? 'Automation saved.' : 'Automation created.', { kind: 'ok' });

@@ -140,9 +140,9 @@ function seed(params) {
       origin: extra.origin || 'ui', created_by: { login: extra.author || 'mkarp' },
       created_at: iso(extra.age || number * 3 * HOUR), updated_at: iso(extra.updated ?? number * 7 * MIN),
       unread_messages: extra.unread || 0, archived: Boolean(extra.archived),
-      account_label: LIVE.has(status) ? (harness === 'claude' ? 'Claude #2' : 'Codex #1') : null,
+      account_label: LIVE.has(status) ? 'Claude #2' : null,
       stepsList: extra.noSteps ? [] : makeSteps(id, done, current),
-      model: harness === 'claude' ? 'claude-opus-4' : 'gpt-5-codex',
+      model: 'claude-opus-4',
       effort: 'high',
       delivery: extra.delivery || null, // {stage, environment, pr} once delivery started
     };
@@ -150,24 +150,24 @@ function seed(params) {
   const pr = (number, title, state, base, checks) => ({ number, url: `https://github.com/Quartio-Studio/${number > 400 ? 'product' : 'studio'}/pull/${number}`, title, state, base, head: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, checks });
   db.tasks = [
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, unread: 2, updated: 20e3 }),
-    t('sb_studio', 11, '3D model viewer', 'codex', 'running', 'waiting', { done: 2, author: 'anna-q' }),
+    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 2, author: 'anna-q' }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
-    t('sb_studio', 9, 'Translate session to Codex', 'codex', 'switching', null, { done: 3 }),
+    t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3 }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
     t('sb_studio', 7, 'Search indexing', 'claude', 'waiting_capacity', 'needs_attention', { done: 1 }),
-    t('sb_studio', 6, 'Fix flaky checkout test', 'codex', 'starting', null, { noSteps: true }),
+    t('sb_studio', 6, 'Fix flaky checkout test', 'claude', 'starting', null, { noSteps: true }),
     t('sb_studio', 5, 'Docs restructure', 'claude', 'closed', null, { done: 7, current: false, updated: 5 * HOUR, delivery: { stage: 'pr_open', environment: null, pr: pr(214, 'Docs restructure', 'open', 'quartio', 'success') } }),
     t('sb_studio', 4, 'Payment webhook', 'claude', 'stopped_cancelled', null, { done: 3, current: false, updated: 9 * HOUR, delivery: { stage: 'pr_open', environment: null, pr: pr(209, 'Payment webhook', 'open', 'quartio', 'failure') } }),
-    t('sb_studio', 3, 'Image pipeline', 'codex', 'stopped_crashed', null, { done: 2, current: false, updated: DAY }),
+    t('sb_studio', 3, 'Image pipeline', 'claude', 'stopped_crashed', null, { done: 2, current: false, updated: DAY }),
     t('sb_studio', 2, 'Legacy import', 'claude', 'failed_spawn_error', null, { noSteps: true, updated: 2 * DAY, origin: 'import' }),
     t('sb_studio', 1, 'Old landing page', 'claude', 'closed', null, { done: 7, current: false, archived: true, updated: 6 * DAY, delivery: { stage: 'production_done', environment: null, pr: pr(180, 'Old landing page', 'merged', 'quartio', 'success') } }),
     t('sb_product', 1, 'Prepare repository for Yulius', 'claude', 'closed', null, { origin: 'onboarding', done: 7, current: false, updated: 2 * DAY }),
-    t('sb_product', 2, 'Pricing page', 'codex', 'closed', null, { done: 7, current: false, updated: 3 * HOUR, delivery: { stage: 'merged_integration', environment: null, pr: pr(512, 'Pricing page', 'merged', 'quartio', 'none') } }),
+    t('sb_product', 2, 'Pricing page', 'claude', 'closed', null, { done: 7, current: false, updated: 3 * HOUR, delivery: { stage: 'merged_integration', environment: null, pr: pr(512, 'Pricing page', 'merged', 'quartio', 'none') } }),
     t('sb_three', 2, 'Write README', 'claude', 'closed', null, { done: 7, current: false }),
-    t('sb_three', 1, 'Explore data model', 'codex', 'running', 'working', { done: 1, author: 'anna-q' }),
+    t('sb_three', 1, 'Explore data model', 'claude', 'running', 'working', { done: 1, author: 'anna-q' }),
   ];
   db.messages = [
-    { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_11', login: null, title: '#11 3D model viewer (codex)' }, to_task_id: 'tsk_studio_12', kind: 'scope', subject: 'Scope: src/viewer/**', body: 'I am working in src/viewer/** and public/models/**. Please avoid those paths; I will stay out of src/api/**.', created_at: iso(42 * MIN), read: true },
+    { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_11', login: null, title: '#11 3D model viewer (claude)' }, to_task_id: 'tsk_studio_12', kind: 'scope', subject: 'Scope: src/viewer/**', body: 'I am working in src/viewer/** and public/models/**. Please avoid those paths; I will stay out of src/api/**.', created_at: iso(42 * MIN), read: true },
     { id: 'msg_2', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_10', login: null, title: '#10 AWS login for deploy (claude)' }, to_task_id: 'tsk_studio_12', kind: 'question', subject: 'Which port does the API use?', body: 'Is the checkout API served on http://localhost:20003 in this sandbox? I need it for the deploy smoke test.', created_at: iso(8 * MIN), read: false },
     { id: 'msg_3', task: 'tsk_studio_12', from: { task_id: null, login: 'mkarp', title: 'mkarp' }, to_task_id: 'tsk_studio_12', kind: 'info', subject: '', body: 'Use the Stripe test keys only. The AWS sign-in tab is open: ' + `${ORIGIN}/s/studio/browser?tab=tab-aws`, created_at: iso(3 * MIN), read: false },
   ];
@@ -175,9 +175,9 @@ function seed(params) {
     { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
     { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', enabled: true, priority: 2, status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: null, in_use_by: 3 },
     { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', enabled: true, priority: 3, status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
-    { id: 'acc_x1', provider: 'openai', label: 'Codex #1', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
-    { id: 'acc_x2', provider: 'openai', label: 'Codex #2', enabled: true, priority: 2, status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
-    { id: 'acc_x3', provider: 'openai', label: 'Codex spare', enabled: false, priority: 9, status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_x1', provider: 'anthropic', label: 'Claude #4', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
+    { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', enabled: true, priority: 2, status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_x3', provider: 'anthropic', label: 'Claude spare', enabled: false, priority: 9, status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
   // `wf-feature` and `wf-quick-task` are the built-in instance workflows the server seeds.
   db.workflows = [
@@ -194,7 +194,7 @@ function seed(params) {
   ];
   db.automations = [
     { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
-    { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'codex', enabled: false, created_via: 'ui', next_run_at: null, last_run: null },
+    { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, created_via: 'ui', next_run_at: null, last_run: null },
   ];
   db.mcp = [
     { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true },
@@ -321,7 +321,7 @@ function detail(db, task) {
       : { wall_ms: Date.now() - Date.parse(task.created_at), active_ms: 41 * MIN, input_tokens: 182340, output_tokens: 23410, cache_read_tokens: 1204000, cache_write_tokens: 90210, models: [task.model], switches: task.number === 9 ? 1 : 0, turns: 17 },
     feedback: [],
     delivery: delivery(db, task),
-    switches: task.number === 9 ? [{ at: iso(2 * MIN), reason: 'claude accounts exhausted', from: 'claude/Claude #2', to: 'codex/Codex #1' }] : [],
+    switches: task.number === 9 ? [{ at: iso(2 * MIN), reason: 'account exhausted', from: 'Claude Code (Claude #2)', to: 'Claude Code (Claude #4)' }] : [],
   };
 }
 
@@ -534,24 +534,24 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
   need(sandbox, 'write');
   if (sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing') fail(409, 'conflict', 'The project is being prepared; new tasks start after the preparation task lands (or an admin skips it).');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
-  if (!['claude', 'codex'].includes(body.harness)) fail(422, 'invalid', 'Unknown harness.');
+  if (body.harness && body.harness !== 'claude') fail(422, 'invalid', 'harness must be claude (Yulius runs Claude Code only)');
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
   const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
   const wf = db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {
-    id, sandbox_id: sandbox.id, number, title, harness: body.harness, status: 'queued', activity: null,
+    id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     unread_messages: 0, archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
-    model: body.model || (body.harness === 'claude' ? 'claude-opus-4' : 'gpt-5-codex'), effort: body.effort || 'default', prompt: body.prompt,
+    model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
     delivery: null,
   };
   db.tasks.push(task);
   recount(db);
   later(() => touch(db, task, { status: 'starting' }), 700);
-  later(() => touch(db, task, { status: 'running', activity: 'working', account_label: task.harness === 'claude' ? 'Claude #1' : 'Codex #1' }), 1800);
+  later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return json(201, summary(task));
 });
 route('GET', `/api/tasks/${ID}`, ({ db, p }) => detail(db, taskOf(db, p[0])));
@@ -567,9 +567,9 @@ const continueHandler = ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (LIVE.has(task.status)) fail(409, 'conflict', 'The task is already running.');
-  if (body && body.harness) task.harness = body.harness;
   touch(db, task, { status: 'starting', activity: null });
-  later(() => touch(db, task, { status: 'running', activity: 'waiting', account_label: task.harness === 'claude' ? 'Claude #1' : 'Codex #1' }), 1300);
+  const account = db.accounts.find((a) => body && a.id === body.account_id);
+  later(() => touch(db, task, { status: 'running', activity: 'waiting', account_label: account ? account.label : 'Claude #1' }), 1300);
   return summary(task);
 };
 route('POST', `/api/tasks/${ID}/continue`, continueHandler);
@@ -577,14 +577,13 @@ route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (!['running', 'waiting_capacity'].includes(task.status)) fail(409, 'conflict', 'Only running tasks can switch.');
-  const from = `${task.harness}/${task.account_label}`;
-  const target = body.harness || task.harness;
+  const from = task.account_label;
   const account = db.accounts.find((a) => a.id === body.account_id);
   touch(db, task, { status: 'switching' });
   later(() => {
-    touch(db, task, { status: 'running', activity: 'waiting', harness: target, account_label: account ? account.label : target === 'claude' ? 'Claude #1' : 'Codex #1' });
+    touch(db, task, { status: 'running', activity: 'waiting', account_label: account ? account.label : 'Claude #1' });
     const session = db.sessions.get(task.id);
-    if (session) session.notice(`↻ switched from ${from} to ${target}/${task.account_label}`);
+    if (session) session.notice(`↻ switched from ${from} to ${task.account_label}`);
   }, 2500);
   return summary(task);
 });
@@ -645,7 +644,7 @@ route('GET', `/api/sandboxes/${ID}/git`, ({ db, p }) => {
     recent_commits: [
       { sha: '9f3c2a17b0e4d5c6a7b8c9d0e1f2a3b4c5d6e7f8', subject: 'feat(checkout): cart totals with tax rules', author: 'task #12 (claude)', at: iso(25 * MIN) },
       { sha: '4b1d9e0c7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d', subject: 'docs: restructure architecture section', author: 'task #5 (claude)', at: iso(5 * HOUR) },
-      { sha: 'c0ffee1234567890abcdef1234567890abcdef12', subject: 'fix(viewer): dispose WebGL context on unmount', author: 'task #11 (codex)', at: iso(7 * HOUR) },
+      { sha: 'c0ffee1234567890abcdef1234567890abcdef12', subject: 'fix(viewer): dispose WebGL context on unmount', author: 'task #11', at: iso(7 * HOUR) },
     ],
     // Open pull requests only.
     pulls: tasks.map(pull).filter((pr) => pr && pr.state === 'open'),
@@ -924,7 +923,7 @@ route('GET', '/api/admin/accounts', ({ db }) => { adminOnly(db); return db.accou
 // 201 {account, login_id}: the account waits in `pending_login` until the login terminal finishes.
 route('POST', '/api/admin/accounts', ({ db, body }) => {
   adminOnly(db);
-  if (!['anthropic', 'openai'].includes(body.provider)) fail(422, 'invalid', 'provider must be anthropic or openai');
+  if (body.provider !== 'anthropic') fail(422, 'invalid', 'provider must be anthropic (Claude)');
   if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
   db.nextId += 1;
   const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, enabled: true, priority: 100, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
@@ -988,7 +987,7 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
       total,
       closed: Math.round(total * 0.62),
       by_status: { closed: Math.round(total * 0.62), stopped_cancelled: Math.round(total * 0.12), running: 3, failed_spawn_error: 1, stopped_crashed: 2 },
-      by_harness: { claude: Math.round(total * 0.68), codex: Math.round(total * 0.32) },
+      by_harness: { claude: total },
       by_origin: { ui: Math.round(total * 0.8), automation: Math.round(total * 0.15), import: Math.round(total * 0.05) },
     },
     tasks_per_day: perDay,
@@ -996,18 +995,17 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
     tokens: tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown),
     tokens_by_model: [
       { model: 'claude-opus-4', ...tokenTotals(Math.round(runs * 0.6), Math.round(total * 0.6), n(26e6), n(3.1e6), n(200e6), null, 0) },
-      { model: 'gpt-5-codex', ...tokenTotals(Math.round(runs * 0.3), Math.round(total * 0.3), n(12e6), n(1.7e6), n(90e6), null, 0) },
+      { model: 'claude-sonnet-4', ...tokenTotals(Math.round(runs * 0.3), Math.round(total * 0.3), n(12e6), n(1.7e6), n(90e6), null, 0) },
       { model: 'unknown', ...tokenTotals(unknown, unknown, null, null, null, null, unknown) },
     ],
     tokens_by_harness: [
-      { harness: 'claude', ...tokenTotals(Math.round(runs * 0.68), Math.round(total * 0.68), n(29e6), n(3.5e6), n(220e6), null, unknown) },
-      { harness: 'codex', ...tokenTotals(Math.round(runs * 0.32), Math.round(total * 0.32), n(12e6), n(1.7e6), n(90e6), null, 0) },
+      { harness: 'claude', ...tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown) },
     ],
     tokens_by_account: [
       ...db.accounts.filter((a) => a.enabled).map((a, i) => ({ account_id: a.id, account_label: a.label, ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
       { account_id: 'acc_deleted', account_label: null, ...tokenTotals(2, 1, n(1e6), n(0.1e6), null, null, 0) },
     ],
-    switches: { total: Math.round(total * 0.15), account: Math.round(total * 0.11), provider: Math.round(total * 0.04) },
+    switches: { total: Math.round(total * 0.15) },
     feedback: { correct: Math.round(total * 0.3), incorrect: Math.round(total * 0.06) },
     truncated: false,
   };
@@ -1170,20 +1168,9 @@ const SCRIPT_CLAUDE = [
   `     ${c(114, 'test result: ok. 14 passed; 0 failed')}`,
   `${c(255, '⏺')} The API is running at ${c(39, 'http://localhost:20003/api/cart')} — I opened it in the sandbox browser.`,
   `${c(255, '⏺')} ${bold('yulius')} - message_send (MCP)(to: "#11", kind: "scope", subject: "I own src/api/**")`,
-  `  ${dim('⎿  Delivered to #11 3D model viewer (codex)')}`,
+  `  ${dim('⎿  Delivered to #11 3D model viewer')}`,
   `${c(173, '✻')} ${c(173, 'Pondering…')} ${dim('(esc to interrupt)')}`,
   `${c(255, '⏺')} Done with this step. Anything else before I write the UI wiring?`,
-];
-
-const SCRIPT_CODEX = [
-  `${c(141, '•')} Explored`,
-  `  ${dim('└ Read viewer.tsx, scene.ts')}`,
-  `${c(141, '•')} Ran ${bold('pnpm test --filter viewer')}`,
-  `  ${dim('└ 23 passed')}`,
-  `${c(141, '•')} Edited src/viewer/scene.ts ${c(114, '(+12')} ${c(203, '-3)')}`,
-  `${c(141, '•')} Preview: ${c(39, 'http://localhost:20005/')}`,
-  `${c(141, '•')} Working ${dim('(12s • esc to interrupt)')}`,
-  `${c(255, '›')} Ready. Tell me what to change next.`,
 ];
 
 /** Persistent fake PTY for one task: a scroll region above a native-looking footer. */
@@ -1197,7 +1184,7 @@ class TermSession {
     this.viewers = new Set();
     this.cols = 120;
     this.rows = 36;
-    this.script = task.harness === 'codex' ? SCRIPT_CODEX : SCRIPT_CLAUDE;
+    this.script = SCRIPT_CLAUDE;
     this.scriptIndex = 0;
     this.timer = null;
     this.exited = !LIVE.has(task.status);
@@ -1210,9 +1197,7 @@ class TermSession {
 
   writeHeader() {
     const cwd = `/srv/yulius/sandboxes/${this.sandbox().slug}/worktrees/${this.task.number}`;
-    if (this.task.harness === 'codex') {
-      this.lines.push(`${c(141, '>_')} ${bold('OpenAI Codex')} ${dim('(v0.46.0)')}`, `   ${dim('model:')} ${this.task.model} ${this.task.effort}   ${dim('/model to change')}`, `   ${dim('directory:')} ${cwd}`, '');
-    } else {
+    {
       const w = 54;
       const row = (s, visible) => `${c(173, '│')} ${s}${' '.repeat(Math.max(0, w - 3 - visible))}${c(173, '│')}`;
       this.lines.push(
@@ -1245,11 +1230,9 @@ class TermSession {
   footer() {
     const sep = dim('─'.repeat(Math.max(10, this.cols - 1)));
     const prompt = `${c(245, '>')} ${this.input}`;
-    const hint = this.task.harness === 'codex'
-      ? `${dim(' ⏎ send   ⇧⏎ newline   ⌃C quit')}${' '.repeat(6)}${c(141, `${this.task.model} · ${this.task.effort}`)} ${dim('· 62% context left')}`
-      : `${dim(' ⏵⏵ accept edits on (shift+tab to cycle)')}${' '.repeat(6)}${c(173, `${this.task.model} · effort ${this.task.effort}`)}`;
+    const hint = `${dim(' ⏵⏵ accept edits on (shift+tab to cycle)')}${' '.repeat(6)}${c(173, `${this.task.model} · effort ${this.task.effort}`)}`;
     const visible = hint.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').length;
-    const short = this.task.harness === 'codex' ? c(141, ` ${this.task.model}`) : c(173, ` ${this.task.model}`);
+    const short = c(173, ` ${this.task.model}`);
     return { sep, prompt, hint: visible < this.cols ? hint : short };
   }
 
@@ -1539,15 +1522,13 @@ class LoginSession {
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
       this.ws = ws;
-      const account = this.db.accounts.find((a) => a.id === this.accountId);
-      const codex = account && account.provider === 'openai';
-      ws.push(JSON.stringify(this.state(codex)));
+      ws.push(JSON.stringify(this.state()));
       this.seq += 1;
       ws.push(terminalFrame(2, this.seq, [
-        bold(codex ? 'Codex login' : 'Claude Code login'),
+        bold('Claude Code login'),
         '',
         'Open this URL in your browser and approve access:',
-        c(39, codex ? 'https://auth.openai.com/oauth/authorize?client_id=mock&state=xyz' : 'https://claude.ai/oauth/authorize?code=true&client_id=mock&state=xyz'),
+        c(39, 'https://claude.ai/oauth/authorize?code=true&client_id=mock&state=xyz'),
         '',
         'Paste the authorization code here (any text in mock mode), then press Enter:',
         '> ',
@@ -1560,8 +1541,8 @@ class LoginSession {
     }
   }
 
-  state(codex) {
-    return { type: 'state', attempt_seq: null, harness: codex ? 'codex' : 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.done ? 'ok' : 'running' };
+  state() {
+    return { type: 'state', attempt_seq: null, harness: 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.done ? 'ok' : 'running' };
   }
 
   finish() {
@@ -1573,7 +1554,7 @@ class LoginSession {
       emit(this.db, { type: 'account.updated', account });
     }
     if (this.ws) {
-      this.ws.push(JSON.stringify(this.state(account && account.provider === 'openai')));
+      this.ws.push(JSON.stringify(this.state()));
       this.ws.push(JSON.stringify({ type: 'exit', status: 'ok', code: 0 }));
     }
   }
@@ -1813,9 +1794,9 @@ function startAmbient(db) {
     if (tick === 5 && queued) touch(db, queued, { status: 'running', activity: 'working', account_label: 'Claude #1' });
     const switching = db.tasks.find((t) => t.id === 'tsk_studio_9');
     if (tick === 4 && switching && switching.status === 'switching') {
-      touch(db, switching, { status: 'running', activity: 'waiting', account_label: 'Codex #1' });
+      touch(db, switching, { status: 'running', activity: 'waiting', account_label: 'Claude #4' });
       const session = db.sessions.get(switching.id);
-      if (session) session.notice('↻ switched from claude/Claude #2 to codex/Codex #1 (account exhausted)');
+      if (session) session.notice('↻ switched from Claude #2 to Claude #4 (account exhausted)');
     }
     const working = db.tasks.find((t) => t.id === 'tsk_studio_12');
     if (working && tick % 4 === 0 && working.status === 'running') touch(db, working);

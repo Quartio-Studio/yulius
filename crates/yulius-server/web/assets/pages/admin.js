@@ -170,29 +170,7 @@ export function mountAccountsPage(ctx) {
   if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'Accounts');
   const frame = pageFrame({ title: 'Accounts', sub: 'organization subscriptions used for rotation', actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => add() }, 'Add account')] });
   const host = h('div');
-  // Harness changes are off by default and need a user's approval (ROT-012).
-  const autoSwitch = h('input', { type: 'checkbox', disabled: true });
-  const settingsCard = h('div', { class: 'card stack' },
-    h('label', { class: 'check' }, autoSwitch, h('span', null, 'Switch harness automatically (Claude Code ↔ Codex) when every account of a task’s provider is exhausted')),
-    h('p', { class: 'muted xs' }, 'Off by default: Yulius rotates accounts within the same provider and otherwise asks in the task view before translating a session to the other harness.'));
-  ctx.api.get('/api/admin/settings').then((settings) => {
-    autoSwitch.checked = Boolean(settings && settings.auto_harness_switch);
-    autoSwitch.disabled = false;
-  }).catch((error) => errorToast(error, 'Could not load instance settings'));
-  autoSwitch.addEventListener('change', async () => {
-    autoSwitch.disabled = true;
-    try {
-      const settings = await ctx.api.patch('/api/admin/settings', { auto_harness_switch: autoSwitch.checked });
-      autoSwitch.checked = Boolean(settings && settings.auto_harness_switch);
-      toast(autoSwitch.checked ? 'Automatic harness switching enabled' : 'Harness changes now need approval', { kind: 'ok' });
-    } catch (error) {
-      autoSwitch.checked = !autoSwitch.checked;
-      errorToast(error, 'Could not save the setting');
-    } finally {
-      autoSwitch.disabled = false;
-    }
-  });
-  frame.body.append(settingsCard, host, h('p', { class: 'muted xs' }, 'Rotation uses enabled accounts in priority order (lower first) and switches before an account is exhausted; a change to the other provider needs approval unless enabled above.'));
+  frame.body.append(host, h('p', { class: 'muted xs' }, 'Rotation uses enabled Claude accounts in priority order (lower first) and switches to the next one before an account is exhausted, resuming the same session.'));
 
   const patch = async (account, body) => {
     try {
@@ -207,7 +185,7 @@ export function mountAccountsPage(ctx) {
 
   const reload = loader(host, () => ctx.api.get('/api/admin/accounts'), (list) => {
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.provider || '').localeCompare(b.provider || '') || (a.priority ?? 0) - (b.priority ?? 0));
-    if (accounts.length === 0) return h('div', { class: 'card placeholder' }, 'No accounts yet. Add a Claude or Codex subscription; you complete the provider’s own sign-in.');
+    if (accounts.length === 0) return h('div', { class: 'card placeholder' }, 'No accounts yet. Add a Claude subscription; you complete Claude’s own sign-in.');
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
       const priority = h('input', { class: 'input', type: 'number', min: 0, max: 10000, value: String(account.priority ?? 0), style: { width: '80px', height: '24px' }, 'aria-label': `Priority of ${account.label}` });
       priority.addEventListener('change', async () => {
@@ -263,16 +241,15 @@ export function mountAccountsPage(ctx) {
   });
 
   function add() {
-    const provider = h('select', { class: 'select' }, h('option', { value: 'anthropic' }, 'Claude (Anthropic)'), h('option', { value: 'openai' }, 'Codex (OpenAI)'));
     const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 80, autofocus: true });
     openModal({
-      title: 'Add account',
-      body: h('div', { class: 'stack' }, field('Provider', provider), field('Label', label, 'Shown in usage bars and task details.'), h('p', { class: 'muted small' }, 'Next, a login terminal opens with the provider’s own sign-in (claude setup-token or codex login). Nothing is created when the login cannot start.')),
+      title: 'Add Claude account',
+      body: h('div', { class: 'stack' }, field('Label', label, 'Shown in usage bars and task details.'), h('p', { class: 'muted small' }, 'Next, a login terminal opens with Claude’s own sign-in (claude setup-token). Nothing is created when the login cannot start.')),
       actions: [
         { label: 'Cancel', value: false },
         { label: 'Continue to sign-in', kind: 'primary', run: async () => {
           if (!label.value.trim()) { toast('Give the account a label.', { kind: 'warn' }); return false; }
-          const result = await ctx.api.post('/api/admin/accounts', { provider: provider.value, label: label.value.trim() });
+          const result = await ctx.api.post('/api/admin/accounts', { provider: 'anthropic', label: label.value.trim() });
           reload();
           openLoginTerminal(ctx, result.login_id, result.account ? result.account.label : label.value.trim(), reload);
           return true;

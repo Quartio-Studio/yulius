@@ -265,7 +265,7 @@ export function renderStatus(data) {
 /** Account usage block shared by the Status panel and the Accounts page. */
 export function accountUsage(account) {
   const usage = account.usage || {};
-  const provider = account.provider === 'openai' ? 'Codex' : account.provider === 'anthropic' ? 'Claude' : account.provider;
+  const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
   const tone = { ok: 'ok', relogin: 'warn', limited: 'warn', error: 'danger' }[account.status] || '';
   const windowMeter = (w, name) => w ? meter(w.used_percent ?? null, {
     label: `${name}${w.window_minutes ? ` · ${windowLabel(w.window_minutes)}` : ''}`,
@@ -274,7 +274,7 @@ export function accountUsage(account) {
   return h('div', { class: 'stack-sm', style: { opacity: account.enabled === false ? 0.55 : 1 } },
     h('div', { class: 'row' },
       h('strong', { class: 'ellipsis' }, account.label || account.id),
-      badge(provider, account.provider === 'openai' ? 'violet' : 'accent'),
+      badge(provider, 'accent'),
       badge(account.status || 'unknown', tone),
       account.enabled === false ? badge('disabled') : null,
       h('span', { class: 'spacer' }),

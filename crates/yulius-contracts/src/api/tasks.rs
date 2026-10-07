@@ -27,7 +27,7 @@ pub struct TaskSummary {
     pub number: u32,
     /// Title.
     pub title: String,
-    /// `claude` or `codex`.
+    /// Harness wire name (`claude`; Yulius runs Claude Code only).
     pub harness: String,
     /// Status wire name (domain `TaskStatus::as_str`).
     pub status: String,
@@ -54,26 +54,14 @@ pub struct TaskSummary {
     /// `goal` or `prompt` (TSK-010).
     #[serde(default = "default_mode")]
     pub mode: String,
-    /// A harness change waiting for approval (ROT-012).
-    #[serde(default)]
-    pub harness_proposal: Option<HarnessProposalView>,
 }
 
 fn default_mode() -> String {
     "prompt".into()
 }
 
-/// A proposed harness change shown to users with write access.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HarnessProposalView {
-    /// Proposed harness (`claude` or `codex`).
-    pub harness: String,
-    /// Proposed account id.
-    pub account_id: String,
-    /// Label of the proposed account.
-    pub account_label: Option<String>,
-    /// When it was proposed.
-    pub proposed_at: String,
+fn default_harness() -> String {
+    "claude".into()
 }
 
 /// `POST /api/sandboxes/{sid}/tasks`.
@@ -81,7 +69,8 @@ pub struct HarnessProposalView {
 pub struct CreateTask {
     /// Initial prompt.
     pub prompt: String,
-    /// `claude` or `codex`.
+    /// Harness: `claude` (the default and the only one supported).
+    #[serde(default = "default_harness")]
     pub harness: String,
     /// Workflow to seed steps/instructions.
     #[serde(default)]
@@ -103,16 +92,9 @@ pub struct CreateTask {
 /// `POST /api/tasks/{tid}/continue` and `/switch`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ContinueTask {
-    /// Target harness.
-    #[serde(default)]
-    pub harness: Option<String>,
-    /// Target account.
+    /// Target account (another Claude account); the best one when absent.
     #[serde(default)]
     pub account_id: Option<String>,
-    /// Explicit approval of a change to another harness (ROT-012); without it such a change
-    /// is refused with 409.
-    #[serde(default)]
-    pub approve_harness_change: bool,
 }
 
 /// One process run.
@@ -124,7 +106,7 @@ pub struct AttemptView {
     pub harness: String,
     /// Account label.
     pub account_label: Option<String>,
-    /// `new`, `resume`, `translated` or `handoff`.
+    /// `new` or `resume`.
     pub launch_kind: String,
     /// Attempt state wire name.
     pub state: String,

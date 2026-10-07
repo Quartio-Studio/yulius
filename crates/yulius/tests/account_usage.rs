@@ -17,7 +17,7 @@ use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
 
-/// Claude answers with windows; Codex refuses the token.
+/// Answers with windows, or refuses an expired token.
 struct FakeProbe;
 
 #[async_trait]
@@ -27,6 +27,9 @@ impl UsageProbe for FakeProbe {
             !credential.expose().is_empty(),
             "the stored credential is passed"
         );
+        if credential.expose() == "expired" {
+            return Err("the provider refused this account's token for usage (HTTP 401)".into());
+        }
         match provider {
             Provider::Anthropic => Ok(AccountUsage {
                 primary: Some(UsageWindow {
@@ -41,20 +44,17 @@ impl UsageProbe for FakeProbe {
                 }),
                 ..AccountUsage::default()
             }),
-            Provider::OpenAi => {
-                Err("the provider refused this account's token for usage (HTTP 401)".into())
-            }
         }
     }
 }
 
-async fn account(h: &support::Harness, id: &str, provider: Provider) -> TestResult {
+async fn account(h: &support::Harness, id: &str, credential: &[u8]) -> TestResult {
     h.store
         .insert_account(&AccountRecord {
             id: AccountId::parse(id)?,
-            provider,
+            provider: Provider::Anthropic,
             label: id.into(),
-            credential: Some(h.app.deps.crypto.seal(b"credential")?),
+            credential: Some(h.app.deps.crypto.seal(credential)?),
             priority: 0,
             enabled: true,
             status: AccountStatus::Ok,
@@ -74,8 +74,8 @@ async fn admins_refresh_provider_usage_and_see_observed_tokens() -> TestResult {
         ..HarnessOptions::default()
     })?;
     let admin = setup_superadmin_creds(&h).await?;
-    account(&h, "a-claude", Provider::Anthropic).await?;
-    account(&h, "o-codex", Provider::OpenAi).await?;
+    account(&h, "a-claude", b"credential").await?;
+    account(&h, "a-expired", b"expired").await?;
 
     let refreshed = call(
         &h.router,
@@ -99,7 +99,7 @@ async fn admins_refresh_provider_usage_and_see_observed_tokens() -> TestResult {
     let refused = call(
         &h.router,
         Method::POST,
-        "/api/admin/accounts/o-codex/usage",
+        "/api/admin/accounts/a-expired/usage",
         None,
         &admin,
     )
@@ -111,17 +111,17 @@ async fn admins_refresh_provider_usage_and_see_observed_tokens() -> TestResult {
         refused.body
     );
     let list = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
-    let codex = list
+    let expired = list
         .body
         .as_array()
-        .and_then(|a| a.iter().find(|x| x["id"] == "o-codex"))
-        .ok_or("codex account")?;
+        .and_then(|a| a.iter().find(|x| x["id"] == "a-expired"))
+        .ok_or("expired account")?;
     assert!(
-        codex["last_error"]
+        expired["last_error"]
             .as_str()
             .unwrap_or("")
             .contains("HTTP 401")
     );
-    assert!(codex["tokens_7d"].is_object(), "token totals in the list");
+    assert!(expired["tokens_7d"].is_object(), "token totals in the list");
     Ok(())
 }

@@ -108,7 +108,7 @@ impl App {
         event: &str,
         input: &HookInput,
     ) -> AppResult<HookOutput> {
-        if !matches!(harness, "claude" | "codex") {
+        if harness != "claude" {
             return Err(AppError::NotFound);
         }
         let ctx = self.agent_context(token).await?;
@@ -116,7 +116,7 @@ impl App {
             events::SESSION_START => self.hook_session_start(&ctx, input).await,
             events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(&ctx).await,
             events::STOP => self.hook_stop(&ctx, input).await,
-            events::NOTIFICATION | events::PERMISSION_REQUEST => {
+            events::NOTIFICATION => {
                 self.set_task_activity(&ctx.task, Activity::NeedsAttention)
                     .await?;
                 Ok(HookOutput::default())

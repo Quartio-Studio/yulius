@@ -21,6 +21,7 @@ Companion documents:
 | `P(n)` | Michał's unfinished draft goal prompt, item *n*, on screen at V 3:38 and V 35:45 | Already written before the discussion (visible at V 3:38), so **spoken statements in the call are later and take precedence**. |
 | `K` | User clarifications in the 2026-10-07 goal | Rust implementation; Product dev VM; Studio continuous; support both simply; robustness. |
 | `F 2026-10-07` | Founder feedback after using the deployed instance (2026-10-07 goal: ten items, then the recovery code, five additions — agent cursor, hidden tools rail, the "unknown tab" error, link routing, HTML text with instant copying — and a simpler editor instead of per-user VS Code) | Later than every other source; supersedes them where it conflicts (class C). |
+| `F 2026-10-08` | Founder decision of 2026-10-08: "prune Codex support and switching providers; we use only Claude; if Codex gets better, we'll support it" | Latest source; supersedes every Codex and cross-provider statement (class C). |
 | `R:product`, `R:studio` | Read-only inspection of `/Users/mrfishpl/Desktop/quartio/product` and `/studio` | Structure, instructions, workflows. |
 
 Raw sources, frame captures and research notes stay outside Git (local notes). This document
@@ -41,17 +42,18 @@ Requirement classification used throughout:
 ## 2. Vision
 
 Yulius is a self-hosted harness for **"weaponized vibe-coding"** (T 3:05, P(1)): a person who is
-not a professional programmer describes what they want, and existing coding agents (Claude Code
-and Codex) build production-quality software, while Yulius imposes the discipline the models do
-not impose on their own — specs, plans with todos, documented decisions, architecture docs,
-consistent project context, git hygiene and tested delivery (T 16:27–23:13, T 34:06–35:00).
+not a professional programmer describes what they want, and an existing coding agent (Claude Code;
+Codex was planned and is deferred, F 2026-10-08) builds production-quality software, while Yulius
+imposes the discipline the models do not impose on their own — specs, plans with todos, documented
+decisions, architecture docs, consistent project context, git hygiene and tested delivery
+(T 16:27–23:13, T 34:06–35:00).
 
 Yulius is **not a coding agent**. It is an orchestrator of existing coding agents (P(5)): every
-task is exactly one native Claude Code or Codex session, shown as the agent's own terminal UI
-(T 10:48–11:25). Yulius adds what the harnesses lack or do inconsistently: organization-wide
-accounts with seamless rotation (T 11:44–14:45), harness-independent task communication
-(T 13:27–13:48, T 23:31–23:53), a task step manager (T 15:15–15:43), MCP and skills managed once for
-both harnesses (T 17:06–17:21, T 23:53–24:20, T 32:28), automations, GitHub-mirrored permissions
+task is exactly one native Claude Code session, shown as the agent's own terminal UI
+(T 10:48–11:25). Yulius adds what the harness lacks or does inconsistently: organization-wide
+accounts with seamless rotation (T 11:44–14:45), task-to-task communication
+(T 13:27–13:48, T 23:31–23:53), a task step manager (T 15:15–15:43), MCP and skills managed once
+(T 17:06–17:21, T 23:53–24:20, T 32:28), automations, GitHub-mirrored permissions
 (T 8:41–10:25, T 31:00–31:44), and analytics (T 35:19–35:41).
 
 Target users: a team of 2–5 people, or one person, working comfortably and consistently without
@@ -70,9 +72,9 @@ important task").
 | Superadmin | The single local administrator created at installation (T 30:22, P(3)). |
 | User | A person the superadmin admits; always authenticated with GitHub (T 30:46–31:00). |
 | Sandbox (project) | One GitHub repository and its isolated workspace on the instance. One sandbox = exactly one repository; many sandboxes per instance (T 8:41–10:25). UI tabs are sandboxes (T 6:42). |
-| Task | Exactly one coding-agent session lineage (Claude Code or Codex) with its own worktree, branch, spec and steps (T 11:25, T 23:41). It may span several process runs (resume, account or provider switches) but is one conversation. |
-| Harness | A supported coding-agent CLI: Claude Code or Codex (T 11:28–11:32). |
-| Account | An organization-connected provider subscription login (Claude or Codex) (T 11:50). |
+| Task | Exactly one coding-agent session lineage (Claude Code) with its own worktree, branch, spec and steps (T 11:25, T 23:41). It may span several process runs (resume, account switches) but is one conversation. |
+| Harness | A supported coding-agent CLI: Claude Code (T 11:28–11:32; Codex deferred, F 2026-10-08). |
+| Account | An organization-connected Claude subscription login (T 11:50). |
 | Step | An item of a task's Yulius-managed plan/todo list (T 15:30). |
 | Skill | A `SKILL.md` playbook that the agent activates automatically by task relevance (T 24:04). |
 | Automation | A schedule or trigger that creates tasks (T 24:48–25:22, T 33:35). |
@@ -90,8 +92,8 @@ important task").
    several safe places before continuing (T 30:22–30:38).
 3. Superadmin connects the instance to the GitHub organization or personal account (T 8:41,
    T 31:00) and admits users by GitHub login (T 30:46).
-4. Superadmin connects Claude and Codex accounts by clicking a button and completing the
-   provider's own login (T 31:44–32:00, WA 13:10).
+4. Superadmin connects Claude accounts by clicking a button and completing Claude's own login
+   (T 31:44–32:00, WA 13:10).
 
 ### J2 — Start a new project from a template
 
@@ -103,27 +105,27 @@ important task").
 
 ### J3 — Build a feature by vibe-coding
 
-1. The user clicks "New task", writes "make me an online store" (or a feature request), chooses the
-   harness (Claude or Codex) (T 11:28, T 22:00).
+1. The user clicks "New task" and writes "make me an online store" (or a feature request); the task
+   runs Claude Code (T 11:28, T 22:00; F 2026-10-08).
 2. The center of the screen becomes that agent's native terminal (T 4:36, T 10:48–11:13).
 3. Guided by Yulius' briefing and skills, the agent decides and documents the technology
    (T 20:00–20:34), writes the task spec with a plan of todos (T 17:49–18:00), and Yulius shows the
    steps and the agent's current position (T 15:30–15:43).
 4. The agent implements on the task's own branch and worktree (T 23:00, T 23:41), runs tests, and
    the user delivers through PR → integration → environment → production (T 23:00–23:13).
-5. If an account runs out of usage, the session continues on another account or provider without
-   the user doing anything (T 12:00–13:01).
+5. If an account runs out of usage, the session continues on another Claude account without the
+   user doing anything (T 12:00–13:01).
 
 ### J4 — Import an existing project (Product, Studio)
 
 1. On their computer, a user runs `yulius import`, authenticates, and chooses how far back to import
-   local Claude and Codex sessions, e.g. two weeks (T 26:00).
+   local Claude Code sessions, e.g. two weeks (T 26:00).
 2. Yulius links the GitHub repository (it must exist), syncs local unpublished state, and imports
    sessions opened in that repository as organization tasks (T 26:00, T 27:50–28:08).
 3. Yulius starts a preparation meta-task that adapts the project to the discipline; the user only
    approves or is informed it is running (T 27:00–27:44, WA 13:38).
-4. Any member can open an imported session (even another person's), continue it, or continue it
-   on the other harness (T 28:08–28:33).
+4. Any member can open an imported session (even another person's) and continue it
+   (T 28:08–28:33).
 
 ### J5 — Control work from a phone
 
@@ -132,7 +134,7 @@ Close the laptop; tasks keep running on the VM; log in from a phone and steer ta
 
 ### J6 — Coordinate parallel tasks
 
-Two tasks in one sandbox (possibly Claude and Codex) see each other's purpose and status, exchange
+Two tasks in one sandbox see each other's purpose and status, exchange
 messages and agree on scopes; each works in its own worktree (T 13:27–13:48, T 23:31–23:53).
 
 ### J7 — Daily feedback automation
@@ -216,10 +218,10 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 
 | ID | Requirement | Source | Class | Acceptance |
 | --- | --- | --- | --- | --- |
-| TSK-001 | One task is exactly one Claude Code or Codex session. | T 11:25, P(5) | E | AC-TSK-1 |
+| TSK-001 | One task is exactly one Claude Code session. | T 11:25, P(5), F 2026-10-08 | C | AC-TSK-1 |
 | TSK-002 | The harness is chosen when creating the task; different tasks may use different harnesses. | T 11:28, P(5) | E | AC-TSK-1 |
-| TSK-003 | Only Claude Code and Codex are supported now; the design allows adding other harnesses later. | T 11:32 | E + D | AC-TSK-1 |
-| HRN-001 | The center shows the agent's **native terminal interface** (the real TUI), exactly like a local Claude or Codex session — not a re-rendered chat. | T 10:48–11:20, P(5) "seriously TUI" | E | AC-TSK-2 |
+| TSK-003 | Only Claude Code is supported (Codex was planned and is deferred until it improves); the design keeps a harness port so another harness can be added later. | T 11:32, F 2026-10-08 (supersedes "Claude Code and Codex") | C + D | AC-TSK-1 |
+| HRN-001 | The center shows the agent's **native terminal interface** (the real TUI), exactly like a local Claude Code session — not a re-rendered chat. | T 10:48–11:20, P(5) "seriously TUI" | E | AC-TSK-2 |
 | HRN-002 | The task terminal is dedicated to the agent: the user cannot drop to a shell; leaving the agent session (e.g., `/exit`) closes the task. A separate general terminal is not part of the task view. When a task closes because the user left the session, the UI returns to the graphical task list, closes the task view and removes the task from the Active tasks list (it remains under Tasks with Continue). | T 11:06–11:20, F 2026-10-07 | E | AC-TSK-3 |
 | HRN-003 | Native commands work: `/model`, `/effort`, `/fast` and other slash commands of the harness. | T 14:18 | E | AC-TSK-2 |
 | HRN-004 | Harness features that conflict with "one session = one task" (e.g., Claude switching to another session, `/resume` pickers) are handled: Yulius detects a session-id change and either adopts it into the same task lineage or prevents it, without corrupting another task. | T 13:04–13:27 | E | AC-TSK-4 |
@@ -229,24 +231,24 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | TSK-007 | A stopped or closed task can be continued (resumed) by any member with write permission. | T 28:08–28:33 | E | AC-TSK-7 |
 | TSK-008 | A per-instance concurrency limit queues extra tasks visibly instead of overloading the VM. | robustness (K) | A | AC-NFR-3 |
 | TSK-009 | A write user can delete a task permanently, not only archive it. Deletion requires confirmation, refuses live tasks (stop first) and removes the task's messages, steps, metrics, feedback, switch history, run records and directories, and its local worktree and branch; remote branches and pull requests are untouched. | F 2026-10-07 | C | AC-TSK-8 |
-| TSK-010 | Goal mode: a new task chooses between **Goal** (default) and **Prompt**. In goal mode the task prompt becomes the session's goal through the harness's native `/goal` command (Claude Code and Codex), typed once the TUI is ready, so the agent keeps working until the goal is met; a prompt longer than the harness accepts as a goal (Claude Code: 500 characters) is sent as the first message and the goal requires everything it asks for to be done and verified. Prompt mode sends it as a normal first message. The mode is stored with the task, shown in the task view, and re-applied when a Claude session is continued or a task moves to another harness. | F 2026-10-07 | C | AC-TSK-9 |
+| TSK-010 | Goal mode: a new task chooses between **Goal** (default) and **Prompt**. In goal mode the task prompt becomes the session's goal through Claude Code's native `/goal` command, typed once the TUI is ready, so the agent keeps working until the goal is met; a prompt longer than Claude Code accepts as a goal (500 characters) is sent as the first message and the goal requires everything it asks for to be done and verified. Prompt mode sends it as a normal first message. The mode is stored with the task, shown in the task view, and re-applied when the session is continued (also on another account). | F 2026-10-07 | C | AC-TSK-9 |
 
-### 5.5 Accounts, rotation and provider translation (ROT)
+### 5.5 Accounts and rotation (ROT)
 
 | ID | Requirement | Source | Class | Acceptance |
 | --- | --- | --- | --- | --- |
-| ROT-001 | The organization can connect many accounts per provider (e.g., 10 Codex and 15 Claude Code), more providers in future. | T 11:50–11:58, T 14:00, P(5) | E | AC-ROT-1 |
+| ROT-001 | The organization can connect many Claude accounts (e.g., 15); the design allows more providers in future. | T 11:50–11:58, T 14:00, P(5), F 2026-10-08 | C | AC-ROT-1 |
 | ROT-002 | Connecting an account is a button followed by the provider's own sign-in; no long CLI typing. | T 31:44–32:00, WA 13:10 | E | AC-ROT-1 |
-| ROT-003 | When an account's usage is exhausted — or proactively at ~99% to avoid the edge case — the task switches to another account of the same provider, underneath and smoothly; the user should not notice. | T 11:44–12:18, P(5) | E | AC-ROT-2 |
-| ROT-004 | When all accounts of the provider are exhausted, Yulius first uses accounts whose limits have reset or can be reset; changing the task's harness then needs explicit approval (ROT-012). | T 12:23, P(5), F 2026-10-07 | E (reset semantics U-03) | AC-ROT-3 |
-| ROT-005 | A provider switch translates the session: the Claude session becomes a Codex session (or vice versa) that continues the same task; the terminal visibly shows the other harness, yet the transition is smooth. | T 12:23–13:01, T 14:28–14:45, P(5) | E | AC-ROT-4 |
-| ROT-006 | Translation quality is a first-class, tested capability ("not trivial; needs testing and effort"). | T 14:28–14:45 | E | AC-ROT-4 |
-| ROT-007 | Users can switch provider and account manually. | P(5), T 28:20 | E | AC-ROT-5 |
+| ROT-003 | When an account's usage is exhausted — or proactively at ~99% to avoid the edge case — the task switches to another Claude account, underneath and smoothly; the user should not notice. | T 11:44–12:18, P(5) | E | AC-ROT-2 |
+| ROT-004 | When all accounts are exhausted, Yulius first uses accounts whose limits have reset or can be reset; a task never changes harness or provider. | T 12:23, P(5), F 2026-10-07, F 2026-10-08 | C (reset semantics U-03) | AC-ROT-3 |
+| ROT-005 | Withdrawn (F 2026-10-08): no provider switches, so no session translation. Originally: a provider switch translates the session (Claude ↔ Codex). | T 12:23–13:01, T 14:28–14:45, P(5); F 2026-10-08 | C (withdrawn) | — |
+| ROT-006 | Withdrawn with ROT-005 (F 2026-10-08): translation quality as a tested capability. | T 14:28–14:45; F 2026-10-08 | C (withdrawn) | — |
+| ROT-007 | Users can switch a task to another account manually. | P(5), T 28:20, F 2026-10-08 | C | AC-ROT-5 |
 | ROT-008 | The account orchestrator respects per-task model/effort settings and preserves them across switches where the target supports them. | T 14:00–14:18 | E | AC-ROT-5 |
 | ROT-009 | Subscription management: admins see accounts, usage, reset times and status; can add, disable, re-login, set priority. The accounts section shows each account's usage: provider-reported windows (5-hour, weekly) with percent used and reset time when known, Yulius-observed tokens of the last 24 hours and 7 days, and the tasks using it; unknown values are shown as unknown. | WA 13:12, T 33:29, F 2026-10-07 | E | AC-ROT-1, AC-ROT-7 |
-| ROT-010 | If no account of any provider has capacity, the task waits in "needs attention" with the earliest known reset time, and resumes automatically when capacity returns. | — | A | AC-ROT-6 |
+| ROT-010 | If no account has capacity, the task waits in "needs attention" with the earliest known reset time, and resumes automatically when capacity returns. | — | A | AC-ROT-6 |
 | ROT-011 | Unknown usage is never treated as zero usage; every switch decision is recorded with its inputs for audit. | engineering rules EVT-001 | A | AC-ROT-2 |
-| ROT-012 | Changing a task's harness is disabled by default and needs explicit approval. Automatic rotation stays within the task's provider; when only the other provider has capacity, the task waits ("needs attention") with a proposal that a write user approves ("Switch to Codex"). A manual switch to another harness asks for confirmation, and the API refuses a harness change without explicit approval. An instance administrator may enable automatic harness switching (off by default). | F 2026-10-07 | C | AC-ROT-8 |
+| ROT-012 | A task never changes harness: rotation, Continue and manual switches stay on Claude accounts; there is no harness proposal, approval or setting for it. Rotating from one Claude account to the next stays automatic (proactively at the 99 % threshold from refreshed usage, reactively on a usage limit). | F 2026-10-07, F 2026-10-08 (supersedes approval of harness changes) | C | AC-ROT-8 |
 
 ### 5.6 Task step manager (STP)
 
@@ -262,7 +264,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | ID | Requirement | Source | Class | Acceptance |
 | --- | --- | --- | --- | --- |
 | COM-001 | Tasks can see previous and parallel tasks of their sandbox. | T 13:27 | E | AC-COM-1 |
-| COM-002 | Tasks can communicate through a Yulius-level protocol independent of Claude/Codex (Claude can talk with Codex). | T 13:33–13:48, T 23:47, WA 13:05 | E | AC-COM-2 |
+| COM-002 | Tasks can communicate through a Yulius-level protocol (any task can message another). | T 13:33–13:48, T 23:47, WA 13:05 | E | AC-COM-2 |
 | COM-003 | Tasks can agree on scopes (who works on what) to avoid conflicts. | T 23:31–23:41 | E | AC-COM-3 |
 | COM-004 | Every task starts with the context of the whole project: project summary, architecture, decisions, recent changes, parallel tasks. | T 34:38–35:00, WA 13:44 | E | AC-COM-4 |
 | COM-005 | A message to an idle task can wake it so negotiation proceeds without the user. Users see messages in the UI. | — | A | AC-COM-2 |
@@ -291,14 +293,14 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | SKL-001 | Skills activate automatically when relevant; users do not need slash commands ("make me this design" invokes the design skill). | T 23:53–24:18, WA 13:11 | E | AC-SKL-1 |
 | SKL-002 | Skills from the organization's existing repositories (repository `.agents/skills`, `.claude/skills`) are used this way. | T 24:20 | E | AC-SKL-1 |
 | SKL-003 | A curated subset of Open Mercato skills useful for code discipline is included; not all of them. | T 33:00–33:22, WA 13:11/13:17 | E (selection A, §7.3) | AC-SKL-2 |
-| SKL-004 | One skill catalog serves both harnesses ("skill orchestration"). | WA 13:07 | E | AC-SKL-1 |
+| SKL-004 | One skill catalog serves every Claude Code session ("skill orchestration"). | WA 13:07 | E | AC-SKL-1 |
 | SKL-005 | A Skills page lists skills, their source and enabled state, and shows their content. | T 5:28, T 24:39 | E | AC-SKL-3 |
 
 ### 5.10 MCP (MCP)
 
 | ID | Requirement | Source | Class | Acceptance |
 | --- | --- | --- | --- | --- |
-| MCP-001 | MCP servers are attached once in Yulius and automatically available to both Claude and Codex sessions. | T 17:06–17:21, T 32:28–32:55, WA 13:11, P(7) | E | AC-MCP-1 |
+| MCP-001 | MCP servers are attached once in Yulius and automatically available to every Claude Code session. | T 17:06–17:21, T 32:28–32:55, WA 13:11, P(7) | E | AC-MCP-1 |
 | MCP-002 | Examples to support: Quartio MCP (product and customer knowledge), Apify MCP (e.g., scraping X), any other MCP. | T 17:21, T 32:39 | X (any MCP must work) | AC-MCP-1 |
 | MCP-003 | MCP secrets are stored encrypted and never shown back; the Yulius tool server is always attached. | — | A | AC-MCP-2 |
 
@@ -330,11 +332,11 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | --- | --- | --- | --- | --- |
 | BRW-001 | A real, general browser like Chrome: any address can be typed. | T 6:54–7:00, WA 13:02 | E | AC-BRW-1 |
 | BRW-002 | One browser per sandbox, shared by that sandbox's users and agents (logins such as AWS persist per sandbox). | T 7:21–7:26 (supersedes T 7:00 "global, whole VM" and WA 13:04 "per user") | C | AC-BRW-1 |
-| BRW-003 | Agents control the same browser as fully as the native Claude/Codex browser plugins. | T 7:07, WA 13:04 | E | AC-BRW-2 |
+| BRW-003 | Agents control the same browser as fully as the native Claude browser plugin. | T 7:07, WA 13:04 | E | AC-BRW-2 |
 | BRW-004 | Tab management; when an action is requested from the user (e.g., AWS login), the user can jump straight to that tab; the agent also writes a clickable "open this tab" link in the session. A tab that no longer exists (e.g., after a browser restart) is replaced by the current tab list, not reported as an error. | T 7:26–8:07, F 2026-10-07 ("unknown tab") | E ("nice to have", T 7:26) | AC-BRW-3 |
 | BRW-005 | The user sees the page as live DOM, not as rendered pixels: the server browser's document is mirrored into the user's browser (crisp, selectable text; layout at the panel's size) and clicks, typing and scrolling are forwarded to the real browser on the server. Page resources (images, stylesheets, fonts) load through Yulius, so pages served on the VM's localhost render. Text in the mirror can be selected (Select toggle, or holding Option/Alt) and a selection is copied at once; canvases keep updating. Content that cannot be mirrored (plugins, browser-internal pages, pages that do not send their DOM) falls back to the screencast view, visibly labelled, and the user can switch views. The mirror never runs page scripts in Yulius. | F 2026-10-07 | C | AC-BRW-4 |
 | BRW-006 | A fresh browser and every new tab open a Yulius welcome page: the sandbox name, live links to the sandbox's listening dev-server ports, and short guidance (any address can be typed; agents share this browser). | F 2026-10-07 | C | AC-BRW-5 |
-| BRW-007 | When an agent clicks, types, opens or navigates in the browser, viewers see it: a labelled cursor (task number and harness) at the click position with a click ripple, or a short notice for navigation, like the official Claude/Codex browser plugins. | F 2026-10-07 | C | AC-BRW-6 |
+| BRW-007 | When an agent clicks, types, opens or navigates in the browser, viewers see it: a labelled cursor (task number and harness) at the click position with a click ripple, or a short notice for navigation, like the official Claude browser plugins. | F 2026-10-07 | C | AC-BRW-6 |
 
 ### 5.14 Editor (EDT)
 
@@ -351,8 +353,8 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | --- | --- | --- | --- | --- |
 | IMP-001 | A CLI `yulius import` imports an existing local repository; the user provides credentials; local state is synchronized (rsync-like, resumable). | T 26:00, WA 13:09 | E | AC-IMP-1 |
 | IMP-002 | Every project must have a GitHub repository; import enforces it and enforces permissions. | T 25:45–26:00 | E | AC-IMP-2 |
-| IMP-003 | Import brings Claude and Codex sessions from a user-chosen period (prompted, e.g., two weeks), only those opened in that repository. | T 26:00, WA 13:09 | E | AC-IMP-3 |
-| IMP-004 | Imported sessions become organization tasks, not personal ones; any member can open another person's imported session and continue it, even on the other harness. | T 27:50–28:33 | E | AC-IMP-5 |
+| IMP-003 | Import brings Claude Code sessions from a user-chosen period (prompted, e.g., two weeks), only those opened in that repository. | T 26:00, WA 13:09 | E | AC-IMP-3 |
+| IMP-004 | Imported sessions become organization tasks, not personal ones; any member can open another person's imported session and continue it. | T 27:50–28:33, F 2026-10-08 | C | AC-IMP-5 |
 | IMP-005 | Preparation meta-task after import (see DSC-010). | T 27:00 | E | AC-IMP-4 |
 | IMP-006 | Import is idempotent: re-running imports only new sessions and changed state. | robustness (K) | A | AC-IMP-6 |
 
@@ -396,7 +398,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 │ + New task │ ▸ Step 3/7 · Implement checkout API     ▾ (step strip)   │ 🌐   │
 │ Tasks      ├──────────────────────────────────────────────────────────┤ </>  │
 │ Git        │                                                          │ ✉ 2  │
-│ Workflows  │          native Claude Code / Codex terminal (xterm)     │      │
+│ Workflows  │          native Claude Code terminal (xterm)             │      │
 │ Skills     │                                                          │      │
 │ Automations│                                                          │      │
 │ MCP        │                                                          │      │
@@ -418,8 +420,8 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
   it (collapsible). No other header.
 - Right rail (≈ 40 px icons): Browser, Editor, Shell, Messages. Clicking expands a resizable panel
   (default 45% width); clicking again collapses. Default collapsed (UI-002).
-- Without a selected task the center shows the new-task composer: prompt, harness toggle
-  (Claude Code | Codex), workflow, optional model/effort, Start.
+- Without a selected task the center shows the new-task composer: prompt, Goal / Prompt mode,
+  workflow, optional model/effort, Start (tasks run Claude Code).
 
 ### 6.2 Pages
 
@@ -439,7 +441,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 ### 6.3 Task actions
 
 Action menu (kebab in the step strip and right-click in the sidebar): Stop · Continue · Switch
-(harness/account; a harness change asks for confirmation, ROT-012) · Deliver · Feedback · Archive ·
+account · Deliver · Feedback · Archive ·
 Delete permanently (TSK-009, confirmation required). The new-task form has a Goal / Prompt mode
 switch with Goal selected (TSK-010). Read-only users see the terminal with input
 disabled and a "Read-only (GitHub: read)" banner.
@@ -496,11 +498,12 @@ commands, GitHub tracker). Attribution and license are kept with the vendored fi
 
 ### 7.4 Account rotation order (ROT-003/004)
 
-For a task on provider P: (1) another enabled account of P below the threshold (99%), best
-headroom first, then admin priority; (2) an account of P whose window has reset, or whose provider
-reports an available manual reset (U-03); (3) the other provider's best account, with session
-translation; (4) otherwise wait (ROT-010). Proactive switches happen at turn boundaries; reactive
-switches happen when a limit error ends a turn. After a switch, the interrupted request continues
+Among the Claude accounts: (1) another enabled account below the threshold (99%), best headroom
+first, then admin priority; (2) an account whose window has reset, or whose provider reports an
+available manual reset (U-03); (3) otherwise wait (ROT-010). A task never moves to another harness
+or provider (ROT-012). Proactive switches happen at turn boundaries once refreshed usage shows the
+task's account at the threshold; reactive switches happen when a limit error ends a turn. After a
+switch, the same session resumes on the new account and the interrupted request continues
 automatically.
 
 ### 7.5 Import (IMP)
@@ -509,13 +512,14 @@ automatically.
 detects the GitHub remote, verifies or creates the sandbox (repo admin required to add a project),
 uploads unpublished commits as a Git bundle and uncommitted changes as a snapshot (chunked,
 checksummed, resumable), asks for the session window (default 14 days) unless `--since` is given,
-lists the matching Claude/Codex sessions for confirmation, uploads them, and prints the sandbox URL.
+lists the matching Claude Code sessions for confirmation, uploads them, and prints the sandbox URL.
 Nothing is pushed to GitHub by import.
 
 ## 8. Explicit non-goals and deferred items
 
 | Item | Source | Class |
 | --- | --- | --- |
+| Codex, provider switching and session translation (until Codex improves) | F 2026-10-08 (supersedes T 11:28, T 12:23–14:45) | D |
 | Other harnesses (OpenCode, Pi, …) | T 11:32 | D |
 | More account providers | T 11:58 | D |
 | Format templates beyond the one enforced format | T 21:40 | D |
@@ -563,9 +567,9 @@ instance — out of scope).
 | AC-UI-10 | Localhost and loopback links are classified for the sandbox browser, other links for a new tab. | live (Chrome) |
 | AC-UI-11 | The real terminal view fed output that enables mouse tracking renders rows as HTML (no canvas), keeps the mouse for selection, and a double-click selects a word. | live (Chrome) |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
-| AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude/Codex smoke shows the goal being set. | int, live |
+| AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
-| AC-ROT-8 | With only the other provider available, rotation proposes instead of switching; approving switches; a manual harness change without approval is refused (409); with automatic switching enabled, rotation switches as before. | int |
+| AC-ROT-8 | With every Claude account exhausted the task waits for capacity (no harness change); refreshed usage at the threshold moves a running task to the next Claude account at its next turn boundary with a native resume; creating a Codex task or a Codex account is refused (422) and no harness setting exists. | int |
 | AC-BRW-4 | A page served on the VM's localhost (fixture with a stylesheet, an image and a canvas) is mirrored as DOM in the client: text present in the mirror iframe, image and styles loaded through Yulius, the canvas updating; a click in the mirror reaches the server page; Select mode selects and copies a word; the pixel view can be chosen and left, and a tab that cannot be mirrored falls back to it with a notice. A hostile page that feeds crafted events to the recorder cannot run script in the UI (the mirror iframe is sandboxed `allow-same-origin` only), and the resource endpoint serves write users only, as inert content, and refuses cross-site requests and navigations. | int, live (Chromium) |
 | AC-BRW-5 | A new tab shows the welcome page with the sandbox name and a link to a listening sandbox port. | int, live (Chromium) |
 | AC-BRW-6 | An agent's click reaches viewers with its position and label, and the UI shows the labelled cursor. | int, live (Chromium) |
@@ -585,24 +589,24 @@ instance — out of scope).
 | AC-ARC-1 | Archive removes a task from the sidebar; Archived tasks page lists and restores it. | int, ui |
 | AC-STA-1 | Status panel shows VM metrics and accounts usage; hidden by default. | ui |
 | AC-UI-7 | The right-rail Shell opens a contained shell in the selected worktree for write users; read users cannot open it; it is collapsed by default. | int, ui |
-| AC-TSK-1 | Creating a task with harness Claude or Codex launches that harness in a new worktree on a new branch; task is one session lineage. | int (fake), live |
+| AC-TSK-1 | Creating a task launches Claude Code in a new worktree on a new branch; task is one session lineage. | int (fake), live |
 | AC-TSK-2 | Terminal shows the native TUI byte stream; typed slash commands reach the harness. | int (fake), live |
 | AC-TSK-3 | When the agent process exits normally, the task becomes `closed`; no shell is ever spawned. | int |
 | AC-TSK-4 | A session-id change inside the harness is detected and recorded into the same task lineage; no other task's transcript changes. | int (fixture) |
 | AC-TSK-5 | Two tasks in one sandbox have distinct worktrees and branches; cleanup never removes a dirty or foreign worktree. | int |
 | AC-TSK-6 | Two viewers see identical output; input from a read-only viewer is rejected. | int |
 | AC-TSK-7 | A closed task continues via resume of the same provider session id. | int (fake), live |
-| AC-ROT-1 | Admin adds Claude and Codex accounts via the login terminal; accounts list shows status and usage. | int (fake CLI), ui, live (manual) |
-| AC-ROT-2 | Fake usage at 99% triggers a switch to the next same-provider account at the turn boundary; the session resumes with the same session id; decision recorded. | int |
-| AC-ROT-3 | With all same-provider accounts exhausted and one reset passed, that account is chosen before switching provider. | unit, int |
-| AC-ROT-4 | Provider exhaustion translates a Claude transcript into a Codex session (and reverse) that the target CLI accepts on resume; fallback handoff is used if native resume fails. | unit (fixtures), live |
-| AC-ROT-5 | Manual switch to a chosen account/harness preserves model/effort where supported. | int |
+| AC-ROT-1 | Admin adds Claude accounts via the login terminal; accounts list shows status and usage. | int (fake CLI), ui, live (manual) |
+| AC-ROT-2 | Usage refreshed at 99% triggers a switch to the next Claude account at the turn boundary; the session resumes with the same session id; decision recorded. | int |
+| AC-ROT-3 | With all accounts exhausted and one window reset passed, that account is chosen. | unit, int |
+| AC-ROT-4 | Withdrawn with ROT-005/006 (F 2026-10-08). | — |
+| AC-ROT-5 | Manual switch to a chosen account preserves model/effort. | int |
 | AC-ROT-6 | No capacity anywhere → task `needs attention` with earliest reset; resumes when a reset passes. | int (fake clock) |
 | AC-STP-1 | Agent sets/updates steps via Yulius tools; history records actor and time; UI shows current step. | int, ui |
 | AC-STP-2 | Step strip shows "n/m current step" and expands to the list. | ui |
 | AC-STP-3 | Editing the spec Plan checklist updates steps; step updates are reflected in briefing. | int |
 | AC-COM-1 | `tasks_list` returns previous and parallel tasks with status, branch, spec and summary. | int |
-| AC-COM-2 | A Claude task messages a Codex task; the recipient receives it at its next turn or is woken when idle. | int (fake), live |
+| AC-COM-2 | A task messages a parallel task; the recipient receives it at its next turn or is woken when idle. | int (fake), live |
 | AC-COM-3 | Overlapping scope claims are reported to both tasks. | int |
 | AC-COM-4 | Session start receives a bounded briefing with project summary, decisions, recent changes and parallel tasks. | int |
 | AC-DSC-1 | Validator accepts the scaffolded format and reports precise missing items otherwise. | unit |
@@ -613,10 +617,10 @@ instance — out of scope).
 | AC-DLV-1 | Standard profile: PR into dev, merge after green checks, promotion PR dev→main. | int (fake GitHub) |
 | AC-DLV-2 | Product profile: PR into quartio, dev-VM deploy step requires explicit click and records output, then ff main, then rollout step. | int (fake commands) |
 | AC-DLV-3 | Studio profile: after merge into quartio, main fast-forwards automatically; changing profile to gated disables auto-promotion. | int |
-| AC-SKL-1 | Repository and instance skills are installed into both harness homes so they activate by description. | int, live |
+| AC-SKL-1 | Repository and instance skills are installed into the Claude home so they activate by description. | int, live |
 | AC-SKL-2 | The OM pack contains exactly the selected skills with license/attribution. | unit |
 | AC-SKL-3 | Skills page lists sources and toggles. | ui |
-| AC-MCP-1 | A configured MCP server appears in both Claude (`--mcp-config`) and Codex (`config.toml`) launch configuration. | int, live |
+| AC-MCP-1 | A configured MCP server appears in the Claude launch configuration (`--mcp-config`). | int, live |
 | AC-MCP-2 | MCP secrets are encrypted at rest and never returned by the API. | int |
 | AC-AUT-1 | A cron automation creates a task at the scheduled time (fake clock). | int |
 | AC-AUT-2 | An agent creates an automation through the Yulius MCP tool; it appears in the UI. | int |
@@ -632,7 +636,7 @@ instance — out of scope).
 | AC-IMP-2 | Import of a non-GitHub or foreign-owner repository is refused with guidance. | int |
 | AC-IMP-3 | Only sessions whose cwd/repository match, within the chosen window, are offered. | unit (fixtures) |
 | AC-IMP-4 | After import, the preparation task is created and other tasks are blocked until it lands or is skipped by an admin. | int |
-| AC-IMP-5 | Another member continues an imported session (same harness and other harness). | int (fake), live |
+| AC-IMP-5 | Another member continues an imported session natively. | int (fake), live |
 | AC-IMP-6 | Re-running import adds only new sessions. | int |
 | AC-ANL-1 | Task metrics include durations, models, tokens per attempt, accounts and switches; unknown usage is null, not zero. | int |
 | AC-ANL-2 | Feedback yes/no + comment is stored per user and shown. | int, ui |
@@ -663,6 +667,11 @@ observed. Live provider compatibility and deployment are reported separately fro
   later the same day: the agent's cursor (BRW-007), the hidden tools rail (UI-017), link routing
   (UI-018), HTML terminal text with instant copying and double-click selection (UI-019), text
   selection in the browser mirror (BRW-005) and the "unknown tab" error (BRW-004).
+
+- 2026-10-08 (`F 2026-10-08`): Yulius runs Claude Code only. Codex support, provider switching
+  and session translation are pruned and deferred until Codex improves (TSK-001/003, ROT-001/004/
+  007/012 and IMP-003/004 changed; ROT-005/006 and AC-ROT-4 withdrawn; COM-002, SKL-004, MCP-001,
+  BRW-003/007 reworded). Account rotation between Claude accounts stays automatic.
 
 - 2026-10-07: initial specification from the full transcript, video review, morning notes, draft
   prompt, user clarifications and Product/Studio inspection; self-reviewed (SPEC-003).

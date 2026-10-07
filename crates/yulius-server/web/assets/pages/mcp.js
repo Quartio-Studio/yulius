@@ -18,7 +18,7 @@ export function mountMcpPage(ctx, sandbox, route) {
   scopeFilter.value = route.query.get('scope') || '';
   const frame = pageFrame({
     title: 'MCP',
-    sub: 'attached once, available to Claude Code and Codex',
+    sub: 'attached once, available to every Claude Code session',
     actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'Add server')],
   });
   const host = h('div');

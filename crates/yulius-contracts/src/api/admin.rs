@@ -70,7 +70,7 @@ pub struct AccountUsageView {
 pub struct AccountView {
     /// Id.
     pub id: String,
-    /// `anthropic` or `openai`.
+    /// Provider (`anthropic`).
     pub provider: String,
     /// Label.
     pub label: String,
@@ -114,7 +114,7 @@ pub struct TokenTotalsView {
 /// `POST /api/admin/accounts`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateAccount {
-    /// `anthropic` or `openai`.
+    /// Provider: `anthropic` (Claude), the only one supported.
     pub provider: String,
     /// Label.
     pub label: String,
@@ -185,12 +185,4 @@ pub struct ManifestCallback {
     /// The state issued with the manifest.
     #[serde(default)]
     pub state: String,
-}
-
-/// `GET`/`PATCH /api/admin/settings`: instance behavior settings (instance administrators).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct InstanceSettings {
-    /// Rotation may move tasks to another harness without asking (ROT-012; off by default).
-    #[serde(default)]
-    pub auto_harness_switch: bool,
 }

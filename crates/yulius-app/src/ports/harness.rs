@@ -1,11 +1,11 @@
-//! Harness port: launch planning, transcript observation, translation and login helpers for
-//! Claude Code and Codex (SPEC-002 §7.2–§7.3). Implemented over `yulius-harness`.
+//! Harness port: launch planning, transcript observation and login helpers for Claude Code
+//! (SPEC-002 §7.2). Implemented over `yulius-harness`.
 
 use std::path::{Path, PathBuf};
 
 use yulius_domain::harness::Harness;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, TokenUsage};
+use yulius_domain::usage::TokenUsage;
 
 use crate::error::AppResult;
 use crate::model::Secret;
@@ -14,9 +14,9 @@ use crate::ports::session::LaunchPlan;
 /// New session or native resume.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionMode {
-    /// New session (Claude gets `session_id`; Codex assigns its own).
+    /// New session.
     New {
-        /// Session id to assign (Claude).
+        /// Session id to assign.
         session_id: Option<String>,
         /// Initial prompt.
         prompt: Option<String>,
@@ -68,8 +68,6 @@ pub struct HarnessLaunch {
     pub sandbox_home: PathBuf,
     /// Run directory.
     pub run_dir: PathBuf,
-    /// Codex home for the (sandbox, account) pair.
-    pub codex_home: Option<PathBuf>,
     /// Model.
     pub model: Option<String>,
     /// Effort.
@@ -78,7 +76,7 @@ pub struct HarnessLaunch {
     pub contained: bool,
     /// Extra MCP servers.
     pub mcp: Vec<McpAttachment>,
-    /// Provider credential (Claude token or Codex auth.json text).
+    /// Provider credential (the Claude OAuth token).
     pub credential: Secret,
 }
 
@@ -87,7 +85,7 @@ pub struct HarnessLaunch {
 pub struct HarnessPlan {
     /// Process plan (containment filled in by the supervisor).
     pub plan: LaunchPlan,
-    /// Session id (Claude new/resume, Codex resume); `None` for a new Codex session.
+    /// Session id, when known before the run starts.
     pub session_id: Option<String>,
 }
 
@@ -105,8 +103,6 @@ pub enum Observation {
     UserTurn,
     /// A turn completed.
     TurnComplete,
-    /// Provider rate-limit snapshot.
-    RateLimits(AccountUsage),
     /// The provider reported a usage limit.
     LimitReached {
         /// Reset time if known.
@@ -155,25 +151,6 @@ pub trait HarnessPort: Send + Sync {
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan>;
     /// Path of a Claude session transcript.
     fn claude_transcript(&self, sandbox_home: &Path, worktree: &Path, session_id: &str) -> PathBuf;
-    /// Finds a Codex rollout by session id.
-    ///
-    /// # Errors
-    /// I/O failures.
-    fn find_codex_rollout(
-        &self,
-        sessions_dir: &Path,
-        session_id: &str,
-    ) -> AppResult<Option<PathBuf>>;
-    /// Discovers the session id of a Codex rollout created after `since` for `worktree`.
-    ///
-    /// # Errors
-    /// I/O failures.
-    fn discover_codex_session(
-        &self,
-        sessions_dir: &Path,
-        worktree: &Path,
-        since: Timestamp,
-    ) -> AppResult<Option<(String, PathBuf)>>;
     /// Newest Claude session for `worktree` modified after `since` (session-id drift, HRN-004).
     ///
     /// # Errors
@@ -194,53 +171,15 @@ pub trait HarnessPort: Send + Sync {
         path: &Path,
         from_start: bool,
     ) -> AppResult<Box<dyn TranscriptWatch>>;
-    /// Writes a transcript of `source` (harness `from`) as a native `to` session with
-    /// `new_session_id`; returns the path written.
-    ///
-    /// # Errors
-    /// I/O failures or unreadable sources.
-    fn translate(
-        &self,
-        from: Harness,
-        source: &Path,
-        to: Harness,
-        target: &TranslationTarget,
-    ) -> AppResult<PathBuf>;
     /// Login command for a provider account.
     fn login_argv(&self, harness: Harness) -> Vec<String>;
     /// Extracts a Claude OAuth token from login output.
     fn extract_claude_token(&self, output: &str) -> Option<String>;
     /// A new output masker.
     fn masker(&self) -> Box<dyn OutputMasker>;
-    /// Installs skill directories into both harness homes.
+    /// Installs skill directories into the Claude home.
     ///
     /// # Errors
     /// I/O failures.
-    fn install_skills(
-        &self,
-        skills: &[(String, PathBuf)],
-        claude_dir: &Path,
-        codex_dir: &Path,
-    ) -> AppResult<()>;
-}
-
-/// Where a translated transcript goes.
-#[derive(Debug, Clone)]
-pub struct TranslationTarget {
-    /// New provider session id.
-    pub session_id: String,
-    /// Working directory recorded in the transcript.
-    pub cwd: PathBuf,
-    /// Sandbox home (Claude config lives under it).
-    pub sandbox_home: PathBuf,
-    /// Codex sessions directory.
-    pub codex_sessions: PathBuf,
-    /// Model to record.
-    pub model: Option<String>,
-    /// Effort to record.
-    pub effort: Option<String>,
-    /// Git branch.
-    pub git_branch: Option<String>,
-    /// Current time.
-    pub now: Timestamp,
+    fn install_skills(&self, skills: &[(String, PathBuf)], claude_dir: &Path) -> AppResult<()>;
 }

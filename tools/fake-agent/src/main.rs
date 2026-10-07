@@ -7,7 +7,7 @@
 //! ```text
 //! fake-agent [--mode echo|flood|ignore-term|fork-child|exit-early|sleep]
 //!            [--bytes N] [--code N] [--seconds N] [--ignore-term]
-//!            [--session-id ID] [--transcript PATH --transcript-kind claude|codex]
+//!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
 //!            [--limit-after N] [--report-env NAME]...
 //! ```
 //!
@@ -27,7 +27,7 @@
 //! - `sleep [--seconds N]`: sleeps N seconds (default 600, bounded so a leaked fixture ends).
 //!
 //! With `--transcript`, each echoed turn appends JSONL records shaped like Claude Code
-//! (`--transcript-kind claude`) or Codex rollouts (`codex`). `--limit-after N` prints
+//! (`--transcript-kind claude`, the only kind). `--limit-after N` prints
 //! `LIMIT REACHED` and appends a usage-limit record after N turns; later turns only repeat
 //! `LIMIT REACHED`. `--report-env NAME` prints `ENV NAME=set len=<n>` or `ENV NAME=unset` (never
 //! the value).
@@ -57,12 +57,6 @@ enum Mode {
     Sleep,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TranscriptKind {
-    Claude,
-    Codex,
-}
-
 #[derive(Debug)]
 struct Options {
     mode: Mode,
@@ -72,7 +66,6 @@ struct Options {
     ignore_term: bool,
     session_id: Option<String>,
     transcript: Option<PathBuf>,
-    transcript_kind: TranscriptKind,
     limit_after: Option<u64>,
     report_env: Vec<String>,
 }
@@ -93,7 +86,6 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         ignore_term: false,
         session_id: None,
         transcript: None,
-        transcript_kind: TranscriptKind::Claude,
         limit_after: None,
         report_env: Vec::new(),
     };
@@ -122,10 +114,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.transcript = Some(args.next().ok_or("--transcript needs a path")?.into());
             }
             "--transcript-kind" => {
-                options.transcript_kind = match args.next().as_deref() {
-                    Some("claude") => TranscriptKind::Claude,
-                    Some("codex") => TranscriptKind::Codex,
-                    _ => return Err("--transcript-kind must be claude or codex".into()),
+                if args.next().as_deref() != Some("claude") {
+                    return Err("--transcript-kind must be claude".into());
                 }
             }
             "--report-env" => {
@@ -185,50 +175,27 @@ fn rfc3339(ms: i64) -> String {
 
 struct Transcript {
     path: PathBuf,
-    kind: TranscriptKind,
     session_id: String,
     cwd: String,
     turns: u64,
-    total_input: u64,
-    total_output: u64,
     last_uuid: Option<String>,
 }
 
 impl Transcript {
-    fn open(path: PathBuf, kind: TranscriptKind, session_id: &str) -> io::Result<Self> {
+    fn open(path: PathBuf, session_id: &str) -> io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        let transcript = Self {
+        Ok(Self {
             path,
-            kind,
             session_id: session_id.to_owned(),
             cwd,
             turns: 0,
-            total_input: 0,
-            total_output: 0,
             last_uuid: None,
-        };
-        let empty = std::fs::metadata(&transcript.path).map_or(true, |m| m.len() == 0);
-        if kind == TranscriptKind::Codex && empty {
-            let now = rfc3339(now_ms());
-            transcript.append(&[json!({
-                "timestamp": now,
-                "type": "session_meta",
-                "payload": {
-                    "id": transcript.session_id,
-                    "timestamp": now,
-                    "cwd": transcript.cwd,
-                    "originator": "fake-agent",
-                    "cli_version": "0.0.0-fake",
-                    "model_provider": "fake"
-                }
-            })])?;
-        }
-        Ok(transcript)
+        })
     }
 
     fn append(&self, records: &[Value]) -> io::Result<()> {
@@ -265,117 +232,51 @@ impl Transcript {
         let n = self.turns;
         let input = 10 + prompt.len() as u64;
         let output = 4 + answer.len() as u64;
-        self.total_input += input;
-        self.total_output += output;
         let timestamp = rfc3339(now_ms());
-        let records = match self.kind {
-            TranscriptKind::Claude => {
-                let user_uuid = format!("fake-{}-{n}-u", self.session_id);
-                let mut user = self.claude_envelope("user", &user_uuid, &timestamp);
-                user["message"] = json!({"role": "user", "content": prompt});
-                self.last_uuid = Some(user_uuid);
-                let assistant_uuid = format!("fake-{}-{n}-a", self.session_id);
-                let mut assistant = self.claude_envelope("assistant", &assistant_uuid, &timestamp);
-                assistant["requestId"] = json!(format!("req_fake_{n}"));
-                assistant["message"] = json!({
-                    "id": format!("msg_fake_{n}"),
-                    "type": "message",
-                    "role": "assistant",
-                    "model": "fake-model",
-                    "content": [{"type": "text", "text": answer}],
-                    "stop_reason": "end_turn",
-                    "usage": {
-                        "input_tokens": input,
-                        "cache_creation_input_tokens": 0,
-                        "cache_read_input_tokens": 0,
-                        "output_tokens": output
-                    }
-                });
-                self.last_uuid = Some(assistant_uuid);
-                vec![user, assistant]
+        let user_uuid = format!("fake-{}-{n}-u", self.session_id);
+        let mut user = self.claude_envelope("user", &user_uuid, &timestamp);
+        user["message"] = json!({"role": "user", "content": prompt});
+        self.last_uuid = Some(user_uuid);
+        let assistant_uuid = format!("fake-{}-{n}-a", self.session_id);
+        let mut assistant = self.claude_envelope("assistant", &assistant_uuid, &timestamp);
+        assistant["requestId"] = json!(format!("req_fake_{n}"));
+        assistant["message"] = json!({
+            "id": format!("msg_fake_{n}"),
+            "type": "message",
+            "role": "assistant",
+            "model": "fake-model",
+            "content": [{"type": "text", "text": answer}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": input,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "output_tokens": output
             }
-            TranscriptKind::Codex => {
-                let used = (10.0 * n as f64).min(99.0);
-                vec![
-                    json!({"timestamp": timestamp, "type": "event_msg",
-                        "payload": {"type": "task_started"}}),
-                    json!({"timestamp": timestamp, "type": "response_item", "payload": {
-                        "type": "message", "role": "user",
-                        "content": [{"type": "input_text", "text": prompt}]}}),
-                    json!({"timestamp": timestamp, "type": "response_item", "payload": {
-                        "type": "message", "role": "assistant",
-                        "content": [{"type": "output_text", "text": answer}]}}),
-                    self.codex_token_count(&timestamp, input, output, used, None),
-                    json!({"timestamp": timestamp, "type": "event_msg", "payload": {
-                        "type": "task_complete", "last_agent_message": answer,
-                        "duration_ms": 1}}),
-                ]
-            }
-        };
-        self.append(&records)
-    }
-
-    fn codex_token_count(
-        &self,
-        timestamp: &str,
-        input: u64,
-        output: u64,
-        used_percent: f64,
-        reached: Option<&str>,
-    ) -> Value {
-        let resets_at = now_ms() / 1000 + 3600;
-        json!({"timestamp": timestamp, "type": "event_msg", "payload": {
-            "type": "token_count",
-            "info": {
-                "total_token_usage": {
-                    "input_tokens": self.total_input, "cached_input_tokens": 0,
-                    "output_tokens": self.total_output, "reasoning_output_tokens": 0,
-                    "total_tokens": self.total_input + self.total_output
-                },
-                "last_token_usage": {
-                    "input_tokens": input, "cached_input_tokens": 0,
-                    "output_tokens": output, "reasoning_output_tokens": 0,
-                    "total_tokens": input + output
-                },
-                "model_context_window": 200_000
-            },
-            "rate_limits": {
-                "primary": {"used_percent": used_percent, "window_minutes": 300,
-                    "resets_at": resets_at},
-                "secondary": null,
-                "plan_type": "fake",
-                "rate_limit_reached_type": reached
-            }
-        }})
+        });
+        self.last_uuid = Some(assistant_uuid);
+        self.append(&[user, assistant])
     }
 
     fn limit(&mut self) -> io::Result<()> {
         let timestamp = rfc3339(now_ms());
         let resets_at = now_ms() / 1000 + 3600;
-        let record = match self.kind {
-            TranscriptKind::Claude => {
-                let uuid = format!("fake-{}-limit", self.session_id);
-                let mut record = self.claude_envelope("assistant", &uuid, &timestamp);
-                record["isApiErrorMessage"] = json!(true);
-                record["error"] = json!("rate_limit");
-                record["message"] = json!({
-                    "id": format!("msg_fake_limit_{}", self.turns),
-                    "type": "message",
-                    "role": "assistant",
-                    "model": "<synthetic>",
-                    "content": [{"type": "text",
-                        "text": format!("Claude AI usage limit reached|{resets_at}")}],
-                    "stop_reason": "stop_sequence",
-                    "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
-                        "cache_read_input_tokens": 0, "output_tokens": 0}
-                });
-                self.last_uuid = Some(uuid);
-                record
-            }
-            TranscriptKind::Codex => {
-                self.codex_token_count(&timestamp, 0, 0, 100.0, Some("primary"))
-            }
-        };
+        let uuid = format!("fake-{}-limit", self.session_id);
+        let mut record = self.claude_envelope("assistant", &uuid, &timestamp);
+        record["isApiErrorMessage"] = json!(true);
+        record["error"] = json!("rate_limit");
+        record["message"] = json!({
+            "id": format!("msg_fake_limit_{}", self.turns),
+            "type": "message",
+            "role": "assistant",
+            "model": "<synthetic>",
+            "content": [{"type": "text",
+                "text": format!("Claude AI usage limit reached|{resets_at}")}],
+            "stop_reason": "stop_sequence",
+            "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 0}
+        });
+        self.last_uuid = Some(uuid);
         self.append(&[record])
     }
 }
@@ -471,11 +372,7 @@ fn read_line(input: &mut impl BufRead) -> io::Result<Option<String>> {
 
 fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let mut transcript = match &options.transcript {
-        Some(path) => Some(Transcript::open(
-            path.clone(),
-            options.transcript_kind,
-            session_id,
-        )?),
+        Some(path) => Some(Transcript::open(path.clone(), session_id)?),
         None => None,
     };
     let mut turns = 0u64;

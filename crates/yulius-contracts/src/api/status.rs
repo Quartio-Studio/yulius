@@ -57,7 +57,7 @@ pub struct SandboxStatus {
 pub struct StatusAccount {
     /// Label.
     pub label: String,
-    /// `anthropic` or `openai`.
+    /// Provider (`anthropic`).
     pub provider: String,
     /// `ok`, `relogin`, `error`, `limited` or `pending_login`.
     pub status: String,

@@ -259,22 +259,14 @@ async fn skill_catalog_sources_toggles_run_set_and_om_config() -> TestResult {
         ]
     );
     let homes = tempfile::tempdir()?;
-    let (claude, codex) = (
-        homes.path().join("claude/skills"),
-        homes.path().join("codex/skills"),
+    let dir = homes.path().join("claude/skills");
+    w.h.app.deps.harness.install_skills(&run_set, &dir)?;
+    assert!(dir.join("om-code-review/SKILL.md").is_file());
+    assert!(
+        dir.join("om-code-review/references/review-checklist.md")
+            .is_file()
     );
-    w.h.app
-        .deps
-        .harness
-        .install_skills(&run_set, &claude, &codex)?;
-    for dir in [&claude, &codex] {
-        assert!(dir.join("om-code-review/SKILL.md").is_file());
-        assert!(
-            dir.join("om-code-review/references/review-checklist.md")
-                .is_file()
-        );
-        assert!(!dir.join("om-brainstorm").exists());
-    }
+    assert!(!dir.join("om-brainstorm").exists());
 
     // The Open Mercato config is rendered from the profile and yulius.toml when absent.
     write(

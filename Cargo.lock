@@ -2849,7 +2849,6 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
- "uuid",
  "yulius-app",
  "yulius-browser",
  "yulius-contracts",
@@ -2997,9 +2996,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures",
- "http-body-util",
- "hyper",
- "hyper-util",
  "serde",
  "serde_json",
  "tokio",

@@ -54,8 +54,6 @@ pub struct InstanceRecord {
     pub setup_token_hash: Option<String>,
     /// When the superadmin was created.
     pub setup_completed_at: Option<Timestamp>,
-    /// Instance administrators allowed automatic harness switches (ROT-012; off by default).
-    pub auto_harness_switch: bool,
     /// Argon2id PHC string of the superadmin recovery code (ACC-011); `None` when none is set
     /// or recovery is locked.
     pub recovery_hash: Option<String>,
@@ -264,17 +262,6 @@ impl TaskMode {
     }
 }
 
-/// A harness change waiting for a user's approval (stored as JSON on the task, ROT-012).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct HarnessProposal {
-    /// Proposed harness wire name.
-    pub harness: String,
-    /// Proposed account.
-    pub account_id: String,
-    /// When it was proposed (ms).
-    pub proposed_at: i64,
-}
-
 /// A task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
@@ -328,8 +315,6 @@ pub struct TaskRecord {
     pub wake_enabled: bool,
     /// Goal or prompt mode (TSK-010).
     pub mode: TaskMode,
-    /// A harness change waiting for a user's approval (JSON [`HarnessProposal`], ROT-012).
-    pub harness_proposal: Option<String>,
 }
 
 /// How an attempt was launched.
@@ -339,10 +324,6 @@ pub enum LaunchKind {
     New,
     /// Native resume of the same provider session.
     Resume,
-    /// Resume of a synthesized transcript from the other provider.
-    Translated,
-    /// Fresh session bootstrapped with a handoff document.
-    Handoff,
 }
 
 impl LaunchKind {
@@ -352,8 +333,6 @@ impl LaunchKind {
         match self {
             Self::New => "new",
             Self::Resume => "resume",
-            Self::Translated => "translated",
-            Self::Handoff => "handoff",
         }
     }
 
@@ -362,8 +341,6 @@ impl LaunchKind {
     pub fn parse(text: &str) -> Self {
         match text {
             "resume" => Self::Resume,
-            "translated" => Self::Translated,
-            "handoff" => Self::Handoff,
             _ => Self::New,
         }
     }
@@ -382,7 +359,7 @@ pub struct AttemptRecord {
     pub harness: Harness,
     /// Account used.
     pub account_id: Option<AccountId>,
-    /// Provider session id (known at launch for Claude; discovered for Codex).
+    /// Provider session id (known at launch).
     pub provider_session_id: Option<String>,
     /// Launch kind.
     pub launch_kind: LaunchKind,
@@ -421,9 +398,9 @@ pub struct ProviderSessionRecord {
     pub harness: Harness,
     /// Provider session id.
     pub session_id: String,
-    /// Stored transcript path (imported/translated copies).
+    /// Stored transcript path (imported copies).
     pub transcript_ref: Option<String>,
-    /// `native`, `imported`, `translated`.
+    /// `native` or `imported`.
     pub origin: String,
     /// First seen.
     pub first_seen: Timestamp,
@@ -481,7 +458,7 @@ pub struct AccountRecord {
     pub provider: Provider,
     /// Label.
     pub label: String,
-    /// Sealed credential (Claude token or Codex auth.json).
+    /// Sealed credential (the Claude OAuth token).
     pub credential: Option<Sealed>,
     /// Priority (lower first).
     pub priority: i32,

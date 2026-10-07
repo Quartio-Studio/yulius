@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use flate2::read::GzDecoder;
-use serde_json::json;
 use yulius_contracts::import::ImportHarness;
 use yulius_import::{
     ApiError, ImportError, ImportIo, ImportOptions, RepoError, RetryPolicy, Secret, SessionSources,
@@ -18,8 +17,7 @@ use yulius_import::{
 
 use crate::support::server::{FakeServer, TOKEN};
 use crate::support::{
-    RECENT, RECENT_LATER, RepoFixture, TestResult, codex_user, git, simple_claude_session, since,
-    write, write_codex_session,
+    RECENT, RECENT_LATER, RepoFixture, TestResult, git, simple_claude_session, since, write,
 };
 
 const CHUNK: u64 = 512;
@@ -79,7 +77,7 @@ struct Scenario {
 }
 
 /// A repository with an unpublished branch, an uncommitted edit, one Claude session at the root
-/// and one Codex session in a subdirectory.
+/// and another in a subdirectory.
 fn scenario() -> TestResult<Scenario> {
     let fixture = RepoFixture::new()?;
     git(&fixture.repo, &["checkout", "-q", "-b", "feature"])?;
@@ -99,7 +97,6 @@ fn scenario() -> TestResult<Scenario> {
     )?;
     let root = fixture.root()?;
     let claude = fixture.temp.path().join("claude");
-    let codex = fixture.temp.path().join("codex");
     let claude_transcript = simple_claude_session(
         &claude,
         &root,
@@ -108,21 +105,18 @@ fn scenario() -> TestResult<Scenario> {
         RECENT,
         RECENT_LATER,
     )?;
-    write_codex_session(
-        &codex,
-        "bbbbbbbb-codex",
+    simple_claude_session(
+        &claude,
         &root.join("dir"),
-        "",
-        &[
-            codex_user(RECENT, "Speed up the build"),
-            json!({"timestamp": RECENT_LATER, "type": "event_msg", "payload": {"type": "token_count"}}),
-        ],
+        "bbbbbbbb-claude",
+        "Speed up the build",
+        RECENT_LATER,
+        RECENT_LATER,
     )?;
     Ok(Scenario {
         fixture,
         sources: SessionSources {
             claude_dir: Some(claude),
-            codex_home: Some(codex),
         },
         claude_transcript,
     })
@@ -184,7 +178,7 @@ fn imports_everything_then_uploads_nothing_on_rerun() -> TestResult {
         .iter()
         .map(|session| session.harness)
         .collect();
-    assert_eq!(harnesses, [ImportHarness::Claude, ImportHarness::Codex]);
+    assert_eq!(harnesses, [ImportHarness::Claude, ImportHarness::Claude]);
     assert_eq!(manifest.sessions[1].cwd_relative.as_deref(), Some("dir"));
     assert_eq!(manifest.sessions[1].title, "Speed up the build");
     let Some(snapshot) = manifest.snapshot.clone() else {

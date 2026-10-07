@@ -1,6 +1,6 @@
-//! Hook payloads exchanged with Claude Code and Codex hooks (SPEC-002 §7.5).
+//! Hook payloads exchanged with Claude Code hooks (SPEC-002 §7.5).
 //!
-//! Both CLIs send a JSON object on the hook command's stdin and read a JSON object from its
+//! The CLI sends a JSON object on the hook command's stdin and read a JSON object from its
 //! stdout. The field names below are the CLIs' own (snake_case input, camelCase output).
 //! Inputs tolerate missing and unknown fields because each CLI version adds fields; outputs
 //! omit unset fields so a CLI never sees a value Yulius did not decide.
@@ -17,8 +17,6 @@ pub mod events {
     pub const STOP: &str = "Stop";
     /// Claude Code notification (for example a permission prompt).
     pub const NOTIFICATION: &str = "Notification";
-    /// Codex permission request.
-    pub const PERMISSION_REQUEST: &str = "PermissionRequest";
 }
 
 /// The JSON a CLI sends to a hook command. Every field is optional and unknown fields are
@@ -65,9 +63,6 @@ pub struct HookInput {
     /// Model of the session, when the CLI reports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Turn identifier, when the CLI reports it (Codex).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
 }
 
 /// Event-specific output (`hookSpecificOutput`).
@@ -169,13 +164,12 @@ mod tests {
             HookInput::default()
         );
         let input: HookInput = serde_json::from_value(json!({
-            "hook_event_name": "PermissionRequest",
-            "tool_name": "shell",
-            "tool_input": {"command": ["ls"]},
-            "turn_id": "t1"
+            "hook_event_name": "Notification",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "unknown_field": 1
         }))?;
-        assert_eq!(input.tool_input, Some(json!({"command": ["ls"]})));
-        assert_eq!(input.turn_id.as_deref(), Some("t1"));
+        assert_eq!(input.tool_input, Some(json!({"command": "ls"})));
         Ok(())
     }
 

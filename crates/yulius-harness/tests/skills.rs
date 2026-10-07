@@ -1,4 +1,4 @@
-//! Skill installation contracts: both harness homes, atomic replacement, pruning and bounds
+//! Skill installation contracts: the Claude home, atomic replacement, pruning and bounds
 //! (SPEC-001 SKL-001/004, AC-SKL-1).
 
 use std::fs;
@@ -24,21 +24,19 @@ fn skill(root: &Path, name: &str, body: &str) -> std::io::Result<SkillDir> {
     })
 }
 
-fn homes(root: &Path) -> (PathBuf, PathBuf) {
-    (
-        root.join("home/.claude/skills"),
-        root.join("codex/acc1/skills"),
-    )
+fn home(root: &Path) -> PathBuf {
+    root.join("home/.claude/skills")
 }
 
 #[test]
-fn installs_into_both_homes_and_replaces_stale_copies() -> TestResult {
+fn installs_into_the_claude_home_and_replaces_stale_copies() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let (claude, codex) = homes(dir.path());
+    let claude = home(dir.path());
     let review = skill(dir.path(), "code-review", "v1")?;
-    let report = install_skills(std::slice::from_ref(&review), &claude, &codex)?;
+    let report = install_skills(std::slice::from_ref(&review), &claude)?;
     assert_eq!(report.installed, ["code-review"]);
-    for home in [&claude, &codex] {
+    {
+        let home = &claude;
         let installed = home.join("code-review");
         assert!(fs::read_to_string(installed.join("SKILL.md"))?.contains("v1"));
         assert_eq!(
@@ -54,13 +52,15 @@ fn installs_into_both_homes_and_replaces_stale_copies() -> TestResult {
         review.path.join("SKILL.md"),
         "---\nname: code-review\n---\nv2\n",
     )?;
-    install_skills(std::slice::from_ref(&review), &claude, &codex)?;
-    for home in [&claude, &codex] {
+    install_skills(std::slice::from_ref(&review), &claude)?;
+    {
+        let home = &claude;
         assert!(fs::read_to_string(home.join("code-review/SKILL.md"))?.contains("v2"));
         assert!(!home.join("code-review/stale.md").exists());
     }
     // No staging or backup directories are left behind.
-    for home in [&claude, &codex] {
+    {
+        let home = &claude;
         let names: Vec<String> = fs::read_dir(home)?
             .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
             .collect::<Result<_, _>>()?;
@@ -72,17 +72,16 @@ fn installs_into_both_homes_and_replaces_stale_copies() -> TestResult {
 #[test]
 fn prunes_only_managed_skills_that_left_the_catalog() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let (claude, codex) = homes(dir.path());
+    let claude = home(dir.path());
     let a = skill(dir.path(), "a-skill", "a")?;
     let b = skill(dir.path(), "b-skill", "b")?;
-    install_skills(&[a.clone(), b], &claude, &codex)?;
+    install_skills(&[a.clone(), b], &claude)?;
     // A skill the user installed by hand has no marker and must survive.
     fs::create_dir_all(claude.join("personal"))?;
     fs::write(claude.join("personal/SKILL.md"), "mine")?;
-    let report = install_skills(&[a], &claude, &codex)?;
+    let report = install_skills(&[a], &claude)?;
     assert_eq!(report.removed, ["b-skill"]);
     assert!(!claude.join("b-skill").exists());
-    assert!(!codex.join("b-skill").exists());
     assert!(claude.join("personal/SKILL.md").is_file());
     assert!(claude.join("a-skill/SKILL.md").is_file());
     Ok(())
@@ -92,7 +91,7 @@ fn prunes_only_managed_skills_that_left_the_catalog() -> TestResult {
 #[test]
 fn symlinks_are_copied_only_inside_the_skill() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let (claude, codex) = homes(dir.path());
+    let claude = home(dir.path());
     let linked = skill(dir.path(), "linked", "x")?;
     fs::write(dir.path().join("secret.txt"), "outside")?;
     std::os::unix::fs::symlink(
@@ -104,7 +103,7 @@ fn symlinks_are_copied_only_inside_the_skill() -> TestResult {
         linked.path.join("alias.md"),
     )?;
     std::os::unix::fs::symlink(&linked.path, linked.path.join("loop"))?;
-    let report = install_skills(std::slice::from_ref(&linked), &claude, &codex)?;
+    let report = install_skills(std::slice::from_ref(&linked), &claude)?;
     assert_eq!(
         report.skipped_links, 2,
         "escaping file link and directory link"
@@ -124,7 +123,7 @@ fn symlinks_are_copied_only_inside_the_skill() -> TestResult {
 #[test]
 fn invalid_sources_fail_before_anything_is_written() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let (claude, codex) = homes(dir.path());
+    let claude = home(dir.path());
     let good = skill(dir.path(), "good", "g")?;
     let no_manifest = SkillDir {
         name: "empty".into(),
@@ -132,7 +131,7 @@ fn invalid_sources_fail_before_anything_is_written() -> TestResult {
     };
     fs::create_dir_all(&no_manifest.path)?;
     assert!(matches!(
-        install_skills(&[good.clone(), no_manifest], &claude, &codex),
+        install_skills(&[good.clone(), no_manifest], &claude),
         Err(SkillsError::MissingSkillMd(name)) if name == "empty"
     ));
     assert!(!claude.exists(), "validation happens before any write");
@@ -142,12 +141,12 @@ fn invalid_sources_fail_before_anything_is_written() -> TestResult {
             path: good.path.clone(),
         };
         assert!(matches!(
-            install_skills(&[invalid], &claude, &codex),
+            install_skills(&[invalid], &claude),
             Err(SkillsError::InvalidName(_))
         ));
     }
     assert!(matches!(
-        install_skills(&[good.clone(), good], &claude, &codex),
+        install_skills(&[good.clone(), good], &claude),
         Err(SkillsError::InvalidName(name)) if name == "good"
     ));
     Ok(())
@@ -156,13 +155,13 @@ fn invalid_sources_fail_before_anything_is_written() -> TestResult {
 #[test]
 fn oversized_skill_keeps_the_previous_copy() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let (claude, codex) = homes(dir.path());
+    let claude = home(dir.path());
     let big = skill(dir.path(), "big", "v1")?;
-    install_skills(std::slice::from_ref(&big), &claude, &codex)?;
+    install_skills(std::slice::from_ref(&big), &claude)?;
     let file = fs::File::create(big.path.join("blob.bin"))?;
     file.set_len(MAX_SKILL_BYTES + 1)?;
     assert!(matches!(
-        install_skills(std::slice::from_ref(&big), &claude, &codex),
+        install_skills(std::slice::from_ref(&big), &claude),
         Err(SkillsError::TooLarge(name)) if name == "big"
     ));
     assert!(fs::read_to_string(claude.join("big/SKILL.md"))?.contains("v1"));

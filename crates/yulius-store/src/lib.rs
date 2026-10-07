@@ -36,6 +36,7 @@ const QUEUE_BOUND: usize = 1024;
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_initial.sql"),
     include_str!("migrations/0002_instance_feedback.sql"),
+    include_str!("migrations/0003_claude_only.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -207,6 +208,52 @@ pub(crate) fn to_u32(value: i64) -> u32 {
 mod tests {
     use super::*;
 
+    /// A version-2 database (deployed before the Claude-only change) keeps its rows when
+    /// version 3 drops the harness-switching columns.
+    #[tokio::test]
+    async fn version_two_databases_migrate_to_claude_only() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use yulius_app::ports::store::InstanceStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v2.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            conn.execute_batch(MIGRATIONS[0])?;
+            conn.execute_batch(MIGRATIONS[1])?;
+            conn.pragma_update(None, "user_version", 2)?;
+            conn.execute(
+                "INSERT INTO instance (singleton, public_url, auto_harness_switch) VALUES (1, 'https://yulius.test', 1)",
+                [],
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let instance = store.instance().await?.ok_or("instance")?;
+        assert_eq!(instance.public_url, "https://yulius.test");
+        let columns: Vec<String> = store
+            .call(|c| {
+                let mut statement = c
+                    .prepare("SELECT name FROM pragma_table_info('tasks') UNION ALL SELECT name FROM pragma_table_info('instance')")
+                    .map_err(db)?;
+                let names = statement
+                    .query_map([], |r| r.get(0))
+                    .map_err(db)?
+                    .collect::<Result<Vec<String>, _>>()
+                    .map_err(db)?;
+                Ok(names)
+            })
+            .await?;
+        assert!(
+            !columns
+                .iter()
+                .any(|c| c == "harness_proposal" || c == "auto_harness_switch")
+        );
+        assert!(
+            columns.iter().any(|c| c == "mode"),
+            "version 2 columns that stay are kept"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn migrates_and_reopens() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -219,7 +266,7 @@ mod tests {
                         .map_err(db)
                 })
                 .await?;
-            assert_eq!(version, 2);
+            assert_eq!(version, 3);
         }
         // Reopen applies nothing new and keeps the version.
         let store = SqliteStore::open(&path)?;
@@ -229,7 +276,7 @@ mod tests {
                     .map_err(db)
             })
             .await?;
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         let backup = dir.path().join("backup.db");
         store.backup_to(&backup).await?;
         assert!(backup.exists());

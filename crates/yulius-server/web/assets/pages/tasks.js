@@ -2,7 +2,7 @@
 
 import { h, setChildren, iconButton, badge, toast, errorToast } from '../dom.js';
 import { relShort, dateTime } from '../format.js';
-import { statusInfo, statusGroup, harnessInfo, allows } from '../status.js';
+import { statusInfo, statusGroup, allows } from '../status.js';
 import { openTaskMenu, restoreTask } from '../actions.js';
 import { href } from '../router.js';
 import { pageFrame, dataTable, loader } from './common.js';
@@ -30,17 +30,15 @@ export function mountTasksPage(ctx, sandbox) {
   const search = h('input', { class: 'input', type: 'search', placeholder: 'Search title, branch, author…', 'aria-label': 'Search tasks' });
   const group = h('select', { class: 'select', 'aria-label': 'Status filter' },
     [['', 'All statuses'], ['active', 'Active'], ['attention', 'Needs attention'], ['closed', 'Closed'], ['stopped', 'Stopped'], ['failed', 'Failed']].map(([v, l]) => h('option', { value: v }, l)));
-  const harness = h('select', { class: 'select', 'aria-label': 'Harness filter' }, h('option', { value: '' }, 'All harnesses'), h('option', { value: 'claude' }, 'Claude Code'), h('option', { value: 'codex' }, 'Codex'));
   const origin = h('select', { class: 'select', 'aria-label': 'Origin filter' }, h('option', { value: '' }, 'All origins'), ['ui', 'automation', 'import', 'onboarding', 'agent'].map((o) => h('option', { value: o }, o)));
   const tableHost = h('div');
-  frame.body.append(h('div', { class: 'toolbar' }, search, group, harness, origin), tableHost);
+  frame.body.append(h('div', { class: 'toolbar' }, search, group, origin), tableHost);
 
   function render() {
     const tasks = ctx.store.tasksOf(sandbox.id);
     if (tasks === null) { setChildren(tableHost, h('div', { class: 'placeholder placeholder-loading' }, 'Loading…')); return; }
     const q = search.value.trim().toLowerCase();
     const rows = tasks.filter((t) => (!group.value || statusGroup(t) === group.value)
-      && (!harness.value || t.harness === harness.value)
       && (!origin.value || t.origin === origin.value)
       && (!q || `${t.number} ${t.title} ${t.branch || ''} ${(t.created_by && t.created_by.login) || ''}`.toLowerCase().includes(q)));
     frame.sub.textContent = `${sandbox.name} · ${rows.length} of ${tasks.length}`;
@@ -48,7 +46,6 @@ export function mountTasksPage(ctx, sandbox) {
       { label: 'Status', render: statusCell },
       { label: '#', class: 'num', render: (t) => String(t.number) },
       { label: 'Title', class: 'title-cell', render: (t) => taskLink(sandbox, t) },
-      { label: 'Harness', render: (t) => h('span', { class: 'row nowrap' }, h('span', { class: `task-harness ${t.harness}` }, harnessInfo(t.harness).glyph), harnessInfo(t.harness).name), phoneHide: true },
       { label: 'Author', render: (t) => (t.created_by && t.created_by.login) || '—', phoneHide: true },
       { label: 'Branch', render: (t) => h('code', null, t.branch || '—'), phoneHide: true },
       { label: 'Steps', render: stepsCell, phoneHide: true },
@@ -59,7 +56,7 @@ export function mountTasksPage(ctx, sandbox) {
       onRowClick: (t) => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${t.number}`),
     }));
   }
-  for (const control of [search, group, harness, origin]) control.addEventListener('input', render);
+  for (const control of [search, group, origin]) control.addEventListener('input', render);
   const off = ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) render(); });
   render();
   return { el: frame.el, key: `tasks:${sandbox.id}`, destroy: off };
@@ -78,7 +75,6 @@ export function mountArchivedPage(ctx) {
       { label: '#', class: 'num', render: (t) => String(t.number) },
       { label: 'Title', class: 'title-cell', render: (t) => { const sb = ctx.store.sandboxById(t.sandbox_id); return sb ? taskLink(sb, t) : t.title; } },
       { label: 'Status', render: statusCell, phoneHide: true },
-      { label: 'Harness', render: (t) => harnessInfo(t.harness).name, phoneHide: true },
       { label: 'Archived', class: 'num', render: (t) => h('span', { title: dateTime(t.updated_at) }, relShort(t.updated_at)) },
       { label: '', render: (t) => {
         const sb = ctx.store.sandboxById(t.sandbox_id);

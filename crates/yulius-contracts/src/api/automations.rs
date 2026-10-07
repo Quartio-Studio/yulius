@@ -33,7 +33,8 @@ pub struct Automation {
     /// Workflow for created tasks.
     #[serde(default)]
     pub workflow_id: Option<String>,
-    /// `claude` or `codex`.
+    /// Harness: `claude` (the default and the only one supported).
+    #[serde(default = "default_harness")]
     pub harness: String,
     /// Enabled.
     #[serde(default = "default_true")]
@@ -47,6 +48,10 @@ pub struct Automation {
     /// Last run (read-only).
     #[serde(default)]
     pub last_run: Option<AutomationRunView>,
+}
+
+fn default_harness() -> String {
+    "claude".into()
 }
 
 fn default_true() -> bool {

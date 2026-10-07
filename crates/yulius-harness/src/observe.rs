@@ -1,14 +1,14 @@
 //! Normalized observations from transcript lines and the usage accumulator (SPEC-002 §7.2,
 //! EVT-001/002).
 //!
-//! [`crate::claude::observe_line`] and [`crate::codex::observe_line`] turn one transcript line
-//! into zero or more [`Observed`] values. Unknown record types yield nothing; lines that are not
+//! [`crate::claude::observe_line`] turns one transcript line into zero or more [`Observed`]
+//! values. Unknown record types yield nothing; lines that are not
 //! JSON objects or lack required fields yield [`Observed::Malformed`].
 
 use std::collections::{HashSet, VecDeque};
 
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, TokenUsage};
+use yulius_domain::usage::TokenUsage;
 
 /// Maximum number of recent Claude message ids remembered for de-duplication.
 pub const MESSAGE_ID_MEMORY: usize = 65_536;
@@ -16,7 +16,7 @@ pub const MESSAGE_ID_MEMORY: usize = 65_536;
 /// One normalized fact from a transcript line.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Observed {
-    /// Session identity (Claude: every genuine user prompt record; Codex: `session_meta`).
+    /// Session identity (every genuine user prompt record).
     SessionMeta {
         /// Provider session id.
         session_id: String,
@@ -26,15 +26,6 @@ pub enum Observed {
         model: Option<String>,
         /// CLI version, if recorded.
         version: Option<String>,
-    },
-    /// Model settings of the following turns (Codex `turn_context`).
-    TurnContext {
-        /// Working directory, if recorded.
-        cwd: Option<String>,
-        /// Model, if recorded.
-        model: Option<String>,
-        /// Reasoning effort, if recorded.
-        effort: Option<String>,
     },
     /// A genuine user prompt started a turn (not tool results or injected context).
     UserTurn,
@@ -47,10 +38,6 @@ pub enum Observed {
         /// Usage reported with the message; unknown fields stay `None`.
         usage: TokenUsage,
     },
-    /// Cumulative session usage (Codex `token_count.info.total_token_usage`); last value wins.
-    CumulativeUsage(TokenUsage),
-    /// Provider rate-limit snapshot (Codex `token_count.rate_limits`).
-    RateLimits(AccountUsage),
     /// The provider reported that a usage limit was reached.
     LimitReached {
         /// When the limit resets, if the provider said so in parseable form.
@@ -79,17 +66,15 @@ pub struct LimitSignal {
 
 /// Folds observations of one attempt into usage totals without double counting.
 ///
-/// Claude usage is summed once per `message.id`; repeated lines of the same message refine it
-/// (per-field maximum), and ids already counted earlier are ignored. Codex usage is cumulative:
-/// the last `CumulativeUsage` wins. Unknown usage stays unknown.
+/// Usage is summed once per `message.id`; repeated lines of the same message refine it
+/// (per-field maximum), and ids already counted earlier are ignored. Unknown usage stays
+/// unknown.
 #[derive(Debug, Clone, Default)]
 pub struct UsageAccumulator {
     finalized: Option<TokenUsage>,
     current: Option<(String, TokenUsage)>,
     seen: HashSet<String>,
     seen_order: VecDeque<String>,
-    cumulative: Option<TokenUsage>,
-    rate_limits: Option<AccountUsage>,
     limit: Option<LimitSignal>,
     model: Option<String>,
     malformed: u64,
@@ -127,17 +112,12 @@ impl UsageAccumulator {
                 }
                 self.observe_message(message_id, *usage);
             }
-            Observed::CumulativeUsage(usage) => self.cumulative = Some(*usage),
-            Observed::RateLimits(usage) => self.rate_limits = Some(*usage),
             Observed::LimitReached { resets_at, message } => {
                 self.limit = Some(LimitSignal {
                     resets_at: *resets_at,
                     message: message.clone(),
                 });
             }
-            Observed::TurnContext {
-                model: Some(model), ..
-            } => self.model = Some(model.clone()),
             Observed::TurnComplete { .. } => self.turns_completed += 1,
             Observed::Malformed => self.malformed += 1,
             _ => {}
@@ -179,25 +159,15 @@ impl UsageAccumulator {
         self.current = Some((id.to_owned(), usage));
     }
 
-    /// Usage of the observed lines: the sum of distinct Claude messages and/or the last Codex
-    /// cumulative value. All fields are `None` when nothing was observed.
+    /// Usage of the observed lines: the sum of distinct messages. All fields are `None` when
+    /// nothing was observed.
     #[must_use]
     pub fn usage(&self) -> TokenUsage {
-        let mut claude = self.finalized;
+        let mut total = self.finalized;
         if let Some((_, current)) = &self.current {
-            claude = add_known(claude, *current);
+            total = add_known(total, *current);
         }
-        match (claude, self.cumulative) {
-            (Some(a), Some(b)) => a.checked_add(b),
-            (Some(a), None) | (None, Some(a)) => a,
-            (None, None) => TokenUsage::UNKNOWN,
-        }
-    }
-
-    /// Latest rate-limit snapshot, if any.
-    #[must_use]
-    pub fn rate_limits(&self) -> Option<&AccountUsage> {
-        self.rate_limits.as_ref()
+        total.unwrap_or(TokenUsage::UNKNOWN)
     }
 
     /// Latest limit signal, if any.
@@ -246,7 +216,7 @@ mod tests {
     fn empty_accumulator_reports_unknown() {
         let acc = UsageAccumulator::new();
         assert!(acc.usage().is_unknown());
-        assert_eq!(acc.rate_limits(), None);
+        assert_eq!(acc.last_limit(), None);
     }
 
     #[test]
@@ -274,45 +244,24 @@ mod tests {
     }
 
     #[test]
-    fn codex_cumulative_last_value_wins() {
+    fn counts_malformed_lines_turns_and_keeps_the_latest_limit() {
         let mut acc = UsageAccumulator::new();
-        let first = TokenUsage {
-            input: Some(100),
-            output: Some(10),
-            cache_read: Some(0),
-            cache_write: None,
-        };
-        let second = TokenUsage {
-            input: Some(300),
-            output: Some(40),
-            ..first
-        };
         acc.observe_all(&[
-            Observed::CumulativeUsage(first),
-            Observed::CumulativeUsage(second),
             Observed::Malformed,
             Observed::TurnComplete {
                 duration_ms: Some(5),
             },
+            Observed::LimitReached {
+                resets_at: None,
+                message: "first".into(),
+            },
+            Observed::LimitReached {
+                resets_at: Some(Timestamp(5)),
+                message: "limit".into(),
+            },
         ]);
-        assert_eq!(acc.usage(), second);
         assert_eq!(acc.malformed_lines(), 1);
         assert_eq!(acc.turn_complete_signals(), 1);
-    }
-
-    #[test]
-    fn keeps_latest_limit_and_rate_limits() {
-        let mut acc = UsageAccumulator::new();
-        let snapshot = AccountUsage {
-            limit_reached: true,
-            ..AccountUsage::default()
-        };
-        acc.observe(&Observed::RateLimits(snapshot));
-        acc.observe(&Observed::LimitReached {
-            resets_at: Some(Timestamp(5)),
-            message: "limit".into(),
-        });
-        assert_eq!(acc.rate_limits(), Some(&snapshot));
         assert_eq!(
             acc.last_limit(),
             Some(&LimitSignal {

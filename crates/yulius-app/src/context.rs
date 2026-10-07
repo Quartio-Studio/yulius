@@ -95,7 +95,7 @@ pub struct Deps {
     pub github: Arc<dyn GitHubPort>,
     /// Detached process hosts.
     pub session_host: Arc<dyn SessionHost>,
-    /// Claude Code / Codex adapters.
+    /// Claude Code adapter.
     pub harness: Arc<dyn HarnessPort>,
     /// Git.
     pub git: Arc<dyn GitPort>,

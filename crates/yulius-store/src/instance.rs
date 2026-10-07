@@ -21,7 +21,6 @@ fn instance_from_row(row: &Row<'_>) -> rusqlite::Result<InstanceRecord> {
         setup_completed_at: row
             .get::<_, Option<i64>>("setup_completed_at")?
             .map(Timestamp),
-        auto_harness_switch: row.get("auto_harness_switch")?,
         recovery_hash: row.get("recovery_hash")?,
         recovery_failures: crate::to_u32(row.get("recovery_failures")?),
         recovery_locked_at: row
@@ -31,8 +30,8 @@ fn instance_from_row(row: &Row<'_>) -> rusqlite::Result<InstanceRecord> {
 }
 
 const SELECT: &str = "SELECT owner_login, owner_kind, public_url, github_app, installation_id, \
-    setup_token_hash, setup_completed_at, auto_harness_switch, recovery_hash, recovery_failures, \
-    recovery_locked_at FROM instance WHERE singleton = 1";
+    setup_token_hash, setup_completed_at, recovery_hash, recovery_failures, recovery_locked_at \
+    FROM instance WHERE singleton = 1";
 
 #[async_trait]
 impl InstanceStore for SqliteStore {
@@ -130,18 +129,6 @@ impl InstanceStore for SqliteStore {
             c.execute(
                 "UPDATE instance SET installation_id = ?1 WHERE singleton = 1",
                 [installation_id.map(to_i64)],
-            )
-            .map_err(db)?;
-            Ok(())
-        })
-        .await
-    }
-
-    async fn set_auto_harness_switch(&self, enabled: bool) -> AppResult<()> {
-        self.call(move |c| {
-            c.execute(
-                "UPDATE instance SET auto_harness_switch = ?1 WHERE singleton = 1",
-                [enabled],
             )
             .map_err(db)?;
             Ok(())

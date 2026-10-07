@@ -12,13 +12,12 @@ been performed or verified** as part of the implementation work.
 | Linux x86_64 or arm64, systemd | the service | macOS works for development (runs are "not contained"). |
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
-| Codex CLI (`codex`) | Codex tasks and Codex account login | verified flags with 0.160.1; releases without `--no-daemon` (e.g. 0.154) are detected and warned about. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. |
 
 Inside containment an agent sees only `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/opt`, its own
-sandbox directory and the `yulius` binary. Install the agent CLIs (and Node.js for Codex' npm
-wrapper) system-wide under `/usr/local` or `/opt`; a per-user install such as Claude Code's
+sandbox directory and the `yulius` binary. Install Claude Code system-wide under `/usr/local` or
+`/opt`; a per-user install such as Claude Code's
 default `~/.local/bin/claude` is invisible to contained runs unless its directories are added with
 `--contained-readonly <dir>[:<dir>…]` (`YULIUS_CONTAINED_READONLY`).
 
@@ -130,8 +129,8 @@ WebSocket origins are checked against it.
    at `YULIUS_PUBLIC_URL`.
 4. Administration → Users: admit GitHub logins; they sign in with GitHub. Repository access in
    Yulius mirrors their GitHub permissions (read / write / admin).
-5. Administration → Accounts: add Claude and Codex accounts; each login runs the provider's own
-   sign-in in a terminal in the browser.
+5. Administration → Accounts: add Claude accounts; each login runs Claude's own sign-in in a
+   terminal in the browser. Yulius rotates between them automatically.
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
    `studio` delivery presets.
 

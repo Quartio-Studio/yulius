@@ -5,7 +5,7 @@ import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { statusInfo, harnessInfo, isLive, allows, taskActions } from './status.js';
-import { openTaskMenu, continueTask, approveHarnessProposal } from './actions.js';
+import { openTaskMenu, continueTask } from './actions.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -82,21 +82,7 @@ export function mountTaskView(ctx, sandbox, task) {
     h('div', { class: 'quickbar-input' }, quickInput, h('button', { type: 'button', class: 'btn btn-primary', onClick: sendQuick }, 'Send')),
     h('div', { class: 'quickbar-keys', role: 'group', 'aria-label': 'Keys' }, QUICK_KEYS.map(([label, seq]) => h('button', { type: 'button', class: 'btn', onClick: () => terminal.sendKeys(seq), 'aria-label': `Send ${label}` }, label))));
 
-  // ---- harness change proposal (ROT-012)
-  const proposalBar = h('div', { class: 'proposal-bar', hidden: true, role: 'status' });
-  function renderProposal() {
-    const proposal = current.harness_proposal;
-    const write = allows((ctx.store.sandboxById(sandbox.id) || sandbox).access, 'write');
-    proposalBar.hidden = !proposal;
-    if (!proposal) return;
-    const to = harnessInfo(proposal.harness).name;
-    setChildren(proposalBar,
-      h('span', null, `All ${harnessInfo(current.harness).name} accounts are at their usage limit. Yulius waits for capacity, or this task can move to ${to}.`),
-      write ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => approveHarnessProposal(ctx, current) }, `Switch to ${to}…`) : null);
-  }
-  renderProposal();
-
-  const el = h('div', { class: 'taskview' }, strip, proposalBar, terminal.el, quickbar);
+  const el = h('div', { class: 'taskview' }, strip, terminal.el, quickbar);
 
   function renderStrip() {
     const steps = current.steps || { done: 0, total: 0, current: null };
@@ -151,7 +137,6 @@ export function mountTaskView(ctx, sandbox, task) {
       if (detail && detail.id === current.id) {
         current = { ...current, ...pickSummary(detail) };
         renderStrip();
-        renderProposal();
       }
     } catch (error) {
       if (error.status !== 404) errorToast(error, 'Could not load task details');
@@ -176,7 +161,6 @@ export function mountTaskView(ctx, sandbox, task) {
       const wasLive = isLive(current.status);
       current = { ...current, ...next };
       renderStrip();
-      renderProposal();
       // A continued task gets a new attempt: reconnect if the socket had ended.
       if (!wasLive && isLive(current.status) && terminal.socket.status !== 'open') terminal.reconnect();
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
@@ -192,7 +176,7 @@ export function mountTaskView(ctx, sandbox, task) {
 }
 
 function pickSummary(detail) {
-  const keys = ['status', 'activity', 'title', 'steps', 'unread_messages', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'harness_proposal'];
+  const keys = ['status', 'activity', 'title', 'steps', 'unread_messages', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode'];
   const out = {};
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
@@ -200,21 +184,17 @@ function pickSummary(detail) {
 
 // ---------------------------------------------------------------- composer
 
-const HARNESS_KEY = 'yulius.lastHarness';
-
-/** New-task composer (J3): prompt, harness, workflow, optional model/effort, Start. */
+/** New-task composer (J3): prompt, mode, workflow, optional model/effort, Start (Claude Code). */
 export function mountComposer(ctx, sandbox) {
   const destroyers = [];
   const write = allows(sandbox.access, 'write');
   const prompt = h('textarea', { class: 'textarea composer-prompt', placeholder: 'Describe what you want to build or change — e.g. “make me an online store”…', 'aria-label': 'Task prompt', maxlength: 100000 });
-  const lastHarness = readJson(HARNESS_KEY, 'claude');
-  const harnessInputs = ['claude', 'codex'].map((value) => h('input', { type: 'radio', name: 'composer-harness', value, checked: value === lastHarness }));
   // Goal mode is the default (TSK-010): the prompt becomes the session's /goal.
   const modeInputs = [['goal', 'Goal'], ['prompt', 'Prompt']].map(([value]) => h('input', { type: 'radio', name: 'composer-mode', value, checked: value === 'goal' }));
   const modeHint = h('span', { class: 'muted xs' });
   const renderModeHint = () => {
     modeHint.textContent = modeInputs[0].checked
-      ? 'The agent keeps working until the goal is met (the harness\u2019s /goal).'
+      ? 'The agent keeps working until the goal is met (Claude Code\u2019s /goal).'
       : 'Sent as a normal first message.';
   };
   modeInputs.forEach((input) => input.addEventListener('change', renderModeHint));
@@ -234,11 +214,10 @@ export function mountComposer(ctx, sandbox) {
       prompt,
       h('div', { class: 'composer-row' },
         field('Mode', h('div', { class: 'stack-sm' }, h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Mode' }, modeInputs.map((input) => h('label', null, input, input.value === 'goal' ? 'Goal' : 'Prompt'))), modeHint)),
-        field('Harness', h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Harness' }, harnessInputs.map((input) => h('label', null, input, harnessInfo(input.value).name)))),
         field('Workflow', workflow)),
       h('details', null,
         h('summary', null, 'Model, effort and title (optional)'),
-        h('div', { class: 'form-grid' }, field('Model', model, 'Passed to the harness, e.g. claude-opus-4 or gpt-5-codex'), field('Effort', effort), field('Title', title))),
+        h('div', { class: 'form-grid' }, field('Model', model, 'Passed to Claude Code, e.g. opus, sonnet or a full model id'), field('Effort', effort), field('Title', title))),
       h('div', { class: 'composer-foot' }, startButton, hint)));
 
   // The superadmin is reminded while no recovery code exists (ACC-011).
@@ -311,9 +290,7 @@ export function mountComposer(ctx, sandbox) {
   async function start() {
     const text = prompt.value.trim();
     if (!text) { prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
-    const harness = harnessInputs.find((i) => i.checked).value;
-    writeJson(HARNESS_KEY, harness);
-    const body = { prompt: text, harness, mode: modeInputs.find((i) => i.checked).value };
+    const body = { prompt: text, mode: modeInputs.find((i) => i.checked).value };
     if (workflow.value) body.workflow_id = workflow.value;
     if (model.value.trim()) body.model = model.value.trim();
     if (effort.value) body.effort = effort.value;

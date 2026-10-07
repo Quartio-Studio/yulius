@@ -3,7 +3,7 @@
 
 import { h, svgEl, setChildren, icon, iconButton } from '../dom.js';
 import { compact, duration, int } from '../format.js';
-import { harnessInfo, statusInfo } from '../status.js';
+import { statusInfo } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
 const RANGES = [[7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days']];
@@ -77,7 +77,6 @@ export function renderSummary(data) {
 
   const byStatus = Object.entries(tasks.by_status || {}).map(([status, count]) => ({ label: statusInfo({ status, activity: null }).label, value: count }));
   const byModel = (Array.isArray(data.tokens_by_model) ? data.tokens_by_model : []).map((r) => ({ label: r.model, value: sumTokens(r) }));
-  const byHarness = (Array.isArray(data.tokens_by_harness) ? data.tokens_by_harness : []).map((r) => ({ label: harnessInfo(r.harness).name, value: sumTokens(r) }));
   const byAccount = (Array.isArray(data.tokens_by_account) ? data.tokens_by_account : []).map((r) => ({ label: r.account_label || (r.account_id ? 'deleted account' : 'no account'), value: sumTokens(r) }));
   const byOrigin = Object.entries(tasks.by_origin || {}).map(([origin, count]) => ({ label: origin, value: count }));
   const unknownRuns = Number.isFinite(tokens.unknown_usage_runs) ? tokens.unknown_usage_runs : 0;
@@ -85,16 +84,15 @@ export function renderSummary(data) {
   return [
     data.truncated ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, 'This range has more than 50 000 tasks; the figures describe the newest 50 000.')) : null,
     h('div', { class: 'stat-grid' },
-      stat('Tasks', int(tasks.total), [Number.isFinite(tasks.closed) ? `${tasks.closed} closed` : null, ...Object.entries(tasks.by_harness || {}).map(([k, v]) => `${harnessInfo(k).name} ${v}`)].filter(Boolean).join(' · ') || null),
+      stat('Tasks', int(tasks.total), Number.isFinite(tasks.closed) ? `${tasks.closed} closed` : null),
       stat('Median duration', duration(durationStats.median ?? null), durationStats.p90 !== undefined ? `p90 ${duration(durationStats.p90)}` : null),
       stat('Active agent time', duration(durationStats.total_active ?? null), durationStats.total_wall !== undefined ? `wall ${duration(durationStats.total_wall)}` : null),
       stat('Tokens', compact(totalTokens), `in ${compact(tokens.input)} · out ${compact(tokens.output)}${Number.isFinite(tokens.cache_read) ? ` · cache read ${compact(tokens.cache_read)}` : ''}${unknownRuns ? ` · ${unknownRuns} run${unknownRuns === 1 ? '' : 's'} without usage` : ''}`),
-      stat('Switches', int(switches.total), Number.isFinite(switches.provider) ? `${switches.account ?? 0} account · ${switches.provider} provider` : null),
+      stat('Switches', int(switches.total), 'between Claude accounts'),
       stat('Feedback correct', fbTotal ? `${Math.round(((feedback.correct || 0) / fbTotal) * 100)}%` : '—', fbTotal ? `${feedback.correct || 0} of ${fbTotal} rated` : 'no feedback yet')),
     card('Tasks per day', columnChart(perDay.map((d) => ({ label: d.date, value: d.count })), { unit: 'tasks' })),
     h('div', { class: 'grid-2' },
       card('Tokens by model', hbars(byModel, { format: compact, empty: 'No token data (unknown usage is not counted as zero).' })),
-      card('Tokens by harness', hbars(byHarness, { format: compact })),
       card('Tokens by account', hbars(byAccount, { format: compact })),
       card('Tasks by status', hbars(byStatus, { format: int })),
       card('Tasks by origin', hbars(byOrigin, { format: int })),

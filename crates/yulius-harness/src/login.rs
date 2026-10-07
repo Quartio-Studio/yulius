@@ -4,16 +4,6 @@
 //! captured from its output with [`extract_claude_oauth_token`] while [`TokenMasker`] hides it
 //! from viewers. Run the PTY wide (for example 500 columns) so the TUI does not wrap the token
 //! across lines; a wrapped token is neither captured nor fully masked.
-//!
-//! Codex: `codex login --device-auth` runs with a temporary `CODEX_HOME`; the resulting
-//! `auth.json` is stored in the vault, and after each run the newer copy (by `last_refresh`)
-//! wins ([`newer_codex_auth`]).
-
-use std::cmp::Ordering;
-
-use serde_json::Value;
-
-use crate::time::parse_rfc3339;
 
 /// Prefix of Claude long-lived OAuth tokens.
 pub const CLAUDE_TOKEN_PREFIX: &str = "sk-ant-oat01-";
@@ -30,13 +20,6 @@ fn is_token_byte(b: u8) -> bool {
 #[must_use]
 pub fn claude_setup_token_argv() -> Vec<String> {
     vec!["claude".into(), "setup-token".into()]
-}
-
-/// argv of the Codex device login (`codex login --device-auth`); run it with `CODEX_HOME` set
-/// to a fresh temporary directory.
-#[must_use]
-pub fn codex_device_login_argv() -> Vec<String> {
-    vec!["codex".into(), "login".into(), "--device-auth".into()]
 }
 
 /// The last Claude OAuth token in `output`: `sk-ant-oat01-` followed by at least 20 of
@@ -144,31 +127,6 @@ impl TokenMasker {
         if self.held.len() == prefix.len() {
             self.state = MaskState::Candidate;
         }
-    }
-}
-
-/// `last_refresh` of a Codex `auth.json`, if present.
-#[must_use]
-pub fn codex_auth_last_refresh(auth_json: &[u8]) -> Option<String> {
-    let value: Value = serde_json::from_slice(auth_json).ok()?;
-    value
-        .get("last_refresh")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-}
-
-/// Compares two Codex `auth.json` contents by `last_refresh`: `Greater` when `a` is newer.
-/// A parseable time beats an unparseable or missing one; two missing times are `Equal`;
-/// unparseable texts compare lexically.
-#[must_use]
-pub fn newer_codex_auth(a: &[u8], b: &[u8]) -> Ordering {
-    let (ra, rb) = (codex_auth_last_refresh(a), codex_auth_last_refresh(b));
-    let parsed = |r: &Option<String>| r.as_deref().and_then(parse_rfc3339);
-    match (parsed(&ra), parsed(&rb)) {
-        (Some(x), Some(y)) => x.cmp(&y),
-        (Some(_), None) => Ordering::Greater,
-        (None, Some(_)) => Ordering::Less,
-        (None, None) => ra.cmp(&rb),
     }
 }
 

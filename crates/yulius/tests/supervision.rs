@@ -16,15 +16,19 @@ use yulius::wiring::clock::SystemClock;
 use yulius::wiring::git::GitAdapter;
 use yulius::wiring::harness::HarnessAdapter;
 use yulius::wiring::session::PtySessionHost;
+use yulius_app::auth::AuthContext;
 use yulius_app::context::{App, AppConfig, Deps};
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{
-    AccountRecord, AccountStatus, LaunchKind, SandboxRecord, TaskOrigin, TaskRecord, UserRecord,
+    AccountRecord, AccountStatus, LaunchKind, SandboxRecord, Secret, TaskOrigin, TaskRecord,
+    UserRecord,
 };
+use yulius_app::ports::usage::UsageProbe;
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
+use yulius_domain::usage::{AccountUsage, UsageWindow};
 use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
@@ -55,6 +59,22 @@ fn build_tuned(
     agent: FakeAgentOptions,
     tune: impl FnOnce(&mut AppConfig),
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_custom(
+        data,
+        fake,
+        agent,
+        tune,
+        Arc::new(yulius_app::ports::usage::NoUsageProbe),
+    )
+}
+
+fn build_custom(
+    data: &Path,
+    fake: Option<&Path>,
+    agent: FakeAgentOptions,
+    tune: impl FnOnce(&mut AppConfig),
+    usage: Arc<dyn UsageProbe>,
+) -> Result<Arc<App>, Box<dyn std::error::Error>> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let store = SqliteStore::open(&data.join("yulius.db"))?;
     let mut config = AppConfig::new(
@@ -78,7 +98,7 @@ fn build_tuned(
         git: Arc::new(GitAdapter::new("git")),
         system: Arc::new(support::FixedSystem),
         browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-        usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
+        usage,
     };
     Ok(App::new(config, deps))
 }
@@ -717,11 +737,36 @@ fn messages_wake_idle_tasks_and_a_normal_exit_closes_the_task() -> TestResult {
     Ok(())
 }
 
-/// AC-ROT-2 (proactive path) on Codex: rate limits observed in the rollout reach the 99 %
-/// threshold; at the next turn boundary the session moves to the next OpenAI account with a
-/// native resume of the same Codex session.
+/// The first account (seeded by [`seed_records`]) is at 99.5 % of its five-hour window; others
+/// report no usage.
+struct FirstAccountNearLimit;
+
+#[async_trait::async_trait]
+impl UsageProbe for FirstAccountNearLimit {
+    async fn fetch(
+        &self,
+        _provider: Provider,
+        credential: &Secret,
+    ) -> Result<AccountUsage, String> {
+        if credential.expose() != "sk-ant-oat01-test-credential" {
+            return Ok(AccountUsage::default());
+        }
+        Ok(AccountUsage {
+            primary: Some(UsageWindow {
+                used_percent: Some(99.5),
+                window_minutes: Some(300),
+                resets_at: Some(Timestamp(4_000_000_000_000)),
+            }),
+            ..AccountUsage::default()
+        })
+    }
+}
+
+/// AC-ROT-2 (proactive path): refreshed usage puts the task's account at the 99 % threshold; at
+/// the next turn boundary the session moves to the next Claude account with a native resume of
+/// the same session.
 #[test]
-fn codex_usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
+fn usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
     let data = dir.path().canonicalize()?;
@@ -731,77 +776,43 @@ fn codex_usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
             transcript: true,
             limit_after: None,
         };
-        let app = build_full(&data, Some(&fake), agent, 8)?;
+        let app = build_custom(
+            &data,
+            Some(&fake),
+            agent,
+            |_| {},
+            Arc::new(FirstAccountNearLimit),
+        )?;
         let (sandbox, user) = seed_records(&app).await?;
-        for (id, priority) in [("o-1", 0), ("o-2", 1)] {
-            app.deps
-                .store
-                .insert_account(&AccountRecord {
-                    id: AccountId::parse(id)?,
-                    provider: Provider::OpenAi,
-                    label: format!("Codex {id}"),
-                    credential: Some(
-                        app.deps
-                            .crypto
-                            .seal(br#"{"auth_mode":"chatgpt","tokens":{"access_token":"fake"}}"#)?,
-                    ),
-                    priority,
-                    enabled: true,
-                    status: AccountStatus::Ok,
-                    usage_json: None,
-                    last_error: None,
-                    created_at: Timestamp(1),
-                    updated_at: Timestamp(1),
-                })
-                .await?;
-        }
+        add_account(&app, "a-claude-2", 1).await?;
         seed_repo(&data, &sandbox)?;
-        let record = app
-            .create_task_internal(NewTask {
-                sandbox: sandbox.clone(),
-                created_by: user.clone(),
-                prompt: "Codex rotation".into(),
-                harness: Harness::Codex,
-                title: Some("Codex rotation".into()),
-                workflow_id: None,
-                steps: Vec::new(),
-                model: None,
-                effort: None,
-                origin: TaskOrigin::Ui,
-                automation_run: None,
-                start: true,
-                mode: yulius_app::model::TaskMode::Prompt,
-            })
-            .await?;
-        let id = record.id;
+        let id = new_task(&app, &sandbox, &user, "Proactive").await?;
         wait_for("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
-        // Usage grows 10 % per turn and reaches 99 % on the tenth. The tenth turn's echo is not
-        // awaited: the switch at its turn boundary may replace the screen before a poll sees it.
-        for n in 1..=9 {
-            app.send_input(&id, format!("turn {n}\r").as_bytes())
-                .await?;
-            let echo = format!("ECHO: turn {n}");
-            let seen = wait_for("the echo", Duration::from_secs(15), || {
-                screen_contains(&app, &id, &echo)
-            })
-            .await;
-            if seen.is_err() {
-                eprintln!(
-                    "turn {n}: task {:?}\nattempts {:?}\nscreen:\n{}",
-                    task(&app, &id).await.map(|t| (t.status, t.activity)),
-                    app.deps.store.attempts(&id).await.map(|a| a
-                        .iter()
-                        .map(|a| (a.seq, a.account_id.clone(), a.state, a.exit_reason.clone()))
-                        .collect::<Vec<_>>()),
-                    app.runtime(&id).hub.screen_text()
-                );
-            }
-            seen?;
-        }
-        app.send_input(&id, b"turn 10\r").await?;
+        let first_account = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .and_then(|a| a.account_id)
+            .ok_or("first account")?;
+        assert_eq!(first_account.as_str(), "a-claude");
+        // An administrator refreshes the account's usage: it is at the threshold.
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.refresh_account_usage(&ctx, "a-claude").await?;
+        assert_eq!(
+            app.deps.store.attempts(&id).await?.len(),
+            1,
+            "no switch in the middle of a turn"
+        );
+        // The next turn ends: the session moves on.
+        app.send_input(&id, b"next turn\r").await?;
         wait_for("the proactive switch", Duration::from_secs(90), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() >= 2 && attempts.last().is_some_and(|a| !a.state.is_terminal())
@@ -809,217 +820,20 @@ fn codex_usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
         .await?;
         let attempts = app.deps.store.attempts(&id).await?;
         let (first, second) = (&attempts[0], &attempts[1]);
-        assert_eq!(first.harness, Harness::Codex);
-        assert_eq!(second.harness, Harness::Codex, "same provider first");
-        assert_ne!(first.account_id, second.account_id);
-        assert_eq!(second.launch_kind, LaunchKind::Resume);
-        assert!(
-            first.provider_session_id.is_some(),
-            "Codex session discovered from the rollout"
+        assert_eq!(
+            second.account_id.as_ref().map(AccountId::as_str),
+            Some("a-claude-2")
         );
+        assert_eq!(second.harness, Harness::ClaudeCode);
+        assert_eq!(second.launch_kind, LaunchKind::Resume);
         assert_eq!(first.provider_session_id, second.provider_session_id);
         assert!(!app.deps.store.switches(&id).await?.is_empty());
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        wait_for("the resumed run", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Running)
         })
         .await?;
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })?;
-    rt.shutdown_timeout(Duration::from_secs(5));
-    Ok(())
-}
-
-/// AC-ROT-4 (synthetic, automatic switching enabled): with every Claude account exhausted and a
-/// Codex account available, the
-/// Claude transcript is translated into a native Codex session that the next attempt resumes.
-/// Live acceptance by the real Codex CLI is not covered here.
-#[test]
-fn provider_exhaustion_translates_the_session_to_codex() -> TestResult {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
-    let data = dir.path().canonicalize()?;
-    let rt = runtime()?;
-    rt.block_on(async {
-        let agent = FakeAgentOptions {
-            transcript: true,
-            limit_after: Some(1),
-        };
-        let app = build_full(&data, Some(&fake), agent, 8)?;
-        // Automatic harness switches are an administrator opt-in (ROT-012).
-        app.deps
-            .store
-            .init_instance("https://yulius.test", "setup-hash")
-            .await?;
-        app.deps.store.set_auto_harness_switch(true).await?;
-        let (sandbox, user) = seed_records(&app).await?;
-        app.deps
-            .store
-            .insert_account(&AccountRecord {
-                id: AccountId::parse("o-1")?,
-                provider: Provider::OpenAi,
-                label: "Codex".into(),
-                credential: Some(
-                    app.deps
-                        .crypto
-                        .seal(br#"{"auth_mode":"chatgpt","tokens":{"access_token":"fake"}}"#)?,
-                ),
-                priority: 0,
-                enabled: true,
-                status: AccountStatus::Ok,
-                usage_json: None,
-                last_error: None,
-                created_at: Timestamp(1),
-                updated_at: Timestamp(1),
-            })
-            .await?;
-        seed_repo(&data, &sandbox)?;
-        let id = new_task(&app, &sandbox, &user, "Translate").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
-            screen_contains(&app, &id, "FAKE-AGENT READY")
-        })
-        .await?;
-        app.send_input(&id, b"remember the blue widget\r").await?;
-        // The switch may replace the screen before a poll sees the limit message.
-        wait_for(
-            "the limit or the switch",
-            Duration::from_secs(30),
-            || async {
-                screen_contains(&app, &id, "LIMIT REACHED").await
-                    || app
-                        .deps
-                        .store
-                        .attempts(&id)
-                        .await
-                        .is_ok_and(|a| a.len() >= 2)
-            },
-        )
-        .await?;
-        wait_for("the Codex attempt", Duration::from_secs(90), || async {
-            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
-            attempts.len() >= 2 && attempts.last().is_some_and(|a| !a.state.is_terminal())
-        })
-        .await?;
-        let attempts = app.deps.store.attempts(&id).await?;
-        let second = &attempts[1];
-        assert_eq!(attempts[0].harness, Harness::ClaudeCode);
-        assert_eq!(second.harness, Harness::Codex, "switched provider");
-        assert_eq!(second.launch_kind, LaunchKind::Translated);
-        // The synthesized rollout carries the Claude conversation.
-        let session = second
-            .provider_session_id
-            .clone()
-            .ok_or("codex session id")?;
-        let sessions = data
-            .join("sandboxes")
-            .join(sandbox.as_str())
-            .join("codex/sessions");
-        let rollout = yulius_harness::paths::find_codex_rollout(&sessions, &session)?
-            .ok_or("synthesized rollout")?;
-        let text = std::fs::read_to_string(rollout)?;
-        assert!(
-            text.contains("remember the blue widget"),
-            "user turn translated"
-        );
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })?;
-    rt.shutdown_timeout(Duration::from_secs(5));
-    Ok(())
-}
-
-/// AC-ROT-8: by default exhaustion never changes the harness on its own; the task waits with a
-/// proposal, and an approved switch moves it to Codex.
-#[test]
-fn without_opt_in_exhaustion_proposes_codex_and_waits_for_approval() -> TestResult {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
-    let data = dir.path().canonicalize()?;
-    let rt = runtime()?;
-    rt.block_on(async {
-        let agent = FakeAgentOptions {
-            transcript: true,
-            limit_after: Some(1),
-        };
-        let app = build_full(&data, Some(&fake), agent, 8)?;
-        let (sandbox, user) = seed_records(&app).await?;
-        app.deps
-            .store
-            .insert_account(&AccountRecord {
-                id: AccountId::parse("o-1")?,
-                provider: Provider::OpenAi,
-                label: "Codex".into(),
-                credential: Some(
-                    app.deps
-                        .crypto
-                        .seal(br#"{"auth_mode":"chatgpt","tokens":{"access_token":"fake"}}"#)?,
-                ),
-                priority: 0,
-                enabled: true,
-                status: AccountStatus::Ok,
-                usage_json: None,
-                last_error: None,
-                created_at: Timestamp(1),
-                updated_at: Timestamp(1),
-            })
-            .await?;
-        seed_repo(&data, &sandbox)?;
-        let id = new_task(&app, &sandbox, &user, "Translate").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
-            screen_contains(&app, &id, "FAKE-AGENT READY")
-        })
-        .await?;
-        app.send_input(&id, b"remember the blue widget\r").await?;
-        // The switch may replace the screen before a poll sees the limit message.
-        wait_for(
-            "the limit or the switch",
-            Duration::from_secs(30),
-            || async {
-                screen_contains(&app, &id, "LIMIT REACHED").await
-                    || app
-                        .deps
-                        .store
-                        .attempts(&id)
-                        .await
-                        .is_ok_and(|a| a.len() >= 2)
-            },
-        )
-        .await?;
-        wait_for("the proposal", Duration::from_secs(90), || async {
-            task(&app, &id).await.is_ok_and(|t| {
-                t.status == TaskStatus::WaitingCapacity
-                    && t.harness_proposal
-                        .as_deref()
-                        .is_some_and(|p| p.contains("codex"))
-            })
-        })
-        .await?;
-        let attempts = app.deps.store.attempts(&id).await?;
-        assert!(
-            attempts.iter().all(|a| a.harness == Harness::ClaudeCode),
-            "no automatic harness change"
-        );
-        app.switch_task_now(&id, Some(Harness::Codex), None, "approved", None)
-            .await?;
-        wait_for(
-            "the approved Codex attempt",
-            Duration::from_secs(90),
-            || async {
-                let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
-                attempts
-                    .last()
-                    .is_some_and(|a| a.harness == Harness::Codex && !a.state.is_terminal())
-            },
-        )
-        .await?;
-        assert!(
-            task(&app, &id).await?.harness_proposal.is_none(),
-            "proposal cleared"
-        );
         app.stop_task_now(&id).await?;
         wait_for("the stop", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())

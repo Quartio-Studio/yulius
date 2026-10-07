@@ -131,7 +131,7 @@ fn base_path_and_body_without_content_length() -> TestResult {
     )?;
     let mut output = Vec::new();
     let code = run_hook(
-        "codex",
+        "claude",
         "Stop",
         &mut &b"{}"[..],
         &mut output,
@@ -141,7 +141,7 @@ fn base_path_and_body_without_content_length() -> TestResult {
     assert_eq!(output, b"{\"decision\":\"block\"}");
     assert_eq!(
         join(server)?.line.trim_end(),
-        "POST /internal/hooks/codex/Stop HTTP/1.1"
+        "POST /internal/hooks/claude/Stop HTTP/1.1"
     );
     Ok(())
 }

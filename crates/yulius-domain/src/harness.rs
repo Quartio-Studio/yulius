@@ -2,14 +2,12 @@
 
 use std::fmt;
 
-/// A coding-agent CLI Yulius can run as a task. Only Claude Code and Codex are supported now;
-/// new variants require an adapter (SPEC-001 TSK-003).
+/// A coding-agent CLI Yulius can run as a task. Yulius runs only Claude Code
+/// (F 2026-10-08); another harness needs a variant here and an adapter (SPEC-001 TSK-003).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Harness {
     /// Anthropic Claude Code CLI.
     ClaudeCode,
-    /// OpenAI Codex CLI.
-    Codex,
 }
 
 /// The subscription provider behind a harness; accounts belong to providers.
@@ -17,34 +15,30 @@ pub enum Harness {
 pub enum Provider {
     /// Anthropic (Claude subscriptions).
     Anthropic,
-    /// OpenAI (ChatGPT/Codex subscriptions).
-    OpenAi,
 }
 
-/// Unknown harness or provider text.
+/// Unknown or unsupported harness or provider text.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("unknown harness or provider: {0}")]
+#[error("unsupported harness or provider: {0} (Yulius runs Claude Code only)")]
 pub struct UnknownHarness(pub String);
 
 impl Harness {
     /// All supported harnesses.
-    pub const ALL: [Self; 2] = [Self::ClaudeCode, Self::Codex];
+    pub const ALL: [Self; 1] = [Self::ClaudeCode];
 
     /// The provider whose accounts this harness uses.
     #[must_use]
     pub fn provider(self) -> Provider {
         match self {
             Self::ClaudeCode => Provider::Anthropic,
-            Self::Codex => Provider::OpenAi,
         }
     }
 
-    /// Stable wire name (`claude` or `codex`).
+    /// Stable wire name (`claude`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude",
-            Self::Codex => "codex",
         }
     }
 
@@ -53,18 +47,16 @@ impl Harness {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::ClaudeCode => "Claude Code",
-            Self::Codex => "Codex",
         }
     }
 
     /// Parses a wire name.
     ///
     /// # Errors
-    /// Returns [`UnknownHarness`] for anything other than `claude` or `codex`.
+    /// Returns [`UnknownHarness`] for anything other than `claude`.
     pub fn parse(text: &str) -> Result<Self, UnknownHarness> {
         match text {
             "claude" => Ok(Self::ClaudeCode),
-            "codex" => Ok(Self::Codex),
             other => Err(UnknownHarness(other.to_owned())),
         }
     }
@@ -76,27 +68,24 @@ impl Provider {
     pub fn harness(self) -> Harness {
         match self {
             Self::Anthropic => Harness::ClaudeCode,
-            Self::OpenAi => Harness::Codex,
         }
     }
 
-    /// Stable wire name (`anthropic` or `openai`).
+    /// Stable wire name (`anthropic`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Anthropic => "anthropic",
-            Self::OpenAi => "openai",
         }
     }
 
     /// Parses a wire name.
     ///
     /// # Errors
-    /// Returns [`UnknownHarness`] for anything other than `anthropic` or `openai`.
+    /// Returns [`UnknownHarness`] for anything other than `anthropic`.
     pub fn parse(text: &str) -> Result<Self, UnknownHarness> {
         match text {
             "anthropic" => Ok(Self::Anthropic),
-            "openai" => Ok(Self::OpenAi),
             other => Err(UnknownHarness(other.to_owned())),
         }
     }
@@ -128,6 +117,12 @@ mod tests {
                 Ok(harness.provider())
             );
         }
+    }
+
+    #[test]
+    fn other_harnesses_are_unsupported() {
+        assert!(Harness::parse("codex").is_err());
+        assert!(Provider::parse("openai").is_err());
         assert!(Harness::parse("opencode").is_err());
     }
 }

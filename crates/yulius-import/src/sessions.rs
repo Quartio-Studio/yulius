@@ -1,9 +1,8 @@
-//! Claude Code and Codex session discovery (SPEC-001 IMP-003, AC-IMP-3).
+//! Claude Code session discovery (SPEC-001 IMP-003, AC-IMP-3).
 //!
 //! A session belongs to the repository when its first recorded working directory equals or is
-//! inside one of the repository's checkouts (root or worktree); a Codex session also belongs when
-//! its recorded `git.repository_url` names the same GitHub repository. It is included when its
-//! last timestamp is at or after the window start. Transcripts are read with bounds: at most
+//! inside one of the repository's checkouts (root or worktree). It is included when its last
+//! timestamp is at or after the window start. Transcripts are read with bounds: at most
 //! 64 MiB per file, lines over 4 MiB skipped; a truncated file's final timestamps come from its
 //! last 4 MiB.
 
@@ -19,7 +18,6 @@ use yulius_contracts::import::{
     ImportHarness, MAX_TITLE_CHARS, is_safe_file_name, is_safe_session_id,
 };
 
-use crate::git::{GitHubRemote, parse_github_remote};
 use crate::jsonl::{JsonlReader, Line, MAX_LINE_BYTES, tail_lines};
 use crate::time::{format_millis, parse_rfc3339_millis, system_time_millis};
 
@@ -99,37 +97,6 @@ pub fn discover_claude_sessions(
             if let Some(session) = claude_session(&project.path(), &entry, &matcher, since_ms) {
                 insert_latest(&mut found, session);
             }
-        }
-    }
-    Ok(sorted(found))
-}
-
-/// Finds Codex sessions under `<codex_home>/sessions/YYYY/MM/DD/rollout-*.jsonl` that belong to
-/// `repo_paths` or to the GitHub repository `remote_url`, active at or after `since`. Files whose
-/// first line is not a `session_meta` record are skipped. Results are sorted by start time.
-///
-/// # Errors
-/// Only when the `sessions` directory exists but cannot be listed.
-pub fn discover_codex_sessions(
-    codex_home: &Path,
-    repo_paths: &[PathBuf],
-    remote_url: &str,
-    since: SystemTime,
-) -> io::Result<Vec<DiscoveredSession>> {
-    let root = codex_home.join("sessions");
-    if read_dir_if_exists(&root)?.is_none() {
-        return Ok(Vec::new());
-    }
-    let matcher = RepoMatcher::new(repo_paths);
-    let remote = parse_github_remote(remote_url);
-    let since_ms = system_time_millis(since);
-    let mut files = Vec::new();
-    collect_rollouts(&root, 3, &mut files);
-    files.sort();
-    let mut found = BTreeMap::new();
-    for path in files {
-        if let Some(session) = codex_session(&path, &matcher, remote.as_ref(), since_ms) {
-            insert_latest(&mut found, session);
         }
     }
     Ok(sorted(found))
@@ -365,7 +332,6 @@ impl Scan {
 fn harness_label(harness: ImportHarness) -> &'static str {
     match harness {
         ImportHarness::Claude => "Claude",
-        ImportHarness::Codex => "Codex",
     }
 }
 
@@ -528,207 +494,6 @@ fn scan_claude(path: &Path, matcher: &RepoMatcher) -> io::Result<Option<Scan>> {
         }
     }
     Ok(Some(scan))
-}
-
-// ---------------------------------------------------------------------------------------------
-// Codex
-
-#[derive(Deserialize)]
-struct CodexFirstLine {
-    #[serde(rename = "type")]
-    kind: Option<String>,
-    timestamp: Option<String>,
-    payload: Option<CodexSessionMeta>,
-}
-
-#[derive(Deserialize)]
-struct CodexSessionMeta {
-    id: Option<String>,
-    timestamp: Option<String>,
-    cwd: Option<String>,
-    git: Option<CodexGit>,
-}
-
-#[derive(Deserialize)]
-struct CodexGit {
-    repository_url: Option<String>,
-    branch: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct CodexLine {
-    timestamp: Option<String>,
-    #[serde(rename = "type")]
-    kind: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct CodexPayloadLine {
-    payload: Option<CodexPayload>,
-}
-
-#[derive(Deserialize)]
-struct CodexPayload {
-    #[serde(rename = "type")]
-    kind: Option<String>,
-    role: Option<String>,
-    message: Option<String>,
-    content: Option<Vec<ContentBlock>>,
-}
-
-/// Collects `rollout-*.jsonl` files exactly `depth` directory levels below `dir`
-/// (`YYYY/MM/DD`), without following symbolic links.
-fn collect_rollouts(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        let path = entry.path();
-        if depth > 0 {
-            if kind.is_dir() {
-                collect_rollouts(&path, depth - 1, out);
-            }
-        } else if kind.is_file()
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
-        {
-            out.push(path);
-        }
-    }
-}
-
-fn codex_session(
-    path: &Path,
-    matcher: &RepoMatcher,
-    remote: Option<&GitHubRemote>,
-    since_ms: i64,
-) -> Option<DiscoveredSession> {
-    if modified_before(path, since_ms) {
-        return None;
-    }
-    let size = file_size(path)?;
-    let (session_id, scan) = scan_codex(path, matcher, remote).ok()??;
-    let files = vec![SessionFile {
-        name: format!("sessions/codex/{session_id}.jsonl"),
-        path: path.to_path_buf(),
-        size,
-    }];
-    scan.into_session(ImportHarness::Codex, &session_id, files, since_ms)
-}
-
-/// Scans a Codex rollout; `None` when it is not a session or does not belong to the repository.
-fn scan_codex(
-    path: &Path,
-    matcher: &RepoMatcher,
-    remote: Option<&GitHubRemote>,
-) -> io::Result<Option<(String, Scan)>> {
-    let mut reader = JsonlReader::open(path)?;
-    let mut buf = Vec::new();
-    let Some(Line::Data) = reader.next_line(&mut buf)? else {
-        return Ok(None);
-    };
-    let Ok(first) = serde_json::from_slice::<CodexFirstLine>(&buf) else {
-        return Ok(None);
-    };
-    let (Some("session_meta"), Some(meta)) = (first.kind.as_deref(), first.payload) else {
-        return Ok(None);
-    };
-    let Some(session_id) = meta.id.filter(|id| is_safe_session_id(id)) else {
-        return Ok(None);
-    };
-    let Some(cwd) = meta.cwd.filter(|cwd| !cwd.is_empty()).map(PathBuf::from) else {
-        return Ok(None);
-    };
-    let (repository_url, branch) = meta
-        .git
-        .map_or((None, None), |git| (git.repository_url, git.branch));
-    let relative = match matcher.locate(&cwd) {
-        Some(relative) => relative,
-        None => {
-            let same_repository = remote.is_some_and(|remote| {
-                repository_url
-                    .as_deref()
-                    .and_then(parse_github_remote)
-                    .is_some_and(|recorded| recorded.same_repository(remote))
-            });
-            if !same_repository {
-                return Ok(None);
-            }
-            None
-        }
-    };
-    let mut scan = Scan {
-        cwd: Some(cwd),
-        relative,
-        git_branch: usable_branch(branch),
-        ..Scan::default()
-    };
-    scan.observe(meta.timestamp.as_deref());
-    scan.observe(first.timestamp.as_deref());
-    while let Some(line) = reader.next_line(&mut buf)? {
-        if line == Line::TooLong {
-            scan.skipped_lines += 1;
-            continue;
-        }
-        if buf.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        let Ok(record) = serde_json::from_slice::<CodexLine>(&buf) else {
-            scan.skipped_lines += 1;
-            continue;
-        };
-        scan.observe(record.timestamp.as_deref());
-        if scan.title.is_none() {
-            match record.kind.as_deref() {
-                Some("event_msg") => scan.title = codex_event_title(&buf),
-                Some("response_item") if scan.fallback_title.is_none() => {
-                    scan.fallback_title = codex_response_title(&buf);
-                }
-                _ => {}
-            }
-        }
-    }
-    scan.truncated = reader.truncated;
-    if scan.truncated {
-        for line in tail_lines(path, MAX_LINE_BYTES as u64)? {
-            if let Ok(record) = serde_json::from_slice::<CodexLine>(&line) {
-                scan.observe(record.timestamp.as_deref());
-            }
-        }
-    }
-    Ok(Some((session_id, scan)))
-}
-
-/// Title from an `event_msg` `user_message` record (the user's typed prompt).
-fn codex_event_title(line: &[u8]) -> Option<String> {
-    let payload = serde_json::from_slice::<CodexPayloadLine>(line)
-        .ok()?
-        .payload?;
-    if payload.kind.as_deref() != Some("user_message") {
-        return None;
-    }
-    clean_title(payload.message.as_deref()?)
-}
-
-/// Fallback title from a user `response_item` message (skipping injected context).
-fn codex_response_title(line: &[u8]) -> Option<String> {
-    let payload = serde_json::from_slice::<CodexPayloadLine>(line)
-        .ok()?
-        .payload?;
-    if payload.kind.as_deref() != Some("message") || payload.role.as_deref() != Some("user") {
-        return None;
-    }
-    payload
-        .content?
-        .iter()
-        .filter(|block| block.kind.as_deref() == Some("input_text"))
-        .filter_map(|block| block.text.as_deref())
-        .find_map(clean_title)
 }
 
 #[cfg(test)]

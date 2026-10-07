@@ -84,7 +84,6 @@ export function taskActions(task, access) {
 
 /** "C" or "X" harness glyph and display name. */
 export function harnessInfo(harness) {
-  if (harness === 'codex') return { glyph: 'X', name: 'Codex' };
   if (harness === 'claude') return { glyph: 'C', name: 'Claude Code' };
   return { glyph: '?', name: String(harness || 'unknown') };
 }

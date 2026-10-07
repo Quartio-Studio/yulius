@@ -1,7 +1,7 @@
 [package]
 name = "yulius-harness"
 version = "0.1.0"
-description = "Claude Code and Codex adapters: launch, hooks, transcripts, usage and translation."
+description = "Claude Code adapter: launch, hooks, transcripts, usage and login."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

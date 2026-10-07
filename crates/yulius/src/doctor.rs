@@ -135,7 +135,7 @@ fn containment_visibility(contained: bool, extra: &[PathBuf]) -> Vec<Check> {
     if !contained {
         return Vec::new();
     }
-    ["claude", "codex", "git"]
+    ["claude", "git"]
         .into_iter()
         .filter_map(|program| which(program).map(|path| (program, path)))
         .filter(|(_, path)| !visible_when_contained(path, extra))
@@ -169,35 +169,6 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
             "`claude --version` failed or `claude` is not on PATH; Claude tasks cannot start",
         ),
     });
-    match version_of(Path::new("codex"), &["--version"]) {
-        Some(v) => {
-            let scratch =
-                std::env::temp_dir().join(format!("yulius-doctor-{}", std::process::id()));
-            let features = yulius_harness::probe::probe_codex(Path::new("codex"), &scratch);
-            let _ = std::fs::remove_dir_all(&scratch);
-            let detail = if features.no_daemon {
-                format!("{v} (supports --no-daemon)")
-            } else {
-                format!(
-                    "{v} (no --no-daemon: sessions may use a shared daemon; upgrade recommended)"
-                )
-            };
-            checks.push(check(
-                "Codex",
-                if features.no_daemon {
-                    Level::Ok
-                } else {
-                    Level::Warn
-                },
-                detail,
-            ));
-        }
-        None => checks.push(check(
-            "Codex",
-            Level::Warn,
-            "`codex --version` failed or `codex` is not on PATH; Codex tasks cannot start",
-        )),
-    }
     let bwrap = version_of(Path::new(yulius_ptyhost::BWRAP_PROGRAM), &["--version"]);
     checks.push(match (bwrap, contained) {
         (Some(v), _) => check("bubblewrap", Level::Ok, v),

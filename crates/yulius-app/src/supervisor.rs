@@ -30,12 +30,10 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::hub::Hub;
 use crate::model::{
-    AccountRecord, AccountStatus, AttemptRecord, HarnessProposal, LaunchKind, MetricsRecord,
-    ProviderSessionRecord, SandboxRecord, Secret, SwitchDecisionRecord, TaskMode, TaskRecord,
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MetricsRecord, ProviderSessionRecord,
+    SandboxRecord, Secret, SwitchDecisionRecord, TaskMode, TaskRecord,
 };
-use crate::ports::harness::{
-    HarnessLaunch, Observation, SessionMode, TranslationTarget, UsageSnapshot,
-};
+use crate::ports::harness::{HarnessLaunch, Observation, SessionMode, UsageSnapshot};
 use crate::ports::session::{Containment, RunEvent, RunExit, RunInspection, RunWriter};
 use crate::ports::store::{AttemptUpdate, TaskFieldUpdate};
 use crate::usage_json;
@@ -184,10 +182,6 @@ const GOAL_INLINE_MAX: usize = 450;
 /// The goal of a task whose prompt is too long to be the goal: the prompt is the first message.
 const GOAL_FOR_LONG_PROMPTS: &str =
     "Everything requested in the first message of this session is done and verified.";
-/// Codex's answer to a goal set before its session started.
-const GOAL_NOT_READY: &str = "must start before you can";
-/// Tries to set the goal (Codex may need its session first).
-const GOAL_ATTEMPTS: usize = 3;
 
 /// The prompt as a one-line goal (control characters and runs of whitespace become single
 /// spaces), or `None` when it is too long to be the goal.
@@ -265,24 +259,6 @@ impl App {
         self.sandbox_dir(sandbox).join("home")
     }
 
-    fn codex_sessions(&self, sandbox: &SandboxId) -> PathBuf {
-        self.sandbox_dir(sandbox).join("codex").join("sessions")
-    }
-
-    fn codex_home(&self, sandbox: &SandboxId, account: &AccountId) -> AppResult<PathBuf> {
-        let home = self
-            .sandbox_dir(sandbox)
-            .join("codex")
-            .join(account.as_str());
-        std::fs::create_dir_all(&home).map_err(AppError::internal)?;
-        std::fs::create_dir_all(self.codex_sessions(sandbox)).map_err(AppError::internal)?;
-        let link = home.join("sessions");
-        if std::fs::symlink_metadata(&link).is_err() {
-            std::os::unix::fs::symlink("../sessions", &link).map_err(AppError::internal)?;
-        }
-        Ok(home)
-    }
-
     /// Account views for the rotation policy.
     pub(crate) async fn account_views(&self) -> AppResult<Vec<AccountView>> {
         let accounts = self.deps.store.accounts().await?;
@@ -319,26 +295,19 @@ impl App {
     ) -> AppResult<AccountRecord> {
         let views = self.account_views().await?;
         if !views.iter().any(|v| v.provider == provider) {
-            return Err(AppError::Conflict(format!(
-                "no {} account is connected; an instance administrator can add one",
-                if provider == Provider::Anthropic {
-                    "Claude"
-                } else {
-                    "Codex"
-                }
-            )));
+            return Err(AppError::Conflict(
+                "no Claude account is connected; an instance administrator can add one".into(),
+            ));
         }
         let trigger = match requested {
             Some(id) => Trigger::Manual {
                 account: Some(id.clone()),
-                provider: Some(provider),
             },
             None => Trigger::Start,
         };
         let input = RotationInput {
             current: None,
             task_provider: provider,
-            allow_cross_provider: false,
             accounts: views,
             now: self.now(),
             threshold: rotation::DEFAULT_THRESHOLD,
@@ -433,28 +402,14 @@ impl App {
         Ok(worktree)
     }
 
-    /// Installs the enabled skills into the agent homes and, for Open Mercato skills, writes a
+    /// Installs the enabled skills into the agent home and, for Open Mercato skills, writes a
     /// compatible `.ai/agentic.config.json` into the worktree (git-excluded so it never counts as
     /// a change). Failures are logged; a run never fails because of them.
-    async fn prepare_run_extras(
-        &self,
-        sandbox: &SandboxRecord,
-        worktree: &Path,
-        home: &Path,
-        codex_home: Option<&Path>,
-    ) {
+    async fn prepare_run_extras(&self, sandbox: &SandboxRecord, worktree: &Path, home: &Path) {
         match self.skills_for_run(sandbox).await {
             Ok(skills) if !skills.is_empty() => {
                 let claude_dir = home.join(".claude").join("skills");
-                let codex_dir = codex_home.map_or_else(
-                    || self.sandbox_dir(&sandbox.id).join("codex-skills"),
-                    |h| h.join("skills"),
-                );
-                if let Err(err) = self
-                    .deps
-                    .harness
-                    .install_skills(&skills, &claude_dir, &codex_dir)
-                {
+                if let Err(err) = self.deps.harness.install_skills(&skills, &claude_dir) {
                     tracing::warn!(error = %err, sandbox = %sandbox.id, "skill installation failed");
                 }
             }
@@ -512,7 +467,6 @@ impl App {
         self: &'a Arc<Self>,
         task_id: &'a TaskId,
         start: RunStart,
-        harness_override: Option<Harness>,
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
@@ -551,9 +505,7 @@ impl App {
                 }
                 return Ok(());
             }
-            let result = self
-                .launch_attempt(&task, start, harness_override, account)
-                .await;
+            let result = self.launch_attempt(&task, start, account).await;
             drop(guard);
             if let Err(err) = &result {
                 let reason = match err {
@@ -590,7 +542,6 @@ impl App {
         self: &Arc<Self>,
         task: &TaskRecord,
         start: RunStart,
-        harness_override: Option<Harness>,
         requested: Option<AccountId>,
     ) -> AppResult<()> {
         let store = &self.deps.store;
@@ -623,70 +574,27 @@ impl App {
         let task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
-        let target_harness = harness_override.unwrap_or(task.harness);
+        let harness = task.harness;
         let account = self
-            .choose_account(target_harness.provider(), requested.as_ref())
+            .choose_account(harness.provider(), requested.as_ref())
             .await?;
         let credential = self.open_credential(&account)?;
         let home = self.sandbox_home(&sandbox.id);
         std::fs::create_dir_all(&home).map_err(AppError::internal)?;
-        let codex_home = if target_harness == Harness::Codex {
-            Some(self.codex_home(&sandbox.id, &account.id)?)
-        } else {
-            None
-        };
-        self.prepare_run_extras(&sandbox, &worktree, &home, codex_home.as_deref())
-            .await;
+        self.prepare_run_extras(&sandbox, &worktree, &home).await;
 
-        // Goal mode (TSK-010): the prompt is set as the session goal through the harness's
-        // `/goal` command once the TUI is ready; Claude's goal is per session, so a resumed
-        // Claude session and any session on another harness get it again.
+        // Goal mode (TSK-010): the prompt is set as the session goal through `/goal` once the
+        // TUI is ready; Claude's goal is per session, so a resumed session gets it again.
         let goal_mode = task.mode == TaskMode::Goal;
-        let reapply_goal = goal_mode
-            && match &previous {
-                Some(prev) => {
-                    prev.harness != target_harness || target_harness == Harness::ClaudeCode
-                }
-                None => true,
-            };
-        // Decide new / resume / translated.
+        // Decide new / resume.
         let (mode, launch_kind) = match (&start, &previous) {
-            (RunStart::Resume { prompt }, Some(prev)) if prev.harness == target_harness => (
+            (RunStart::Resume { prompt }, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
                     prompt: prompt.clone(),
                 },
                 LaunchKind::Resume,
             ),
-            (RunStart::Resume { prompt }, Some(prev)) => {
-                let session_id = self.deps.crypto.new_id();
-                match self.translate_session(
-                    &sandbox,
-                    &task,
-                    prev,
-                    target_harness,
-                    &session_id,
-                    &worktree,
-                ) {
-                    Ok(()) => (
-                        SessionMode::Resume {
-                            session_id,
-                            prompt: prompt.clone(),
-                        },
-                        LaunchKind::Translated,
-                    ),
-                    Err(err) => {
-                        tracing::warn!(error = %err, "transcript translation failed; using handoff");
-                        (
-                            SessionMode::New {
-                                session_id: Some(session_id),
-                                prompt: Some(self.handoff_prompt(&task, prompt.as_deref()).await),
-                            },
-                            LaunchKind::Handoff,
-                        )
-                    }
-                }
-            }
             (RunStart::Resume { prompt }, None) | (RunStart::Fresh { prompt }, _) => {
                 // In goal mode a short task prompt arrives as the goal itself; a long one is the
                 // first message and the goal refers to it (Claude caps goal conditions).
@@ -707,12 +615,11 @@ impl App {
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
         let plan = self.deps.harness.plan(&HarnessLaunch {
-            harness: target_harness,
+            harness,
             mode,
             worktree: worktree.clone(),
             sandbox_home: home.clone(),
             run_dir: run_dir.clone(),
-            codex_home,
             model: task.model.clone(),
             effort: task.effort.clone(),
             contained: self.config.contained,
@@ -755,7 +662,7 @@ impl App {
             id: attempt_id.clone(),
             task_id: task.id.clone(),
             seq,
-            harness: target_harness,
+            harness,
             account_id: Some(account.id.clone()),
             provider_session_id: plan.session_id.clone(),
             launch_kind,
@@ -771,18 +678,6 @@ impl App {
             exit_reason: None,
         };
         store.insert_attempt(&attempt).await?;
-        if target_harness != task.harness {
-            store
-                .update_task(
-                    &task.id,
-                    &TaskFieldUpdate {
-                        harness: Some(target_harness),
-                        ..TaskFieldUpdate::default()
-                    },
-                    self.now(),
-                )
-                .await?;
-        }
         let runtime = self.runtime(&task.id);
         let size = runtime.hub.size();
         let spawned = match self
@@ -840,22 +735,13 @@ impl App {
                 .await?;
         }
         if let Some(session_id) = &plan.session_id {
-            self.record_lineage(
-                &task,
-                target_harness,
-                session_id,
-                if launch_kind == LaunchKind::Translated {
-                    "translated"
-                } else {
-                    "native"
-                },
-            )
-            .await?;
+            self.record_lineage(&task, harness, session_id, "native")
+                .await?;
         }
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
-        if reapply_goal {
+        if goal_mode {
             self.spawn_goal(&task.id, &attempt_id, &task.prompt);
         }
         Ok(())
@@ -894,21 +780,13 @@ impl App {
                     break;
                 }
             }
-            // Codex refuses a goal until its session has started: retry a few times.
-            for _ in 0..GOAL_ATTEMPTS {
-                if let Err(err) = app.send_input(&task_id, command.as_bytes()).await {
-                    tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
-                    return;
-                }
-                // A separate Enter, so the TUI sees typed text first and then a submit.
-                tokio::time::sleep(Duration::from_millis(150)).await;
-                let _ = app.send_input(&task_id, b"\r").await;
-                tokio::time::sleep(Duration::from_millis(2500)).await;
-                if !runtime.hub.screen_text().contains(GOAL_NOT_READY) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_secs(3)).await;
+            if let Err(err) = app.send_input(&task_id, command.as_bytes()).await {
+                tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
+                return;
             }
+            // A separate Enter, so the TUI sees typed text first and then a submit.
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let _ = app.send_input(&task_id, b"\r").await;
         });
     }
 
@@ -980,70 +858,7 @@ impl App {
                 worktree,
                 session_id,
             ))),
-            Harness::Codex => self
-                .deps
-                .harness
-                .find_codex_rollout(&self.codex_sessions(&sandbox.id), session_id),
         }
-    }
-
-    fn translate_session(
-        &self,
-        sandbox: &SandboxRecord,
-        task: &TaskRecord,
-        previous: &ProviderSessionRecord,
-        to: Harness,
-        session_id: &str,
-        worktree: &Path,
-    ) -> AppResult<()> {
-        let source = self
-            .transcript_path(
-                sandbox,
-                worktree,
-                previous.harness,
-                &previous.session_id,
-                previous.transcript_ref.as_deref(),
-            )?
-            .ok_or_else(|| AppError::Conflict("previous transcript not found".into()))?;
-        self.deps.harness.translate(
-            previous.harness,
-            &source,
-            to,
-            &TranslationTarget {
-                session_id: session_id.to_owned(),
-                cwd: worktree.to_path_buf(),
-                sandbox_home: self.sandbox_home(&sandbox.id),
-                codex_sessions: self.codex_sessions(&sandbox.id),
-                model: task.model.clone(),
-                effort: task.effort.clone(),
-                git_branch: task.branch.clone(),
-                now: self.now(),
-            },
-        )?;
-        Ok(())
-    }
-
-    async fn handoff_prompt(&self, task: &TaskRecord, extra: Option<&str>) -> String {
-        let steps = self.deps.store.steps(&task.id).await.unwrap_or_default();
-        let plan: Vec<String> = steps
-            .iter()
-            .map(|s| format!("- [{}] {}", s.status, s.title))
-            .collect();
-        format!(
-            "You are continuing task #{} \"{}\" started earlier by another coding agent session whose transcript could not be transferred.\n\
-             Original request:\n{}\n\nSpec: {}\nBranch: {}\nPlan:\n{}\n\nInspect the worktree (git status, git log) to see what was done, then continue. {}",
-            task.number,
-            task.title,
-            task.prompt,
-            task.spec_path.as_deref().unwrap_or("(not registered yet)"),
-            task.branch.as_deref().unwrap_or("(unknown)"),
-            if plan.is_empty() {
-                "(no steps yet)".into()
-            } else {
-                plan.join("\n")
-            },
-            extra.unwrap_or("")
-        )
     }
 
     /// Attaches to a run's host, resets the hub and starts the output pump and transcript watcher.
@@ -1340,7 +1155,7 @@ impl App {
             let app = self.clone();
             let id = task.id.clone();
             tokio::spawn(async move {
-                if let Err(err) = app.start_run(&id, start, None, None).await {
+                if let Err(err) = app.start_run(&id, start, None).await {
                     tracing::warn!(error = %err, task = %id, "queued task failed to start");
                 }
             });
@@ -1407,14 +1222,13 @@ impl App {
         Ok(())
     }
 
-    /// Switches a running task to another account or harness (manual or rotation-driven).
+    /// Switches a running task to another account (manual or rotation-driven).
     ///
     /// # Errors
     /// `Conflict` when the task is not running.
     pub async fn switch_task_now(
         self: &Arc<Self>,
         task_id: &TaskId,
-        harness: Option<Harness>,
         account: Option<AccountId>,
         reason: &str,
         prompt: Option<String>,
@@ -1422,9 +1236,6 @@ impl App {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let attempt = store.live_attempt(task_id).await?;
-        if task.harness_proposal.is_some() {
-            self.clear_harness_proposal(task_id).await;
-        }
         let next = task
             .status
             .apply(TaskEvent::SwitchStarted)
@@ -1439,16 +1250,16 @@ impl App {
             Some(a) => self.account_desc(a.harness, a.account_id.as_ref()).await,
             None => task.harness.as_str().to_owned(),
         };
-        let target_harness = harness.unwrap_or(task.harness);
         let decision_id = self.deps.crypto.new_id();
-        let to_desc = self.account_desc(target_harness, account.as_ref()).await;
+        let to_desc = self.account_desc(task.harness, account.as_ref()).await;
         store
             .insert_switch(&SwitchDecisionRecord {
                 id: decision_id.clone(),
                 task_id: task_id.clone(),
                 at: self.now(),
                 reason: reason.to_owned(),
-                inputs: serde_json::json!({"harness": target_harness.as_str(), "account": account.as_ref().map(AccountId::as_str)}).to_string(),
+                inputs: serde_json::json!({"account": account.as_ref().map(AccountId::as_str)})
+                    .to_string(),
                 from_desc: from_desc.clone(),
                 to_desc: to_desc.clone(),
                 outcome: "started".into(),
@@ -1489,10 +1300,7 @@ impl App {
             }
         }
         let start = RunStart::Resume { prompt };
-        match self
-            .start_run(task_id, start, Some(target_harness), account)
-            .await
-        {
+        match self.start_run(task_id, start, account).await {
             Ok(()) => {
                 store.set_switch_outcome(&decision_id, "completed").await?;
                 runtime.hub.notice(format!("↻ Continuing on {to_desc}"));
@@ -1532,21 +1340,8 @@ impl App {
             None => None,
         };
         match label {
-            Some(l) => format!(
-                "{} ({l})",
-                if harness == Harness::ClaudeCode {
-                    "Claude Code"
-                } else {
-                    "Codex"
-                }
-            ),
-            None => {
-                if harness == Harness::ClaudeCode {
-                    "Claude Code".into()
-                } else {
-                    "Codex".into()
-                }
-            }
+            Some(l) => format!("{} ({l})", harness.display_name()),
+            None => harness.display_name().to_owned(),
         }
     }
 
@@ -1678,6 +1473,20 @@ impl App {
             .store
             .set_account_state(account, status, Some(&json), None, self.now())
             .await;
+        // At or above the threshold: tasks on this account rotate at their next turn boundary
+        // (ROT-003).
+        if usage.exhausted(self.now(), rotation::DEFAULT_THRESHOLD)
+            && let Ok(live) = self.deps.store.live_attempts().await
+        {
+            for attempt in live
+                .iter()
+                .filter(|a| a.account_id.as_ref() == Some(account))
+            {
+                self.runtime(&attempt.task_id)
+                    .proactive_switch
+                    .store(true, Ordering::SeqCst);
+            }
+        }
     }
 
     fn start_watcher(self: &Arc<Self>, task_id: &TaskId, attempt: &AttemptRecord) {
@@ -1718,21 +1527,6 @@ impl App {
                 break;
             }
             let now = self.now();
-            // Codex assigns its own id: discover the rollout created for this worktree.
-            if session_id.is_none()
-                && attempt.harness == Harness::Codex
-                && let Ok(Some((id, _))) = self.deps.harness.discover_codex_session(
-                    &self.codex_sessions(&sandbox.id),
-                    &worktree,
-                    started,
-                )
-            {
-                let _ = self.deps.store.set_attempt_session(&attempt.id, &id).await;
-                let _ = self
-                    .record_lineage(&task, Harness::Codex, &id, "native")
-                    .await;
-                session_id = Some(id);
-            }
             // Claude session-id drift (/clear, /resume inside the TUI): adopt into the lineage.
             if attempt.harness == Harness::ClaudeCode && now.millis_since(last_drift_check) > 5_000
             {
@@ -1794,14 +1588,6 @@ impl App {
     ) {
         let runtime = self.runtime(task_id);
         match observation {
-            Observation::RateLimits(usage) => {
-                if let Some(account) = &attempt.account_id {
-                    self.record_account_usage(account, &usage).await;
-                    if usage.exhausted(self.now(), rotation::DEFAULT_THRESHOLD) {
-                        runtime.proactive_switch.store(true, Ordering::SeqCst);
-                    }
-                }
-            }
             Observation::LimitReached { resets_at, message } => {
                 tracing::info!(task = %task_id, %message, "usage limit reached");
                 if let Some(account) = &attempt.account_id {
@@ -1841,66 +1627,6 @@ impl App {
         }
     }
 
-    /// Whether an administrator allowed automatic harness switches (off by default).
-    pub(crate) async fn auto_harness_switch(&self) -> bool {
-        self.deps
-            .store
-            .instance()
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|i| i.auto_harness_switch)
-    }
-
-    /// When only another harness has capacity, records a proposal on the task for a user to
-    /// approve (ROT-012) and returns that harness' display name.
-    async fn propose_harness_change(
-        &self,
-        task: &TaskRecord,
-        input: &RotationInput,
-        trigger: Trigger,
-    ) -> Option<&'static str> {
-        let mut crossing = input.clone();
-        crossing.allow_cross_provider = true;
-        let (
-            Decision::Switch {
-                account,
-                provider,
-                cross_provider: true,
-            },
-            _,
-        ) = rotation::decide(&crossing, trigger)
-        else {
-            return None;
-        };
-        let harness = provider.harness();
-        let proposal = HarnessProposal {
-            harness: harness.as_str().to_owned(),
-            account_id: account.as_str().to_owned(),
-            proposed_at: self.now().0,
-        };
-        let json = serde_json::to_string(&proposal).ok()?;
-        let update = TaskFieldUpdate {
-            harness_proposal: Some(Some(json)),
-            ..TaskFieldUpdate::default()
-        };
-        self.deps
-            .store
-            .update_task(&task.id, &update, self.now())
-            .await
-            .ok()?;
-        Some(harness.display_name())
-    }
-
-    /// Clears a pending harness proposal (capacity returned, or any switch happened).
-    pub(crate) async fn clear_harness_proposal(&self, task: &TaskId) {
-        let update = TaskFieldUpdate {
-            harness_proposal: Some(None),
-            ..TaskFieldUpdate::default()
-        };
-        let _ = self.deps.store.update_task(task, &update, self.now()).await;
-    }
-
     /// Applies the rotation policy for a task and acts on the decision (SPEC-001 §7.4).
     pub async fn rotate(
         self: &Arc<Self>,
@@ -1917,12 +1643,9 @@ impl App {
         let Ok(accounts) = self.account_views().await else {
             return;
         };
-        // Harness changes are automatic only when an administrator allowed them (ROT-012).
-        let automatic = self.auto_harness_switch().await;
         let input = RotationInput {
             current: current.clone(),
             task_provider: task.harness.provider(),
-            allow_cross_provider: automatic,
             accounts,
             now: self.now(),
             threshold: rotation::DEFAULT_THRESHOLD,
@@ -1932,32 +1655,18 @@ impl App {
         runtime.proactive_switch.store(false, Ordering::SeqCst);
         match decision {
             Decision::Stay => {}
-            Decision::Switch {
-                account, provider, ..
-            } => {
+            Decision::Switch { account } => {
                 let prompt = matches!(trigger, Trigger::LimitReached).then(|| {
                     "Yulius moved this session to another account because the previous one reached its usage limit. Continue the task exactly where you left off.".to_owned()
                 });
                 if let Err(err) = self
-                    .switch_task_now(
-                        task_id,
-                        Some(provider.harness()),
-                        Some(account),
-                        &format!("{reason:?}"),
-                        prompt,
-                    )
+                    .switch_task_now(task_id, Some(account), &format!("{reason:?}"), prompt)
                     .await
                 {
                     tracing::warn!(error = %err, task = %task_id, "automatic switch failed");
                 }
             }
             Decision::Wait { until } => {
-                let proposed = if automatic {
-                    None
-                } else {
-                    self.propose_harness_change(&task, &input, trigger.clone())
-                        .await
-                };
                 if let Ok(next) = task.status.apply(TaskEvent::CapacityExhausted) {
                     let _ = self
                         .deps
@@ -1972,13 +1681,9 @@ impl App {
                         .await;
                 }
                 let when = until.map_or_else(|| "an unknown time".to_owned(), crate::auth::rfc3339);
-                runtime.hub.notice(match proposed {
-                    Some(other) => format!(
-                        "All {} accounts are at their usage limit. Approve switching this task to {other} in the task view, or Yulius continues here at {when}.",
-                        task.harness.display_name()
-                    ),
-                    None => format!("All connected accounts are at their usage limit. Yulius will continue at {when}."),
-                });
+                runtime.hub.notice(format!(
+                    "All connected accounts are at their usage limit. Yulius will continue at {when}."
+                ));
                 self.publish_task(task_id).await;
                 let app = self.clone();
                 let tid = task_id.clone();
@@ -2018,22 +1723,15 @@ impl App {
             let input = RotationInput {
                 current: None,
                 task_provider: task.harness.provider(),
-                allow_cross_provider: self.auto_harness_switch().await,
                 accounts,
                 now: self.now(),
                 threshold: rotation::DEFAULT_THRESHOLD,
             };
             match rotation::decide(&input, Trigger::Start) {
-                (
-                    Decision::Switch {
-                        account, provider, ..
-                    },
-                    reason,
-                ) => {
+                (Decision::Switch { account }, reason) => {
                     let prompt = Some("Usage capacity is available again. Continue the task exactly where you left off.".to_owned());
-                    if Some(&account) == current.as_ref() && provider == task.harness.provider() {
+                    if Some(&account) == current.as_ref() {
                         // Same account recovered: just nudge the live session.
-                        self.clear_harness_proposal(task_id).await;
                         let _ = self
                             .deps
                             .store
@@ -2050,13 +1748,7 @@ impl App {
                         }
                         self.publish_task(task_id).await;
                     } else if let Err(err) = self
-                        .switch_task_now(
-                            task_id,
-                            Some(provider.harness()),
-                            Some(account),
-                            &format!("{reason:?}"),
-                            prompt,
-                        )
+                        .switch_task_now(task_id, Some(account), &format!("{reason:?}"), prompt)
                         .await
                     {
                         tracing::warn!(error = %err, "resume after capacity wait failed");

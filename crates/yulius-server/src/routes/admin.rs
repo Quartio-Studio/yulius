@@ -5,8 +5,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Redirect;
 use yulius_contracts::api::admin::{
-    AdminUser, AdmitUser, GitHubStatus, InstanceSettings, ManifestCallback, ManifestRequest,
-    ManifestResponse, UpdateUser,
+    AdminUser, AdmitUser, GitHubStatus, ManifestCallback, ManifestRequest, ManifestResponse,
+    UpdateUser,
 };
 
 use crate::AppState;
@@ -78,19 +78,4 @@ pub async fn github_manifest_callback(
             Redirect::to(&format!("/admin/github?error={message}"))
         }
     }
-}
-
-pub async fn settings(
-    State(app): State<AppState>,
-    Auth(ctx): Auth,
-) -> ApiResult<Json<InstanceSettings>> {
-    Ok(Json(app.instance_settings(&ctx).await?))
-}
-
-pub async fn update_settings(
-    State(app): State<AppState>,
-    Auth(ctx): Auth,
-    Json(req): Json<InstanceSettings>,
-) -> ApiResult<Json<InstanceSettings>> {
-    Ok(Json(app.update_instance_settings(&ctx, &req).await?))
 }

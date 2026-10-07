@@ -68,7 +68,6 @@ async fn task(h: &support::Harness, t: TaskSpec<'_>) -> TestResult {
             gate_blocks: 0,
             wake_enabled: true,
             mode: yulius_app::model::TaskMode::Prompt,
-            harness_proposal: None,
         })
         .await?;
     Ok(())
@@ -192,7 +191,7 @@ async fn base(h: &support::Harness) -> Result<(Creds, Creds), Box<dyn std::error
 /// The cohort used by the analytics test (see assertions for expected figures).
 async fn seed_cohort(h: &support::Harness) -> TestResult {
     account(h, "acc-a", Provider::Anthropic, "Claude A", None, None).await?;
-    account(h, "acc-b", Provider::OpenAi, "Codex B", None, None).await?;
+    account(h, "acc-b", Provider::Anthropic, "Claude B", None, None).await?;
     let t1 = OCT1 + 10 * HOUR;
     task(
         h,
@@ -200,7 +199,7 @@ async fn seed_cohort(h: &support::Harness) -> TestResult {
             id: "t1",
             sandbox: "s1",
             title: "Fix \"checkout\", totals",
-            harness: Harness::Codex,
+            harness: Harness::ClaudeCode,
             status: TaskStatus::Closed,
             created: t1,
             closed: Some(t1 + 2 * HOUR),
@@ -230,7 +229,7 @@ async fn seed_cohort(h: &support::Harness) -> TestResult {
     )
     .await?;
     let model_only = MetricsRecord {
-        model: Some("gpt-5".into()),
+        model: Some("claude-sonnet".into()),
         ..MetricsRecord::default()
     };
     attempt(
@@ -238,7 +237,7 @@ async fn seed_cohort(h: &support::Harness) -> TestResult {
         (
             "t1",
             2,
-            Harness::Codex,
+            Harness::ClaudeCode,
             "acc-b",
             t1 + 31 * MIN,
             Some(t1 + 41 * MIN),
@@ -251,7 +250,7 @@ async fn seed_cohort(h: &support::Harness) -> TestResult {
         "d1",
         "t1",
         t1 + 30 * MIN + 30_000,
-        json!({"harness": "codex", "account": "acc-b"}),
+        json!({"account": "acc-b"}),
     )
     .await?;
     feedback(h, "t1", "u-alice", "correct").await?;
@@ -413,7 +412,7 @@ async fn summary_sums_known_usage_counts_unknown_runs_and_hides_invisible_sandbo
         s["tasks"]["by_status"],
         json!({"closed": 1, "stopped_cancelled": 1, "queued": 1})
     );
-    assert_eq!(s["tasks"]["by_harness"], json!({"claude": 2, "codex": 1}));
+    assert_eq!(s["tasks"]["by_harness"], json!({"claude": 3}));
     let days: Vec<(String, u64)> = s["tasks_per_day"]
         .as_array()
         .ok_or("days")?
@@ -441,9 +440,9 @@ async fn summary_sums_known_usage_counts_unknown_runs_and_hides_invisible_sandbo
         (&opus["input"], &opus["unknown_usage_runs"]),
         (&json!(100), &json!(0))
     );
-    let gpt = by(&s["tokens_by_model"], "model", "gpt-5")?;
+    let sonnet = by(&s["tokens_by_model"], "model", "claude-sonnet")?;
     assert_eq!(
-        (&gpt["input"], &gpt["unknown_usage_runs"]),
+        (&sonnet["input"], &sonnet["unknown_usage_runs"]),
         (&Value::Null, &json!(1))
     );
     let unknown = by(&s["tokens_by_model"], "model", "unknown")?;
@@ -455,16 +454,14 @@ async fn summary_sums_known_usage_counts_unknown_runs_and_hides_invisible_sandbo
             &claude["input"],
             &claude["unknown_usage_runs"]
         ),
-        (&json!(2), &json!(100), &json!(1))
+        (&json!(3), &json!(100), &json!(2))
     );
-    let codex = by(&s["tokens_by_harness"], "harness", "codex")?;
-    assert!(codex["input"].is_null());
     let a = by(&s["tokens_by_account"], "account_label", "Claude A")?;
     assert_eq!(
         (&a["account_id"], &a["runs"], &a["input"]),
         (&json!("acc-a"), &json!(2), &json!(100))
     );
-    let b = by(&s["tokens_by_account"], "account_label", "Codex B")?;
+    let b = by(&s["tokens_by_account"], "account_label", "Claude B")?;
     assert!(b["output"].is_null());
 
     // Durations from attempts: t1 = 30 + 10 min, t2 = 20 min.
@@ -472,10 +469,7 @@ async fn summary_sums_known_usage_counts_unknown_runs_and_hides_invisible_sandbo
         s["duration_ms"],
         json!({"median": 1_800_000, "p90": 2_400_000, "total_wall": 3_600_000, "total_active": 600_000})
     );
-    assert_eq!(
-        s["switches"],
-        json!({"total": 2, "account": 1, "provider": 1})
-    );
+    assert_eq!(s["switches"], json!({"total": 2}));
     assert_eq!(s["feedback"], json!({"correct": 1, "incorrect": 1}));
     assert_eq!(s["truncated"], false);
 
@@ -598,9 +592,9 @@ async fn task_export_as_json_and_escaped_csv() -> TestResult {
     let t1 = &rows[0];
     assert_eq!(t1["sandbox"], "studio");
     assert_eq!(t1["harness"], "claude", "harness of the first run");
-    assert_eq!(t1["harnesses"], "claude;codex");
-    assert_eq!(t1["models"], "claude-opus;gpt-5");
-    assert_eq!(t1["accounts"], "Claude A;Codex B");
+    assert_eq!(t1["harnesses"], "claude");
+    assert_eq!(t1["models"], "claude-opus;claude-sonnet");
+    assert_eq!(t1["accounts"], "Claude A;Claude B");
     assert_eq!(
         (&t1["attempts"], &t1["wall_ms"], &t1["active_ms"]),
         (&json!(2), &json!(2_400_000), &json!(600_000))
@@ -690,10 +684,10 @@ async fn status_shows_vm_capacity_visible_sandboxes_and_role_scoped_accounts() -
         Some("synthetic failure"),
     )
     .await?;
-    account(&h, "acc-b", Provider::OpenAi, "Codex B", None, None).await?;
+    account(&h, "acc-b", Provider::Anthropic, "Claude B", None, None).await?;
     for (id, sandbox, harness_kind, account_id) in [
         ("live1", "s1", Harness::ClaudeCode, "acc-a"),
-        ("live2", "s2", Harness::Codex, "acc-b"),
+        ("live2", "s2", Harness::ClaudeCode, "acc-b"),
     ] {
         task(
             &h,
@@ -754,7 +748,7 @@ async fn status_shows_vm_capacity_visible_sandboxes_and_role_scoped_accounts() -
             "{hidden} is for administrators only"
         );
     }
-    let b = by(&s["accounts"], "label", "Codex B")?;
+    let b = by(&s["accounts"], "label", "Claude B")?;
     assert!(b["usage"]["primary"].is_null(), "unknown usage stays null");
 
     let admin_view = call(&h.router, Method::GET, "/api/status", None, &bob).await?;

@@ -3,7 +3,7 @@
 
 import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, placeholder, linkify } from './dom.js';
-import { taskActions, harnessInfo, statusInfo, allows } from './status.js';
+import { taskActions, statusInfo, allows } from './status.js';
 import { relLong, dateTime } from './format.js';
 
 // ---------------------------------------------------------------- task menu
@@ -18,7 +18,7 @@ export function openTaskMenu(ctx, anchor, task) {
     { header: `#${task.number} · ${statusInfo(task).label}` },
     { label: 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
-    { label: 'Switch harness / account…', disabled: !can.switch, title: can.switch ? null : why, onSelect: () => openSwitchDialog(ctx, task) },
+    { label: 'Switch account…', disabled: !can.switch, title: can.switch ? null : why, onSelect: () => openSwitchDialog(ctx, task) },
     { label: 'Deliver…', disabled: !can.deliver, title: can.deliver ? null : why, onSelect: () => openDeliveryDialog(ctx, task) },
     { label: 'Feedback…', disabled: !can.feedback, onSelect: () => openFeedbackDialog(ctx, task) },
     { separator: true },
@@ -83,25 +83,6 @@ export async function deleteTask(ctx, task) {
   }
 }
 
-/** Approves a proposed harness change (ROT-012) after a confirmation. */
-export async function approveHarnessProposal(ctx, task) {
-  const proposal = task.harness_proposal;
-  if (!proposal) return;
-  const from = harnessInfo(task.harness).name;
-  const to = harnessInfo(proposal.harness).name;
-  const ok = await confirmDialog({
-    title: `Move task #${task.number} to ${to}?`,
-    message: `All ${from} accounts are at their usage limit. The conversation is translated into a new ${to} session${proposal.account_label ? ` on ${proposal.account_label}` : ''} and continues there.`,
-    confirmLabel: `Switch to ${to}`,
-  });
-  if (!ok) return;
-  const live = task.status === 'running' || task.status === 'waiting_capacity';
-  const payload = { harness: proposal.harness, account_id: proposal.account_id, approve_harness_change: true };
-  await taskPost(ctx, task, 'switch', () => (live
-    ? ctx.api.post(`/api/tasks/${enc(task.id)}/switch`, payload)
-    : ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, payload)), `Switching #${task.number} to ${to}…`);
-}
-
 /** Archive is a one-click action with Undo (UI-006). */
 export async function archiveTask(ctx, task) {
   const updated = await taskPost(ctx, task, 'archive', () => ctx.api.post(`/api/tasks/${enc(task.id)}/archive`));
@@ -124,57 +105,32 @@ export async function restoreTask(ctx, task) {
 
 // ---------------------------------------------------------------- switch
 
-/** Switch harness/account; for an ended task this continues it with the chosen target. */
+/** Switch to another Claude account; for an ended task this continues it on that account. */
 export async function openSwitchDialog(ctx, task) {
   const live = task.status === 'running' || task.status === 'waiting_capacity';
   let accounts = [];
   try {
     accounts = await ctx.api.get('/api/admin/accounts', { allow401: true });
   } catch {
-    accounts = []; // Only instance admins can list accounts; others pick a harness only.
+    accounts = []; // Only instance admins can list accounts; others let rotation choose.
   }
-  const harnessInputs = ['claude', 'codex'].map((value) => h('input', { type: 'radio', name: 'switch-harness', value, checked: value === task.harness }));
-  const accountSelect = h('select', { class: 'select' });
-  const renderAccounts = () => {
-    const harness = harnessInputs.find((i) => i.checked).value;
-    const provider = harness === 'codex' ? 'openai' : 'anthropic';
-    setChildren(accountSelect,
-      h('option', { value: '' }, 'Automatic (rotation picks the best account)'),
-      (Array.isArray(accounts) ? accounts : []).filter((a) => a.provider === provider).map((a) =>
-        h('option', { value: a.id, disabled: !a.enabled || a.status === 'error' || a.status === 'pending_login' }, `${a.label} · ${a.status}${a.usage && a.usage.primary && Number.isFinite(a.usage.primary.used_percent) ? ` · ${Math.round(a.usage.primary.used_percent)}%` : ''}`)));
-  };
-  // A different harness translates the session: explicit approval (ROT-012).
-  const approve = h('input', { type: 'checkbox' });
-  const approveRow = h('label', { class: 'row', style: { gap: '8px', alignItems: 'flex-start' }, hidden: true }, approve,
-    h('span', { class: 'text-2' }));
-  const renderApproval = () => {
-    const target = harnessInputs.find((i) => i.checked).value;
-    approveRow.hidden = target === task.harness;
-    approve.checked = false;
-    approveRow.lastChild.textContent = `I approve moving this task from ${harnessInfo(task.harness).name} to ${harnessInfo(target).name}. Its conversation is translated into a new ${harnessInfo(target).name} session.`;
-  };
-  harnessInputs.forEach((i) => i.addEventListener('change', () => { renderAccounts(); renderApproval(); }));
-  renderAccounts();
-  renderApproval();
+  const accountSelect = h('select', { class: 'select' },
+    h('option', { value: '' }, 'Automatic (rotation picks the best account)'),
+    (Array.isArray(accounts) ? accounts : []).map((a) =>
+      h('option', { value: a.id, disabled: !a.enabled || a.status === 'error' || a.status === 'pending_login' }, `${a.label} · ${a.status}${a.usage && a.usage.primary && Number.isFinite(a.usage.primary.used_percent) ? ` · ${Math.round(a.usage.primary.used_percent)}%` : ''}`)));
   const body = h('div', { class: 'stack' },
     h('p', { class: 'text-2' }, live
-      ? 'The session moves to the chosen harness or account at the next turn boundary. A provider switch translates the conversation; the terminal shows the new harness.'
-      : 'The task is not running; it will continue on the chosen harness or account.'),
-    field('Harness', h('div', { class: 'seg', role: 'radiogroup' }, harnessInputs.map((input) => h('label', null, input, harnessInfo(input.value).name)))),
+      ? 'The session moves to the chosen account at the next turn boundary and resumes the same conversation.'
+      : 'The task is not running; it will continue on the chosen account.'),
     field('Account', accountSelect, accounts.length ? null : 'Only instance administrators can pick a specific account.'),
-    approveRow,
   );
   openModal({
     title: `Switch task #${task.number}`,
     body,
     actions: [
       { label: 'Cancel', value: false },
-      { label: live ? 'Switch' : 'Continue on target', kind: 'primary', run: async () => {
-        const payload = { harness: harnessInputs.find((i) => i.checked).value };
-        if (payload.harness !== task.harness) {
-          if (!approve.checked) throw new Error('Tick the approval to move this task to another harness.');
-          payload.approve_harness_change = true;
-        }
+      { label: live ? 'Switch' : 'Continue on account', kind: 'primary', run: async () => {
+        const payload = {};
         if (accountSelect.value) payload.account_id = accountSelect.value;
         const updated = live
           ? await ctx.api.post(`/api/tasks/${enc(task.id)}/switch`, payload)

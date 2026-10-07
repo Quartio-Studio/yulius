@@ -243,11 +243,28 @@ async fn workflows_seed_builtins_scope_permissions_and_task_steps() -> TestResul
         &w.h.router,
         Method::POST,
         "/api/sandboxes/s1/tasks",
-        Some(json!({"prompt": "Fix a typo", "harness": "codex", "workflow_id": "wf-quick-task"})),
+        Some(json!({"prompt": "Fix a typo", "workflow_id": "wf-quick-task"})),
         &w.alice,
     )
     .await?;
     assert_eq!(quick.body["steps"]["total"], 0);
+    assert_eq!(
+        quick.body["harness"], "claude",
+        "Claude Code is the default harness"
+    );
+    let codex = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "x", "harness": "codex"})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(
+        codex.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "Yulius runs Claude Code only"
+    );
     let quick_record =
         w.h.store
             .task(&TaskId::parse(quick.body["id"].as_str().ok_or("id")?)?)
@@ -848,7 +865,7 @@ async fn seed_agent(
             number: 0,
             title: "agent task".into(),
             prompt: "set up automations".into(),
-            harness: Harness::Codex,
+            harness: Harness::ClaudeCode,
             model: None,
             effort: None,
             workflow_id: None,
@@ -868,7 +885,6 @@ async fn seed_agent(
             gate_blocks: 0,
             wake_enabled: true,
             mode: yulius_app::model::TaskMode::Prompt,
-            harness_proposal: None,
         })
         .await?;
     h.store
@@ -876,7 +892,7 @@ async fn seed_agent(
             id: AttemptId::parse(&format!("a-{task}"))?,
             task_id: t.id.clone(),
             seq: 1,
-            harness: Harness::Codex,
+            harness: Harness::ClaudeCode,
             account_id: None,
             provider_session_id: None,
             launch_kind: LaunchKind::New,
@@ -971,7 +987,7 @@ async fn agents_manage_automations_through_mcp_tools() -> TestResult {
     let automation = &created["automation"];
     assert_eq!(automation["created_via"], "agent");
     assert_eq!(
-        automation["harness"], "codex",
+        automation["harness"], "claude",
         "defaults to the agent's harness"
     );
     assert_eq!(automation["workflow_id"], "wf-feature");
