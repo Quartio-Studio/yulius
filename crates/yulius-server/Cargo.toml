@@ -1,0 +1,32 @@
+[package]
+name = "yulius-server"
+version = "0.1.0"
+description = "Yulius HTTP, WebSocket, MCP and hook endpoints and the embedded web UI."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[package.metadata.yulius]
+layer = "interface"
+
+[dependencies]
+yulius-app = { workspace = true }
+yulius-contracts = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
+# CORS for additional frontends (desktop app) listed in the origin allowlist.
+tower-http = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tracing = { workspace = true }
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+http-body-util = { workspace = true }

@@ -1,0 +1,34 @@
+[package]
+name = "yulius-store"
+version = "0.1.0"
+description = "SQLite persistence for Yulius."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[package.metadata.yulius]
+layer = "adapter"
+
+[dependencies]
+yulius-domain = { workspace = true }
+yulius-app = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { workspace = true }
+# JSON columns (workflows, MCP servers, import jobs).
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+argon2 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

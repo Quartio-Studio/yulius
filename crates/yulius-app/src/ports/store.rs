@@ -1,0 +1,453 @@
+//! Persistence ports, split per area. One adapter (SQLite) implements all of them.
+//!
+//! Compare-and-set methods return `Ok(false)` when the expected state no longer holds; callers
+//! treat that as a lost race (one durable outcome, SPEC-002 §6).
+
+use async_trait::async_trait;
+use yulius_domain::ids::{AccountId, AttemptId, SandboxId, StepId, TaskId, UserId};
+use yulius_domain::permission::AccessLevel;
+use yulius_domain::task::{Activity, AttemptState, TaskStatus};
+use yulius_domain::time::Timestamp;
+
+use crate::error::AppResult;
+use crate::model::{
+    AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess, DeviceGrantRecord,
+    FeedbackRecord, GitHubTokenRecord, InboxEntry, InstanceRecord, MessageRecord, MetricsRecord,
+    ProviderSessionRecord, SandboxRecord, ScopeClaimRecord, Sealed, StepRecord,
+    SwitchDecisionRecord, TaskRecord, UserRecord, WebSessionRecord,
+};
+
+/// Instance singleton and setup.
+#[async_trait]
+pub trait InstanceStore: Send + Sync {
+    /// The instance row, if initialized.
+    async fn instance(&self) -> AppResult<Option<InstanceRecord>>;
+    /// Creates the instance row if absent (idempotent); returns the current row.
+    async fn init_instance(
+        &self,
+        public_url: &str,
+        setup_token_hash: &str,
+    ) -> AppResult<InstanceRecord>;
+    /// Replaces the setup token hash while setup is pending.
+    async fn set_setup_token_hash(&self, hash: &str) -> AppResult<()>;
+    /// Atomically creates the superadmin and completes setup. Fails with `Conflict` when a
+    /// superadmin already exists.
+    async fn complete_setup(&self, superadmin: &UserRecord, at: Timestamp) -> AppResult<()>;
+    /// Stores GitHub App credentials and the owner.
+    async fn set_github_app(
+        &self,
+        sealed: &Sealed,
+        owner_login: &str,
+        owner_kind: &str,
+    ) -> AppResult<()>;
+    /// Records the App installation id.
+    async fn set_installation(&self, installation_id: Option<u64>) -> AppResult<()>;
+    /// Updates the public URL.
+    async fn set_public_url(&self, url: &str) -> AppResult<()>;
+}
+
+/// Users and GitHub tokens.
+#[async_trait]
+pub trait UserStore: Send + Sync {
+    /// User by id.
+    async fn user(&self, id: &UserId) -> AppResult<Option<UserRecord>>;
+    /// User by GitHub login (case-insensitive).
+    async fn user_by_login(&self, login: &str) -> AppResult<Option<UserRecord>>;
+    /// User by GitHub numeric id.
+    async fn user_by_github_id(&self, github_id: u64) -> AppResult<Option<UserRecord>>;
+    /// The superadmin.
+    async fn superadmin(&self) -> AppResult<Option<UserRecord>>;
+    /// All users.
+    async fn users(&self) -> AppResult<Vec<UserRecord>>;
+    /// Inserts a user (`Conflict` on duplicate login).
+    async fn insert_user(&self, user: &UserRecord) -> AppResult<()>;
+    /// Updates flags.
+    async fn update_user_flags(
+        &self,
+        id: &UserId,
+        disabled_at: Option<Option<Timestamp>>,
+        is_instance_admin: Option<bool>,
+    ) -> AppResult<()>;
+    /// Links GitHub identity details after OAuth.
+    async fn link_github(
+        &self,
+        id: &UserId,
+        github_id: u64,
+        login: &str,
+        display_name: &str,
+        avatar_url: Option<&str>,
+    ) -> AppResult<()>;
+    /// Stores the user's GitHub token.
+    async fn save_github_token(&self, token: &GitHubTokenRecord, at: Timestamp) -> AppResult<()>;
+    /// The user's GitHub token.
+    async fn github_token(&self, user: &UserId) -> AppResult<Option<GitHubTokenRecord>>;
+}
+
+/// Web sessions, CLI tokens, device grants and OAuth states.
+#[async_trait]
+pub trait SessionStore: Send + Sync {
+    /// Inserts a web session.
+    async fn insert_web_session(&self, session: &WebSessionRecord) -> AppResult<()>;
+    /// Web session by cookie hash.
+    async fn web_session(&self, id_hash: &str) -> AppResult<Option<WebSessionRecord>>;
+    /// Revokes one session.
+    async fn revoke_web_session(&self, id_hash: &str, at: Timestamp) -> AppResult<()>;
+    /// Revokes all sessions and tokens of a user.
+    async fn revoke_user_credentials(&self, user: &UserId, at: Timestamp) -> AppResult<()>;
+    /// Inserts an API token.
+    async fn insert_api_token(&self, token: &ApiTokenRecord) -> AppResult<()>;
+    /// API token by hash (not revoked).
+    async fn api_token(&self, token_hash: &str) -> AppResult<Option<ApiTokenRecord>>;
+    /// Inserts a device grant.
+    async fn insert_device_grant(&self, grant: &DeviceGrantRecord) -> AppResult<()>;
+    /// Device grant by device-code hash.
+    async fn device_grant_by_device(
+        &self,
+        device_code_hash: &str,
+    ) -> AppResult<Option<DeviceGrantRecord>>;
+    /// Device grant by user code.
+    async fn device_grant_by_user_code(
+        &self,
+        user_code: &str,
+    ) -> AppResult<Option<DeviceGrantRecord>>;
+    /// Sets status/user/token of a pending grant; `Ok(false)` if not pending.
+    async fn resolve_device_grant(
+        &self,
+        user_code: &str,
+        status: &str,
+        user: Option<&UserId>,
+        token: Option<&Sealed>,
+    ) -> AppResult<bool>;
+    /// Marks an approved grant consumed and clears its sealed token; `Ok(false)` if not approved.
+    async fn consume_device_grant(&self, device_code_hash: &str) -> AppResult<bool>;
+    /// Stores an OAuth state.
+    async fn insert_oauth_state(
+        &self,
+        state_hash: &str,
+        next_path: &str,
+        at: Timestamp,
+        expires_at: Timestamp,
+    ) -> AppResult<()>;
+    /// Removes and returns an unexpired OAuth state's next path.
+    async fn take_oauth_state(&self, state_hash: &str, now: Timestamp)
+    -> AppResult<Option<String>>;
+}
+
+/// GitHub permission cache.
+#[async_trait]
+pub trait PermissionStore: Send + Sync {
+    /// Cached access.
+    async fn cached_access(
+        &self,
+        user: &UserId,
+        sandbox: &SandboxId,
+    ) -> AppResult<Option<CachedAccess>>;
+    /// Stores access.
+    async fn put_access(
+        &self,
+        user: &UserId,
+        sandbox: &SandboxId,
+        level: AccessLevel,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// Drops a user's cache (sign-in, disable).
+    async fn clear_access(&self, user: &UserId) -> AppResult<()>;
+}
+
+/// Sandboxes.
+#[async_trait]
+pub trait SandboxStore: Send + Sync {
+    /// Inserts a sandbox (`Conflict` when the repository is already linked).
+    async fn insert_sandbox(&self, sandbox: &SandboxRecord) -> AppResult<()>;
+    /// Sandbox by id (including removed).
+    async fn sandbox(&self, id: &SandboxId) -> AppResult<Option<SandboxRecord>>;
+    /// Active sandbox by slug.
+    async fn sandbox_by_slug(&self, slug: &str) -> AppResult<Option<SandboxRecord>>;
+    /// Active sandbox by repository.
+    async fn sandbox_by_repo(&self, owner: &str, name: &str) -> AppResult<Option<SandboxRecord>>;
+    /// Active sandboxes.
+    async fn sandboxes(&self) -> AppResult<Vec<SandboxRecord>>;
+    /// Next free port base (multiples of `count` from `start`).
+    async fn next_port_base(&self, start: u16, count: u16) -> AppResult<u16>;
+    /// Replaces the profile JSON.
+    async fn set_profile(&self, id: &SandboxId, profile_json: &str) -> AppResult<()>;
+    /// Sets onboarding state and task.
+    async fn set_onboarding(
+        &self,
+        id: &SandboxId,
+        state: &str,
+        task: Option<&TaskId>,
+    ) -> AppResult<()>;
+    /// Marks removed.
+    async fn remove_sandbox(&self, id: &SandboxId, at: Timestamp) -> AppResult<()>;
+}
+
+/// Field updates for a task (only `Some` fields change).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskFieldUpdate {
+    /// Title.
+    pub title: Option<String>,
+    /// Harness.
+    pub harness: Option<yulius_domain::harness::Harness>,
+    /// Branch.
+    pub branch: Option<String>,
+    /// Worktree.
+    pub worktree_path: Option<String>,
+    /// Spec path.
+    pub spec_path: Option<String>,
+    /// Model.
+    pub model: Option<Option<String>>,
+    /// Effort.
+    pub effort: Option<Option<String>>,
+    /// Archived time.
+    pub archived_at: Option<Option<Timestamp>>,
+    /// Gate block counter.
+    pub gate_blocks: Option<u32>,
+    /// Idle wake flag.
+    pub wake_enabled: Option<bool>,
+}
+
+/// Field updates for an attempt's terminal transition or pids.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttemptUpdate {
+    /// ptyhost pid.
+    pub ptyhost_pid: Option<u32>,
+    /// Child pid.
+    pub child_pid: Option<u32>,
+    /// End time.
+    pub ended_at: Option<Timestamp>,
+    /// Exit code.
+    pub exit_code: Option<i32>,
+    /// Exit reason.
+    pub exit_reason: Option<String>,
+}
+
+/// Tasks, attempts, lineage, metrics, feedback and switch decisions.
+#[async_trait]
+pub trait TaskStore: Send + Sync {
+    /// Inserts a task, allocating the next number in its sandbox; returns the stored record.
+    async fn insert_task(&self, task: &TaskRecord) -> AppResult<TaskRecord>;
+    /// Task by id.
+    async fn task(&self, id: &TaskId) -> AppResult<Option<TaskRecord>>;
+    /// Task by sandbox and number.
+    async fn task_by_number(
+        &self,
+        sandbox: &SandboxId,
+        number: u32,
+    ) -> AppResult<Option<TaskRecord>>;
+    /// Tasks of a sandbox, archived or not.
+    async fn tasks(&self, sandbox: &SandboxId, archived: bool) -> AppResult<Vec<TaskRecord>>;
+    /// Tasks in any of the given statuses (all sandboxes).
+    async fn tasks_with_status(&self, statuses: &[TaskStatus]) -> AppResult<Vec<TaskRecord>>;
+    /// CAS status change; `expected = None` means any. Sets `updated_at`, and `closed_at`/
+    /// `queued_at` as appropriate.
+    async fn transition_task(
+        &self,
+        id: &TaskId,
+        expected: Option<TaskStatus>,
+        next: TaskStatus,
+        activity: Option<Activity>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Sets activity while running.
+    async fn set_activity(
+        &self,
+        id: &TaskId,
+        activity: Option<Activity>,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// Updates fields.
+    async fn update_task(
+        &self,
+        id: &TaskId,
+        update: &TaskFieldUpdate,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// Inserts an attempt (`Conflict` when another live attempt exists for the task).
+    async fn insert_attempt(&self, attempt: &AttemptRecord) -> AppResult<()>;
+    /// Attempt by id.
+    async fn attempt(&self, id: &AttemptId) -> AppResult<Option<AttemptRecord>>;
+    /// Attempt by token hash.
+    async fn attempt_by_token(&self, token_hash: &str) -> AppResult<Option<AttemptRecord>>;
+    /// Attempts of a task in order.
+    async fn attempts(&self, task: &TaskId) -> AppResult<Vec<AttemptRecord>>;
+    /// The spawning/live attempt of a task.
+    async fn live_attempt(&self, task: &TaskId) -> AppResult<Option<AttemptRecord>>;
+    /// All spawning/live attempts.
+    async fn live_attempts(&self) -> AppResult<Vec<AttemptRecord>>;
+    /// CAS attempt state change (only allowed transitions per `AttemptState::can_become`).
+    async fn transition_attempt(
+        &self,
+        id: &AttemptId,
+        next: AttemptState,
+        update: &AttemptUpdate,
+    ) -> AppResult<bool>;
+    /// Records the provider session id of an attempt.
+    async fn set_attempt_session(&self, id: &AttemptId, session_id: &str) -> AppResult<()>;
+    /// Upserts a lineage entry (by sandbox, harness, session id).
+    async fn upsert_provider_session(&self, record: &ProviderSessionRecord) -> AppResult<()>;
+    /// Lineage of a task, oldest first.
+    async fn provider_sessions(&self, task: &TaskId) -> AppResult<Vec<ProviderSessionRecord>>;
+    /// Whether a provider session is already known in a sandbox.
+    async fn provider_session_exists(
+        &self,
+        sandbox: &SandboxId,
+        harness: &str,
+        session_id: &str,
+    ) -> AppResult<bool>;
+    /// Upserts metrics for an attempt.
+    async fn put_metrics(
+        &self,
+        attempt: &AttemptId,
+        task: &TaskId,
+        metrics: &MetricsRecord,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// Metrics of all attempts of a task.
+    async fn task_metrics(&self, task: &TaskId) -> AppResult<Vec<MetricsRecord>>;
+    /// Upserts feedback.
+    async fn put_feedback(&self, feedback: &FeedbackRecord) -> AppResult<()>;
+    /// Feedback of a task.
+    async fn feedback(&self, task: &TaskId) -> AppResult<Vec<FeedbackRecord>>;
+    /// Records a switch decision.
+    async fn insert_switch(&self, decision: &SwitchDecisionRecord) -> AppResult<()>;
+    /// Updates a switch outcome.
+    async fn set_switch_outcome(&self, id: &str, outcome: &str) -> AppResult<()>;
+    /// Switch decisions of a task.
+    async fn switches(&self, task: &TaskId) -> AppResult<Vec<SwitchDecisionRecord>>;
+}
+
+/// Provider accounts.
+#[async_trait]
+pub trait AccountStore: Send + Sync {
+    /// Inserts an account.
+    async fn insert_account(&self, account: &AccountRecord) -> AppResult<()>;
+    /// Account by id.
+    async fn account(&self, id: &AccountId) -> AppResult<Option<AccountRecord>>;
+    /// All accounts.
+    async fn accounts(&self) -> AppResult<Vec<AccountRecord>>;
+    /// Updates label/priority/enabled.
+    async fn update_account(
+        &self,
+        id: &AccountId,
+        label: Option<&str>,
+        priority: Option<i32>,
+        enabled: Option<bool>,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// Stores the sealed credential and status.
+    async fn set_account_credential(
+        &self,
+        id: &AccountId,
+        credential: &Sealed,
+        status: AccountStatus,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// Stores status, usage snapshot and error.
+    async fn set_account_state(
+        &self,
+        id: &AccountId,
+        status: AccountStatus,
+        usage_json: Option<&str>,
+        last_error: Option<&str>,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// Deletes an account.
+    async fn delete_account(&self, id: &AccountId) -> AppResult<()>;
+}
+
+/// Steps, messages and scope claims.
+#[async_trait]
+pub trait CoordinationStore: Send + Sync {
+    /// Replaces the step list of a task (records events for status changes).
+    async fn replace_steps(
+        &self,
+        task: &TaskId,
+        steps: &[StepRecord],
+        actor: &str,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// Steps of a task in order.
+    async fn steps(&self, task: &TaskId) -> AppResult<Vec<StepRecord>>;
+    /// Updates one step and records an event; `NotFound` if absent.
+    async fn update_step(
+        &self,
+        step: &StepId,
+        status: &str,
+        note: Option<&str>,
+        actor: &str,
+        at: Timestamp,
+    ) -> AppResult<StepRecord>;
+    /// Inserts a message and receipts for the recipients.
+    async fn insert_message(&self, message: &MessageRecord, recipients: &[TaskId])
+    -> AppResult<()>;
+    /// Messages addressed to a task (direct or broadcast), newest last.
+    async fn inbox(
+        &self,
+        task: &TaskId,
+        unread_only: bool,
+        limit: u32,
+    ) -> AppResult<Vec<InboxEntry>>;
+    /// Marks messages delivered (hook context) for a task.
+    async fn mark_delivered(&self, task: &TaskId, at: Timestamp) -> AppResult<u32>;
+    /// Marks messages read for a task.
+    async fn mark_read(&self, task: &TaskId, at: Timestamp) -> AppResult<u32>;
+    /// Unread count for a task.
+    async fn unread_count(&self, task: &TaskId) -> AppResult<u32>;
+    /// Messages of a sandbox involving a task (sent or received), newest last.
+    async fn task_messages(&self, task: &TaskId, limit: u32) -> AppResult<Vec<InboxEntry>>;
+    /// Inserts a scope claim.
+    async fn insert_claim(&self, claim: &ScopeClaimRecord) -> AppResult<()>;
+    /// Active claims of a sandbox.
+    async fn active_claims(&self, sandbox: &SandboxId) -> AppResult<Vec<ScopeClaimRecord>>;
+    /// Releases claims of a task (all when `pattern` is `None`); returns count.
+    async fn release_claims(
+        &self,
+        task: &TaskId,
+        pattern: Option<&str>,
+        at: Timestamp,
+    ) -> AppResult<u32>;
+}
+
+/// Append-only audit log.
+#[async_trait]
+pub trait AuditStore: Send + Sync {
+    /// Appends an entry.
+    async fn audit(
+        &self,
+        at: Timestamp,
+        actor: &str,
+        action: &str,
+        target: Option<&str>,
+        detail: Option<&str>,
+    ) -> AppResult<()>;
+}
+
+/// Every store area; the SQLite adapter implements this.
+pub trait Store:
+    InstanceStore
+    + UserStore
+    + SessionStore
+    + PermissionStore
+    + SandboxStore
+    + TaskStore
+    + AccountStore
+    + CoordinationStore
+    + AuditStore
+    + crate::ports::store_ext::ExtensionStores
+{
+}
+
+impl<T> Store for T where
+    T: InstanceStore
+        + UserStore
+        + SessionStore
+        + PermissionStore
+        + SandboxStore
+        + TaskStore
+        + AccountStore
+        + CoordinationStore
+        + AuditStore
+        + crate::ports::store_ext::ExtensionStores
+{
+}
