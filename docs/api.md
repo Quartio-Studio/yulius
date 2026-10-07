@@ -355,9 +355,9 @@ the harnesses.
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
-| GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null"}` — **not routed yet** (404; the web UI then shows `GET /api/me` `instance` facts) |
-| POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub) — **not routed yet** |
-| GET | `/api/admin/github/manifest/callback?code` | superadmin | stores App credentials, 302 to install — **not routed yet** |
+| GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
+| POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
+| GET | `/api/admin/github/manifest/callback?code&state` | superadmin | converts the code, stores the sealed App credentials and owner, 303 to the App's installation page; failures 303 to `/admin/github?error=…` |
 | GET | `/api/analytics/summary?sandbox&from&to` | read | → `AnalyticsSummary` |
 | GET | `/api/analytics/tasks?format=json|csv&sandbox&from&to` | read | → `[TaskRow]` or CSV |
 | GET | `/api/status` | signed in | → `Status` |

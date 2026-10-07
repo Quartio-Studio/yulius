@@ -239,6 +239,17 @@ pub trait GitHubPort: Send + Sync {
     fn app_manifest(&self, public_url: &str, owner_login: &str) -> serde_json::Value;
     /// URL the manifest form is posted to.
     fn manifest_post_url(&self, owner_login: &str, owner_is_org: bool) -> String;
+    /// [`Self::manifest_post_url`] with a one-time `state` that GitHub returns to the callback.
+    fn manifest_post_url_with_state(
+        &self,
+        owner_login: &str,
+        owner_is_org: bool,
+        state: &str,
+    ) -> String {
+        let base = self.manifest_post_url(owner_login, owner_is_org);
+        let sep = if base.contains('?') { '&' } else { '?' };
+        format!("{base}{sep}state={state}")
+    }
     /// Converts a manifest code into App credentials.
     async fn convert_manifest(&self, code: &str) -> AppResult<GitHubAppConfig>;
     /// Opens a pull request.

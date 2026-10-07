@@ -308,6 +308,22 @@ impl GitHubPort for GitHubAdapter {
             .unwrap_or_else(|_| "about:blank".into())
     }
 
+    fn manifest_post_url_with_state(
+        &self,
+        owner_login: &str,
+        owner_is_org: bool,
+        state: &str,
+    ) -> String {
+        let kind = if owner_is_org {
+            OwnerKind::Organization
+        } else {
+            OwnerKind::User
+        };
+        self.plain
+            .manifest_post_url_with_state(owner_login, kind, state)
+            .unwrap_or_else(|_| "about:blank".into())
+    }
+
     async fn convert_manifest(&self, code: &str) -> AppResult<GitHubAppConfig> {
         let c = self.plain.convert_manifest(code).await.map_err(map_err)?;
         Ok(GitHubAppConfig {

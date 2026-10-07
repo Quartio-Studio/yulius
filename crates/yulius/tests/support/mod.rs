@@ -177,8 +177,18 @@ impl GitHubPort for FakeGitHub {
     fn manifest_post_url(&self, _: &str, _: bool) -> String {
         String::new()
     }
-    async fn convert_manifest(&self, _: &str) -> AppResult<GitHubAppConfig> {
-        Err(AppError::Upstream("n/a".into()))
+    async fn convert_manifest(&self, code: &str) -> AppResult<GitHubAppConfig> {
+        if code != "manifest-code" {
+            return Err(AppError::Upstream("unknown manifest code".into()));
+        }
+        Ok(GitHubAppConfig {
+            app_id: 42,
+            slug: "yulius-test-app".into(),
+            client_id: "Iv1.test".into(),
+            client_secret: "secret".into(),
+            private_key_pem: "pem".into(),
+            webhook_secret: None,
+        })
     }
     async fn create_pull(
         &self,

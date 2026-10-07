@@ -152,3 +152,14 @@ pub struct ManifestResponse {
     /// The manifest JSON.
     pub manifest: serde_json::Value,
 }
+
+/// Query of `GET /api/admin/github/manifest/callback`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestCallback {
+    /// Conversion code from GitHub.
+    #[serde(default)]
+    pub code: String,
+    /// The state issued with the manifest.
+    #[serde(default)]
+    pub state: String,
+}

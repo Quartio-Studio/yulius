@@ -53,6 +53,12 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             get(admin::list_users).post(admin::admit_user),
         )
         .route("/api/admin/users/{id}", patch(admin::update_user))
+        .route("/api/admin/github", get(admin::github))
+        .route("/api/admin/github/manifest", post(admin::github_manifest))
+        .route(
+            "/api/admin/github/manifest/callback",
+            get(admin::github_manifest_callback),
+        )
         .route("/api/sandboxes", get(sandboxes::list))
         .route("/api/sandboxes/{sid}", get(sandboxes::get_one))
         .route(

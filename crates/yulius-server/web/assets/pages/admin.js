@@ -203,8 +203,11 @@ export function mountGithubPage(ctx) {
   const frame = pageFrame({ title: 'GitHub connection', sub: 'the instance is bound to one GitHub organization or personal account' });
   const host = h('div');
   frame.body.append(host);
-  // GET /api/admin/github is documented but this server build does not route it yet: on a
-  // 404 the page shows what /api/me knows about the connection instead of an error.
+  // The manifest callback returns here with ?error=… when GitHub's conversion failed.
+  const callbackError = new URLSearchParams(window.location.search).get('error');
+  if (callbackError) frame.body.prepend(h('div', { class: 'card card-pad', role: 'alert' }, badge('setup failed', 'danger'), ' ', callbackError));
+  // An older server without the GitHub admin routes answers 404: then the page shows what
+  // /api/me knows about the connection instead of an error.
   const fetchConfig = () => ctx.api.get('/api/admin/github').catch((error) => {
     if (error.status === 404) return { unsupported: true };
     throw error;
