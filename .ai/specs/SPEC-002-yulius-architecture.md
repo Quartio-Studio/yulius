@@ -76,8 +76,10 @@ Principles:
 | ADR-06 | Cross-provider switch by synthesizing the target CLI's native transcript from a provider-neutral IR, then native resume; fallback to a handoff bootstrap when native resume is rejected. | Always summarize into a fresh session; API-level context replay | Keeps "same session" feel (ROT-005); depends on undocumented formats — pinned, fixture-tested, live-smoked; fallback guarantees continuity. |
 | ADR-07 | Yulius MCP (Streamable HTTP, JSON-RPC) on a loopback listener with per-run bearer tokens; hooks call the same listener through `yulius hook`. | Per-harness plugins; injecting text into the TUI only | One protocol for both CLIs; least privilege (task tokens reach only task-scoped tools). |
 | ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. |
-| ADR-09 | Per-sandbox headless Chromium with a CDP screencast viewer; agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. | noVNC desktop; Playwright server | Real browser, shared by users and agents (BRW-002/003); screencast is efficient and works on phones. |
-| ADR-10 | openvscode-server per sandbox on demand, reverse-proxied with Yulius auth. | code-server; Monaco-only editor | "Normal VS Code" (EDT-001); binary is an external prerequisite on the VM. |
+| ADR-09 | Per-sandbox headless Chromium; the user's view is a live DOM mirror (rrweb recorder injected through CDP in an isolated world, replayed in a script-free iframe in the UI; page resources fetched through Yulius by the server browser), with the CDP screencast as labelled fallback; input is dispatched with CDP `Input.*`. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; canvas/plugins/internal pages need the fallback. |
+| ADR-10 | openvscode-server per (user, sandbox) on demand, inside the sandbox containment as the user's identity, with user data and extensions in the user's home; reverse-proxied with Yulius auth. The connection token is persisted per editor and given to the browser as a cookie scoped to `/s/<sandbox>/editor` (VS Code's client must read it); it only works through the loopback listener behind the proxy. | One shared, uncontained editor per sandbox (original; broke the remote connection because the token was hidden, and exposed the data directory) ; code-server | Personal VS Code (EDT-003); contained like shells; binary is an external prerequisite on the VM; one process per active user and sandbox (idle-stopped). |
+| ADR-12 | Sandbox identity for user processes (shells, editors): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
+| ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 
 ## 3. Code organization
@@ -115,6 +117,10 @@ sandboxes/<sandbox>/home/           sandbox HOME inside containment (caches, .cl
 sandboxes/<sandbox>/codex/<account>/    CODEX_HOME per account; sessions -> ../sessions
 sandboxes/<sandbox>/codex/sessions/     shared Codex rollouts for the sandbox
 sandboxes/<sandbox>/browser/        Chromium profile
+users/<user>/home/                  user's home in their shells and editors (bound at /home/<login>; ADR-12)
+users/<user>/identity/              generated passwd/group files of the user's sandbox identity
+editors/<sandbox>/<user>/           editor connection token (0600) of the user's editor in that sandbox
+runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
 runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files
 shells/<shell>/                     ptyhost run directories of sandbox shells (UI-015)
@@ -418,6 +424,18 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   merges or deployments (SEC-003). Deployment commands run only on explicit user action with an
   audit entry.
 
+- User processes (UI-016, EDT-003): shells and editors run contained as the user's identity
+  (ADR-12). A user's home is bound only into that user's processes; agent runs never see it.
+  Shells are attachable only by their creator. The editor's connection token reaches the user's
+  browser as a path-scoped cookie; it is useless without the proxy because editors listen on
+  loopback and contained agents cannot read other users' cookies. Git in user processes asks the
+  internal listener with a per-process workspace token and receives the user's own GitHub token.
+- Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
+  Argon2; the failure counter and permanent lock are persisted before the response is sent.
+- Browser mirror (ADR-09): the recorder runs in an isolated world, so page scripts cannot tamper
+  with it; the replay iframe runs no page scripts; resource fetches go through the server browser
+  with the same URL policy as navigation.
+
 ## 8a. Imported repository specifics (Product, Studio)
 
 - Sandboxes clone from GitHub; local machine state arrives only through `yulius import` uploads.
@@ -552,6 +570,9 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Not exercised | Real GitHub App/OAuth, real Chromium (as sandbox browser), openvscode-server, Codex sessions, cross-provider resume with real CLIs, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
+
+- 2026-10-07 (F 2026-10-07): ADR-09 DOM mirror, ADR-10 personal contained editor and token
+  cookie, ADR-12 sandbox identity, ADR-13 recovery code; data directory additions; security notes.
 
 - 2026-10-07: initial architecture and runtime contracts.
 - 2026-10-07: implementation findings — socket path bound, ptyhost orphan watchdog, Claude config

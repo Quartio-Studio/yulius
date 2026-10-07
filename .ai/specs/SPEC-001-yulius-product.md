@@ -20,6 +20,7 @@ Companion documents:
 | `WA hh:mm` | Founders' morning notes list in a group chat, scrolled on screen at V 3:45, V 23:30 and V 31:45–35:40 | The call explicitly walks this list (T 3:38 "the points we wrote this morning"; T 35:44 "that's all from WhatsApp"). Only product notes are used; personal chat is excluded. |
 | `P(n)` | Michał's unfinished draft goal prompt, item *n*, on screen at V 3:38 and V 35:45 | Already written before the discussion (visible at V 3:38), so **spoken statements in the call are later and take precedence**. |
 | `K` | User clarifications in the 2026-10-07 goal | Rust implementation; Product dev VM; Studio continuous; support both simply; robustness. |
+| `F 2026-10-07` | Founder feedback after using the deployed instance (2026-10-07 goal: ten items plus the recovery code) | Later than every other source; supersedes them where it conflicts (class C). |
 | `R:product`, `R:studio` | Read-only inspection of `/Users/mrfishpl/Desktop/quartio/product` and `/studio` | Structure, instructions, workflows. |
 
 Raw sources, frame captures and research notes stay outside Git (local notes). This document
@@ -158,14 +159,24 @@ defaults that implementation may refine without changing user-visible intent.
 | ID | Requirement | Source | Class | Acceptance |
 | --- | --- | --- | --- | --- |
 | ACC-001 | Exactly one superadmin per instance, created at installation with a password chosen then. | T 30:22, P(3) | E | AC-ACC-1 |
-| ACC-002 | The superadmin password is not recoverable: no email reset, no "forgot password", no recovery code. Setup and the first superadmin sessions show an unmistakable warning to store the password in several safe places, and setup requires explicit confirmation. | T 30:22–30:38 (supersedes P(3) "recovery code is given") | C | AC-ACC-1 |
+| ACC-002 | The superadmin password can be recovered only with the instance's 6-digit recovery code (ACC-011); there is no email reset. Setup shows the password warning and the recovery code once, and requires explicit confirmation that both are stored safely. | T 30:22–30:38, P(3) "recovery code is given", F 2026-10-07 (recovery code; supersedes "no recovery code") | C | AC-ACC-1, AC-ACC-7 |
 | ACC-003 | Setup is reachable only with a one-time setup token available on the VM, so a public instance cannot be claimed by a stranger. | — | A | AC-ACC-2 |
 | ACC-004 | The superadmin admits users (by GitHub login); only admitted users may sign in; the superadmin can disable a user, which ends their sessions. | T 30:46 | E | AC-ACC-3 |
 | ACC-005 | Every user authenticates with GitHub; there is no user password. | T 30:52–31:00, WA 13:40, P(4) | E | AC-ACC-3 |
-| ACC-006 | The instance connects either the organization's GitHub or a private GitHub account, and every project is a repository of that owner. | T 8:41–9:00, T 31:00, P(4) | E | AC-PRJ-1 |
+| ACC-006 | The instance connects either the organization's GitHub or a private GitHub account, and every project is a repository of that owner. | T 8:41–9:00, T 31:00, P(4) | E | AC-UI-8 | Two users of one sandbox: each sees only their own shells (attaching to the other's shell is 404); in a contained shell `whoami` is the user's login, `id -u` is 0, `sudo id -u` prints 0, and a file written to `~` is in that user's persistent home and invisible to the other user. | int (Linux CI) |
+| AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
+| AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude/Codex smoke shows the goal being set. | int, live |
+| AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
+| AC-ROT-8 | With only the other provider available, rotation proposes instead of switching; approving switches; a manual harness change without approval is refused (409); with automatic switching enabled, rotation switches as before. | int |
+| AC-BRW-4 | A page served on the VM's localhost (fixture with a stylesheet and image) is mirrored as DOM in the client (text present in the mirror iframe, image loaded through Yulius), a click in the mirror reaches the server page, and a canvas-only page offers the screencast fallback. | int, live (Chromium) |
+| AC-BRW-5 | A new tab shows the welcome page with the sandbox name and a link to a listening sandbox port. | int, live (Chromium) |
+| AC-EDT-2 | Two users get separate editor instances with separate settings directories; the editor process runs inside containment as the user's identity (Linux). | int |
+| AC-EDT-3 | Opt-in live test: real openvscode-server behind the proxy in headless Chrome lists the repository. | live |
+| AC-PRJ-1 |
 | ACC-007 | Project permissions mirror GitHub repository permissions: no access → the sandbox is invisible (as if nonexistent); read → can view tasks, terminals (read-only), steps and history but not act; write → can create/continue/steer tasks and use browser/editor; admin → sandbox configuration. | T 9:00–9:39, T 31:11–31:44, P(4) | E | AC-ACC-4 |
 | ACC-008 | Permission changes on GitHub take effect in Yulius within 5 minutes without user action, and immediately after the user signs in again; revocation closes the user's live terminal connections to that sandbox. | T 31:38 ("consistent") | A | AC-ACC-5 |
 | ACC-009 | The superadmin may mark users as instance administrators, who may manage accounts, instance MCP servers and the instance skill catalog. Instance administration never grants repository access that GitHub does not grant. | — | A | AC-ACC-6 |
+| ACC-011 | Recovery code: a uniformly random 6-digit code generated at setup, shown exactly once and stored only as an Argon2id hash. "Forgot password" with the right code sets a new password, ends every superadmin session and shows a fresh code once. After 3 wrong codes recovery is permanently disabled (the counter survives restarts); only a signed-in superadmin who re-enters the password can generate a new code, which replaces the old one and re-enables recovery. The UI states that the code must be kept perfectly safe. | F 2026-10-07 | C | AC-ACC-7 |
 | ACC-010 | Settings as a general section are removed for the MVP; instance administration lives in a compact admin menu. | T 5:31–5:33 (supersedes P(2) "settings") | C | AC-UI-1 |
 
 ### 5.2 Sandboxes and projects (PRJ)
@@ -204,7 +215,9 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-012 | The interface is usable on a phone: tasks list, status, terminal view and a quick-input bar that sends text/keys to the session. | T 29:00, WA 13:34 | E | AC-UI-6 |
 | UI-013 | A small per-task action menu provides: Stop, Continue, Switch harness/account, Deliver, Feedback, Archive. | T 13:04–14:28 (switching), T 35:19 (feedback), P(5) | A (placement) | AC-UI-4 |
 | UI-014 | Visual direction: dark, dense, terminal-first, following the reference's compactness; one consistent design system. | V 2:30–6:50 | A | AC-UI-1 |
-| UI-015 | A general sandbox shell (contained, write permission) is available from the right rail, hidden by default; it is separate from the agent terminal and never replaces it. The VS Code editor's integrated terminal is also available. | T 11:13 ("a separate terminal is here, of course"), V 11:12 (reference Terminal tab) vs T 6:42 (Terminal/Logs tabs replaced by sandbox tabs) | U-11 | AC-UI-7 |
+| UI-015 | A general sandbox shell (contained, write permission) is available from the right rail, hidden by default; it is separate from the agent terminal and never replaces it. The VS Code editor's integrated terminal is also available. | T 11:13 ("a separate terminal is here, of course"), V 11:12 (reference Terminal tab) vs T 6:42 (Terminal/Logs tabs replaced by sandbox tabs) | U-12 | "Every user gets root access": root inside an unprivileged user namespace cannot write host system directories, and overlay mounts in user namespaces are refused on the Ubuntu 24.04 host (AppArmor userns restriction; verified 2026-10-07). | F 2026-10-07 | Users are uid 0 with `sudo` in their sandbox; homes, the sandbox and `/tmp` are writable; system packages are installed by the operator; per-user tools install into the home (e.g. `npm -g` with a home prefix, `pip --user`, `cargo install`) | A writable system layer becomes available (newer bubblewrap with `--overlay`, or a container runtime) |
+| U-11 | AC-UI-7 |
+| UI-016 | Shells are user-scoped: only the user who opened a shell can list, see or type into it (administrators included). Inside the sandbox every user is a separate user with root access: their own login name and prompt, root privileges in the sandbox (`id -u` is 0, `sudo` works), and a private home that persists across their sandboxes and sessions. The same identity is used by the user's editor terminals (EDT-003). | F 2026-10-07 | C (system-directory writes U-12) | AC-UI-8 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -214,7 +227,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | TSK-002 | The harness is chosen when creating the task; different tasks may use different harnesses. | T 11:28, P(5) | E | AC-TSK-1 |
 | TSK-003 | Only Claude Code and Codex are supported now; the design allows adding other harnesses later. | T 11:32 | E + D | AC-TSK-1 |
 | HRN-001 | The center shows the agent's **native terminal interface** (the real TUI), exactly like a local Claude or Codex session — not a re-rendered chat. | T 10:48–11:20, P(5) "seriously TUI" | E | AC-TSK-2 |
-| HRN-002 | The task terminal is dedicated to the agent: the user cannot drop to a shell; leaving the agent session (e.g., `/exit`) closes the task. A separate general terminal is not part of the task view. | T 11:06–11:20 | E | AC-TSK-3 |
+| HRN-002 | The task terminal is dedicated to the agent: the user cannot drop to a shell; leaving the agent session (e.g., `/exit`) closes the task. A separate general terminal is not part of the task view. When a task closes because the user left the session, the UI returns to the graphical task list, closes the task view and removes the task from the Active tasks list (it remains under Tasks with Continue). | T 11:06–11:20, F 2026-10-07 | E | AC-TSK-3 |
 | HRN-003 | Native commands work: `/model`, `/effort`, `/fast` and other slash commands of the harness. | T 14:18 | E | AC-TSK-2 |
 | HRN-004 | Harness features that conflict with "one session = one task" (e.g., Claude switching to another session, `/resume` pickers) are handled: Yulius detects a session-id change and either adopts it into the same task lineage or prevents it, without corrupting another task. | T 13:04–13:27 | E | AC-TSK-4 |
 | TSK-004 | Tasks keep running when the browser window closes; the user can come back from any device. | T 28:38–29:00, P(1) "doesn't stop when the website is closed" | E | AC-NFR-1 |
@@ -222,6 +235,8 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | TSK-006 | Several users may watch the same task; one person types at a time (the last to type controls terminal size). | T 28:00–28:33 (shared org sessions) | A | AC-TSK-6 |
 | TSK-007 | A stopped or closed task can be continued (resumed) by any member with write permission. | T 28:08–28:33 | E | AC-TSK-7 |
 | TSK-008 | A per-instance concurrency limit queues extra tasks visibly instead of overloading the VM. | robustness (K) | A | AC-NFR-3 |
+| TSK-009 | A write user can delete a task permanently, not only archive it. Deletion requires confirmation, refuses live tasks (stop first) and removes the task's messages, steps, metrics, feedback, switch history, run records and directories, and its local worktree and branch; remote branches and pull requests are untouched. | F 2026-10-07 | C | AC-TSK-8 |
+| TSK-010 | Goal mode: a new task chooses between **Goal** (default) and **Prompt**. In goal mode the task prompt becomes the session's goal through the harness's native `/goal` command (Claude Code and Codex), so the agent keeps working until the goal is met; prompt mode sends it as a normal first message. The mode is stored with the task, shown in the task view, and re-applied when a Claude session is continued or a task moves to another harness. | F 2026-10-07 | C | AC-TSK-9 |
 
 ### 5.5 Accounts, rotation and provider translation (ROT)
 
@@ -230,14 +245,15 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | ROT-001 | The organization can connect many accounts per provider (e.g., 10 Codex and 15 Claude Code), more providers in future. | T 11:50–11:58, T 14:00, P(5) | E | AC-ROT-1 |
 | ROT-002 | Connecting an account is a button followed by the provider's own sign-in; no long CLI typing. | T 31:44–32:00, WA 13:10 | E | AC-ROT-1 |
 | ROT-003 | When an account's usage is exhausted — or proactively at ~99% to avoid the edge case — the task switches to another account of the same provider, underneath and smoothly; the user should not notice. | T 11:44–12:18, P(5) | E | AC-ROT-2 |
-| ROT-004 | When all accounts of the provider are exhausted, Yulius first uses accounts whose limits have reset or can be reset, and only then switches to the other provider. | T 12:23, P(5) | E (reset semantics U-03) | AC-ROT-3 |
+| ROT-004 | When all accounts of the provider are exhausted, Yulius first uses accounts whose limits have reset or can be reset; changing the task's harness then needs explicit approval (ROT-012). | T 12:23, P(5), F 2026-10-07 | E (reset semantics U-03) | AC-ROT-3 |
 | ROT-005 | A provider switch translates the session: the Claude session becomes a Codex session (or vice versa) that continues the same task; the terminal visibly shows the other harness, yet the transition is smooth. | T 12:23–13:01, T 14:28–14:45, P(5) | E | AC-ROT-4 |
 | ROT-006 | Translation quality is a first-class, tested capability ("not trivial; needs testing and effort"). | T 14:28–14:45 | E | AC-ROT-4 |
 | ROT-007 | Users can switch provider and account manually. | P(5), T 28:20 | E | AC-ROT-5 |
 | ROT-008 | The account orchestrator respects per-task model/effort settings and preserves them across switches where the target supports them. | T 14:00–14:18 | E | AC-ROT-5 |
-| ROT-009 | Subscription management: admins see accounts, usage, reset times and status; can add, disable, re-login, set priority. | WA 13:12, T 33:29 | E | AC-ROT-1 |
+| ROT-009 | Subscription management: admins see accounts, usage, reset times and status; can add, disable, re-login, set priority. The accounts section shows each account's usage: provider-reported windows (5-hour, weekly) with percent used and reset time when known, Yulius-observed tokens of the last 24 hours and 7 days, and the tasks using it; unknown values are shown as unknown. | WA 13:12, T 33:29, F 2026-10-07 | E | AC-ROT-1, AC-ROT-7 |
 | ROT-010 | If no account of any provider has capacity, the task waits in "needs attention" with the earliest known reset time, and resumes automatically when capacity returns. | — | A | AC-ROT-6 |
 | ROT-011 | Unknown usage is never treated as zero usage; every switch decision is recorded with its inputs for audit. | engineering rules EVT-001 | A | AC-ROT-2 |
+| ROT-012 | Changing a task's harness is disabled by default and needs explicit approval. Automatic rotation stays within the task's provider; when only the other provider has capacity, the task waits ("needs attention") with a proposal that a write user approves ("Switch to Codex"). A manual switch to another harness asks for confirmation, and the API refuses a harness change without explicit approval. An instance administrator may enable automatic harness switching (off by default). | F 2026-10-07 | C | AC-ROT-8 |
 
 ### 5.6 Task step manager (STP)
 
@@ -323,6 +339,8 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | BRW-002 | One browser per sandbox, shared by that sandbox's users and agents (logins such as AWS persist per sandbox). | T 7:21–7:26 (supersedes T 7:00 "global, whole VM" and WA 13:04 "per user") | C | AC-BRW-1 |
 | BRW-003 | Agents control the same browser as fully as the native Claude/Codex browser plugins. | T 7:07, WA 13:04 | E | AC-BRW-2 |
 | BRW-004 | Tab management; when an action is requested from the user (e.g., AWS login), the user can jump straight to that tab; the agent also writes a clickable "open this tab" link in the session. | T 7:26–8:07 | E ("nice to have", T 7:26) | AC-BRW-3 |
+| BRW-005 | The user sees the page as live DOM, not as rendered pixels: the server browser's document is mirrored into the user's browser (crisp, selectable text; layout at the panel's size) and clicks, typing and scrolling are forwarded to the real browser on the server. Page resources (images, stylesheets, fonts) load through Yulius, so pages served on the VM's localhost render. Content that cannot be mirrored (canvas-only apps, plugins, browser-internal pages) falls back to the screencast view, visibly labelled, and the user can switch views. | F 2026-10-07 | C | AC-BRW-4 |
+| BRW-006 | A fresh browser and every new tab open a Yulius welcome page: the sandbox name, live links to the sandbox's listening dev-server ports, and short guidance (any address can be typed; agents share this browser). | F 2026-10-07 | C | AC-BRW-5 |
 
 ### 5.14 Editor (EDT)
 
@@ -330,6 +348,8 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | --- | --- | --- | --- | --- |
 | EDT-001 | The editor is a normal VS Code, hidden by default. | T 8:21–8:31, T 5:56, WA 13:09 | E | AC-EDT-1 |
 | EDT-002 | The editor opens the sandbox (task worktree selectable); access requires write permission. | — | A | AC-EDT-1 |
+| EDT-003 | The editor is personal: each user has their own VS Code (settings, keybindings, extensions and profiles, which they can import) that follows them across sandboxes. It runs inside the sandbox containment as the user's sandbox identity (UI-016), and Git in the editor and the user's shells authenticates as the user's own GitHub account. | F 2026-10-07 | C | AC-EDT-2 |
+| EDT-004 | The editor works end to end through the Yulius proxy in a real browser: the workbench loads and its remote connection lists the folder. | F 2026-10-07 ("coding editor still doesn't work") | C | AC-EDT-3 |
 
 ### 5.15 Import and migration (IMP)
 
@@ -425,7 +445,9 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 ### 6.3 Task actions
 
 Action menu (kebab in the step strip and right-click in the sidebar): Stop · Continue · Switch
-(harness/account) · Deliver · Feedback · Archive. Read-only users see the terminal with input
+(harness/account; a harness change asks for confirmation, ROT-012) · Deliver · Feedback · Archive ·
+Delete permanently (TSK-009, confirmation required). The new-task form has a Goal / Prompt mode
+switch with Goal selected (TSK-010). Read-only users see the terminal with input
 disabled and a "Read-only (GitHub: read)" banner.
 
 ### 6.4 Phone (< 768 px)
@@ -505,7 +527,7 @@ Nothing is pushed to GitHub by import.
 | Format templates beyond the one enforced format | T 21:40 | D |
 | Local (non-VM) server, instance migration to VM | T 29:19–30:00 | D |
 | Desktop (Electron) app | T 29:40 | D (server/UI separation now) |
-| Email-based password recovery | T 30:22 | D |
+| Email-based password recovery (the recovery code exists, ACC-011) | T 30:22 | D |
 | Multiple repositories in one sandbox | T 9:51–10:22 | dropped |
 | General Settings section | T 5:31 | dropped for MVP |
 | Deploying this instance (yulius.quartio.ai) | goal | out of scope of this request |
@@ -534,12 +556,13 @@ instance — out of scope).
 
 | ID | Scenario | Evidence |
 | --- | --- | --- |
-| AC-ACC-1 | Setup with valid token creates the superadmin only after the user confirms the non-recoverable warning; a second setup attempt is refused; no recovery endpoint exists. | int, ui |
+| AC-ACC-1 | Setup with valid token creates the superadmin only after the user confirms that the password and the recovery code are stored safely; a second setup attempt is refused. | int, ui |
 | AC-ACC-2 | Setup without/with a wrong token is refused; token is single-use. | int |
 | AC-ACC-3 | An admitted GitHub user signs in via OAuth; a non-admitted GitHub user is refused; disabling a user ends their sessions and WebSockets. | int (fake GitHub) |
 | AC-ACC-4 | With fake GitHub permissions none/read/write/admin, API and UI expose exactly the allowed operations; invisible sandboxes return 404. | int, ui |
 | AC-ACC-5 | Downgrading a permission in fake GitHub takes effect within the cache TTL and closes write-capable terminal sockets. | int |
 | AC-ACC-6 | Instance admin can manage accounts but sees no sandbox without GitHub access. | int |
+| AC-ACC-7 | Setup returns a 6-digit recovery code once; recovery with it sets a new password, revokes sessions and issues a new code; three wrong codes disable recovery permanently (also after restart) until a signed-in superadmin regenerates the code with the password. | int, ui |
 | AC-PRJ-1 | Creating/importing a sandbox requires a repository of the instance owner; one repository maps to one sandbox. | int |
 | AC-PRJ-2 | Task worktrees contain only the sandbox repository; there is no UI/API to add another repository. | int |
 | AC-PRJ-3 | Creating from each template creates the GitHub repo (fake), pushes the scaffold with the docs format that passes the validator, configures protection, and opens the tab. | int, ui |
@@ -623,6 +646,12 @@ Pending. Evidence is recorded per checkpoint in GitHub issues and in SPEC-002 §
 observed. Live provider compatibility and deployment are reported separately from synthetic tests.
 
 ## 12. Changelog
+
+- 2026-10-07 (feedback on the deployed instance, `F 2026-10-07`): recovery code (ACC-002
+  changed, ACC-011), user-scoped shells with per-user root identity (UI-016, U-12), clean-exit UI
+  (HRN-002), task deletion (TSK-009), goal mode (TSK-010), harness changes need approval (ROT-004
+  changed, ROT-012), account usage (ROT-009), DOM-mirrored browser and welcome page (BRW-005/006),
+  personal contained editor and the editor connection fix (EDT-003/004).
 
 - 2026-10-07: initial specification from the full transcript, video review, morning notes, draft
   prompt, user clarifications and Product/Studio inspection; self-reviewed (SPEC-003).
