@@ -63,6 +63,10 @@ sha2 = "0.11.0"
 hex = "0.4.3"
 base64 = "0.23.1"
 tempfile = "3.27.0"
+# GitHub adapter (WP-C): HTTPS via reqwest + rustls with the ring provider; ring also signs App JWTs.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "http2", "charset", "form"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+ring = "0.17.14"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
