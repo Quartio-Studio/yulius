@@ -2,11 +2,17 @@
 // Topics: sandboxes, tasks (sid), task (TaskSummary), task-removed (tid), steps (tid),
 // message ({task_id, message}), browser-action (event), automation-run (event),
 // account (Account), resync, events-status (status).
+//
+// The server sends `resync` (not `sandbox.updated`) after sandbox changes, and sandbox
+// counters (running / needs attention / queued) are not pushed at all: task events
+// schedule one debounced reload of /api/sandboxes so the tab badges stay current.
 
 import { enc } from './api.js';
 import { ReconnectingSocket } from './termsocket.js';
 
 const ORDER_KEY = 'yulius.sandboxOrder';
+/** Delay before task events refresh the sandbox counters (one reload per burst). */
+const COUNTS_REFRESH_MS = 1500;
 
 function readJson(key, fallback) {
   try {
@@ -32,6 +38,8 @@ export function createStore(api) {
     eventsStatus: 'closed',
   };
   let events = null;
+  let countsTimer = null;
+  let countsInFlight = false;
 
   function on(topic, fn) {
     if (!subscribers.has(topic)) subscribers.set(topic, new Set());
@@ -140,10 +148,21 @@ export function createStore(api) {
     if (map && map.delete(tabId)) emit('browser-action', { sandbox_id: sandboxId, tab_id: tabId, cleared: true });
   }
 
+  /** Reload /api/sandboxes once after a burst of task events (bounded: one timer, one request). */
+  function scheduleCountsRefresh() {
+    if (countsTimer || !state.me) return;
+    countsTimer = setTimeout(async () => {
+      countsTimer = null;
+      if (countsInFlight || !state.me) return;
+      countsInFlight = true;
+      try { await loadSandboxes(); } catch { /* the next event or resync retries */ } finally { countsInFlight = false; }
+    }, COUNTS_REFRESH_MS);
+  }
+
   function handleEvent(event) {
     switch (event.type) {
-      case 'task.updated': upsertTask(event.task); break;
-      case 'task.removed': removeTask(event.task_id); break;
+      case 'task.updated': upsertTask(event.task); scheduleCountsRefresh(); break;
+      case 'task.removed': removeTask(event.task_id); scheduleCountsRefresh(); break;
       case 'steps.updated': emit('steps', event.task_id); break;
       case 'message': emit('message', { task_id: event.task_id, message: event.message }); break;
       case 'sandbox.updated': upsertSandbox(event.sandbox); break;
@@ -178,6 +197,8 @@ export function createStore(api) {
   function stopEvents() {
     if (events) events.stop();
     events = null;
+    clearTimeout(countsTimer);
+    countsTimer = null;
   }
 
   return {

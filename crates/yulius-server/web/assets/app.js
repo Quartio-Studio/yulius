@@ -209,9 +209,15 @@ function createApp(root, transport) {
         updateTitle();
       }),
       store.on('tasks', () => updateTitle()),
+      // `resync` follows lost events and every sandbox change (import, onboarding, removal).
       store.on('resync', async () => {
         try {
           await store.loadSandboxes();
+          if (currentSandbox && !store.sandboxById(currentSandbox.id)) {
+            toast(`${currentSandbox.name} was removed or is no longer visible to you.`, { kind: 'info' });
+            navigate('/', { replace: true });
+            return;
+          }
           if (currentSandbox) await store.loadTasks(currentSandbox.id);
         } catch (error) {
           errorToast(error, 'Could not refresh');

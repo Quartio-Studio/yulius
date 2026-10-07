@@ -4,7 +4,7 @@
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast } from './dom.js';
-import { ReconnectingSocket, parseBrowserFrame } from './termsocket.js';
+import { ReconnectingSocket, parseBrowserFrame, CLOSE_REVOKED, CLOSE_SERVER_ERROR } from './termsocket.js';
 import { allows } from './status.js';
 
 const MOUSE_BUTTONS = ['left', 'middle', 'right'];
@@ -43,6 +43,7 @@ export function createBrowserPanel(ctx, sandbox) {
   let pendingMove = null;
   let viewportTimer = null;
   let visible = false;
+  let lastError = null; // last {code, message} error frame; explains a following close
   const frames = new Map(); // tab id → last ImageBitmap
 
   const tabStrip = h('div', { class: 'bp-tabs', role: 'tablist', 'aria-label': 'Browser tabs' });
@@ -165,8 +166,17 @@ export function createBrowserPanel(ctx, sandbox) {
     } else if (message.type === 'action_requested') {
       ctx.store.handleEvent({ ...message, type: 'browser.action_requested', sandbox_id: sandbox.id });
     } else if (message.type === 'error') {
-      toast(message.message || 'Browser error', { kind: 'error' });
+      lastError = { code: message.code, message: message.message || '' };
+      // `upstream` precedes a 1011 close when Chromium is missing or the browser stopped:
+      // the overlay explains it, so no toast.
+      if (message.code !== 'upstream') toast(message.message || 'Browser error', { kind: 'error', detail: message.code ? `code: ${message.code}` : null });
     }
+  }
+
+  function showFailure(text) {
+    showOverlay(h('div', { class: 'stack', style: { alignItems: 'center', maxWidth: '420px', textAlign: 'center' } },
+      h('p', null, text),
+      h('button', { type: 'button', class: 'btn btn-sm', onClick: () => { lastError = null; if (socket) socket.retry(); else connect(); } }, 'Retry')));
   }
 
   function connect() {
@@ -176,10 +186,19 @@ export function createBrowserPanel(ctx, sandbox) {
       path: `/api/sandboxes/${enc(sandbox.id)}/browser`,
       onOpen: () => { lastViewport = null; sendViewport(); },
       onMessage,
-      onStatus: (status) => {
-        if (status === 'reconnecting' || status === 'connecting') showOverlay(status === 'connecting' ? 'Connecting to the sandbox browser…' : 'Reconnecting to the sandbox browser…');
-        else if (status === 'failed') showOverlay(h('div', { class: 'stack', style: { alignItems: 'center' } }, h('p', null, 'The sandbox browser is unreachable.'), h('button', { type: 'button', class: 'btn btn-sm', onClick: () => socket && socket.retry() }, 'Retry')));
-        else if (status === 'open' && tabs.length === 0) showOverlay('Waiting for tabs…');
+      onStatus: (status, detail = {}) => {
+        if (status === 'reconnecting' && detail.code === CLOSE_SERVER_ERROR) {
+          // The browser failed to start or stopped (e.g. Chromium missing): do not hammer it.
+          const reason = lastError && lastError.message ? lastError.message : 'The sandbox browser stopped.';
+          if (socket) socket.stop();
+          showFailure(`The sandbox browser is not available: ${reason}`);
+        } else if (status === 'reconnecting' || status === 'connecting') {
+          showOverlay(status === 'connecting' ? 'Connecting to the sandbox browser…' : 'Reconnecting to the sandbox browser…');
+        } else if (status === 'failed') {
+          showFailure(detail.code === CLOSE_REVOKED ? 'Your access to this sandbox browser was revoked.' : 'The sandbox browser is unreachable.');
+        } else if (status === 'open' && tabs.length === 0) {
+          showOverlay('Waiting for tabs…');
+        }
       },
     });
     socket.start();
