@@ -1,0 +1,162 @@
+//! Provider accounts.
+
+use async_trait::async_trait;
+use rusqlite::{OptionalExtension, Row, params};
+use yulius_app::error::AppResult;
+use yulius_app::model::{AccountRecord, AccountStatus, Sealed};
+use yulius_app::ports::store::AccountStore;
+use yulius_domain::harness::Provider;
+use yulius_domain::ids::AccountId;
+use yulius_domain::time::Timestamp;
+
+use crate::{SqliteStore, bad_column, db};
+
+const COLS: &str = "id, provider, label, credential, priority, enabled, status, usage, last_error, created_at, updated_at";
+
+fn from_row(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
+    let id: String = row.get("id")?;
+    let provider: String = row.get("provider")?;
+    let status: String = row.get("status")?;
+    Ok(AccountRecord {
+        id: AccountId::parse(&id).map_err(|_| bad_column("account id", &id))?,
+        provider: Provider::parse(&provider).map_err(|_| bad_column("provider", &provider))?,
+        label: row.get("label")?,
+        credential: row.get::<_, Option<Vec<u8>>>("credential")?.map(Sealed),
+        priority: row.get("priority")?,
+        enabled: row.get("enabled")?,
+        status: AccountStatus::parse(&status),
+        usage_json: row.get("usage")?,
+        last_error: row.get("last_error")?,
+        created_at: Timestamp(row.get("created_at")?),
+        updated_at: Timestamp(row.get("updated_at")?),
+    })
+}
+
+#[async_trait]
+impl AccountStore for SqliteStore {
+    async fn insert_account(&self, a: &AccountRecord) -> AppResult<()> {
+        let a = a.clone();
+        self.call(move |c| {
+            c.execute(
+                &format!("INSERT INTO accounts ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
+                params![
+                    a.id.as_str(),
+                    a.provider.as_str(),
+                    a.label,
+                    a.credential.map(|s| s.0),
+                    a.priority,
+                    a.enabled,
+                    a.status.as_str(),
+                    a.usage_json,
+                    a.last_error,
+                    a.created_at.0,
+                    a.updated_at.0
+                ],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn account(&self, id: &AccountId) -> AppResult<Option<AccountRecord>> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| {
+            c.query_row(
+                &format!("SELECT {COLS} FROM accounts WHERE id = ?1"),
+                [id],
+                from_row,
+            )
+            .optional()
+            .map_err(db)
+        })
+        .await
+    }
+
+    async fn accounts(&self) -> AppResult<Vec<AccountRecord>> {
+        self.call(|c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT {COLS} FROM accounts ORDER BY provider, priority, created_at"
+                ))
+                .map_err(db)?;
+            let rows = stmt.query_map([], from_row).map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn update_account(
+        &self,
+        id: &AccountId,
+        label: Option<&str>,
+        priority: Option<i32>,
+        enabled: Option<bool>,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (id, label) = (id.as_str().to_owned(), label.map(str::to_owned));
+        self.call(move |c| {
+            c.execute(
+                "UPDATE accounts SET label = COALESCE(?1, label), priority = COALESCE(?2, priority), \
+                 enabled = COALESCE(?3, enabled), updated_at = ?4 WHERE id = ?5",
+                params![label, priority, enabled, at.0, id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn set_account_credential(
+        &self,
+        id: &AccountId,
+        credential: &Sealed,
+        status: AccountStatus,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (id, cred) = (id.as_str().to_owned(), credential.0.clone());
+        self.call(move |c| {
+            c.execute(
+                "UPDATE accounts SET credential = ?1, status = ?2, last_error = NULL, updated_at = ?3 WHERE id = ?4",
+                params![cred, status.as_str(), at.0, id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn set_account_state(
+        &self,
+        id: &AccountId,
+        status: AccountStatus,
+        usage_json: Option<&str>,
+        last_error: Option<&str>,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (id, usage, err) = (
+            id.as_str().to_owned(),
+            usage_json.map(str::to_owned),
+            last_error.map(str::to_owned),
+        );
+        self.call(move |c| {
+            c.execute(
+                "UPDATE accounts SET status = ?1, usage = COALESCE(?2, usage), last_error = ?3, updated_at = ?4 WHERE id = ?5",
+                params![status.as_str(), usage, err, at.0, id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete_account(&self, id: &AccountId) -> AppResult<()> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| {
+            c.execute("DELETE FROM accounts WHERE id = ?1", [id])
+                .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+}
