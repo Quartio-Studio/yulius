@@ -640,6 +640,40 @@ async fn snapshot_and_screenshot_tools_are_bounded() -> TestResult {
 }
 
 #[tokio::test]
+async fn bounded_screenshots_shrink_until_they_fit_the_budget() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    let params = ScreenshotParams { tab_id: tab };
+    let budget = 100_000;
+
+    // A small PNG is returned as is.
+    let small = instance.tool_screenshot_within(&params, budget).await?;
+    assert_eq!(
+        (small.result.mime_type.as_str(), small.quality, small.scale),
+        ("image/png", None, 1.0)
+    );
+
+    // 300 000 bytes as PNG: JPEG 80 % = 240 000, 60 % = 180 000, 50 % at 0.75 = 84 375 fits.
+    fake.set_screenshot_base64_len(300_000);
+    let shrunk = instance.tool_screenshot_within(&params, budget).await?;
+    assert_eq!(shrunk.result.mime_type, "image/jpeg");
+    assert_eq!((shrunk.quality, shrunk.scale), (Some(50), 0.75));
+    assert!(shrunk.result.data_base64.len() <= budget);
+    assert_eq!(shrunk.viewport, (1280, 800));
+    let requests = fake.calls_for("Page.captureScreenshot");
+    let last = requests.last().ok_or("no screenshot request")?;
+    assert_eq!(last.params["format"], "jpeg");
+    assert_eq!(last.params["clip"]["scale"], 0.75);
+    assert_eq!(last.params["clip"]["width"], 1280);
+
+    // Nothing fits a tiny budget: a typed error naming the bound.
+    assert!(matches!(
+        instance.tool_screenshot_within(&params, 10).await,
+        Err(BrowserError::ResultTooLarge { limit: 10 })
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn user_action_requests_are_registered_published_and_cleared() -> TestResult {
     let (_fake, instance, tab) = setup().await?;
     let mut events = instance.subscribe_events();

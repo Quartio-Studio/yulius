@@ -605,7 +605,7 @@ fn respond(
             let data = if len == 0 {
                 TINY_PNG_BASE64.to_owned()
             } else {
-                "A".repeat(len)
+                "A".repeat(scaled_screenshot_len(len, params))
             };
             Ok(json!({"data": data}))
         }
@@ -649,6 +649,32 @@ fn respond(
         | "Browser.close" => Ok(json!({})),
         other => Err((-32601, format!("'{other}' wasn't found"))),
     }
+}
+
+/// Synthetic size of a configured screenshot: PNG keeps `len`; JPEG shrinks with `quality`
+/// (percent) and with the square of `clip.scale`, like a real encoder roughly does.
+fn scaled_screenshot_len(len: usize, params: &Value) -> usize {
+    if params.get("format").and_then(Value::as_str) != Some("jpeg") {
+        return len;
+    }
+    let quality = params
+        .get("quality")
+        .and_then(Value::as_u64)
+        .unwrap_or(100)
+        .min(100);
+    let per_mille = params
+        .get("clip")
+        .and_then(|clip| clip.get("scale"))
+        .and_then(Value::as_f64)
+        .map_or(1000, |scale| {
+            (scale.clamp(0.0, 1.0) * 1000.0).round() as u64
+        });
+    let scaled = (len as u64)
+        .saturating_mul(quality)
+        .saturating_mul(per_mille)
+        .saturating_mul(per_mille)
+        / (100 * 1000 * 1000);
+    usize::try_from(scaled).unwrap_or(len).max(1)
 }
 
 async fn emit_frames(

@@ -114,6 +114,60 @@ impl Default for InstanceConfig {
     }
 }
 
+/// One encoding attempt of [`BrowserInstance::tool_screenshot_within`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScreenshotStep {
+    /// JPEG quality; `None` means PNG.
+    pub quality: Option<u8>,
+    /// Scale of the viewport (1.0 = full size).
+    pub scale: f64,
+}
+
+/// Attempts of [`BrowserInstance::tool_screenshot_within`], largest first.
+pub const BOUNDED_SCREENSHOT_STEPS: [ScreenshotStep; 7] = [
+    ScreenshotStep {
+        quality: None,
+        scale: 1.0,
+    },
+    ScreenshotStep {
+        quality: Some(80),
+        scale: 1.0,
+    },
+    ScreenshotStep {
+        quality: Some(60),
+        scale: 1.0,
+    },
+    ScreenshotStep {
+        quality: Some(50),
+        scale: 0.75,
+    },
+    ScreenshotStep {
+        quality: Some(45),
+        scale: 0.5,
+    },
+    ScreenshotStep {
+        quality: Some(40),
+        scale: 0.35,
+    },
+    ScreenshotStep {
+        quality: Some(30),
+        scale: 0.25,
+    },
+];
+
+/// A screenshot that fits a byte budget, with the encoding that made it fit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundedScreenshot {
+    /// The image (`image/png` or `image/jpeg`).
+    pub result: ScreenshotResult,
+    /// JPEG quality used; `None` for PNG.
+    pub quality: Option<u8>,
+    /// Scale of the image relative to the viewport (1.0 = CSS pixels).
+    pub scale: f64,
+    /// Viewport (width, height) in CSS pixels when captured.
+    pub viewport: (u32, u32),
+}
+
 /// Notifications for the server (viewer messages and the UI event stream).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowserEvent {
@@ -1540,6 +1594,60 @@ impl BrowserInstance {
             mime_type: "image/png".to_owned(),
             data_base64: data.to_owned(),
         })
+    }
+
+    /// `browser_screenshot` within a byte budget (e.g. an MCP result cap): a PNG of the
+    /// viewport when it fits, otherwise JPEGs of decreasing quality and scale
+    /// ([`BOUNDED_SCREENSHOT_STEPS`]) until one fits. The result says which step was used so
+    /// callers can map coordinates of a downscaled image back to the viewport.
+    ///
+    /// # Errors
+    /// [`BrowserError::ResultTooLarge`] when even the smallest step exceeds the budget; tab or
+    /// CDP failures.
+    pub async fn tool_screenshot_within(
+        &self,
+        params: &ScreenshotParams,
+        max_base64_bytes: usize,
+    ) -> Result<BoundedScreenshot, BrowserError> {
+        self.touch();
+        let session = self.session(&params.tab_id).await?;
+        let viewport = lock(&self.state).viewport;
+        let limit = max_base64_bytes.min(SCREENSHOT_MAX_BASE64_BYTES);
+        for step in BOUNDED_SCREENSHOT_STEPS {
+            let mut request = match step.quality {
+                None => json!({"format": "png"}),
+                Some(quality) => json!({"format": "jpeg", "quality": quality}),
+            };
+            if step.scale < 1.0 {
+                request["clip"] = json!({"x": 0, "y": 0, "width": viewport.0,
+                    "height": viewport.1, "scale": step.scale});
+            }
+            let shot = self
+                .cdp
+                .call_session(&session, "Page.captureScreenshot", request)
+                .await?;
+            let data = shot
+                .get("data")
+                .and_then(Value::as_str)
+                .ok_or_else(|| malformed("Page.captureScreenshot", "missing data"))?;
+            if data.len() <= limit {
+                let mime_type = if step.quality.is_some() {
+                    "image/jpeg"
+                } else {
+                    "image/png"
+                };
+                return Ok(BoundedScreenshot {
+                    result: ScreenshotResult {
+                        mime_type: mime_type.to_owned(),
+                        data_base64: data.to_owned(),
+                    },
+                    quality: step.quality,
+                    scale: step.scale,
+                    viewport,
+                });
+            }
+        }
+        Err(BrowserError::ResultTooLarge { limit })
     }
 
     /// `browser_request_user_action`: records a pending request on the tab (shown in tab
