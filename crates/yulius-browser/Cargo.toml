@@ -14,4 +14,38 @@ workspace = true
 [package.metadata.yulius]
 layer = "adapter"
 
+[features]
+# In-process fake CDP server and fake Chromium launcher for tests (this crate's and the
+# integrator's). Never enable in production builds.
+fake = []
+
 [dependencies]
+yulius-contracts = { workspace = true }
+yulius-domain = { workspace = true }
+base64 = { workspace = true }
+futures = { workspace = true }
+nix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[test]]
+name = "cdp"
+required-features = ["fake"]
+
+[[test]]
+name = "instance"
+required-features = ["fake"]
+
+[[test]]
+name = "manager"
+required-features = ["fake"]
+
+[[test]]
+name = "real_chromium"
