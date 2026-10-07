@@ -473,7 +473,7 @@ impl App {
         let token = self
             .deps
             .github
-            .installation_token(&app, installation)
+            .repository_token(&app, installation, &sandbox.repo_name)
             .await?;
         Ok(GitCredential { token })
     }

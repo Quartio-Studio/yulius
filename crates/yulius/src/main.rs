@@ -67,6 +67,15 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Check this host's prerequisites (git, agent CLIs, containment, browser, editor, data dir).
+    Doctor {
+        /// Data directory.
+        #[arg(long, env = "YULIUS_DATA", default_value = "/var/lib/yulius")]
+        data: PathBuf,
+        /// Require bubblewrap containment.
+        #[arg(long, env = "YULIUS_CONTAINED")]
+        contained: bool,
+    },
     /// Print build information.
     Version,
 }
@@ -107,6 +116,7 @@ fn main() -> ExitCode {
             since,
             yes,
         } => yulius::cli::import(path, &server, since, yes),
+        Command::Doctor { data, contained } => yulius::doctor::doctor(&data, contained),
         Command::Version => {
             println!("yulius {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

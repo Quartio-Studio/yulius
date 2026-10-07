@@ -10,19 +10,16 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use support::agents::{FakeAgentHarness, FakeAgentOptions};
 use support::{FakeGitHub, TestResult};
 use yulius::wiring::clock::SystemClock;
 use yulius::wiring::git::GitAdapter;
 use yulius::wiring::harness::HarnessAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::context::{App, AppConfig, Deps};
-use yulius_app::error::AppResult;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{
-    AccountRecord, AccountStatus, SandboxRecord, TaskOrigin, TaskRecord, UserRecord,
-};
-use yulius_app::ports::harness::{
-    HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch, TranslationTarget,
+    AccountRecord, AccountStatus, LaunchKind, SandboxRecord, TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
@@ -32,94 +29,21 @@ use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 
-/// Real harness planning (env, files, secrets) with the agent executable swapped for the fake.
-struct FakeAgentHarness {
-    inner: HarnessAdapter,
-    fake: PathBuf,
-}
-
-impl HarnessPort for FakeAgentHarness {
-    fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {
-        let mut plan = self.inner.plan(launch)?;
-        let session = plan
-            .session_id
-            .clone()
-            .unwrap_or_else(|| "fake-session".into());
-        plan.plan.argv = vec![
-            self.fake.to_string_lossy().into_owned(),
-            "--mode".into(),
-            "echo".into(),
-            "--session-id".into(),
-            session,
-            "--report-env".into(),
-            "YULIUS_TASK_TOKEN".into(),
-        ];
-        Ok(plan)
-    }
-    fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
-        self.inner.claude_transcript(home, worktree, session)
-    }
-    fn find_codex_rollout(&self, dir: &Path, session: &str) -> AppResult<Option<PathBuf>> {
-        self.inner.find_codex_rollout(dir, session)
-    }
-    fn discover_codex_session(
-        &self,
-        dir: &Path,
-        worktree: &Path,
-        since: Timestamp,
-    ) -> AppResult<Option<(String, PathBuf)>> {
-        self.inner.discover_codex_session(dir, worktree, since)
-    }
-    fn newest_claude_session(
-        &self,
-        home: &Path,
-        worktree: &Path,
-        since: Timestamp,
-    ) -> AppResult<Option<(String, PathBuf)>> {
-        self.inner.newest_claude_session(home, worktree, since)
-    }
-    fn watch(
-        &self,
-        harness: Harness,
-        path: &Path,
-        from_start: bool,
-    ) -> AppResult<Box<dyn TranscriptWatch>> {
-        self.inner.watch(harness, path, from_start)
-    }
-    fn translate(
-        &self,
-        from: Harness,
-        source: &Path,
-        to: Harness,
-        target: &TranslationTarget,
-    ) -> AppResult<PathBuf> {
-        self.inner.translate(from, source, to, target)
-    }
-    fn login_argv(&self, harness: Harness) -> Vec<String> {
-        self.inner.login_argv(harness)
-    }
-    fn extract_claude_token(&self, output: &str) -> Option<String> {
-        self.inner.extract_claude_token(output)
-    }
-    fn masker(&self) -> Box<dyn OutputMasker> {
-        self.inner.masker()
-    }
-    fn install_skills(
-        &self,
-        skills: &[(String, PathBuf)],
-        claude: &Path,
-        codex: &Path,
-    ) -> AppResult<()> {
-        self.inner.install_skills(skills, claude, codex)
-    }
-}
-
 fn build(data: &Path, fake: &Path) -> Result<Arc<App>, Box<dyn std::error::Error>> {
     build_with(data, Some(fake))
 }
 
 /// `fake = None` launches the real agent CLIs (live checks only).
 fn build_with(data: &Path, fake: Option<&Path>) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_full(data, fake, FakeAgentOptions::default(), 8)
+}
+
+fn build_full(
+    data: &Path,
+    fake: Option<&Path>,
+    agent: FakeAgentOptions,
+    max_live_sessions: u32,
+) -> Result<Arc<App>, Box<dyn std::error::Error>> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let store = SqliteStore::open(&data.join("yulius.db"))?;
     let mut config = AppConfig::new(
@@ -129,6 +53,7 @@ fn build_with(data: &Path, fake: Option<&Path>) -> Result<Arc<App>, Box<dyn std:
         exe.clone(),
     );
     config.contained = false;
+    config.max_live_sessions = max_live_sessions;
     let deps = Deps {
         store: Arc::new(store),
         clock: Arc::new(SystemClock),
@@ -136,10 +61,7 @@ fn build_with(data: &Path, fake: Option<&Path>) -> Result<Arc<App>, Box<dyn std:
         github: Arc::new(FakeGitHub::default()),
         session_host: Arc::new(PtySessionHost::new(exe.clone())),
         harness: match fake {
-            Some(fake) => Arc::new(FakeAgentHarness {
-                inner: HarnessAdapter::new(exe, "http://127.0.0.1:9"),
-                fake: fake.to_path_buf(),
-            }),
+            Some(fake) => Arc::new(FakeAgentHarness::new(exe, fake.to_path_buf(), agent)),
             None => Arc::new(HarnessAdapter::new(exe, "http://127.0.0.1:9")),
         },
         git: Arc::new(GitAdapter::new("git")),
@@ -472,6 +394,173 @@ fn real_claude_tui_reaches_the_prompt_inside_ptyhost() -> TestResult {
         app.stop_task_now(&id).await?;
         wait_for("the stop", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+async fn add_account(
+    app: &App,
+    id: &str,
+    priority: i32,
+) -> Result<AccountId, Box<dyn std::error::Error>> {
+    let account = AccountId::parse(id)?;
+    app.deps
+        .store
+        .insert_account(&AccountRecord {
+            id: account.clone(),
+            provider: Provider::Anthropic,
+            label: format!("Claude {id}"),
+            credential: Some(
+                app.deps
+                    .crypto
+                    .seal(b"sk-ant-oat01-second-test-credential")?,
+            ),
+            priority,
+            enabled: true,
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    Ok(account)
+}
+
+/// AC-ROT-2 (reactive path): the provider reports a usage limit at the end of a turn; Yulius moves
+/// the same session to the next account of the provider with a native resume.
+#[test]
+fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+        };
+        let app = build_full(&data, Some(&fake), agent, 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        add_account(&app, "a-claude-2", 1).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_task(&app, &sandbox, &user, "Rotation").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the limit", Duration::from_secs(15), || {
+            screen_contains(&app, &id, "LIMIT REACHED")
+        })
+        .await?;
+        wait_for(
+            "the switch to another account",
+            Duration::from_secs(90),
+            || async {
+                let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+                attempts.len() >= 2 && attempts.last().is_some_and(|a| !a.state.is_terminal())
+            },
+        )
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let (first, second) = (&attempts[0], &attempts[1]);
+        assert_ne!(first.account_id, second.account_id, "another account");
+        assert_eq!(second.launch_kind, LaunchKind::Resume);
+        assert_eq!(
+            first.provider_session_id, second.provider_session_id,
+            "same session"
+        );
+        assert!(
+            !app.deps.store.switches(&id).await?.is_empty(),
+            "decision recorded"
+        );
+        wait_for("the resumed run", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Running)
+        })
+        .await?;
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// AC-ROT-6: no capacity anywhere → the task waits for capacity instead of failing.
+#[test]
+fn without_capacity_the_task_waits() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+        };
+        let app = build_full(&data, Some(&fake), agent, 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_task(&app, &sandbox, &user, "No capacity").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("waiting for capacity", Duration::from_secs(60), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// AC-NFR-3: beyond the live-session limit tasks queue and start when capacity frees up.
+#[test]
+fn tasks_queue_at_the_session_limit_and_start_when_a_slot_frees() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 1)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let first = new_task(&app, &sandbox, &user, "First").await?;
+        wait_for("the first run", Duration::from_secs(30), || {
+            screen_contains(&app, &first, "FAKE-AGENT READY")
+        })
+        .await?;
+        let second = new_task(&app, &sandbox, &user, "Second").await?;
+        assert_eq!(task(&app, &second).await?.status, TaskStatus::Queued);
+        app.stop_task_now(&first).await?;
+        wait_for("the queued task to start", Duration::from_secs(60), || {
+            screen_contains(&app, &second, "FAKE-AGENT READY")
+        })
+        .await?;
+        assert_eq!(task(&app, &second).await?.status, TaskStatus::Running);
+        app.stop_task_now(&second).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &second).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
         Ok::<_, Box<dyn std::error::Error>>(())

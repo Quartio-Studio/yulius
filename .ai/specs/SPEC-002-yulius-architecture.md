@@ -117,9 +117,16 @@ sandboxes/<sandbox>/codex/sessions/     shared Codex rollouts for the sandbox
 sandboxes/<sandbox>/browser/        Chromium profile
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
 runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files
+shells/<shell>/                     ptyhost run directories of sandbox shells (UI-015)
+logins/<login>/                     temporary provider login (config dir + run dir); zero-filled and removed after the login
 transcripts/<task>/                 archived/imported provider transcripts (immutable copies)
-skills/                             instance skill catalog (vendored Open Mercato pack)
+skills/open-mercato/                instance skill catalog extracted from the binary (vendored Open Mercato pack)
 ```
+
+Unix socket paths are limited (104 bytes on macOS, 108 on Linux): `serve` refuses a data directory
+whose longest socket path (`<data>/logins/<uuid>/pty.sock`) would exceed 103 bytes. A ptyhost shuts
+its run down (normal escalation) when its run directory is removed or replaced or its socket
+disappears on two consecutive 2 s checks, so a deleted run directory never leaves an unmanaged agent.
 
 Atomic file writes: write to `*.tmp` in the same directory, `fsync`, rename, `fsync` the directory.
 
@@ -276,8 +283,19 @@ home), `TERM=xterm-256color`, `COLORTERM=truecolor`, git author identity of the 
 and `PORT` (first port of the range). Provider secrets are environment-only.
 
 Sandbox shell sessions (SPEC-001 UI-015) reuse the same ptyhost machinery with the user's login
-shell in the contained sandbox; they are not tasks, have no harness hooks or MCP token, are
-limited to 2 per user per sandbox, and end when their process exits or after 12 h idle.
+shell in the contained sandbox; they are not tasks, have no harness hooks, MCP token or Git
+credential helper, are limited to 4 live shells per sandbox, require current write access to attach,
+and end when their process exits, after 30 min without viewers, or at server shutdown.
+
+Launch preparation verified against the real CLIs (2026-10-07): with an isolated
+`CLAUDE_CONFIG_DIR`, Claude Code 2.1.292 opens a theme picker and, for every new working directory,
+a folder-trust prompt whose default answer is "No, exit". Before each launch Yulius merges
+`hasCompletedOnboarding`, `theme`, `projects[<worktree realpath>].hasTrustDialogAccepted` (and
+`bypassPermissionsModeAccepted` for contained runs) into `<CLAUDE_CONFIG_DIR>/.claude.json`, keeping
+Claude's own keys. Codex added `--no-daemon` after 0.154 (0.154.0 rejects it as an unexpected
+argument); Yulius probes `codex --help` once (empty `CODEX_HOME`, 10 s bound) and passes the flag
+only when it is advertised. Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` and
+`<CODEX_HOME>/skills` at each launch.
 
 | Concern | Claude Code (verified 2.1.292 flags) | Codex CLI (verified 0.160.1 flags) |
 | --- | --- | --- |
@@ -484,6 +502,12 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | R-04 | Claude usage percentage not available for setup tokens. | Reactive switching on limit errors; proactive only where usage is known. |
 | R-05 | Browser screencast performance on phones. | Adaptive frame rate/quality; snapshot mode. |
 | R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
+| R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; sandboxes share the loopback network, so any local process (including other sandboxes' agents) can drive a sandbox browser and its logged-in sessions; in contained mode CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's containment/network namespace. |
+| R-08 | An unrestricted GitHub installation token works for every repository of the installation. | Mitigated: agents receive tokens restricted to their sandbox repository (`repositories` parameter), only for live task tokens and only for `github.com/<owner>/<repo>`; unrestricted tokens stay server-side (delivery pushes, repository creation). |
+| R-09 | Delivery environment commands and openvscode-server run with the server's privileges outside containment, in a clone whose `.git` and the sandbox home are agent-writable (repository-local Git config such as filter drivers, tools reading `HOME`). | Hooks, fsmonitor and global/system Git config disabled for the checkout; editor disabled by default in contained mode (`--editor-uncontained` to accept). Open: run environment commands inside the sandbox containment. |
+| R-10 | The MCP server connection test lets a write user make the server POST to any URL, including internal addresses (SSRF); only tool names or a short error are returned. | Bounded 5 s exchange. Open: deny loopback/link-local/private targets unless an admin allows them. |
+| R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
+| R-12 | Codex releases without `--no-daemon` may host sessions in a shared app-server daemon outside the spawned process (containment, ownership). | Probe and prefer releases with the flag; live verification pending (no dedicated Codex account). |
 
 ## 13. Delivery checkpoints
 
@@ -507,8 +531,22 @@ Tracked as GitHub issues (one per checkpoint) with evidence comments.
 
 ## 14. Implementation evidence
 
-Pending; updated per checkpoint with commands, results and gaps.
+Integration branch `feat/core-services` (2026-10-07). Hosted CI is blocked by the organization's
+Actions billing; the local gate `scripts/dev ci` (check, fmt, clippy `-D warnings`, nextest, doctests,
+cargo-deny, machete, rustdoc) is the evidence until it runs.
+
+| Area | Evidence |
+| --- | --- |
+| Process supervision (NFR-001..005) | `crates/yulius/tests/supervision.rs`: real detached ptyhost + fake agent + real git worktrees; a server runtime is dropped and a new one reconciles and reattaches the same child pid, snapshot restores the screen, crash exit code recorded, stop escalation; `crates/yulius-ptyhost/tests/*` (13 + orphan watchdog). |
+| Hooks, briefing, discipline (COM-004, DSC-003) | `crates/yulius/tests/agent_hooks.rs` over the internal HTTP listener. |
+| Live Claude Code 2.1.292 | `tests/live_claude.rs` (opt-in): hooks fire, Yulius MCP `steps_set` with the task bearer token, session id and transcript path as predicted. `supervision.rs::real_claude_tui_reaches_the_prompt_inside_ptyhost` (opt-in): the real TUI in the real ptyhost reaches its prompt without first-run screens. |
+| Live Codex | Help-level flag check of 0.160.1 and 0.154.0 only; no live session (no dedicated account). |
+| Real adapters | `tests/git_adapter.rs` (real git); GitHub adapter unit-tested against recorded HTTP (no real App configured). |
+| Areas | `accounts.rs`, `analytics.rs`, `automations.rs`, `skills_mcp.rs`, `delivery.rs`, `projects.rs`, `import_server.rs`, `browser.rs`, `editor.rs`, `shells.rs`, `http_auth.rs`, `mcp_coordination.rs`. |
+| Not exercised | Real GitHub App/OAuth, real Chromium, openvscode-server, bubblewrap on Linux, Codex sessions, cross-provider resume with real CLIs, deployment (out of scope). |
 
 ## 15. Changelog
 
 - 2026-10-07: initial architecture and runtime contracts.
+- 2026-10-07: implementation findings — socket path bound, ptyhost orphan watchdog, Claude config
+  seeding, Codex flag probe, shell limits as implemented, risks R-07..R-12, evidence table.

@@ -902,3 +902,31 @@ async fn every_request_sends_the_required_headers() -> TestResult {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn repository_tokens_are_restricted_and_cached_per_repository() -> TestResult {
+    let fake = FakeGitHub::start().await?;
+    let installation = fake.add_installation("acme", OwnerKind::Organization);
+    let client = GitHubClient::new(fake.config())?;
+    let path = format!("/app/installations/{installation}/access_tokens");
+
+    let scoped = client.create_repository_token(installation, "app").await?;
+    let again = client.create_repository_token(installation, "APP").await?;
+    assert_eq!(scoped, again, "cached per repository, case-insensitively");
+    let unrestricted = client.create_installation_token(installation).await?;
+    assert_ne!(scoped.token, unrestricted.token, "separate cache entries");
+    assert_eq!(fake.count("POST", &path), 2);
+    let bodies: Vec<serde_json::Value> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.path == path)
+        .map(|r| serde_json::from_str(&r.body))
+        .collect::<Result<_, _>>()?;
+    assert_eq!(bodies[0]["repositories"], serde_json::json!(["app"]));
+    assert!(bodies[1].get("repositories").is_none());
+    assert!(matches!(
+        client.create_repository_token(installation, "../x").await,
+        Err(GitHubError::InvalidInput { .. })
+    ));
+    Ok(())
+}

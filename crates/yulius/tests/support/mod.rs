@@ -575,6 +575,8 @@ pub async fn insert_sandbox(
     Ok(())
 }
 
+/// The real harness planning with the fake agent executable.
+pub mod agents;
 /// Repository fixtures (real Git over local remotes) for project and import tests.
 pub mod repos;
 
@@ -766,6 +768,8 @@ pub struct HarnessOptions {
     pub dir: Option<tempfile::TempDir>,
     /// Adjusts the configuration before the app is built.
     pub configure: Option<ConfigureFn>,
+    /// Harness port (default: the real adapter with `/bin/false` hooks).
+    pub harness: Option<Arc<dyn yulius_app::ports::harness::HarnessPort>>,
 }
 
 /// Like [`harness`] with the given adapters. The data directory path is canonical.
@@ -795,10 +799,12 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         session_host: options
             .session_host
             .unwrap_or_else(|| Arc::new(yulius::wiring::pending::UnavailableSessionHost)),
-        harness: Arc::new(yulius::wiring::harness::HarnessAdapter::new(
-            "/bin/false".into(),
-            "http://127.0.0.1:1",
-        )),
+        harness: options.harness.unwrap_or_else(|| {
+            Arc::new(yulius::wiring::harness::HarnessAdapter::new(
+                "/bin/false".into(),
+                "http://127.0.0.1:1",
+            ))
+        }),
         git: options
             .git
             .unwrap_or_else(|| Arc::new(yulius::wiring::pending::UnavailableGit)),

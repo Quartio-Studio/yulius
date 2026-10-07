@@ -197,6 +197,21 @@ pub trait GitHubPort: Send + Sync {
         app: &GitHubAppConfig,
         installation_id: u64,
     ) -> AppResult<Secret>;
+
+    /// Installation token restricted to the repository `repo` of the installation's owner
+    /// (for agents). The default falls back to an unrestricted installation token.
+    ///
+    /// # Errors
+    /// GitHub failures.
+    async fn repository_token(
+        &self,
+        app: &GitHubAppConfig,
+        installation_id: u64,
+        repo: &str,
+    ) -> AppResult<Secret> {
+        let _ = repo;
+        self.installation_token(app, installation_id).await
+    }
     /// Repositories the installation can access.
     async fn installation_repos(
         &self,

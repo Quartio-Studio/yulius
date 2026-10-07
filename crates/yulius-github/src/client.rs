@@ -29,7 +29,8 @@ pub(crate) struct Inner {
     pub(crate) config: GitHubConfig,
     pub(crate) transport: Transport,
     pub(crate) signer: Option<AppSigner>,
-    pub(crate) tokens: Mutex<HashMap<u64, InstallationToken>>,
+    /// Installation tokens by (installation, repository restriction).
+    pub(crate) tokens: Mutex<HashMap<(u64, Option<String>), InstallationToken>>,
 }
 
 impl std::fmt::Debug for GitHubClient {

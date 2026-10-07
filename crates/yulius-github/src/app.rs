@@ -54,16 +54,45 @@ impl GitHubClient {
         &self,
         installation_id: u64,
     ) -> Result<InstallationToken, GitHubError> {
+        self.installation_token(installation_id, None).await
+    }
+
+    /// An installation access token restricted to the single repository `repository` (name
+    /// within the installation's owner), cached like [`Self::create_installation_token`]. Give
+    /// agents these: an unrestricted installation token works for every repository of the
+    /// installation.
+    ///
+    /// # Errors
+    /// Typed GitHub errors; [`GitHubError::InvalidInput`] for an invalid repository name.
+    pub async fn create_repository_token(
+        &self,
+        installation_id: u64,
+        repository: &str,
+    ) -> Result<InstallationToken, GitHubError> {
+        validate::repo_name(repository)?;
+        self.installation_token(installation_id, Some(repository))
+            .await
+    }
+
+    async fn installation_token(
+        &self,
+        installation_id: u64,
+        repository: Option<&str>,
+    ) -> Result<InstallationToken, GitHubError> {
         let now = self.now();
-        if let Some(cached) = self.cached_token(installation_id, now) {
+        let key = (installation_id, repository.map(str::to_ascii_lowercase));
+        if let Some(cached) = self.cached_token(&key, now) {
             return Ok(cached);
         }
         let jwt = self.app_jwt()?;
         let id = installation_id.to_string();
         let url = self.api_url(&["app", "installations", &id, "access_tokens"])?;
-        let wire: WireInstallationToken = self
-            .send_json(Method::POST, url, Some(&jwt), serde_json::json!({}))
-            .await?;
+        let body = match repository {
+            Some(name) => serde_json::json!({ "repositories": [name] }),
+            None => serde_json::json!({}),
+        };
+        let wire: WireInstallationToken =
+            self.send_json(Method::POST, url, Some(&jwt), body).await?;
         let expires_at = parse_rfc3339(&wire.expires_at)
             .ok_or_else(|| GitHubError::Decode("unparseable expires_at".into()))?;
         let token = InstallationToken {
@@ -77,19 +106,19 @@ impl GitHubClient {
                     cache.clear();
                 }
             }
-            cache.insert(installation_id, token.clone());
+            cache.insert(key, token.clone());
         }
         Ok(token)
     }
 
     fn cached_token(
         &self,
-        installation_id: u64,
+        key: &(u64, Option<String>),
         now: yulius_domain::time::Timestamp,
     ) -> Option<InstallationToken> {
         let cache = self.inner.tokens.lock().ok()?;
         cache
-            .get(&installation_id)
+            .get(key)
             .filter(|t| t.expires_at.millis_since(now) > TOKEN_REFRESH_MARGIN_MS)
             .cloned()
     }
