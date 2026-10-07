@@ -1,6 +1,12 @@
 // Mock backend for ?mock=1: an in-memory implementation of docs/api.md with fake
 // WebSockets (events, task/shell/login terminals, sandbox browser). It lets the UI be
-// exercised without `yulius serve`. Everything here is synthetic data.
+// exercised without `yulius serve` and documents the real response shapes (the routes
+// here are checked against the server router by crates/yulius/tests/ui_contract.rs).
+// Everything here is synthetic data.
+//
+// Like the real server it sends `resync` (not `sandbox.updated`) after sandbox changes,
+// answers 404 for the GitHub App admin endpoints that the server does not route yet, and
+// keeps unknown usage `null`.
 //
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
 // role=member|admin|superadmin (default superadmin), contained=0 (host mode), github=0.
@@ -25,6 +31,45 @@ class MockError extends Error {
 }
 
 const fail = (status, code, message) => { throw new MockError(status, code, message); };
+const clone = (value) => JSON.parse(JSON.stringify(value));
+
+// Named delivery presets, as `GET /api/delivery/presets` returns them (yulius-domain).
+const PRESETS = {
+  standard: { preset: 'standard', integration_branch: 'dev', production_branch: 'main', merge: 'squash', promote: 'merge_commit', auto_promote: false, require_checks: true, environments: [{ name: 'dev', after: 'integration', command: null, verify: 'manual' }] },
+  product: { preset: 'product', integration_branch: 'quartio', production_branch: 'main', merge: 'merge', promote: 'fast_forward', auto_promote: false, require_checks: true, environments: [{ name: 'dev-vm', after: 'integration', command: null, verify: 'manual' }, { name: 'rollout', after: 'production', command: null, verify: 'manual' }] },
+  studio: { preset: 'studio', integration_branch: 'quartio', production_branch: 'main', merge: 'merge', promote: 'fast_forward', auto_promote: true, require_checks: false, environments: [] },
+};
+
+/** Server-side relabeling: a named preset stays only while every setting equals its defaults. */
+function relabel(profile) {
+  const named = PRESETS[profile.preset];
+  const p = { ...profile, require_checks: profile.require_checks ?? (profile.preset === 'studio' ? false : true) };
+  if (!named) return { ...p, preset: 'custom' };
+  const same = JSON.stringify({ ...p, preset: '' }) === JSON.stringify({ ...named, preset: '' });
+  return same ? p : { ...p, preset: 'custom' };
+}
+
+const ENV_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const BRANCH_RE = /^[A-Za-z0-9._/-]{1,200}$/;
+
+/** PATCH /api/sandboxes/{sid} profile validation (subset of the server's rules). */
+function validateProfile(profile) {
+  if (!profile || typeof profile !== 'object') fail(422, 'invalid', 'profile is required');
+  for (const key of ['integration_branch', 'production_branch']) if (!BRANCH_RE.test(profile[key] || '')) fail(422, 'invalid', `invalid branch name: ${profile[key] || ''}`);
+  if (profile.integration_branch === profile.production_branch) fail(422, 'invalid', 'integration and production branches must differ');
+  if (!['squash', 'merge', 'rebase'].includes(profile.merge)) fail(422, 'invalid', 'merge must be squash, merge or rebase');
+  if (!['merge_commit', 'fast_forward'].includes(profile.promote)) fail(422, 'invalid', 'promote must be merge_commit or fast_forward');
+  const envs = Array.isArray(profile.environments) ? profile.environments : [];
+  if (envs.length > 8) fail(422, 'invalid', 'at most 8 environments');
+  const seen = new Set();
+  for (const env of envs) {
+    if (!ENV_NAME_RE.test(env.name || '')) fail(422, 'invalid', `invalid environment name: ${env.name || ''}`);
+    if (seen.has(env.name)) fail(422, 'invalid', `duplicate environment: ${env.name}`);
+    seen.add(env.name);
+    if (env.command !== null && env.command !== undefined && (!String(env.command).trim() || /[\r\n]/.test(env.command) || env.command.length > 2000)) fail(422, 'invalid', `invalid command for ${env.name}`);
+    if (env.verify === 'command' && !env.command) fail(422, 'invalid', `${env.name}: verify "command" needs a command`);
+  }
+}
 
 function json(status, body) {
   if (status === 204) return new Response(null, { status });
@@ -73,18 +118,17 @@ function seed(params) {
     eventSockets: new Set(),
     sessions: new Map(),
     browsers: new Map(),
-    runs: new Map(),
+    liveShells: new Set(),
+
     nextId: 100,
   };
-  const profile = (preset) => ({
-    standard: { preset: 'standard', integration_branch: 'dev', production_branch: 'main', merge: 'squash', promote: 'merge_commit', auto_promote: false, environments: [{ name: 'dev', after: 'integration', command: 'scripts/deploy dev', verify: 'manual' }] },
-    product: { preset: 'product', integration_branch: 'quartio', production_branch: 'main', merge: 'squash', promote: 'fast_forward', auto_promote: false, environments: [{ name: 'dev-vm', after: 'integration', command: 'node scripts/deployer.mjs --target dev-vm', verify: 'manual' }, { name: 'production', after: 'production', command: 'node scripts/deployer.mjs --target fleet', verify: 'manual' }] },
-    studio: { preset: 'studio', integration_branch: 'quartio', production_branch: 'main', merge: 'squash', promote: 'fast_forward', auto_promote: true, environments: [] },
-  }[preset]);
+  // Product: the product preset with a dev-vm deploy command (so it is "custom"): exercises
+  // command runs plus manual confirmation. Studio: continuous, no environments.
+  const productProfile = relabel({ ...clone(PRESETS.product), environments: [{ name: 'dev-vm', after: 'integration', command: 'node scripts/deployer.mjs --target dev-vm', verify: 'manual' }, { name: 'rollout', after: 'production', command: null, verify: 'manual' }] });
   db.sandboxes = [
-    { id: 'sb_studio', slug: 'studio', name: 'Quartio Studio', repo: { owner: 'Quartio-Studio', name: 'studio', url: 'https://github.com/Quartio-Studio/studio' }, access: role === 'member' ? 'write' : 'admin', default_branch: 'main', profile: profile('studio'), onboarding: 'ready', port_base: 20000, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 } },
-    { id: 'sb_product', slug: 'product', name: 'Product', repo: { owner: 'Quartio-Studio', name: 'product', url: 'https://github.com/Quartio-Studio/product' }, access: role === 'member' ? 'write' : 'admin', default_branch: 'main', profile: profile('product'), onboarding: 'preparing', port_base: 20020, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 } },
-    { id: 'sb_three', slug: 'sandbox-3', name: 'Sandbox 3', repo: { owner: 'Quartio-Studio', name: 'sandbox-3', url: 'https://github.com/Quartio-Studio/sandbox-3' }, access: 'read', default_branch: 'main', profile: profile('standard'), onboarding: 'not_needed', port_base: 20040, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 } },
+    { id: 'sb_studio', slug: 'studio', name: 'studio', repo: { owner: 'Quartio-Studio', name: 'studio', url: 'https://github.com/Quartio-Studio/studio' }, access: role === 'member' ? 'write' : 'admin', default_branch: 'main', profile: clone(PRESETS.studio), onboarding: 'ready', port_base: 20000, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 } },
+    { id: 'sb_product', slug: 'product', name: 'product', repo: { owner: 'Quartio-Studio', name: 'product', url: 'https://github.com/Quartio-Studio/product' }, access: role === 'member' ? 'write' : 'admin', default_branch: 'main', profile: productProfile, onboarding: 'ready', port_base: 20020, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 } },
+    { id: 'sb_three', slug: 'sandbox-3', name: 'sandbox-3', repo: { owner: 'Quartio-Studio', name: 'sandbox-3', url: 'https://github.com/Quartio-Studio/sandbox-3' }, access: 'read', default_branch: 'main', profile: clone(PRESETS.standard), onboarding: 'not_needed', port_base: 20040, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 } },
   ];
   const t = (sandbox, number, title, harness, status, activity, extra = {}) => {
     const id = `tsk_${sandbox.slice(3)}_${number}`;
@@ -92,7 +136,7 @@ function seed(params) {
     const current = extra.current ?? (LIVE.has(status) && status !== 'queued');
     return {
       id, sandbox_id: sandbox, number, title, harness, status, activity,
-      branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`,
+      branch: extra.branch === null ? null : `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`,
       origin: extra.origin || 'ui', created_by: { login: extra.author || 'mkarp' },
       created_at: iso(extra.age || number * 3 * HOUR), updated_at: iso(extra.updated ?? number * 7 * MIN),
       unread_messages: extra.unread || 0, archived: Boolean(extra.archived),
@@ -100,8 +144,10 @@ function seed(params) {
       stepsList: extra.noSteps ? [] : makeSteps(id, done, current),
       model: harness === 'claude' ? 'claude-opus-4' : 'gpt-5-codex',
       effort: 'high',
+      delivery: extra.delivery || null, // {stage, environment, pr} once delivery started
     };
   };
+  const pr = (number, title, state, base, checks) => ({ number, url: `https://github.com/Quartio-Studio/${number > 400 ? 'product' : 'studio'}/pull/${number}`, title, state, base, head: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, checks });
   db.tasks = [
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, unread: 2, updated: 20e3 }),
     t('sb_studio', 11, '3D model viewer', 'codex', 'running', 'waiting', { done: 2, author: 'anna-q' }),
@@ -110,12 +156,13 @@ function seed(params) {
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
     t('sb_studio', 7, 'Search indexing', 'claude', 'waiting_capacity', 'needs_attention', { done: 1 }),
     t('sb_studio', 6, 'Fix flaky checkout test', 'codex', 'starting', null, { noSteps: true }),
-    t('sb_studio', 5, 'Docs restructure', 'claude', 'closed', null, { done: 7, current: false, updated: 5 * HOUR }),
-    t('sb_studio', 4, 'Payment webhook', 'claude', 'stopped_cancelled', null, { done: 3, current: false, updated: 9 * HOUR }),
+    t('sb_studio', 5, 'Docs restructure', 'claude', 'closed', null, { done: 7, current: false, updated: 5 * HOUR, delivery: { stage: 'pr_open', environment: null, pr: pr(214, 'Docs restructure', 'open', 'quartio', 'success') } }),
+    t('sb_studio', 4, 'Payment webhook', 'claude', 'stopped_cancelled', null, { done: 3, current: false, updated: 9 * HOUR, delivery: { stage: 'pr_open', environment: null, pr: pr(209, 'Payment webhook', 'open', 'quartio', 'failure') } }),
     t('sb_studio', 3, 'Image pipeline', 'codex', 'stopped_crashed', null, { done: 2, current: false, updated: DAY }),
     t('sb_studio', 2, 'Legacy import', 'claude', 'failed_spawn_error', null, { noSteps: true, updated: 2 * DAY, origin: 'import' }),
-    t('sb_studio', 1, 'Old landing page', 'claude', 'closed', null, { done: 7, current: false, archived: true, updated: 6 * DAY }),
-    t('sb_product', 1, 'Prepare repository for Yulius', 'claude', 'running', 'working', { origin: 'onboarding', done: 1 }),
+    t('sb_studio', 1, 'Old landing page', 'claude', 'closed', null, { done: 7, current: false, archived: true, updated: 6 * DAY, delivery: { stage: 'production_done', environment: null, pr: pr(180, 'Old landing page', 'merged', 'quartio', 'success') } }),
+    t('sb_product', 1, 'Prepare repository for Yulius', 'claude', 'closed', null, { origin: 'onboarding', done: 7, current: false, updated: 2 * DAY }),
+    t('sb_product', 2, 'Pricing page', 'codex', 'closed', null, { done: 7, current: false, updated: 3 * HOUR, delivery: { stage: 'merged_integration', environment: null, pr: pr(512, 'Pricing page', 'merged', 'quartio', 'none') } }),
     t('sb_three', 2, 'Write README', 'claude', 'closed', null, { done: 7, current: false }),
     t('sb_three', 1, 'Explore data model', 'codex', 'running', 'working', { done: 1, author: 'anna-q' }),
   ];
@@ -132,8 +179,10 @@ function seed(params) {
     { id: 'acc_x2', provider: 'openai', label: 'Codex #2', enabled: true, priority: 2, status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
     { id: 'acc_x3', provider: 'openai', label: 'Codex spare', enabled: false, priority: 9, status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
+  // `wf-feature` and `wf-quick-task` are the built-in instance workflows the server seeds.
   db.workflows = [
-    { id: 'wf_feature', sandbox: null, name: 'Feature (spec → PR)', description: 'Default discipline: spec with plan, implementation, tests, PR.', steps: ['Write task spec', 'Implement', 'Test', 'Open PR'], instructions: 'Follow AGENTS.md. Keep the spec Plan checklist in sync.', gates: { require_spec: true, require_tests: true }, scope: 'instance' },
+    { id: 'wf-feature', sandbox: null, name: 'Feature', description: 'Default discipline: spec with plan, implementation, tests, PR.', steps: ['Write task spec', 'Implement', 'Test', 'Open PR'], instructions: 'Follow AGENTS.md. Keep the spec Plan checklist in sync.', gates: { require_spec: true, require_tests: true }, scope: 'instance' },
+    { id: 'wf-quick-task', sandbox: null, name: 'Quick task', description: 'Small change without a spec gate.', steps: ['Implement', 'Test'], instructions: '', gates: { require_spec: false, require_tests: true }, scope: 'instance' },
     { id: 'wf_bugfix', sandbox: 'sb_studio', name: 'Bugfix', description: 'Reproduce with a failing test first.', steps: ['Reproduce with a failing test', 'Fix', 'Open PR'], instructions: '', gates: { require_spec: true, require_tests: true }, scope: 'sandbox' },
   ];
   db.skills = [
@@ -144,18 +193,22 @@ function seed(params) {
     { name: 'om-testing', description: 'Write meaningful tests for every behavior change (Open Mercato).', source: 'open-mercato', path: 'open-mercato/om-testing/SKILL.md', enabled: false },
   ];
   db.automations = [
-    { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf_feature', harness: 'claude', enabled: true, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
+    { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
     { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'codex', enabled: false, created_via: 'ui', next_run_at: null, last_run: null },
   ];
   db.mcp = [
     { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true },
     { id: 'mcp_apify', sandbox: 'sb_studio', scope: 'sandbox', name: 'apify', transport: 'stdio', command: 'npx', args: ['-y', '@apify/actors-mcp-server'], url: null, env_keys: ['APIFY_TOKEN'], header_keys: [], enabled: true },
   ];
+  // AdminUser (the superadmin is not listed).
   db.users = [
-    { id: 'usr_1', github_login: 'mkarp', display_name: 'Michal Karp', is_instance_admin: true, disabled: false, is_superadmin: false, last_seen_at: iso(MIN) },
-    { id: 'usr_2', github_login: 'anna-q', display_name: 'Anna', is_instance_admin: false, disabled: false, is_superadmin: false, last_seen_at: iso(3 * HOUR) },
-    { id: 'usr_3', github_login: 'old-contractor', display_name: '', is_instance_admin: false, disabled: true, is_superadmin: false, last_seen_at: iso(40 * DAY) },
+    { id: 'usr_1', github_login: 'mkarp', display_name: 'Michal Karp', is_instance_admin: true, disabled: false, github_linked: true },
+    { id: 'usr_2', github_login: 'anna-q', display_name: 'Anna', is_instance_admin: false, disabled: false, github_linked: true },
+    { id: 'usr_3', github_login: 'new-hire', display_name: 'new-hire', is_instance_admin: false, disabled: false, github_linked: false },
+    { id: 'usr_4', github_login: 'old-contractor', display_name: 'old-contractor', is_instance_admin: false, disabled: true, github_linked: true },
   ];
+  db.runs = []; // EnvironmentRun records, newest last
+  db.promotionPr = new Map(); // sandbox id → open promotion PR URL (merge_commit promotion)
   recount(db);
   return db;
 }
@@ -177,39 +230,97 @@ function summary(task) {
   };
 }
 
-function prFor(task) {
-  if (task.number === 5) return { number: 214, url: 'https://github.com/Quartio-Studio/studio/pull/214', title: 'Docs restructure', state: 'open', base: 'quartio', head: task.branch, checks: 'success' };
-  if (task.number === 4) return { number: 209, url: 'https://github.com/Quartio-Studio/studio/pull/209', title: 'Payment webhook', state: 'open', base: 'quartio', head: task.branch, checks: 'failure' };
-  if (task.number === 1) return { number: 180, url: 'https://github.com/Quartio-Studio/studio/pull/180', title: 'Old landing page', state: 'merged', base: 'quartio', head: task.branch, checks: 'success' };
-  return null;
+/** Where a stage sits in the profile: the next environment, promotion, or nothing (domain `position`). */
+function position(profile, stage, environment) {
+  const envs = Array.isArray(profile.environments) ? profile.environments : [];
+  const integration = envs.filter((e) => e.after === 'integration');
+  const production = envs.filter((e) => e.after === 'production');
+  if (stage === 'none') return { kind: 'no_pr' };
+  if (stage === 'pr_open') return { kind: 'pr_open' };
+  if (stage === 'merged_integration') return integration[0] ? { kind: 'env', env: integration[0] } : { kind: 'promote' };
+  if (stage === 'env_done') {
+    const i = integration.findIndex((e) => e.name === environment);
+    if (i >= 0) return integration[i + 1] ? { kind: 'env', env: integration[i + 1] } : { kind: 'promote' };
+    const j = production.findIndex((e) => e.name === environment);
+    if (j >= 0 && production[j + 1]) return { kind: 'env', env: production[j + 1] };
+    return { kind: 'done' };
+  }
+  if (stage === 'promoted') return production[0] ? { kind: 'env', env: production[0] } : { kind: 'done' };
+  return { kind: 'done' };
 }
 
-function delivery(task) {
-  const pr = prFor(task);
-  const specValid = task.number !== 12;
+function specProblems(task) {
+  return task.number === 12 && task.sandbox_id === 'sb_studio' ? ['Plan: 3 unchecked items without notes', 'Missing section: Verification'] : [];
+}
+
+/** `Delivery` of a task: next actions the domain accepts now, blocked ones with the reason. */
+function delivery(db, task) {
+  const sandbox = sandboxOf(db, task.sandbox_id);
+  const profile = sandbox.profile;
+  const state = task.delivery || { stage: 'none', environment: null, pr: null };
+  const problems = specProblems(task);
   const stepsOpen = task.stepsList.filter((s) => s.status !== 'done' && s.status !== 'skipped').length;
-  let stage = 'none';
-  let next = specValid ? ['open_pr'] : ['open_pr'];
-  if (pr && pr.state === 'open') { stage = 'pr_open'; next = ['merge']; }
-  if (pr && pr.state === 'merged') { stage = 'promoted'; next = []; }
-  if (task.deliveryStage) { stage = task.deliveryStage; next = task.deliveryNext; }
+  const next = [];
+  const blocked = [];
+  const pos = position(profile, state.stage, state.environment);
+  if (pos.kind === 'no_pr') {
+    if (task.branch === null) blocked.push({ action: 'open_pr', reason: 'the task has no branch yet' });
+    else if (problems.length) blocked.push({ action: 'open_pr', reason: `the task spec is not valid: ${problems[0]}` });
+    else next.push('open_pr');
+  } else if (pos.kind === 'pr_open') {
+    const checks = state.pr ? state.pr.checks : 'none';
+    if (profile.require_checks !== false && checks !== 'success') blocked.push({ action: 'merge', reason: `checks are ${checks}; the profile requires green checks` });
+    else if (stepsOpen) blocked.push({ action: 'merge', reason: `${stepsOpen} plan steps are still open` });
+    else next.push('merge');
+  } else if (pos.kind === 'env') {
+    if (pos.env.command) next.push(`run_env:${pos.env.name}`);
+    if (pos.env.verify === 'manual') next.push(`confirm_env:${pos.env.name}`);
+  } else if (pos.kind === 'promote') {
+    next.push('promote');
+  }
+  const pull = state.pr ? { ...state.pr, checks: state.pr.state === 'open' ? state.pr.checks : 'none' } : null;
   return {
-    stage, pr: task.pr || pr, spec_valid: specValid,
-    spec_problems: specValid ? [] : ['Plan: 3 unchecked items without notes', 'Missing section: Verification', 'Decision log does not reference the ADR for the payment provider'],
-    steps_open: stepsOpen, next_actions: next,
+    stage: state.stage,
+    environment: state.stage === 'env_done' ? state.environment : null,
+    pr: pull,
+    spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
+    spec_valid: problems.length === 0 && task.stepsList.length > 0,
+    spec_problems: task.stepsList.length ? problems : ['No spec is registered and none under docs/specs names this task.'],
+    steps_open: stepsOpen,
+    next_actions: next,
+    blocked,
+    notes: [],
   };
 }
 
+/** Advance every task of the sandbox for which `envName` is due (after a run or confirmation). */
+function advanceEnvironment(db, sandbox, envName) {
+  const envs = sandbox.profile.environments || [];
+  const production = envs.filter((e) => e.after === 'production');
+  for (const task of db.tasks.filter((t) => t.sandbox_id === sandbox.id && t.delivery)) {
+    const pos = position(sandbox.profile, task.delivery.stage, task.delivery.environment);
+    if (pos.kind !== 'env' || pos.env.name !== envName) continue;
+    const last = production.length && production[production.length - 1].name === envName;
+    task.delivery = { ...task.delivery, stage: last ? 'production_done' : 'env_done', environment: last ? null : envName };
+    touch(db, task);
+  }
+}
+
 function detail(db, task) {
+  const live = LIVE.has(task.status);
+  const ran = task.origin !== 'onboarding' || task.stepsList.some((s) => s.status === 'done');
   return {
     ...summary(task),
-    spec_path: task.stepsList.length ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
-    worktree: `/srv/yulius/sandboxes/${task.sandbox_id.slice(3)}/worktrees/${task.number}`,
-    attempts: [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', launch_kind: 'new', state: LIVE.has(task.status) ? 'live' : 'exited', started_at: task.created_at, ended_at: LIVE.has(task.status) ? null : task.updated_at, exit_code: LIVE.has(task.status) ? null : 0, exit_reason: LIVE.has(task.status) ? null : 'normal' }],
+    spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
+    worktree: task.branch ? `/srv/yulius/sandboxes/${task.sandbox_id.slice(3)}/worktrees/${task.number}` : null,
+    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live ? null : 0, exit_reason: live ? null : 'normal' }] : [],
     steps_list: task.stepsList,
-    metrics: { wall_ms: Date.now() - Date.parse(task.created_at), active_ms: 41 * MIN, input_tokens: 182340, output_tokens: 23410, cache_read_tokens: 1204000, cache_write_tokens: 90210, models: [task.model], switches: task.number === 9 ? 1 : 0, turns: 17 },
+    // Unknown usage stays null (task #6 never reported tokens).
+    metrics: task.number === 6
+      ? { wall_ms: Date.now() - Date.parse(task.created_at), active_ms: null, input_tokens: null, output_tokens: null, cache_read_tokens: null, cache_write_tokens: null, models: [], switches: 0, turns: null }
+      : { wall_ms: Date.now() - Date.parse(task.created_at), active_ms: 41 * MIN, input_tokens: 182340, output_tokens: 23410, cache_read_tokens: 1204000, cache_write_tokens: 90210, models: [task.model], switches: task.number === 9 ? 1 : 0, turns: 17 },
     feedback: [],
-    delivery: delivery(task),
+    delivery: delivery(db, task),
     switches: task.number === 9 ? [{ at: iso(2 * MIN), reason: 'claude accounts exhausted', from: 'claude/Claude #2', to: 'codex/Codex #1' }] : [],
   };
 }
@@ -230,12 +341,16 @@ function emit(db, event) {
   for (const socket of db.eventSockets) socket.push(data);
 }
 
+/** Sandbox changes: the server publishes `resync` (sandbox views differ per user). */
+function resync(db) {
+  emit(db, { type: 'resync' });
+}
+
+/** Task change: `task.updated` only; sandbox counters are not pushed (clients refetch). */
 function touch(db, task, changes = {}) {
   Object.assign(task, changes, { updated_at: new Date().toISOString() });
   recount(db);
   emit(db, { type: 'task.updated', task: summary(task) });
-  const sandbox = db.sandboxes.find((s) => s.id === task.sandbox_id);
-  if (sandbox) emit(db, { type: 'sandbox.updated', sandbox });
   const session = db.sessions.get(task.id);
   if (session) session.taskChanged();
 }
@@ -279,8 +394,8 @@ const ID = '([^/]+)';
 
 route('GET', '/api/setup/status', ({ db }) => ({ setup_required: db.setupRequired }));
 route('POST', '/api/setup', ({ db, body }) => {
-  if (!db.setupRequired) fail(409, 'conflict', 'This instance is already set up.');
-  if (body.token !== 'YUL-SETUP-1234') fail(422, 'invalid', 'Wrong setup token. (Mock token: YUL-SETUP-1234)');
+  if (!db.setupRequired) fail(403, 'forbidden', 'This instance is already set up.');
+  if (body.token !== 'YUL-SETUP-1234') fail(403, 'forbidden', 'Wrong setup token. (Mock token: YUL-SETUP-1234)');
   if (body.password !== body.password_confirm) fail(422, 'invalid', 'Passwords do not match.');
   if (!body.confirm_saved) fail(422, 'invalid', 'Confirm that the password is stored safely.');
   db.setupRequired = false;
@@ -295,75 +410,117 @@ route('POST', '/api/auth/password', ({ db, body }) => {
   db.me.user = { ...db.me.user, is_superadmin: true };
   return db.me;
 });
+// Mock only: stands in for the GitHub OAuth round trip (/api/auth/github/start → callback).
 route('POST', '/api/auth/mock-github', ({ db }) => { db.signedIn = true; return db.me; });
 route('POST', '/api/auth/logout', ({ db }) => { db.signedIn = false; for (const s of db.eventSockets) s.serverClose(1000); return json(204); });
 route('GET', '/api/me', ({ db }) => db.me);
 route('POST', '/api/device/approve', ({ body }) => {
-  if (!/^[A-Z0-9]{4}-?[A-Z0-9]{4}$/.test(body.user_code || '')) fail(404, 'not_found', 'Unknown or expired code.');
+  if (!/^[A-Z0-9]{4}-?[A-Z0-9]{4}$/.test(body.user_code || '')) fail(404, 'not_found', 'not found');
   return json(204);
 });
 
 route('GET', '/api/sandboxes', ({ db }) => db.sandboxes);
-route('GET', '/api/github/repositories', ({ db }) => [
-  ...db.sandboxes.map((s) => ({ owner: s.repo.owner, name: s.repo.name, private: true, access: s.access, already_sandbox: true })),
-  { owner: 'Quartio-Studio', name: 'website', private: false, access: 'admin', already_sandbox: false },
-  { owner: 'Quartio-Studio', name: 'mobile-app', private: true, access: 'admin', already_sandbox: false },
-  { owner: 'Quartio-Studio', name: 'infra', private: true, access: 'write', already_sandbox: false },
-  { owner: 'Quartio-Studio', name: 'customer-portal', private: true, access: 'admin', already_sandbox: false },
-]);
+route('GET', '/api/github/repositories', ({ db }) => {
+  if (!db.me.user.github_linked) fail(403, 'forbidden', 'a GitHub-linked account is required');
+  if (!db.me.instance.github_configured) fail(409, 'conflict', 'the GitHub App is not configured');
+  return [
+    ...db.sandboxes.map((s) => ({ owner: s.repo.owner, name: s.repo.name, private: true, access: s.access, already_sandbox: true })),
+    { owner: 'Quartio-Studio', name: 'website', private: false, access: 'admin', already_sandbox: false },
+    { owner: 'Quartio-Studio', name: 'mobile-app', private: true, access: 'admin', already_sandbox: false },
+    { owner: 'Quartio-Studio', name: 'infra', private: true, access: 'write', already_sandbox: false },
+    { owner: 'Quartio-Studio', name: 'handbook', private: true, access: 'read', already_sandbox: false },
+  ];
+});
 route('GET', '/api/templates', () => [
-  { id: 'empty', name: 'Empty project (Yulius format only)', description: 'Docs format, AGENTS.md and a minimal test command.' },
-  { id: 'web', name: 'Web application', description: 'Small web app skeleton with a test runner and dev server on the sandbox port range.' },
-  { id: 'python-data', name: 'Python data project', description: 'Python package with notebooks folder, pytest and a data/README.' },
-  { id: 'rust-service', name: 'Rust service', description: 'Axum service skeleton with cargo test and CI workflow.' },
+  { id: 'empty', name: 'Empty project (Yulius format only)', description: 'Documentation format and rules only; the first task chooses the technology.' },
+  { id: 'web', name: 'Web application', description: 'Node.js HTTP server with a testable request handler; no dependencies.' },
+  { id: 'python-data', name: 'Python data project', description: 'Python package summarizing CSV data with unittest tests; standard library only.' },
+  { id: 'rust-service', name: 'Rust service', description: 'Rust HTTP service on std::net with unit tests; no dependencies.' },
 ]);
 route('POST', '/api/sandboxes', ({ db, body }) => {
-  let name;
   let repoName;
   if (body.mode === 'import') {
-    if (!body.repo || !body.repo.includes('/')) fail(422, 'invalid', 'Choose a repository.');
-    repoName = body.repo.split('/')[1];
-    name = repoName;
+    if (!body.repo || !body.repo.includes('/')) fail(422, 'invalid', 'repo must be owner/name');
+    const [owner, name] = body.repo.split('/');
+    if (owner !== 'Quartio-Studio') fail(422, 'invalid', 'only repositories of the instance owner can be imported');
+    if (['infra', 'handbook'].includes(name)) fail(403, 'forbidden', 'importing needs admin or maintain permission on the repository');
+    repoName = name;
     if (db.sandboxes.some((s) => s.repo.name === repoName)) fail(409, 'conflict', 'That repository is already a sandbox.');
-  } else {
+  } else if (body.mode === 'create') {
+    if (!db.me.user.is_instance_admin) fail(403, 'forbidden', 'only instance administrators can create projects');
     if (!/^[A-Za-z0-9._-]{1,100}$/.test(body.name || '')) fail(422, 'invalid', 'Invalid repository name.');
     repoName = body.name;
-    name = body.name;
+  } else {
+    fail(422, 'invalid', 'mode must be import or create');
   }
   db.nextId += 1;
   const sandbox = {
-    id: `sb_${db.nextId}`, slug: repoName.toLowerCase(), name,
+    id: `sb_${db.nextId}`, slug: repoName.toLowerCase(), name: repoName,
     repo: { owner: 'Quartio-Studio', name: repoName, url: `https://github.com/Quartio-Studio/${repoName}` },
     access: 'admin', default_branch: 'main',
-    profile: { preset: 'standard', integration_branch: 'dev', production_branch: 'main', merge: 'squash', promote: 'merge_commit', auto_promote: false, environments: [{ name: 'dev', after: 'integration', command: null, verify: 'manual' }] },
+    profile: clone(PRESETS.standard),
+    // An imported repository that does not follow the documentation format gets a resting
+    // preparation task; created projects start from a conforming template.
     onboarding: body.mode === 'import' ? 'pending' : 'not_needed',
     port_base: 20000 + db.sandboxes.length * 20, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 },
   };
   db.sandboxes.push(sandbox);
   if (body.mode === 'import') {
-    later(() => { sandbox.onboarding = 'preparing'; emit(db, { type: 'sandbox.updated', sandbox }); }, 2500);
+    const id = `tsk_${sandbox.id.slice(3)}_1`;
+    db.tasks.push({
+      id, sandbox_id: sandbox.id, number: 1, title: 'Prepare repository for Yulius', harness: 'claude', status: 'closed', activity: null,
+      branch: null, origin: 'onboarding', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      unread_messages: 0, archived: false, account_label: null,
+      stepsList: ['Assess the documentation format', 'Add AGENTS.md and docs/specs', 'Open PR'].map((title, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title, status: 'pending', note: '', updated_by: null, updated_at: null })),
+      model: 'claude-opus-4', effort: 'high', delivery: null, prompt: 'Adapt this repository to the Yulius documentation format.',
+    });
   }
+  recount(db);
+  resync(db);
   return json(201, sandbox);
 });
 route('GET', `/api/sandboxes/${ID}`, ({ db, p }) => sandboxOf(db, p[0]));
 route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
-  if (body.profile) sandbox.profile = body.profile;
-  emit(db, { type: 'sandbox.updated', sandbox });
+  if (body.profile) {
+    validateProfile(body.profile);
+    sandbox.profile = relabel({ ...body.profile, environments: (body.profile.environments || []).map((e) => ({ ...e, command: e.command && e.command.trim() ? e.command : null })) });
+  }
   return sandbox;
 });
 route('POST', `/api/sandboxes/${ID}/onboarding/skip`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
+  if (!['pending', 'preparing'].includes(sandbox.onboarding)) fail(409, 'conflict', 'nothing awaits preparation');
   sandbox.onboarding = 'skipped';
-  emit(db, { type: 'sandbox.updated', sandbox });
+  resync(db);
+  return sandbox;
+});
+route('POST', `/api/sandboxes/${ID}/onboarding/approve`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  if (sandbox.onboarding !== 'pending') fail(409, 'conflict', 'nothing awaits approval');
+  sandbox.onboarding = 'preparing';
+  const task = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
+  if (task) {
+    touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
+    later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1200);
+    later(() => {
+      task.stepsList = task.stepsList.map((s) => ({ ...s, status: 'done', updated_by: 'task #1 (claude)', updated_at: new Date().toISOString() }));
+      touch(db, task, { status: 'closed', activity: null, account_label: null });
+      sandbox.onboarding = 'ready';
+      resync(db);
+    }, 9000);
+  }
+  resync(db);
   return sandbox;
 });
 route('DELETE', `/api/sandboxes/${ID}`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
   db.sandboxes = db.sandboxes.filter((s) => s.id !== sandbox.id);
+  resync(db);
   return json(204);
 });
 
@@ -389,6 +546,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
     unread_messages: 0, archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
     model: body.model || (body.harness === 'claude' ? 'claude-opus-4' : 'gpt-5-codex'), effort: body.effort || 'default', prompt: body.prompt,
+    delivery: null,
   };
   db.tasks.push(task);
   recount(db);
@@ -445,7 +603,7 @@ route('POST', `/api/tasks/${ID}/restore`, ({ db, p }) => {
 });
 route('POST', `/api/tasks/${ID}/feedback`, ({ db, p, body }) => {
   taskOf(db, p[0]);
-  if (!['correct', 'incorrect'].includes(body.verdict)) fail(422, 'invalid', 'Choose a verdict.');
+  if (!['correct', 'incorrect'].includes(body.verdict)) fail(422, 'invalid', 'verdict must be correct or incorrect');
   return json(204);
 });
 route('GET', `/api/tasks/${ID}/messages`, ({ db, p }) => {
@@ -460,7 +618,7 @@ route('POST', `/api/tasks/${ID}/messages`, ({ db, p, body }) => {
   needTaskWrite(db, task);
   if (!body.body || !body.body.trim()) fail(422, 'invalid', 'Empty message.');
   db.nextId += 1;
-  const stored = { id: `msg_${db.nextId}`, task: task.id, from: { task_id: null, login: db.me.user.login, title: db.me.user.login }, to_task_id: task.id, kind: 'info', subject: '', body: body.body, created_at: new Date().toISOString(), read: true };
+  const stored = { id: `msg_${db.nextId}`, task: task.id, from: { task_id: null, login: db.me.user.login, title: db.me.user.display_name || db.me.user.login }, to_task_id: task.id, kind: 'info', subject: '', body: body.body, created_at: new Date().toISOString(), read: true };
   db.messages.push(stored);
   const { task: _t, ...message } = stored;
   later(() => {
@@ -474,81 +632,167 @@ route('POST', `/api/tasks/${ID}/messages`, ({ db, p, body }) => {
 });
 route('GET', '/api/archived-tasks', ({ db }) => db.tasks.filter((t) => t.archived && db.sandboxes.some((s) => s.id === t.sandbox_id)).map(summary));
 
+// ---- Git and delivery
+
+route('GET', '/api/delivery/presets', () => [clone(PRESETS.standard), clone(PRESETS.product), clone(PRESETS.studio)]);
 route('GET', `/api/sandboxes/${ID}/git`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
-  const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived && t.stepsList.length);
+  const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived && t.branch);
+  const pull = (t) => (t.delivery && t.delivery.pr ? { ...t.delivery.pr, checks: t.delivery.pr.state === 'open' ? t.delivery.pr.checks : 'none' } : null);
   return {
     integration_branch: sandbox.profile.integration_branch, production_branch: sandbox.profile.production_branch, default_branch: sandbox.default_branch,
-    tasks: tasks.map((t) => ({ task_id: t.id, title: t.title, branch: t.branch, ahead: (t.number * 3) % 11 + 1, behind: t.number % 3, files_changed: (t.number * 7) % 23 + 1, insertions: (t.number * 131) % 900 + 12, deletions: (t.number * 37) % 200, pr: t.pr || prFor(t) })),
+    tasks: tasks.map((t) => ({ task_id: t.id, title: t.title, branch: t.branch, ahead: (t.number * 3) % 11 + 1, behind: t.number % 3, files_changed: (t.number * 7) % 23 + 1, insertions: (t.number * 131) % 900 + 12, deletions: (t.number * 37) % 200, pr: pull(t) })),
     recent_commits: [
       { sha: '9f3c2a17b0e4d5c6a7b8c9d0e1f2a3b4c5d6e7f8', subject: 'feat(checkout): cart totals with tax rules', author: 'task #12 (claude)', at: iso(25 * MIN) },
       { sha: '4b1d9e0c7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d', subject: 'docs: restructure architecture section', author: 'task #5 (claude)', at: iso(5 * HOUR) },
       { sha: 'c0ffee1234567890abcdef1234567890abcdef12', subject: 'fix(viewer): dispose WebGL context on unmount', author: 'task #11 (codex)', at: iso(7 * HOUR) },
-      { sha: '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b', subject: 'Merge pull request #180 from feat/old-landing-page', author: 'mkarp', at: iso(6 * DAY) },
     ],
-    pulls: tasks.map((t) => t.pr || prFor(t)).filter(Boolean),
+    // Open pull requests only.
+    pulls: tasks.map(pull).filter((pr) => pr && pr.state === 'open'),
+    // Reads degrade: a GitHub failure becomes a note instead of an error.
+    notes: sandbox.id === 'sb_three' ? ['GitHub: pull requests could not be read (rate limited); lists may be incomplete.'] : [],
   };
 });
-route('GET', `/api/tasks/${ID}/delivery`, ({ db, p }) => delivery(taskOf(db, p[0])));
+route('GET', `/api/tasks/${ID}/delivery`, ({ db, p }) => delivery(db, taskOf(db, p[0])));
 route('POST', `/api/tasks/${ID}/delivery/pr`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  if (!delivery(task).spec_valid) fail(422, 'invalid', 'The task spec is not valid yet: missing Verification section.');
+  const d = delivery(db, task);
+  const refusal = d.blocked.find((b) => b.action === 'open_pr');
+  if (refusal) fail(409, 'conflict', refusal.reason);
+  if (!d.next_actions.includes('open_pr')) fail(409, 'conflict', 'a pull request is already open');
   db.nextId += 1;
-  task.pr = { number: 300 + db.nextId, url: `https://github.com/Quartio-Studio/studio/pull/${300 + db.nextId}`, title: body.title || task.title, state: 'open', base: sandboxOf(db, task.sandbox_id).profile.integration_branch, head: task.branch, checks: 'pending' };
-  task.deliveryStage = 'pr_open';
-  task.deliveryNext = ['merge'];
-  later(() => { task.pr.checks = 'success'; }, 4000);
-  return delivery(task);
+  const sandbox = sandboxOf(db, task.sandbox_id);
+  const number = 300 + db.nextId;
+  task.delivery = { stage: 'pr_open', environment: null, pr: { number, url: `${sandbox.repo.url}/pull/${number}`, title: body.title || task.title, state: 'open', base: sandbox.profile.integration_branch, head: task.branch, checks: 'pending' } };
+  later(() => { if (task.delivery && task.delivery.pr) task.delivery.pr.checks = 'success'; }, 4000);
+  return delivery(db, task);
 });
 route('POST', `/api/tasks/${ID}/delivery/merge`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  const d = delivery(task);
-  if (!d.pr || d.pr.checks !== 'success') fail(409, 'conflict', `Checks are ${d.pr ? d.pr.checks : 'missing'}; merge requires green checks.`);
-  task.pr = { ...d.pr, state: 'merged' };
+  const d = delivery(db, task);
+  const refusal = d.blocked.find((b) => b.action === 'merge');
+  if (refusal) fail(409, 'conflict', refusal.reason);
+  if (!d.next_actions.includes('merge')) fail(409, 'conflict', 'no open pull request to merge');
   const sandbox = sandboxOf(db, task.sandbox_id);
-  const env = sandbox.profile.environments.find((e) => e.after === 'integration');
-  task.deliveryStage = 'merged_integration';
-  task.deliveryNext = env ? [`run_env:${env.name}`, 'promote'] : ['promote'];
-  return delivery(task);
+  task.delivery = { stage: 'merged_integration', environment: null, pr: { ...task.delivery.pr, state: 'merged' } };
+  const notes = [];
+  const pos = position(sandbox.profile, 'merged_integration', null);
+  if (sandbox.profile.auto_promote && pos.kind === 'promote') {
+    const production = (sandbox.profile.environments || []).filter((e) => e.after === 'production');
+    task.delivery.stage = production.length ? 'promoted' : 'production_done';
+    notes.push(`Promoted ${sandbox.profile.integration_branch} → ${sandbox.profile.production_branch} automatically (auto_promote).`);
+  }
+  touch(db, task);
+  return { ...delivery(db, task), notes };
 });
 route('POST', `/api/sandboxes/${ID}/delivery/promote`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
-  return { result: sandbox.profile.promote === 'fast_forward' ? 'fast_forwarded' : 'promotion_pr_merged', sha: 'e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3' };
+  const waiting = db.tasks.filter((t) => t.sandbox_id === sandbox.id && t.delivery && position(sandbox.profile, t.delivery.stage, t.delivery.environment).kind === 'promote');
+  const pendingEnv = db.tasks.some((t) => t.sandbox_id === sandbox.id && t.delivery && ['merged_integration', 'env_done'].includes(t.delivery.stage) && position(sandbox.profile, t.delivery.stage, t.delivery.environment).kind === 'env' && position(sandbox.profile, t.delivery.stage, t.delivery.environment).env.after === 'integration');
+  if (pendingEnv) fail(409, 'conflict', 'a merged task still has an integration environment pending');
+  if (waiting.length === 0) fail(409, 'conflict', `${sandbox.profile.production_branch} already equals ${sandbox.profile.integration_branch}`);
+  if (sandbox.profile.promote === 'merge_commit' && !db.promotionPr.has(sandbox.id)) {
+    db.nextId += 1;
+    const url = `${sandbox.repo.url}/pull/${600 + db.nextId}`;
+    db.promotionPr.set(sandbox.id, url);
+    return { result: 'pr_opened', sha: url };
+  }
+  db.promotionPr.delete(sandbox.id);
+  const production = (sandbox.profile.environments || []).filter((e) => e.after === 'production');
+  for (const task of waiting) {
+    task.delivery = { ...task.delivery, stage: production.length ? 'promoted' : 'production_done', environment: null };
+    touch(db, task);
+  }
+  return { result: 'promoted', sha: 'e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3' };
 });
+
+function newRun(db, sandbox, env, kind) {
+  db.nextId += 1;
+  const run = {
+    run_id: `run_${db.nextId}`, sandbox_id: sandbox.id, environment: env.name, kind, state: kind === 'manual' ? 'succeeded' : 'running',
+    command: kind === 'manual' ? null : env.command, commit: '9f3c2a17b0e4d5c6a7b8c9d0e1f2a3b4c5d6e7f8', requested_by: db.me.user.login,
+    output: kind === 'manual' ? `${db.me.user.login} confirmed ${env.name}.` : '', exit_code: null,
+    started_at: new Date().toISOString(), ended_at: kind === 'manual' ? new Date().toISOString() : null, startedMs: Date.now(),
+  };
+  db.runs.push(run);
+  if (db.runs.length > 50) db.runs.shift();
+  return run;
+}
+
+const RUN_LINES = ['Resolving target…', 'Uploading build artifact (12.4 MiB)…', 'Restarting service…', 'Health check: GET /healthz → 200', 'Smoke test: checkout flow ✓', 'Deploy finished.'];
+
+/** Advance a command run with the clock (one line per second) and apply its outcome once. */
+function progressRun(db, run) {
+  if (run.state !== 'running') return run;
+  const lines = [`$ ${run.command}`, ...RUN_LINES];
+  const shown = Math.min(lines.length, Math.floor((Date.now() - run.startedMs) / 1000) + 1);
+  run.output = lines.slice(0, shown).join('\n');
+  if (shown >= lines.length) {
+    Object.assign(run, { state: 'succeeded', exit_code: 0, ended_at: new Date().toISOString() });
+    const sandbox = db.sandboxes.find((s) => s.id === run.sandbox_id);
+    const env = sandbox && (sandbox.profile.environments || []).find((e) => e.name === run.environment);
+    if (sandbox && env && env.verify === 'command') advanceEnvironment(db, sandbox, env.name);
+  }
+  return run;
+}
+
+const runView = (run) => {
+  const { sandbox_id: _s, startedMs: _t, ...out } = run;
+  return { ...out, output: out.output.slice(-2048) };
+};
+
 route('POST', `/api/sandboxes/${ID}/delivery/environments/${ID}/runs`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
-  if (body.confirm !== true) fail(422, 'invalid', 'Deploys need explicit confirmation.');
-  const env = sandbox.profile.environments.find((e) => e.name === p[1]);
-  if (!env) fail(404, 'not_found', 'No such environment.');
-  db.nextId += 1;
-  const runId = `run_${db.nextId}`;
-  db.runs.set(runId, { started: Date.now(), env });
-  return { run_id: runId };
+  if (body.confirm !== true) fail(422, 'invalid', 'environment runs need {"confirm": true}');
+  const env = (sandbox.profile.environments || []).find((e) => e.name === p[1]);
+  if (!env) fail(404, 'not_found', 'not found');
+  if (!env.command) {
+    const run = newRun(db, sandbox, env, 'manual');
+    advanceEnvironment(db, sandbox, env.name);
+    return runView(run);
+  }
+  if (db.runs.some((r) => r.sandbox_id === sandbox.id && progressRun(db, r).state === 'running')) fail(409, 'conflict', 'another environment run is in progress for this sandbox');
+  return runView(newRun(db, sandbox, env, 'command'));
+});
+route('POST', `/api/sandboxes/${ID}/delivery/environments/${ID}/confirm`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  if (body.confirm !== true) fail(422, 'invalid', 'confirmation needs {"confirm": true}');
+  const env = (sandbox.profile.environments || []).find((e) => e.name === p[1]);
+  if (!env) fail(404, 'not_found', 'not found');
+  if (env.command && env.verify !== 'manual') fail(409, 'conflict', `${env.name} is verified by its command`);
+  const run = newRun(db, sandbox, env, 'manual');
+  advanceEnvironment(db, sandbox, env.name);
+  return runView(run);
+});
+route('GET', `/api/sandboxes/${ID}/delivery/runs`, ({ db, p }) => {
+  sandboxOf(db, p[0]);
+  return db.runs.filter((r) => r.sandbox_id === p[0]).map((r) => runView(progressRun(db, r))).reverse().slice(0, 20);
 });
 route('GET', `/api/sandboxes/${ID}/delivery/runs/${ID}`, ({ db, p }) => {
-  const run = db.runs.get(p[1]);
-  if (!run) fail(404, 'not_found', 'No such run.');
-  const lines = [`$ ${run.env.command || '(manual verification)'}`, 'Resolving target…', 'Uploading build artifact (12.4 MiB)…', 'Restarting service…', 'Health check: GET /healthz → 200', 'Smoke test: checkout flow ✓', 'Deploy finished.'];
-  const elapsed = (Date.now() - run.started) / 1000;
-  const shown = Math.min(lines.length, Math.floor(elapsed) + 1);
-  const done = shown >= lines.length;
-  return { state: done ? 'succeeded' : 'running', output: lines.slice(0, shown).join('\n'), exit_code: done ? 0 : null };
+  const run = db.runs.find((r) => r.run_id === p[1] && r.sandbox_id === p[0]);
+  if (!run) fail(404, 'not_found', 'not found');
+  return runView(progressRun(db, run));
 });
+
+// ---- Skills, workflows, automations, MCP
 
 route('GET', `/api/sandboxes/${ID}/skills`, ({ db, p }) => { sandboxOf(db, p[0]); return db.skills; });
 route('GET', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p }) => {
   const skill = db.skills.find((s) => s.name === p[1]);
-  if (!skill) fail(404, 'not_found', 'No such skill.');
+  if (!skill) fail(404, 'not_found', 'not found');
   return { name: skill.name, content: `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n# ${skill.name}\n\n1. Read AGENTS.md and the task spec.\n2. Make the smallest complete change.\n3. Verify with tests and report evidence.\n` };
 });
 route('PUT', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   const skill = db.skills.find((s) => s.name === p[1]);
-  if (!skill) fail(404, 'not_found', 'No such skill.');
+  if (!skill) fail(404, 'not_found', 'not found');
+  if (skill.source === 'repository') fail(422, 'invalid', 'repository skills are always available inside the repository');
+  if (skill.source === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance skills are managed by instance administrators');
   skill.enabled = Boolean(body.enabled);
   return json(204);
 });
@@ -556,15 +800,16 @@ route('PUT', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p, body }) => {
 route('GET', `/api/sandboxes/${ID}/workflows`, ({ db, p }) => db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === p[0]).map(({ sandbox: _s, ...w }) => w));
 route('POST', `/api/sandboxes/${ID}/workflows`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  if (body.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance workflows are managed by instance administrators');
   db.nextId += 1;
-  const wf = { id: `wf_${db.nextId}`, sandbox: p[0], name: body.name, description: body.description || '', steps: body.steps || [], instructions: body.instructions || '', gates: body.gates || {}, scope: body.scope === 'instance' ? 'instance' : 'sandbox' };
+  const wf = { id: `wf_${db.nextId}`, sandbox: body.scope === 'instance' ? null : p[0], name: body.name, description: body.description || '', steps: body.steps || [], instructions: body.instructions || '', gates: { require_spec: Boolean(body.gates && body.gates.require_spec), require_tests: Boolean(body.gates && body.gates.require_tests) }, scope: body.scope === 'instance' ? 'instance' : 'sandbox' };
   db.workflows.push(wf);
   const { sandbox: _s, ...out } = wf;
   return json(201, out);
 });
 route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
   const wf = db.workflows.find((w) => w.id === p[0]);
-  if (!wf) fail(404, 'not_found', 'No such workflow.');
+  if (!wf) fail(404, 'not_found', 'not found');
   Object.assign(wf, { name: body.name, description: body.description, steps: body.steps, instructions: body.instructions, gates: body.gates });
   const { sandbox: _s, ...out } = wf;
   return out;
@@ -574,6 +819,7 @@ route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { db.workflows = db.workf
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  if (Math.abs(Number(body.utc_offset_minutes) || 0) > 1080) fail(422, 'invalid', 'utc_offset_minutes must be within ±1080');
   db.nextId += 1;
   const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
   db.automations.push(a);
@@ -582,31 +828,35 @@ route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
 });
 route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
-  if (!a) fail(404, 'not_found', 'No such automation.');
+  if (!a) fail(404, 'not_found', 'not found');
   Object.assign(a, body, { next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
   const { sandbox: _s, ...out } = a;
   return out;
 });
 route('DELETE', `/api/automations/${ID}`, ({ db, p }) => { db.automations = db.automations.filter((a) => a.id !== p[0]); return json(204); });
+// Run now: one run, also when disabled; 200 with the AutomationRun.
 route('POST', `/api/automations/${ID}/run`, ({ db, p }) => {
   const a = db.automations.find((x) => x.id === p[0]);
-  if (!a) fail(404, 'not_found', 'No such automation.');
-  a.last_run = { scheduled_for: new Date().toISOString(), state: 'scheduled', task_id: null };
-  later(() => {
-    a.last_run = { ...a.last_run, state: 'task_created', task_id: 'tsk_studio_8' };
-    emit(db, { type: 'automation.run', automation_id: a.id, state: 'task_created', task_id: 'tsk_studio_8' });
-  }, 1500);
-  return json(204);
+  if (!a) fail(404, 'not_found', 'not found');
+  const previous = a.last_run && a.last_run.task_id ? db.tasks.find((t) => t.id === a.last_run.task_id) : null;
+  const run = previous && LIVE.has(previous.status)
+    ? { scheduled_for: new Date().toISOString(), state: 'skipped_previous_active', task_id: null, error: null }
+    : { scheduled_for: new Date().toISOString(), state: 'task_created', task_id: 'tsk_studio_8', error: null };
+  a.last_run = run;
+  emit(db, { type: 'automation.run', automation_id: a.id, state: run.state, task_id: run.task_id });
+  return run;
 });
 route('GET', `/api/automations/${ID}/runs`, ({ db, p }) => {
   const a = db.automations.find((x) => x.id === p[0]);
-  if (!a) fail(404, 'not_found', 'No such automation.');
-  return [0, 1, 2, 3, 4].map((i) => ({ scheduled_for: iso((i + 1) * DAY - 10 * HOUR), state: i === 2 ? 'skipped' : i === 4 ? 'failed' : 'task_created', task_id: i === 2 || i === 4 ? null : 'tsk_studio_8', error: i === 4 ? 'Quartio MCP returned 502' : i === 2 ? null : null }));
+  if (!a) fail(404, 'not_found', 'not found');
+  return [0, 1, 2, 3, 4].map((i) => ({ scheduled_for: iso((i + 1) * DAY - 10 * HOUR), state: i === 2 ? 'skipped_previous_active' : i === 4 ? 'failed' : 'task_created', task_id: i === 2 || i === 4 ? null : 'tsk_studio_8', error: i === 4 ? 'the task could not be created: capacity reached' : null }));
 });
 
 route('GET', `/api/sandboxes/${ID}/mcp`, ({ db, p }) => db.mcp.filter((m) => m.scope === 'instance' || m.sandbox === p[0]).map(({ sandbox: _s, ...m }) => m));
 route('POST', `/api/sandboxes/${ID}/mcp`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(body.name || '') || body.name.toLowerCase() === 'yulius') fail(422, 'invalid', 'invalid or reserved server name');
+  if (body.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
   db.nextId += 1;
   const m = { id: `mcp_${db.nextId}`, sandbox: p[0], scope: body.scope === 'instance' ? 'instance' : 'sandbox', name: body.name, transport: body.transport, command: body.command || null, args: body.args || [], url: body.url || null, env_keys: Object.keys(body.env || {}), header_keys: Object.keys(body.headers || {}), enabled: body.enabled !== false };
   db.mcp.push(m);
@@ -615,9 +865,11 @@ route('POST', `/api/sandboxes/${ID}/mcp`, ({ db, p, body }) => {
 });
 route('PUT', `/api/mcp/${ID}`, ({ db, p, body }) => {
   const m = db.mcp.find((x) => x.id === p[0]);
-  if (!m) fail(404, 'not_found', 'No such server.');
-  if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'Instance servers need an instance admin.');
-  Object.assign(m, { name: body.name, transport: body.transport, command: body.command, args: body.args, url: body.url, enabled: body.enabled });
+  if (!m) fail(404, 'not_found', 'not found');
+  if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  Object.assign(m, { name: body.name, transport: body.transport, command: body.command ?? null, args: body.args || [], url: body.url ?? null });
+  if (body.enabled !== undefined) m.enabled = Boolean(body.enabled);
+  // Secrets are write-only: an omitted map keeps the stored values, a given map replaces them.
   if (body.env) m.env_keys = Object.keys(body.env);
   if (body.headers) m.header_keys = Object.keys(body.headers);
   const { sandbox: _s, ...out } = m;
@@ -626,101 +878,179 @@ route('PUT', `/api/mcp/${ID}`, ({ db, p, body }) => {
 route('DELETE', `/api/mcp/${ID}`, ({ db, p }) => { db.mcp = db.mcp.filter((m) => m.id !== p[0]); return json(204); });
 route('POST', `/api/mcp/${ID}/test`, ({ db, p }) => {
   const m = db.mcp.find((x) => x.id === p[0]);
-  if (!m) fail(404, 'not_found', 'No such server.');
+  if (!m) fail(404, 'not_found', 'not found');
+  if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
   return m.name === 'apify' ? { ok: false, tools: [], error: 'APIFY_TOKEN rejected (401)' } : { ok: true, tools: ['search_knowledge', 'get_customer', 'list_feedback', 'get_product_doc'], error: null };
 });
 
-route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p }) => {
+// ---- Shells: 201 {"id"}; an empty body or {"task_id"}; at most 4 live shells per sandbox.
+route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  if (body.task_id) {
+    const task = db.tasks.find((t) => t.id === body.task_id && t.sandbox_id === p[0]);
+    if (!task) fail(404, 'not_found', 'not found');
+  }
+  const prefix = `sh_${p[0]}_`;
+  if ([...db.liveShells].filter((id) => id.startsWith(prefix)).length >= 4) fail(429, 'capacity', 'at most 4 live shells per sandbox');
   db.nextId += 1;
-  return { id: `sh_${p[0]}_${db.nextId}` };
+  const id = `${prefix}${db.nextId}`;
+  db.liveShells.add(id);
+  return json(201, { id });
 });
 
-const adminOnly = (db) => { if (!db.me.user.is_instance_admin && !db.me.user.is_superadmin) fail(403, 'forbidden', 'Instance administrators only.'); };
-const superOnly = (db) => { if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'Superadmin only.'); };
+// ---- Administration
+
+const adminOnly = (db) => { if (!db.me.user.is_instance_admin && !db.me.user.is_superadmin) fail(403, 'forbidden', 'instance administrators only'); };
+const superOnly = (db) => { if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only'); };
 route('GET', '/api/admin/users', ({ db }) => { superOnly(db); return db.users; });
 route('POST', '/api/admin/users', ({ db, body }) => {
   superOnly(db);
+  if (!/^[A-Za-z0-9-]{1,39}$/.test(body.github_login || '')) fail(422, 'invalid', 'not a valid GitHub login');
   if (db.users.some((u) => u.github_login.toLowerCase() === String(body.github_login).toLowerCase())) fail(409, 'conflict', 'Already admitted.');
   db.nextId += 1;
-  const user = { id: `usr_${db.nextId}`, github_login: body.github_login, display_name: body.display_name || '', is_instance_admin: Boolean(body.is_instance_admin), disabled: false, is_superadmin: false, last_seen_at: null };
+  const user = { id: `usr_${db.nextId}`, github_login: body.github_login, display_name: body.display_name || body.github_login, is_instance_admin: Boolean(body.is_instance_admin), disabled: false, github_linked: false };
   db.users.push(user);
   return json(201, user);
 });
 route('PATCH', `/api/admin/users/${ID}`, ({ db, p, body }) => {
   superOnly(db);
   const user = db.users.find((u) => u.id === p[0]);
-  if (!user) fail(404, 'not_found', 'No such user.');
-  Object.assign(user, body);
+  if (!user) fail(404, 'not_found', 'not found');
+  if (body.disabled !== undefined) user.disabled = Boolean(body.disabled);
+  if (body.is_instance_admin !== undefined) user.is_instance_admin = Boolean(body.is_instance_admin);
   return user;
 });
 route('GET', '/api/admin/accounts', ({ db }) => { adminOnly(db); return db.accounts; });
+// 201 {account, login_id}: the account waits in `pending_login` until the login terminal finishes.
 route('POST', '/api/admin/accounts', ({ db, body }) => {
   adminOnly(db);
+  if (!['anthropic', 'openai'].includes(body.provider)) fail(422, 'invalid', 'provider must be anthropic or openai');
+  if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
   db.nextId += 1;
-  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, enabled: true, priority: 5, status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, enabled: true, priority: 100, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
-  return { account, login_id: `login_${account.id}` };
+  return json(201, { account, login_id: `login_${account.id}` });
 });
 route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
-  if (!account) fail(404, 'not_found', 'No such account.');
-  Object.assign(account, body);
+  if (!account) fail(404, 'not_found', 'not found');
+  if (body.priority !== undefined && !(Number.isInteger(body.priority) && body.priority >= 0 && body.priority <= 10000)) fail(422, 'invalid', 'priority must be 0–10000');
+  if (body.label !== undefined && !(body.label.length >= 1 && body.label.length <= 80)) fail(422, 'invalid', 'label must be 1–80 characters');
+  for (const key of ['enabled', 'priority', 'label']) if (body[key] !== undefined) account[key] = body[key];
+  emit(db, { type: 'account.updated', account });
   return account;
 });
-route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => { adminOnly(db); db.accounts = db.accounts.filter((a) => a.id !== p[0]); return json(204); });
-route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => { adminOnly(db); return { login_id: `login_${p[0]}` }; });
-route('GET', '/api/admin/github', ({ db }) => {
-  superOnly(db);
-  return db.me.instance.github_configured ? { configured: true, app_slug: 'yulius-quartio', owner_login: 'Quartio-Studio', install_url: 'https://github.com/apps/yulius-quartio/installations/new' } : { configured: false, app_slug: null, owner_login: null, install_url: null };
+route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  if (account.in_use_by > 0) fail(409, 'conflict', `${account.label} is used by ${account.in_use_by} live task(s)`);
+  db.accounts = db.accounts.filter((a) => a.id !== p[0]);
+  return json(204);
 });
-route('POST', '/api/admin/github/manifest', ({ db, body }) => {
-  superOnly(db);
-  return { post_url: body.owner_kind === 'org' ? `https://github.com/organizations/${body.owner_login}/settings/apps/new?state=mock` : 'https://github.com/settings/apps/new?state=mock', manifest: { name: 'Yulius', url: ORIGIN, hook_attributes: { url: `${ORIGIN}/api/github/webhook` }, redirect_url: `${ORIGIN}/api/admin/github/manifest/callback`, public: false, default_permissions: { contents: 'write', pull_requests: 'write', checks: 'read', metadata: 'read', administration: 'write' } } };
+route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  return { account, login_id: `login_${account.id}` };
 });
+// GET /api/admin/github and POST /api/admin/github/manifest are documented in docs/api.md but
+// not routed by the server yet: like the server, the mock answers 404 (the page falls back
+// to /api/me).
+
+// ---- Analytics and status
+
+const tokenTotals = (runs, tasks, input, output, cacheRead, cacheWrite, unknown) => ({ runs, tasks, input, output, cache_read: cacheRead, cache_write: cacheWrite, unknown_usage_runs: unknown });
 
 route('GET', '/api/analytics/summary', ({ db, query }) => {
-  const from = Date.parse(query.get('from') || iso(30 * DAY));
-  const to = Date.parse(query.get('to') || new Date().toISOString());
-  const days = Math.max(1, Math.round((to - from) / DAY));
+  if (query.get('sandbox') && !db.sandboxes.some((s) => s.id === query.get('sandbox'))) fail(404, 'not_found', 'not found');
+  const fromDay = query.get('from');
+  const toDay = query.get('to');
+  const to = Date.parse(toDay || new Date().toISOString().slice(0, 10));
+  const from = Date.parse(fromDay || new Date(to - 29 * DAY).toISOString().slice(0, 10));
+  const days = Math.max(1, Math.round((to - from) / DAY) + 1);
   const perDay = [];
-  for (let i = days - 1; i >= 0; i -= 1) {
-    const date = new Date(to - i * DAY).toISOString().slice(0, 10);
+  for (let i = 0; i < days; i += 1) {
+    const date = new Date(from + i * DAY).toISOString().slice(0, 10);
     const weekday = new Date(date).getUTCDay();
-    const base = weekday === 0 || weekday === 6 ? 1 : 4;
+    const base = weekday === 0 || weekday === 6 ? 0 : 3;
     perDay.push({ date, count: (hashString(date + query.get('sandbox')) % 5) + base });
   }
   const total = perDay.reduce((a, d) => a + d.count, 0);
   const scale = total / 120;
+  const runs = Math.round(total * 1.3);
+  const unknown = Math.round(total * 0.1);
+  const n = (v) => Math.round(v * scale);
   return {
-    from: query.get('from'), to: query.get('to'),
-    tasks: { total, by_status: { closed: Math.round(total * 0.62), stopped_cancelled: Math.round(total * 0.12), running: 3, failed_spawn_error: 1, stopped_crashed: 2 }, by_harness: { claude: Math.round(total * 0.68), codex: Math.round(total * 0.32) } },
+    range: { sandbox: query.get('sandbox') || null, from: fromDay || null, to: toDay || null },
+    tasks: {
+      total,
+      closed: Math.round(total * 0.62),
+      by_status: { closed: Math.round(total * 0.62), stopped_cancelled: Math.round(total * 0.12), running: 3, failed_spawn_error: 1, stopped_crashed: 2 },
+      by_harness: { claude: Math.round(total * 0.68), codex: Math.round(total * 0.32) },
+      by_origin: { ui: Math.round(total * 0.8), automation: Math.round(total * 0.15), import: Math.round(total * 0.05) },
+    },
     tasks_per_day: perDay,
-    duration_ms: { median: 47 * MIN, p90: 3.2 * HOUR, total_active: total * 31 * MIN, total_wall: total * 58 * MIN },
-    tokens: { input: Math.round(41e6 * scale), output: Math.round(5.2e6 * scale), cache_read: Math.round(310e6 * scale), cache_write: Math.round(22e6 * scale) },
-    tokens_by_model: [{ model: 'claude-opus-4', input: Math.round(26e6 * scale), output: Math.round(3.1e6 * scale) }, { model: 'gpt-5-codex', input: Math.round(12e6 * scale), output: Math.round(1.7e6 * scale) }, { model: 'claude-sonnet-4.5', input: Math.round(3e6 * scale), output: Math.round(0.4e6 * scale) }],
-    tokens_by_harness: [{ harness: 'claude', input: Math.round(29e6 * scale), output: Math.round(3.5e6 * scale) }, { harness: 'codex', input: Math.round(12e6 * scale), output: Math.round(1.7e6 * scale) }],
-    tokens_by_account: db.accounts.filter((a) => a.enabled).map((a, i) => ({ account_label: a.label, input: Math.round((14e6 / (i + 1)) * scale), output: Math.round((1.8e6 / (i + 1)) * scale) })),
+    duration_ms: { median: 47 * MIN, p90: 3.2 * HOUR, total_wall: total * 58 * MIN, total_active: total * 31 * MIN },
+    tokens: tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown),
+    tokens_by_model: [
+      { model: 'claude-opus-4', ...tokenTotals(Math.round(runs * 0.6), Math.round(total * 0.6), n(26e6), n(3.1e6), n(200e6), null, 0) },
+      { model: 'gpt-5-codex', ...tokenTotals(Math.round(runs * 0.3), Math.round(total * 0.3), n(12e6), n(1.7e6), n(90e6), null, 0) },
+      { model: 'unknown', ...tokenTotals(unknown, unknown, null, null, null, null, unknown) },
+    ],
+    tokens_by_harness: [
+      { harness: 'claude', ...tokenTotals(Math.round(runs * 0.68), Math.round(total * 0.68), n(29e6), n(3.5e6), n(220e6), null, unknown) },
+      { harness: 'codex', ...tokenTotals(Math.round(runs * 0.32), Math.round(total * 0.32), n(12e6), n(1.7e6), n(90e6), null, 0) },
+    ],
+    tokens_by_account: [
+      ...db.accounts.filter((a) => a.enabled).map((a, i) => ({ account_id: a.id, account_label: a.label, ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
+      { account_id: 'acc_deleted', account_label: null, ...tokenTotals(2, 1, n(1e6), n(0.1e6), null, null, 0) },
+    ],
     switches: { total: Math.round(total * 0.15), account: Math.round(total * 0.11), provider: Math.round(total * 0.04) },
     feedback: { correct: Math.round(total * 0.3), incorrect: Math.round(total * 0.06) },
+    truncated: false,
   };
 });
+const TASK_ROW_COLUMNS = ['task_id', 'sandbox', 'number', 'title', 'status', 'origin', 'harness', 'harnesses', 'models', 'accounts', 'created_at', 'closed_at', 'attempts', 'wall_ms', 'active_ms', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'unknown_usage_runs', 'switches', 'feedback', 'feedback_correct', 'feedback_incorrect'];
 route('GET', '/api/analytics/tasks', ({ db, query }) => {
-  const rows = db.tasks.map((t) => ({ task_id: t.id, sandbox: t.sandbox_id, number: t.number, title: t.title, harness: t.harness, status: t.status, created_at: t.created_at }));
-  if (query.get('format') === 'csv') {
-    const csv = ['task_id,sandbox,number,title,harness,status,created_at', ...rows.map((r) => [r.task_id, r.sandbox, r.number, `"${r.title}"`, r.harness, r.status, r.created_at].join(','))].join('\n');
-    return new Response(csv, { status: 200, headers: { 'Content-Type': 'text/csv' } });
+  const format = query.get('format') || 'json';
+  if (format !== 'json' && format !== 'csv') fail(422, 'invalid', 'format must be json or csv');
+  const sandboxFilter = query.get('sandbox');
+  const rows = db.tasks.filter((t) => !sandboxFilter || t.sandbox_id === sandboxFilter).map((t) => {
+    const known = t.number !== 6;
+    return {
+      task_id: t.id, sandbox: (db.sandboxes.find((s) => s.id === t.sandbox_id) || {}).slug || t.sandbox_id, number: t.number, title: t.title, status: t.status,
+      origin: t.origin, harness: t.harness, harnesses: t.harness, models: known ? t.model : '', accounts: t.account_label || '',
+      created_at: t.created_at, closed_at: t.status === 'closed' ? t.updated_at : null, attempts: 1, wall_ms: Date.now() - Date.parse(t.created_at),
+      active_ms: known ? 41 * MIN : null, input_tokens: known ? 182340 : null, output_tokens: known ? 23410 : null, cache_read_tokens: known ? 1204000 : null,
+      cache_write_tokens: null, unknown_usage_runs: known ? 0 : 1, switches: t.number === 9 ? 1 : 0, feedback: null, feedback_correct: 0, feedback_incorrect: 0,
+    };
+  });
+  if (format === 'csv') {
+    const cell = (v) => {
+      if (v === null || v === undefined) return '';
+      let text = String(v);
+      if (typeof v === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+      return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const csv = [TASK_ROW_COLUMNS.join(','), ...rows.map((r) => TASK_ROW_COLUMNS.map((k) => cell(r[k])).join(','))].join('\r\n');
+    return new Response(`${csv}\r\n`, { status: 200, headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="yulius-tasks-${query.get('from') || 'start'}-${query.get('to') || 'now'}.csv"` } });
   }
   return rows;
 });
 route('GET', '/api/status', ({ db }) => {
   const wobble = (Date.now() / 1000) % 60;
+  const admin = db.me.user.is_instance_admin || db.me.user.is_superadmin;
   return {
-    vm: { cpu_percent: 22 + Math.sin(wobble) * 9, cpu_count: 8, memory_used_bytes: 9.4 * 2 ** 30, memory_total_bytes: 16 * 2 ** 30, disk_used_bytes: 141 * 2 ** 30, disk_total_bytes: 200 * 2 ** 30, load: [1.21, 0.97, 0.74], uptime_s: 9 * 86400 + 3600 * 4 },
+    // Disk total unknown on purpose: unknown metrics are null, never zero.
+    vm: { cpu_percent: 22 + Math.sin(wobble) * 9, cpu_count: 8, memory_used_bytes: 9.4 * 2 ** 30, memory_total_bytes: 16 * 2 ** 30, disk_used_bytes: 141 * 2 ** 30, disk_total_bytes: null, load: [1.21, 0.97, 0.74], load_1m: 1.21, uptime_s: 9 * 86400 + 3600 * 4 },
     sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: 8, queued: db.tasks.filter((t) => t.status === 'queued').length },
-    sandboxes: db.sandboxes.map((s, i) => ({ id: s.id, name: s.name, live_sessions: s.counts.running, disk_bytes: (12 + i * 7) * 2 ** 30 })),
-    accounts: db.accounts,
+    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: s.counts.running })),
+    accounts: db.accounts.map((a) => (admin
+      ? { label: a.label, provider: a.provider, status: a.status, enabled: a.enabled, usage: a.usage, id: a.id, priority: a.priority, last_error: a.last_error, in_use_by: a.in_use_by }
+      : { label: a.label, provider: a.provider, status: a.status, enabled: a.enabled, usage: a.usage })),
+    contained: db.me.instance.contained,
   };
 });
 
@@ -865,7 +1195,6 @@ class TermSession {
     this.lines = [];
     this.input = '';
     this.viewers = new Set();
-    this.controller = null;
     this.cols = 120;
     this.rows = 36;
     this.script = task.harness === 'codex' ? SCRIPT_CODEX : SCRIPT_CLAUDE;
@@ -967,8 +1296,10 @@ class TermSession {
     return (RANK[this.sandbox().access] || 0) >= RANK.write && LIVE.has(this.task.status);
   }
 
-  state(ws) {
-    return JSON.stringify({ type: 'state', attempt_seq: 1, harness: this.task.harness, cols: this.cols, rows: this.rows, can_write: this.canWrite(), controller: ws === this.controller, status: this.task.status });
+  // Like the server: every viewer with write access controls the size (controller = can_write).
+  state(_ws) {
+    const write = this.canWrite();
+    return JSON.stringify({ type: 'state', attempt_seq: 1, harness: this.task.harness, cols: this.cols, rows: this.rows, can_write: write, controller: write, status: this.task.status });
   }
 
   sendStates() {
@@ -982,15 +1313,12 @@ class TermSession {
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
       this.viewers.add(ws);
-      if (!this.controller && this.canWrite()) {
-        this.controller = ws;
-        if (msg.cols && msg.rows) { this.cols = Math.max(20, Math.min(400, msg.cols)); this.rows = Math.max(8, Math.min(200, msg.rows)); }
-      }
+      if (this.canWrite() && msg.cols && msg.rows) { this.cols = Math.max(20, Math.min(400, msg.cols)); this.rows = Math.max(8, Math.min(200, msg.rows)); }
       ws.push(this.state(ws));
       this.sendSnapshot(ws);
       this.ensureTicking();
     } else if (msg.type === 'resize') {
-      if (ws !== this.controller) return;
+      if (!this.canWrite()) return;
       const cols = Math.max(20, Math.min(400, msg.cols));
       const rows = Math.max(8, Math.min(200, msg.rows));
       if (cols === this.cols && rows === this.rows) return;
@@ -999,19 +1327,15 @@ class TermSession {
       this.seq += 1;
       for (const viewer of this.viewers) { viewer.push(this.state(viewer)); viewer.push(terminalFrame(2, this.seq, this.snapshot())); }
     } else if (msg.type === 'take_control') {
-      if (!this.canWrite()) return;
-      this.controller = ws;
-      this.sendStates();
+      ws.push(this.state(ws));
     } else if (msg.type === 'input') {
-      if (!this.canWrite()) { ws.push(JSON.stringify({ type: 'error', code: 'read_only', message: 'Input requires write permission.' })); return; }
-      if (this.controller !== ws) { this.controller = ws; this.sendStates(); }
+      if (!this.canWrite()) { ws.push(JSON.stringify({ type: 'error', code: 'forbidden', message: 'Input requires write access to the repository.' })); return; }
       this.onInput(String(msg.data || ''));
     }
   }
 
   closed(ws) {
     this.viewers.delete(ws);
-    if (this.controller === ws) this.controller = [...this.viewers][0] || null;
     if (this.viewers.size === 0) this.stopTicking();
   }
 
@@ -1129,9 +1453,11 @@ class TermSession {
   }
 }
 
-/** Fake bash in the sandbox shell panel. */
+/** Fake bash in the sandbox shell panel (`state` has attempt_seq and harness null). */
 class ShellSession {
-  constructor(slug) {
+  constructor(db, id, slug) {
+    this.db = db;
+    this.id = id;
     this.slug = slug;
     this.seq = 0;
     this.input = '';
@@ -1151,7 +1477,7 @@ class ShellSession {
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
       this.ws = ws;
-      ws.push(JSON.stringify({ type: 'state', attempt_seq: 1, harness: null, cols: msg.cols, rows: msg.rows, can_write: true, controller: true, status: 'running' }));
+      ws.push(JSON.stringify({ type: 'state', attempt_seq: null, harness: null, cols: msg.cols, rows: msg.rows, can_write: true, controller: true, status: 'running' }));
       this.seq += 1;
       ws.push(terminalFrame(2, this.seq, `${dim('Contained sandbox shell (mock). Try: ls, pwd, git status, exit')}\r\n${this.prompt}`));
     } else if (msg.type === 'input') {
@@ -1175,7 +1501,9 @@ class ShellSession {
     };
     if (cmd === 'exit') {
       this.out('\r\nlogout\r\n');
-      if (this.ws) this.ws.push(JSON.stringify({ type: 'exit', status: 'closed', code: 0 }));
+      // The server sends `exit` and closes the socket when the shell process ends.
+      if (this.ws) { this.ws.push(JSON.stringify({ type: 'exit', status: 'closed', code: 0 })); const ws = this.ws; setTimeout(() => ws.serverClose(1000, 'shell ended'), 50); }
+      this.db.liveShells.delete(this.id);
       return;
     }
     const result = cmd ? outputs[cmd] ?? `bash: ${cmd.split(' ')[0]}: command not found (mock shell)` : '';
@@ -1185,7 +1513,10 @@ class ShellSession {
   closed() { this.ws = null; }
 }
 
-/** Fake provider login for the account login terminal. */
+/**
+ * Fake provider login for the account login terminal: a fixed 500×40 PTY; `state.status`
+ * goes running → ok and the exit frame carries the same status. Tokens are masked.
+ */
 class LoginSession {
   constructor(db, loginId) {
     this.db = db;
@@ -1210,7 +1541,7 @@ class LoginSession {
       this.ws = ws;
       const account = this.db.accounts.find((a) => a.id === this.accountId);
       const codex = account && account.provider === 'openai';
-      ws.push(JSON.stringify({ type: 'state', attempt_seq: 1, harness: codex ? 'codex' : 'claude', cols: msg.cols, rows: msg.rows, can_write: true, controller: true, status: 'running' }));
+      ws.push(JSON.stringify(this.state(codex)));
       this.seq += 1;
       ws.push(terminalFrame(2, this.seq, [
         bold(codex ? 'Codex login' : 'Claude Code login'),
@@ -1229,15 +1560,22 @@ class LoginSession {
     }
   }
 
+  state(codex) {
+    return { type: 'state', attempt_seq: null, harness: codex ? 'codex' : 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.done ? 'ok' : 'running' };
+  }
+
   finish() {
     this.done = true;
-    this.out(`\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
+    this.out(`\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     const account = this.db.accounts.find((a) => a.id === this.accountId);
     if (account) {
       Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });
       emit(this.db, { type: 'account.updated', account });
     }
-    if (this.ws) this.ws.push(JSON.stringify({ type: 'exit', status: 'closed', code: 0 }));
+    if (this.ws) {
+      this.ws.push(JSON.stringify(this.state(account && account.provider === 'openai')));
+      this.ws.push(JSON.stringify({ type: 'exit', status: 'ok', code: 0 }));
+    }
   }
 
   closed() { this.ws = null; }
@@ -1430,8 +1768,10 @@ function openSocket(db, path) {
     if (!session) { session = new TermSession(db, task); db.sessions.set(task.id, session); }
     ws.server = session;
   } else if ((m = path.match(/^\/api\/shells\/([^/]+)\/terminal$/))) {
-    const slug = (db.sandboxes.find((s) => decodeURIComponent(m[1]).includes(s.id)) || { slug: 'sandbox' }).slug;
-    ws.server = new ShellSession(slug);
+    const id = decodeURIComponent(m[1]);
+    if (!db.liveShells.has(id)) { fatal('not_found', 'not found'); return ws; }
+    const slug = (db.sandboxes.find((s) => id.includes(s.id)) || { slug: 'sandbox' }).slug;
+    ws.server = new ShellSession(db, id, slug);
   } else if ((m = path.match(/^\/api\/admin\/accounts\/login\/([^/]+)\/terminal$/))) {
     ws.server = new LoginSession(db, decodeURIComponent(m[1]));
   } else if ((m = path.match(/^\/api\/sandboxes\/([^/]+)\/browser$/))) {
