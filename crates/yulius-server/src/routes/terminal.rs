@@ -19,9 +19,6 @@ use crate::AppState;
 use crate::auth::Auth;
 use crate::error::ApiResult;
 
-/// Permission re-check interval for open viewers (ACC-008).
-const RECHECK: Duration = Duration::from_secs(60);
-
 pub async fn terminal(
     State(app): State<AppState>,
     Auth(ctx): Auth,
@@ -74,7 +71,8 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut s
     }
     let mut last_seq = attach.subscription.seq;
     let mut last_input_seq: Option<u64> = None;
-    let mut recheck = tokio::time::interval(RECHECK);
+    let mut recheck =
+        tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
     recheck.tick().await;
     loop {
         tokio::select! {

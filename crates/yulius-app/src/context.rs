@@ -40,6 +40,8 @@ pub struct AppConfig {
     pub permission_stale_ms: i64,
     /// Cookies carry `Secure`.
     pub secure_cookies: bool,
+    /// How often open terminal viewers re-check their access (ACC-008).
+    pub viewer_recheck_ms: u64,
 }
 
 impl AppConfig {
@@ -55,6 +57,7 @@ impl AppConfig {
         Self {
             data_dir,
             secure_cookies: public_url.starts_with("https://"),
+            viewer_recheck_ms: 60_000,
             public_url,
             internal_url: internal_url.trim_end_matches('/').to_owned(),
             yulius_exe,
