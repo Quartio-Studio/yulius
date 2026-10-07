@@ -87,6 +87,10 @@ pub struct Deps {
     pub git: Arc<dyn GitPort>,
     /// Machine metrics for the status panel.
     pub system: Arc<dyn SystemProbe>,
+    /// Per-sandbox shared browser (SPEC-001 BRW-001..004).
+    pub browser: Arc<dyn crate::ports::browser::BrowserPort>,
+    /// Per-sandbox VS Code server (SPEC-001 EDT-001/002).
+    pub editor: Arc<dyn crate::ports::editor::EditorPort>,
 }
 
 /// The application.
@@ -105,6 +109,8 @@ pub struct App {
     pub(crate) supervisor: crate::supervisor::SupervisorState,
     /// Account login terminals.
     pub(crate) logins: crate::accounts::LoginRegistry,
+    /// Sandbox shell sessions (SPEC-001 UI-015).
+    pub(crate) shells: crate::shells::ShellState,
 }
 
 impl App {
@@ -119,6 +125,7 @@ impl App {
             message_waker: OnceLock::new(),
             supervisor: crate::supervisor::SupervisorState::default(),
             logins: crate::accounts::LoginRegistry::default(),
+            shells: crate::shells::ShellState::default(),
         })
     }
 

@@ -144,6 +144,8 @@ fn build_with(data: &Path, fake: Option<&Path>) -> Result<Arc<App>, Box<dyn std:
         },
         git: Arc::new(GitAdapter::new("git")),
         system: Arc::new(support::FixedSystem),
+        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
+        editor: Arc::new(yulius::wiring::editor::UnavailableEditor::default()),
     };
     Ok(App::new(config, deps))
 }

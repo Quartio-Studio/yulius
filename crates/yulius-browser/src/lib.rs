@@ -41,8 +41,9 @@ pub use discovery::{
 };
 pub use error::{BrowserError, CdpError};
 pub use instance::{
-    BrowserEvent, BrowserInstance, FrameSubscription, InstanceConfig, KeyInput, MouseInput,
-    ScreencastConfig, VIEWPORT_MAX, VIEWPORT_MIN,
+    BOUNDED_SCREENSHOT_STEPS, BoundedScreenshot, BrowserEvent, BrowserInstance, FrameSubscription,
+    InstanceConfig, KeyInput, MouseInput, ScreencastConfig, ScreenshotStep, VIEWPORT_MAX,
+    VIEWPORT_MIN,
 };
 pub use manager::{BrowserConfig, BrowserManager, DEVTOOLS_PORT_FILE, IdleReaper};
 pub use process::StopTimeouts;

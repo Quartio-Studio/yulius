@@ -33,7 +33,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         obj.insert("subject".into(), json!({"type": "string"}));
         obj.insert("body".into(), json!({"type": "string"}));
     }
-    vec![
+    let mut tools = vec![
         ToolDescriptor {
             name: "tasks_list".into(),
             description: "List previous and parallel tasks of this project (other Claude Code or Codex sessions): status, branch, spec and step progress. Use it before starting work to avoid duplicating or conflicting with others.".into(),
@@ -109,7 +109,9 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             description: "List the workflows (reusable task recipes with initial steps, instructions and gates) available in this project.".into(),
             input_schema: schema(json!({}), &[]),
         },
-    ]
+    ];
+    tools.extend(crate::browser::tool_descriptors());
+    tools
 }
 
 impl App {
@@ -181,6 +183,17 @@ impl App {
             "automations_list" => self.tool_automations_list(ctx).await,
             "automation_update" => self.tool_automation_update(ctx, &args).await,
             "workflows_list" => self.tool_workflows_list(ctx).await,
+            "browser_tabs" => self.tool_browser_tabs(ctx, &args).await,
+            "browser_open" => self.tool_browser_open(ctx, &args).await,
+            "browser_navigate" => self.tool_browser_navigate(ctx, &args).await,
+            "browser_click" => self.tool_browser_click(ctx, &args).await,
+            "browser_type" => self.tool_browser_type(ctx, &args).await,
+            "browser_snapshot" => self.tool_browser_snapshot(ctx, &args).await,
+            // Returns a complete result with an image item (size-bounded by the tool itself).
+            "browser_screenshot" => return self.tool_browser_screenshot(ctx, &args).await,
+            "browser_request_user_action" => {
+                self.tool_browser_request_user_action(ctx, &args).await
+            }
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         };
         match outcome {

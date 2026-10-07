@@ -10,7 +10,7 @@ use std::path::Path;
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use support::{Creds, TestResult, add_sandbox, call, harness_with, perms, user_with_token};
+use support::{Creds, TestResult, add_sandbox, call, harness_configured, perms, user_with_token};
 use yulius_app::ports::harness::McpAttachment;
 use yulius_app::ports::store::SandboxStore;
 use yulius_app::skills::pack;
@@ -26,7 +26,7 @@ struct World {
 }
 
 async fn world(contained: bool) -> Result<World, Error> {
-    let h = harness_with(|c| {
+    let h = harness_configured(move |c| {
         c.max_live_sessions = 0;
         c.contained = contained;
     })?;

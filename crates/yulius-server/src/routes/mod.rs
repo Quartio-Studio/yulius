@@ -4,7 +4,9 @@ mod accounts;
 mod admin;
 mod analytics;
 mod automations;
+mod browser;
 mod delivery;
+mod editor;
 mod events;
 mod git;
 mod imports;
@@ -14,6 +16,7 @@ mod mcp_servers;
 mod projects;
 mod sandboxes;
 mod setup_auth;
+mod shells;
 mod skills;
 mod status;
 mod tasks;
@@ -23,7 +26,7 @@ mod workflows;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::{get, patch, post, put};
+use axum::routing::{any, get, patch, post, put};
 use yulius_app::context::App;
 
 use crate::AppState;
@@ -159,6 +162,12 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/sandboxes/{sid}/delivery/runs/{run_id}",
             get(delivery::run),
         )
+        .route("/api/sandboxes/{sid}/browser", get(browser::browser))
+        .route("/api/sandboxes/{sid}/shells", post(shells::create))
+        .route("/api/shells/{id}/terminal", get(shells::terminal))
+        .route("/s/{sid}/editor", any(editor::redirect_root))
+        .route("/s/{sid}/editor/", any(editor::proxy))
+        .route("/s/{sid}/editor/{*rest}", any(editor::proxy))
 }
 
 /// Internal (loopback) routes.

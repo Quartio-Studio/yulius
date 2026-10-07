@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::{Creds, TestResult, add_sandbox, call, harness_with, perms, user_with_token};
+use support::{Creds, TestResult, add_sandbox, call, harness_configured, perms, user_with_token};
 use yulius_app::automations::{AutomationRunRecord, RunState, run_key};
 use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
@@ -41,7 +41,7 @@ struct World {
 /// Sandbox `s1` (studio) with alice (write), bob (read) and root (instance admin, write).
 /// Created tasks stay queued (no live-session capacity), which counts as active.
 async fn world() -> Result<World, Error> {
-    let h = harness_with(|c| c.max_live_sessions = 0)?;
+    let h = harness_configured(|c| c.max_live_sessions = 0)?;
     add_sandbox(&h, "s1", "studio", 20000).await?;
     let alice = user_with_token(&h, "u-alice", "alice", false).await?;
     let bob = user_with_token(&h, "u-bob", "bob", false).await?;

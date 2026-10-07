@@ -50,7 +50,7 @@ pub const TOOL_CLICK: &str = "browser_click";
 pub const TOOL_TYPE: &str = "browser_type";
 /// MCP tool name: accessible text outline of a tab.
 pub const TOOL_SNAPSHOT: &str = "browser_snapshot";
-/// MCP tool name: PNG screenshot of a tab.
+/// MCP tool name: screenshot of a tab (PNG, or JPEG when shrunk to fit a result bound).
 pub const TOOL_SCREENSHOT: &str = "browser_screenshot";
 /// MCP tool name: ask the user to act in a tab (e.g. log in).
 pub const TOOL_REQUEST_USER_ACTION: &str = "browser_request_user_action";
@@ -578,9 +578,9 @@ pub struct ScreenshotParams {
 /// Result of `browser_screenshot`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScreenshotResult {
-    /// Always `image/png`.
+    /// `image/png`, or `image/jpeg` when the image was shrunk to fit a result bound.
     pub mime_type: String,
-    /// Base64 PNG of the viewport, at most [`SCREENSHOT_MAX_BASE64_BYTES`].
+    /// Base64 image of the viewport, at most [`SCREENSHOT_MAX_BASE64_BYTES`].
     pub data_base64: String,
 }
 
@@ -683,7 +683,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: TOOL_SCREENSHOT,
-            description: "PNG screenshot of the tab's viewport as base64 (at most 2 MiB).",
+            description: "Screenshot of the tab's viewport as an image: PNG, or a smaller JPEG (lower quality, downscaled) when needed to fit the tool result limit; the accompanying text gives the scale.",
             input_schema: json!({"type": "object", "properties": {"tab_id": tab},
                 "required": ["tab_id"], "additionalProperties": false}),
         },

@@ -39,14 +39,18 @@ yulius-ptyhost = { workspace = true }
 yulius-git = { workspace = true }
 yulius-github = { workspace = true }
 yulius-import = { workspace = true }
+yulius-browser = { workspace = true }
+yulius-editor = { workspace = true }
 rustls = { workspace = true }
 uuid = { workspace = true }
 sysinfo = { workspace = true }
 
 [dev-dependencies]
 yulius-ptyhost = { workspace = true, features = ["test-support"] }
+yulius-browser = { workspace = true, features = ["fake"] }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+nix = { workspace = true }
 tempfile = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1.5"
-tokio-tungstenite = { workspace = true }
-futures = { workspace = true }

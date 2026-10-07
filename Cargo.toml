@@ -75,6 +75,10 @@ signal-hook = { version = "0.4.5", default-features = false }
 ring = "0.17.14"
 # Machine metrics for the status panel (CPU, memory, data-dir disk, load).
 sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk"] }
+# Editor reverse proxy (HTTP/1.1 client with upgrades to the loopback openvscode-server).
+hyper = "1.12.0"
+hyper-util = "0.1.21"
+http-body-util = "0.1.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

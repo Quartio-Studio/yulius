@@ -174,7 +174,7 @@ impl App {
         self.sandbox_dir(sandbox).join("repo")
     }
 
-    fn sandbox_home(&self, sandbox: &SandboxId) -> PathBuf {
+    pub(crate) fn sandbox_home(&self, sandbox: &SandboxId) -> PathBuf {
         self.sandbox_dir(sandbox).join("home")
     }
 
