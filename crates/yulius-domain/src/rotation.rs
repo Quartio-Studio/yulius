@@ -230,7 +230,9 @@ fn start(input: &RotationInput) -> (Decision, DecisionReason) {
             Class::Exhausted => {}
         }
     }
-    select_or_wait(input, input.current.as_ref())
+    // No exclusion: an exhausted or unusable current account is filtered out anyway, and a
+    // current account of another provider may still be the best cross-provider choice.
+    select_or_wait(input, None)
 }
 
 fn proactive(input: &RotationInput) -> (Decision, DecisionReason) {
@@ -888,6 +890,33 @@ mod tests {
             },
         );
         assert_eq!(switched_to(&decision), Some("o1"));
+        Ok(())
+    }
+
+    #[test]
+    fn start_may_return_to_a_current_account_of_another_provider() -> Result<(), IdError> {
+        // The task's harness changed to Claude, but only the previous Codex account has capacity.
+        let rotation = input(
+            Some("o1"),
+            vec![
+                account("a1", A, usage(Some(100.0), None))?,
+                account("o1", O, usage(Some(10.0), None))?,
+            ],
+        )?;
+        assert_eq!(
+            decide(&rotation, Trigger::Start),
+            (
+                Decision::Switch {
+                    account: id("o1")?,
+                    provider: O,
+                    cross_provider: true
+                },
+                DecisionReason::Selected {
+                    tier: Tier::Headroom,
+                    cross_provider: true
+                }
+            )
+        );
         Ok(())
     }
 
