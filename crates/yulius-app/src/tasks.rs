@@ -304,6 +304,87 @@ impl App {
         self.task_summary(&task).await
     }
 
+    /// Deletes a task permanently (SPEC-001 TSK-009): write access, not live. Removes the
+    /// local worktree and branch (uncommitted work included), run directories, archived
+    /// transcripts and every record; remote branches and pull requests are untouched. Audited.
+    ///
+    /// # Errors
+    /// `NotFound`/`Forbidden` without access; `Conflict` while the task runs or starts.
+    pub async fn delete_task(&self, ctx: &AuthContext, id: &str) -> AppResult<()> {
+        let task = self.load_task(ctx, id, Action::Work).await?;
+        let starting = matches!(
+            task.status,
+            TaskStatus::Starting
+                | TaskStatus::Running
+                | TaskStatus::Switching
+                | TaskStatus::Stopping
+        );
+        if starting || self.deps.store.live_attempt(&task.id).await?.is_some() {
+            return Err(AppError::Conflict(
+                "stop the task before deleting it".into(),
+            ));
+        }
+        let attempts = self.deps.store.attempts(&task.id).await?;
+        if let Some(path) = &task.worktree_path {
+            let repo = self.sandbox_repo(&task.sandbox_id);
+            let root = self.sandbox_dir(&task.sandbox_id).join("worktrees");
+            if let Err(err) = self
+                .deps
+                .git
+                .discard_worktree(
+                    &repo,
+                    std::path::Path::new(path),
+                    &root,
+                    task.branch.as_deref(),
+                )
+                .await
+            {
+                tracing::warn!(task = %task.id, error = %err, "could not discard the task worktree");
+            }
+        }
+        if !self.deps.store.delete_task(&task.id).await? {
+            return Err(AppError::NotFound);
+        }
+        let runs = self.config.data_dir.join("runs");
+        for attempt in attempts {
+            let dir = std::path::PathBuf::from(&attempt.run_dir);
+            if dir.starts_with(&runs) {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+        let _ = std::fs::remove_dir_all(
+            self.config
+                .data_dir
+                .join("transcripts")
+                .join(task.id.as_str()),
+        );
+        self.forget_runtime(&task.id);
+        let actor = ctx
+            .user
+            .github_login
+            .clone()
+            .unwrap_or_else(|| "superadmin".into());
+        let _ = self
+            .deps
+            .store
+            .audit(
+                self.now(),
+                &actor,
+                "task.deleted",
+                Some(task.id.as_str()),
+                Some(&format!("#{} {}", task.number, task.title)),
+            )
+            .await;
+        self.events.publish(
+            Some(task.sandbox_id.clone()),
+            false,
+            yulius_contracts::events::UiEvent::TaskRemoved {
+                task_id: task.id.as_str().to_owned(),
+            },
+        );
+        Ok(())
+    }
+
     /// Records the caller's feedback (ANL-002). Read access suffices.
     ///
     /// # Errors

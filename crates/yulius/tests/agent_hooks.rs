@@ -136,6 +136,8 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
             queued_at: None,
             gate_blocks: 0,
             wake_enabled: true,
+            mode: yulius_app::model::TaskMode::Prompt,
+            harness_proposal: None,
         })
     };
     let mut main = mk_task("t-main", 1, "Checkout API", TaskStatus::Running)?;

@@ -78,6 +78,7 @@ export function taskActions(task, access) {
     feedback: allows(access, 'read'),
     archive: write && ended && !task.archived,
     restore: write && task.archived,
+    delete: write && ended && task.status !== 'stopping',
   };
 }
 

@@ -208,6 +208,13 @@ impl App {
             .clone()
     }
 
+    /// Drops a deleted task's runtime state.
+    pub(crate) fn forget_runtime(&self, task: &TaskId) {
+        if let Ok(mut map) = self.supervisor.runtimes.lock() {
+            map.remove(task);
+        }
+    }
+
     fn existing_runtime(&self, task: &TaskId) -> Option<Arc<TaskRuntime>> {
         self.supervisor
             .runtimes

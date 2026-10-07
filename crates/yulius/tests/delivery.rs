@@ -611,6 +611,8 @@ impl Fixture {
                 queued_at: None,
                 gate_blocks: 0,
                 wake_enabled: true,
+                mode: yulius_app::model::TaskMode::Prompt,
+                harness_proposal: None,
             })
             .await?;
         Ok(worktree)

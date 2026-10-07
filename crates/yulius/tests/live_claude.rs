@@ -95,6 +95,8 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
         queued_at: None,
         gate_blocks: 0,
         wake_enabled: false,
+        mode: yulius_app::model::TaskMode::Prompt,
+        harness_proposal: None,
     };
     store.insert_task(&task).await?;
     let work = tempfile::tempdir()?;

@@ -50,6 +50,15 @@ pub async fn archive(
     Ok(Json(app.archive_task(&ctx, &tid, true).await?))
 }
 
+pub async fn delete(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<StatusCode> {
+    app.delete_task(&ctx, &tid).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn restore(
     State(app): State<AppState>,
     Auth(ctx): Auth,

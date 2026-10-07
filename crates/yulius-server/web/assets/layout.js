@@ -398,11 +398,14 @@ export function createSidebar(ctx, appEl) {
       count.textContent = '';
       return;
     }
-    const tasks = ctx.store.tasksOf(sandbox.id);
-    if (tasks === null) {
+    const all = ctx.store.tasksOf(sandbox.id);
+    if (all === null) {
       setChildren(list, h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
       return;
     }
+    // A task the user left normally is done for now: it stays under Tasks (with Continue) but
+    // leaves the Active list (HRN-002).
+    const tasks = all.filter((task) => task.status !== 'closed');
     count.textContent = tasks.length ? String(tasks.length) : '';
     if (tasks.length === 0) {
       rows.clear();

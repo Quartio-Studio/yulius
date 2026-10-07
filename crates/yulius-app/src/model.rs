@@ -223,6 +223,38 @@ impl TaskOrigin {
     }
 }
 
+/// How the task prompt reaches the agent (SPEC-001 TSK-010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TaskMode {
+    /// The prompt becomes the session's goal through the harness's `/goal` command (default
+    /// for new tasks).
+    #[default]
+    Goal,
+    /// The prompt is the first message.
+    Prompt,
+}
+
+impl TaskMode {
+    /// Wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Goal => "goal",
+            Self::Prompt => "prompt",
+        }
+    }
+
+    /// Parses a wire name.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "goal" => Some(Self::Goal),
+            "prompt" => Some(Self::Prompt),
+            _ => None,
+        }
+    }
+}
+
 /// A task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
@@ -274,6 +306,10 @@ pub struct TaskRecord {
     pub gate_blocks: u32,
     /// Whether idle-wake on messages is enabled.
     pub wake_enabled: bool,
+    /// Goal or prompt mode (TSK-010).
+    pub mode: TaskMode,
+    /// A harness change waiting for a user's approval (JSON [`HarnessProposal`], ROT-012).
+    pub harness_proposal: Option<String>,
 }
 
 /// How an attempt was launched.

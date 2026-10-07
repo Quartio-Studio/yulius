@@ -33,7 +33,10 @@ use yulius_app::error::{AppError, AppResult};
 const QUEUE_BOUND: usize = 1024;
 
 /// Ordered migrations; index + 1 is the schema version stored in `PRAGMA user_version`.
-const MIGRATIONS: &[&str] = &[include_str!("migrations/0001_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/0001_initial.sql"),
+    include_str!("migrations/0002_instance_feedback.sql"),
+];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
@@ -216,7 +219,7 @@ mod tests {
                         .map_err(db)
                 })
                 .await?;
-            assert_eq!(version, 1);
+            assert_eq!(version, 2);
         }
         // Reopen applies nothing new and keeps the version.
         let store = SqliteStore::open(&path)?;
@@ -226,7 +229,7 @@ mod tests {
                     .map_err(db)
             })
             .await?;
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
         let backup = dir.path().join("backup.db");
         store.backup_to(&backup).await?;
         assert!(backup.exists());

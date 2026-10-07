@@ -868,6 +868,8 @@ async fn insert_live_attempt(h: &support::Harness, account: &AccountId) -> TestR
             queued_at: None,
             gate_blocks: 0,
             wake_enabled: true,
+            mode: yulius_app::model::TaskMode::Prompt,
+            harness_proposal: None,
         })
         .await?;
     h.store

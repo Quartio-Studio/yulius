@@ -25,6 +25,7 @@ export function openTaskMenu(ctx, anchor, task) {
     task.archived
       ? { label: 'Restore', disabled: !can.restore, onSelect: () => restoreTask(ctx, task) }
       : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (allows(access, 'write') ? 'Stop the task before archiving' : why), onSelect: () => archiveTask(ctx, task) },
+    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (allows(access, 'write') ? 'Stop the task before deleting it' : why), onSelect: () => deleteTask(ctx, task) },
   ], { align: anchor instanceof Element ? 'end' : 'start' });
 }
 
@@ -56,6 +57,30 @@ export async function stopTask(ctx, task) {
 /** Resume a closed/stopped task on the same session lineage (TSK-007). */
 export function continueTask(ctx, task) {
   return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, {}), `Continuing #${task.number}…`);
+}
+
+/** Permanent deletion (TSK-009): typed confirmation; cannot be undone. */
+export async function deleteTask(ctx, task) {
+  const ok = await confirmDialog({
+    title: `Delete task #${task.number} permanently?`,
+    message: `"${task.title}" and its history, messages, steps and metrics are deleted, and its local worktree and branch are removed, including uncommitted changes. Pushed branches and pull requests on GitHub stay. This cannot be undone.`,
+    confirmLabel: 'Delete permanently',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await ctx.api.del(`/api/tasks/${enc(task.id)}`);
+  } catch (error) {
+    errorToast(error, `Could not delete task #${task.number}`);
+    return;
+  }
+  ctx.store.removeTask(task.id);
+  toast(`Deleted #${task.number} ${task.title}`, { kind: 'ok' });
+  const route = ctx.route();
+  if (route && route.name === 'task' && route.number === task.number) {
+    const sandbox = ctx.store.sandboxById(task.sandbox_id);
+    if (sandbox) ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`);
+  }
 }
 
 /** Archive is a one-click action with Undo (UI-006). */

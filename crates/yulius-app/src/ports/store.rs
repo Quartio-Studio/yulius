@@ -205,6 +205,8 @@ pub struct TaskFieldUpdate {
     pub gate_blocks: Option<u32>,
     /// Idle wake flag.
     pub wake_enabled: Option<bool>,
+    /// Pending harness-change proposal (`Some(None)` clears it).
+    pub harness_proposal: Option<Option<String>>,
 }
 
 /// Field updates for an attempt's terminal transition or pids.
@@ -263,6 +265,10 @@ pub trait TaskStore: Send + Sync {
         update: &TaskFieldUpdate,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Deletes a task and everything recorded for it (attempts, lineage, steps, messages to or
+    /// from it, metrics, feedback, delivery, switch decisions, claims); references from
+    /// automation runs and sandbox onboarding are cleared. Returns whether it existed.
+    async fn delete_task(&self, id: &TaskId) -> AppResult<bool>;
     /// Inserts an attempt (`Conflict` when another live attempt exists for the task).
     async fn insert_attempt(&self, attempt: &AttemptRecord) -> AppResult<()>;
     /// Attempt by id.

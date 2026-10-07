@@ -162,6 +162,8 @@ export function mountTaskView(ctx, sandbox, task) {
       renderStrip();
       // A continued task gets a new attempt: reconnect if the socket had ended.
       if (!wasLive && isLive(current.status) && terminal.socket.status !== 'open') terminal.reconnect();
+      // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
+      if (wasLive && current.status === 'closed' && ctx.onTaskClosed) ctx.onTaskClosed(current);
     },
     get task() { return current; },
     get detail() { return detail; },

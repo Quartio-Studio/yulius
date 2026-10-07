@@ -66,6 +66,7 @@ function createApp(root, transport) {
     currentSandbox: () => currentSandbox,
     currentTask: () => currentTask,
     openLink,
+    onTaskClosed,
     signOut,
     isSuperadmin: () => Boolean(store.state.me && store.state.me.user && store.state.me.user.is_superadmin),
     isInstanceAdmin: () => Boolean(store.state.me && store.state.me.user && (store.state.me.user.is_superadmin || store.state.me.user.is_instance_admin)),
@@ -273,6 +274,14 @@ function createApp(root, transport) {
     } else {
       navigate(`/s/${encodeURIComponent(sandbox.slug)}/browser?tab=${encodeURIComponent(tabId || '')}`);
     }
+  }
+
+  /** The viewed task closed because the user left the session: show the task list. */
+  function onTaskClosed(task) {
+    const sandbox = store.sandboxById(task.sandbox_id);
+    if (!sandbox || !currentSandbox || currentSandbox.id !== sandbox.id) return;
+    navigate(`/s/${encodeURIComponent(sandbox.slug)}/tasks`);
+    toast(`Task #${task.number} closed. Continue it any time from Tasks.`, { kind: 'info' });
   }
 
   /** Links from the terminal, messages and pages (UI-011, BRW-004). */

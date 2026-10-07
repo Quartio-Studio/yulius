@@ -116,6 +116,8 @@ impl App {
             queued_at: req.start.then_some(now),
             gate_blocks: 0,
             wake_enabled: true,
+            mode: crate::model::TaskMode::Prompt,
+            harness_proposal: None,
         };
         let task = store.insert_task(&record).await?;
         let branch = branch_for(task.number, &task.title);
