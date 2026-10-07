@@ -423,6 +423,33 @@ fn pending_integration_environment<'p>(
     }
 }
 
+/// Whether a task is in `environment`'s stage and has not passed it yet (so running it now
+/// would skip a due environment).
+fn not_yet_reached(
+    stage: &DeliveryStage,
+    profile: &DeliveryProfile,
+    environment: &Environment,
+) -> bool {
+    if region(stage, profile) != Some(environment.after) {
+        return false;
+    }
+    let names: Vec<&str> = profile
+        .environments_after(environment.after)
+        .map(|env| env.name.as_str())
+        .collect();
+    let next_due = match stage {
+        DeliveryStage::EnvDone(done) => names
+            .iter()
+            .position(|name| name == done)
+            .map_or(names.len(), |index| index + 1),
+        _ => 0,
+    };
+    names
+        .iter()
+        .position(|name| *name == environment.name)
+        .is_some_and(|requested| requested >= next_due)
+}
+
 /// Facts of a change already merged (environment and promotion decisions).
 fn merged_facts(production_diverged: bool) -> DeliveryFacts {
     DeliveryFacts {
@@ -834,7 +861,9 @@ impl App {
                     err.public_message()
                 )),
             }
-            dirty = self.deps.git.has_changes(worktree).await.unwrap_or(false);
+            if record.stage == DeliveryStage::None {
+                dirty = self.deps.git.has_changes(worktree).await.unwrap_or(false);
+            }
         }
         let mut pr = None;
         // Only an answer from GitHub may change the recorded stage; failures never do.
@@ -1510,12 +1539,16 @@ impl App {
             ),
         )
         .await;
-        if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
-            tracing::warn!(error = %err, "refreshing the sandbox clone after a merge failed");
-        }
+        let fetched = match self.dlv_refresh_clone(&sandbox).await {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(error = %err, "refreshing the sandbox clone after a merge failed");
+                false
+            }
+        };
         let mut notes = Vec::new();
         if let Some(note) = self
-            .dlv_auto_promote_if_enabled(&sandbox, &profile, &ctx.user, &token)
+            .dlv_auto_promote_if_enabled(&sandbox, &profile, &ctx.user, &token, fetched)
             .await
         {
             notes.push(note);
@@ -1585,14 +1618,17 @@ impl App {
         Ok(moved)
     }
 
-    /// `(integration-only commits, production-only commits)` from the freshly fetched sandbox
-    /// clone; `None` when Git cannot tell.
+    /// `(integration-only commits, production-only commits)` from the sandbox clone, fetched
+    /// first unless `fetched`; `None` when Git cannot tell.
     async fn dlv_branch_relation(
         &self,
         sandbox: &SandboxRecord,
         profile: &DeliveryProfile,
+        fetched: bool,
     ) -> Option<(u32, u32)> {
-        self.dlv_refresh_clone(sandbox).await.ok()?;
+        if !fetched {
+            self.dlv_refresh_clone(sandbox).await.ok()?;
+        }
         let repo = self.sandbox_repo(&sandbox.id);
         self.deps
             .git
@@ -1606,7 +1642,8 @@ impl App {
     }
 
     /// Promotes the integration branch: fast-forward, or open/merge the promotion pull request
-    /// (merge commit). Tasks waiting for promotion advance once production moved.
+    /// (merge commit). Tasks waiting for promotion advance once production moved. `fetched`
+    /// says the sandbox clone was fetched just before.
     async fn dlv_promote(
         &self,
         sandbox: &SandboxRecord,
@@ -1614,6 +1651,7 @@ impl App {
         by: Initiator,
         actor: &UserRecord,
         token: &Secret,
+        fetched: bool,
     ) -> AppResult<PromoteResult> {
         let candidates: Vec<(TaskRecord, DeliveryRecord)> = self
             .dlv_sandbox_deliveries(sandbox)
@@ -1648,7 +1686,7 @@ impl App {
         let production_sha = github
             .branch_sha(token, owner, name, &profile.production_branch)
             .await?;
-        let relation = self.dlv_branch_relation(sandbox, profile).await;
+        let relation = self.dlv_branch_relation(sandbox, profile, fetched).await;
         let contained = production_sha.as_deref() == Some(integration_sha.as_str())
             || relation.is_some_and(|(ahead, _)| ahead == 0);
         if contained {
@@ -1854,6 +1892,7 @@ impl App {
         profile: &DeliveryProfile,
         actor: &UserRecord,
         token: &Secret,
+        fetched: bool,
     ) -> Option<String> {
         if !profile.auto_promote {
             return None;
@@ -1872,7 +1911,7 @@ impl App {
             return None;
         }
         match self
-            .dlv_promote(sandbox, profile, Initiator::Policy, actor, token)
+            .dlv_promote(sandbox, profile, Initiator::Policy, actor, token, fetched)
             .await
         {
             Ok(result) => Some(format!(
@@ -1911,15 +1950,23 @@ impl App {
             .await?;
         let profile = delivery_profile(&sandbox);
         let token = self.user_github_token(&ctx.user).await?;
-        self.dlv_promote(&sandbox, &profile, Initiator::User, &ctx.user, &token)
-            .await
+        self.dlv_promote(
+            &sandbox,
+            &profile,
+            Initiator::User,
+            &ctx.user,
+            &token,
+            false,
+        )
+        .await
     }
 
     // ---------------------------------------------------------------- environments
 
-    /// Tasks for which `action` applies now. When none does but some task is in the
-    /// environment's stage, that task's refusal is returned (for example an environment out
-    /// of order); with no task in that stage the action is a standalone run.
+    /// Tasks for which `action` applies now. When none does but some task in the
+    /// environment's stage has not reached it yet, that task's refusal is returned (for example
+    /// an environment out of order). Otherwise the action is a standalone run (a redeploy, or
+    /// no delivered change waiting), which changes no stage.
     async fn dlv_due_tasks(
         &self,
         sandbox: &SandboxRecord,
@@ -1935,9 +1982,7 @@ impl App {
             match dlv::apply(&record.stage, action, by, profile, &facts) {
                 Ok(next) => due.push((task, record, next)),
                 Err(err) => {
-                    if refused.is_none()
-                        && region(&record.stage, profile) == Some(environment.after)
-                    {
+                    if refused.is_none() && not_yet_reached(&record.stage, profile, environment) {
                         refused = Some((task.number, err));
                     }
                 }
@@ -2025,13 +2070,32 @@ impl App {
                 ),
                 other => other,
             })?;
-        self.dlv_audit(
-            &Self::dlv_actor_login(&ctx.user),
-            "delivery.environment.run",
-            &format!("{}/{}", sandbox.slug, env.name),
-            &format!("run {}; command: {command}", run.id),
-        )
-        .await;
+        // The audit entry is part of the trust contract: no entry, no run.
+        if let Err(err) = self
+            .deps
+            .store
+            .audit(
+                self.now(),
+                &Self::dlv_actor_login(&ctx.user),
+                "delivery.environment.run",
+                Some(&format!("{}/{}", sandbox.slug, env.name)),
+                Some(&format!("run {}; command: {command}", run.id)),
+            )
+            .await
+        {
+            let _ = self
+                .deps
+                .store
+                .finish_environment_run(
+                    &run.id,
+                    EnvironmentRunState::Error,
+                    "[yulius] not started: the audit entry could not be written\n",
+                    None,
+                    self.now(),
+                )
+                .await;
+            return Err(err);
+        }
         let app = Arc::clone(self);
         let user = ctx.user.clone();
         let run_id = run.id.clone();
@@ -2108,7 +2172,7 @@ impl App {
         if env.after == Stage::Integration
             && let Ok(token) = self.user_github_token(&ctx.user).await
             && let Some(note) = self
-                .dlv_auto_promote_if_enabled(sandbox, profile, &ctx.user, &token)
+                .dlv_auto_promote_if_enabled(sandbox, profile, &ctx.user, &token, false)
                 .await
         {
             output.push_str(&note);
@@ -2209,7 +2273,7 @@ impl App {
                 && let Ok(token) = self.user_github_token(&user).await
             {
                 note = self
-                    .dlv_auto_promote_if_enabled(&sandbox, &profile, &user, &token)
+                    .dlv_auto_promote_if_enabled(&sandbox, &profile, &user, &token, false)
                     .await
                     .or(note);
             }
@@ -2618,6 +2682,40 @@ mod tests {
             Some(Stage::Production)
         );
         assert_eq!(region(&DeliveryStage::PrOpen, &profile), None);
+    }
+
+    #[test]
+    fn only_skipping_ahead_counts_as_out_of_order() {
+        let mut profile = DeliveryProfile::product();
+        profile.environments.insert(
+            1,
+            Environment {
+                name: "staging".into(),
+                after: Stage::Integration,
+                command: None,
+                verify: Verify::Manual,
+            },
+        );
+        let dev_vm = profile.environments[0].clone();
+        let staging = profile.environments[1].clone();
+        let rollout = profile.environments[2].clone();
+        let merged = DeliveryStage::MergedIntegration;
+        assert!(not_yet_reached(&merged, &profile, &dev_vm));
+        assert!(not_yet_reached(&merged, &profile, &staging));
+        assert!(!not_yet_reached(&merged, &profile, &rollout), "other stage");
+        let deployed = DeliveryStage::EnvDone("dev-vm".into());
+        assert!(!not_yet_reached(&deployed, &profile, &dev_vm), "a redeploy");
+        assert!(not_yet_reached(&deployed, &profile, &staging));
+        assert!(!not_yet_reached(
+            &DeliveryStage::ProductionDone,
+            &profile,
+            &rollout
+        ));
+        assert!(not_yet_reached(
+            &DeliveryStage::Promoted,
+            &profile,
+            &rollout
+        ));
     }
 
     #[test]

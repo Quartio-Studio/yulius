@@ -288,28 +288,10 @@ impl GitPort for RealGit {
     }
 }
 
-/// The fake GitHub's repository: merges and fast-forwards happen in the bare origin.
+/// The fake GitHub's repository: merges and fast-forwards happen directly in the bare origin
+/// (`merge-tree` + `commit-tree` + `update-ref`, no working tree).
 struct BareRemote {
     origin: PathBuf,
-    scratch: PathBuf,
-}
-
-impl BareRemote {
-    fn scratch(&self) -> Result<&Path, String> {
-        if !self.scratch.join(".git").exists() {
-            let parent = self.scratch.parent().ok_or("no parent")?;
-            git_sync(
-                parent,
-                &[
-                    "clone",
-                    "--quiet",
-                    &self.origin.to_string_lossy(),
-                    &self.scratch.to_string_lossy(),
-                ],
-            )?;
-        }
-        Ok(&self.scratch)
-    }
 }
 
 impl FakeRemote for BareRemote {
@@ -336,33 +318,41 @@ impl FakeRemote for BareRemote {
         method: &str,
         message: &str,
     ) -> Result<String, String> {
-        let dir = self.scratch()?;
-        git_sync(dir, &["fetch", "--quiet", "origin"])?;
-        git_sync(
-            dir,
-            &["checkout", "--quiet", "-B", base, &format!("origin/{base}")],
+        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
+        let tree = git_sync(
+            &self.origin,
+            &["merge-tree", "--write-tree", &base_sha, head_sha],
         )?;
-        match method {
+        let commit = match method {
             "merge" => git_sync(
-                dir,
-                &["merge", "--quiet", "--no-ff", "-m", message, head_sha],
+                &self.origin,
+                &[
+                    "commit-tree",
+                    &tree,
+                    "-p",
+                    &base_sha,
+                    "-p",
+                    head_sha,
+                    "-m",
+                    message,
+                ],
             )?,
-            "squash" => {
-                git_sync(dir, &["merge", "--quiet", "--squash", head_sha])?;
-                git_sync(dir, &["commit", "--quiet", "-m", message])?
-            }
+            "squash" => git_sync(
+                &self.origin,
+                &["commit-tree", &tree, "-p", &base_sha, "-m", message],
+            )?,
             other => return Err(format!("unsupported merge method {other}")),
         };
         git_sync(
-            dir,
+            &self.origin,
             &[
-                "push",
-                "--quiet",
-                "origin",
-                &format!("HEAD:refs/heads/{base}"),
+                "update-ref",
+                &format!("refs/heads/{base}"),
+                &commit,
+                &base_sha,
             ],
         )?;
-        git_sync(dir, &["rev-parse", "HEAD"])
+        Ok(commit)
     }
     fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String> {
         let reference = format!("refs/heads/{branch}");
@@ -456,37 +446,22 @@ async fn add_user(
 async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
     let root = tempfile::tempdir()?;
     let origin = root.path().join("origin.git");
-    let seed = root.path().join("seed");
-    std::fs::create_dir_all(&seed)?;
-    git(&seed, &["init", "--quiet", "-b", "main"])?;
-    std::fs::write(seed.join("README.md"), "# Shop\n")?;
-    git(&seed, &["add", "-A"])?;
-    git(&seed, &["commit", "--quiet", "-m", "Initial commit"])?;
     git(
         root.path(),
-        &["init", "--quiet", "--bare", &origin.to_string_lossy()],
-    )?;
-    git(
-        &seed,
-        &["remote", "add", "origin", &origin.to_string_lossy()],
-    )?;
-    git(&seed, &["push", "--quiet", "origin", "main"])?;
-    git(
-        &seed,
         &[
-            "push",
+            "init",
             "--quiet",
-            "origin",
-            &format!("main:refs/heads/{}", profile.integration_branch),
+            "--bare",
+            "-b",
+            "main",
+            &origin.to_string_lossy(),
         ],
     )?;
-
     let h = harness_with_git(Arc::new(RealGit {
         origin: origin.clone(),
     }))?;
     h.github.set_remote(Arc::new(BareRemote {
         origin: origin.clone(),
-        scratch: root.path().join("scratch"),
     }));
     h.store.init_instance("https://yulius.test", "x").await?;
     let app_cfg = json!({"app_id": 1, "slug": "yulius-test", "client_id": "c", "client_secret": "s", "private_key_pem": "k", "webhook_secret": null});
@@ -521,6 +496,20 @@ async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
             "--quiet",
             &origin.to_string_lossy(),
             &repo.to_string_lossy(),
+        ],
+    )?;
+    git(
+        &repo,
+        &["commit", "--quiet", "--allow-empty", "-m", "Initial commit"],
+    )?;
+    git(
+        &repo,
+        &[
+            "push",
+            "--quiet",
+            "origin",
+            "HEAD:refs/heads/main",
+            &format!("HEAD:refs/heads/{}", profile.integration_branch),
         ],
     )?;
     let alice = add_user(
@@ -1156,6 +1145,22 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
     assert_eq!(d["environment"], "dev-vm");
     assert_eq!(actions(&d), ["promote"]);
 
+    // A redeploy is allowed (still confirmed) and changes no stage.
+    let again = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/environments/dev-vm/runs",
+            Some(json!({"confirm": true})),
+            &f.bob,
+        )
+        .await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    let rerun = f
+        .wait_run(again.body["run_id"].as_str().ok_or("run id")?)
+        .await?;
+    assert_eq!(rerun["state"], "succeeded", "{rerun}");
+    assert_eq!(f.delivery("t1").await?["environment"], "dev-vm");
+
     // Fast-forward main to the integration head, then confirm the rollout step.
     let quartio = f.origin_sha("quartio")?;
     let promoted = f
@@ -1209,7 +1214,8 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
             &f.rita,
         )
         .await?;
-    assert_eq!(runs.body.as_array().map(Vec::len), Some(3));
+    assert_eq!(runs.body.as_array().map(Vec::len), Some(4));
+    assert_eq!(runs.body[0]["kind"], "manual", "newest first");
     Ok(())
 }
 
