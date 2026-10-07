@@ -4,10 +4,12 @@
 pub mod access;
 pub mod admin;
 pub mod auth;
+pub mod background;
 pub mod context;
 pub mod coordination;
 pub mod error;
 pub mod events;
+pub mod hooks;
 pub mod hub;
 pub mod lifecycle;
 pub mod mcp;

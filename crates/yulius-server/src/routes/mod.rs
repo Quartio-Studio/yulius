@@ -2,6 +2,7 @@
 
 mod admin;
 mod events;
+mod internal;
 mod mcp;
 mod sandboxes;
 mod setup_auth;
@@ -65,4 +66,6 @@ pub fn internal(_app: Arc<App>) -> Router<AppState> {
     Router::new()
         .route("/internal/healthz", get(|| async { "ok" }))
         .route("/mcp", post(mcp::post).get(mcp::get))
+        .route("/hooks/{harness}/{event}", post(internal::hook))
+        .route("/internal/git-credential", post(internal::git_credential))
 }

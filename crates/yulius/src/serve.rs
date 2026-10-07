@@ -52,9 +52,29 @@ fn prepare_data_dir(dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("cannot restrict data directory: {e}"))
 }
 
+/// Longest Unix socket path every supported OS accepts (macOS `sun_path` is 104 bytes).
+const MAX_SOCKET_PATH: usize = 103;
+
+/// Rejects data directories whose run sockets (`<data>/runs/<uuid>/pty.sock`) would exceed the
+/// Unix socket path limit, so the failure happens at startup and not at the first task launch.
+pub fn check_socket_paths(data_dir: &std::path::Path) -> Result<(), String> {
+    let resolved = data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| data_dir.to_path_buf());
+    let longest = resolved.as_os_str().len() + "/runs/".len() + 36 + "/pty.sock".len();
+    if longest > MAX_SOCKET_PATH {
+        return Err(format!(
+            "the data directory path {} is too long for session sockets ({longest} > {MAX_SOCKET_PATH} bytes); use a shorter --data path",
+            resolved.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Builds the application over the data directory.
 pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     prepare_data_dir(&args.data_dir)?;
+    check_socket_paths(&args.data_dir)?;
     let store = SqliteStore::open(&args.data_dir.join("yulius.db")).map_err(|e| e.to_string())?;
     let crypto = MasterKeyCrypto::load_or_create(&args.data_dir.join("master.key"))
         .map_err(|e| e.to_string())?;
@@ -110,6 +130,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         .await
         .map_err(|e| format!("cannot bind {}: {e}", args.internal_bind))?;
     tracing::info!(public = %args.bind, internal = %args.internal_bind, "yulius listening");
+    app.start_background();
     let public_router = yulius_server::public_router(app.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
     let internal_router = yulius_server::internal_router(app.clone())
