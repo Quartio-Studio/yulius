@@ -7,12 +7,14 @@
 //! fatal (SPEC-002 R-01, EVT-002).
 
 pub mod claude;
+pub mod claude_config;
 pub mod codex;
 pub mod hook_client;
 pub mod launch;
 pub mod login;
 pub mod observe;
 pub mod paths;
+pub mod probe;
 pub mod secret;
 pub mod skills;
 pub mod tail;

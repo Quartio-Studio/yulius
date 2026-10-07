@@ -36,9 +36,15 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 yulius-harness = { workspace = true }
+yulius-ptyhost = { workspace = true }
+yulius-git = { workspace = true }
+yulius-github = { workspace = true }
+yulius-import = { workspace = true }
+rustls = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+yulius-ptyhost = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1.5"

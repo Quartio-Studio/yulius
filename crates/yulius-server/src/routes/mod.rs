@@ -3,12 +3,14 @@
 mod admin;
 mod automations;
 mod events;
+mod internal;
 mod mcp;
 mod mcp_servers;
 mod sandboxes;
 mod setup_auth;
 mod skills;
 mod tasks;
+mod terminal;
 mod workflows;
 
 use std::sync::Arc;
@@ -59,6 +61,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/tasks/{tid}/messages",
             get(tasks::messages).post(tasks::post_message),
         )
+        .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
         .route(
             "/api/sandboxes/{sid}/workflows",
@@ -99,4 +102,6 @@ pub fn internal(_app: Arc<App>) -> Router<AppState> {
     Router::new()
         .route("/internal/healthz", get(|| async { "ok" }))
         .route("/mcp", post(mcp::post).get(mcp::get))
+        .route("/hooks/{harness}/{event}", post(internal::hook))
+        .route("/internal/git-credential", post(internal::git_credential))
 }

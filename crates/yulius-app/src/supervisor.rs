@@ -116,6 +116,12 @@ pub struct SupervisorState {
     launch: tokio::sync::Mutex<()>,
 }
 
+/// The Git credential helper command line for `exe` (shell-quoted for Git's `!` form).
+fn credential_helper(exe: &Path) -> String {
+    let quoted = exe.to_string_lossy().replace('\'', "'\\''");
+    format!("!'{quoted}' git-credential")
+}
+
 /// Branch name for a task: `feat/<number>-<slug>`.
 #[must_use]
 pub fn branch_for(number: u32, title: &str) -> String {
@@ -689,6 +695,26 @@ impl App {
             ("YULIUS_PORT_COUNT".into(), sandbox.port_count.to_string()),
             ("PORT".into(), sandbox.port_base.to_string()),
             ("YULIUS_SANDBOX".into(), sandbox.slug.clone()),
+            // Git asks Yulius for a short-lived installation token (never stored on disk).
+            ("GIT_CONFIG_COUNT".into(), "3".into()),
+            (
+                "GIT_CONFIG_KEY_0".into(),
+                "credential.https://github.com.helper".into(),
+            ),
+            ("GIT_CONFIG_VALUE_0".into(), String::new()),
+            (
+                "GIT_CONFIG_KEY_1".into(),
+                "credential.https://github.com.helper".into(),
+            ),
+            (
+                "GIT_CONFIG_VALUE_1".into(),
+                credential_helper(&self.config.yulius_exe),
+            ),
+            (
+                "GIT_CONFIG_KEY_2".into(),
+                "credential.https://github.com.useHttpPath".into(),
+            ),
+            ("GIT_CONFIG_VALUE_2".into(), "true".into()),
         ]
     }
 
@@ -1569,7 +1595,10 @@ impl App {
                     .await;
                 self.publish_task(task_id).await;
             }
-            Observation::TurnComplete | Observation::Session { .. } => {}
+            Observation::TurnComplete => {
+                self.turn_ended(task_id, attempt.account_id.clone());
+            }
+            Observation::Session { .. } => {}
         }
     }
 
@@ -1654,7 +1683,7 @@ impl App {
         }
     }
 
-    fn retry_waiting<'a>(self: &'a Arc<Self>, task_id: &'a TaskId) -> BoxFuture<'a, ()> {
+    pub(crate) fn retry_waiting<'a>(self: &'a Arc<Self>, task_id: &'a TaskId) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             let Ok(Some(task)) = self.deps.store.task(task_id).await else {
                 return;

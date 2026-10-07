@@ -52,6 +52,7 @@ fn claude_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         yulius_url: "http://127.0.0.1:7801/".into(),
         mcp_servers: servers(),
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        codex_features: yulius_harness::probe::CodexFeatures::default(),
     }
 }
 
@@ -525,5 +526,29 @@ fn planned_file_write_is_private_and_replaces_atomically() -> TestResult {
     };
     assert!(missing_parent.write().is_err());
     assert!(!format!("{missing_parent:?}").contains("SYNTHETIC"));
+    Ok(())
+}
+
+#[test]
+fn codex_without_no_daemon_support_omits_the_flag() -> TestResult {
+    // Codex 0.154 rejects `--no-daemon` ("unexpected argument"); 0.160 supports it.
+    let request = LaunchRequest {
+        codex_features: yulius_harness::probe::CodexFeatures { no_daemon: false },
+        ..codex_request(
+            LaunchMode::New {
+                session_id: None,
+                prompt: None,
+            },
+            true,
+        )
+    };
+    let plan = plan_launch(&request)?;
+    assert_eq!(plan.argv.first().map(String::as_str), Some("codex"));
+    assert!(
+        !plan.argv.iter().any(|a| a == "--no-daemon"),
+        "{:?}",
+        plan.argv
+    );
+    assert_eq!(plan.argv.get(1).map(String::as_str), Some("-C"));
     Ok(())
 }

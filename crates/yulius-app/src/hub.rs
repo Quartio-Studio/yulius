@@ -137,6 +137,15 @@ impl Hub {
             .unwrap_or((80, 24))
     }
 
+    /// Visible screen text (for previews and tests).
+    #[must_use]
+    pub fn screen_text(&self) -> String {
+        self.screen
+            .lock()
+            .map(|s| s.parser.screen().contents())
+            .unwrap_or_default()
+    }
+
     /// Sends a notice line to viewers.
     pub fn notice(&self, text: impl Into<String>) {
         let _ = self.tx.send(HubFrame::Notice(text.into()));

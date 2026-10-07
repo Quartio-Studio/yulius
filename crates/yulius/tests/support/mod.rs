@@ -212,6 +212,7 @@ impl GitHubPort for FakeGitHub {
 /// A test instance.
 pub struct Harness {
     pub app: Arc<App>,
+    pub internal: Router,
     pub github: Arc<FakeGitHub>,
     pub clock: Arc<TestClock>,
     pub store: SqliteStore,
@@ -220,6 +221,13 @@ pub struct Harness {
 }
 
 pub fn harness() -> Result<Harness, Box<dyn std::error::Error>> {
+    harness_with_git(Arc::new(yulius::wiring::pending::UnavailableGit))
+}
+
+/// Like [`harness`] with a specific Git adapter.
+pub fn harness_with_git(
+    git: Arc<dyn yulius_app::ports::git::GitPort>,
+) -> Result<Harness, Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let store = SqliteStore::open_in_memory()?;
     let github = Arc::new(FakeGitHub::default());
@@ -236,17 +244,20 @@ pub fn harness() -> Result<Harness, Box<dyn std::error::Error>> {
         crypto: Arc::new(MasterKeyCrypto::from_key(&[9u8; 32])?),
         github: github.clone(),
         session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
-        harness: Arc::new(yulius::wiring::harness::HarnessAdapter {
-            yulius_exe: "/bin/false".into(),
-            yulius_url: "http://127.0.0.1:1".into(),
-        }),
-        git: Arc::new(yulius::wiring::pending::UnavailableGit),
+        harness: Arc::new(yulius::wiring::harness::HarnessAdapter::new(
+            "/bin/false".into(),
+            "http://127.0.0.1:1",
+        )),
+        git,
     };
     let app = App::new(config, deps);
     let router = yulius_server::public_router(app.clone())
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5000))));
+    let internal = yulius_server::internal_router(app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5001))));
     Ok(Harness {
         app,
+        internal,
         github,
         clock,
         store,
@@ -345,17 +356,20 @@ pub fn harness_with(
         crypto: Arc::new(MasterKeyCrypto::from_key(&[9u8; 32])?),
         github: github.clone(),
         session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
-        harness: Arc::new(yulius::wiring::harness::HarnessAdapter {
-            yulius_exe: "/bin/false".into(),
-            yulius_url: "http://127.0.0.1:1".into(),
-        }),
+        harness: Arc::new(yulius::wiring::harness::HarnessAdapter::new(
+            "/bin/false".into(),
+            "http://127.0.0.1:1",
+        )),
         git: Arc::new(yulius::wiring::pending::UnavailableGit),
     };
     let app = App::new(config, deps);
     let router = yulius_server::public_router(app.clone())
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5000))));
+    let internal = yulius_server::internal_router(app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5001))));
     Ok(Harness {
         app,
+        internal,
         github,
         clock,
         store,
