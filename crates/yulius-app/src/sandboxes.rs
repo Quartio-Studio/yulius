@@ -13,15 +13,7 @@ use crate::model::SandboxRecord;
 /// The default profile for new projects (SPEC-001 DLV-002).
 #[must_use]
 pub fn standard_profile() -> Profile {
-    Profile {
-        preset: "standard".into(),
-        integration_branch: "dev".into(),
-        production_branch: "main".into(),
-        merge: "squash".into(),
-        promote: "merge_commit".into(),
-        auto_promote: false,
-        environments: Vec::new(),
-    }
+    crate::delivery::profile_to_contract(&yulius_domain::delivery::DeliveryProfile::standard())
 }
 
 impl App {

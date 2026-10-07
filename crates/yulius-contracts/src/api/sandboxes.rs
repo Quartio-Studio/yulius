@@ -66,6 +66,10 @@ pub struct Profile {
     pub promote: String,
     /// Promote automatically after an integration merge (Studio).
     pub auto_promote: bool,
+    /// Merges wait for green checks. Absent or null in a request means the preset's default
+    /// (`false` for `studio`, otherwise `true`); responses always carry a value.
+    #[serde(default)]
+    pub require_checks: Option<bool>,
     /// Deployment/verification environments.
     pub environments: Vec<Environment>,
 }
@@ -77,7 +81,8 @@ pub struct Environment {
     pub name: String,
     /// `integration` or `production`: which stage it follows.
     pub after: String,
-    /// Command run on explicit confirmation, if any.
+    /// Command run on explicit confirmation, if any: repository-administrator-configured shell
+    /// text executed as `/bin/sh -c <command>` in the sandbox clone (docs/api.md trust contract).
     pub command: Option<String>,
     /// `manual` or `command`.
     pub verify: String,

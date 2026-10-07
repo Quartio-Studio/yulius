@@ -8,6 +8,7 @@ mod accounts;
 mod audit;
 mod coordination;
 pub mod crypto;
+mod delivery;
 mod ext;
 mod instance;
 mod sandboxes;

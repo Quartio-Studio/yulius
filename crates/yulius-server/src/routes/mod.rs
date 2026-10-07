@@ -1,7 +1,9 @@
 //! Route tables.
 
 mod admin;
+mod delivery;
 mod events;
+mod git;
 mod mcp;
 mod sandboxes;
 mod setup_auth;
@@ -56,6 +58,29 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             get(tasks::messages).post(tasks::post_message),
         )
         .route("/api/events", get(events::events))
+        .route("/api/sandboxes/{sid}", patch(delivery::update_sandbox))
+        .route("/api/delivery/presets", get(delivery::presets))
+        .route("/api/sandboxes/{sid}/git", get(git::overview))
+        .route("/api/tasks/{tid}/delivery", get(delivery::task_delivery))
+        .route("/api/tasks/{tid}/delivery/pr", post(delivery::open_pr))
+        .route("/api/tasks/{tid}/delivery/merge", post(delivery::merge))
+        .route(
+            "/api/sandboxes/{sid}/delivery/promote",
+            post(delivery::promote),
+        )
+        .route(
+            "/api/sandboxes/{sid}/delivery/environments/{env}/runs",
+            post(delivery::run_environment),
+        )
+        .route(
+            "/api/sandboxes/{sid}/delivery/environments/{env}/confirm",
+            post(delivery::confirm_environment),
+        )
+        .route("/api/sandboxes/{sid}/delivery/runs", get(delivery::runs))
+        .route(
+            "/api/sandboxes/{sid}/delivery/runs/{run_id}",
+            get(delivery::run),
+        )
 }
 
 /// Internal (loopback) routes.

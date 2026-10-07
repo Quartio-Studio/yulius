@@ -69,6 +69,11 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             description: "Get this task's steps and progress.".into(),
             input_schema: schema(json!({}), &[]),
         },
+        ToolDescriptor {
+            name: "delivery_status".into(),
+            description: "Read-only delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and what people can do next. Merging, deploying and promoting are human actions in Yulius; there is no tool for them.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
     ]
 }
 
@@ -136,6 +141,7 @@ impl App {
             "steps_set" => self.tool_steps_set(ctx, &args).await,
             "step_update" => self.tool_step_update(ctx, &args).await,
             "steps_get" => self.tool_steps_get(ctx).await,
+            "delivery_status" => self.tool_delivery_status(ctx).await,
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         };
         match outcome {

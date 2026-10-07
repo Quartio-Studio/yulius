@@ -1,0 +1,2585 @@
+//! Git page, delivery profiles and the per-task delivery flow (SPEC-001 GIT-001/002,
+//! DLV-001..005, DSC-002/007/008, J8; SPEC-002 §6.7, ADR-11, §8).
+//!
+//! The decision logic lives in [`yulius_domain::delivery`]; this module gathers the facts it
+//! needs (spec validity from the task worktree, open steps, pull request state and checks from
+//! GitHub, the worktree head), performs the side effects (push, pull request, merge,
+//! promotion, environment runs) and persists the per-task stage.
+//!
+//! Rules enforced here:
+//! - every merge, promotion and environment run is an explicit request of a person with write
+//!   access; the only policy action is the profile's `auto_promote`, executed right after a
+//!   merge (or the last integration environment) done through Yulius. Agents only get the
+//!   read-only `delivery_status` tool (GIT-002, SEC-003);
+//! - a pull request needs a valid task spec (DSC-002); a merge needs the domain gates (spec,
+//!   open steps, checks per profile) and the head that was checked, which GitHub verifies
+//!   again (`expected_head`);
+//! - reads degrade: GitHub or Git failures become `notes` instead of failing the page.
+//!
+//! Environment command trust contract (DLV-003, SPEC-002 §8): an environment `command` is
+//! shell text configured by a repository administrator in the sandbox profile (never read from
+//! the repository). Each run needs an explicit confirmation, is audited with actor,
+//! environment and command, and runs as `/bin/sh -c <command>` in the sandbox's primary clone
+//! checked out at the head of the stage's branch, with a minimal environment (`PATH`,
+//! `HOME` = sandbox home, `LANG`), the output bounded to the last
+//! [`ENVIRONMENT_OUTPUT_BYTES`], and a [`ENVIRONMENT_TIMEOUT`] after which the process group is
+//! killed and reaped ([`runner`]). It runs with the server's privileges (no containment).
+
+pub mod runner;
+
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde_json::{Value, json};
+use tokio::sync::watch;
+use yulius_contracts::api::git::{
+    BlockedAction, CommitView, Delivery, EnvironmentRun, GitOverview, OpenPr, PromoteResult,
+    PullView, RunEnvironment, TaskBranch,
+};
+use yulius_contracts::api::sandboxes::{
+    Environment as EnvironmentView, Profile, Sandbox, UpdateSandbox,
+};
+use yulius_domain::delivery::{
+    self as dlv, ChecksState, DeliveryAction, DeliveryError, DeliveryFacts, DeliveryProfile,
+    DeliveryStage, Environment, EnvironmentEvidence, Initiator, MergeMethod, NextAction, PrState,
+    Preset, PromoteMethod, Stage, Verify,
+};
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
+use yulius_domain::permission::Action;
+use yulius_domain::spec_format::{self, MAX_CONFIG_BYTES, MAX_PATH_BYTES, SpecReport};
+use yulius_domain::steps::StepStatus;
+use yulius_domain::time::Timestamp;
+
+use crate::auth::{AuthContext, rfc3339};
+use crate::context::App;
+use crate::coordination::AgentContext;
+use crate::error::{AppError, AppResult};
+use crate::model::{SandboxRecord, Secret, StepRecord, TaskRecord, UserRecord};
+use crate::ports::github::{self as gh, GhPull, NewPull};
+use crate::ports::store::TaskFieldUpdate;
+use runner::{CommandEnd, CommandSpec, OutputRing, run_bounded};
+
+/// Wall-clock limit of one environment command.
+pub const ENVIRONMENT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Limit of the checkout before an environment command.
+pub const CHECKOUT_TIMEOUT: Duration = Duration::from_secs(120);
+/// Output kept per environment run (the tail).
+pub const ENVIRONMENT_OUTPUT_BYTES: usize = 1 << 20;
+/// Largest spec file read.
+pub const MAX_SPEC_BYTES: u64 = 256 * 1024;
+/// Most files examined when discovering an unregistered spec.
+pub const MAX_SPEC_CANDIDATES: usize = 500;
+/// Integration commits on the Git page.
+pub const RECENT_COMMITS: u32 = 20;
+/// Open pull requests examined on the Git page.
+pub const MAX_PULLS: usize = 30;
+/// Longest pull request title.
+pub const MAX_PR_TITLE_CHARS: usize = 200;
+/// Longest pull request body.
+pub const MAX_PR_BODY_BYTES: usize = 64 * 1024;
+/// Runs listed per sandbox.
+pub const RUN_LIST_LIMIT: u32 = 20;
+/// Output tail shown per run in lists.
+const RUN_LIST_OUTPUT_BYTES: usize = 2 * 1024;
+/// A `running` row older than the run limits plus this grace has no runner any more.
+const LOST_RUN_GRACE_MS: i64 = 5 * 60 * 1000;
+/// Longest Goal excerpt in a generated pull request body.
+const GOAL_EXCERPT_CHARS: usize = 2_000;
+
+const DIRTY_WORKTREE: &str = "the task worktree has uncommitted changes; commit (or discard) them first so the pull request contains exactly what was validated";
+
+/// The persisted delivery stage of one task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryRecord {
+    /// Task.
+    pub task_id: TaskId,
+    /// Stage.
+    pub stage: DeliveryStage,
+    /// Task pull request number, once known.
+    pub pr_number: Option<u64>,
+    /// Last change.
+    pub updated_at: Timestamp,
+}
+
+impl DeliveryRecord {
+    fn initial(task: &TaskId) -> Self {
+        Self {
+            task_id: task.clone(),
+            stage: DeliveryStage::None,
+            pr_number: None,
+            updated_at: Timestamp(0),
+        }
+    }
+}
+
+/// State of an environment run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnvironmentRunState {
+    /// The command is running.
+    Running,
+    /// Exit status 0 (or a manual confirmation).
+    Succeeded,
+    /// Non-zero exit, a signal or the timeout.
+    Failed,
+    /// Could not start, or no runner is attached any more (server restart).
+    Error,
+}
+
+impl EnvironmentRunState {
+    /// Wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Error => "error",
+        }
+    }
+
+    /// Parses a wire name.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "running" => Some(Self::Running),
+            "succeeded" => Some(Self::Succeeded),
+            "failed" => Some(Self::Failed),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+
+/// What an environment run recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnvironmentRunKind {
+    /// The environment command ran.
+    Command,
+    /// A person confirmed the environment (manual verification).
+    Manual,
+}
+
+impl EnvironmentRunKind {
+    /// Wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Manual => "manual",
+        }
+    }
+
+    /// Parses a wire name.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "command" => Some(Self::Command),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
+}
+
+/// One environment run or manual confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentRunRecord {
+    /// Run id.
+    pub id: String,
+    /// Sandbox.
+    pub sandbox_id: SandboxId,
+    /// Environment name.
+    pub environment: String,
+    /// Command run or manual confirmation.
+    pub kind: EnvironmentRunKind,
+    /// Requesting user.
+    pub requested_by: UserId,
+    /// Command text (audit).
+    pub command: Option<String>,
+    /// Commit checked out for the command.
+    pub commit: Option<String>,
+    /// State.
+    pub state: EnvironmentRunState,
+    /// Output tail.
+    pub output: String,
+    /// Exit code.
+    pub exit_code: Option<i32>,
+    /// Start.
+    pub started_at: Timestamp,
+    /// End.
+    pub ended_at: Option<Timestamp>,
+}
+
+// ---------------------------------------------------------------- profiles
+
+fn invalid(message: impl Into<String>) -> AppError {
+    AppError::Invalid(message.into())
+}
+
+/// Converts and validates an API profile. Unknown names are rejected, blank commands mean "no
+/// command", a missing `require_checks` takes the preset's default, and the result is
+/// relabeled (`custom` unless every setting equals the named preset's defaults, DLV-005).
+///
+/// # Errors
+/// `Invalid` with the first problem found.
+pub fn profile_from_contract(profile: &Profile) -> AppResult<DeliveryProfile> {
+    let preset = Preset::parse(&profile.preset)
+        .ok_or_else(|| invalid("preset must be standard, product, studio or custom"))?;
+    let merge = MergeMethod::parse(&profile.merge)
+        .ok_or_else(|| invalid("merge must be squash, merge or rebase"))?;
+    let promote = PromoteMethod::parse(&profile.promote)
+        .ok_or_else(|| invalid("promote must be merge_commit or fast_forward"))?;
+    let mut environments = Vec::with_capacity(profile.environments.len());
+    for env in &profile.environments {
+        let after = Stage::parse(&env.after).ok_or_else(|| {
+            invalid(format!(
+                "environment '{}': after must be integration or production",
+                env.name
+            ))
+        })?;
+        let verify = Verify::parse(&env.verify).ok_or_else(|| {
+            invalid(format!(
+                "environment '{}': verify must be manual or command",
+                env.name
+            ))
+        })?;
+        environments.push(Environment {
+            name: env.name.trim().to_owned(),
+            after,
+            command: env
+                .command
+                .as_deref()
+                .filter(|c| !c.trim().is_empty())
+                .map(str::to_owned),
+            verify,
+        });
+    }
+    let parsed = DeliveryProfile {
+        preset,
+        integration_branch: profile.integration_branch.trim().to_owned(),
+        production_branch: profile.production_branch.trim().to_owned(),
+        merge,
+        promote,
+        auto_promote: profile.auto_promote,
+        require_checks: profile
+            .require_checks
+            .unwrap_or_else(|| DeliveryProfile::for_preset(preset).require_checks),
+        environments,
+    };
+    parsed
+        .validate()
+        .map_err(|err| AppError::Invalid(err.to_string()))?;
+    Ok(parsed.relabeled())
+}
+
+/// The API form of a profile.
+#[must_use]
+pub fn profile_to_contract(profile: &DeliveryProfile) -> Profile {
+    Profile {
+        preset: profile.preset.as_str().to_owned(),
+        integration_branch: profile.integration_branch.clone(),
+        production_branch: profile.production_branch.clone(),
+        merge: profile.merge.as_str().to_owned(),
+        promote: profile.promote.as_str().to_owned(),
+        auto_promote: profile.auto_promote,
+        require_checks: Some(profile.require_checks),
+        environments: profile
+            .environments
+            .iter()
+            .map(|env| EnvironmentView {
+                name: env.name.clone(),
+                after: env.after.as_str().to_owned(),
+                command: env.command.clone(),
+                verify: env.verify.as_str().to_owned(),
+            })
+            .collect(),
+    }
+}
+
+/// The sandbox's stored profile; an unreadable or invalid one falls back to `standard`.
+#[must_use]
+pub fn delivery_profile(sandbox: &SandboxRecord) -> DeliveryProfile {
+    serde_json::from_str::<Profile>(&sandbox.profile_json)
+        .map_err(|err| AppError::Invalid(err.to_string()))
+        .and_then(|profile| profile_from_contract(&profile))
+        .unwrap_or_else(|_| DeliveryProfile::standard())
+}
+
+/// The three named presets (DLV-002..004) in API form.
+#[must_use]
+pub fn preset_profiles() -> Vec<Profile> {
+    [Preset::Standard, Preset::Product, Preset::Studio]
+        .into_iter()
+        .map(|preset| profile_to_contract(&DeliveryProfile::for_preset(preset)))
+        .collect()
+}
+
+fn profile_summary(profile: &DeliveryProfile) -> String {
+    let environments: Vec<String> = profile
+        .environments
+        .iter()
+        .map(|env| {
+            format!(
+                "{} (after {}, verify {}, command: {})",
+                env.name,
+                env.after.as_str(),
+                env.verify.as_str(),
+                env.command.as_deref().unwrap_or("none")
+            )
+        })
+        .collect();
+    format!(
+        "preset {}; {} -> {}; merge {}; promote {}; auto_promote {}; require_checks {}; environments: [{}]",
+        profile.preset.as_str(),
+        profile.integration_branch,
+        profile.production_branch,
+        profile.merge.as_str(),
+        profile.promote.as_str(),
+        profile.auto_promote,
+        profile.require_checks,
+        environments.join("; ")
+    )
+}
+
+// ---------------------------------------------------------------- small helpers
+
+/// Maps a domain refusal to an API error (state conflicts are 409, request problems 422).
+fn refusal(err: &DeliveryError) -> AppError {
+    match err {
+        DeliveryError::ConfirmationRequired(_)
+        | DeliveryError::UnknownEnvironment(_)
+        | DeliveryError::WrongEvidence { .. }
+        | DeliveryError::NoCommand(_) => AppError::Invalid(err.to_string()),
+        DeliveryError::UserActionRequired => AppError::Forbidden(err.to_string()),
+        _ => AppError::Conflict(err.to_string()),
+    }
+}
+
+fn domain_checks(state: gh::ChecksState) -> ChecksState {
+    match state {
+        gh::ChecksState::None => ChecksState::None,
+        gh::ChecksState::Pending => ChecksState::Pending,
+        gh::ChecksState::Success => ChecksState::Success,
+        gh::ChecksState::Failure => ChecksState::Failure,
+    }
+}
+
+fn pr_wire_state(pull: &GhPull) -> &'static str {
+    if pull.merged {
+        "merged"
+    } else if pull.state == "open" {
+        "open"
+    } else {
+        "closed"
+    }
+}
+
+fn pull_view(pull: &GhPull, checks: &str) -> PullView {
+    PullView {
+        number: pull.number,
+        url: pull.html_url.clone(),
+        title: pull.title.clone(),
+        state: pr_wire_state(pull).to_owned(),
+        base: pull.base.clone(),
+        head: pull.head.clone(),
+        checks: checks.to_owned(),
+    }
+}
+
+fn is_open(pull: &GhPull) -> bool {
+    !pull.merged && pull.state == "open"
+}
+
+fn past_merge(stage: &DeliveryStage) -> bool {
+    matches!(
+        stage,
+        DeliveryStage::MergedIntegration
+            | DeliveryStage::EnvDone(_)
+            | DeliveryStage::Promoted
+            | DeliveryStage::ProductionDone
+    )
+}
+
+/// The stage region a recorded stage is in (`None` before the merge and when done).
+fn region(stage: &DeliveryStage, profile: &DeliveryProfile) -> Option<Stage> {
+    match stage {
+        DeliveryStage::MergedIntegration => Some(Stage::Integration),
+        DeliveryStage::Promoted => Some(Stage::Production),
+        DeliveryStage::EnvDone(name) => profile.environment(name).map(|env| env.after),
+        DeliveryStage::None | DeliveryStage::PrOpen | DeliveryStage::ProductionDone => None,
+    }
+}
+
+/// The integration environment still due for a merged task, if any.
+fn pending_integration_environment<'p>(
+    stage: &DeliveryStage,
+    profile: &'p DeliveryProfile,
+) -> Option<&'p Environment> {
+    let mut integration = profile.environments_after(Stage::Integration);
+    match stage {
+        DeliveryStage::MergedIntegration => integration.next(),
+        DeliveryStage::EnvDone(done) => integration.skip_while(|env| env.name != *done).nth(1),
+        _ => None,
+    }
+}
+
+/// Facts of a change already merged (environment and promotion decisions).
+fn merged_facts(production_diverged: bool) -> DeliveryFacts {
+    DeliveryFacts {
+        spec_valid: true,
+        steps_open: 0,
+        checks: ChecksState::None,
+        pr_state: PrState::Merged,
+        head_current: true,
+        production_diverged,
+    }
+}
+
+fn is_hex_sha(text: &str) -> bool {
+    matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn clip_chars(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text.to_owned(),
+    }
+}
+
+fn clip_bytes(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut cut = max;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &text[..cut]
+}
+
+fn tail_bytes(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
+/// A safe repository-relative path: non-empty, bounded, only normal components.
+fn safe_relative(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= MAX_PATH_BYTES
+        && !path.contains('\0')
+        && Path::new(path)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
+}
+
+/// Reads a repository file below `root`, refusing paths that escape it (also through
+/// symlinks) and files larger than `max` bytes. Errors are user-facing and never contain
+/// server paths.
+async fn read_repo_file(root: &Path, relative: &str, max: u64) -> Result<String, String> {
+    if !safe_relative(relative) {
+        return Err(format!(
+            "`{}` is not a safe repository-relative path",
+            clip_chars(relative, 100)
+        ));
+    }
+    let root = tokio::fs::canonicalize(root)
+        .await
+        .map_err(|_| "the task worktree is missing".to_owned())?;
+    let path = tokio::fs::canonicalize(root.join(relative))
+        .await
+        .map_err(|_| format!("`{relative}` does not exist in the task worktree"))?;
+    if !path.starts_with(&root) {
+        return Err(format!("`{relative}` points outside the task worktree"));
+    }
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| format!("`{relative}` cannot be read"))?;
+    if !meta.is_file() {
+        return Err(format!("`{relative}` is not a file"));
+    }
+    if meta.len() > max {
+        return Err(format!("`{relative}` is larger than {max} bytes"));
+    }
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| format!("`{relative}` cannot be read"))?;
+    String::from_utf8(bytes).map_err(|_| format!("`{relative}` is not UTF-8 text"))
+}
+
+/// Text of a level-2 section (outside code fences), trimmed.
+fn section_text(markdown: &str, name: &str) -> Option<String> {
+    let mut inside = false;
+    let mut fence = false;
+    let mut out = Vec::new();
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fence = !fence;
+        }
+        if !fence && trimmed.starts_with('#') {
+            let level = trimmed.bytes().take_while(|b| *b == b'#').count();
+            if level <= 2 {
+                if inside {
+                    break;
+                }
+                inside = level == 2 && trimmed[level..].trim().eq_ignore_ascii_case(name);
+                continue;
+            }
+        }
+        if inside {
+            out.push(line);
+        }
+    }
+    let text = out.join("\n").trim().to_owned();
+    (!text.is_empty()).then_some(text)
+}
+
+// ---------------------------------------------------------------- observations
+
+/// Result of reading and validating the task spec.
+#[derive(Debug, Clone, Default)]
+struct SpecCheck {
+    path: Option<String>,
+    valid: bool,
+    problems: Vec<String>,
+    report: Option<SpecReport>,
+    goal: Option<String>,
+}
+
+impl SpecCheck {
+    fn problem(path: Option<String>, message: String) -> Self {
+        Self {
+            path,
+            valid: false,
+            problems: vec![message],
+            report: None,
+            goal: None,
+        }
+    }
+}
+
+/// Everything observed about one task before a delivery decision.
+#[derive(Debug, Clone)]
+struct Observed {
+    record: DeliveryRecord,
+    spec: SpecCheck,
+    steps: Vec<StepRecord>,
+    steps_open: usize,
+    pr: Option<GhPull>,
+    checks: ChecksState,
+    worktree_head: Option<String>,
+    dirty: bool,
+    notes: Vec<String>,
+}
+
+impl Observed {
+    fn pr_state(&self) -> PrState {
+        match &self.pr {
+            Some(pull) if pull.merged => PrState::Merged,
+            Some(pull) if is_open(pull) => PrState::Open,
+            Some(_) => PrState::Closed,
+            None if past_merge(&self.record.stage) => PrState::Merged,
+            None => PrState::Absent,
+        }
+    }
+
+    fn facts(&self) -> DeliveryFacts {
+        DeliveryFacts {
+            spec_valid: self.spec.valid,
+            steps_open: self.steps_open,
+            checks: self.checks,
+            pr_state: self.pr_state(),
+            head_current: matches!(
+                (&self.pr, &self.worktree_head),
+                (Some(pull), Some(head)) if pull.head_sha == *head
+            ),
+            production_diverged: false,
+        }
+    }
+}
+
+impl App {
+    async fn dlv_sandbox_of(&self, task: &TaskRecord) -> AppResult<SandboxRecord> {
+        self.deps
+            .store
+            .sandbox(&task.sandbox_id)
+            .await?
+            .filter(|s| s.removed_at.is_none())
+            .ok_or(AppError::NotFound)
+    }
+
+    async fn dlv_require_sandbox(
+        &self,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+        action: Action,
+    ) -> AppResult<SandboxRecord> {
+        let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
+        Ok(self.require(&ctx.user, &sid, action).await?.0)
+    }
+
+    /// Short-lived installation token for Git transport (push, fetch).
+    async fn dlv_installation_token(&self, sandbox: &SandboxRecord) -> AppResult<Secret> {
+        let app = self.github_app().await?;
+        let installed = self
+            .deps
+            .store
+            .instance()
+            .await?
+            .and_then(|instance| instance.installation_id);
+        let id = match installed {
+            Some(id) => id,
+            None => self
+                .deps
+                .github
+                .find_installation(&app, &sandbox.repo_owner)
+                .await?
+                .ok_or_else(|| {
+                    AppError::Conflict(
+                        "the GitHub App is not installed on the repository owner".into(),
+                    )
+                })?,
+        };
+        self.deps.github.installation_token(&app, id).await
+    }
+
+    /// Token for GitHub reads: the caller's user token, else the installation token.
+    async fn dlv_read_token(
+        &self,
+        sandbox: &SandboxRecord,
+        user: Option<&UserRecord>,
+    ) -> Result<Secret, String> {
+        if let Some(user) = user
+            && let Ok(token) = self.user_github_token(user).await
+        {
+            return Ok(token);
+        }
+        self.dlv_installation_token(sandbox)
+            .await
+            .map_err(|err| format!("GitHub is not available: {}", err.public_message()))
+    }
+
+    /// Fetches the sandbox's primary clone.
+    async fn dlv_refresh_clone(&self, sandbox: &SandboxRecord) -> AppResult<()> {
+        let repo = self.sandbox_repo(&sandbox.id);
+        if !repo.join(".git").exists() {
+            return Err(AppError::Conflict(
+                "the sandbox repository is not cloned yet".into(),
+            ));
+        }
+        let token = self.dlv_installation_token(sandbox).await?;
+        let url = format!(
+            "https://github.com/{}/{}.git",
+            sandbox.repo_owner, sandbox.repo_name
+        );
+        self.deps.git.sync_clone(&url, &repo, &token).await
+    }
+
+    async fn dlv_audit(&self, actor: &str, action: &str, target: &str, detail: &str) {
+        if let Err(err) = self
+            .deps
+            .store
+            .audit(self.now(), actor, action, Some(target), Some(detail))
+            .await
+        {
+            tracing::error!(error = %err, action, "audit write failed");
+        }
+    }
+
+    fn dlv_actor_login(user: &UserRecord) -> String {
+        user.github_login
+            .clone()
+            .unwrap_or_else(|| "superadmin".into())
+    }
+
+    /// Reads and validates the task spec; registers a discovered spec path.
+    async fn dlv_check_spec(&self, task: &TaskRecord) -> SpecCheck {
+        let Some(worktree) = task.worktree_path.as_deref().map(PathBuf::from) else {
+            return SpecCheck::problem(
+                task.spec_path.clone(),
+                "The task has no worktree yet, so its spec cannot be read.".into(),
+            );
+        };
+        let path = match &task.spec_path {
+            Some(path) => path.clone(),
+            None => match self.dlv_discover_spec(task, &worktree).await {
+                (_, Some(found)) => {
+                    let update = TaskFieldUpdate {
+                        spec_path: Some(found.clone()),
+                        ..TaskFieldUpdate::default()
+                    };
+                    if let Err(err) = self
+                        .deps
+                        .store
+                        .update_task(&task.id, &update, self.now())
+                        .await
+                    {
+                        tracing::warn!(error = %err, "registering the discovered spec failed");
+                    }
+                    found
+                }
+                (dir, None) => {
+                    return SpecCheck::problem(
+                        None,
+                        format!(
+                            "No spec is registered for this task and no Markdown file under `{dir}` has `yulius-task: {}` frontmatter; write the task spec there.",
+                            task.id
+                        ),
+                    );
+                }
+            },
+        };
+        match read_repo_file(&worktree, &path, MAX_SPEC_BYTES).await {
+            Ok(text) => {
+                let report = spec_format::validate_spec_for(&text, &task.id);
+                SpecCheck {
+                    path: Some(path),
+                    valid: report.is_valid(),
+                    problems: report.problems.iter().map(ToString::to_string).collect(),
+                    goal: section_text(&text, "Goal"),
+                    report: Some(report),
+                }
+            }
+            Err(message) => SpecCheck::problem(Some(path.clone()), format!("Spec {message}.")),
+        }
+    }
+
+    /// Looks for a spec naming this task under the project's specs directory. Returns the
+    /// directory searched and the repository-relative path found.
+    async fn dlv_discover_spec(
+        &self,
+        task: &TaskRecord,
+        worktree: &Path,
+    ) -> (String, Option<String>) {
+        let config = read_repo_file(
+            worktree,
+            "yulius.toml",
+            u64::try_from(MAX_CONFIG_BYTES).unwrap_or(u64::MAX),
+        )
+        .await
+        .ok();
+        let layout = spec_format::project_layout(config.as_deref());
+        let dir = layout.specs_dir.trim_end_matches('/').to_owned();
+        if !safe_relative(&dir) {
+            return (dir, None);
+        }
+        let Ok(mut entries) = tokio::fs::read_dir(worktree.join(&dir)).await else {
+            return (dir, None);
+        };
+        let mut names = Vec::new();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if names.len() >= MAX_SPEC_CANDIDATES {
+                break;
+            }
+            let is_file = entry.file_type().await.is_ok_and(|t| t.is_file());
+            if let Some(name) = entry.file_name().to_str()
+                && is_file
+                && name.ends_with(".md")
+            {
+                names.push(name.to_owned());
+            }
+        }
+        names.sort();
+        for name in names {
+            let relative = format!("{dir}/{name}");
+            let Ok(text) = read_repo_file(worktree, &relative, MAX_SPEC_BYTES).await else {
+                continue;
+            };
+            if text.contains(task.id.as_str())
+                && spec_format::validate_spec(&text).task_id.as_deref() == Some(task.id.as_str())
+            {
+                return (dir, Some(relative));
+            }
+        }
+        (dir, None)
+    }
+
+    /// Gathers the facts of one task and reconciles its stage with GitHub (a pull request
+    /// opened, merged or closed outside Yulius).
+    async fn dlv_observe(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskRecord,
+        profile: &DeliveryProfile,
+        token: Option<&Secret>,
+    ) -> AppResult<Observed> {
+        let store = &self.deps.store;
+        let record = store
+            .delivery(&task.id)
+            .await?
+            .unwrap_or_else(|| DeliveryRecord::initial(&task.id));
+        let spec = self.dlv_check_spec(task).await;
+        let steps = store.steps(&task.id).await?;
+        let steps_open = steps
+            .iter()
+            .filter(|s| !StepStatus::parse(&s.status).is_some_and(StepStatus::is_resolved))
+            .count();
+        let mut notes = Vec::new();
+        let pre_merge = matches!(record.stage, DeliveryStage::None | DeliveryStage::PrOpen);
+        let mut worktree_head = None;
+        let mut dirty = false;
+        if let Some(worktree) = task.worktree_path.as_deref().map(Path::new)
+            && pre_merge
+        {
+            match self.deps.git.log(worktree, "HEAD", 1).await {
+                Ok(commits) => worktree_head = commits.into_iter().next().map(|c| c.sha),
+                Err(err) => notes.push(format!(
+                    "Git: the task branch head cannot be read: {}",
+                    err.public_message()
+                )),
+            }
+            dirty = self.deps.git.has_changes(worktree).await.unwrap_or(false);
+        }
+        let mut pr = None;
+        let mut checks = ChecksState::None;
+        if let Some(token) = token {
+            let github = &self.deps.github;
+            let (owner, repo) = (&sandbox.repo_owner, &sandbox.repo_name);
+            if let Some(number) = record.pr_number {
+                match github.get_pull(token, owner, repo, number).await {
+                    Ok(pull) => pr = Some(pull),
+                    Err(err) => notes.push(format!(
+                        "GitHub: pull request #{number} cannot be read: {}",
+                        err.public_message()
+                    )),
+                }
+            } else if let (Some(branch), DeliveryStage::None) = (&task.branch, &record.stage) {
+                match github.list_pulls(token, owner, repo, Some(branch)).await {
+                    Ok(pulls) => {
+                        pr = pulls.into_iter().find(|p| {
+                            p.head == *branch && p.base == profile.integration_branch && is_open(p)
+                        });
+                    }
+                    Err(err) => notes.push(format!(
+                        "GitHub: pull requests cannot be listed: {}",
+                        err.public_message()
+                    )),
+                }
+            }
+            if let Some(pull) = pr.as_ref().filter(|p| is_open(p)) {
+                match github.checks(token, owner, repo, &pull.head_sha).await {
+                    Ok(state) => checks = domain_checks(state),
+                    Err(err) => {
+                        // Unknown checks never allow a merge that requires them.
+                        checks = ChecksState::Pending;
+                        notes.push(format!(
+                            "GitHub: checks cannot be read: {}",
+                            err.public_message()
+                        ));
+                    }
+                }
+            }
+        }
+        let mut observed = Observed {
+            record,
+            spec,
+            steps,
+            steps_open,
+            pr,
+            checks,
+            worktree_head,
+            dirty,
+            notes,
+        };
+        let next = dlv::reconcile(&observed.record.stage, &observed.facts());
+        let found_number = observed.pr.as_ref().map(|p| p.number);
+        if next != observed.record.stage
+            || (found_number.is_some() && observed.record.pr_number.is_none())
+        {
+            let reconciled = DeliveryRecord {
+                task_id: task.id.clone(),
+                pr_number: if next == DeliveryStage::None {
+                    None
+                } else {
+                    found_number.or(observed.record.pr_number)
+                },
+                stage: next,
+                updated_at: self.now(),
+            };
+            if store
+                .transition_delivery(&observed.record.stage, &reconciled)
+                .await?
+            {
+                if reconciled.stage != observed.record.stage {
+                    self.dlv_audit(
+                        "yulius",
+                        "delivery.reconcile",
+                        &format!("{}#{}", sandbox.slug, task.number),
+                        &format!(
+                            "{} -> {} (GitHub state)",
+                            observed.record.stage, reconciled.stage
+                        ),
+                    )
+                    .await;
+                }
+                if reconciled.stage == DeliveryStage::None {
+                    observed.pr = None;
+                }
+                observed.record = reconciled;
+            }
+        }
+        Ok(observed)
+    }
+
+    fn dlv_delivery_of(
+        profile: &DeliveryProfile,
+        observed: &Observed,
+        mut notes: Vec<String>,
+    ) -> Delivery {
+        let facts = observed.facts();
+        let stage = &observed.record.stage;
+        let next_actions = dlv::next_actions(stage, profile, &facts)
+            .iter()
+            .map(NextAction::wire)
+            .collect();
+        let blocked = dlv::blocked_actions(stage, profile, &facts)
+            .into_iter()
+            .map(|(action, err)| BlockedAction {
+                action: action.wire(),
+                reason: err.to_string(),
+            })
+            .collect();
+        if observed.dirty && *stage == DeliveryStage::None {
+            notes.push(format!("Git: {DIRTY_WORKTREE}."));
+        }
+        notes.extend(observed.notes.iter().cloned());
+        let checks = if observed.pr.as_ref().is_some_and(is_open) {
+            observed.checks.as_str()
+        } else {
+            "none"
+        };
+        Delivery {
+            stage: stage.wire_name().to_owned(),
+            environment: match stage {
+                DeliveryStage::EnvDone(name) => Some(name.clone()),
+                _ => None,
+            },
+            pr: observed.pr.as_ref().map(|p| pull_view(p, checks)),
+            spec_path: observed.spec.path.clone(),
+            spec_valid: observed.spec.valid,
+            spec_problems: observed.spec.problems.clone(),
+            steps_open: u32::try_from(observed.steps_open).unwrap_or(u32::MAX),
+            next_actions,
+            blocked,
+            notes,
+        }
+    }
+
+    // ---------------------------------------------------------------- reads
+
+    /// Delivery state of a task for `user` (or for an agent with `None`, using the App's
+    /// installation token for GitHub reads). Reconciles with GitHub; GitHub and Git failures
+    /// become notes.
+    ///
+    /// # Errors
+    /// Store failures and a missing sandbox.
+    pub async fn delivery_view(
+        &self,
+        task: &TaskRecord,
+        user: Option<&UserRecord>,
+    ) -> AppResult<Delivery> {
+        let sandbox = self.dlv_sandbox_of(task).await?;
+        let profile = delivery_profile(&sandbox);
+        let mut notes = Vec::new();
+        let token = match self.dlv_read_token(&sandbox, user).await {
+            Ok(token) => Some(token),
+            Err(note) => {
+                notes.push(note);
+                None
+            }
+        };
+        let observed = self
+            .dlv_observe(&sandbox, task, &profile, token.as_ref())
+            .await?;
+        Ok(Self::dlv_delivery_of(&profile, &observed, notes))
+    }
+
+    /// The `TaskDetail.delivery` value: the full view, or the stored stage with a note when
+    /// even that cannot be computed.
+    pub async fn task_detail_delivery(&self, task: &TaskRecord, user: &UserRecord) -> Delivery {
+        match self.delivery_view(task, Some(user)).await {
+            Ok(view) => view,
+            Err(err) => Delivery {
+                stage: "none".into(),
+                notes: vec![format!(
+                    "The delivery state is unavailable: {}",
+                    err.public_message()
+                )],
+                ..Delivery::default()
+            },
+        }
+    }
+
+    /// `GET /api/tasks/{tid}/delivery`.
+    ///
+    /// # Errors
+    /// `NotFound` without read access.
+    pub async fn task_delivery(&self, ctx: &AuthContext, task_id: &str) -> AppResult<Delivery> {
+        let task = self.load_task(ctx, task_id, Action::View).await?;
+        self.delivery_view(&task, Some(&ctx.user)).await
+    }
+
+    /// `GET /api/sandboxes/{sid}/git`: branches, per-task branch facts, recent integration
+    /// commits and open pull requests with checks (GIT-001). Degrades to partial data with
+    /// notes when Git or GitHub fail.
+    ///
+    /// # Errors
+    /// `NotFound` without read access; store failures.
+    pub async fn git_overview(
+        &self,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+    ) -> AppResult<GitOverview> {
+        let sandbox = self
+            .dlv_require_sandbox(ctx, sandbox_id, Action::View)
+            .await?;
+        let profile = delivery_profile(&sandbox);
+        let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
+        let repo = self.sandbox_repo(&sandbox.id);
+        let cloned = repo.join(".git").exists();
+        let integration_ref = format!("origin/{}", profile.integration_branch);
+        let mut notes = Vec::new();
+        let token = match self.dlv_read_token(&sandbox, Some(&ctx.user)).await {
+            Ok(token) => Some(token),
+            Err(note) => {
+                notes.push(note);
+                None
+            }
+        };
+        let mut open_pulls = Vec::new();
+        let mut checks_by_pr = Vec::new();
+        if let Some(token) = &token {
+            match self.deps.github.list_pulls(token, owner, name, None).await {
+                Ok(pulls) => {
+                    open_pulls = pulls.into_iter().filter(is_open).take(MAX_PULLS).collect()
+                }
+                Err(err) => notes.push(format!(
+                    "GitHub: pull requests cannot be listed: {}",
+                    err.public_message()
+                )),
+            }
+            let mut checks_failed = false;
+            for pull in &open_pulls {
+                let state = match self
+                    .deps
+                    .github
+                    .checks(token, owner, name, &pull.head_sha)
+                    .await
+                {
+                    Ok(state) => state.as_str(),
+                    Err(err) => {
+                        if !checks_failed {
+                            checks_failed = true;
+                            notes.push(format!(
+                                "GitHub: checks cannot be read: {}",
+                                err.public_message()
+                            ));
+                        }
+                        "unknown"
+                    }
+                };
+                checks_by_pr.push((pull.number, state));
+            }
+        }
+        let checks_of = |number: u64| {
+            checks_by_pr
+                .iter()
+                .find(|(n, _)| *n == number)
+                .map_or("unknown", |(_, state)| *state)
+        };
+        let pulls: Vec<PullView> = open_pulls
+            .iter()
+            .map(|p| pull_view(p, checks_of(p.number)))
+            .collect();
+
+        if !cloned {
+            notes.push("Git: the sandbox repository is not cloned yet.".into());
+        }
+        let mut tasks = Vec::new();
+        let mut git_failed = false;
+        for task in self.deps.store.tasks(&sandbox.id, false).await? {
+            let Some(branch) = task.branch.clone() else {
+                continue;
+            };
+            let mut view = TaskBranch {
+                task_id: task.id.to_string(),
+                title: task.title.clone(),
+                branch: branch.clone(),
+                ahead: 0,
+                behind: 0,
+                files_changed: 0,
+                insertions: 0,
+                deletions: 0,
+                pr: open_pulls
+                    .iter()
+                    .find(|p| p.head == branch)
+                    .map(|p| pull_view(p, checks_of(p.number))),
+            };
+            if cloned
+                && self
+                    .deps
+                    .git
+                    .branch_exists(&repo, &branch)
+                    .await
+                    .unwrap_or(false)
+            {
+                let git = &self.deps.git;
+                match (
+                    git.ahead_behind(&repo, &integration_ref, &branch).await,
+                    git.diff_stat(&repo, &integration_ref, &branch).await,
+                ) {
+                    (Ok((ahead, behind)), Ok(stat)) => {
+                        view.ahead = ahead;
+                        view.behind = behind;
+                        view.files_changed = stat.files;
+                        view.insertions = stat.insertions;
+                        view.deletions = stat.deletions;
+                    }
+                    (Err(err), _) | (_, Err(err)) => {
+                        if !git_failed {
+                            git_failed = true;
+                            notes.push(format!(
+                                "Git: branch statistics are incomplete: {}",
+                                err.public_message()
+                            ));
+                        }
+                    }
+                }
+            }
+            if view.pr.is_none()
+                && let Some(token) = &token
+                && let Ok(Some(record)) = self.deps.store.delivery(&task.id).await
+                && record.stage == DeliveryStage::PrOpen
+                && let Some(number) = record.pr_number
+                && let Ok(pull) = self.deps.github.get_pull(token, owner, name, number).await
+            {
+                // Merged or closed outside Yulius: show it and reconcile the stage.
+                view.pr = Some(pull_view(&pull, "none"));
+                let observed_state = if pull.merged {
+                    PrState::Merged
+                } else if is_open(&pull) {
+                    PrState::Open
+                } else {
+                    PrState::Closed
+                };
+                let facts = DeliveryFacts {
+                    pr_state: observed_state,
+                    ..merged_facts(false)
+                };
+                let next = dlv::reconcile(&record.stage, &facts);
+                if next != record.stage {
+                    let reconciled = DeliveryRecord {
+                        pr_number: (next != DeliveryStage::None).then_some(number),
+                        stage: next,
+                        updated_at: self.now(),
+                        ..record.clone()
+                    };
+                    let _ = self
+                        .deps
+                        .store
+                        .transition_delivery(&record.stage, &reconciled)
+                        .await;
+                }
+            }
+            tasks.push(view);
+        }
+
+        let mut recent_commits = Vec::new();
+        if cloned {
+            match self
+                .deps
+                .git
+                .log(&repo, &integration_ref, RECENT_COMMITS)
+                .await
+            {
+                Ok(commits) => {
+                    recent_commits = commits
+                        .into_iter()
+                        .map(|c| CommitView {
+                            sha: c.sha,
+                            subject: c.subject,
+                            author: c.author,
+                            at: rfc3339(Timestamp(c.at_ms)),
+                        })
+                        .collect();
+                }
+                Err(err) => notes.push(format!(
+                    "Git: recent commits of {} cannot be read: {}",
+                    profile.integration_branch,
+                    err.public_message()
+                )),
+            }
+        }
+        Ok(GitOverview {
+            integration_branch: profile.integration_branch.clone(),
+            production_branch: profile.production_branch.clone(),
+            default_branch: sandbox.default_branch.clone(),
+            tasks,
+            recent_commits,
+            pulls,
+            notes,
+        })
+    }
+
+    // ---------------------------------------------------------------- profile
+
+    /// `PATCH /api/sandboxes/{sid}` (admin): validates and stores the delivery profile.
+    ///
+    /// # Errors
+    /// `Forbidden` below admin, `Invalid` profiles.
+    pub async fn update_sandbox_profile(
+        &self,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+        req: &UpdateSandbox,
+    ) -> AppResult<Sandbox> {
+        let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
+        let (sandbox, level) = self.require(&ctx.user, &sid, Action::Administer).await?;
+        let Some(requested) = &req.profile else {
+            return self.sandbox_view(&sandbox, level).await;
+        };
+        let before = delivery_profile(&sandbox);
+        let profile = profile_from_contract(requested)?;
+        let json =
+            serde_json::to_string(&profile_to_contract(&profile)).map_err(AppError::internal)?;
+        self.deps.store.set_profile(&sid, &json).await?;
+        self.dlv_audit(
+            &Self::dlv_actor_login(&ctx.user),
+            "delivery.profile.update",
+            &sandbox.slug,
+            &format!(
+                "from preset {}: {}",
+                before.preset.as_str(),
+                profile_summary(&profile)
+            ),
+        )
+        .await;
+        let updated = self
+            .deps
+            .store
+            .sandbox(&sid)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        self.sandbox_view(&updated, level).await
+    }
+
+    // ---------------------------------------------------------------- pull request
+
+    /// `POST /api/tasks/{tid}/delivery/pr`: pushes the task branch with an installation token
+    /// and opens the pull request into the integration branch with the caller's token.
+    /// Refused without a valid spec (DSC-002) or with uncommitted changes.
+    ///
+    /// # Errors
+    /// `Conflict` refusals, `Upstream` Git/GitHub failures.
+    pub async fn open_task_pr(
+        &self,
+        ctx: &AuthContext,
+        task_id: &str,
+        req: &OpenPr,
+    ) -> AppResult<Delivery> {
+        let task = self.load_task(ctx, task_id, Action::Work).await?;
+        let sandbox = self.dlv_sandbox_of(&task).await?;
+        let profile = delivery_profile(&sandbox);
+        let branch = task.branch.clone().ok_or_else(|| {
+            AppError::Conflict("the task has no branch yet; start it first".into())
+        })?;
+        let worktree = task.worktree_path.clone().ok_or_else(|| {
+            AppError::Conflict("the task has no worktree yet; start it first".into())
+        })?;
+        if branch == profile.integration_branch || branch == profile.production_branch {
+            return Err(AppError::Invalid(format!(
+                "the task branch '{branch}' is a protected delivery branch"
+            )));
+        }
+        let token = self.user_github_token(&ctx.user).await?;
+        let observed = self
+            .dlv_observe(&sandbox, &task, &profile, Some(&token))
+            .await?;
+        dlv::apply(
+            &observed.record.stage,
+            &DeliveryAction::OpenPr,
+            Initiator::User,
+            &profile,
+            &observed.facts(),
+        )
+        .map_err(|err| match err {
+            DeliveryError::SpecInvalid => AppError::Conflict(format!(
+                "{err} Problems: {}",
+                observed.spec.problems.join(" ")
+            )),
+            other => refusal(&other),
+        })?;
+        if observed.dirty {
+            return Err(AppError::Conflict(DIRTY_WORKTREE.into()));
+        }
+        let installation = self.dlv_installation_token(&sandbox).await?;
+        self.deps
+            .git
+            .push(Path::new(&worktree), &branch, &branch, &installation)
+            .await?;
+        let title = req
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or(&task.title)
+            .replace(['\n', '\r'], " ");
+        let pull = self
+            .deps
+            .github
+            .create_pull(
+                &token,
+                &sandbox.repo_owner,
+                &sandbox.repo_name,
+                &NewPull {
+                    head: branch.clone(),
+                    base: profile.integration_branch.clone(),
+                    title: clip_chars(&title, MAX_PR_TITLE_CHARS),
+                    body: self.dlv_pr_body(&sandbox, &task, &observed, req.body.as_deref()),
+                },
+            )
+            .await?;
+        let next = DeliveryRecord {
+            task_id: task.id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(pull.number),
+            updated_at: self.now(),
+        };
+        if !self
+            .deps
+            .store
+            .transition_delivery(&observed.record.stage, &next)
+            .await?
+        {
+            return Err(AppError::Conflict(
+                "the delivery state changed concurrently; refresh".into(),
+            ));
+        }
+        self.dlv_audit(
+            &Self::dlv_actor_login(&ctx.user),
+            "delivery.pr.open",
+            &format!("{}#{}", sandbox.slug, task.number),
+            &format!(
+                "pull request #{} {} -> {} at {}",
+                pull.number, branch, profile.integration_branch, pull.head_sha
+            ),
+        )
+        .await;
+        self.publish_task(&task.id).await;
+        let task = self
+            .deps
+            .store
+            .task(&task.id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        self.delivery_view(&task, Some(&ctx.user)).await
+    }
+
+    fn dlv_pr_body(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskRecord,
+        observed: &Observed,
+        custom: Option<&str>,
+    ) -> String {
+        let link = format!(
+            "Delivered with Yulius task #{}: {}/s/{}/t/{}",
+            task.number, self.config.public_url, sandbox.slug, task.number
+        );
+        let mut body = String::new();
+        match custom.map(str::trim).filter(|b| !b.is_empty()) {
+            Some(custom) => body.push_str(custom),
+            None => {
+                if let Some(goal) = &observed.spec.goal {
+                    body.push_str("## Goal\n\n");
+                    body.push_str(&clip_chars(goal, GOAL_EXCERPT_CHARS));
+                    body.push_str("\n\n");
+                }
+                if let Some(path) = &observed.spec.path {
+                    body.push_str(&format!("**Spec:** `{path}`\n\n"));
+                }
+                if let Some(report) = &observed.spec.report
+                    && !report.plan.is_empty()
+                {
+                    body.push_str("## Plan\n\n");
+                    for item in &report.plan {
+                        body.push_str(&format!(
+                            "{}- [{}] {}\n",
+                            "  ".repeat(item.depth.min(4)),
+                            if item.checked { "x" } else { " " },
+                            item.text
+                        ));
+                    }
+                    body.push('\n');
+                }
+                if !observed.steps.is_empty() {
+                    body.push_str("## Steps\n\n");
+                    for step in &observed.steps {
+                        body.push_str(&format!("- {} ({})\n", step.title, step.status));
+                    }
+                    body.push('\n');
+                }
+            }
+        }
+        let room = MAX_PR_BODY_BYTES.saturating_sub(link.len() + 8);
+        let mut out = clip_bytes(&body, room).trim_end().to_owned();
+        out.push_str("\n\n---\n");
+        out.push_str(&link);
+        out
+    }
+
+    // ---------------------------------------------------------------- merge
+
+    /// `POST /api/tasks/{tid}/delivery/merge`: merges the task pull request with the profile's
+    /// method at the head that was checked, after the domain gates (spec, open steps, checks
+    /// per profile, current head). With `auto_promote`, promotes right after (policy).
+    ///
+    /// # Errors
+    /// `Conflict` refusals (including stale heads), `Upstream` GitHub failures.
+    pub async fn merge_task_pr(&self, ctx: &AuthContext, task_id: &str) -> AppResult<Delivery> {
+        let task = self.load_task(ctx, task_id, Action::Work).await?;
+        let sandbox = self.dlv_sandbox_of(&task).await?;
+        let profile = delivery_profile(&sandbox);
+        let token = self.user_github_token(&ctx.user).await?;
+        let observed = self
+            .dlv_observe(&sandbox, &task, &profile, Some(&token))
+            .await?;
+        dlv::apply(
+            &observed.record.stage,
+            &DeliveryAction::Merge,
+            Initiator::User,
+            &profile,
+            &observed.facts(),
+        )
+        .map_err(|err| refusal(&err))?;
+        let pull = observed
+            .pr
+            .clone()
+            .ok_or_else(|| AppError::Conflict("the pull request cannot be read".into()))?;
+        let merge_sha = self
+            .deps
+            .github
+            .merge_pull(
+                &token,
+                &sandbox.repo_owner,
+                &sandbox.repo_name,
+                pull.number,
+                profile.merge.as_str(),
+                &pull.head_sha,
+            )
+            .await?;
+        let next = DeliveryRecord {
+            task_id: task.id.clone(),
+            stage: DeliveryStage::MergedIntegration,
+            pr_number: Some(pull.number),
+            updated_at: self.now(),
+        };
+        self.deps
+            .store
+            .transition_delivery(&observed.record.stage, &next)
+            .await?;
+        let actor = Self::dlv_actor_login(&ctx.user);
+        self.dlv_audit(
+            &actor,
+            "delivery.merge",
+            &format!("{}#{}", sandbox.slug, task.number),
+            &format!(
+                "pull request #{} merged into {} ({}) at head {} -> {}",
+                pull.number,
+                profile.integration_branch,
+                profile.merge.as_str(),
+                pull.head_sha,
+                merge_sha
+            ),
+        )
+        .await;
+        if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
+            tracing::warn!(error = %err, "refreshing the sandbox clone after a merge failed");
+        }
+        let mut notes = Vec::new();
+        if let Some(note) = self
+            .dlv_auto_promote_if_enabled(&sandbox, &profile, &ctx.user, &token)
+            .await
+        {
+            notes.push(note);
+        }
+        self.publish_task(&task.id).await;
+        let task = self
+            .deps
+            .store
+            .task(&task.id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let mut view = self.delivery_view(&task, Some(&ctx.user)).await?;
+        view.notes.extend(notes);
+        Ok(view)
+    }
+
+    // ---------------------------------------------------------------- promotion
+
+    /// Tasks of the sandbox (archived ones included) with their delivery rows.
+    async fn dlv_sandbox_deliveries(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Vec<(TaskRecord, DeliveryRecord)>> {
+        let store = &self.deps.store;
+        let records = store.deliveries(&sandbox.id).await?;
+        let mut tasks = store.tasks(&sandbox.id, false).await?;
+        tasks.extend(store.tasks(&sandbox.id, true).await?);
+        tasks.sort_by_key(|t| t.number);
+        Ok(tasks
+            .into_iter()
+            .map(|task| {
+                let record = records
+                    .iter()
+                    .find(|r| r.task_id == task.id)
+                    .cloned()
+                    .unwrap_or_else(|| DeliveryRecord::initial(&task.id));
+                (task, record)
+            })
+            .collect())
+    }
+
+    /// Moves tasks to their computed stages (compare-and-set each); returns the numbers moved.
+    async fn dlv_advance(
+        &self,
+        moves: Vec<(TaskRecord, DeliveryRecord, DeliveryStage)>,
+    ) -> AppResult<Vec<u32>> {
+        let mut moved = Vec::new();
+        for (task, record, next) in moves {
+            if next == record.stage {
+                continue;
+            }
+            let updated = DeliveryRecord {
+                stage: next,
+                updated_at: self.now(),
+                ..record.clone()
+            };
+            if self
+                .deps
+                .store
+                .transition_delivery(&record.stage, &updated)
+                .await?
+            {
+                moved.push(task.number);
+                self.publish_task(&task.id).await;
+            }
+        }
+        Ok(moved)
+    }
+
+    async fn dlv_production_diverged(
+        &self,
+        sandbox: &SandboxRecord,
+        profile: &DeliveryProfile,
+    ) -> bool {
+        if self.dlv_refresh_clone(sandbox).await.is_err() {
+            return false;
+        }
+        let repo = self.sandbox_repo(&sandbox.id);
+        self.deps
+            .git
+            .ahead_behind(
+                &repo,
+                &format!("origin/{}", profile.production_branch),
+                &format!("origin/{}", profile.integration_branch),
+            )
+            .await
+            .is_ok_and(|(_, behind)| behind > 0)
+    }
+
+    /// Promotes the integration branch: fast-forward, or open/merge the promotion pull request
+    /// (merge commit). Tasks waiting for promotion advance once production moved.
+    async fn dlv_promote(
+        &self,
+        sandbox: &SandboxRecord,
+        profile: &DeliveryProfile,
+        by: Initiator,
+        actor: &UserRecord,
+        token: &Secret,
+    ) -> AppResult<PromoteResult> {
+        let candidates: Vec<(TaskRecord, DeliveryRecord)> = self
+            .dlv_sandbox_deliveries(sandbox)
+            .await?
+            .into_iter()
+            .filter(|(_, record)| region(&record.stage, profile) == Some(Stage::Integration))
+            .collect();
+        for (task, record) in &candidates {
+            if let Some(env) = pending_integration_environment(&record.stage, profile) {
+                return Err(AppError::Conflict(format!(
+                    "task #{}: environment '{}' is not done yet; finish it before promoting",
+                    task.number, env.name
+                )));
+            }
+        }
+        if by == Initiator::Policy && candidates.is_empty() {
+            return Err(AppError::Conflict(
+                "nothing merged through Yulius is waiting for promotion".into(),
+            ));
+        }
+        let github = &self.deps.github;
+        let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
+        let integration_sha = github
+            .branch_sha(token, owner, name, &profile.integration_branch)
+            .await?
+            .ok_or_else(|| {
+                AppError::Conflict(format!(
+                    "branch '{}' does not exist on GitHub",
+                    profile.integration_branch
+                ))
+            })?;
+        let production_sha = github
+            .branch_sha(token, owner, name, &profile.production_branch)
+            .await?;
+        if production_sha.as_deref() == Some(integration_sha.as_str()) {
+            return Err(AppError::Conflict(format!(
+                "nothing to promote: '{}' already points at the head of '{}'",
+                profile.production_branch, profile.integration_branch
+            )));
+        }
+        let diverged = profile.promote == PromoteMethod::FastForward
+            && self.dlv_production_diverged(sandbox, profile).await;
+        let facts = merged_facts(diverged);
+        let mut moves = Vec::new();
+        if candidates.is_empty() {
+            if diverged {
+                return Err(refusal(&DeliveryError::ProductionDiverged {
+                    production: profile.production_branch.clone(),
+                    integration: profile.integration_branch.clone(),
+                }));
+            }
+        } else {
+            for (task, record) in candidates {
+                let next = dlv::apply(&record.stage, &DeliveryAction::Promote, by, profile, &facts)
+                    .map_err(|err| refusal(&err))?;
+                moves.push((task, record, next));
+            }
+        }
+        let numbers: Vec<String> = moves
+            .iter()
+            .map(|(t, _, _)| format!("#{}", t.number))
+            .collect();
+        let (result, sha) = match profile.promote {
+            PromoteMethod::FastForward => {
+                github
+                    .fast_forward(
+                        token,
+                        owner,
+                        name,
+                        &profile.production_branch,
+                        &integration_sha,
+                    )
+                    .await?;
+                ("promoted", integration_sha.clone())
+            }
+            PromoteMethod::MergeCommit => {
+                let existing = github
+                    .list_pulls(token, owner, name, Some(&profile.integration_branch))
+                    .await?
+                    .into_iter()
+                    .find(|p| {
+                        is_open(p)
+                            && p.head == profile.integration_branch
+                            && p.base == profile.production_branch
+                    });
+                match existing {
+                    None => {
+                        let mut body = format!(
+                            "Promotes `{}` to `{}` with a merge commit.\n\n",
+                            profile.integration_branch, profile.production_branch
+                        );
+                        for (task, _, _) in &moves {
+                            body.push_str(&format!("- #{} {}\n", task.number, task.title));
+                        }
+                        body.push_str(&format!(
+                            "\n---\nOpened from Yulius: {}/s/{}/git",
+                            self.config.public_url, sandbox.slug
+                        ));
+                        let pull = github
+                            .create_pull(
+                                token,
+                                owner,
+                                name,
+                                &NewPull {
+                                    head: profile.integration_branch.clone(),
+                                    base: profile.production_branch.clone(),
+                                    title: format!(
+                                        "Promote {} to {}",
+                                        profile.integration_branch, profile.production_branch
+                                    ),
+                                    body: clip_bytes(&body, MAX_PR_BODY_BYTES).to_owned(),
+                                },
+                            )
+                            .await?;
+                        self.dlv_audit(
+                            &Self::dlv_policy_actor(by, actor),
+                            "delivery.promotion_pr.open",
+                            &sandbox.slug,
+                            &format!(
+                                "pull request #{} {} -> {} for tasks [{}]",
+                                pull.number,
+                                profile.integration_branch,
+                                profile.production_branch,
+                                numbers.join(", ")
+                            ),
+                        )
+                        .await;
+                        return Ok(PromoteResult {
+                            result: "pr_opened".into(),
+                            sha: Some(pull.html_url),
+                        });
+                    }
+                    Some(_) if by == Initiator::Policy => {
+                        return Err(AppError::Conflict(
+                            "the promotion pull request waits for a person to merge it".into(),
+                        ));
+                    }
+                    Some(pull) => {
+                        if profile.require_checks {
+                            match domain_checks(
+                                github.checks(token, owner, name, &pull.head_sha).await?,
+                            ) {
+                                ChecksState::Failure => {
+                                    return Err(refusal(&DeliveryError::ChecksFailing));
+                                }
+                                ChecksState::Pending => {
+                                    return Err(refusal(&DeliveryError::ChecksPending));
+                                }
+                                ChecksState::None | ChecksState::Success => {}
+                            }
+                        }
+                        let sha = github
+                            .merge_pull(
+                                token,
+                                owner,
+                                name,
+                                pull.number,
+                                MergeMethod::Merge.as_str(),
+                                &pull.head_sha,
+                            )
+                            .await?;
+                        ("promoted", sha)
+                    }
+                }
+            }
+        };
+        self.dlv_audit(
+            &Self::dlv_policy_actor(by, actor),
+            "delivery.promote",
+            &sandbox.slug,
+            &format!(
+                "{} -> {} ({}) at {}; tasks [{}]",
+                profile.integration_branch,
+                profile.production_branch,
+                profile.promote.as_str(),
+                sha,
+                numbers.join(", ")
+            ),
+        )
+        .await;
+        self.dlv_advance(moves).await?;
+        Ok(PromoteResult {
+            result: result.into(),
+            sha: Some(sha),
+        })
+    }
+
+    fn dlv_policy_actor(by: Initiator, actor: &UserRecord) -> String {
+        match by {
+            Initiator::User => Self::dlv_actor_login(actor),
+            Initiator::Policy => format!(
+                "policy:auto_promote (after {})",
+                Self::dlv_actor_login(actor)
+            ),
+        }
+    }
+
+    /// Runs the profile's automatic promotion when it is enabled and every merged change has
+    /// finished its integration environments. Returns a note describing the outcome.
+    async fn dlv_auto_promote_if_enabled(
+        &self,
+        sandbox: &SandboxRecord,
+        profile: &DeliveryProfile,
+        actor: &UserRecord,
+        token: &Secret,
+    ) -> Option<String> {
+        if !profile.auto_promote {
+            return None;
+        }
+        let deliveries = self.dlv_sandbox_deliveries(sandbox).await.ok()?;
+        let waiting: Vec<&DeliveryRecord> = deliveries
+            .iter()
+            .map(|(_, record)| record)
+            .filter(|record| region(&record.stage, profile) == Some(Stage::Integration))
+            .collect();
+        if waiting.is_empty()
+            || waiting
+                .iter()
+                .any(|record| pending_integration_environment(&record.stage, profile).is_some())
+        {
+            return None;
+        }
+        match self
+            .dlv_promote(sandbox, profile, Initiator::Policy, actor, token)
+            .await
+        {
+            Ok(result) => Some(format!(
+                "Automatic promotion ({}): {} {}",
+                profile.promote.as_str(),
+                result.result,
+                result.sha.unwrap_or_default()
+            )),
+            Err(err) => {
+                self.dlv_audit(
+                    &Self::dlv_policy_actor(Initiator::Policy, actor),
+                    "delivery.promote.failed",
+                    &sandbox.slug,
+                    &err.public_message(),
+                )
+                .await;
+                Some(format!(
+                    "Automatic promotion did not happen: {}",
+                    err.public_message()
+                ))
+            }
+        }
+    }
+
+    /// `POST /api/sandboxes/{sid}/delivery/promote` (write): an explicit promotion.
+    ///
+    /// # Errors
+    /// `Conflict` when environments are pending, production diverged or nothing changed.
+    pub async fn promote_sandbox(
+        &self,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+    ) -> AppResult<PromoteResult> {
+        let sandbox = self
+            .dlv_require_sandbox(ctx, sandbox_id, Action::Work)
+            .await?;
+        let profile = delivery_profile(&sandbox);
+        let token = self.user_github_token(&ctx.user).await?;
+        self.dlv_promote(&sandbox, &profile, Initiator::User, &ctx.user, &token)
+            .await
+    }
+
+    // ---------------------------------------------------------------- environments
+
+    /// Tasks for which `action` applies now. When none does but some task is in the
+    /// environment's stage, that task's refusal is returned (for example an environment out
+    /// of order); with no task in that stage the action is a standalone run.
+    async fn dlv_due_tasks(
+        &self,
+        sandbox: &SandboxRecord,
+        profile: &DeliveryProfile,
+        environment: &Environment,
+        action: &DeliveryAction,
+        by: Initiator,
+    ) -> AppResult<Vec<(TaskRecord, DeliveryRecord, DeliveryStage)>> {
+        let facts = merged_facts(false);
+        let mut due = Vec::new();
+        let mut refused = None;
+        for (task, record) in self.dlv_sandbox_deliveries(sandbox).await? {
+            match dlv::apply(&record.stage, action, by, profile, &facts) {
+                Ok(next) => due.push((task, record, next)),
+                Err(err) => {
+                    if refused.is_none()
+                        && region(&record.stage, profile) == Some(environment.after)
+                    {
+                        refused = Some((task.number, err));
+                    }
+                }
+            }
+        }
+        if due.is_empty()
+            && let Some((number, err)) = refused
+        {
+            return Err(match refusal(&err) {
+                AppError::Conflict(message) => {
+                    AppError::Conflict(format!("task #{number}: {message}"))
+                }
+                other => other,
+            });
+        }
+        Ok(due)
+    }
+
+    fn dlv_environment_named<'p>(
+        profile: &'p DeliveryProfile,
+        name: &str,
+    ) -> AppResult<&'p Environment> {
+        profile
+            .environment(name)
+            .ok_or_else(|| refusal(&DeliveryError::UnknownEnvironment(clip_chars(name, 64))))
+    }
+
+    /// `POST /api/sandboxes/{sid}/delivery/environments/{env}/runs` (write). Requires
+    /// `{"confirm": true}`. An environment with a command starts it in the background (see the
+    /// module trust contract); one without a command records the person's confirmation.
+    ///
+    /// # Errors
+    /// `Invalid` without confirmation or for unknown environments, `Conflict` when out of order
+    /// or while another run of the sandbox is in progress.
+    pub async fn start_environment_run(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+        environment: &str,
+        req: &RunEnvironment,
+    ) -> AppResult<EnvironmentRun> {
+        let sandbox = self
+            .dlv_require_sandbox(ctx, sandbox_id, Action::Work)
+            .await?;
+        let profile = delivery_profile(&sandbox);
+        let env = Self::dlv_environment_named(&profile, environment)?.clone();
+        let Some(command) = env.command.clone() else {
+            return self
+                .dlv_record_confirmation(ctx, &sandbox, &profile, &env, req.confirm)
+                .await;
+        };
+        if !req.confirm {
+            return Err(refusal(&DeliveryError::ConfirmationRequired(
+                env.name.clone(),
+            )));
+        }
+        let action = DeliveryAction::RunEnvironment {
+            name: env.name.clone(),
+            confirmed: true,
+        };
+        self.dlv_due_tasks(&sandbox, &profile, &env, &action, Initiator::User)
+            .await?;
+        let run = EnvironmentRunRecord {
+            id: self.deps.crypto.new_id(),
+            sandbox_id: sandbox.id.clone(),
+            environment: env.name.clone(),
+            kind: EnvironmentRunKind::Command,
+            requested_by: ctx.user.id.clone(),
+            command: Some(command.clone()),
+            commit: None,
+            state: EnvironmentRunState::Running,
+            output: String::new(),
+            exit_code: None,
+            started_at: self.now(),
+            ended_at: None,
+        };
+        self.deps
+            .store
+            .insert_environment_run(&run)
+            .await
+            .map_err(|err| match err {
+                AppError::Conflict(_) => AppError::Conflict(
+                    "another environment run is in progress in this project; wait for it to finish"
+                        .into(),
+                ),
+                other => other,
+            })?;
+        self.dlv_audit(
+            &Self::dlv_actor_login(&ctx.user),
+            "delivery.environment.run",
+            &format!("{}/{}", sandbox.slug, env.name),
+            &format!("run {}; command: {command}", run.id),
+        )
+        .await;
+        let app = Arc::clone(self);
+        let user = ctx.user.clone();
+        let run_id = run.id.clone();
+        tokio::spawn(async move {
+            app.dlv_execute_environment_run(sandbox, profile, env, run_id, user)
+                .await;
+        });
+        self.dlv_run_view(&run, None).await
+    }
+
+    /// `POST /api/sandboxes/{sid}/delivery/environments/{env}/confirm` (write): a person
+    /// confirms a manually verified environment (`{"confirm": true}` required).
+    ///
+    /// # Errors
+    /// `Invalid` without confirmation or for command-verified environments, `Conflict` out of
+    /// order.
+    pub async fn confirm_environment(
+        &self,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+        environment: &str,
+        req: &RunEnvironment,
+    ) -> AppResult<EnvironmentRun> {
+        let sandbox = self
+            .dlv_require_sandbox(ctx, sandbox_id, Action::Work)
+            .await?;
+        let profile = delivery_profile(&sandbox);
+        let env = Self::dlv_environment_named(&profile, environment)?.clone();
+        self.dlv_record_confirmation(ctx, &sandbox, &profile, &env, req.confirm)
+            .await
+    }
+
+    async fn dlv_record_confirmation(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &SandboxRecord,
+        profile: &DeliveryProfile,
+        env: &Environment,
+        confirmed: bool,
+    ) -> AppResult<EnvironmentRun> {
+        if !confirmed {
+            return Err(AppError::Invalid(format!(
+                "confirming environment '{}' requires explicit confirmation",
+                env.name
+            )));
+        }
+        if env.verify != Verify::Manual {
+            return Err(refusal(&DeliveryError::WrongEvidence {
+                name: env.name.clone(),
+                verify: "its command",
+            }));
+        }
+        let action = DeliveryAction::CompleteEnvironment {
+            name: env.name.clone(),
+            evidence: EnvironmentEvidence::UserConfirmed,
+        };
+        let due = self
+            .dlv_due_tasks(sandbox, profile, env, &action, Initiator::User)
+            .await?;
+        let login = Self::dlv_actor_login(&ctx.user);
+        let now = self.now();
+        let moved = self.dlv_advance(due).await?;
+        let mut output = format!(
+            "Environment '{}' confirmed by {login} at {}.\n",
+            env.name,
+            rfc3339(now)
+        );
+        if moved.is_empty() {
+            output.push_str("No delivered task was waiting for this environment.\n");
+        } else {
+            let numbers: Vec<String> = moved.iter().map(|n| format!("#{n}")).collect();
+            output.push_str(&format!("Tasks advanced: {}.\n", numbers.join(", ")));
+        }
+        if env.after == Stage::Integration
+            && let Ok(token) = self.user_github_token(&ctx.user).await
+            && let Some(note) = self
+                .dlv_auto_promote_if_enabled(sandbox, profile, &ctx.user, &token)
+                .await
+        {
+            output.push_str(&note);
+            output.push('\n');
+        }
+        let run = EnvironmentRunRecord {
+            id: self.deps.crypto.new_id(),
+            sandbox_id: sandbox.id.clone(),
+            environment: env.name.clone(),
+            kind: EnvironmentRunKind::Manual,
+            requested_by: ctx.user.id.clone(),
+            command: None,
+            commit: None,
+            state: EnvironmentRunState::Succeeded,
+            output,
+            exit_code: None,
+            started_at: now,
+            ended_at: Some(now),
+        };
+        self.deps.store.insert_environment_run(&run).await?;
+        self.dlv_audit(
+            &login,
+            "delivery.environment.confirm",
+            &format!("{}/{}", sandbox.slug, env.name),
+            &format!("run {}; tasks advanced: {moved:?}", run.id),
+        )
+        .await;
+        self.dlv_run_view(&run, None).await
+    }
+
+    /// Background part of a command run: fetch, check out the stage's branch head, run the
+    /// command, record the outcome and — for command-verified environments that succeeded —
+    /// advance the waiting tasks (and auto-promote when enabled).
+    async fn dlv_execute_environment_run(
+        self: Arc<Self>,
+        sandbox: SandboxRecord,
+        profile: DeliveryProfile,
+        env: Environment,
+        run_id: String,
+        user: UserRecord,
+    ) {
+        let mut ring = OutputRing::new(ENVIRONMENT_OUTPUT_BYTES);
+        let (tx, mut rx) = watch::channel(String::new());
+        let store = self.deps.store.clone();
+        let writer_id = run_id.clone();
+        let writer = tokio::spawn(async move {
+            while rx.changed().await.is_ok() {
+                let text = rx.borrow_and_update().clone();
+                if let Err(err) = store.update_environment_run(&writer_id, &text, None).await {
+                    tracing::warn!(error = %err, "storing environment run output failed");
+                }
+            }
+        });
+        let outcome = self
+            .dlv_environment_steps(&sandbox, &profile, &env, &run_id, &mut ring, &tx)
+            .await;
+        drop(tx);
+        let _ = writer.await;
+        let (state, exit_code) = match &outcome {
+            Ok(end) if end.succeeded() => (EnvironmentRunState::Succeeded, Some(0)),
+            Ok(end) => {
+                ring.push_str(&match end {
+                    CommandEnd::Exited(code) => format!("\n[yulius] exited with status {code}\n"),
+                    CommandEnd::Signaled(signal) => format!("\n[yulius] terminated by signal {signal}\n"),
+                    CommandEnd::TimedOut => format!(
+                        "\n[yulius] the command exceeded {} minutes; its process group was killed\n",
+                        ENVIRONMENT_TIMEOUT.as_secs() / 60
+                    ),
+                    CommandEnd::SpawnFailed(message) => format!("\n[yulius] could not start: {message}\n"),
+                });
+                let state = if matches!(end, CommandEnd::SpawnFailed(_)) {
+                    EnvironmentRunState::Error
+                } else {
+                    EnvironmentRunState::Failed
+                };
+                (state, end.exit_code())
+            }
+            Err(message) => {
+                ring.push_str(&format!("\n[yulius] {message}\n"));
+                (EnvironmentRunState::Error, None)
+            }
+        };
+        let mut advanced = Vec::new();
+        let mut note = None;
+        if state == EnvironmentRunState::Succeeded && env.verify == Verify::Command {
+            let action = DeliveryAction::CompleteEnvironment {
+                name: env.name.clone(),
+                evidence: EnvironmentEvidence::CommandSucceeded,
+            };
+            match self
+                .dlv_due_tasks(&sandbox, &profile, &env, &action, Initiator::Policy)
+                .await
+            {
+                Ok(due) => advanced = self.dlv_advance(due).await.unwrap_or_default(),
+                Err(err) => note = Some(err.public_message()),
+            }
+            if env.after == Stage::Integration
+                && let Ok(token) = self.user_github_token(&user).await
+            {
+                note = self
+                    .dlv_auto_promote_if_enabled(&sandbox, &profile, &user, &token)
+                    .await
+                    .or(note);
+            }
+        }
+        if !advanced.is_empty() {
+            let numbers: Vec<String> = advanced.iter().map(|n| format!("#{n}")).collect();
+            ring.push_str(&format!(
+                "[yulius] tasks advanced: {}\n",
+                numbers.join(", ")
+            ));
+        }
+        if let Some(note) = note {
+            ring.push_str(&format!("[yulius] {note}\n"));
+        }
+        let finished = self
+            .deps
+            .store
+            .finish_environment_run(&run_id, state, &ring.text(), exit_code, self.now())
+            .await;
+        if let Err(err) = finished {
+            tracing::error!(error = %err, run = %run_id, "recording the environment run outcome failed");
+        }
+        self.dlv_audit(
+            &Self::dlv_actor_login(&user),
+            "delivery.environment.finished",
+            &format!("{}/{}", sandbox.slug, env.name),
+            &format!("run {run_id}: {} (exit {exit_code:?})", state.as_str()),
+        )
+        .await;
+    }
+
+    async fn dlv_environment_steps(
+        &self,
+        sandbox: &SandboxRecord,
+        profile: &DeliveryProfile,
+        env: &Environment,
+        run_id: &str,
+        ring: &mut OutputRing,
+        tx: &watch::Sender<String>,
+    ) -> Result<CommandEnd, String> {
+        let command = env
+            .command
+            .clone()
+            .ok_or_else(|| format!("environment '{}' has no command", env.name))?;
+        let repo = self.sandbox_repo(&sandbox.id);
+        let branch = match env.after {
+            Stage::Integration => &profile.integration_branch,
+            Stage::Production => &profile.production_branch,
+        };
+        ring.push_str(&format!(
+            "[yulius] fetching {}/{}\n",
+            sandbox.repo_owner, sandbox.repo_name
+        ));
+        let _ = tx.send(ring.text());
+        self.dlv_refresh_clone(sandbox)
+            .await
+            .map_err(|err| format!("fetching the repository failed: {}", err.public_message()))?;
+        let head = self
+            .deps
+            .git
+            .log(&repo, &format!("origin/{branch}"), 1)
+            .await
+            .map_err(|err| format!("reading {branch} failed: {}", err.public_message()))?
+            .into_iter()
+            .next()
+            .map(|commit| commit.sha)
+            .filter(|sha| is_hex_sha(sha))
+            .ok_or_else(|| format!("branch {branch} has no readable head commit"))?;
+        let home = self.sandbox_dir(&sandbox.id).join("home");
+        tokio::fs::create_dir_all(&home)
+            .await
+            .map_err(|_| "the sandbox home directory cannot be created".to_owned())?;
+        let mut env_vars = vec![
+            (
+                "PATH".to_owned(),
+                std::env::var("PATH")
+                    .ok()
+                    .filter(|p| !p.is_empty())
+                    .unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
+            ),
+            ("HOME".to_owned(), home.to_string_lossy().into_owned()),
+            ("LANG".to_owned(), "C.UTF-8".to_owned()),
+        ];
+        ring.push_str(&format!("[yulius] checking out {branch} at {head}\n"));
+        let mut checkout_env = env_vars.clone();
+        checkout_env.push(("GIT_TERMINAL_PROMPT".into(), "0".into()));
+        let checkout = CommandSpec {
+            argv: [
+                "git",
+                "checkout",
+                "--quiet",
+                "--force",
+                "--detach",
+                head.as_str(),
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            cwd: repo.clone(),
+            env: checkout_env,
+            timeout: CHECKOUT_TIMEOUT,
+        };
+        let end = run_bounded(&checkout, ring, Some(tx)).await;
+        if !end.succeeded() {
+            return Err(format!("checking out {head} failed ({end:?})"));
+        }
+        let _ = self
+            .deps
+            .store
+            .update_environment_run(run_id, &ring.text(), Some(&head))
+            .await;
+        env_vars.push(("YULIUS_ENVIRONMENT".into(), env.name.clone()));
+        env_vars.push(("YULIUS_BRANCH".into(), branch.clone()));
+        env_vars.push(("YULIUS_COMMIT".into(), head.clone()));
+        ring.push_str(&format!("[yulius] $ {command}\n"));
+        let spec = CommandSpec {
+            argv: vec!["/bin/sh".into(), "-c".into(), command],
+            cwd: repo,
+            env: env_vars,
+            timeout: ENVIRONMENT_TIMEOUT,
+        };
+        Ok(run_bounded(&spec, ring, Some(tx)).await)
+    }
+
+    async fn dlv_run_view(
+        &self,
+        run: &EnvironmentRunRecord,
+        output_tail: Option<usize>,
+    ) -> AppResult<EnvironmentRun> {
+        Ok(EnvironmentRun {
+            run_id: run.id.clone(),
+            environment: run.environment.clone(),
+            kind: run.kind.as_str().to_owned(),
+            state: run.state.as_str().to_owned(),
+            command: run.command.clone(),
+            commit: run.commit.clone(),
+            requested_by: self.login_of(&run.requested_by).await,
+            output: match output_tail {
+                Some(max) => tail_bytes(&run.output, max).to_owned(),
+                None => run.output.clone(),
+            },
+            exit_code: run.exit_code,
+            started_at: rfc3339(run.started_at),
+            ended_at: run.ended_at.map(rfc3339),
+        })
+    }
+
+    /// A `running` row older than every run limit has no runner any more: record it as
+    /// `error`.
+    async fn dlv_expire_lost_run(
+        &self,
+        run: EnvironmentRunRecord,
+    ) -> AppResult<EnvironmentRunRecord> {
+        let limit = i64::try_from((ENVIRONMENT_TIMEOUT + CHECKOUT_TIMEOUT).as_millis())
+            .unwrap_or(i64::MAX)
+            .saturating_add(LOST_RUN_GRACE_MS);
+        if run.state != EnvironmentRunState::Running
+            || self.now().millis_since(run.started_at) <= limit
+        {
+            return Ok(run);
+        }
+        let output = format!(
+            "{}\n[yulius] no runner is attached to this run any more (server restart?); its outcome is unknown\n",
+            run.output
+        );
+        let now = self.now();
+        self.deps
+            .store
+            .finish_environment_run(&run.id, EnvironmentRunState::Error, &output, None, now)
+            .await?;
+        Ok(EnvironmentRunRecord {
+            state: EnvironmentRunState::Error,
+            output,
+            ended_at: Some(now),
+            ..run
+        })
+    }
+
+    /// `GET /api/sandboxes/{sid}/delivery/runs/{run_id}` (read).
+    ///
+    /// # Errors
+    /// `NotFound` for unknown runs or other sandboxes' runs.
+    pub async fn environment_run(
+        &self,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+        run_id: &str,
+    ) -> AppResult<EnvironmentRun> {
+        let sandbox = self
+            .dlv_require_sandbox(ctx, sandbox_id, Action::View)
+            .await?;
+        let run = self
+            .deps
+            .store
+            .environment_run(run_id)
+            .await?
+            .filter(|run| run.sandbox_id == sandbox.id)
+            .ok_or(AppError::NotFound)?;
+        let run = self.dlv_expire_lost_run(run).await?;
+        self.dlv_run_view(&run, None).await
+    }
+
+    /// `GET /api/sandboxes/{sid}/delivery/runs` (read): recent runs with output tails.
+    ///
+    /// # Errors
+    /// `NotFound` without read access.
+    pub async fn environment_runs(
+        &self,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+    ) -> AppResult<Vec<EnvironmentRun>> {
+        let sandbox = self
+            .dlv_require_sandbox(ctx, sandbox_id, Action::View)
+            .await?;
+        let mut out = Vec::new();
+        for run in self
+            .deps
+            .store
+            .environment_runs(&sandbox.id, RUN_LIST_LIMIT)
+            .await?
+        {
+            let run = self.dlv_expire_lost_run(run).await?;
+            out.push(self.dlv_run_view(&run, Some(RUN_LIST_OUTPUT_BYTES)).await?);
+        }
+        Ok(out)
+    }
+
+    /// Startup reconciliation: runs recorded as `running` have no runner after a restart and
+    /// are recorded as `error`. Returns how many were closed. Call once before serving.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn reconcile_environment_runs(&self) -> AppResult<u32> {
+        let mut closed = 0;
+        for run in self.deps.store.running_environment_runs().await? {
+            let output = format!(
+                "{}\n[yulius] interrupted by a server restart; the command may have been killed or may have finished unobserved\n",
+                run.output
+            );
+            if self
+                .deps
+                .store
+                .finish_environment_run(
+                    &run.id,
+                    EnvironmentRunState::Error,
+                    &output,
+                    None,
+                    self.now(),
+                )
+                .await?
+            {
+                closed += 1;
+            }
+        }
+        Ok(closed)
+    }
+
+    // ---------------------------------------------------------------- agent tool
+
+    /// `delivery_status` agent tool (read-only): the task's delivery state, pull request,
+    /// checks and profile. There is deliberately no tool that merges, promotes or deploys
+    /// (GIT-002, SEC-003).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn tool_delivery_status(&self, ctx: &AgentContext) -> AppResult<Value> {
+        let task = self
+            .deps
+            .store
+            .task(&ctx.task.id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let sandbox = self.dlv_sandbox_of(&task).await?;
+        let profile = delivery_profile(&sandbox);
+        let view = self.delivery_view(&task, None).await?;
+        Ok(json!({
+            "stage": view.stage,
+            "environment": view.environment,
+            "pull_request": view.pr,
+            "spec_path": view.spec_path,
+            "spec_valid": view.spec_valid,
+            "spec_problems": view.spec_problems,
+            "steps_open": view.steps_open,
+            "next_actions_for_people": view.next_actions,
+            "blocked": view.blocked,
+            "notes": view.notes,
+            "profile": profile_to_contract(&profile),
+            "policy": "People open, merge, deploy and promote in Yulius (or the profile auto-promotes after a merge); agents have no tool for it. Commit and push your task branch, keep the spec valid and the steps up to date.",
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn presets_round_trip_through_the_contract() -> TestResult {
+        for profile in preset_profiles() {
+            let parsed = profile_from_contract(&profile)?;
+            assert_eq!(parsed.preset.as_str(), profile.preset);
+            assert_eq!(profile_to_contract(&parsed), profile);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_require_checks_takes_the_preset_default() -> TestResult {
+        let mut studio = profile_to_contract(&DeliveryProfile::studio());
+        studio.require_checks = None;
+        let parsed = profile_from_contract(&studio)?;
+        assert!(!parsed.require_checks);
+        assert_eq!(parsed.preset, Preset::Studio, "still the studio preset");
+        Ok(())
+    }
+
+    #[test]
+    fn overrides_relabel_and_invalid_profiles_are_rejected() -> TestResult {
+        let mut gated = profile_to_contract(&DeliveryProfile::studio());
+        gated.auto_promote = false;
+        assert_eq!(profile_from_contract(&gated)?.preset, Preset::Custom);
+
+        let mut same = profile_to_contract(&DeliveryProfile::standard());
+        same.production_branch = "dev".into();
+        assert!(matches!(
+            profile_from_contract(&same),
+            Err(AppError::Invalid(_))
+        ));
+
+        let mut bad_env = profile_to_contract(&DeliveryProfile::product());
+        bad_env.environments[0].command = Some("deploy\nrm -rf /".into());
+        assert!(matches!(
+            profile_from_contract(&bad_env),
+            Err(AppError::Invalid(_))
+        ));
+
+        let mut blank = profile_to_contract(&DeliveryProfile::product());
+        blank.environments[0].command = Some("   ".into());
+        assert_eq!(profile_from_contract(&blank)?.environments[0].command, None);
+
+        let mut unknown = profile_to_contract(&DeliveryProfile::standard());
+        unknown.merge = "octopus".into();
+        assert!(matches!(
+            profile_from_contract(&unknown),
+            Err(AppError::Invalid(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn stored_garbage_falls_back_to_standard() -> TestResult {
+        let record = SandboxRecord {
+            id: SandboxId::parse("s")?,
+            slug: "s".into(),
+            repo_owner: "o".into(),
+            repo_name: "r".into(),
+            github_repo_id: None,
+            default_branch: "main".into(),
+            profile_json: "{}".into(),
+            port_base: 1,
+            port_count: 1,
+            onboarding_state: "not_needed".into(),
+            onboarding_task_id: None,
+            created_by: UserId::parse("u")?,
+            created_at: Timestamp(0),
+            removed_at: None,
+        };
+        assert_eq!(delivery_profile(&record), DeliveryProfile::standard());
+        Ok(())
+    }
+
+    #[test]
+    fn relative_paths_are_checked() {
+        assert!(safe_relative("docs/specs/a.md"));
+        assert!(!safe_relative("../etc/passwd"));
+        assert!(!safe_relative("/etc/passwd"));
+        assert!(!safe_relative("./a.md"));
+        assert!(!safe_relative(""));
+    }
+
+    #[test]
+    fn goal_section_is_extracted_outside_code() {
+        let spec = "---\nyulius-task: t\n---\n# T\n## Goal\nShip it.\n```\n## Not a heading\n```\nMore.\n## Context\nx\n";
+        assert_eq!(
+            section_text(spec, "Goal").as_deref(),
+            Some("Ship it.\n```\n## Not a heading\n```\nMore.")
+        );
+        assert_eq!(section_text(spec, "Plan"), None);
+    }
+
+    #[test]
+    fn pending_integration_environments_follow_the_profile() {
+        let profile = DeliveryProfile::product();
+        assert_eq!(
+            pending_integration_environment(&DeliveryStage::MergedIntegration, &profile)
+                .map(|e| e.name.as_str()),
+            Some("dev-vm")
+        );
+        assert!(
+            pending_integration_environment(&DeliveryStage::EnvDone("dev-vm".into()), &profile)
+                .is_none()
+        );
+        assert_eq!(
+            region(&DeliveryStage::EnvDone("rollout".into()), &profile),
+            Some(Stage::Production)
+        );
+        assert_eq!(region(&DeliveryStage::PrOpen, &profile), None);
+    }
+
+    #[test]
+    fn hex_and_clipping_helpers() {
+        assert!(is_hex_sha(&"a".repeat(40)));
+        assert!(!is_hex_sha("--upload-pack=x"));
+        assert_eq!(clip_chars("abcdef", 3), "abc…");
+        assert_eq!(clip_bytes("żółw", 3), "ż");
+        assert_eq!(tail_bytes("żółw", 3), "łw");
+    }
+}

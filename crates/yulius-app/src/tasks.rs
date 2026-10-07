@@ -2,7 +2,6 @@
 //! UI-006). Process lifecycle lives in the supervisor.
 
 use yulius_contracts::api::common::UserRef;
-use yulius_contracts::api::git::Delivery;
 use yulius_contracts::api::tasks::{
     AttemptView, FeedbackView, MessageFrom, MessageView, Metrics, StepProgress, StepView,
     SwitchView, TaskDetail, TaskSummary,
@@ -268,10 +267,7 @@ impl App {
             steps_list: steps.iter().map(step_view).collect(),
             metrics,
             feedback,
-            delivery: Delivery {
-                stage: "none".into(),
-                ..Delivery::default()
-            },
+            delivery: self.task_detail_delivery(&task, &ctx.user).await,
             switches,
         })
     }
