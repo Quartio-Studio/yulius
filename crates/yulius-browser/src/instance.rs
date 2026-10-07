@@ -728,6 +728,39 @@ impl BrowserInstance {
         }
     }
 
+    /// Re-reads a tab's title and URL. Chromium does not report every title change through
+    /// `Target.targetInfoChanged`, so this runs after loads and same-document navigations.
+    async fn refresh_tab(&self, tab: &TabId) {
+        match self
+            .cdp
+            .call("Target.getTargetInfo", json!({"targetId": tab.as_str()}))
+            .await
+        {
+            Ok(result) => {
+                if let Some((id, title, url)) = result.get("targetInfo").and_then(page_entry) {
+                    let mut state = lock(&self.state);
+                    if state.has(&id) {
+                        state.upsert(id, title, url);
+                        drop(state);
+                        self.publish();
+                    }
+                }
+            }
+            Err(error) => debug!(%error, "refreshing tab info failed"),
+        }
+    }
+
+    async fn refresh_session_tab(&self, session: &str) {
+        let tab = lock(&self.state)
+            .sessions
+            .iter()
+            .find(|(_, s)| s.as_str() == session)
+            .map(|(tab, _)| tab.clone());
+        if let Some(tab) = tab {
+            self.refresh_tab(&tab).await;
+        }
+    }
+
     fn forget_tab(&self, tab: &TabId) {
         let (session, had_action, existed) = {
             let mut state = lock(&self.state);
@@ -1222,6 +1255,7 @@ impl BrowserInstance {
         let mut events = self.cdp.subscribe_events();
         self.navigate_session(tab, &session, url).await?;
         let loaded = wait_for_load(&mut events, &session, self.config.load_timeout).await;
+        self.refresh_tab(tab).await;
         Ok(NavigationResult {
             tab: self.tab_info(tab)?,
             loaded,
@@ -1590,7 +1624,16 @@ async fn event_loop(
             event = events.recv() => {
                 let Some(instance) = instance.upgrade() else { return };
                 match event {
-                    Ok(event) => instance.on_event(&event),
+                    Ok(event) => {
+                        instance.on_event(&event);
+                        let refresh = matches!(
+                            event.method.as_str(),
+                            "Page.loadEventFired" | "Page.domContentEventFired" | "Page.navigatedWithinDocument"
+                        );
+                        if let (true, Some(session)) = (refresh, event.session_id.as_deref()) {
+                            instance.refresh_session_tab(session).await;
+                        }
+                    }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(skipped, "browser events lagged; resynchronizing targets");
                         if let Err(error) = instance.resync().await {

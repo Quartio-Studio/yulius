@@ -484,6 +484,14 @@ fn respond(
             );
             Ok(json!({}))
         }
+        "Target.getTargetInfo" => {
+            let target_id = text("targetId");
+            let state = lock(&shared.state);
+            match state.targets.iter().find(|t| t.id == target_id) {
+                Some(target) => Ok(json!({"targetInfo": target_info(target)})),
+                None => Err((-32602, "No target with given id found".into())),
+            }
+        }
         "Target.getTargets" => {
             let state = lock(&shared.state);
             let infos: Vec<Value> = state.targets.iter().map(target_info).collect();

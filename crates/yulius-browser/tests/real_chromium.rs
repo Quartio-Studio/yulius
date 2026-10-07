@@ -66,18 +66,10 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
         .await?;
     assert!(opened.loaded, "load event within the timeout");
     let tab = opened.tab.id.clone();
-    eprintln!("step: opened {opened:?}");
-    let early = browser
-        .tool_snapshot(&SnapshotParams {
-            tab_id: tab.clone(),
-        })
-        .await?;
-    eprintln!("step: early snapshot {early:?}");
-    let targets = browser
-        .cdp()
-        .call("Target.getTargets", serde_json::json!({}))
-        .await?;
-    eprintln!("step: targets {targets}");
+    assert_eq!(
+        opened.tab.title, "Yulius test page",
+        "tool results carry the loaded title"
+    );
     let mut tabs = browser.subscribe_tabs();
     let titled = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -95,7 +87,6 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
     })
     .await?;
     assert!(titled, "title arrives through target events");
-    eprintln!("step: titled");
 
     let snapshot_params = SnapshotParams {
         tab_id: tab.clone(),
@@ -138,7 +129,6 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
     let png = base64::engine::general_purpose::STANDARD.decode(shot.data_base64)?;
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
-    eprintln!("step: screenshot ok");
     let mut frames = browser.subscribe_frames(&tab).await?;
     browser.navigate(&tab, &format!("{page_url}?again")).await?;
     let frame = tokio::time::timeout(Duration::from_secs(10), frames.recv())
