@@ -228,22 +228,95 @@ the harnesses.
 | GET/POST | `/api/admin/users` | superadmin | `{"github_login","display_name?","is_instance_admin?"}` |
 | PATCH | `/api/admin/users/{id}` | superadmin | `{"disabled?","is_instance_admin?"}` |
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
-| POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic|openai","label"}` → `{"account":Account,"login_id"}` then use the login terminal |
-| PATCH/DELETE | `/api/admin/accounts/{id}` | instance admin | `{"enabled?","priority?","label?"}` |
-| POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"login_id"}` |
+| POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic|openai","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
+| PATCH | `/api/admin/accounts/{id}` | instance admin | `{"enabled?","priority?" (0–10000),"label?" (1–80 chars)}` → `Account` |
+| DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
+| POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
+| WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub) |
 | GET | `/api/admin/github/manifest/callback?code` | superadmin | stores App credentials, 302 to install |
-| GET | `/api/analytics/summary?sandbox&from&to` | read | aggregates |
-| GET | `/api/analytics/tasks?format=json|csv` | read | per-task rows |
-| GET | `/api/status` | signed in | VM, sandboxes, accounts usage |
+| GET | `/api/analytics/summary?sandbox&from&to` | read | → `AnalyticsSummary` |
+| GET | `/api/analytics/tasks?format=json|csv&sandbox&from&to` | read | → `[TaskRow]` or CSV |
+| GET | `/api/status` | signed in | → `Status` |
 
 ```json
-Account = {"id","provider","label","enabled","priority","status":"ok|relogin|error|limited",
+Account = {"id","provider","label","enabled","priority",
+  "status":"pending_login|ok|relogin|error|limited",
   "usage":{"primary":{"used_percent":42.0,"resets_at":"…","window_minutes":300}|null,
            "secondary":{…}|null,"observed_at":"…|null"},
   "last_error":"…|null","in_use_by":0}
 ```
+
+Unknown usage is `null`, never zero. Credentials are never returned.
+
+**Login terminal.** Each login runs the provider CLI's own sign-in (`claude setup-token`;
+`codex login --device-auth` with a temporary `CODEX_HOME`) in a server-owned PTY 500 columns
+wide so tokens and URLs never wrap. It uses the terminal protocol above: `resize` and
+`take_control` only re-send `state` (the size is fixed), `input` is forwarded while the login
+runs. `state.status` is `running`, then `ok|error|cancelled`; the `exit` frame carries the same
+status and the CLI's exit code. Output is masked before it reaches any viewer (Claude tokens
+become `sk-ant-oat01-[REDACTED]`). On exit the credential (Claude token from the output, Codex
+`auth.json`) is sealed into the account (`ok`, `account.updated`), and the temporary directory
+is overwritten and removed. A login that ends without a credential sets `error` with a message;
+an account that still holds a working credential keeps its status and records
+`re-login failed: …`. Bounds: one login per account, 8 at once (`capacity`), 16 viewers per
+login, 15-minute timeout (the process is stopped), finished logins stay viewable for 10 minutes.
+
+**Analytics.** `sandbox` is optional (default: every sandbox the caller can see; an invisible
+one is `not_found`); `from`/`to` are inclusive UTC days `YYYY-MM-DD` that select tasks by
+creation time; every figure describes that cohort (at most 50 000 newest tasks, `truncated`).
+Token figures sum known values only and count runs without usage in `unknown_usage_runs`;
+a figure no run reported is `null`. Wall time comes from attempts, active time from metrics.
+
+```json
+AnalyticsSummary = {
+  "range": {"sandbox": "…|null", "from": "2026-10-01|null", "to": "2026-10-07|null"},
+  "tasks": {"total": 3, "closed": 1, "by_status": {"closed": 1}, "by_harness": {"claude": 2},
+            "by_origin": {"ui": 3}},
+  "tasks_per_day": [{"date": "2026-10-01", "count": 1}],
+  "duration_ms": {"median": 1800000, "p90": 2400000, "total_wall": 3600000,
+                  "total_active": 600000},
+  "tokens": Tokens,
+  "tokens_by_model": [{"model": "claude-opus|unknown", …Tokens}],
+  "tokens_by_harness": [{"harness": "claude", …Tokens}],
+  "tokens_by_account": [{"account_id": "…|null", "account_label": "…|null", …Tokens}],
+  "switches": {"total": 2, "account": 1, "provider": 1},
+  "feedback": {"correct": 1, "incorrect": 1},
+  "truncated": false
+}
+Tokens = {"runs": 3, "tasks": 2, "input": 100, "output": 50, "cache_read": 10,
+          "cache_write": null, "unknown_usage_runs": 2}
+TaskRow = {"task_id","sandbox","number","title","status","origin","harness","harnesses",
+  "models","accounts","created_at","closed_at|null","attempts","wall_ms","active_ms|null",
+  "input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null",
+  "unknown_usage_runs","switches","feedback":"correct|incorrect|null","feedback_correct",
+  "feedback_incorrect"}
+```
+
+`tasks_per_day` lists every day of a range up to 366 days (zero-task days included), otherwise only
+days with tasks. `harnesses`, `models` and `accounts` are `;`-separated. `format=csv` returns
+`text/csv` (attachment `yulius-tasks-<from>-<to>.csv`) with the `TaskRow` keys as the header,
+CRLF line ends, RFC 4180 quoting, empty cells for unknown values, and a leading `'` on text
+cells that start with `=`, `+`, `-`, `@`, tab or CR (spreadsheet formula injection).
+
+```json
+Status = {
+  "vm": {"cpu_percent": 12.5, "cpu_count": 4, "memory_used_bytes": 1, "memory_total_bytes": 2,
+         "disk_used_bytes": 1, "disk_total_bytes": 2, "load": [0.5, 0.3, 0.1], "load_1m": 0.5,
+         "uptime_s": 60},
+  "sessions": {"live": 2, "limit": 8, "queued": 1},
+  "sandboxes": [{"id", "slug", "name", "live_sessions": 1}],
+  "accounts": [{"label", "provider", "status", "enabled", "usage",
+                "id?", "priority?", "last_error?", "in_use_by?"}],
+  "contained": true
+}
+```
+
+VM fields are `null` when unknown (CPU needs two readings). Disk figures describe the volume
+holding the data directory. `sandboxes` lists only sandboxes the caller can see; `sessions` is
+instance-wide. Account `id`, `priority`, `last_error` and `in_use_by` are present only for
+instance administrators.
 
 ## UI event stream
 
@@ -251,4 +324,4 @@ Account = {"id","provider","label","enabled","priority","status":"ok|relogin|err
 "task_id"}`, `{"type":"steps.updated","task_id"}`, `{"type":"message","task_id","message":Message}`,
 `{"type":"sandbox.updated","sandbox":Sandbox}`, `{"type":"browser.action_requested","sandbox_id",
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
-`{"type":"account.updated","account":Account}`, `{"type":"resync"}`.
+`{"type":"account.updated","account":Account}` (instance administrators only), `{"type":"resync"}`.

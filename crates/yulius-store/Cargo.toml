@@ -19,6 +19,7 @@ yulius-domain = { workspace = true }
 yulius-app = { workspace = true }
 thiserror = { workspace = true }
 rusqlite = { workspace = true }
+# JSON columns of workflows and MCP servers.
 serde_json = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

@@ -15,6 +15,7 @@ use crate::wiring::git::GitAdapter;
 use crate::wiring::github_client::GitHubAdapter;
 use crate::wiring::harness::HarnessAdapter;
 use crate::wiring::session::PtySessionHost;
+use crate::wiring::system::SysinfoProbe;
 
 /// Server options (flags or environment variables).
 #[derive(Debug, Args)]
@@ -55,13 +56,13 @@ fn prepare_data_dir(dir: &Path) -> Result<(), String> {
 /// Longest Unix socket path every supported OS accepts (macOS `sun_path` is 104 bytes).
 const MAX_SOCKET_PATH: usize = 103;
 
-/// Rejects data directories whose run sockets (`<data>/runs/<uuid>/pty.sock`) would exceed the
+/// Rejects data directories whose run sockets (`<data>/runs/<uuid>/pty.sock`, `<data>/logins/<uuid>/pty.sock`) would exceed the
 /// Unix socket path limit, so the failure happens at startup and not at the first task launch.
 pub fn check_socket_paths(data_dir: &std::path::Path) -> Result<(), String> {
     let resolved = data_dir
         .canonicalize()
         .unwrap_or_else(|_| data_dir.to_path_buf());
-    let longest = resolved.as_os_str().len() + "/runs/".len() + 36 + "/pty.sock".len();
+    let longest = resolved.as_os_str().len() + "/logins/".len() + 36 + "/pty.sock".len();
     if longest > MAX_SOCKET_PATH {
         return Err(format!(
             "the data directory path {} is too long for session sockets ({longest} > {MAX_SOCKET_PATH} bytes); use a shorter --data path",
@@ -96,6 +97,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
             config.internal_url.clone(),
         )),
         git: Arc::new(GitAdapter::new("git")),
+        system: Arc::new(SysinfoProbe::new()),
     };
     Ok(App::new(config, deps))
 }
@@ -112,6 +114,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         return Err("the internal listener must bind a loopback address".into());
     }
     let app = build_app(&args)?;
+    app.cleanup_stale_logins().await;
     if let Some(token) = app.prepare_setup().await.map_err(|e| e.to_string())? {
         let path = args.data_dir.join("setup.token");
         let _ = std::fs::remove_file(&path);

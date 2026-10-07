@@ -5,6 +5,7 @@
 //! the async executor never blocks on SQLite and concurrent writers never race.
 
 mod accounts;
+mod analytics;
 mod audit;
 mod automations;
 mod coordination;

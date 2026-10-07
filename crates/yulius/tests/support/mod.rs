@@ -228,6 +228,17 @@ pub fn harness() -> Result<Harness, Box<dyn std::error::Error>> {
 pub fn harness_with_git(
     git: Arc<dyn yulius_app::ports::git::GitPort>,
 ) -> Result<Harness, Box<dyn std::error::Error>> {
+    build_harness(
+        git,
+        Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+    )
+}
+
+/// The shared builder: in-memory store, fake GitHub, fixed clock and system metrics.
+pub fn build_harness(
+    git: Arc<dyn yulius_app::ports::git::GitPort>,
+    session_host: Arc<dyn yulius_app::ports::session::SessionHost>,
+) -> Result<Harness, Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let store = SqliteStore::open_in_memory()?;
     let github = Arc::new(FakeGitHub::default());
@@ -243,12 +254,13 @@ pub fn harness_with_git(
         clock: clock.clone(),
         crypto: Arc::new(MasterKeyCrypto::from_key(&[9u8; 32])?),
         github: github.clone(),
-        session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+        session_host,
         harness: Arc::new(yulius::wiring::harness::HarnessAdapter::new(
             "/bin/false".into(),
             "http://127.0.0.1:1",
         )),
         git,
+        system: Arc::new(FixedSystem),
     };
     let app = App::new(config, deps);
     let router = yulius_server::public_router(app.clone())
@@ -334,6 +346,152 @@ pub fn session_from(set_cookie: &Option<String>) -> Option<String> {
     first.strip_prefix("yulius_session=").map(str::to_owned)
 }
 
+/// Deterministic machine metrics for status tests (disk total unknown on purpose).
+pub struct FixedSystem;
+
+impl yulius_app::ports::system::SystemProbe for FixedSystem {
+    fn snapshot(&self, _: &std::path::Path) -> yulius_app::ports::system::SystemSnapshot {
+        yulius_app::ports::system::SystemSnapshot {
+            cpu_percent: Some(12.5),
+            cpu_count: Some(4),
+            memory_used: Some(1_000),
+            memory_total: Some(4_000),
+            disk_used: None,
+            disk_total: None,
+            load: Some([0.5, 0.25, 0.125]),
+            uptime_s: Some(60),
+        }
+    }
+}
+
+/// Like [`harness`] but with a custom process host (account login tests).
+pub fn harness_with_host(
+    session_host: Arc<dyn yulius_app::ports::session::SessionHost>,
+) -> Result<Harness, Box<dyn std::error::Error>> {
+    build_harness(
+        Arc::new(yulius::wiring::pending::UnavailableGit),
+        session_host,
+    )
+}
+
+/// Creates the superadmin through the setup flow and returns its cookie credentials.
+pub async fn setup_superadmin_creds(h: &Harness) -> Result<Creds, Box<dyn std::error::Error>> {
+    let token = h.app.prepare_setup().await?.ok_or("setup token")?;
+    let r = call(
+        &h.router,
+        Method::POST,
+        "/api/setup",
+        Some(serde_json::json!({
+            "token": token.expose(), "password": "a very long secret",
+            "password_confirm": "a very long secret", "confirm_saved": true
+        })),
+        &Creds::default(),
+    )
+    .await?;
+    if r.status != StatusCode::CREATED {
+        return Err(format!("setup failed: {}", r.status).into());
+    }
+    Ok(Creds {
+        cookie: session_from(&r.set_cookie),
+        csrf: r.body["csrf_token"].as_str().map(str::to_owned),
+        bearer: None,
+    })
+}
+
+/// Stores a GitHub App so GitHub sign-in works against the fake.
+pub async fn configure_github_app(h: &Harness) -> Result<(), Box<dyn std::error::Error>> {
+    use yulius_app::ports::store::InstanceStore;
+    let cfg = serde_json::json!({"app_id": 1, "slug": "yulius-test", "client_id": "c",
+        "client_secret": "s", "private_key_pem": "k", "webhook_secret": null});
+    let sealed = h.app.deps.crypto.seal(cfg.to_string().as_bytes())?;
+    h.store
+        .set_github_app(&sealed, "Quartio-Studio", "org")
+        .await?;
+    Ok(())
+}
+
+/// Admits `login` (as superadmin), signs it in through the fake GitHub and returns cookie
+/// credentials with CSRF.
+pub async fn admit_and_sign_in(
+    h: &Harness,
+    admin: &Creds,
+    login: &str,
+    github_id: u64,
+    instance_admin: bool,
+) -> Result<Creds, Box<dyn std::error::Error>> {
+    let code = format!("code-{login}");
+    h.github.add_user(&code, github_id, login);
+    let admit = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/users",
+        Some(serde_json::json!({"github_login": login, "is_instance_admin": instance_admin})),
+        admin,
+    )
+    .await?;
+    if admit.status != StatusCode::CREATED {
+        return Err(format!("admit failed: {}", admit.status).into());
+    }
+    let start = call(
+        &h.router,
+        Method::GET,
+        "/api/auth/github/start?next=/",
+        None,
+        &Creds::default(),
+    )
+    .await?;
+    let location = start.location.ok_or("location")?;
+    let state = location.split("state=").nth(1).ok_or("state")?.to_owned();
+    let cb = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/auth/github/callback?code={code}&state={state}"),
+        None,
+        &Creds::default(),
+    )
+    .await?;
+    let cookie = session_from(&cb.set_cookie).ok_or("no session cookie")?;
+    let creds = Creds {
+        cookie: Some(cookie),
+        csrf: None,
+        bearer: None,
+    };
+    let me = call(&h.router, Method::GET, "/api/me", None, &creds).await?;
+    Ok(Creds {
+        csrf: me.body["csrf_token"].as_str().map(str::to_owned),
+        ..creds
+    })
+}
+
+/// Inserts an active sandbox `id` for repository `Quartio-Studio/<slug>`.
+pub async fn insert_sandbox(
+    h: &Harness,
+    id: &str,
+    slug: &str,
+    port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use yulius_app::ports::store::SandboxStore;
+    h.store
+        .insert_sandbox(&yulius_app::model::SandboxRecord {
+            id: yulius_domain::ids::SandboxId::parse(id)?,
+            slug: slug.into(),
+            repo_owner: "Quartio-Studio".into(),
+            repo_name: slug.into(),
+            github_repo_id: None,
+            default_branch: "main".into(),
+            profile_json: "{}".into(),
+            port_base: port,
+            port_count: 20,
+            onboarding_state: "not_needed".into(),
+            onboarding_task_id: None,
+            created_by: yulius_domain::ids::UserId::parse("u")?,
+            created_at: Timestamp(1),
+            removed_at: None,
+        })
+        .await?;
+    Ok(())
+}
+
 /// Like [`harness`] but lets a test adjust the configuration first (for example
 /// `max_live_sessions = 0`, which keeps created tasks queued without a process host).
 pub fn harness_with(
@@ -361,6 +519,7 @@ pub fn harness_with(
             "http://127.0.0.1:1",
         )),
         git: Arc::new(yulius::wiring::pending::UnavailableGit),
+        system: Arc::new(FixedSystem),
     };
     let app = App::new(config, deps);
     let router = yulius_server::public_router(app.clone())

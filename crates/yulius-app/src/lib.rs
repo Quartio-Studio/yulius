@@ -2,7 +2,9 @@
 //! adapters (SPEC-002 §3). Use cases are `impl App` blocks grouped by area.
 
 pub mod access;
+pub mod accounts;
 pub mod admin;
+pub mod analytics;
 pub mod auth;
 pub mod automations;
 pub mod background;
@@ -19,6 +21,7 @@ pub mod model;
 pub mod ports;
 pub mod sandboxes;
 pub mod skills;
+pub mod status;
 pub mod supervisor;
 pub mod tasks;
 pub mod terminal;

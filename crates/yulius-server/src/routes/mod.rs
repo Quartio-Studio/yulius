@@ -1,6 +1,8 @@
 //! Route tables.
 
+mod accounts;
 mod admin;
+mod analytics;
 mod automations;
 mod events;
 mod internal;
@@ -9,6 +11,7 @@ mod mcp_servers;
 mod sandboxes;
 mod setup_auth;
 mod skills;
+mod status;
 mod tasks;
 mod terminal;
 mod workflows;
@@ -95,6 +98,22 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             put(mcp_servers::update).delete(mcp_servers::delete),
         )
         .route("/api/mcp/{id}/test", post(mcp_servers::test))
+        .route(
+            "/api/admin/accounts",
+            get(accounts::list).post(accounts::create),
+        )
+        .route(
+            "/api/admin/accounts/{id}",
+            patch(accounts::update).delete(accounts::delete),
+        )
+        .route("/api/admin/accounts/{id}/relogin", post(accounts::relogin))
+        .route(
+            "/api/admin/accounts/login/{lid}/terminal",
+            get(accounts::login_terminal),
+        )
+        .route("/api/analytics/summary", get(analytics::summary))
+        .route("/api/analytics/tasks", get(analytics::tasks))
+        .route("/api/status", get(status::status))
 }
 
 /// Internal (loopback) routes.
