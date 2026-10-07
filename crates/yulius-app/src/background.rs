@@ -12,7 +12,7 @@ use yulius_domain::task::{Activity, TaskStatus};
 use crate::context::App;
 use crate::coordination::MessageWaker;
 
-/// Idle time (agent waiting and nobody typing) before a message wakes a task (COM-005).
+/// Default idle time (agent waiting and nobody typing) before a message wakes a task (COM-005).
 pub const WAKE_IDLE_MS: i64 = 30_000;
 /// Queue drain interval.
 const TICK: Duration = Duration::from_secs(60);
@@ -79,7 +79,7 @@ impl App {
     }
 
     /// Types a short notice into a waiting agent once it and its viewers have been idle for
-    /// [`WAKE_IDLE_MS`]; retries once later when the task is not idle long enough yet.
+    /// `config.wake_idle_ms`; retries once later when the task is not idle long enough yet.
     async fn wake_if_idle(self: &Arc<Self>, task_id: &TaskId) {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
@@ -103,7 +103,7 @@ impl App {
         let now = self.now().0;
         let last_input = self.runtime(task_id).last_input_ms.load(Ordering::SeqCst);
         let idle_since = task.updated_at.0.max(last_input);
-        let remaining = idle_since + WAKE_IDLE_MS - now;
+        let remaining = idle_since + self.config.wake_idle_ms - now;
         if remaining > 0 {
             self.schedule_wake(task_id.clone(), remaining + 500);
             return;

@@ -42,6 +42,8 @@ pub struct AppConfig {
     pub secure_cookies: bool,
     /// How often open terminal viewers re-check their access (ACC-008).
     pub viewer_recheck_ms: u64,
+    /// Idle time before a message wakes a waiting task (COM-005).
+    pub wake_idle_ms: i64,
 }
 
 impl AppConfig {
@@ -58,6 +60,7 @@ impl AppConfig {
             data_dir,
             secure_cookies: public_url.starts_with("https://"),
             viewer_recheck_ms: 60_000,
+            wake_idle_ms: crate::background::WAKE_IDLE_MS,
             public_url,
             internal_url: internal_url.trim_end_matches('/').to_owned(),
             yulius_exe,

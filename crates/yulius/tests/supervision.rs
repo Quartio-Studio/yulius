@@ -44,6 +44,17 @@ fn build_full(
     agent: FakeAgentOptions,
     max_live_sessions: u32,
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_tuned(data, fake, agent, |c| {
+        c.max_live_sessions = max_live_sessions
+    })
+}
+
+fn build_tuned(
+    data: &Path,
+    fake: Option<&Path>,
+    agent: FakeAgentOptions,
+    tune: impl FnOnce(&mut AppConfig),
+) -> Result<Arc<App>, Box<dyn std::error::Error>> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let store = SqliteStore::open(&data.join("yulius.db"))?;
     let mut config = AppConfig::new(
@@ -53,7 +64,7 @@ fn build_full(
         exe.clone(),
     );
     config.contained = false;
-    config.max_live_sessions = max_live_sessions;
+    tune(&mut config);
     let deps = Deps {
         store: Arc::new(store),
         clock: Arc::new(SystemClock),
@@ -561,6 +572,86 @@ fn tasks_queue_at_the_session_limit_and_start_when_a_slot_frees() -> TestResult 
         app.stop_task_now(&second).await?;
         wait_for("the stop", Duration::from_secs(30), || async {
             task(&app, &second).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// AC-TSK-3 and AC-COM-2/COM-005: an agent's normal exit closes its task; a message to a task
+/// that has been waiting idle wakes it by typing a notice into its terminal.
+#[test]
+fn messages_wake_idle_tasks_and_a_normal_exit_closes_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_tuned(&data, Some(&fake), FakeAgentOptions::default(), |c| {
+            c.wake_idle_ms = 1_000;
+        })?;
+        app.start_background();
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let sender = new_task(&app, &sandbox, &user, "Sender").await?;
+        let recipient = new_task(&app, &sandbox, &user, "Recipient").await?;
+        for id in [&sender, &recipient] {
+            wait_for("a banner", Duration::from_secs(30), || {
+                screen_contains(&app, id, "FAKE-AGENT READY")
+            })
+            .await?;
+        }
+        // The recipient finished its turn (what its Stop hook reports) and nobody types.
+        app.deps
+            .store
+            .set_activity(
+                &recipient,
+                Some(yulius_domain::task::Activity::Waiting),
+                app.now(),
+            )
+            .await?;
+        let ctx = yulius_app::coordination::AgentContext {
+            attempt: app
+                .deps
+                .store
+                .live_attempt(&sender)
+                .await?
+                .ok_or("sender attempt")?,
+            task: task(&app, &sender).await?,
+        };
+        let number = task(&app, &recipient).await?.number;
+        app.tool_message_send(
+            &ctx,
+            &serde_json::json!({"number": number, "kind": "question", "subject": "Schema",
+                "body": "Does the invoices table keep the currency column?"}),
+        )
+        .await?;
+        wait_for("the wake notice", Duration::from_secs(20), || {
+            screen_contains(&app, &recipient, "ECHO: Yulius: you have new messages")
+        })
+        .await?;
+        assert!(
+            !screen_contains(&app, &sender, "you have new messages").await,
+            "only the recipient is woken"
+        );
+
+        // A normal exit of the agent closes the task; no shell is spawned.
+        app.send_input(&sender, b"/exit\r").await?;
+        wait_for("the closed sender", Duration::from_secs(20), || async {
+            task(&app, &sender)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Closed)
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&sender).await?;
+        assert_eq!(attempts.last().and_then(|a| a.exit_code), Some(0));
+        app.stop_task_now(&recipient).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &recipient)
+                .await
+                .is_ok_and(|t| !t.status.is_live())
         })
         .await?;
         Ok::<_, Box<dyn std::error::Error>>(())
