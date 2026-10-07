@@ -82,6 +82,7 @@ Sandbox = {
 Profile = {"preset": "standard|product|studio|custom", "integration_branch": "dev",
            "production_branch": "main", "merge": "squash|merge|rebase",
            "promote": "merge_commit|fast_forward", "auto_promote": false,
+           "require_checks": true,
            "environments": [{"name": "dev", "after": "integration|production",
                              "command": "…|null", "verify": "manual|command"}]}
 ```
@@ -101,6 +102,15 @@ Applying: bundle branches become `import/<login>/<branch>`; the snapshot is comm
 `import/<login>/snapshot-<YYYY-MM-DD>[-n]` created from the client's `HEAD`; each new session
 becomes an archived task (`origin: "import"`) whose transcript is kept immutably and resumed
 natively on Continue (same or other harness).
+
+`PATCH /api/sandboxes/{sid}` validates the profile (branch names, distinct branches, environment
+names, single-line commands ≤ 2000 bytes, `verify: command` needs a command, ≤ 8 environments) and
+relabels it: `preset` stays a named preset only while every setting equals that preset's
+defaults, otherwise it becomes `custom` (so switching Studio's `auto_promote` off yields `custom`).
+`require_checks` absent or null means the preset's default (`false` for `studio`, else `true`);
+responses always carry it; blank commands mean "no command". The sandbox profile is the only
+source of environment commands (never the repository). `GET /api/delivery/presets` (signed in)
+returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 
 ## Tasks
 
@@ -175,21 +185,81 @@ The account-login terminal (`/api/admin/accounts/login/{lid}/terminal`) and sand
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview` |
 | GET | `/api/tasks/{tid}/delivery` | read | → `Delivery` |
-| POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` → `Delivery` (refused without a valid spec) |
-| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires green checks per profile) |
-| POST | `/api/sandboxes/{sid}/delivery/promote` | write | → `{"result","sha"}` |
-| POST | `/api/sandboxes/{sid}/delivery/environments/{env}/runs` | write | `{"confirm":true}` → `{"run_id"}` |
-| GET | `/api/sandboxes/{sid}/delivery/runs/{run_id}` | read | → `{"state","output","exit_code"}` |
+| POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes) |
+| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile) |
+| POST | `/api/sandboxes/{sid}/delivery/promote` | write | → `{"result":"promoted|pr_opened","sha"}` |
+| POST | `/api/sandboxes/{sid}/delivery/environments/{env}/runs` | write | `{"confirm":true}` → `EnvironmentRun` (includes `run_id`) |
+| POST | `/api/sandboxes/{sid}/delivery/environments/{env}/confirm` | write | `{"confirm":true}` → `EnvironmentRun` (manual verification) |
+| GET | `/api/sandboxes/{sid}/delivery/runs` | read | → `[EnvironmentRun]` (newest 20, output tails of 2 KiB) |
+| GET | `/api/sandboxes/{sid}/delivery/runs/{run_id}` | read | → `EnvironmentRun` |
 
 ```json
 GitOverview = {"integration_branch","production_branch","default_branch",
   "tasks":[{"task_id","title","branch","ahead","behind","files_changed","insertions","deletions","pr":PR|null}],
-  "recent_commits":[{"sha","subject","author","at"}], "pulls":[PR]}
-PR = {"number","url","title","state":"open|merged|closed","base","head","checks":"none|pending|success|failure"}
+  "recent_commits":[{"sha","subject","author","at"}], "pulls":[PR], "notes":["…"]}
+PR = {"number","url","title","state":"open|merged|closed","base","head",
+      "checks":"none|pending|success|failure|unknown"}
 Delivery = {"stage":"none|pr_open|merged_integration|env_done|promoted|production_done",
-  "pr":PR|null,"spec_valid":bool,"spec_problems":["…"],"steps_open":0,
-  "next_actions":["open_pr|merge|run_env:dev|promote|run_env:production"]}
+  "environment":"dev-vm|null", "pr":PR|null, "spec_path":"docs/specs/…|null",
+  "spec_valid":bool, "spec_problems":["…"], "steps_open":0,
+  "next_actions":["open_pr|merge|run_env:<name>|confirm_env:<name>|promote"],
+  "blocked":[{"action","reason"}], "notes":["…"]}
+EnvironmentRun = {"run_id","environment","kind":"command|manual",
+  "state":"running|succeeded|failed|error","command":"…|null","commit":"<sha>|null",
+  "requested_by":"login","output":"…","exit_code":0|null,"started_at","ended_at":"…|null"}
 ```
+
+Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, §8):
+
+- **Reads degrade.** Git or GitHub failures add a line to `notes` and leave the affected lists
+  empty or partial (`checks: "unknown"` when checks cannot be read) instead of failing. GitHub
+  reads use the caller's token, else the GitHub App installation token. Task branch statistics
+  compare the local task branch with `origin/<integration>` of the sandbox clone (refreshed by
+  merges, promotions and environment runs, not by reads).
+- **Stage reconciliation.** Reading a task's delivery aligns the stored stage with GitHub: a PR
+  opened, merged or closed outside Yulius moves the stage (`none`→`pr_open`, →`merged_integration`,
+  `pr_open`→`none`). `env_done` carries the environment in `environment`. `blocked` lists the
+  actions of the current stage that are refused now, with the domain's reason.
+- **Spec.** The spec is read from the task worktree at the registered `spec_path`; if none is
+  registered, the first Markdown file under the project's specs directory (`yulius.toml`
+  `[docs]`, default `docs/specs`) whose frontmatter names the task is registered. Paths escaping
+  the worktree (also via symlinks) and files over 256 KiB are refused.
+- **Open PR** pushes the task branch with an installation token, then opens the PR into the
+  integration branch with the caller's token (title: task title unless given; body: the spec's
+  Goal, spec path, Plan checklist and steps unless given, plus a link back to the task).
+- **Merge** uses the profile's merge method and passes the head that was checked as the
+  expected head; a PR head that differs from the task worktree's head is refused as stale.
+  With `auto_promote` (Studio), the integration branch is promoted right after a merge done
+  through Yulius once no integration environment is pending; the outcome is added to `notes`
+  and audited. No other path merges, promotes or deploys on its own; agents only have the
+  read-only `delivery_status` tool.
+- **Promote** refuses while a merged task still has an integration environment pending, when
+  production already equals integration, or when a fast-forward is impossible.
+  `fast_forward`: production is fast-forwarded to the integration head (`result: "promoted"`,
+  `sha` = new head). `merge_commit`: the first call opens the promotion PR integration →
+  production (`result: "pr_opened"`, `sha` = PR URL); a later call merges it with a merge commit
+  once its checks allow (`result: "promoted"`). Tasks waiting for promotion then advance to
+  `promoted` (or `production_done` without production environments).
+- **Environment runs** need `{"confirm": true}` on every request. For an environment with a
+  command, the run starts in the background and `GET …/runs/{run_id}` reports progress; only one
+  command run per sandbox runs at a time (`conflict` otherwise). An environment without a command
+  is a manual checkpoint: the same request (or `…/confirm`) records the person's confirmation as
+  a `manual` run. `…/confirm` also confirms command environments whose `verify` is `manual`.
+  Environments must follow the profile order for tasks in their stage (`conflict` otherwise);
+  when no task is in that stage the run is standalone. A successful command with `verify:
+  command`, or a confirmation, advances every task for which the environment is due.
+- **Environment command trust contract.** `command` is shell text configured only by repository
+  administrators through the sandbox profile. Each run is audited (actor, environment, command)
+  and executed as `/bin/sh -c <command>` in the sandbox's primary clone, checked out (detached)
+  at the head of `origin/<integration>` (`after: integration`) or `origin/<production>` (`after:
+  production`), with only `PATH`, `HOME` (the sandbox home), `LANG`, `YULIUS_ENVIRONMENT`,
+  `YULIUS_BRANCH` and `YULIUS_COMMIT` set, stdin closed, the last 1 MiB of combined output kept,
+  and a 30-minute limit after which the whole process group is killed and the shell reaped
+  (`state: "failed"`). It runs with the server's privileges, without sandbox containment; the
+  clone's `.git` and the sandbox home are writable by the sandbox's agents, so the checkout
+  ignores global/system Git config and disables hooks and fsmonitor (repository-local config
+  such as filter drivers is still read). Commands are visible to every reader of the sandbox:
+  keep secrets out of them. Runs left `running` by a server restart become `error`.
 
 ## Skills, workflows, automations, MCP
 

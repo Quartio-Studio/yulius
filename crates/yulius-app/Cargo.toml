@@ -28,6 +28,8 @@ vt100 = { workspace = true }
 sha2 = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
+# Process-group kill for bounded delivery environment runs (delivery::runner).
+nix = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

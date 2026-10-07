@@ -332,13 +332,19 @@ CREATE TABLE environment_runs (
     id TEXT PRIMARY KEY,
     sandbox_id TEXT NOT NULL,
     environment TEXT NOT NULL,
+    kind TEXT NOT NULL,             -- command | manual (a person's confirmation)
     requested_by TEXT NOT NULL,
-    state TEXT NOT NULL,
-    output TEXT NOT NULL,
+    command TEXT,                   -- audit copy of the command that ran
+    commit_sha TEXT,                -- commit checked out for the command
+    state TEXT NOT NULL,            -- running | succeeded | failed | error
+    output TEXT NOT NULL,           -- bounded tail
     exit_code INTEGER,
     started_at INTEGER NOT NULL,
     ended_at INTEGER
 );
+-- At most one command run per sandbox at a time.
+CREATE UNIQUE INDEX one_running_environment_run ON environment_runs(sandbox_id) WHERE state = 'running';
+CREATE INDEX environment_runs_sandbox ON environment_runs(sandbox_id, started_at);
 
 CREATE TABLE import_jobs (
     id TEXT PRIMARY KEY,

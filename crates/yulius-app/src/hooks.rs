@@ -5,13 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use yulius_contracts::api::sandboxes::Profile;
 use yulius_contracts::hooks::{HookInput, HookOutput, events};
 use yulius_domain::briefing::{
     BriefingInput, DEFAULT_BUDGET_BYTES, MAX_RECENT_CHANGES, ParallelTask, RecentChange, TaskBrief,
     build_briefing,
 };
-use yulius_domain::delivery::{DeliveryProfile, MergeMethod, Preset, PromoteMethod};
 use yulius_domain::rotation::Trigger;
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
 use yulius_domain::spec_format::{DecisionsLocation, validate_spec_for};
@@ -59,28 +57,6 @@ fn repo_path(root: &Path, relative: &str) -> Option<PathBuf> {
         return None;
     }
     Some(root.join(rel))
-}
-
-/// The domain delivery profile for a stored profile (preset defaults plus stored overrides).
-#[must_use]
-pub fn delivery_profile(profile: &Profile) -> DeliveryProfile {
-    let mut out =
-        DeliveryProfile::for_preset(Preset::parse(&profile.preset).unwrap_or(Preset::Standard));
-    if !profile.integration_branch.is_empty() {
-        out.integration_branch
-            .clone_from(&profile.integration_branch);
-    }
-    if !profile.production_branch.is_empty() {
-        out.production_branch.clone_from(&profile.production_branch);
-    }
-    if let Some(merge) = MergeMethod::parse(&profile.merge) {
-        out.merge = merge;
-    }
-    if let Some(promote) = PromoteMethod::parse(&profile.promote) {
-        out.promote = promote;
-    }
-    out.auto_promote = profile.auto_promote;
-    out
 }
 
 fn digest(entries: &[InboxEntry]) -> String {
@@ -201,7 +177,7 @@ impl App {
             .worktree_path
             .as_ref()
             .map_or_else(|| self.sandbox_repo(&task.sandbox_id), PathBuf::from);
-        let profile = delivery_profile(&self.profile_of(&sandbox));
+        let profile = crate::delivery::delivery_profile(&sandbox);
         let root_for_read = root.clone();
         let repo = tokio::task::spawn_blocking(move || RepoDocs::read(&root_for_read))
             .await
@@ -400,7 +376,7 @@ impl App {
             .ok_or(AppError::NotFound)?;
         let base = format!(
             "origin/{}",
-            delivery_profile(&self.profile_of(&sandbox)).integration_branch
+            crate::delivery::delivery_profile(&sandbox).integration_branch
         );
         let dirty = self.deps.git.has_changes(&worktree).await.unwrap_or(false);
         let ahead = self

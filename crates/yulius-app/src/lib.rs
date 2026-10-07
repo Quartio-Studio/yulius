@@ -9,6 +9,7 @@ pub mod auth;
 pub mod background;
 pub mod context;
 pub mod coordination;
+pub mod delivery;
 pub mod error;
 pub mod events;
 pub mod hooks;

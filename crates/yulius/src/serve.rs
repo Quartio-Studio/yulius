@@ -115,6 +115,14 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     }
     let app = build_app(&args)?;
     app.cleanup_stale_logins().await;
+    match app.reconcile_environment_runs().await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(
+            runs = n,
+            "environment runs interrupted by a restart were closed"
+        ),
+        Err(err) => tracing::error!(error = %err, "environment run reconciliation failed"),
+    }
     if let Some(token) = app.prepare_setup().await.map_err(|e| e.to_string())? {
         let path = args.data_dir.join("setup.token");
         let _ = std::fs::remove_file(&path);

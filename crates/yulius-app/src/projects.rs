@@ -13,9 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use yulius_contracts::api::sandboxes::{
-    AvailableRepo, CreateSandbox, Environment, Profile, Sandbox, Template,
-};
+use yulius_contracts::api::sandboxes::{AvailableRepo, CreateSandbox, Profile, Sandbox, Template};
 use yulius_contracts::events::UiEvent;
 use yulius_domain::delivery::{DeliveryProfile, MergeMethod, Preset, PromoteMethod};
 use yulius_domain::ids::SandboxId;
@@ -45,28 +43,10 @@ const MAX_SLUG_ATTEMPTS: u32 = 20;
 /// Longest repository description passed to GitHub.
 const MAX_DESCRIPTION_CHARS: usize = 350;
 
-/// Contracts view of a domain delivery profile. `require_checks` has no contracts field yet and
-/// is implied by the preset.
+/// Contracts view of a domain delivery profile.
 #[must_use]
 pub fn profile_view(profile: &DeliveryProfile) -> Profile {
-    Profile {
-        preset: profile.preset.as_str().to_owned(),
-        integration_branch: profile.integration_branch.clone(),
-        production_branch: profile.production_branch.clone(),
-        merge: profile.merge.as_str().to_owned(),
-        promote: profile.promote.as_str().to_owned(),
-        auto_promote: profile.auto_promote,
-        environments: profile
-            .environments
-            .iter()
-            .map(|env| Environment {
-                name: env.name.clone(),
-                after: env.after.as_str().to_owned(),
-                command: env.command.clone(),
-                verify: env.verify.as_str().to_owned(),
-            })
-            .collect(),
-    }
+    crate::delivery::profile_to_contract(profile)
 }
 
 fn has_delivery_section(yulius_toml: &str) -> bool {

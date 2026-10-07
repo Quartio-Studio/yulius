@@ -9,6 +9,7 @@ mod analytics;
 mod audit;
 mod coordination;
 pub mod crypto;
+mod delivery;
 mod ext;
 mod imports;
 mod instance;
