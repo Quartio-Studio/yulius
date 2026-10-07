@@ -1,10 +1,13 @@
 # Working in Yulius
 
-Yulius is Quartio's planned Rust coding-agent workspace, inspired by Cezar and
-Open Mercato Cloud. This checkout currently contains engineering infrastructure
-and reusable templates; it does **not** contain a working orchestrator.
-The product brief is still forthcoming. Do not invent a feature roadmap from a
-screenshot or turn a proposed architecture into an accepted product requirement.
+Yulius is Quartio's Rust coding-agent workspace, inspired by Cezar and Open Mercato
+Cloud: a self-hosted orchestrator of native Claude Code and Codex sessions that enforces
+engineering discipline. The accepted product brief is
+[SPEC-001](.ai/specs/SPEC-001-yulius-product.md); architecture and runtime contracts are
+[SPEC-002](.ai/specs/SPEC-002-yulius-architecture.md); source tracing is
+[SPEC-003](.ai/specs/SPEC-003-traceability.md). SPEC-002 choices are engineering
+assumptions, not user requirements. Check the specs' evidence sections for what is
+implemented; do not invent features beyond them.
 
 ## Start here
 

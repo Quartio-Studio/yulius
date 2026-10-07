@@ -1,0 +1,20 @@
+[package]
+name = "yulius-contracts"
+version = "0.1.0"
+description = "Versioned external contracts: HTTP API, events, terminal and ptyhost protocols, MCP and hooks."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[package.metadata.yulius]
+layer = "contracts"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,169 @@
+# SPEC-003: Source traceability and self-review
+
+Status: accepted
+Date: 2026-10-07
+Owner: implementing agent
+Scope authorization: user goal of 2026-10-07 (trace requirements to timestamps and video
+evidence; review the specification against the originals).
+
+This review maps every segment range of the Oct 6 transcript (all 295 segments, indices
+`[000]`–`[294]`), every morning note and every draft-prompt item to requirements in
+[SPEC-001](SPEC-001-yulius-product.md) or to an explicit classification. A row count is not proof of
+coverage; the self-review in §5 records what was re-checked and what changed.
+
+## 1. Transcript coverage (in order)
+
+| Segments | Time | Content (paraphrase) | Maps to |
+| --- | --- | --- | --- |
+| 000–008 | 00:00–02:28 | Mic test, recording, start screen share | meta (no requirement) |
+| 009–013 | 02:31–03:33 | Liked Cezar's concept, it has problems; build a separate product for weaponized vibe-coding that imposes discipline; Open Mercato workflows and interface stay | §2 Vision, UI-001, AUT-004 |
+| 014–016 | 03:38–03:56 | Go through the points written this morning | WA list (§2 below) |
+| 017–023 | 04:00–04:47 | Layout: panel (left), space (center), browser+editor (right); not on by default, icons that expand; everything except left is the terminal | UI-001, UI-002, UI-003 (V 4:04–4:24 pointing) |
+| 024–027 | 04:47–04:55 | Like Claude in a terminal: bar on the left, middle is … | UI-003, HRN-001 |
+| 028–038 | 04:55–05:19 | Tasks like Cezar's; create a task, tasks appear at the bottom; click Active | UI-004, UI-005 (V 5:04–5:36) |
+| 039–041 | 05:19–05:28 | This part stays: Workflow, Skills, Automation | UI-004, AUT-004, SKL-005 |
+| 042–043 | 05:31–05:33 | Settings not needed for MVP | ACC-010 (C over P(2)) |
+| 044–049 | 05:36–05:50 | Active stays; Archive moved elsewhere | UI-006 |
+| 050–055 | 05:50–05:59 | Web hidden by default, editor too; "what is the editor for… but OK, keep it" | UI-002, EDT-001 |
+| 056 | 06:00–06:21 | Top usage bar removed; CPU/GPU/RAM into a hidden status/usage panel | UI-007, Status panel (V 6:00) |
+| 057–064 | 06:21–06:50 | Project name header pointless; second-level thin tabs (≤ "Coding Agent / Terminal Logs" row) listing "Quartio Studio", "Sandbox 1", "Sandbox 2" instead of Terminal/Logs | UI-008, PRJ-006 (V 6:33–6:44) |
+| 065–068 | 06:50–07:05 | Web is broken in the reference; should be a normal Chrome-like browser, any address; global for the whole VM | BRW-001; "global" superseded |
+| 069–072 | 07:07–07:56 | Agents use it too; global or per user is messy (AWS login) → per sandbox; nice to have tab management; jump to the tab where an action is requested | BRW-002 (C), BRW-003, BRW-004 |
+| 073–077 | 07:56–08:12 | Agent writes "click, open this tab" in chat; links in Claude are hard to navigate | BRW-004, UI-011 |
+| 078–082 | 08:13–08:37 | Right part done; editor = plain VS Code | EDT-001 |
+| 083–086 | 08:37–09:39 | Permissions copied from GitHub; org GitHub or private account; each project a GitHub repo (Product/Studio imports, new projects); inherited permissions; one sandbox = one repo; many sandboxes per instance | ACC-006, ACC-007, PRJ-001, PRJ-003 |
+| 087–102 | 09:39–10:28 | One VM, many isolated sandboxes; wish to check another repo from a sandbox dropped — MCP covers it; coding rules will live in Yulius | PRJ-001, PRJ-002, PRJ-007, DSC-001/005 |
+| 103–109 | 10:31–11:05 | Accounts topic; center up to the bar must be exactly the native Claude/Codex session interface — a terminal | HRN-001 (V 10:38–10:59 selection) |
+| 110–113 | 11:06–11:22 | Cannot exit the terminal; leaving the session closes the task; a separate terminal exists (V 11:12 reference Terminal tab), this one is dedicated to Claude/Codex | HRN-002, UI-015 (U-11) |
+| 114–117 | 11:25–11:41 | One task = one session; harness chosen at creation; Claude and Codex only for now | TSK-001..003 |
+| 118–126 | 11:41–13:01 | Many accounts per provider; switch at exhaustion or ~99%; invisible; use resets first; then switch provider, visible in the terminal yet smooth; elegant | ROT-001, ROT-003, ROT-004 (U-03), ROT-005 |
+| 127 | 13:04–13:27 | Harness features (switching sessions) conflict with one session = one task; handle smartly | HRN-004 |
+| 128–131 | 13:27–13:50 | Tasks see previous and parallel tasks; Yulius-level communication protocol independent of Claude/Codex; "additionally a protocol which…" (deferred to discipline, unfinished) | COM-001, COM-002 |
+| 132–135 | 13:56–14:45 | Strong account orchestrator (10 Codex, 15 Claude); effort changes; native `/model`, `/effort`, `/fast`; session translation across providers is non-trivial and needs testing | ROT-001, ROT-008, HRN-003, ROT-005, ROT-006 |
+| 136–147 | 14:45–15:09 | Header panel annoys; finish UI first; big things to remove; layout breaks | UI-009 (V 14:58 broken header) |
+| 148–155 | 15:11–16:00 | Likes the step bar "maybe not in this form"; Yulius' own step/todo manager, auditable, where the agent is and what remains; commits/files tabs removed (files = editor); very simplified | STP-001..003, UI-009, U-04 |
+| 156–158 | 16:04–16:23 | "claude default" belongs at the bottom where commands are typed; "done" status → icons on the left | UI-010, UI-005 |
+| 159–164 | 16:23–16:59 | Discipline; product assumption: push vibe-coding to the limit; definition of vibe-coding | §2 Vision, DSC-012 |
+| 165–167 | 17:00–17:35 | Two ways: MCP delegated to Yulius, attached to both harnesses; Quartio MCP feeds product knowledge | MCP-001, MCP-002 (X) |
+| 168–170 | 17:35–18:59 | Enforce docs format; one task = one spec/implementation plan; Yulius enforces todos/sections and prompts the agent; architecture and other diagrams; docs and decisions as Markdown next to code | DSC-001..005 |
+| 171 | 19:00–19:12 | New project gets the format automatically; import is harder | PRJ-005, DSC-010 |
+| 172–173 | 19:13–19:59 | Non-programmer wants production-level code; models insufficient; bugs | DSC-012, §2 Vision |
+| 174–177 | 20:00–20:40 | New/converted repo: technology decisions documented and made by the agent (Python for data, C++/Rust for speed — examples) | DSC-006 (X for languages) |
+| 178–180 | 20:40–21:10 | Implementers may research documentation practice; for now one task = one spec | DSC-011 |
+| 181–186 | 21:10–21:59 | Git discipline: no direct pushes to production, PRs; see Cezar → rather this Yulius repo and our other repos; one format now, templates later | DSC-007, DLV-002, DSC-001 (D templates) |
+| 187–192 | 22:00–23:22 | Limit bugs/slop with maximum simplicity; online store and 3D model examples; new task = one feature → spec → branch → per-spec implementation → tests, QA → dev → main; testing at every stage; deployment within it | DSC-008, DLV-001/002 (X for store/3D) |
+| 193–197 | 23:22–23:53 | Browser done; sessions communicate and agree scopes; each fix its own worktree; communication independent of harness | COM-002, COM-003, TSK-005 |
+| 198–205 | 23:53–24:37 | Skills: no slash commands for non-technical users; automatic activation (design example); take skills from our existing repository | SKL-001, SKL-002 (X design) |
+| 206–207 | 24:37–24:47 | Workflows + skills tabs; manage Git and automations | UI-004, GIT-001, AUT-004 |
+| 208–212 | 24:48–25:44 | Other product collects customer knowledge/feedback; daily task implementing last day's feedback; create automations; ask the agent to create an automation/workflow | AUT-001 (X daily feedback), AUT-002 |
+| 213–214 | 25:45–26:59 | Every project needs a GitHub repo, enforced; `yulius import` CLI with credentials, rsync-like sync; import Claude/Codex sessions from a prompted period (e.g., two weeks), only those of the repository | IMP-001..003 |
+| 215 | 27:00–27:44 | Imported project may not comply; preparation meta-task first; minimal attention (approve or informed); tidy docs | DSC-010, IMP-005, U-08 |
+| 216–217 | 27:44–27:50 | Anything else for import? No | — |
+| 218–221 | 27:50–28:33 | Imported sessions of different people are organization sessions; anyone can continue another's session, even switching to Codex; maximally simple | IMP-004, TSK-007 |
+| 222–224 | 28:38–29:18 | Sandbox keeps running after closing the window; control from phone; many sandboxes per VM installation, each project a repo | TSK-004, UI-012, PRJ-001 |
+| 225–237 | 29:19–30:21 | Local computer? For now VM; server usable from a desktop app (Electron); local server later; migrate instance to VM later; deploy our space on julius.quartio.ai | OPS-001 (U-01), OPS-002, OPS-003 (D) |
+| 238–241 | 30:22–30:51 | Superadmin at install; password not recoverable for now (needs email); strong UI warning to save it; superadmin creates users | ACC-001, ACC-002 (C over P(3)), ACC-004 |
+| 241–247 | 30:52–31:43 | Every user GitHub-authenticated; org or private GitHub; inherited permissions (read-only → read tasks; no access → invisible); consistent | ACC-005..008 |
+| 248–249 | 31:44–32:05 | Easy login to Claude, Codex, GitHub via OAuth, button | ROT-002, ACC-005 |
+| 250–251 | 32:06–32:27 | Create or import; basic templates; auto-create GitHub repo; synchronized | PRJ-003, PRJ-004, PRJ-008 |
+| 252–254 | 32:28–32:59 | Automatic skills covered; MCP independent of harness: Quartio MCP, Apify MCP (scrape X), anything | MCP-001, MCP-002 (X) |
+| 255–259 | 33:00–33:28 | Open Mercato skills: include the useful ones for code discipline, not all; comb and decide | SKL-003, §7.3 |
+| 260–261 | 33:29–33:43 | Clickable links; subscription management covered; agent creates automations/cron jobs | UI-011, ROT-009, AUT-002, AUT-003 |
+| 262–268 | 33:44–34:05 | "Archive chats works great": archiving is great but the button need not be permanent; "my archived chats" with restore | UI-006, AC-ARC-1 |
+| 269–274 | 34:06–35:05 | Discipline again: decisions inconsistent across sessions without a project summary; consistent docs, good specs, summaries of recent changes; one task with full project context — most important | COM-004, DSC-009, §2 success measure |
+| 275–279 | 35:06–35:44 | Background analytics: duration, model, user feedback (correct or not), tokens; full analytics, very important | ANL-001..003 |
+| 280–281 | 35:44–35:52 | That is all from WhatsApp; now the prompt written so far | P(n) list (§3 below) |
+| 282–285 | 35:53–36:37 | Like Cezar, need different foundations; that is all; assume and decide the rest; harness for solid vibe-coding for 2–5 people or one, consistent, no slop; everything documented | §2 Vision (team size supersedes P(1) "2–3") |
+| 286–290 | 36:38–37:10 | Which model to run the spec with | meta (not a product requirement) |
+| 291–294 | 37:29–37:33 | Send the spec; end | meta |
+
+## 2. Morning notes (WA) coverage
+
+| Note | Maps to |
+| --- | --- |
+| 13:02 Browser should work (for Yulius) | BRW-001 |
+| 13:04 Per-user browser, controllable 1:1 like native Claude/Codex plugins | BRW-003; per-user superseded by T 7:26 per sandbox (BRW-002) |
+| 13:05 Sessions communicate regardless of Codex/Claude | COM-002 |
+| 13:07 Skill orchestration | SKL-004 |
+| 13:08 workflows, skills, automations, git, github | UI-004, GIT-001, AUT-*, SKL-* |
+| 13:09 Easy migration of projects and sessions (choose session range) | IMP-001..003 |
+| 13:09 editor | EDT-001 |
+| 13:09 switching between projects | PRJ-006, UI-008 |
+| 13:10 easy login to claude, codex, github | ROT-002, ACC-005 |
+| 13:10 templates | PRJ-004, PRJ-008 |
+| 13:11 Automatic skills | SKL-001 |
+| 13:11 mcps | MCP-001 |
+| 13:11 From OM | SKL-003 |
+| 13:12 clickable links | UI-011 |
+| 13:12 subscription management | ROT-009 |
+| 13:13 Automations and cron jobs; settable by prompts | AUT-001..003 |
+| 13:17 unsure about OM skills | resolved at T 33:00–33:22 (SKL-003) |
+| 13:27 archive chats works great | UI-006 |
+| 13:34 phone support | UI-012, J5 |
+| 13:35 enforcing specs | DSC-001..003 |
+| 13:36 whatsapp | U-07 (no requirement) |
+| 13:38 onboarding after import: "do you want to reverse-engineer?" | DSC-010 |
+| 13:39 consistent model of basic git hygiene | DSC-007 |
+| 13:40 mandatory GitHub connection for every user | ACC-005 |
+| 13:44 project summary, what happened recently | DSC-009, COM-004 |
+
+## 3. Draft prompt (P) coverage — predates the call
+
+| Item | Maps to | Precedence note |
+| --- | --- | --- |
+| P(1) vision; documentation discipline; teams of 2–3; keeps running when the website is closed; analyze both repos; tasks by Claude/Codex, documented, talking, easy harness/account switch | §2, DSC-*, TSK-004, COM-002, ROT-007, R:product/R:studio review | Team size 2–5 (T 36:07) supersedes 2–3 |
+| P(2) dashboard, tasks, git, automations, skills, workflows, settings; Open Mercato sandbox view (harness left, editor + browser right) | UI-001, UI-004 | Settings dropped (T 5:31); browser/editor hidden by default (T 4:20) |
+| P(3) open source; org VM; yulius.quartio.ai; one superadmin; password set at start; recovery code; not recoverable; strong UI warning | OPS-001, ACC-001/002, U-01, U-02 | "Recovery code" superseded by T 30:22 (not recoverable for now) |
+| P(4) one instance = one org or private profile; every user connects GitHub; project = one repo, linked on onboarding or created; same permissions as GitHub; proxy for GitHub | ACC-005..007, PRJ-001/003/004 | consistent with call |
+| P(5) orchestrator for existing agents; many accounts; one session = one task; same TUI ("seriously TUI", image of a native TUI); rotation and provider translation; manual switching; harness chosen per task | TSK-*, HRN-*, ROT-* | consistent with call |
+| P(6) discipline is the reason the product exists | §2, DSC-* | — |
+| P(7) mcps; "Example usecase:" unfinished | MCP-001 | unfinished text ignored |
+
+## 4. Video observations used
+
+| Time | Observation | Used for |
+| --- | --- | --- |
+| V 2:30–4:00 | Open Mercato sandbox page with Cezar inside; top usage bar; "AI Coding Agent / Terminal / Logs" row; Web/Editor panel previewing the app | Layout reference (UI-001..008), PRJ-010 |
+| V 4:04–4:24 | Cursor on left nav, center, Web/Editor tabs while describing zones | UI-001 |
+| V 4:56–5:36 | Skills page, Tasks list, new-task dialog (worktree, autonomous, plan first), session with step bar; Active/Archived at sidebar bottom | UI-004, UI-005, U-09 |
+| V 5:54 | Editor tab is a browser VS Code | EDT-001 |
+| V 6:00–6:44 | Cursor on top usage bar, project title, the Terminal/Logs row | UI-007, UI-008 |
+| V 6:54 | Cursor on the browser address bar | BRW-001 |
+| V 10:38–10:59 | Selection over the session transcript area | HRN-001 |
+| V 11:12 | Reference Terminal tab (plain shell) opened briefly | UI-015, U-11 |
+| V 14:50–16:23 | Task header scrolled/broken; cursor on step bar; Changes and Files tabs shown | UI-009, STP-003 |
+| V 3:45, 23:30–24:35, 31:45–35:40 | Morning notes list | §2 |
+| V 3:38, 35:45–37:15 | Draft prompt | §3 |
+
+Incidental screen content deliberately **not** used: the Quartio Studio website shown in the
+preview, browser tab titles, private chats and personal account messages, the unrelated Quartio
+product operations visible in a second terminal, Cezar's dashboard numbers, Google Meet UI.
+
+## 5. Self-review log
+
+Method: after drafting, the full transcript was re-read against SPEC-001 segment by segment
+(table §1), every WA note and P item was checked (tables §2–§3), and the video was re-inspected
+where a statement depended on pointing.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | T 11:13 mentions an existing separate terminal; the first draft removed all non-agent terminals. | Re-checked V 11:12 (reference Terminal tab). Added UI-015 and U-11: hidden sandbox shell in the right rail. |
+| 2 | Sandboxes share the VM network; parallel dev servers would collide, and the reference's Web panel previewed the app under development. | Added PRJ-010 (per-sandbox port ranges) and SPEC-002 environment variables. |
+| 3 | Superadmin recovery: P(3) says a recovery code is given; T 30:22 says not recoverable for now. | P predates the call (visible at V 3:38); spoken statement wins (ACC-002, class C). |
+| 4 | Browser scope: WA 13:04 per user, T 7:00 global, T 7:26 per sandbox. | Latest wins: per sandbox (BRW-002, class C). |
+| 5 | Team size: P(1) 2–3, T 36:07 2–5. | Latest wins: 2–5. |
+| 6 | "Settings" in P(2) vs removal at T 5:31. | Removed (ACC-010); archived tasks reachable from user menu (T 34:00 suggested a settings-like place). |
+| 7 | "Limit resets" meaning unclear. | U-03: support time-window resets automatically; manual reset entitlements surfaced, not automated. |
+| 8 | Dashboard is in P(2) and the reference but not discussed in the call. | Kept as analytics/overview page (ANL-003) — not removed by any correction. |
+| 9 | "Coding rules will be in Yulius" (T 10:16–10:21). | Covered by DSC-001/005 and the briefing (SPEC-002 §7.6); traced in §1. |
+| 10 | Product and Studio branch models differ from the transcript's dev/main. | K clarifications: delivery profiles (DLV-003/004), standard profile for new projects only. |
+| 11 | Git discipline reference "this Yulius repo and our other repos" (T 21:29). | DLV-002 standard profile mirrors this repository's dev → main workflow. |
+| 12 | Studio contains git-crypt-encrypted secrets and a pre-commit mass-delete guard. | SPEC-002 notes: sandboxes clone locked (secrets stay encrypted); unlocking is an explicit admin action; the preparation task follows the repo's AGENTS.md (hooks install). |
+| 13 | Risk of presenting design choices as requirements. | SPEC-002 is labelled engineering assumptions; SPEC-001 A-class rows marked. |
+| 14 | "whatsapp" note unexplained. | U-07: no feature invented. |
+
+Remaining genuine uncertainties are listed in SPEC-001 §9 (U-01…U-11) and SPEC-002 §12 (R-01…R-06).
+
+## Changelog
+
+- 2026-10-07: initial traceability review and self-review log.

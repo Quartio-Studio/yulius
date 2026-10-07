@@ -1,12 +1,84 @@
 [workspace]
-members = ["tools/xtask"]
+members = [
+    "crates/yulius-domain",
+    "crates/yulius-contracts",
+    "crates/yulius-app",
+    "crates/yulius-store",
+    "crates/yulius-ptyhost",
+    "crates/yulius-harness",
+    "crates/yulius-github",
+    "crates/yulius-git",
+    "crates/yulius-browser",
+    "crates/yulius-editor",
+    "crates/yulius-import",
+    "crates/yulius-server",
+    "crates/yulius",
+    "tools/xtask",
+    "tools/fake-agent",
+]
 resolver = "3"
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
-repository = "https://github.com/Quartio-Studio/yulius"
+repository = "https://github.com/Quartio-Studio/yulius-v2"
+
+[workspace.dependencies]
+# Internal crates
+yulius-domain = { path = "crates/yulius-domain", version = "0.1.0" }
+yulius-contracts = { path = "crates/yulius-contracts", version = "0.1.0" }
+yulius-app = { path = "crates/yulius-app", version = "0.1.0" }
+yulius-store = { path = "crates/yulius-store", version = "0.1.0" }
+yulius-ptyhost = { path = "crates/yulius-ptyhost", version = "0.1.0" }
+yulius-harness = { path = "crates/yulius-harness", version = "0.1.0" }
+yulius-github = { path = "crates/yulius-github", version = "0.1.0" }
+yulius-git = { path = "crates/yulius-git", version = "0.1.0" }
+yulius-browser = { path = "crates/yulius-browser", version = "0.1.0" }
+yulius-editor = { path = "crates/yulius-editor", version = "0.1.0" }
+yulius-import = { path = "crates/yulius-import", version = "0.1.0" }
+yulius-server = { path = "crates/yulius-server", version = "0.1.0" }
+# External crates: exact minor pins; the lockfile holds exact versions.
+thiserror = "2.0.21"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process", "signal", "fs"] }
+async-trait = "0.1"
+futures = "0.3.34"
+axum = { version = "0.8.9", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.7.1", features = ["trace", "limit", "cors"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+argon2 = "0.6.0"
+rand = "0.10.3"
+uuid = { version = "1.27.0", features = ["v4"] }
+portable-pty = "0.9.0"
+vt100 = "0.16.2"
+nix = { version = "0.31.3", features = ["signal", "process", "fs", "user"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+toml = "1.1.6"
+sha2 = "0.11.0"
+hex = "0.4.3"
+base64 = "0.23.1"
+tempfile = "3.27.0"
+chacha20poly1305 = "0.11.0"
+# HTTPS client for `yulius import`/`login` (shared TLS decision: rustls with the ring provider).
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "http2", "charset", "form"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+# Uncommitted-state snapshot archive (tar.gz) for `yulius import`.
+tar = { version = "0.4.46", default-features = false }
+flate2 = "1.1.10"
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake"] }
+signal-hook = { version = "0.4.5", default-features = false }
+ring = "0.17.14"
+# Machine metrics for the status panel (CPU, memory, data-dir disk, load).
+sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk"] }
+# Editor reverse proxy (HTTP/1.1 client with upgrades to the loopback openvscode-server).
+hyper = "1.12.0"
+hyper-util = "0.1.21"
+http-body-util = "0.1.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
