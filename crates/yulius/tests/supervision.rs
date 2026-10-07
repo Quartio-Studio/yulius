@@ -1026,8 +1026,23 @@ fn contained_tasks_cannot_read_other_sandboxes_or_the_data_directory() -> TestRe
         })
         .await?;
         let worktree = PathBuf::from(task(&app, &id).await?.worktree_path.ok_or("worktree")?);
+        let run_dir = PathBuf::from(
+            app.deps
+                .store
+                .live_attempt(&id)
+                .await?
+                .ok_or("attempt")?
+                .run_dir,
+        );
         let probes = [
             (worktree.join("README.md"), "READ README.md OK"),
+            // The generated Claude settings are visible; the rest of the run directory is not.
+            (
+                run_dir.join("claude-settings.json"),
+                "READ claude-settings.json OK",
+            ),
+            (run_dir.join("launch.json"), "READ launch.json ERR"),
+            (PathBuf::from("/etc/resolv.conf"), "READ resolv.conf OK"),
             (other.join("secret.txt"), "READ secret.txt ERR"),
             (data.join("yulius.db"), "READ yulius.db ERR"),
         ];

@@ -625,12 +625,22 @@ impl App {
             .push(("YULIUS_TASK_TOKEN".into(), task_token.clone()));
         launch.env.extend(self.base_env(&sandbox, &home));
         launch.containment = if self.config.contained {
+            let sandbox_root = self.sandbox_dir(&sandbox.id);
+            // Generated per-run config (Claude settings and MCP config live in the run directory,
+            // which stays hidden): bind exactly those files read-only.
+            let run_files: Vec<PathBuf> = launch
+                .files
+                .iter()
+                .map(|f| f.path.clone())
+                .filter(|p| !p.starts_with(&sandbox_root))
+                .collect();
             Containment::Bubblewrap {
-                sandbox_root: self.sandbox_dir(&sandbox.id),
+                sandbox_root,
                 home: home.clone(),
                 writable: Vec::new(),
                 readonly: std::iter::once(self.config.yulius_exe.clone())
                     .chain(self.config.contained_readonly.iter().cloned())
+                    .chain(run_files)
                     .collect(),
             }
         } else {

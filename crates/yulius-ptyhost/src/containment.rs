@@ -10,6 +10,21 @@ pub const BWRAP_PROGRAM: &str = "bwrap";
 /// Host system directories bound read-only at the same path (skipped by bwrap when absent).
 pub const SYSTEM_READONLY_DIRS: [&str; 6] = ["/usr", "/bin", "/lib", "/lib64", "/etc", "/opt"];
 
+/// The host resolver configuration.
+const RESOLV_CONF: &str = "/etc/resolv.conf";
+
+/// The directory holding the real resolver file when `resolv_conf` is a symbolic link out of the
+/// bound system directories (Ubuntu: `/run/systemd/resolve/stub-resolv.conf`). Without it name
+/// resolution fails inside the sandbox even though the network is shared.
+fn resolver_dir(resolv_conf: &Path) -> Option<String> {
+    let target = std::fs::canonicalize(resolv_conf).ok()?;
+    let dir = target.parent()?;
+    let inside = SYSTEM_READONLY_DIRS
+        .iter()
+        .any(|system| dir.starts_with(system));
+    (!inside).then(|| dir.to_string_lossy().into_owned())
+}
+
 /// Builds the full `bwrap` argv that runs `inner_argv` with working directory `cwd` inside the
 /// sandbox described by `c`.
 ///
@@ -40,6 +55,11 @@ pub fn bwrap_argv(c: &BubblewrapSpec, inner_argv: &[String], cwd: &str) -> Vec<S
     for dir in SYSTEM_READONLY_DIRS {
         push_bind(&mut argv, "--ro-bind-try", dir);
     }
+    if c.share_net
+        && let Some(dir) = resolver_dir(Path::new(RESOLV_CONF))
+    {
+        push_bind(&mut argv, "--ro-bind-try", &dir);
+    }
     push_bind(&mut argv, "--bind", &c.sandbox_root);
     if !Path::new(&c.home).starts_with(&c.sandbox_root) {
         push_bind(&mut argv, "--bind", &c.home);
@@ -68,6 +88,21 @@ fn push_bind(argv: &mut Vec<String>, option: &str, path: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resolver_dir_follows_symlinks_out_of_the_system_dirs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let run = dir.path().join("run-resolve");
+        std::fs::create_dir_all(&run)?;
+        std::fs::write(run.join("stub-resolv.conf"), "nameserver 127.0.0.53\n")?;
+        let link = dir.path().join("resolv.conf");
+        std::os::unix::fs::symlink(run.join("stub-resolv.conf"), &link)?;
+        let expected = run.canonicalize()?.to_string_lossy().into_owned();
+        assert_eq!(super::resolver_dir(&link), Some(expected));
+        assert_eq!(super::resolver_dir(&dir.path().join("missing")), None);
+        Ok(())
+    }
+
     use super::*;
 
     fn spec() -> BubblewrapSpec {
