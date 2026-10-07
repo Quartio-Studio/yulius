@@ -56,6 +56,8 @@ pub const MAX_ACTIVE_LOGINS: usize = 8;
 pub const LOGIN_VIEWERS_MAX: u64 = 16;
 /// How long a finished login stays visible to (re)connecting viewers.
 pub const FINISHED_LOGIN_RETENTION_MS: i64 = 10 * 60 * 1000;
+/// Logins kept in memory (running plus recently finished).
+pub const MAX_RETAINED_LOGINS: usize = 32;
 /// Largest keyboard input frame accepted from a viewer.
 pub const LOGIN_INPUT_MAX: usize = 64 * 1024;
 /// Longest account label.
@@ -691,7 +693,8 @@ impl App {
         })
     }
 
-    /// Drops finished logins older than the retention period.
+    /// Drops finished logins older than the retention period, and the oldest finished ones
+    /// beyond [`MAX_RETAINED_LOGINS`].
     fn prune_logins(&self) {
         let now = self.now().0;
         if let Ok(mut map) = self.logins.sessions.lock() {
@@ -699,6 +702,16 @@ impl App {
                 let finished = s.finished_at.load(Ordering::SeqCst);
                 finished == 0 || now.saturating_sub(finished) < FINISHED_LOGIN_RETENTION_MS
             });
+            let mut finished: Vec<(i64, String)> = map
+                .iter()
+                .map(|(id, s)| (s.finished_at.load(Ordering::SeqCst), id.clone()))
+                .filter(|(at, _)| *at != 0)
+                .collect();
+            finished.sort();
+            let excess = map.len().saturating_sub(MAX_RETAINED_LOGINS);
+            for (_, id) in finished.into_iter().take(excess) {
+                map.remove(&id);
+            }
         }
     }
 
@@ -847,7 +860,7 @@ impl App {
     ) {
         let mut masker = self.deps.harness.masker();
         let deadline = tokio::time::Instant::now() + self.login_timeout();
-        let mut ending = loop {
+        let ending = loop {
             tokio::select! {
                 () = session.cancel.notified() => break Ending::Cancelled,
                 event = tokio::time::timeout_at(deadline, reader.next()) => match event {
@@ -862,26 +875,25 @@ impl App {
             }
         };
         if matches!(ending, Ending::TimedOut | Ending::Cancelled) {
-            ending = match self
+            let stopped = self
                 .stop_login(&session, masker.as_mut(), &mut seq, reader.as_mut())
-                .await
-            {
-                Some(exit) if matches!(ending, Ending::TimedOut) => {
-                    tracing::info!(code = ?exit.code, "login timed out and was stopped");
-                    Ending::TimedOut
-                }
-                _ => ending,
-            };
+                .await;
+            tracing::info!(
+                exited = stopped.is_some(),
+                timed_out = matches!(ending, Ending::TimedOut),
+                "login process stopped"
+            );
         }
-        if matches!(ending, Ending::Lost) {
-            ending = match self.deps.session_host.inspect(&session.dir) {
+        let ending = match ending {
+            Ending::Lost => match self.deps.session_host.inspect(&session.dir) {
                 RunInspection::Exited(exit) => Ending::Exited(exit),
                 _ => {
                     let _ = self.deps.session_host.terminate(&session.dir);
                     Ending::Lost
                 }
-            };
-        }
+            },
+            other => other,
+        };
         let tail = masker.finish();
         if !tail.is_empty() {
             session.hub.output(seq, &tail);
@@ -955,7 +967,7 @@ impl App {
     /// Extracts and seals the credential (or records the failure), wipes the temporary
     /// directory and tells viewers and the UI.
     async fn finish_login(&self, session: &LoginSession, ending: Ending) {
-        let raw = session.raw.lock().map(|mut r| r.take()).unwrap_or_default();
+        let mut raw = session.raw.lock().map(|mut r| r.take()).unwrap_or_default();
         let exit_code = match &ending {
             Ending::Exited(exit) => exit.code,
             _ => None,
@@ -988,6 +1000,9 @@ impl App {
                 _ => reason,
             }))
         };
+        // Best-effort scrub of the plaintext copy before the buffer is freed.
+        raw.fill(0);
+        std::hint::black_box(&raw);
         drop(raw);
         let phase = match result {
             None => LoginPhase::Cancelled,
