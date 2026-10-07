@@ -757,3 +757,97 @@ fn codex_usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// AC-ROT-4 (synthetic): with every Claude account exhausted and a Codex account available, the
+/// Claude transcript is translated into a native Codex session that the next attempt resumes.
+/// Live acceptance by the real Codex CLI is not covered here.
+#[test]
+fn provider_exhaustion_translates_the_session_to_codex() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+        };
+        let app = build_full(&data, Some(&fake), agent, 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        app.deps
+            .store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse("o-1")?,
+                provider: Provider::OpenAi,
+                label: "Codex".into(),
+                credential: Some(
+                    app.deps
+                        .crypto
+                        .seal(br#"{"auth_mode":"chatgpt","tokens":{"access_token":"fake"}}"#)?,
+                ),
+                priority: 0,
+                enabled: true,
+                status: AccountStatus::Ok,
+                usage_json: None,
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+            })
+            .await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_task(&app, &sandbox, &user, "Translate").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        app.send_input(&id, b"remember the blue widget\r").await?;
+        wait_for("the limit", Duration::from_secs(15), || {
+            screen_contains(&app, &id, "LIMIT REACHED")
+        })
+        .await?;
+        wait_for("the Codex attempt", Duration::from_secs(90), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() >= 2 && attempts.last().is_some_and(|a| !a.state.is_terminal())
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let second = &attempts[1];
+        assert_eq!(attempts[0].harness, Harness::ClaudeCode);
+        assert_eq!(second.harness, Harness::Codex, "switched provider");
+        eprintln!("cross-provider launch kind: {:?}", second.launch_kind);
+        assert!(
+            matches!(
+                second.launch_kind,
+                LaunchKind::Translated | LaunchKind::Handoff
+            ),
+            "{:?}",
+            second.launch_kind
+        );
+        if second.launch_kind == LaunchKind::Translated {
+            // The synthesized rollout carries the Claude conversation.
+            let session = second
+                .provider_session_id
+                .clone()
+                .ok_or("codex session id")?;
+            let sessions = data
+                .join("sandboxes")
+                .join(sandbox.as_str())
+                .join("codex/sessions");
+            let rollout = yulius_harness::paths::find_codex_rollout(&sessions, &session)?
+                .ok_or("synthesized rollout")?;
+            let text = std::fs::read_to_string(rollout)?;
+            assert!(
+                text.contains("remember the blue widget"),
+                "user turn translated"
+            );
+        }
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
