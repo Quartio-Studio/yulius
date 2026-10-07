@@ -41,13 +41,16 @@ const GIT_ENV: [(&str, &str); 3] = [
     ("GIT_CONFIG_NOSYSTEM", "1"),
     ("GIT_TERMINAL_PROMPT", "0"),
 ];
-const IDENTITY: [&str; 6] = [
+/// Identity for commits; no fsync (throwaway repositories: keeps tests fast on busy disks).
+const IDENTITY: [&str; 8] = [
     "-c",
     "user.name=Yulius Test",
     "-c",
     "user.email=test@yulius.test",
     "-c",
     "commit.gpgsign=false",
+    "-c",
+    "core.fsync=none",
 ];
 
 fn git_sync(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -311,6 +314,10 @@ impl BareRemote {
 
 impl FakeRemote for BareRemote {
     fn branch_sha(&self, branch: &str) -> Option<String> {
+        // Pushed refs are loose files in the bare repository; fall back to git for packed ones.
+        if let Ok(text) = std::fs::read_to_string(self.origin.join("refs/heads").join(branch)) {
+            return Some(text.trim().to_owned());
+        }
         git_sync(
             &self.origin,
             &[
@@ -709,10 +716,10 @@ fn product_with_deploy() -> Value {
 
 // ---------------------------------------------------------------- tests
 
-/// AC-DSC-2, AC-DLV-1, AC-GIT-1: the PR is refused until the task has a valid committed spec;
-/// merging waits for green checks; the dev checkpoint gates the promotion PR dev → main.
+/// AC-DSC-2, AC-GIT-1: the PR is refused until the task has a valid committed spec, which is
+/// discovered and registered; the Git page shows the branch facts, the PR and its checks.
 #[tokio::test]
-async fn standard_flow_requires_a_spec_green_checks_and_a_promotion_pr() -> TestResult {
+async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
     let wt = f
         .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
@@ -825,6 +832,25 @@ async fn standard_flow_requires_a_spec_green_checks_and_a_promotion_pr() -> Test
     assert_eq!(page.body["pulls"].as_array().map(Vec::len), Some(1));
     assert_eq!(page.body["recent_commits"][0]["subject"], "Initial commit");
     assert_eq!(page.body["notes"], json!([]));
+
+    Ok(())
+}
+
+/// AC-DLV-1: standard profile — merging waits for green checks; the dev checkpoint gates the
+/// promotion, which opens a promotion PR dev → main and merges it on a later request.
+#[tokio::test]
+async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
 
     // Checks gate the merge (standard requires them).
     f.h.github.set_checks(&head, ChecksState::Pending);
@@ -1551,8 +1577,9 @@ async fn no_api_path_merges_or_promotes_without_a_person() -> TestResult {
     Ok(())
 }
 
-/// Reconciliation: a pull request merged outside Yulius moves the task forward on read, and a
-/// broken GitHub degrades the Git page to notes instead of failing it.
+/// Reconciliation: GitHub outages never change the recorded stage; a pull request merged
+/// outside Yulius moves the task forward on read; a promotion merged on GitHub is recorded by
+/// the next promotion request; a broken clone degrades the Git page to notes.
 #[tokio::test]
 async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
@@ -1566,16 +1593,117 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
         .await?;
     assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
 
-    // Merged on GitHub directly.
-    if let Ok(mut pulls) = f.h.github.pulls.lock()
-        && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
-    {
-        pull.state = "closed".into();
-        pull.merged = true;
-    }
+    // Merged on GitHub directly, outside Yulius.
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        1,
+        "squash",
+        &head,
+    )
+    .await?;
+
+    // GitHub unreachable (expired user token, broken App credentials): the page answers with
+    // a note and the stage stays as recorded.
+    let crypto = &f.h.app.deps.crypto;
+    let expired = |access: &str| -> BoxResult<GitHubTokenRecord> {
+        Ok(GitHubTokenRecord {
+            user_id: UserId::parse("u-bob")?,
+            access: crypto.seal(access.as_bytes())?,
+            refresh: None,
+            expires_at: Some(Timestamp(1)),
+            refresh_expires_at: None,
+        })
+    };
+    f.h.store
+        .save_github_token(&expired("token-bob")?, Timestamp(2))
+        .await?;
+    f.h.store
+        .set_github_app(&Sealed(vec![1, 2, 3]), "Quartio-Studio", "org")
+        .await?;
+    let d = f.delivery("t1").await?;
+    assert_eq!(d["stage"], "pr_open", "{d}");
+    assert!(
+        d["notes"].to_string().contains("GitHub is not available"),
+        "{d}"
+    );
+    let app_cfg = json!({"app_id": 1, "slug": "yulius-test", "client_id": "c", "client_secret": "s", "private_key_pem": "k", "webhook_secret": null});
+    f.h.store
+        .set_github_app(
+            &crypto.seal(app_cfg.to_string().as_bytes())?,
+            "Quartio-Studio",
+            "org",
+        )
+        .await?;
+    f.h.store
+        .save_github_token(
+            &GitHubTokenRecord {
+                expires_at: None,
+                ..expired("token-bob")?
+            },
+            Timestamp(3),
+        )
+        .await?;
+
     let d = f.delivery("t1").await?;
     assert_eq!(d["stage"], "merged_integration", "{d}");
     assert_eq!(actions(&d), ["confirm_env:dev"]);
+
+    // The promotion pull request is merged on GitHub; the next promote records it.
+    let confirmed = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/environments/dev/confirm",
+            Some(json!({"confirm": true})),
+            &f.bob,
+        )
+        .await?;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+    let opened = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            None,
+            &f.bob,
+        )
+        .await?;
+    assert_eq!(opened.body["result"], "pr_opened", "{}", opened.body);
+    let head = f.h.github.pull(2).ok_or("pull 2")?.head_sha;
+    yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        2,
+        "merge",
+        &head,
+    )
+    .await?;
+    let recorded = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            None,
+            &f.bob,
+        )
+        .await?;
+    assert_eq!(recorded.status, StatusCode::OK, "{}", recorded.body);
+    assert_eq!(recorded.body["result"], "promoted");
+    assert_eq!(recorded.body["sha"], f.origin_sha("main")?.as_str());
+    assert_eq!(f.delivery("t1").await?["stage"], "production_done");
+    let nothing = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            None,
+            &f.bob,
+        )
+        .await?;
+    assert_eq!(nothing.status, StatusCode::CONFLICT);
+    assert!(error_message(&nothing).contains("nothing to promote"));
 
     // The sandbox clone is missing: the Git page still answers, with notes.
     std::fs::remove_dir_all(&f.repo)?;

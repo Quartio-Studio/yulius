@@ -837,21 +837,29 @@ impl App {
             dirty = self.deps.git.has_changes(worktree).await.unwrap_or(false);
         }
         let mut pr = None;
+        // Only an answer from GitHub may change the recorded stage; failures never do.
+        let mut pr_known = false;
         let mut checks = ChecksState::None;
         if let Some(token) = token {
             let github = &self.deps.github;
             let (owner, repo) = (&sandbox.repo_owner, &sandbox.repo_name);
             if let Some(number) = record.pr_number {
                 match github.get_pull(token, owner, repo, number).await {
-                    Ok(pull) => pr = Some(pull),
+                    Ok(pull) => {
+                        pr = Some(pull);
+                        pr_known = true;
+                    }
                     Err(err) => notes.push(format!(
                         "GitHub: pull request #{number} cannot be read: {}",
                         err.public_message()
                     )),
                 }
             } else if let (Some(branch), DeliveryStage::None) = (&task.branch, &record.stage) {
-                match github.list_pulls(token, owner, repo, Some(branch)).await {
+                // Filtered here rather than through the adapter's `head` parameter, whose
+                // GitHub form is `owner:branch`.
+                match github.list_pulls(token, owner, repo, None).await {
                     Ok(pulls) => {
+                        pr_known = true;
                         pr = pulls.into_iter().find(|p| {
                             p.head == *branch && p.base == profile.integration_branch && is_open(p)
                         });
@@ -887,6 +895,9 @@ impl App {
             dirty,
             notes,
         };
+        if !pr_known {
+            return Ok(observed);
+        }
         let next = dlv::reconcile(&observed.record.stage, &observed.facts());
         let found_number = observed.pr.as_ref().map(|p| p.number);
         if next != observed.record.stage
@@ -1574,14 +1585,14 @@ impl App {
         Ok(moved)
     }
 
-    async fn dlv_production_diverged(
+    /// `(integration-only commits, production-only commits)` from the freshly fetched sandbox
+    /// clone; `None` when Git cannot tell.
+    async fn dlv_branch_relation(
         &self,
         sandbox: &SandboxRecord,
         profile: &DeliveryProfile,
-    ) -> bool {
-        if self.dlv_refresh_clone(sandbox).await.is_err() {
-            return false;
-        }
+    ) -> Option<(u32, u32)> {
+        self.dlv_refresh_clone(sandbox).await.ok()?;
         let repo = self.sandbox_repo(&sandbox.id);
         self.deps
             .git
@@ -1591,7 +1602,7 @@ impl App {
                 &format!("origin/{}", profile.integration_branch),
             )
             .await
-            .is_ok_and(|(_, behind)| behind > 0)
+            .ok()
     }
 
     /// Promotes the integration branch: fast-forward, or open/merge the promotion pull request
@@ -1637,14 +1648,49 @@ impl App {
         let production_sha = github
             .branch_sha(token, owner, name, &profile.production_branch)
             .await?;
-        if production_sha.as_deref() == Some(integration_sha.as_str()) {
-            return Err(AppError::Conflict(format!(
-                "nothing to promote: '{}' already points at the head of '{}'",
-                profile.production_branch, profile.integration_branch
-            )));
+        let relation = self.dlv_branch_relation(sandbox, profile).await;
+        let contained = production_sha.as_deref() == Some(integration_sha.as_str())
+            || relation.is_some_and(|(ahead, _)| ahead == 0);
+        if contained {
+            if candidates.is_empty() {
+                return Err(AppError::Conflict(format!(
+                    "nothing to promote: '{}' already contains '{}'",
+                    profile.production_branch, profile.integration_branch
+                )));
+            }
+            // Promoted outside Yulius (for example the promotion pull request merged on
+            // GitHub): record it instead of leaving the tasks waiting.
+            let facts = merged_facts(false);
+            let mut moves = Vec::new();
+            for (task, record) in candidates {
+                let next = dlv::apply(&record.stage, &DeliveryAction::Promote, by, profile, &facts)
+                    .map_err(|err| refusal(&err))?;
+                moves.push((task, record, next));
+            }
+            let numbers: Vec<String> = moves
+                .iter()
+                .map(|(t, _, _)| format!("#{}", t.number))
+                .collect();
+            self.dlv_audit(
+                &Self::dlv_policy_actor(by, actor),
+                "delivery.promote.reconciled",
+                &sandbox.slug,
+                &format!(
+                    "'{}' already contains '{}'; tasks [{}] recorded as promoted",
+                    profile.production_branch,
+                    profile.integration_branch,
+                    numbers.join(", ")
+                ),
+            )
+            .await;
+            self.dlv_advance(moves).await?;
+            return Ok(PromoteResult {
+                result: "promoted".into(),
+                sha: production_sha,
+            });
         }
         let diverged = profile.promote == PromoteMethod::FastForward
-            && self.dlv_production_diverged(sandbox, profile).await;
+            && relation.is_some_and(|(_, behind)| behind > 0);
         let facts = merged_facts(diverged);
         let mut moves = Vec::new();
         if candidates.is_empty() {
@@ -1680,7 +1726,7 @@ impl App {
             }
             PromoteMethod::MergeCommit => {
                 let existing = github
-                    .list_pulls(token, owner, name, Some(&profile.integration_branch))
+                    .list_pulls(token, owner, name, None)
                     .await?
                     .into_iter()
                     .find(|p| {
