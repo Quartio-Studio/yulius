@@ -7,6 +7,8 @@ import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+/** Server names: 1–64 letters, digits, `-` or `_`; `yulius` is reserved. */
+const NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Mount the MCP page; ?scope=instance pre-filters (admin "Instance MCP" entry). */
 export function mountMcpPage(ctx, sandbox, route) {
@@ -24,6 +26,10 @@ export function mountMcpPage(ctx, sandbox, route) {
   let servers = [];
 
   const canManage = (server) => write && (server.scope !== 'instance' || instanceAdmin);
+  // Tests follow the write rule; stdio tests run outside the containment, so a contained
+  // instance lets only instance administrators run them.
+  const contained = Boolean(ctx.store.state.me && ctx.store.state.me.instance && ctx.store.state.me.instance.contained);
+  const canTest = (server) => canManage(server) && (server.transport !== 'stdio' || !contained || instanceAdmin);
 
   function render() {
     const shown = servers.filter((s) => !scopeFilter.value || s.scope === scopeFilter.value);
@@ -50,7 +56,7 @@ export function mountMcpPage(ctx, sandbox, route) {
             : null,
           testResult),
         h('div', { class: 'list-actions' },
-          h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, onClick: async (event) => {
+          h('button', { type: 'button', class: 'btn btn-sm', disabled: !canTest(server), title: canTest(server) ? 'Connect and list tools (HTTP ≤ 5 s, stdio ≤ 10 s)' : server.scope === 'instance' && !instanceAdmin ? 'Instance servers are tested by instance administrators' : server.transport === 'stdio' && contained ? 'On a contained instance stdio tests need an instance administrator' : 'Requires write access', onClick: async (event) => {
             const button = event.currentTarget;
             button.classList.add('busy');
             try {
@@ -134,7 +140,7 @@ export function mountMcpPage(ctx, sandbox, route) {
   }
 
   function edit(server) {
-    const name = h('input', { class: 'input', value: server ? server.name : '', maxlength: 100, autofocus: true, placeholder: 'quartio' });
+    const name = h('input', { class: 'input', value: server ? server.name : '', maxlength: 64, autofocus: true, placeholder: 'quartio' });
     const transport = h('select', { class: 'select' }, h('option', { value: 'http' }, 'HTTP (Streamable)'), h('option', { value: 'stdio' }, 'stdio (command)'));
     transport.value = server ? server.transport : 'http';
     const url = h('input', { class: 'input mono', value: server ? server.url || '' : '', placeholder: 'https://mcp.example.com/mcp' });
@@ -144,8 +150,9 @@ export function mountMcpPage(ctx, sandbox, route) {
     scope.value = server ? server.scope : (route.query.get('scope') === 'instance' && instanceAdmin ? 'instance' : 'sandbox');
     const env = secretEditor('Environment variables', server ? server.env_keys || [] : []);
     const headers = secretEditor('Headers', server ? server.header_keys || [] : []);
-    const httpFields = h('div', { class: 'stack' }, field('URL', url), h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Headers (secret)'), headers.el));
-    const stdioFields = h('div', { class: 'stack' }, field('Command', command), field('Arguments', args));
+    const httpFields = h('div', { class: 'stack' }, field('URL', url), h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Headers (secret)'), headers.el,
+      h('span', { class: 'field-hint' }, 'Agent sessions receive HTTP secrets only as an Authorization: Bearer token; other headers are used by Test but not yet passed to the harnesses.')));
+    const stdioFields = h('div', { class: 'stack' }, field('Command', command), field('Arguments', args), h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Environment (secret)'), env.el));
     const sync = () => { httpFields.hidden = transport.value !== 'http'; stdioFields.hidden = transport.value !== 'stdio'; };
     transport.addEventListener('change', sync);
     sync();
@@ -155,12 +162,13 @@ export function mountMcpPage(ctx, sandbox, route) {
       body: h('div', { class: 'stack' },
         h('div', { class: 'form-grid' }, field('Name', name), field('Transport', transport), field('Scope', scope)),
         httpFields, stdioFields,
-        h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Environment (secret)'), env.el),
-        h('p', { class: 'muted xs' }, 'Secrets are encrypted at rest, passed to sessions only through the environment and never shown again.')),
+        h('p', { class: 'muted xs' }, 'Secrets are write-only: stored encrypted and never shown again. Leaving “Replace” unticked keeps the stored values. A sandbox server overrides an instance server of the same name.')),
       actions: [
         { label: 'Cancel', value: false },
         { label: server ? 'Save' : 'Add', kind: 'primary', run: async () => {
-          if (!name.value.trim()) { toast('Name is required.', { kind: 'warn' }); return false; }
+          const trimmed = name.value.trim();
+          if (!NAME_RE.test(trimmed)) { toast('Use 1–64 letters, digits, “-” or “_” for the name.', { kind: 'warn' }); return false; }
+          if (trimmed.toLowerCase() === 'yulius') { toast('“yulius” is reserved for the built-in Yulius tool server.', { kind: 'warn' }); return false; }
           const body = {
             name: name.value.trim(),
             transport: transport.value,
@@ -171,7 +179,7 @@ export function mountMcpPage(ctx, sandbox, route) {
           };
           if (!server) body.scope = scope.value;
           try {
-            const envValue = env.value();
+            const envValue = transport.value === 'stdio' ? env.value() : undefined;
             if (envValue !== undefined) body.env = envValue;
             const headerValue = transport.value === 'http' ? headers.value() : undefined;
             if (headerValue !== undefined) body.headers = headerValue;

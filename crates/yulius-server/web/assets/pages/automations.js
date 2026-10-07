@@ -7,12 +7,18 @@ import { allows, harnessInfo } from '../status.js';
 import { href } from '../router.js';
 import { pageFrame, loader, dataTable } from './common.js';
 
-const RUN_TONE = { task_created: 'ok', skipped: '', failed: 'danger', scheduled: 'warn' };
+// AutomationRun.state (docs/api.md "Skills, workflows, automations, MCP").
+const RUN_TONE = { scheduled: 'warn', task_created: 'ok', skipped_previous_active: '', skipped_disabled: '', failed: 'danger' };
+const RUN_LABEL = { scheduled: 'scheduled', task_created: 'task created', skipped_previous_active: 'skipped: previous task still active', skipped_disabled: 'skipped: disabled', failed: 'failed' };
 
-function offsetOptions() {
+const runBadge = (state) => badge(RUN_LABEL[state] || state || 'unknown', RUN_TONE[state] || '');
+
+/** Quarter-hour offsets from UTC−12 to UTC+14, plus `current` when it is another valid value (±1080). */
+function offsetOptions(current) {
   const out = [];
   for (let m = -12 * 60; m <= 14 * 60; m += 15) out.push(m);
-  return out;
+  if (Number.isInteger(current) && !out.includes(current)) out.push(current);
+  return out.sort((a, b) => a - b);
 }
 
 /** Mount the Automations page. */
@@ -54,7 +60,7 @@ export function mountAutomationsPage(ctx, sandbox) {
         h('div', { class: 'list-sub' }, `${describeCron(a.cron)} · ${utcOffset(a.utc_offset_minutes)} · `, h('code', null, a.cron)),
         h('div', { class: 'list-sub' },
           a.enabled && a.next_run_at ? h('span', { title: dateTime(a.next_run_at) }, `next ${relLong(a.next_run_at)}`) : h('span', null, a.enabled ? 'not scheduled' : 'paused'),
-          a.last_run ? [' · last: ', badge(a.last_run.state, RUN_TONE[a.last_run.state] || ''), ' ', h('span', { title: dateTime(a.last_run.scheduled_for) }, relLong(a.last_run.scheduled_for)), ' ', taskLink(a.last_run.task_id)] : ' · never ran')),
+          a.last_run ? [' · last: ', runBadge(a.last_run.state), ' ', h('span', { title: dateTime(a.last_run.scheduled_for) }, relLong(a.last_run.scheduled_for)), ' ', taskLink(a.last_run.task_id)] : ' · never ran')),
       h('div', { class: 'list-actions' },
         h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, onClick: () => runNow(a) }, 'Run now'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => history(a) }, 'History'),
@@ -66,11 +72,16 @@ export function mountAutomationsPage(ctx, sandbox) {
     return { name: a.name, cron: a.cron, utc_offset_minutes: a.utc_offset_minutes, prompt: a.prompt, workflow_id: a.workflow_id || null, harness: a.harness, enabled: a.enabled };
   }
 
+  /** One run now, also when disabled; the response is the AutomationRun. */
   async function runNow(a) {
     try {
-      await ctx.api.post(`/api/automations/${enc(a.id)}/run`);
-      toast(`${a.name}: run started`, { kind: 'ok' });
-      setTimeout(reload, 800);
+      const run = await ctx.api.post(`/api/automations/${enc(a.id)}/run`);
+      const state = run && run.state;
+      const task = run && run.task_id ? ctx.store.findTask(run.task_id) : null;
+      if (state === 'failed') toast(`${a.name}: run failed${run.error ? ` — ${run.error}` : ''}`, { kind: 'error' });
+      else toast(`${a.name}: ${RUN_LABEL[state] || state || 'run recorded'}${task ? ` (#${task.number})` : ''}`, { kind: state === 'task_created' ? 'ok' : 'info' });
+      if (run && run.task_id) ctx.store.loadTasks(sandbox.id).catch(() => null);
+      reload();
     } catch (error) {
       errorToast(error, 'Run refused');
     }
@@ -81,7 +92,7 @@ export function mountAutomationsPage(ctx, sandbox) {
     ctx.api.get(`/api/automations/${enc(a.id)}/runs`).then((runs) => {
       setChildren(modal.body, dataTable([
         { label: 'Scheduled for', render: (r) => dateTime(r.scheduled_for) },
-        { label: 'State', render: (r) => badge(r.state, RUN_TONE[r.state] || '') },
+        { label: 'State', render: (r) => runBadge(r.state) },
         { label: 'Task', render: (r) => taskLink(r.task_id) || '—' },
         { label: 'Error', render: (r) => (r.error ? h('span', { class: 'field-error' }, r.error) : '—') },
       ], Array.isArray(runs) ? runs : [], { empty: 'No runs yet.' }));
@@ -103,7 +114,7 @@ export function mountAutomationsPage(ctx, sandbox) {
     const name = h('input', { class: 'input', value: a ? a.name : '', maxlength: 100, autofocus: true });
     const cron = h('input', { class: 'input mono', value: a ? a.cron : '0 9 * * *', placeholder: 'min hour day month weekday' });
     const cronHint = h('span', { class: 'field-hint' });
-    const offset = h('select', { class: 'select' }, offsetOptions().map((m) => h('option', { value: String(m) }, utcOffset(m))));
+    const offset = h('select', { class: 'select' }, offsetOptions(a ? a.utc_offset_minutes : null).map((m) => h('option', { value: String(m) }, utcOffset(m))));
     offset.value = String(a ? a.utc_offset_minutes : -new Date().getTimezoneOffset());
     const prompt = h('textarea', { class: 'textarea', rows: 6, placeholder: 'What the created task should do, e.g. “Implement yesterday’s customer feedback from the Quartio MCP.”', value: a ? a.prompt : '' });
     const workflow = h('select', { class: 'select' }, h('option', { value: '' }, 'No workflow'), workflows.map((w) => h('option', { value: w.id }, w.name)));

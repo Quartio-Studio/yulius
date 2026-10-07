@@ -220,14 +220,20 @@ export function mountComposer(ctx, sandbox) {
         h('span', { class: 'banner-text' }, h('strong', null, 'Your superadmin password cannot be recovered. '), 'There is no reset or recovery code. Store it in several safe places.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => { writeJson('yulius.passwordAck', true); renderBanner(); } }, 'I have stored it')));
     }
+    // Onboarding (docs/api.md "Sandboxes"): `pending` waits for a person to approve the
+    // resting preparation task (write), `preparing` runs it; admins may skip either.
     const blocked = sb.onboarding === 'pending' || sb.onboarding === 'preparing';
     if (blocked) {
       const prep = (ctx.store.tasksOf(sb.id) || []).find((t) => t.origin === 'onboarding');
+      const pending = sb.onboarding === 'pending';
       items.push(h('div', { class: 'banner banner-info' }, icon('refresh'),
         h('span', { class: 'banner-text' },
-          h('strong', null, sb.onboarding === 'pending' ? 'Preparation pending. ' : 'Preparing this project. '),
-          'A preparation task adapts the imported repository to the Yulius format first; new tasks start once it lands.',
+          h('strong', null, pending ? 'This project needs preparation. ' : 'Preparing this project. '),
+          pending
+            ? 'The repository does not follow the Yulius documentation format yet. Start the preparation task to adapt it; new tasks can start once it lands.'
+            : 'A preparation task adapts the imported repository to the Yulius format; new tasks can start once it lands.',
           prep ? [' ', h('a', { href: href(`/s/${encodeURIComponent(sb.slug)}/t/${prep.number}`), dataset: { route: `/s/${encodeURIComponent(sb.slug)}/t/${prep.number}` } }, `Open #${prep.number}`)] : null),
+        pending && allows(sb.access, 'write') ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: approveOnboarding }, 'Start preparation') : null,
         allows(sb.access, 'admin') ? h('button', { type: 'button', class: 'btn btn-sm', onClick: skipOnboarding }, 'Skip for now') : null));
     }
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
@@ -236,6 +242,17 @@ export function mountComposer(ctx, sandbox) {
     startButton.disabled = disabled;
     prompt.disabled = disabled;
     startButton.title = blocked ? 'Blocked until project preparation finishes' : !write ? 'Requires write access' : '';
+  }
+
+  async function approveOnboarding() {
+    try {
+      const updated = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/onboarding/approve`);
+      if (updated && updated.id) ctx.store.upsertSandbox(updated);
+      await ctx.store.loadTasks(sandbox.id).catch(() => null);
+      toast('Preparation started.', { kind: 'ok' });
+    } catch (error) {
+      errorToast(error, 'Could not start preparation');
+    }
   }
 
   async function skipOnboarding() {

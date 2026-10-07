@@ -25,7 +25,11 @@ export function mountSkillsPage(ctx, sandbox, route) {
     frame.sub.textContent = `${shown.length} of ${skills.length} · activated automatically by relevance in both harnesses`;
     if (shown.length === 0) return h('div', { class: 'card placeholder' }, skills.length ? 'No skill matches.' : 'No skills found. Repository skills live in .agents/skills or .claude/skills.');
     return h('div', { class: 'card list' }, shown.map((skill) => {
-      const canToggle = write && (skill.source !== 'instance' || ctx.isInstanceAdmin());
+      // Repository skills are always available inside the repository (PUT → 422);
+      // instance skills are toggled by instance administrators.
+      const repository = skill.source === 'repository';
+      const canToggle = write && !repository && (skill.source !== 'instance' || ctx.isInstanceAdmin());
+      const why = repository ? 'Repository skills are always available inside the repository' : !write ? 'Requires write access' : skill.source === 'instance' && !ctx.isInstanceAdmin() ? 'Instance skills are managed by instance administrators' : null;
       return h('div', { class: 'list-item' },
         h('div', { class: 'list-main' },
           h('div', { class: 'list-title' }, h('button', { type: 'button', class: 'btn-ghost btn btn-sm', style: { padding: 0, height: 'auto', fontWeight: 600, color: 'var(--text)' }, onClick: () => view(skill) }, skill.name), badge(skill.source, SOURCE_TONE[skill.source] || '')),
@@ -33,7 +37,7 @@ export function mountSkillsPage(ctx, sandbox, route) {
           skill.path ? h('div', { class: 'list-sub mono' }, skill.path) : null),
         h('div', { class: 'list-actions' },
           h('button', { type: 'button', class: 'btn btn-sm', onClick: () => view(skill) }, 'View'),
-          toggle({ checked: skill.enabled, disabled: !canToggle, label: `${skill.enabled ? 'Disable' : 'Enable'} ${skill.name}`, onChange: async (checked, input) => {
+          h('span', { title: why }, toggle({ checked: skill.enabled, disabled: !canToggle, label: `${skill.enabled ? 'Disable' : 'Enable'} ${skill.name}`, onChange: async (checked, input) => {
             try {
               await ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/skills/${enc(skill.name)}`, { enabled: checked });
               skill.enabled = checked;
@@ -42,7 +46,7 @@ export function mountSkillsPage(ctx, sandbox, route) {
               input.checked = !checked;
               errorToast(error, 'Could not change skill');
             }
-          } })));
+          } }))));
     }));
   }
 

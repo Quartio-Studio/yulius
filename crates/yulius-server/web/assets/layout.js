@@ -210,15 +210,19 @@ function pct(used, total) {
   return Number.isFinite(used) && Number.isFinite(total) && total > 0 ? (used / total) * 100 : null;
 }
 
-/** Render GET /api/status. Unknown fields render as "—"/"unknown", never as zero. */
+/**
+ * Render GET /api/status (`StatusView`: vm, sessions, sandboxes, accounts, contained).
+ * VM fields are null when unknown (CPU needs two readings) and render as "—"/"unknown",
+ * never as zero. Account id/priority/last_error/in_use_by are present for admins only.
+ */
 export function renderStatus(data) {
   const vm = data.vm || {};
-  const memPct = vm.memory_percent ?? pct(vm.memory_used_bytes, vm.memory_total_bytes);
-  const diskPct = vm.disk_percent ?? pct(vm.disk_used_bytes, vm.disk_total_bytes);
+  const memPct = pct(vm.memory_used_bytes, vm.memory_total_bytes);
+  const diskPct = pct(vm.disk_used_bytes, vm.disk_total_bytes);
   const sessions = data.sessions || {};
   const sandboxes = Array.isArray(data.sandboxes) ? data.sandboxes : [];
   const accounts = Array.isArray(data.accounts) ? data.accounts : [];
-  const load = Array.isArray(vm.load) ? vm.load.map((v) => Number(v).toFixed(2)).join(' · ') : '—';
+  const load = Array.isArray(vm.load) ? vm.load.map((v) => Number(v).toFixed(2)).join(' · ') : Number.isFinite(vm.load_1m) ? Number(vm.load_1m).toFixed(2) : '—';
   return [
     h('div', { class: 'status-section' },
       h('h3', null, 'Machine'),
@@ -228,17 +232,17 @@ export function renderStatus(data) {
         meter(diskPct, { label: 'Disk', detail: vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null }),
         h('dl', { class: 'kv' },
           h('dt', null, 'Load'), h('dd', null, load),
-          h('dt', null, 'Uptime'), h('dd', null, vm.uptime_s ? duration(vm.uptime_s * 1000) : '—'),
-          h('dt', null, 'Sessions'), h('dd', null, sessions.live !== undefined ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}${sessions.queued ? ` · ${sessions.queued} queued` : ''}` : '—'))),
+          h('dt', null, 'Uptime'), h('dd', null, Number.isFinite(vm.uptime_s) ? duration(vm.uptime_s * 1000) : '—'),
+          h('dt', null, 'Sessions'), h('dd', null, Number.isFinite(sessions.live) ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}${sessions.queued ? ` · ${sessions.queued} queued` : ''}` : '—'),
+          h('dt', null, 'Containment'), h('dd', null, data.contained === true ? 'on' : data.contained === false ? 'off (host mode)' : '—'))),
     ),
     sandboxes.length ? h('div', { class: 'status-section' },
       h('h3', null, 'Sandboxes'),
       h('table', { class: 'table' },
-        h('thead', null, h('tr', null, h('th', null, 'Sandbox'), h('th', { class: 'num' }, 'Sessions'), h('th', { class: 'num' }, 'Disk'))),
+        h('thead', null, h('tr', null, h('th', null, 'Sandbox'), h('th', { class: 'num' }, 'Live sessions'))),
         h('tbody', null, sandboxes.map((s) => h('tr', null,
           h('td', { class: 'title-cell' }, s.name || s.slug || s.id),
-          h('td', { class: 'num' }, s.live_sessions ?? s.sessions ?? '—'),
-          h('td', { class: 'num' }, bytes(s.disk_bytes))))))) : null,
+          h('td', { class: 'num' }, Number.isFinite(s.live_sessions) ? String(s.live_sessions) : '—')))))) : null,
     h('div', { class: 'status-section' },
       h('h3', null, 'Accounts'),
       accounts.length === 0 ? h('div', { class: 'muted small' }, 'No accounts connected.') : accounts.map(accountUsage),
