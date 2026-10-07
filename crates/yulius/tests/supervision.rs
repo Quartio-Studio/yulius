@@ -725,10 +725,22 @@ fn codex_usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
             app.send_input(&id, format!("turn {n}\r").as_bytes())
                 .await?;
             let echo = format!("ECHO: turn {n}");
-            wait_for("the echo", Duration::from_secs(15), || {
+            let seen = wait_for("the echo", Duration::from_secs(15), || {
                 screen_contains(&app, &id, &echo)
             })
-            .await?;
+            .await;
+            if seen.is_err() {
+                eprintln!(
+                    "turn {n}: task {:?}\nattempts {:?}\nscreen:\n{}",
+                    task(&app, &id).await.map(|t| (t.status, t.activity)),
+                    app.deps.store.attempts(&id).await.map(|a| a
+                        .iter()
+                        .map(|a| (a.seq, a.account_id.clone(), a.state, a.exit_reason.clone()))
+                        .collect::<Vec<_>>()),
+                    app.runtime(&id).hub.screen_text()
+                );
+            }
+            seen?;
         }
         wait_for("the proactive switch", Duration::from_secs(90), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
