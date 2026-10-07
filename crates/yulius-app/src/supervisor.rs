@@ -116,6 +116,35 @@ pub struct SupervisorState {
     launch: tokio::sync::Mutex<()>,
 }
 
+/// File in a run directory holding the run's final screen (`<cols> <rows>\n` + redraw bytes).
+pub(crate) const FINAL_SCREEN_FILE: &str = "final-screen";
+
+/// Writes `bytes` to `path` readable by the owner only.
+pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+/// Reads a saved final screen: (cols, rows, redraw bytes).
+pub(crate) fn read_final_screen(run_dir: &Path) -> Option<(u16, u16, Vec<u8>)> {
+    let bytes = std::fs::read(run_dir.join(FINAL_SCREEN_FILE)).ok()?;
+    let newline = bytes.iter().position(|b| *b == b'\n')?;
+    let header = std::str::from_utf8(&bytes[..newline]).ok()?;
+    let (cols, rows) = header.split_once(' ')?;
+    Some((
+        cols.parse().ok()?,
+        rows.parse().ok()?,
+        bytes[newline + 1..].to_vec(),
+    ))
+}
+
 /// The Git credential helper command line for `exe` (shell-quoted for Git's `!` form).
 fn credential_helper(exe: &Path) -> String {
     let quoted = exe.to_string_lossy().replace('\'', "'\\''");
@@ -1061,6 +1090,16 @@ impl App {
         let runtime = self.runtime(task_id);
         let intent = runtime.intent.lock().ok().and_then(|mut g| g.take());
         runtime.watcher_alive.store(false, Ordering::SeqCst);
+        // Keep the last screen so viewers still see how the run ended after a server restart.
+        if let Ok(Some(attempt)) = store.attempt(attempt_id).await {
+            let (screen, (cols, rows)) = runtime.hub.formatted_screen();
+            let mut record = format!("{cols} {rows}\n").into_bytes();
+            record.extend_from_slice(&screen);
+            let path = PathBuf::from(&attempt.run_dir).join(FINAL_SCREEN_FILE);
+            if let Err(err) = crate::supervisor::write_private_file(&path, &record) {
+                tracing::debug!(error = %err, "cannot save the final screen");
+            }
+        }
         let state = if intent.is_some() {
             AttemptState::Killed
         } else {
@@ -1849,6 +1888,20 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn final_screen_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join(super::FINAL_SCREEN_FILE);
+        super::write_private_file(&path, b"120 40\n\x1b[1mbye")?;
+        let (cols, rows, bytes) = super::read_final_screen(dir.path()).ok_or("unreadable")?;
+        assert_eq!(
+            (cols, rows, bytes.as_slice()),
+            (120, 40, b"\x1b[1mbye".as_slice())
+        );
+        assert!(super::read_final_screen(&dir.path().join("missing")).is_none());
+        Ok(())
+    }
+
     use super::branch_for;
 
     #[test]

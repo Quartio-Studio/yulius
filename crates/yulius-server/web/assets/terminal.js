@@ -78,6 +78,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       onState: (message) => {
         state = { ...state, ...message };
         if (message.status && !isEndedStatus(message.status)) exited = null;
+        // A task that ended before this page opened still shows how it ended (and Continue).
+        else if (message.status && isEndedStatus(message.status) && !exited) exited = { status: message.status, code: null };
         term.options.disableStdin = !state.can_write;
         applySize();
         render();

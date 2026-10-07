@@ -71,6 +71,14 @@ impl App {
             .require(&ctx.user, &task.sandbox_id, Action::View)
             .await?;
         let runtime = self.runtime(&task.id);
+        if !runtime.hub.has_output()
+            && self.deps.store.live_attempt(&task.id).await?.is_none()
+            && let Some(last) = self.deps.store.attempts(&task.id).await?.pop()
+            && let Some((cols, rows, screen)) =
+                crate::supervisor::read_final_screen(std::path::Path::new(&last.run_dir))
+        {
+            runtime.hub.reset(1, &screen, cols, rows);
+        }
         if runtime.hub.viewer_count() >= MAX_VIEWERS {
             return Err(AppError::Capacity("too many viewers on this task".into()));
         }

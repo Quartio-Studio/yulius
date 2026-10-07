@@ -942,18 +942,24 @@ fn a_session_change_inside_claude_is_adopted_into_the_task_lineage() -> TestResu
                 == Some(new_session)
         })
         .await?;
-        let lineage: Vec<String> = app
-            .deps
-            .store
-            .provider_sessions(&id)
-            .await?
-            .into_iter()
-            .map(|s| s.session_id)
-            .collect();
-        assert!(
-            lineage.contains(&original) && lineage.contains(&new_session.to_owned()),
-            "{lineage:?}"
-        );
+        // Lineage records are written by the watcher; wait until both sessions are there.
+        let expected = [original.clone(), new_session.to_owned()];
+        wait_for(
+            "both sessions in the lineage",
+            Duration::from_secs(20),
+            || async {
+                app.deps
+                    .store
+                    .provider_sessions(&id)
+                    .await
+                    .is_ok_and(|sessions| {
+                        expected
+                            .iter()
+                            .all(|want| sessions.iter().any(|s| &s.session_id == want))
+                    })
+            },
+        )
+        .await?;
         assert_eq!(
             app.deps.store.attempts(&id).await?.len(),
             1,

@@ -143,6 +143,24 @@ impl Hub {
             .unwrap_or((80, 24))
     }
 
+    /// The screen as escape sequences that redraw it, with its size (cols, rows).
+    #[must_use]
+    pub fn formatted_screen(&self) -> (Vec<u8>, (u16, u16)) {
+        self.screen
+            .lock()
+            .map(|s| {
+                let (rows, cols) = s.parser.screen().size();
+                (s.parser.screen().contents_formatted(), (cols, rows))
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether any output reached this hub since it was created or reset.
+    #[must_use]
+    pub fn has_output(&self) -> bool {
+        self.screen.lock().map(|s| s.seq > 0).unwrap_or(false)
+    }
+
     /// Visible screen text (for previews and tests).
     #[must_use]
     pub fn screen_text(&self) -> String {
