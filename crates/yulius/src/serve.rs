@@ -74,6 +74,14 @@ pub struct ServeArgs {
     /// CLI install directories outside /usr and /opt).
     #[arg(long, env = "YULIUS_CONTAINED_READONLY", value_delimiter = ':')]
     pub contained_readonly: Vec<PathBuf>,
+    /// Additional frontend origins allowed for WebSockets and CORS (comma-separated), e.g. a
+    /// desktop app's origin.
+    #[arg(
+        long = "allowed-origin",
+        env = "YULIUS_ALLOWED_ORIGINS",
+        value_delimiter = ','
+    )]
+    pub allowed_origins: Vec<String>,
     /// Login shell for sandbox shells (default: $SHELL, /bin/bash, /bin/sh).
     #[arg(long, env = "YULIUS_SHELL")]
     pub shell: Option<PathBuf>,

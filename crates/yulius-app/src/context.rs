@@ -47,6 +47,9 @@ pub struct AppConfig {
     /// Extra host paths visible read-only inside containment (for example agent CLI install
     /// directories outside `/usr` and `/opt`).
     pub contained_readonly: Vec<PathBuf>,
+    /// Additional frontend origins (for example a desktop app) allowed for WebSockets and CORS
+    /// besides the public URL (OPS-002, AC-OPS-2).
+    pub allowed_origins: Vec<String>,
 }
 
 impl AppConfig {
@@ -65,6 +68,7 @@ impl AppConfig {
             viewer_recheck_ms: 60_000,
             wake_idle_ms: crate::background::WAKE_IDLE_MS,
             contained_readonly: Vec::new(),
+            allowed_origins: Vec::new(),
             public_url,
             internal_url: internal_url.trim_end_matches('/').to_owned(),
             yulius_exe,
@@ -137,6 +141,18 @@ impl App {
             logins: crate::accounts::LoginRegistry::default(),
             shells: crate::shells::ShellState::default(),
         })
+    }
+
+    /// Whether a browser `Origin` may use the API: the public URL or an allowlisted origin.
+    #[must_use]
+    pub fn origin_allowed(&self, origin: &str) -> bool {
+        let origin = origin.trim_end_matches('/');
+        origin == self.config.public_url.trim_end_matches('/')
+            || self
+                .config
+                .allowed_origins
+                .iter()
+                .any(|o| o.trim_end_matches('/') == origin)
     }
 
     /// Current time.

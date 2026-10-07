@@ -47,7 +47,7 @@ async-trait = "0.1"
 futures = "0.3.34"
 axum = { version = "0.8.9", features = ["ws", "macros"] }
 tower = "0.5"
-tower-http = { version = "0.7.1", features = ["trace", "limit"] }
+tower-http = { version = "0.7.1", features = ["trace", "limit", "cors"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }

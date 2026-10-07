@@ -18,6 +18,9 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
   is missing or disabled, the message says which), `internal` (500).
 - Access levels: `read`, `write`, `admin` (SPEC-001 ACC-007). Endpoints note the minimum level.
 
+
+Other frontends (for example a desktop app, OPS-002) use bearer tokens from the device flow (`POST /api/device/start`, approval in the web UI, `POST /api/device/poll`, as used by `yulius login`) and must be listed with `yulius serve --allowed-origin <origin>` (`YULIUS_ALLOWED_ORIGINS`, comma-separated): those origins get CORS responses (methods GET/POST/PUT/PATCH/DELETE; headers `Authorization`, `Content-Type`, `X-Yulius-CSRF`) and may open WebSockets; every other cross-origin WebSocket is refused with 403.
+
 ## Setup and session
 
 | Method | Path | Body → Response |

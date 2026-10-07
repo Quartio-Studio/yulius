@@ -22,6 +22,8 @@ yulius-contracts = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
+# CORS for additional frontends (desktop app) listed in the origin allowlist.
+tower-http = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tracing = { workspace = true }

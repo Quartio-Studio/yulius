@@ -390,3 +390,58 @@ async fn device_approval_issues_a_single_use_cli_token() -> TestResult {
     assert_eq!(me.status, StatusCode::OK);
     Ok(())
 }
+
+/// OPS-002 / AC-OPS-2: another frontend (for example a desktop app) uses the API with a bearer
+/// token from an allowlisted origin; other origins get neither CORS headers nor WebSockets.
+#[tokio::test]
+async fn allowlisted_origins_get_cors_and_websockets() -> TestResult {
+    use support::{
+        HarnessOptions, harness_with, seed_github_user, serve, ws_connect, ws_refusal_status,
+    };
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(|c| {
+            c.allowed_origins = vec!["app://yulius-desktop".into()]
+        })),
+        ..HarnessOptions::default()
+    })?;
+    let creds = seed_github_user(&h, "u-desk", "desk").await?;
+    let preflight = |origin: &'static str| {
+        axum::http::Request::builder()
+            .method("OPTIONS")
+            .uri("/api/me")
+            .header("origin", origin)
+            .header("access-control-request-method", "GET")
+            .header("access-control-request-headers", "authorization")
+            .body(axum::body::Body::empty())
+    };
+    use tower::ServiceExt;
+    let allowed = h
+        .router
+        .clone()
+        .oneshot(preflight("app://yulius-desktop")?)
+        .await?;
+    assert_eq!(
+        allowed
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("app://yulius-desktop")
+    );
+    let other = h
+        .router
+        .clone()
+        .oneshot(preflight("https://evil.test")?)
+        .await?;
+    assert!(other.headers().get("access-control-allow-origin").is_none());
+
+    let served = serve(h.router.clone()).await?;
+    let socket = ws_connect(served.addr, "/api/events", &creds, "app://yulius-desktop").await;
+    assert!(
+        socket.is_ok(),
+        "allowlisted origin may open the event stream"
+    );
+    let refused = ws_connect(served.addr, "/api/events", &creds, "https://evil.test").await;
+    let status = refused.err().as_ref().and_then(ws_refusal_status);
+    assert_eq!(status, Some(403));
+    Ok(())
+}

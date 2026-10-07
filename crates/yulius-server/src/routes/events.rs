@@ -20,7 +20,7 @@ pub fn check_origin(app: &AppState, headers: &HeaderMap) -> Result<(), AppError>
     let origin = headers.get("origin").and_then(|v| v.to_str().ok());
     match origin {
         None => Ok(()),
-        Some(o) if o.trim_end_matches('/') == app.config.public_url => Ok(()),
+        Some(o) if app.origin_allowed(o) => Ok(()),
         Some(_) => Err(AppError::Forbidden("cross-origin WebSocket refused".into())),
     }
 }

@@ -20,10 +20,44 @@ pub type AppState = Arc<App>;
 
 /// Router for the public listener (UI and API).
 pub fn public_router(app: Arc<App>) -> Router {
-    routes::public(app.clone())
+    let cors = cors_layer(&app.config.allowed_origins);
+    let router = routes::public(app.clone())
         .fallback(assets::serve)
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .with_state(app)
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES));
+    let router = match cors {
+        Some(cors) => router.layer(cors),
+        None => router,
+    };
+    router.with_state(app)
+}
+
+/// CORS for allowlisted frontend origins (bearer-token API use; cookies stay same-site).
+fn cors_layer(origins: &[String]) -> Option<tower_http::cors::CorsLayer> {
+    use axum::http::{HeaderName, HeaderValue, Method, header};
+    let values: Vec<HeaderValue> = origins
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o.trim_end_matches('/')).ok())
+        .collect();
+    if values.is_empty() {
+        return None;
+    }
+    Some(
+        tower_http::cors::CorsLayer::new()
+            .allow_origin(tower_http::cors::AllowOrigin::list(values))
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::PATCH,
+                Method::DELETE,
+            ])
+            .allow_headers([
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                HeaderName::from_static("x-yulius-csrf"),
+            ])
+            .max_age(std::time::Duration::from_secs(600)),
+    )
 }
 
 /// Router for the loopback-only internal listener (MCP, hooks, git credentials).
