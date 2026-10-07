@@ -52,7 +52,7 @@ async fn setup_requires_token_confirmation_and_happens_once() -> TestResult {
         unconfirmed.body["error"]["message"]
             .as_str()
             .unwrap_or("")
-            .contains("cannot be recovered")
+            .contains("stored the password safely")
     );
 
     let short = call(&h.router, Method::POST, "/api/setup", Some(json!({
@@ -78,7 +78,7 @@ async fn setup_requires_token_confirmation_and_happens_once() -> TestResult {
         h.app.prepare_setup().await?.is_none(),
         "no new token once set up"
     );
-    // No recovery endpoint exists.
+    // Recovery exists only with the code issued at setup (ACC-011; tests/recovery.rs).
     let recover = call(
         &h.router,
         Method::POST,
@@ -87,7 +87,11 @@ async fn setup_requires_token_confirmation_and_happens_once() -> TestResult {
         &Creds::default(),
     )
     .await?;
-    assert_eq!(recover.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        recover.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a code is required"
+    );
     Ok(())
 }
 

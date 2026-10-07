@@ -113,3 +113,39 @@ pub struct DeviceApprove {
     /// Approve or deny.
     pub approve: bool,
 }
+
+/// `GET /api/auth/recovery`: whether password recovery is possible (ACC-011).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryStatus {
+    /// A recovery code exists and recovery is not locked.
+    pub available: bool,
+    /// Recovery was disabled permanently by wrong codes.
+    pub locked: bool,
+    /// Wrong codes still accepted before the lock.
+    pub attempts_left: u32,
+}
+
+/// `POST /api/auth/recover`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoverRequest {
+    /// The 6-digit recovery code.
+    pub code: String,
+    /// New superadmin password.
+    pub password: String,
+    /// Repeated new password.
+    pub password_confirm: String,
+}
+
+/// A freshly issued recovery code, shown once (setup, recovery, regeneration).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryCode {
+    /// Six digits; never shown again.
+    pub recovery_code: String,
+}
+
+/// `POST /api/admin/recovery-code`: the current password re-confirms the superadmin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegenerateRecovery {
+    /// Current superadmin password.
+    pub password: String,
+}

@@ -6,6 +6,7 @@ import { h, badge, openModal, field, toast, confirmDialog, errorToast, toggle } 
 import { createTerminalView } from '../terminal.js';
 import { accountUsage } from '../layout.js';
 import { pageFrame, loader, dataTable } from './common.js';
+import { recoveryCodeCard } from './auth.js';
 
 function forbidden(ctx, what) {
   const frame = pageFrame({ title: what });
@@ -20,7 +21,7 @@ export function mountUsersPage(ctx) {
   if (!ctx.isSuperadmin()) return forbidden(ctx, 'Users');
   const frame = pageFrame({ title: 'Users', sub: 'only admitted GitHub users can sign in', actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => add() }, 'Admit user')] });
   const host = h('div');
-  frame.body.append(host);
+  frame.body.append(recoveryCard(ctx), host);
 
   const patch = async (user, body, message) => {
     try {
@@ -73,6 +74,41 @@ export function mountUsersPage(ctx) {
     });
   }
   return { el: frame.el, key: 'admin:users' };
+}
+
+/** Superadmin recovery code (ACC-011): status and a password-confirmed regeneration. */
+export function recoveryCard(ctx) {
+  const state = h('p', { class: 'text-2' }, 'Checking…');
+  const generate = h('button', { type: 'button', class: 'btn btn-sm' }, 'Generate new code…');
+  const card = h('div', { class: 'card stack-sm' }, h('strong', null, 'Superadmin recovery code'), state, h('div', { class: 'row' }, generate));
+  const refresh = () => ctx.api.get('/api/auth/recovery').then((s) => {
+    state.textContent = s.available
+      ? `A recovery code is set (${s.attempts_left} of 3 attempts left). Generating a new one replaces it.`
+      : s.locked
+        ? 'Recovery is disabled after three wrong codes. Generate a new code to enable it again.'
+        : 'No recovery code yet: without one, a forgotten superadmin password cannot be reset. Generate one and keep it perfectly safe.';
+    card.classList.toggle('card-warn', !s.available);
+  }).catch(() => { state.textContent = 'Could not load the recovery status.'; });
+  generate.addEventListener('click', async () => {
+    const password = h('input', { class: 'input', type: 'password', autocomplete: 'current-password' });
+    const modal = openModal({
+      title: 'Generate a new recovery code',
+      body: h('div', { class: 'stack-sm' }, h('p', { class: 'text-2' }, 'The current code stops working. Confirm with the superadmin password.'), field('Superadmin password', password)),
+      actions: [{ label: 'Cancel', value: false }, { label: 'Generate', kind: 'primary', value: 'go' }],
+    });
+    setTimeout(() => password.focus(), 30);
+    if ((await modal.result) !== 'go') return;
+    try {
+      const result = await ctx.api.post('/api/admin/recovery-code', { password: password.value });
+      const shown = openModal({ title: 'New recovery code', body: h('div'), actions: [], dismissible: false });
+      shown.body.replaceChildren(recoveryCodeCard(result.recovery_code, { title: 'Your new recovery code', continueLabel: 'Done', onContinue: () => shown.close(true) }));
+      refresh();
+    } catch (error) {
+      errorToast(error, 'Could not generate a recovery code');
+    }
+  });
+  refresh();
+  return card;
 }
 
 // ---------------------------------------------------------------- accounts

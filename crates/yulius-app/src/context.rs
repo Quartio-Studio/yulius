@@ -125,6 +125,8 @@ pub struct App {
     pub(crate) shells: crate::shells::ShellState,
     /// Workspace tokens of user processes (SPEC-002 ADR-12).
     pub(crate) workspace_grants: crate::identity::WorkspaceGrants,
+    /// Serializes recovery-code checks so parallel guesses cannot exceed the limit (ADR-13).
+    pub(crate) recovery_lock: tokio::sync::Mutex<()>,
 }
 
 impl App {
@@ -141,6 +143,7 @@ impl App {
             logins: crate::accounts::LoginRegistry::default(),
             shells: crate::shells::ShellState::default(),
             workspace_grants: crate::identity::WorkspaceGrants::default(),
+            recovery_lock: tokio::sync::Mutex::new(()),
         })
     }
 

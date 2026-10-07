@@ -241,14 +241,21 @@ export function mountComposer(ctx, sandbox) {
         h('div', { class: 'form-grid' }, field('Model', model, 'Passed to the harness, e.g. claude-opus-4 or gpt-5-codex'), field('Effort', effort), field('Title', title))),
       h('div', { class: 'composer-foot' }, startButton, hint)));
 
+  // The superadmin is reminded while no recovery code exists (ACC-011).
+  let recovery = null;
+  const me0 = ctx.store.state.me;
+  if (me0 && me0.user && me0.user.is_superadmin) {
+    ctx.api.get('/api/auth/recovery').then((state) => { recovery = state; renderBanner(); }).catch(() => {});
+  }
+
   function renderBanner() {
     const sb = ctx.store.sandboxById(sandbox.id) || sandbox;
     const items = [];
     const me = ctx.store.state.me;
-    if (me && me.user && me.user.is_superadmin && !readJson('yulius.passwordAck', false)) {
+    if (me && me.user && me.user.is_superadmin && recovery && !recovery.available) {
       items.push(h('div', { class: 'banner banner-danger' }, icon('warn'),
-        h('span', { class: 'banner-text' }, h('strong', null, 'Your superadmin password cannot be recovered. '), 'There is no reset or recovery code. Store it in several safe places.'),
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => { writeJson('yulius.passwordAck', true); renderBanner(); } }, 'I have stored it')));
+        h('span', { class: 'banner-text' }, h('strong', null, recovery.locked ? 'Password recovery is disabled. ' : 'No recovery code yet. '), 'Without a recovery code a forgotten superadmin password cannot be reset.'),
+        h('a', { class: 'btn btn-sm', href: href('/admin/users'), dataset: { route: '/admin/users' } }, 'Generate one')));
     }
     // Onboarding (docs/api.md "Sandboxes"): `pending` waits for a person to approve the
     // resting preparation task (write), `preparing` runs it; admins may skip either.

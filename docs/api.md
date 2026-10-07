@@ -26,8 +26,11 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 | Method | Path | Body → Response |
 | --- | --- | --- |
 | GET | `/api/setup/status` | → `{"setup_required": bool}` |
-| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + cookie. Refused once a superadmin exists. |
+| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. Refused once a superadmin exists. |
 | POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; rate limited) |
+| GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
+| POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left); 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
+| POST | `/api/admin/recovery-code` | superadmin session, `{"password"}` → `{"recovery_code"}`: replaces the code and re-enables a locked recovery; 403 for a wrong password |
 | GET | `/api/auth/github/start?next=/` | → 302 to GitHub |
 | GET | `/api/auth/github/callback?code&state` | → 302 to `next`, sets cookie; refuses users not admitted |
 | POST | `/api/auth/logout` | → 204 |

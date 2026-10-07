@@ -79,6 +79,8 @@ pub trait UserStore: Send + Sync {
         disabled_at: Option<Option<Timestamp>>,
         is_instance_admin: Option<bool>,
     ) -> AppResult<()>;
+    /// Replaces a user's password hash (superadmin recovery, ACC-011).
+    async fn set_password_hash(&self, id: &UserId, phc: &str) -> AppResult<()>;
     /// Links GitHub identity details after OAuth.
     async fn link_github(
         &self,

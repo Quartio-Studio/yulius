@@ -650,3 +650,13 @@ body.resizing iframe { pointer-events: none; }
 .ed-empty[hidden] { display: none; }
 .ed-status { display: flex; gap: 14px; align-items: center; height: 22px; padding: 0 10px; font-size: 11.5px; border-top: 1px solid var(--border); background: var(--surface); flex: none; overflow: hidden; white-space: nowrap; }
 .ed-status > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+
+/* Recovery code (ACC-011). */
+.recovery-code { font: 600 34px/1.2 var(--mono, ui-monospace, Menlo, monospace); letter-spacing: .18em; text-align: center; padding: 14px 8px; border: 1px dashed var(--border); border-radius: 10px; user-select: all; }
+.recovery-gap { display: inline-block; width: .6em; }
+.recovery-input { font-size: 20px; letter-spacing: .3em; max-width: 12ch; }
+.btn-link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-align: left; }
+.btn-link:hover { text-decoration: underline; }
+.card-warn { border-color: var(--warn); }
+.recovery-card { box-shadow: none; border: 0; padding: 0; max-width: none; }
+.modal .recovery-card .auth-logo { display: none; }

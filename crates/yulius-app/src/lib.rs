@@ -27,6 +27,7 @@ pub mod model;
 pub mod onboarding;
 pub mod ports;
 pub mod projects;
+pub mod recovery;
 pub mod sandboxes;
 pub mod shells;
 pub mod skills;

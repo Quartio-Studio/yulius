@@ -39,6 +39,8 @@ pub struct NewSession {
     pub max_age_s: i64,
     /// The session's view of the user.
     pub me: Me,
+    /// A recovery code issued with this session (setup only), shown once.
+    pub recovery_code: Option<Secret>,
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -103,7 +105,7 @@ impl App {
         }
         if !confirm_saved {
             return Err(AppError::Invalid(
-                "confirm that you stored the password safely; it cannot be recovered".into(),
+                "confirm that you stored the password safely".into(),
             ));
         }
         if password.expose() != confirm.expose() {
@@ -131,7 +133,11 @@ impl App {
         store
             .audit(now, "superadmin", "setup.completed", None, None)
             .await?;
-        self.new_session(&user).await
+        // The recovery code is shown once, with the first session (ACC-011).
+        let code = self.issue_recovery_code().await?;
+        let mut session = self.new_session(&user).await?;
+        session.recovery_code = Some(code);
+        Ok(session)
     }
 
     /// Superadmin password sign-in with per-client rate limiting.
@@ -196,6 +202,7 @@ impl App {
             cookie: Secret(cookie),
             max_age_s: self.config.session_ttl_ms / 1000,
             me,
+            recovery_code: None,
         })
     }
 

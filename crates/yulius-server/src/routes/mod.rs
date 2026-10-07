@@ -39,6 +39,12 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/setup/status", get(setup_auth::setup_status))
         .route("/api/setup", post(setup_auth::setup))
         .route("/api/auth/password", post(setup_auth::password_login))
+        .route("/api/auth/recovery", get(setup_auth::recovery_status))
+        .route("/api/auth/recover", post(setup_auth::recover))
+        .route(
+            "/api/admin/recovery-code",
+            post(setup_auth::regenerate_recovery),
+        )
         .route("/api/auth/github/start", get(setup_auth::github_start))
         .route(
             "/api/auth/github/callback",

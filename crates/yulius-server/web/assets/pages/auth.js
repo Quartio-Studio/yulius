@@ -1,9 +1,35 @@
 // Standalone pages shown before a session exists: setup wizard (J1, ACC-001..003) and
-// sign-in (GitHub OAuth + superadmin password, ACC-005).
+// sign-in (GitHub OAuth + superadmin password, ACC-005), with the superadmin recovery code
+// (ACC-002/011): shown once at setup and after a recovery; "Forgot password?" uses it.
 
-import { h, icon, field, setChildren, errorToast } from '../dom.js';
+import { h, icon, field, setChildren, errorToast, toast } from '../dom.js';
 
 const MIN_PASSWORD = 12;
+
+/**
+ * The recovery code, shown once with the warnings; Continue needs the acknowledgement.
+ * Used by setup, recovery and the administration page.
+ */
+export function recoveryCodeCard(code, { title = 'Your recovery code', continueLabel = 'Continue', onContinue }) {
+  const ack = h('input', { type: 'checkbox' });
+  const next = h('button', { type: 'button', class: 'btn btn-primary', disabled: true, onClick: () => onContinue() }, continueLabel);
+  ack.addEventListener('change', () => { next.disabled = !ack.checked; });
+  const copy = h('button', { type: 'button', class: 'btn btn-sm', onClick: async () => {
+    try { await navigator.clipboard.writeText(code); toast('Recovery code copied', { kind: 'ok' }); } catch { /* clipboard unavailable */ }
+  } }, 'Copy');
+  return h('div', { class: 'auth-card recovery-card' },
+    h('div', { class: 'auth-logo' }, 'Yulius'),
+    h('h1', { class: 'auth-title' }, title),
+    h('div', { class: 'recovery-code', 'aria-label': `Recovery code ${code.split('').join(' ')}` }, code.slice(0, 3), h('span', { class: 'recovery-gap' }), code.slice(3)),
+    h('div', { class: 'row', style: { justifyContent: 'center' } }, copy),
+    h('div', { class: 'warning-box', role: 'note' }, icon('warn', { size: 18 }),
+      h('div', { class: 'stack-sm' },
+        h('strong', null, 'Keep this code perfectly safe.'),
+        h('span', null, 'It is the only way to reset a forgotten superadmin password, and it is shown only now. Store it apart from the password — for example in a password manager and on a sealed paper copy.'),
+        h('span', null, 'Three wrong codes disable password recovery permanently.'))),
+    h('label', { class: 'check' }, ack, h('span', null, 'I have stored the recovery code safely.')),
+    next);
+}
 
 /** Setup wizard: token, password + confirmation, non-recoverable warning (ACC-002). */
 export function mountSetup(ctx, { onDone }) {
@@ -40,10 +66,10 @@ export function mountSetup(ctx, { onDone }) {
     h('label', { class: 'check small' }, show, h('span', null, 'Show passwords')),
     h('div', { class: 'warning-box', role: 'note' }, icon('warn', { size: 18 }),
       h('div', { class: 'stack-sm' },
-        h('strong', null, 'This password cannot be recovered.'),
-        h('span', null, 'There is no email reset, no “forgot password” and no recovery code. If you lose it, nobody can sign in as superadmin.'),
-        h('span', null, 'Store it in several safe places — for example a password manager and a sealed paper copy — before you continue.'))),
-    h('label', { class: 'check', for: 'ack-recover' }, ackRecover, h('span', null, 'I understand the superadmin password cannot be recovered.')),
+        h('strong', null, 'Store this password safely.'),
+        h('span', null, 'There is no email reset. The only way back in is the 6-digit recovery code shown on the next screen; three wrong codes disable recovery for good.'),
+        h('span', null, 'Store the password in several safe places — for example a password manager and a sealed paper copy — before you continue.'))),
+    h('label', { class: 'check', for: 'ack-recover' }, ackRecover, h('span', null, 'I understand the password can only be recovered with the recovery code.')),
     h('label', { class: 'check', for: 'ack-stored' }, ackStored, h('span', null, 'I have stored the password in several safe places.')),
     problems,
     submit);
@@ -57,7 +83,13 @@ export function mountSetup(ctx, { onDone }) {
       const me = await ctx.api.post('/api/setup', { token: token.value.trim(), password: password.value, password_confirm: confirm.value, confirm_saved: true }, { allow401: true });
       password.value = '';
       confirm.value = '';
-      onDone(me);
+      const code = me && me.recovery_code;
+      if (me) delete me.recovery_code;
+      if (code) {
+        setChildren(root, recoveryCodeCard(code, { onContinue: () => onDone(me) }));
+      } else {
+        onDone(me);
+      }
     } catch (error) {
       errorToast(error, 'Setup failed');
       submit.disabled = false;
@@ -66,7 +98,64 @@ export function mountSetup(ctx, { onDone }) {
     }
   });
 
-  return { el: h('div', { class: 'auth' }, form) };
+  const root = h('div', { class: 'auth' }, form);
+  return { el: root };
+}
+
+/** "Forgot password?": the recovery code sets a new superadmin password (ACC-011). */
+function recoveryForm(ctx, { onBack, onRecovered }) {
+  const code = h('input', { class: 'input mono recovery-input', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 6, placeholder: '000000', 'aria-label': 'Recovery code' });
+  const password = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minlength: MIN_PASSWORD });
+  const confirm = h('input', { class: 'input', type: 'password', autocomplete: 'new-password' });
+  const status = h('p', { class: 'text-2' }, 'Checking recovery…');
+  const problems = h('div', { class: 'field-error', role: 'alert' });
+  const submit = h('button', { type: 'submit', class: 'btn btn-primary', disabled: true }, 'Reset password');
+  const validate = () => {
+    const ok = /^\d{6}$/.test(code.value.trim()) && password.value.length >= MIN_PASSWORD && confirm.value === password.value;
+    problems.textContent = password.value && password.value.length < MIN_PASSWORD ? `Use at least ${MIN_PASSWORD} characters.` : confirm.value && confirm.value !== password.value ? 'The passwords do not match.' : '';
+    submit.disabled = !ok;
+    return ok;
+  };
+  for (const input of [code, password, confirm]) input.addEventListener('input', validate);
+  const form = h('form', { class: 'auth-card', novalidate: true },
+    h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'superadmin', hidden: true, readOnly: true, tabindex: '-1', 'aria-hidden': 'true' }),
+    h('div', { class: 'auth-logo' }, 'Yulius'),
+    h('h1', { class: 'auth-title' }, 'Reset the superadmin password'),
+    status,
+    field('Recovery code', code, 'The 6 digits shown when the instance was set up.'),
+    field('New password', password, `At least ${MIN_PASSWORD} characters.`),
+    field('Repeat new password', confirm),
+    problems,
+    h('div', { class: 'row' }, submit, h('button', { type: 'button', class: 'btn btn-ghost', onClick: onBack }, 'Back to sign-in')));
+  ctx.api.get('/api/auth/recovery', { allow401: true }).then((state) => {
+    if (state && state.available) {
+      status.textContent = `${state.attempts_left} attempt${state.attempts_left === 1 ? '' : 's'} left. After three wrong codes recovery is disabled permanently.`;
+    } else {
+      status.textContent = state && state.locked
+        ? 'Password recovery is permanently disabled after too many wrong codes.'
+        : 'No recovery code is set for this instance. A signed-in superadmin can create one under Administration.';
+      for (const input of [code, password, confirm]) input.disabled = true;
+    }
+  }).catch(() => { status.textContent = 'Could not check recovery.'; });
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!validate()) return;
+    submit.disabled = true;
+    submit.classList.add('busy');
+    try {
+      const result = await ctx.api.post('/api/auth/recover', { code: code.value.trim(), password: password.value, password_confirm: confirm.value }, { allow401: true });
+      password.value = '';
+      confirm.value = '';
+      onRecovered(result.recovery_code);
+    } catch (err) {
+      problems.textContent = err.message || 'Recovery failed.';
+      code.select();
+      submit.disabled = false;
+    } finally {
+      submit.classList.remove('busy');
+    }
+  });
+  return form;
 }
 
 /** Sign-in: GitHub (all users) and a compact superadmin password form. */
@@ -104,7 +193,8 @@ export function mountSignIn(ctx, { next, onDone, error }) {
       onDone(me, nextPath);
     });
   }
-  const details = h('details', null, h('summary', { class: 'muted small', style: { cursor: 'pointer' } }, 'Superadmin password'), h('div', { style: { marginTop: '8px' } }, form));
+  const forgot = h('button', { type: 'button', class: 'btn-link small', onClick: () => showRecovery() }, 'Forgot password?');
+  const details = h('details', null, h('summary', { class: 'muted small', style: { cursor: 'pointer' } }, 'Superadmin password'), h('div', { class: 'stack-sm', style: { marginTop: '8px' } }, form, forgot));
   const card = h('div', { class: 'auth-card' },
     h('div', { class: 'auth-logo' }, 'Yulius'),
     h('h1', { class: 'auth-title' }, 'Sign in'),
@@ -115,5 +205,21 @@ export function mountSignIn(ctx, { next, onDone, error }) {
     details);
   if (error) details.open = false;
   setChildren(card.querySelector('.field-error'), error || '');
-  return { el: h('div', { class: 'auth' }, card) };
+  const root = h('div', { class: 'auth' }, card);
+  function showRecovery() {
+    setChildren(root, recoveryForm(ctx, {
+      onBack: () => setChildren(root, card),
+      onRecovered: (fresh) => setChildren(root, recoveryCodeCard(fresh, {
+        title: 'Password changed — your new recovery code',
+        continueLabel: 'Back to sign-in',
+        onContinue: () => {
+          setChildren(root, card);
+          details.open = true;
+          errorBox.textContent = 'Password changed. Sign in with the new password.';
+          password.focus();
+        },
+      })),
+    }));
+  }
+  return { el: root };
 }
