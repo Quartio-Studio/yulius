@@ -6,6 +6,7 @@ mod mcp;
 mod sandboxes;
 mod setup_auth;
 mod tasks;
+mod terminal;
 
 use std::sync::Arc;
 
@@ -55,6 +56,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/tasks/{tid}/messages",
             get(tasks::messages).post(tasks::post_message),
         )
+        .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
 }
 

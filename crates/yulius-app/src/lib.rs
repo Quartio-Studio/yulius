@@ -17,4 +17,5 @@ pub mod ports;
 pub mod sandboxes;
 pub mod supervisor;
 pub mod tasks;
+pub mod terminal;
 pub mod usage_json;

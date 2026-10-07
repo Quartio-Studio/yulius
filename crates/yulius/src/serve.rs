@@ -11,9 +11,10 @@ use yulius_store::SqliteStore;
 use yulius_store::crypto::{MasterKeyCrypto, write_private};
 
 use crate::wiring::clock::SystemClock;
-use crate::wiring::github::UnavailableGitHub;
+use crate::wiring::git::GitAdapter;
+use crate::wiring::github_client::GitHubAdapter;
 use crate::wiring::harness::HarnessAdapter;
-use crate::wiring::pending::{UnavailableGit, UnavailableSessionHost};
+use crate::wiring::session::PtySessionHost;
 
 /// Server options (flags or environment variables).
 #[derive(Debug, Args)]
@@ -66,19 +67,22 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
         store: Arc::new(store),
         clock: Arc::new(SystemClock),
         crypto: Arc::new(crypto),
-        github: Arc::new(UnavailableGitHub),
-        session_host: Arc::new(UnavailableSessionHost),
+        github: Arc::new(GitHubAdapter::new(
+            yulius_github::GitHubConfig::github_com().map_err(|e| e.to_string())?,
+        )?),
+        session_host: Arc::new(PtySessionHost::new(config.yulius_exe.clone())),
         harness: Arc::new(HarnessAdapter {
             yulius_exe: config.yulius_exe.clone(),
             yulius_url: config.internal_url.clone(),
         }),
-        git: Arc::new(UnavailableGit),
+        git: Arc::new(GitAdapter::new("git")),
     };
     Ok(App::new(config, deps))
 }
 
 /// Runs the server until SIGINT/SIGTERM.
 pub async fn serve(args: ServeArgs) -> Result<(), String> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
