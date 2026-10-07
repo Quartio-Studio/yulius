@@ -28,14 +28,16 @@ export function openTaskMenu(ctx, anchor, task) {
   ], { align: anchor instanceof Element ? 'end' : 'start' });
 }
 
-async function taskPost(ctx, task, action, body, okMessage) {
+// Every API path is a literal at its call site so tests/ui_contract.rs can check it
+// against the server's router.
+async function taskPost(ctx, task, verb, request, okMessage) {
   try {
-    const updated = await ctx.api.post(`/api/tasks/${enc(task.id)}/${action}`, body);
+    const updated = await request();
     if (updated && updated.id) ctx.store.upsertTask(updated);
     if (okMessage) toast(okMessage, { kind: 'ok' });
     return updated;
   } catch (error) {
-    errorToast(error, `Could not ${action} task #${task.number}`);
+    errorToast(error, `Could not ${verb} task #${task.number}`);
     return null;
   }
 }
@@ -48,17 +50,17 @@ export async function stopTask(ctx, task) {
     confirmLabel: 'Stop task',
     danger: true,
   });
-  if (ok) await taskPost(ctx, task, 'stop', undefined, `Stopping #${task.number}…`);
+  if (ok) await taskPost(ctx, task, 'stop', () => ctx.api.post(`/api/tasks/${enc(task.id)}/stop`), `Stopping #${task.number}…`);
 }
 
 /** Resume a closed/stopped task on the same session lineage (TSK-007). */
 export function continueTask(ctx, task) {
-  return taskPost(ctx, task, 'continue', {}, `Continuing #${task.number}…`);
+  return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, {}), `Continuing #${task.number}…`);
 }
 
 /** Archive is a one-click action with Undo (UI-006). */
 export async function archiveTask(ctx, task) {
-  const updated = await taskPost(ctx, task, 'archive');
+  const updated = await taskPost(ctx, task, 'archive', () => ctx.api.post(`/api/tasks/${enc(task.id)}/archive`));
   if (updated) {
     ctx.store.removeTask(task.id);
     toast(`Archived #${task.number} ${task.title}`, { kind: 'ok', action: { label: 'Undo', run: () => restoreTask(ctx, task) } });
@@ -72,7 +74,7 @@ export async function archiveTask(ctx, task) {
 
 /** Restore an archived task back to the sidebar. */
 export async function restoreTask(ctx, task) {
-  const updated = await taskPost(ctx, task, 'restore', undefined, `Restored #${task.number}`);
+  const updated = await taskPost(ctx, task, 'restore', () => ctx.api.post(`/api/tasks/${enc(task.id)}/restore`), `Restored #${task.number}`);
   return updated;
 }
 
@@ -95,7 +97,7 @@ export async function openSwitchDialog(ctx, task) {
     setChildren(accountSelect,
       h('option', { value: '' }, 'Automatic (rotation picks the best account)'),
       (Array.isArray(accounts) ? accounts : []).filter((a) => a.provider === provider).map((a) =>
-        h('option', { value: a.id, disabled: !a.enabled || a.status === 'error' }, `${a.label} · ${a.status}${a.usage && a.usage.primary ? ` · ${Math.round(a.usage.primary.used_percent)}%` : ''}`)));
+        h('option', { value: a.id, disabled: !a.enabled || a.status === 'error' || a.status === 'pending_login' }, `${a.label} · ${a.status}${a.usage && a.usage.primary && Number.isFinite(a.usage.primary.used_percent) ? ` · ${Math.round(a.usage.primary.used_percent)}%` : ''}`)));
   };
   harnessInputs.forEach((i) => i.addEventListener('change', renderAccounts));
   renderAccounts();
@@ -114,7 +116,9 @@ export async function openSwitchDialog(ctx, task) {
       { label: live ? 'Switch' : 'Continue on target', kind: 'primary', run: async () => {
         const payload = { harness: harnessInputs.find((i) => i.checked).value };
         if (accountSelect.value) payload.account_id = accountSelect.value;
-        const updated = await ctx.api.post(`/api/tasks/${enc(task.id)}/${live ? 'switch' : 'continue'}`, payload);
+        const updated = live
+          ? await ctx.api.post(`/api/tasks/${enc(task.id)}/switch`, payload)
+          : await ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, payload);
         if (updated && updated.id) ctx.store.upsertTask(updated);
         toast(live ? `Switching #${task.number}…` : `Continuing #${task.number}…`, { kind: 'ok' });
       } },
@@ -158,71 +162,123 @@ const STAGES = [
   ['production_done', 'Production done'],
 ];
 
-/** PR line with state and checks badges. */
+const CHECKS = {
+  success: ['checks passed', 'ok'],
+  failure: ['checks failed', 'danger'],
+  pending: ['checks running', 'warn'],
+  none: ['no checks', ''],
+  unknown: ['checks unknown', 'warn'],
+};
+
+/** PR line with state and checks badges (`checks: unknown` when GitHub could not be read). */
 export function prLine(pr) {
   if (!pr) return h('span', { class: 'muted' }, 'No pull request');
-  const checks = { success: ['checks passed', 'ok'], failure: ['checks failed', 'danger'], pending: ['checks running', 'warn'], none: ['no checks', ''] }[pr.checks] || [pr.checks, ''];
+  const checks = CHECKS[pr.checks] || [pr.checks || 'checks unknown', 'warn'];
   const state = { open: 'accent', merged: 'violet', closed: '' }[pr.state] || '';
   return h('span', { class: 'row-wrap' },
     h('a', { href: pr.url, target: '_blank', rel: 'noopener noreferrer' }, `#${pr.number}`),
     h('span', { class: 'ellipsis' }, pr.title),
     badge(pr.state, state),
-    badge(checks[0], checks[1]),
+    badge(checks[0], checks[1], pr.checks === 'unknown' ? 'GitHub checks could not be read' : null),
     h('span', { class: 'muted small mono' }, `${pr.base} ← ${pr.head}`));
 }
 
-/** Delivery panel for one task: stage, spec validity, PR and next actions (DLV, GIT-002). */
+/** Notes from Git/GitHub reads and policy outcomes (reads degrade instead of failing). */
+export function notesBanner(notes) {
+  const list = Array.isArray(notes) ? notes.filter(Boolean) : [];
+  if (list.length === 0) return null;
+  return h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }),
+    h('div', { class: 'banner-text stack-sm' }, list.map((note) => h('span', null, note))));
+}
+
+/** Label for a delivery action wire name (`run_env:<name>`, `confirm_env:<name>`, …). */
+function actionLabel(action) {
+  if (action === 'open_pr') return 'Open pull request';
+  if (action === 'merge') return 'Merge';
+  if (action === 'promote') return 'Promote';
+  if (action.startsWith('run_env:')) return `Run ${action.slice('run_env:'.length)}`;
+  if (action.startsWith('confirm_env:')) return `Confirm ${action.slice('confirm_env:'.length)}`;
+  return action;
+}
+
+/** Delivery panel for one task: stage, spec validity, PR, next and blocked actions (DLV, GIT-002). */
 export function openDeliveryDialog(ctx, task) {
   const sandbox = ctx.store.sandboxById(task.sandbox_id);
   const modal = openModal({ title: `Deliver #${task.number} ${task.title}`, body: placeholder('Loading delivery…', 'loading'), wide: true, actions: [{ label: 'Close' }] });
   const load = async () => {
     try {
       const delivery = await ctx.api.get(`/api/tasks/${enc(task.id)}/delivery`);
-      setChildren(modal.body, renderDelivery(delivery));
+      setChildren(modal.body, renderDelivery(delivery || {}));
     } catch (error) {
       setChildren(modal.body, placeholder(error.message, 'error'));
     }
   };
+  const actionButton = (action, primary) => {
+    const label = actionLabel(action);
+    const cls = ['btn', primary && 'btn-primary'];
+    if (action === 'open_pr') return h('button', { type: 'button', class: cls, onClick: () => openPrDialog(ctx, task, load) }, label);
+    if (action === 'merge') return h('button', { type: 'button', class: cls, onClick: () => mergeTask(ctx, task, load) }, label);
+    if (action === 'promote') return h('button', { type: 'button', class: cls, onClick: async () => { if (sandbox) { await promote(ctx, sandbox); load(); } } }, label);
+    if (action.startsWith('run_env:')) {
+      const env = action.slice('run_env:'.length);
+      return h('button', { type: 'button', class: cls, onClick: async () => { if (sandbox) { await runEnvironment(ctx, sandbox, env); load(); } } }, label);
+    }
+    if (action.startsWith('confirm_env:')) {
+      const env = action.slice('confirm_env:'.length);
+      return h('button', { type: 'button', class: cls, onClick: async () => { if (sandbox) { await confirmEnvironment(ctx, sandbox, env); load(); } } }, label);
+    }
+    return h('button', { type: 'button', class: 'btn', disabled: true, title: 'This version of the UI does not know this action' }, label);
+  };
   const renderDelivery = (d) => {
-    const stageIndex = STAGES.findIndex(([s]) => s === d.stage || (s === 'env_done' && String(d.stage).startsWith('env_')));
-    const actions = (d.next_actions || []).map((action) => {
-      if (action === 'open_pr') return h('button', { type: 'button', class: 'btn btn-primary', disabled: !d.spec_valid, title: d.spec_valid ? null : 'The task spec must be valid first', onClick: () => openPrDialog(ctx, task, load) }, 'Open pull request');
-      if (action === 'merge') return h('button', { type: 'button', class: 'btn btn-primary', onClick: async () => {
-        const ok = await confirmDialog({ title: `Merge PR #${d.pr ? d.pr.number : ''}?`, message: `Merge into ${d.pr ? d.pr.base : 'the integration branch'} using the profile's merge method. Checks must be green.`, confirmLabel: 'Merge' });
-        if (!ok) return;
-        try { await ctx.api.post(`/api/tasks/${enc(task.id)}/delivery/merge`); toast('Merged.', { kind: 'ok' }); } catch (error) { errorToast(error, 'Merge refused'); }
-        load();
-      } }, 'Merge');
-      if (action.startsWith('run_env:')) {
-        const env = action.slice('run_env:'.length);
-        return h('button', { type: 'button', class: 'btn', onClick: async () => { if (sandbox) { await runDeploy(ctx, sandbox, env); load(); } } }, `Run deploy: ${env}`);
-      }
-      if (action === 'promote') return h('button', { type: 'button', class: 'btn', onClick: async () => { if (sandbox) { await promote(ctx, sandbox); load(); } } }, 'Promote');
-      return h('button', { type: 'button', class: 'btn', disabled: true }, action);
-    });
+    const stageIndex = STAGES.findIndex(([s]) => s === d.stage);
+    const next = Array.isArray(d.next_actions) ? d.next_actions : [];
+    const blocked = Array.isArray(d.blocked) ? d.blocked : [];
     return h('div', { class: 'stack' },
-      h('div', { class: 'stage-track' }, STAGES.map(([stage, label], i) => h('span', { class: ['stage', i < stageIndex && 'done', i === stageIndex && 'current'] }, i < stageIndex ? icon('check', { size: 11 }) : null, label))),
+      h('div', { class: 'stage-track' }, STAGES.map(([stage, label], i) => h('span', { class: ['stage', i < stageIndex && 'done', i === stageIndex && 'current'] },
+        i < stageIndex ? icon('check', { size: 11 }) : null,
+        stage === 'env_done' && d.stage === 'env_done' && d.environment ? `${label}: ${d.environment}` : label))),
+      stageIndex < 0 ? h('div', { class: 'muted small' }, `Stage: ${d.stage || 'unknown'}`) : null,
+      notesBanner(d.notes),
       h('div', { class: 'card card-pad stack-sm' },
         h('div', { class: 'row' }, h('strong', null, 'Pull request')),
         prLine(d.pr)),
       h('div', { class: 'card card-pad stack-sm' },
         h('div', { class: 'row' }, h('strong', null, 'Task spec'), d.spec_valid ? badge('valid', 'ok') : badge('needs work', 'danger')),
+        d.spec_path ? h('div', { class: 'muted small' }, h('code', null, d.spec_path)) : h('div', { class: 'muted small' }, 'No spec registered for this task yet.'),
         d.spec_valid ? null : h('ul', { class: 'small', style: { margin: 0, paddingLeft: '18px' } }, (d.spec_problems || []).map((p) => h('li', null, p))),
         d.steps_open ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), `${d.steps_open} step${d.steps_open === 1 ? '' : 's'} still open in the plan.`) : null),
-      h('div', { class: 'row-wrap' }, actions.length ? actions : h('span', { class: 'muted' }, 'No delivery action is available right now.')),
-      h('p', { class: 'muted xs' }, 'Merges, deploys and promotions only happen on your explicit action (or an explicit profile policy).'),
+      h('div', { class: 'row-wrap' },
+        next.map((action, i) => actionButton(action, i === 0)),
+        blocked.map((b) => h('button', { type: 'button', class: 'btn', disabled: true, title: b.reason }, actionLabel(b.action))),
+        next.length || blocked.length ? null : h('span', { class: 'muted' }, 'No delivery action applies at this stage.')),
+      blocked.length ? h('ul', { class: 'small muted', style: { margin: 0, paddingLeft: '18px' } },
+        blocked.map((b) => h('li', null, h('strong', null, `${actionLabel(b.action)}: `), b.reason))) : null,
+      h('p', { class: 'muted xs' }, 'Merges, deploys and promotions only happen on your explicit action (or an explicit profile policy such as automatic promotion).'),
     );
   };
   load();
   return modal;
 }
 
+async function mergeTask(ctx, task, onDone) {
+  const ok = await confirmDialog({ title: `Merge #${task.number} ${task.title}?`, message: 'Merge the pull request into the integration branch using the profile’s merge method. The PR head must match the task worktree; checks must pass when the profile requires them.', confirmLabel: 'Merge' });
+  if (!ok) return;
+  try {
+    const delivery = await ctx.api.post(`/api/tasks/${enc(task.id)}/delivery/merge`);
+    const notes = delivery && Array.isArray(delivery.notes) && delivery.notes.length ? delivery.notes.join(' ') : null;
+    toast('Merged.', { kind: 'ok', detail: notes });
+  } catch (error) {
+    errorToast(error, 'Merge refused');
+  }
+  onDone();
+}
+
 function openPrDialog(ctx, task, onDone) {
   const title = h('input', { class: 'input', placeholder: task.title, maxlength: 200 });
-  const body = h('textarea', { class: 'textarea', rows: 6, placeholder: 'Optional description (defaults to the task spec summary)' });
+  const body = h('textarea', { class: 'textarea', rows: 6, placeholder: 'Optional description (defaults to the spec’s goal, plan and steps, plus a link to the task)' });
   openModal({
     title: 'Open pull request',
-    body: h('div', { class: 'stack' }, field('Title', title), field('Body', body)),
+    body: h('div', { class: 'stack' }, field('Title', title), field('Body', body), h('p', { class: 'muted xs' }, 'Refused without a valid spec or with uncommitted changes in the task worktree.')),
     actions: [
       { label: 'Cancel', value: false },
       { label: 'Open PR', kind: 'primary', run: async () => {
@@ -237,43 +293,83 @@ function openPrDialog(ctx, task, onDone) {
   });
 }
 
-/** Explicitly confirmed environment deploy, then a live run viewer (DLV-003). */
-export async function runDeploy(ctx, sandbox, envName) {
-  const env = ((sandbox.profile && sandbox.profile.environments) || []).find((e) => e.name === envName);
+function environmentOf(sandbox, envName) {
+  return ((sandbox.profile && sandbox.profile.environments) || []).find((e) => e.name === envName) || null;
+}
+
+/**
+ * Run an environment step after explicit confirmation (DLV-003). With a command, the run
+ * starts in the background and a viewer polls it; without one, the same request records the
+ * person's confirmation as a `manual` run.
+ */
+export async function runEnvironment(ctx, sandbox, envName) {
+  const env = environmentOf(sandbox, envName);
+  const command = env && env.command;
   const ok = await confirmDialog({
-    title: `Run deploy: ${envName}`,
+    title: command ? `Run ${envName}` : `Confirm ${envName}`,
     message: h('div', { class: 'stack-sm' },
-      h('p', null, `This runs the “${envName}” environment step for ${sandbox.name} on the server now.`),
-      env && env.command ? h('pre', { class: 'code-view' }, env.command) : h('p', { class: 'muted small' }, 'This environment has no command; the step is recorded as a manual verification.')),
-    checkbox: `I want to run the ${envName} deploy now.`,
-    confirmLabel: 'Run deploy',
-    danger: true,
+      command
+        ? h('p', null, `This runs the “${envName}” command for ${sandbox.name} on the server now (as /bin/sh -c in the sandbox clone, outside sandbox containment).`)
+        : h('p', null, `“${envName}” has no command. Confirming records that you verified it.`),
+      command ? h('pre', { class: 'code-view' }, command) : null,
+      env && env.verify === 'manual' && command ? h('p', { class: 'muted small' }, 'This environment is verified manually: confirm it after checking the result.') : null),
+    checkbox: command ? `I want to run ${envName} now.` : `I verified ${envName}.`,
+    confirmLabel: command ? `Run ${envName}` : `Confirm ${envName}`,
+    danger: Boolean(command),
   });
   if (!ok) return null;
   try {
-    const result = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/delivery/environments/${enc(envName)}/runs`, { confirm: true });
-    openRunViewer(ctx, sandbox, result.run_id, envName);
-    return result;
+    const run = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/delivery/environments/${enc(envName)}/runs`, { confirm: true });
+    if (run && run.state === 'running') openRunViewer(ctx, sandbox, run.run_id, envName);
+    else toast(`${envName}: ${run ? run.state : 'recorded'}`, { kind: run && run.state === 'succeeded' ? 'ok' : 'warn' });
+    return run;
   } catch (error) {
-    errorToast(error, `Deploy ${envName} refused`);
+    errorToast(error, `${envName} refused`);
+    return null;
+  }
+}
+
+/** Confirm a manual verification (`confirm_env:<name>`): POST …/environments/{env}/confirm. */
+export async function confirmEnvironment(ctx, sandbox, envName) {
+  const ok = await confirmDialog({
+    title: `Confirm ${envName}`,
+    message: `Record that you verified “${envName}” for ${sandbox.name}. Tasks waiting for this environment advance.`,
+    checkbox: `I verified ${envName}.`,
+    confirmLabel: `Confirm ${envName}`,
+  });
+  if (!ok) return null;
+  try {
+    const run = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/delivery/environments/${enc(envName)}/confirm`, { confirm: true });
+    toast(`${envName} confirmed`, { kind: 'ok' });
+    return run;
+  } catch (error) {
+    errorToast(error, `Confirming ${envName} refused`);
     return null;
   }
 }
 
 const RUN_POLL_MS = 2000;
-const RUN_POLL_MAX = 900; // 30 minutes
+const RUN_POLL_MAX = 900; // 30 minutes, the server's run limit
+const RUN_DONE = new Set(['succeeded', 'failed', 'error']);
+const RUN_TONE = { running: 'warn', succeeded: 'ok', failed: 'danger', error: 'danger' };
 
-/** Poll a delivery run and show its output until it finishes (bounded). */
+/** Badge for an EnvironmentRun state. */
+export function runStateBadge(state) {
+  return badge(state || 'unknown', RUN_TONE[state] || '');
+}
+
+/** Poll an environment run and show its output until it finishes (bounded). */
 export function openRunViewer(ctx, sandbox, runId, envName) {
-  const stateEl = badge('starting', 'warn');
+  const stateEl = runStateBadge('running');
+  const meta = h('span', { class: 'muted small' });
   const output = h('pre', { class: 'code-view run-output', 'aria-live': 'polite' }, '');
   const exitEl = h('span', { class: 'muted small' });
   let polls = 0;
   let timer = null;
   const modal = openModal({
-    title: `Deploy ${envName} · run ${runId}`,
+    title: `${envName} · run ${runId}`,
     wide: true,
-    body: h('div', { class: 'stack' }, h('div', { class: 'row' }, stateEl, exitEl), output),
+    body: h('div', { class: 'stack' }, h('div', { class: 'row-wrap' }, stateEl, exitEl, meta), output),
     actions: [{ label: 'Close' }],
     onClose: () => clearTimeout(timer),
   });
@@ -281,14 +377,14 @@ export function openRunViewer(ctx, sandbox, runId, envName) {
     polls += 1;
     try {
       const run = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/delivery/runs/${enc(runId)}`);
-      const done = ['succeeded', 'success', 'failed', 'failure', 'error', 'cancelled', 'done', 'completed'].includes(run.state);
-      stateEl.textContent = run.state;
-      stateEl.className = `badge badge-${done ? (run.exit_code === 0 || run.state === 'succeeded' || run.state === 'success' ? 'ok' : 'danger') : 'warn'}`;
+      setChildren(stateEl, run.state || 'unknown');
+      stateEl.className = `badge badge-${RUN_TONE[run.state] || 'warn'}`;
+      setChildren(meta, [run.kind, run.commit ? `at ${String(run.commit).slice(0, 8)}` : null, run.requested_by ? `by ${run.requested_by}` : null, run.started_at ? `started ${relLong(run.started_at)}` : null].filter(Boolean).join(' · '));
       const atBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 8;
-      output.textContent = run.output || '';
+      output.textContent = run.output || (run.kind === 'manual' ? 'Manual confirmation (no command output).' : '');
       if (atBottom) output.scrollTop = output.scrollHeight;
       exitEl.textContent = run.exit_code === null || run.exit_code === undefined ? '' : `exit code ${run.exit_code}`;
-      if (done) return;
+      if (RUN_DONE.has(run.state)) return;
     } catch (error) {
       exitEl.textContent = `poll failed: ${error.message}`;
     }
@@ -304,13 +400,20 @@ export async function promote(ctx, sandbox) {
   const profile = sandbox.profile || {};
   const ok = await confirmDialog({
     title: `Promote ${profile.integration_branch || 'integration'} → ${profile.production_branch || 'production'}?`,
-    message: `Promotion method: ${profile.promote || 'per profile'}. This updates the production branch of ${sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name}.`,
+    message: profile.promote === 'merge_commit'
+      ? `Promotion uses a merge-commit pull request: the first promotion opens it, a later one merges it once its checks allow. This updates the production branch of ${sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name}.`
+      : `Promotion fast-forwards ${profile.production_branch || 'production'} to the integration head of ${sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name}.`,
     confirmLabel: 'Promote',
   });
   if (!ok) return null;
   try {
     const result = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/delivery/promote`);
-    toast(`Promotion: ${result.result}${result.sha ? ` · ${String(result.sha).slice(0, 8)}` : ''}`, { kind: 'ok' });
+    if (result && result.result === 'pr_opened') {
+      const url = result.sha && /^https?:\/\//.test(result.sha) ? result.sha : null;
+      toast('Promotion pull request opened. Promote again to merge it once its checks allow.', { kind: 'ok', timeout: 10000, action: url ? { label: 'Open PR', run: () => window.open(url, '_blank', 'noopener,noreferrer') } : undefined });
+    } else {
+      toast(`Promoted${result && result.sha ? ` · ${String(result.sha).slice(0, 8)}` : ''}`, { kind: 'ok' });
+    }
     return result;
   } catch (error) {
     errorToast(error, 'Promotion refused');
@@ -324,11 +427,14 @@ const REPO_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
 
 /** "+" dialog: import an existing repository or create a new one from a template. */
 export function openSandboxDialog(ctx, mode = 'import') {
-  const tabImport = h('input', { type: 'radio', name: 'sb-mode', value: 'import', checked: mode === 'import' });
-  const tabCreate = h('input', { type: 'radio', name: 'sb-mode', value: 'create', checked: mode === 'create' });
+  // Create mode is for instance administrators (docs/api.md "Sandboxes").
+  const canCreate = ctx.isInstanceAdmin();
+  const startMode = mode === 'create' && canCreate ? 'create' : 'import';
+  const tabImport = h('input', { type: 'radio', name: 'sb-mode', value: 'import', checked: startMode === 'import' });
+  const tabCreate = h('input', { type: 'radio', name: 'sb-mode', value: 'create', checked: startMode === 'create', disabled: !canCreate });
   const content = h('div', { class: 'stack' });
   const body = h('div', { class: 'stack' },
-    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Mode' }, h('label', null, tabImport, 'Import repository'), h('label', null, tabCreate, 'Create project')),
+    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Mode' }, h('label', null, tabImport, 'Import repository'), h('label', { title: canCreate ? null : 'Only instance administrators can create projects' }, tabCreate, 'Create project')),
     content);
   let submitButton;
   let selectedRepo = null;
@@ -356,7 +462,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
   const renderImport = async () => {
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Filter repositories…', 'aria-label': 'Filter repositories' });
     const list = h('div', { class: 'card list', style: { maxHeight: '320px', overflow: 'auto' } }, placeholder('Loading repositories…', 'loading'));
-    setChildren(content, search, list, h('p', { class: 'muted xs' }, 'Importing needs admin permission on the repository. The repository must belong to the instance owner.'));
+    setChildren(content, search, list, h('p', { class: 'muted xs' }, 'Importing needs admin or maintain permission on the repository, which must belong to the instance owner. Yulius clones it and checks the documentation format; a project that does not follow it gets a preparation task first.'));
     const draw = () => {
       if (!repos) return;
       const q = search.value.trim().toLowerCase();
@@ -364,13 +470,14 @@ export function openSandboxDialog(ctx, mode = 'import') {
       if (shown.length === 0) { setChildren(list, placeholder(repos.length ? 'No repository matches.' : 'No repositories visible to you.')); return; }
       setChildren(list, shown.map((r) => {
         const full = `${r.owner}/${r.name}`;
-        const disabled = r.already_sandbox || r.access !== 'admin';
+        // GitHub "maintain" is listed as Yulius `write` but may import; the server decides.
+        const disabled = r.already_sandbox || r.access === 'read';
         const radio = h('input', { type: 'radio', name: 'sb-repo', value: full, disabled, checked: selectedRepo === full });
         radio.addEventListener('change', () => { selectedRepo = full; updateSubmit(); });
         return h('label', { class: 'list-item', style: { cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1 } },
           radio,
           h('div', { class: 'list-main' }, h('div', { class: 'list-title' }, full, r.private ? badge('private') : badge('public', 'accent'))),
-          r.already_sandbox ? badge('already a sandbox', 'ok') : badge(r.access, r.access === 'admin' ? '' : 'warn', r.access === 'admin' ? null : 'Admin permission required'));
+          r.already_sandbox ? badge('already a sandbox', 'ok') : badge(r.access, r.access === 'admin' ? '' : 'warn', r.access === 'admin' ? null : r.access === 'write' ? 'Import needs admin or maintain permission on GitHub' : 'Admin or maintain permission required'));
       }));
     };
     search.addEventListener('input', draw);
@@ -378,6 +485,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
       try {
         repos = await ctx.api.get('/api/github/repositories');
       } catch (error) {
+        // 403: no GitHub-linked account; 409: no GitHub App. The server's message says which.
         setChildren(list, placeholder(error.message, 'error'));
         return;
       }
@@ -392,7 +500,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
       field('Repository name', nameInput, 'Created under the instance’s GitHub owner.'), nameError,
       field('Description', descInput),
       h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Template'), templateList),
-      h('p', { class: 'muted xs' }, 'Yulius creates the GitHub repository, scaffolds the documentation format, configures branch protection and opens the new tab.'));
+      h('p', { class: 'muted xs' }, 'Instance administrators only. Yulius creates a private GitHub repository, pushes the template to main and dev, adds rulesets requiring pull requests and opens the new tab.'));
     if (!templates) {
       try { templates = await ctx.api.get('/api/templates'); } catch (error) { setChildren(templateList, placeholder(error.message, 'error')); return; }
     }
@@ -423,7 +531,8 @@ export function openSandboxDialog(ctx, mode = 'import') {
           : { mode: 'create', name: nameInput.value.trim(), template: templateValue, description: descInput.value.trim() };
         const sandbox = await ctx.api.post('/api/sandboxes', payload);
         ctx.store.upsertSandbox(sandbox);
-        toast(tabImport.checked ? `Imported ${sandbox.name}` : `Created ${sandbox.name}`, { kind: 'ok' });
+        const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
+        toast(`${tabImport.checked ? 'Imported' : 'Created'} ${sandbox.name}${preparing ? ' — it needs preparation before tasks can start' : ''}`, { kind: 'ok' });
         ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`);
       } },
     ],
@@ -435,7 +544,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
 export async function confirmRemoveSandbox(ctx, sandbox) {
   const ok = await confirmDialog({
     title: `Remove ${sandbox.name} from Yulius?`,
-    message: 'Running sessions are stopped and task history is exported. The GitHub repository itself is not deleted or changed.',
+    message: 'Live and queued tasks are stopped. The GitHub repository, the server’s clone and the task records are kept; the sandbox disappears from Yulius for everyone.',
     typeToConfirm: sandbox.name,
     confirmLabel: 'Remove sandbox',
     danger: true,
