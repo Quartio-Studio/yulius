@@ -86,9 +86,12 @@ impl PtyClient {
         token: &[u8; TOKEN_BYTES],
         want_snapshot: bool,
     ) -> Result<(Self, Welcome, Option<Snapshot>), ClientError> {
-        tokio::time::timeout(CONNECT_TIMEOUT, Self::handshake(run_dir, token, want_snapshot))
-            .await
-            .map_err(|_| ClientError::Timeout)?
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            Self::handshake(run_dir, token, want_snapshot),
+        )
+        .await
+        .map_err(|_| ClientError::Timeout)?
     }
 
     async fn handshake(

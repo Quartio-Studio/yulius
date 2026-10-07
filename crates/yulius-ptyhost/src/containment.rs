@@ -87,7 +87,11 @@ mod tests {
 
     #[test]
     fn namespace_and_filesystem_flags_come_first() {
-        let argv = bwrap_argv(&spec(), &["claude".into()], "/data/sandboxes/s1/worktrees/t1");
+        let argv = bwrap_argv(
+            &spec(),
+            &["claude".into()],
+            "/data/sandboxes/s1/worktrees/t1",
+        );
         assert_eq!(
             &argv[..11],
             &[
@@ -105,7 +109,10 @@ mod tests {
             ]
         );
         for dir in SYSTEM_READONLY_DIRS {
-            assert!(position(&argv, &["--ro-bind-try", dir, dir]).is_some(), "{dir}");
+            assert!(
+                position(&argv, &["--ro-bind-try", dir, dir]).is_some(),
+                "{dir}"
+            );
         }
     }
 

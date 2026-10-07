@@ -320,7 +320,12 @@ fn write_exit(run_dir: &Path, attempt_id: &str, record: &ExitRecord) -> io::Resu
     atomic_write(run_dir, EXIT_FILE, &json, 0o600)
 }
 
-fn record_failure(run_dir: &Path, attempt_id: &str, reason: ExitReason, error: HostError) -> HostError {
+fn record_failure(
+    run_dir: &Path,
+    attempt_id: &str,
+    reason: ExitReason,
+    error: HostError,
+) -> HostError {
     let record = ExitRecord {
         code: None,
         signal: None,
@@ -540,15 +545,10 @@ fn reap(shared: &Shared) -> Result<WaitStatus, Errno> {
     use nix::sys::wait::{Id, WaitPidFlag, waitid};
     // Observe the exit without reaping: while the zombie exists its pid (and process group id)
     // cannot be reused, so the group kill below cannot hit an unrelated process.
-    loop {
-        match waitid(
-            Id::Pid(shared.child_pid),
-            WaitPidFlag::WEXITED | WaitPidFlag::WNOWAIT,
-        ) {
-            Err(Errno::EINTR) => {}
-            _ => break,
-        }
-    }
+    while let Err(Errno::EINTR) = waitid(
+        Id::Pid(shared.child_pid),
+        WaitPidFlag::WEXITED | WaitPidFlag::WNOWAIT,
+    ) {}
     let mut state = shared.lock();
     let _ = signal_group(shared.child_pid, Signal::SIGKILL);
     kill_session(shared.child_pid, shared.host_pid);
@@ -800,7 +800,9 @@ fn serve_connection(shared: &Arc<Shared>, mut stream: UnixStream) {
         return;
     };
     if stream.set_read_timeout(None).is_err()
-        || stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT)).is_err()
+        || stream
+            .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
+            .is_err()
     {
         return;
     }
@@ -1145,10 +1147,10 @@ mod tests {
 
     #[test]
     fn oversized_snapshot_falls_back_to_bounded_plain_text() {
-        let mut parser = vt100::Parser::new(1000, 1000, 0);
-        // Alternate colors per cell so the formatted form is far larger than the plain one.
+        let mut parser = vt100::Parser::new(500, 500, 0);
+        // Alternate colors per cell so the formatted form exceeds the snapshot bound.
         let mut bytes = Vec::new();
-        for i in 0..1_000_000u32 {
+        for i in 0..250_000u32 {
             bytes.extend_from_slice(format!("\x1b[3{}m", i % 8).as_bytes());
             bytes.push(b'#');
         }

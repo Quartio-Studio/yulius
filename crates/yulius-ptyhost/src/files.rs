@@ -66,7 +66,9 @@ pub(crate) fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>,
 /// Reads `status.json`, rejecting newer record versions.
 pub(crate) fn read_status(path: &Path) -> Result<Option<StatusRecord>, RecordError> {
     match read_record::<StatusRecord>(path)? {
-        Some(status) if status.version > RECORD_VERSION => Err(RecordError::Version(status.version)),
+        Some(status) if status.version > RECORD_VERSION => {
+            Err(RecordError::Version(status.version))
+        }
         other => Ok(other),
     }
 }
@@ -111,7 +113,9 @@ mod tests {
         atomic_write(dir.path(), "r.json", b"one", 0o600)?;
         atomic_write(dir.path(), "r.json", b"two", 0o600)?;
         assert_eq!(fs::read(dir.path().join("r.json"))?, b"two");
-        let mode = fs::metadata(dir.path().join("r.json"))?.permissions().mode();
+        let mode = fs::metadata(dir.path().join("r.json"))?
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600);
         assert!(!dir.path().join(".r.json.tmp").exists());
         Ok(())
@@ -136,7 +140,10 @@ mod tests {
             dir.path().join(EXIT_FILE),
             r#"{"version":2,"attempt_id":"a","exit":{"code":0,"signal":null,"ended_at_ms":1,"reason":"exited"}}"#,
         )?;
-        assert!(matches!(read_exit(dir.path()), Err(RecordError::Version(2))));
+        assert!(matches!(
+            read_exit(dir.path()),
+            Err(RecordError::Version(2))
+        ));
         fs::write(dir.path().join(EXIT_FILE), vec![b' '; 2 << 20])?;
         assert!(matches!(read_exit(dir.path()), Err(RecordError::TooLarge)));
         fs::write(dir.path().join(EXIT_FILE), b"{not json")?;

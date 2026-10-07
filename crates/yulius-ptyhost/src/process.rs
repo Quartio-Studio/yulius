@@ -15,7 +15,10 @@ use nix::unistd::{Pid, getpgid, getsid};
 const START_SLACK_MS: i64 = 2_000;
 
 pub(crate) fn pid(raw: u32) -> Option<Pid> {
-    i32::try_from(raw).ok().filter(|p| *p > 1).map(Pid::from_raw)
+    i32::try_from(raw)
+        .ok()
+        .filter(|p| *p > 1)
+        .map(Pid::from_raw)
 }
 
 /// The process exists, is signalable by us and is not a zombie.
@@ -106,7 +109,11 @@ mod imp {
             return;
         };
         for entry in entries.flatten().take(1 << 20) {
-            let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<i32>().ok()) else {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|s| s.parse::<i32>().ok())
+            else {
                 continue;
             };
             if pid == except.as_raw() || pid <= 1 {

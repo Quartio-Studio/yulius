@@ -213,10 +213,9 @@ impl ClientFrame {
     /// Returns [`ProtocolError::InvalidValue`] for oversize input or out-of-range dimensions.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         match self {
-            Self::Input(bytes) if bytes.len() > MAX_INPUT_CHUNK => Err(invalid(
-                "Input",
-                "input chunk exceeds MAX_INPUT_CHUNK",
-            )),
+            Self::Input(bytes) if bytes.len() > MAX_INPUT_CHUNK => {
+                Err(invalid("Input", "input chunk exceeds MAX_INPUT_CHUNK"))
+            }
             Self::Resize { cols, rows } if !valid_dimension(*cols) || !valid_dimension(*rows) => {
                 Err(invalid("Resize", "dimension outside 1..=1000"))
             }
@@ -769,9 +768,7 @@ pub fn encode_client(frame: &ClientFrame) -> Vec<u8> {
             .bytes(token)
             .u8(u8::from(*want_snapshot))
             .finish(),
-        ClientFrame::Input(bytes) => FrameWriter::new(T_INPUT, bytes.len())
-            .bytes(bytes)
-            .finish(),
+        ClientFrame::Input(bytes) => FrameWriter::new(T_INPUT, bytes.len()).bytes(bytes).finish(),
         ClientFrame::Resize { cols, rows } => {
             FrameWriter::new(T_RESIZE, 4).u16(*cols).u16(*rows).finish()
         }
@@ -1181,7 +1178,9 @@ mod tests {
         match rng.below(6) {
             0 => {
                 let mut token = [0u8; TOKEN_BYTES];
-                token.iter_mut().for_each(|b| *b = (rng.next() & 0xff) as u8);
+                token
+                    .iter_mut()
+                    .for_each(|b| *b = (rng.next() & 0xff) as u8);
                 ClientFrame::Hello {
                     version: (rng.next() & 0xffff) as u16,
                     token,
@@ -1366,7 +1365,10 @@ mod tests {
         // A host frame type is unknown in the client direction and vice versa.
         let mut decoder = FrameDecoder::new();
         decoder.push(&encode_host(&HostFrame::Pong(3)));
-        assert_eq!(decoder.next_client(), Err(ProtocolError::UnknownType(T_PONG)));
+        assert_eq!(
+            decoder.next_client(),
+            Err(ProtocolError::UnknownType(T_PONG))
+        );
         let mut decoder = FrameDecoder::new();
         decoder.push(&encode_client(&ClientFrame::Ping(3)));
         assert_eq!(decoder.next_host(), Err(ProtocolError::UnknownType(T_PING)));
@@ -1488,7 +1490,11 @@ mod tests {
 
     #[test]
     fn validate_matches_decoder_limits() {
-        assert!(ClientFrame::Input(vec![0; MAX_INPUT_CHUNK]).validate().is_ok());
+        assert!(
+            ClientFrame::Input(vec![0; MAX_INPUT_CHUNK])
+                .validate()
+                .is_ok()
+        );
         assert!(
             ClientFrame::Input(vec![0; MAX_INPUT_CHUNK + 1])
                 .validate()
@@ -1569,7 +1575,8 @@ mod tests {
 
     #[test]
     fn launch_spec_validation_rejects_each_bad_field() {
-        let cases: Vec<(fn(&mut LaunchSpec), &str)> = vec![
+        type Mutation = fn(&mut LaunchSpec);
+        let cases: Vec<(Mutation, &str)> = vec![
             (|s| s.version = 2, "version"),
             (|s| s.attempt_id = "../x".into(), "attempt_id"),
             (|s| s.task_id = String::new(), "task_id"),

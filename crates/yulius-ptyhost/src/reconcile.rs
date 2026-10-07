@@ -82,7 +82,11 @@ fn parse_boottime(text: &str) -> Option<String> {
             .collect();
         digits.parse().ok()
     };
-    Some(format!("boottime:{}.{:06}", field("sec =")?, field("usec =")?))
+    Some(format!(
+        "boottime:{}.{:06}",
+        field("sec =")?,
+        field("usec =")?
+    ))
 }
 
 /// Classifies a run directory for restart reconciliation.

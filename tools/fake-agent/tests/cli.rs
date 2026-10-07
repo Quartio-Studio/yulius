@@ -31,7 +31,10 @@ fn stdout(output: &Output) -> String {
 
 #[test]
 fn echo_mode_answers_lines_and_exits_on_command() -> TestResult {
-    let output = run(&["--session-id", "s-1"], "hello\nsecond line\n/exit\nignored\n")?;
+    let output = run(
+        &["--session-id", "s-1"],
+        "hello\nsecond line\n/exit\nignored\n",
+    )?;
     assert_eq!(output.status.code(), Some(0));
     let text = stdout(&output);
     assert_eq!(
@@ -62,6 +65,14 @@ fn flood_writes_exact_byte_counts_to_both_streams() -> TestResult {
     let first_line = text.find('\n').ok_or("no first line")? + 1;
     assert_eq!(output.stdout.len() - first_line - marker.len(), 200_000);
     assert_eq!(output.stderr.len(), 200_000);
+    Ok(())
+}
+
+#[test]
+fn flood_command_floods_on_demand() -> TestResult {
+    let output = run(&[], "/flood 1000\n/exit\n")?;
+    assert_eq!(output.stderr.len(), 1000);
+    assert!(stdout(&output).ends_with("FLOOD DONE\nBYE\n"));
     Ok(())
 }
 
@@ -192,7 +203,11 @@ fn fork_child_spawns_a_live_descendant() -> TestResult {
             break pid.parse()?;
         }
     };
-    child.stdin.take().ok_or("no stdin")?.write_all(b"/exit\n")?;
+    child
+        .stdin
+        .take()
+        .ok_or("no stdin")?
+        .write_all(b"/exit\n")?;
     assert_eq!(child.wait()?.code(), Some(0));
     // The descendant outlives its parent until it is killed.
     let descendant = Pid::from_raw(pid);

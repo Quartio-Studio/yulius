@@ -14,7 +14,8 @@
 //! Modes:
 //! - `echo` (default): prints `FAKE-AGENT READY session=<id>`, then answers each input line with
 //!   `ECHO: <line>`. `/exit` exits 0, `/crash` exits 3, `/later <ms> <text>` prints `<text>` after
-//!   a delay (≤ 60 s), `/size` prints `SIZE <rows> <cols>` of its terminal (via `stty size`).
+//!   a delay (≤ 60 s), `/size` prints `SIZE <rows> <cols>` of its terminal (via `stty size`),
+//!   `/flood <n>` floods like `--mode flood` on demand.
 //! - `flood --bytes N`: writes N bytes to stdout and N bytes to stderr, prints `FLOOD DONE`, then
 //!   behaves like `echo`.
 //! - `ignore-term`: like `echo` but ignores SIGTERM, SIGINT and SIGHUP (also `--ignore-term`).
@@ -490,6 +491,14 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 return Ok(3);
             }
             "/size" => say(&format!("SIZE {}", terminal_size()))?,
+            _ if line.starts_with("/flood ") => {
+                let bytes = line
+                    .get("/flood ".len()..)
+                    .and_then(|n| n.trim().parse::<u64>().ok())
+                    .unwrap_or(0)
+                    .min(MAX_FLOOD_BYTES);
+                flood(bytes)?;
+            }
             _ if line.starts_with("/later ") => {
                 let mut parts = line.splitn(3, ' ').skip(1);
                 let delay = parts
