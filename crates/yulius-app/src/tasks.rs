@@ -22,7 +22,7 @@ use crate::ports::store::TaskFieldUpdate;
 /// Maximum title length derived from a prompt.
 const TITLE_MAX: usize = 80;
 
-/// Derives a task title from its prompt: first non-empty line, trimmed to [`TITLE_MAX`] chars.
+/// Derives a task title from its prompt: first non-empty line, trimmed to 80 characters.
 #[must_use]
 pub fn title_from_prompt(prompt: &str) -> String {
     let line = prompt
