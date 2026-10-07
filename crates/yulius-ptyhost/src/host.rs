@@ -100,6 +100,8 @@ fn io_error(context: &'static str) -> impl FnOnce(io::Error) -> HostError {
 /// # Errors
 /// Returns the failure that prevented or ended the run abnormally.
 pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
+    // Taken first: a run directory removed while the host starts is still detected as orphaned.
+    let identity = dir_identity(run_dir);
     let launch = load_launch(run_dir)?;
     let attempt = launch.attempt_id.clone();
     let fail = |reason, error| record_failure(run_dir, &attempt, reason, error);
@@ -147,7 +149,7 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
         abort_child(child_pid);
         return Err(fail(ExitReason::HostError, error));
     }
-    if let Some(identity) = dir_identity(run_dir) {
+    if let Some(identity) = identity {
         let watcher = Arc::clone(&shared);
         let dir = run_dir.to_path_buf();
         // Without the watchdog the run is still fully functional; it only loses orphan cleanup.
