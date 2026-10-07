@@ -169,30 +169,45 @@ Delivery = {"stage":"none|pr_open|merged_integration|env_done|promoted|productio
 | Method | Path | Level | Notes |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/skills` | read | `[{"name","description","source":"repository|instance|open-mercato","path","enabled"}]` |
-| GET | `/api/sandboxes/{sid}/skills/{name}` | read | `{"name","content"}` |
-| PUT | `/api/sandboxes/{sid}/skills/{name}` | write | `{"enabled":bool}` |
-| GET/POST | `/api/sandboxes/{sid}/workflows` | read/write | `Workflow` |
-| PUT/DELETE | `/api/workflows/{id}` | write | |
-| GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation` |
-| PUT/DELETE | `/api/automations/{id}` | write | |
-| POST | `/api/automations/{id}/run` | write | creates one run now |
-| GET | `/api/automations/{id}/runs` | read | `[{"scheduled_for","state","task_id","error"}]` |
-| GET/POST | `/api/sandboxes/{sid}/mcp` | read/write | `McpServer` (sandbox + inherited instance servers) |
-| PUT/DELETE | `/api/mcp/{id}` | write (instance: admin) | |
-| POST | `/api/mcp/{id}/test` | write | `{"ok","tools":["…"],"error"}` |
+| GET | `/api/sandboxes/{sid}/skills/{name}` | read | `{"name","content"}` (`SKILL.md`, at most 512 KiB) |
+| PUT | `/api/sandboxes/{sid}/skills/{name}` | write (instance skills: instance admin) | `{"enabled":bool}` → 204. Repository skills → 422 (always available inside the repository). |
+| GET/POST | `/api/sandboxes/{sid}/workflows` | read/write | `Workflow`; POST → 201. `"scope":"instance"` creates an instance workflow (instance admins). |
+| PUT/DELETE | `/api/workflows/{id}` | write (instance: admin) | PUT replaces name, description, steps, instructions, gates → `Workflow`; DELETE → 204 |
+| GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201 |
+| PUT/DELETE | `/api/automations/{id}` | write | PUT replaces the editable fields → `Automation`; DELETE → 204 (removes run history; tasks stay) |
+| POST | `/api/automations/{id}/run` | write | creates one run now (also when disabled) → `AutomationRun` |
+| GET | `/api/automations/{id}/runs` | read | `[AutomationRun]`, newest first (at most 100) |
+| GET/POST | `/api/sandboxes/{sid}/mcp` | read/write | `McpServer` (sandbox + inherited instance servers); POST body `McpServerInput` → 201 |
+| PUT/DELETE | `/api/mcp/{id}` | write (instance: admin) | PUT `McpServerInput` → `McpServer`; DELETE → 204 |
+| POST | `/api/mcp/{id}/test` | write (instance: admin) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). |
 
 ```json
 Workflow = {"id","name","description","steps":["Write spec","Implement","Test","Open PR"],
             "instructions":"…","gates":{"require_spec":true,"require_tests":true},"scope":"instance|sandbox"}
 Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","workflow_id|null",
               "harness":"claude|codex","enabled":true,"created_via":"ui|agent",
-              "next_run_at":"…|null","last_run":{"scheduled_for","state","task_id|null"}|null}
+              "next_run_at":"…|null","last_run":AutomationRun|null}
+AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
+                 "task_id|null","error|null"}
 McpServer = {"id","scope":"instance|sandbox","name","transport":"stdio|http","command|null",
              "args":[],"url|null","env_keys":["APIFY_TOKEN"],"header_keys":[],"enabled":true}
+McpServerInput = {"name","transport","command?","args?","url?","env?":{"KEY":"value"},
+                  "headers?":{"Name":"value"},"enabled?":bool,"scope?":"sandbox|instance"}
 ```
 
-Secrets are write-only: create/update bodies may include `"env": {"KEY": "value"}` and
-`"headers": {…}`; responses only list keys.
+Two built-in instance workflows, `Feature` (`wf-feature`) and `Quick task` (`wf-quick-task`), are
+seeded whenever the instance has no instance workflow. Automation `cron` is a five-field
+expression (`yulius-domain::cron`), `utc_offset_minutes` is within ±1080, and at most 100
+automations exist per sandbox. A run whose automation's previous task is still active is
+recorded as `skipped_previous_active`.
+
+MCP secrets are write-only: responses only list key names. On update, an omitted `env`/`headers`
+keeps the stored values; a given map replaces all values of that map (`{}` clears it). Names are
+1–64 letters, digits, `-` or `_`, unique per scope ignoring case and `-`/`_`; `yulius` is reserved
+for the always-attached Yulius tool server. A sandbox server overrides an instance server of the
+same name for that sandbox (also when disabled). Agent runs receive HTTP secrets only as an
+`Authorization: Bearer` token; other headers are used by the test endpoint but not yet passed to
+the harnesses.
 
 ## Browser, editor, shell
 

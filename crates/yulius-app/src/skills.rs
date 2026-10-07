@@ -404,24 +404,18 @@ pub fn scan_catalog(repo: &Path, skills_root: &Path) -> Vec<CatalogSkill> {
     found
 }
 
+/// Writes through a temporary file and a rename so readers (skill installs) never see a
+/// partial file. No fsync: the extracted pack is a cache that [`extract_pack`] verifies byte for
+/// byte against the embedded copy at every startup and rewrites on mismatch, so a write lost in
+/// a crash is repaired on the next start.
 fn write_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
     let name = target
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| io::Error::other("invalid file name"))?;
     let tmp = target.with_file_name(format!(".{name}.yulius-tmp"));
-    {
-        let mut file = fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    fs::rename(&tmp, target)?;
-    if let Some(parent) = target.parent()
-        && let Ok(dir) = fs::File::open(parent)
-    {
-        let _ = dir.sync_all();
-    }
-    Ok(())
+    fs::File::create(&tmp)?.write_all(bytes)?;
+    fs::rename(&tmp, target)
 }
 
 /// Removes entries under `dir` that are not part of the pack (bounded walk, never follows
