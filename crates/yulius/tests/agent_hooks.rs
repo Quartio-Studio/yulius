@@ -495,3 +495,49 @@ async fn briefing_includes_the_task_workflow_instructions() -> TestResult {
     assert!(briefing.len() <= 12 * 1024 + 64);
     Ok(())
 }
+
+#[tokio::test]
+async fn steps_follow_the_spec_plan_checklist() -> TestResult {
+    let f = fixture().await?;
+    let spec = |implement_done: bool| {
+        format!(
+            "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout API\n\n\
+             ## Goal\n\nCustomers can pay.\n\n## Context\n\nNo checkout yet.\n\n\
+             ## Requirements\n\n- Card payments.\n\n## Plan\n\n- [x] Write spec\n- [{}] Implement API\n  - [ ] Validate input\n- [ ] Open PR\n\n\
+             ## Acceptance Criteria\n\nA test order succeeds.\n\n## Test plan\n\n```sh\ncargo test\n```\n\n\
+             ## Decisions\n\n- Hosted payment page.\n",
+            if implement_done { "x" } else { " " }
+        )
+    };
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(f.worktree.join("docs/specs/checkout.md"), spec(false))?;
+    hook(&f, "Stop", json!({})).await?;
+    let steps = f.h.app.deps.store.steps(&f.task).await?;
+    let view: Vec<(String, String)> = steps
+        .iter()
+        .map(|s| (s.title.clone(), s.status.clone()))
+        .collect();
+    assert_eq!(
+        view,
+        [
+            ("Write spec".to_owned(), "done".to_owned()),
+            ("Implement API".to_owned(), "pending".to_owned()),
+            ("Open PR".to_owned(), "pending".to_owned()),
+        ],
+        "top-level plan items become steps"
+    );
+    let implement_id = steps[1].id.clone();
+
+    // Ticking the box in the spec marks the step done (same step id); the briefing shows it.
+    std::fs::write(f.worktree.join("docs/specs/checkout.md"), spec(true))?;
+    let body = hook(&f, "SessionStart", json!({"session_id": "s2"})).await?;
+    let steps = f.h.app.deps.store.steps(&f.task).await?;
+    assert_eq!(steps[1].status, "done");
+    assert_eq!(steps[1].id, implement_id);
+    assert_eq!(steps[1].updated_by.as_deref(), Some("spec"));
+    let briefing = body["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .ok_or("briefing")?;
+    assert!(briefing.contains("Implement API"), "{briefing}");
+    Ok(())
+}

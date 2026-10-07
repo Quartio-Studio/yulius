@@ -152,6 +152,9 @@ impl App {
                 .set_attempt_session(&ctx.attempt.id, session)
                 .await?;
         }
+        if let Err(err) = self.sync_steps_from_spec(&ctx.task).await {
+            tracing::warn!(error = %err, task = %ctx.task.id, "step sync from the spec failed");
+        }
         let briefing = self.briefing(&ctx.task, ctx.attempt.harness).await?;
         Ok(HookOutput::additional_context(
             events::SESSION_START,
@@ -303,6 +306,9 @@ impl App {
     ) -> AppResult<HookOutput> {
         let store = &self.deps.store;
         let task = &ctx.task;
+        if let Err(err) = self.sync_steps_from_spec(task).await {
+            tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
+        }
         let mut reasons = Vec::new();
 
         let urgent: Vec<InboxEntry> = store
@@ -416,6 +422,91 @@ impl App {
         })
         .await
         .map_err(AppError::internal)
+    }
+}
+
+impl App {
+    /// Keeps the task's steps in sync with the Plan checklist of its spec (STP-004): the
+    /// top-level plan items become the steps in order; checked items are `done`; unchecked
+    /// items keep the status of the existing step with the same title (agents may mark them
+    /// `in_progress` before ticking the box) or start `pending`. Writes only on change. Returns
+    /// whether the steps changed.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn sync_steps_from_spec(&self, task: &TaskRecord) -> AppResult<bool> {
+        let (Some(worktree), Some(spec_path)) =
+            (task.worktree_path.as_ref(), task.spec_path.as_ref())
+        else {
+            return Ok(false);
+        };
+        let Some(path) = repo_path(Path::new(worktree), spec_path) else {
+            return Ok(false);
+        };
+        let expected = task.id.clone();
+        let plan = tokio::task::spawn_blocking(move || {
+            read_bounded(&path).map(|text| validate_spec_for(&text, &expected).plan)
+        })
+        .await
+        .map_err(AppError::internal)?;
+        let Some(plan) = plan else { return Ok(false) };
+        let items: Vec<_> = plan
+            .into_iter()
+            .filter(|item| item.depth == 0 && !item.text.trim().is_empty())
+            .take(100)
+            .collect();
+        if items.is_empty() {
+            return Ok(false);
+        }
+        let existing = self.deps.store.steps(&task.id).await?;
+        let now = self.now();
+        let mut steps = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let title: String = item.text.trim().chars().take(300).collect();
+            let previous = existing.iter().find(|s| s.title == title);
+            let status = if item.checked {
+                "done".to_owned()
+            } else {
+                previous.map_or_else(|| "pending".to_owned(), |p| p.status.clone())
+            };
+            let unchanged = previous.is_some_and(|p| p.status == status);
+            steps.push(crate::model::StepRecord {
+                id: match previous {
+                    Some(p) => p.id.clone(),
+                    None => yulius_domain::ids::StepId::parse(&self.deps.crypto.new_id())
+                        .map_err(AppError::internal)?,
+                },
+                task_id: task.id.clone(),
+                ordinal: u32::try_from(i + 1).unwrap_or(u32::MAX),
+                title,
+                status,
+                note: previous.and_then(|p| p.note.clone()),
+                updated_by: if unchanged {
+                    previous.and_then(|p| p.updated_by.clone())
+                } else {
+                    Some("spec".into())
+                },
+                updated_at: if unchanged {
+                    previous.and_then(|p| p.updated_at)
+                } else {
+                    Some(now)
+                },
+            });
+        }
+        let same = steps.len() == existing.len()
+            && steps
+                .iter()
+                .zip(&existing)
+                .all(|(a, b)| a.title == b.title && a.status == b.status);
+        if same {
+            return Ok(false);
+        }
+        self.deps
+            .store
+            .replace_steps(&task.id, &steps, "spec", now)
+            .await?;
+        self.publish_steps(task).await;
+        Ok(true)
     }
 }
 

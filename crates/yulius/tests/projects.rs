@@ -631,6 +631,29 @@ async fn remove_stops_tasks_and_keeps_the_repository() -> TestResult {
     );
     let queued = w.h.store.task(&queued.id).await?.ok_or("task")?;
     assert!(matches!(queued.status, TaskStatus::Stopped(_)));
+    // PRJ-009: an export of the tasks is preserved (owner-only).
+    let exports: Vec<_> = std::fs::read_dir(w.data_dir().join("exports"))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(exports.len(), 1, "{exports:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&exports[0])?)?;
+    assert_eq!(doc["sandbox"]["repository"], "Quartio-Studio/shop");
+    let exported: Vec<&str> = doc["tasks"]
+        .as_array()
+        .ok_or("tasks")?
+        .iter()
+        .filter_map(|t| t["id"].as_str())
+        .collect();
+    assert!(
+        exported.contains(&"t-running") && exported.contains(&"t-queued"),
+        "every task of the sandbox is exported (incl. the preparation task): {exported:?}"
+    );
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&exports[0])?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
     // PRJ-009: GitHub repository and files are kept.
     assert!(git(&remote, &["rev-parse", "refs/heads/main"]).is_ok());
     assert!(w.github.created().is_empty());

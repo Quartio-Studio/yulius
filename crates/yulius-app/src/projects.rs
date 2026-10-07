@@ -25,7 +25,7 @@ use yulius_domain::spec_format::{
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::{SandboxRecord, Secret, UserRecord};
+use crate::model::{SandboxRecord, Secret, TaskRecord, UserRecord};
 use crate::ports::github::{GitHubAppConfig, RepoAccess, RulesetRequest};
 
 /// First port of the first sandbox range (PRJ-010).
@@ -847,6 +847,7 @@ impl App {
                 }
             }
         }
+        let export = self.export_sandbox_tasks(&record, &tasks).await?;
         store.remove_sandbox(&id, self.now()).await?;
         store
             .audit(
@@ -855,13 +856,121 @@ impl App {
                 "sandbox.removed",
                 Some(id.as_str()),
                 Some(&format!(
-                    "{}/{} stopped={stopped}; GitHub repository and files kept",
-                    record.repo_owner, record.repo_name
+                    "{}/{} stopped={stopped}; GitHub repository and files kept; tasks exported to {}",
+                    record.repo_owner,
+                    record.repo_name,
+                    export.display()
                 )),
             )
             .await?;
         self.publish_resync(None);
         Ok(())
+    }
+}
+
+impl App {
+    /// Writes `<data>/exports/sandbox-<slug>-<ms>.json` (0600) with every task of a sandbox, its
+    /// attempts, steps and messages, before the sandbox is removed (PRJ-009).
+    async fn export_sandbox_tasks(
+        &self,
+        sandbox: &SandboxRecord,
+        tasks: &[TaskRecord],
+    ) -> AppResult<std::path::PathBuf> {
+        let store = &self.deps.store;
+        let mut rows = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let attempts: Vec<serde_json::Value> = store
+                .attempts(&task.id)
+                .await?
+                .into_iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "seq": a.seq,
+                        "harness": a.harness.as_str(),
+                        "account_id": a.account_id.map(|id| id.as_str().to_owned()),
+                        "provider_session_id": a.provider_session_id,
+                        "launch_kind": a.launch_kind.as_str(),
+                        "state": format!("{:?}", a.state),
+                        "started_at_ms": a.started_at.0,
+                        "ended_at_ms": a.ended_at.map(|t| t.0),
+                        "exit_code": a.exit_code,
+                        "exit_reason": a.exit_reason,
+                    })
+                })
+                .collect();
+            let steps: Vec<serde_json::Value> = store
+                .steps(&task.id)
+                .await?
+                .into_iter()
+                .map(|s| serde_json::json!({"ordinal": s.ordinal, "title": s.title, "status": s.status, "note": s.note}))
+                .collect();
+            let messages: Vec<serde_json::Value> = store
+                .task_messages(&task.id, 1_000)
+                .await?
+                .into_iter()
+                .map(|e| {
+                    let m = e.message;
+                    serde_json::json!({
+                        "from_task": m.from_task.map(|t| t.as_str().to_owned()),
+                        "from_user": m.from_user.map(|u| u.as_str().to_owned()),
+                        "to_task": m.to_task.map(|t| t.as_str().to_owned()),
+                        "kind": m.kind, "subject": m.subject, "body": m.body,
+                        "created_at_ms": m.created_at.0,
+                    })
+                })
+                .collect();
+            rows.push(serde_json::json!({
+                "id": task.id.as_str(),
+                "number": task.number,
+                "title": task.title,
+                "prompt": task.prompt,
+                "harness": task.harness.as_str(),
+                "status": task.status.as_str(),
+                "branch": task.branch,
+                "spec_path": task.spec_path,
+                "origin": task.origin.as_str(),
+                "created_by": task.created_by.as_str(),
+                "created_at_ms": task.created_at.0,
+                "closed_at_ms": task.closed_at.map(|t| t.0),
+                "archived_at_ms": task.archived_at.map(|t| t.0),
+                "attempts": attempts,
+                "steps": steps,
+                "messages": messages,
+            }));
+        }
+        let now = self.now();
+        let doc = serde_json::json!({
+            "sandbox": {
+                "id": sandbox.id.as_str(),
+                "slug": sandbox.slug,
+                "repository": format!("{}/{}", sandbox.repo_owner, sandbox.repo_name),
+            },
+            "exported_at_ms": now.0,
+            "tasks": rows,
+        });
+        let bytes = serde_json::to_vec_pretty(&doc).map_err(AppError::internal)?;
+        let dir = self.config.data_dir.join("exports");
+        let path = dir.join(format!("sandbox-{}-{}.json", sandbox.slug, now.0));
+        let target = path.clone();
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            use std::io::Write;
+            use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&dir)?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&target)?;
+            file.write_all(&bytes)?;
+            file.sync_all()
+        })
+        .await
+        .map_err(AppError::internal)?
+        .map_err(AppError::internal)?;
+        Ok(path)
     }
 }
 
