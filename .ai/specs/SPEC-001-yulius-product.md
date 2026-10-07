@@ -20,7 +20,7 @@ Companion documents:
 | `WA hh:mm` | Founders' morning notes list in a group chat, scrolled on screen at V 3:45, V 23:30 and V 31:45–35:40 | The call explicitly walks this list (T 3:38 "the points we wrote this morning"; T 35:44 "that's all from WhatsApp"). Only product notes are used; personal chat is excluded. |
 | `P(n)` | Michał's unfinished draft goal prompt, item *n*, on screen at V 3:38 and V 35:45 | Already written before the discussion (visible at V 3:38), so **spoken statements in the call are later and take precedence**. |
 | `K` | User clarifications in the 2026-10-07 goal | Rust implementation; Product dev VM; Studio continuous; support both simply; robustness. |
-| `F 2026-10-07` | Founder feedback after using the deployed instance (2026-10-07 goal: ten items plus the recovery code) | Later than every other source; supersedes them where it conflicts (class C). |
+| `F 2026-10-07` | Founder feedback after using the deployed instance (2026-10-07 goal: ten items, then the recovery code, five additions — agent cursor, hidden tools rail, the "unknown tab" error, link routing, HTML text with instant copying — and a simpler editor instead of per-user VS Code) | Later than every other source; supersedes them where it conflicts (class C). |
 | `R:product`, `R:studio` | Read-only inspection of `/Users/mrfishpl/Desktop/quartio/product` and `/studio` | Structure, instructions, workflows. |
 
 Raw sources, frame captures and research notes stay outside Git (local notes). This document
@@ -163,16 +163,7 @@ defaults that implementation may refine without changing user-visible intent.
 | ACC-003 | Setup is reachable only with a one-time setup token available on the VM, so a public instance cannot be claimed by a stranger. | — | A | AC-ACC-2 |
 | ACC-004 | The superadmin admits users (by GitHub login); only admitted users may sign in; the superadmin can disable a user, which ends their sessions. | T 30:46 | E | AC-ACC-3 |
 | ACC-005 | Every user authenticates with GitHub; there is no user password. | T 30:52–31:00, WA 13:40, P(4) | E | AC-ACC-3 |
-| ACC-006 | The instance connects either the organization's GitHub or a private GitHub account, and every project is a repository of that owner. | T 8:41–9:00, T 31:00, P(4) | E | AC-UI-8 | Two users of one sandbox: each sees only their own shells (attaching to the other's shell is 404); in a contained shell `whoami` is the user's login, `id -u` is 0, `sudo id -u` prints 0, and a file written to `~` is in that user's persistent home and invisible to the other user. | int (Linux CI) |
-| AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
-| AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude/Codex smoke shows the goal being set. | int, live |
-| AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
-| AC-ROT-8 | With only the other provider available, rotation proposes instead of switching; approving switches; a manual harness change without approval is refused (409); with automatic switching enabled, rotation switches as before. | int |
-| AC-BRW-4 | A page served on the VM's localhost (fixture with a stylesheet and image) is mirrored as DOM in the client (text present in the mirror iframe, image loaded through Yulius), a click in the mirror reaches the server page, and a canvas-only page offers the screencast fallback. | int, live (Chromium) |
-| AC-BRW-5 | A new tab shows the welcome page with the sandbox name and a link to a listening sandbox port. | int, live (Chromium) |
-| AC-EDT-2 | The file API serves write users only, keeps every path (symbolic links included) inside the folder, hides `.git`, writes atomically and refuses a stale save with 409. | int |
-| AC-EDT-3 | Opt-in browser test: the real UI in headless Chrome opens the editor panel, colors JavaScript, suggests `console` members, saves with Cmd/Ctrl+S, and suggests words in a Python file. | live (Chrome) |
-| AC-PRJ-1 |
+| ACC-006 | The instance connects either the organization's GitHub or a private GitHub account, and every project is a repository of that owner. | T 8:41–9:00, T 31:00, P(4) | E | AC-PRJ-1 |
 | ACC-007 | Project permissions mirror GitHub repository permissions: no access → the sandbox is invisible (as if nonexistent); read → can view tasks, terminals (read-only), steps and history but not act; write → can create/continue/steer tasks and use browser/editor; admin → sandbox configuration. | T 9:00–9:39, T 31:11–31:44, P(4) | E | AC-ACC-4 |
 | ACC-008 | Permission changes on GitHub take effect in Yulius within 5 minutes without user action, and immediately after the user signs in again; revocation closes the user's live terminal connections to that sandbox. | T 31:38 ("consistent") | A | AC-ACC-5 |
 | ACC-009 | The superadmin may mark users as instance administrators, who may manage accounts, instance MCP servers and the instance skill catalog. Instance administration never grants repository access that GitHub does not grant. | — | A | AC-ACC-6 |
@@ -215,9 +206,11 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-012 | The interface is usable on a phone: tasks list, status, terminal view and a quick-input bar that sends text/keys to the session. | T 29:00, WA 13:34 | E | AC-UI-6 |
 | UI-013 | A small per-task action menu provides: Stop, Continue, Switch harness/account, Deliver, Feedback, Archive. | T 13:04–14:28 (switching), T 35:19 (feedback), P(5) | A (placement) | AC-UI-4 |
 | UI-014 | Visual direction: dark, dense, terminal-first, following the reference's compactness; one consistent design system. | V 2:30–6:50 | A | AC-UI-1 |
-| UI-015 | A general sandbox shell (contained, write permission) is available from the right rail, hidden by default; it is separate from the agent terminal and never replaces it. The VS Code editor's integrated terminal is also available. | T 11:13 ("a separate terminal is here, of course"), V 11:12 (reference Terminal tab) vs T 6:42 (Terminal/Logs tabs replaced by sandbox tabs) | U-12 | "Every user gets root access": root inside an unprivileged user namespace cannot write host system directories, and overlay mounts in user namespaces are refused on the Ubuntu 24.04 host (AppArmor userns restriction; verified 2026-10-07). | F 2026-10-07 | Users are uid 0 with `sudo` in their sandbox; homes, the sandbox and `/tmp` are writable; system packages are installed by the operator; per-user tools install into the home (e.g. `npm -g` with a home prefix, `pip --user`, `cargo install`) | A writable system layer becomes available (newer bubblewrap with `--overlay`, or a container runtime) |
-| U-11 | AC-UI-7 |
+| UI-015 | A general sandbox shell (contained, write permission) is available from the right rail, hidden by default; it is separate from the agent terminal and never replaces it. | T 11:13 ("a separate terminal is here, of course"), V 11:12 (reference Terminal tab) vs T 6:42 (Terminal/Logs tabs replaced by sandbox tabs) | U-11 | AC-UI-7 |
 | UI-016 | Shells are user-scoped: only the user who opened a shell can list, see or type into it (administrators included). Inside the sandbox every user is a separate user with root access: their own login name and prompt, root privileges in the sandbox (`id -u` is 0, `sudo` works), and a private home that persists across their sandboxes and sessions. | F 2026-10-07 | C (system-directory writes U-12) | AC-UI-8 |
+| UI-017 | The whole right tool rail (browser, editor, shell, messages) is hidden by default; a top-bar toggle shows it and the choice is remembered per browser. | F 2026-10-07 (supersedes the visible icon rail of UI-002) | C | AC-UI-9 |
+| UI-018 | Links in terminals, messages and pages open in a new tab of the user's browser; links to the VM itself (localhost, loopback addresses) open in the sandbox browser instead, since only it can reach them. | F 2026-10-07 | C | AC-UI-10 |
+| UI-019 | Terminal and TUI text is HTML text in the user's browser, not an image: a selection is copied at once, and a double-click selects a word even when the program (e.g., Claude Code) switched on mouse reporting; the mouse can be handed to the program on request. | F 2026-10-07 | C | AC-UI-11 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -338,9 +331,10 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | BRW-001 | A real, general browser like Chrome: any address can be typed. | T 6:54–7:00, WA 13:02 | E | AC-BRW-1 |
 | BRW-002 | One browser per sandbox, shared by that sandbox's users and agents (logins such as AWS persist per sandbox). | T 7:21–7:26 (supersedes T 7:00 "global, whole VM" and WA 13:04 "per user") | C | AC-BRW-1 |
 | BRW-003 | Agents control the same browser as fully as the native Claude/Codex browser plugins. | T 7:07, WA 13:04 | E | AC-BRW-2 |
-| BRW-004 | Tab management; when an action is requested from the user (e.g., AWS login), the user can jump straight to that tab; the agent also writes a clickable "open this tab" link in the session. | T 7:26–8:07 | E ("nice to have", T 7:26) | AC-BRW-3 |
-| BRW-005 | The user sees the page as live DOM, not as rendered pixels: the server browser's document is mirrored into the user's browser (crisp, selectable text; layout at the panel's size) and clicks, typing and scrolling are forwarded to the real browser on the server. Page resources (images, stylesheets, fonts) load through Yulius, so pages served on the VM's localhost render. Content that cannot be mirrored (canvas-only apps, plugins, browser-internal pages) falls back to the screencast view, visibly labelled, and the user can switch views. | F 2026-10-07 | C | AC-BRW-4 |
+| BRW-004 | Tab management; when an action is requested from the user (e.g., AWS login), the user can jump straight to that tab; the agent also writes a clickable "open this tab" link in the session. A tab that no longer exists (e.g., after a browser restart) is replaced by the current tab list, not reported as an error. | T 7:26–8:07, F 2026-10-07 ("unknown tab") | E ("nice to have", T 7:26) | AC-BRW-3 |
+| BRW-005 | The user sees the page as live DOM, not as rendered pixels: the server browser's document is mirrored into the user's browser (crisp, selectable text; layout at the panel's size) and clicks, typing and scrolling are forwarded to the real browser on the server. Page resources (images, stylesheets, fonts) load through Yulius, so pages served on the VM's localhost render. Text in the mirror can be selected (Select toggle, or holding Option/Alt) and a selection is copied at once; canvases keep updating. Content that cannot be mirrored (plugins, browser-internal pages, pages that do not send their DOM) falls back to the screencast view, visibly labelled, and the user can switch views. The mirror never runs page scripts in Yulius. | F 2026-10-07 | C | AC-BRW-4 |
 | BRW-006 | A fresh browser and every new tab open a Yulius welcome page: the sandbox name, live links to the sandbox's listening dev-server ports, and short guidance (any address can be typed; agents share this browser). | F 2026-10-07 | C | AC-BRW-5 |
+| BRW-007 | When an agent clicks, types, opens or navigates in the browser, viewers see it: a labelled cursor (task number and harness) at the click position with a click ripple, or a short notice for navigation, like the official Claude/Codex browser plugins. | F 2026-10-07 | C | AC-BRW-6 |
 
 ### 5.14 Editor (EDT)
 
@@ -547,6 +541,7 @@ Nothing is pushed to GitHub by import.
 | U-09 | Agents' autonomy level (approval prompts). | Cezar "Autonomous" toggle (V 5:04); vibe-coding intent | Full-auto only inside an OS sandbox; harness default approvals otherwise | — |
 | U-10 | Browser control parity "1:1 like native plugins" — exact tool set. | WA 13:04 | Yulius browser tools via MCP + raw CDP endpoint for CDP-capable MCPs | — |
 | U-11 | Is a general shell terminal still wanted? T 6:42 replaced the reference's Terminal/Logs tabs with sandbox tabs; later at T 11:13 (V 11:12, clicking the reference Terminal tab) the speaker says a separate terminal obviously exists, but the center must be the agent. | T 6:42, T 11:13, V 11:12 | Keep a hidden-by-default sandbox shell in the right rail (UI-015); no Terminal/Logs tabs | Founders say otherwise |
+| U-12 | "Every user gets root access": root inside an unprivileged user namespace cannot write host system directories, and overlay mounts in user namespaces are refused on the Ubuntu 24.04 host (AppArmor userns restriction; verified 2026-10-07). | F 2026-10-07 | Users are uid 0 with `sudo` in their sandbox; homes, the sandbox and `/tmp` are writable; system packages are installed by the operator; per-user tools install into the home (e.g. `npm -g` with a home prefix, `pip --user`, `cargo install`) | A writable system layer becomes available (newer bubblewrap with `--overlay`, or a container runtime) |
 
 ## 10. Acceptance scenarios
 
@@ -563,6 +558,19 @@ instance — out of scope).
 | AC-ACC-5 | Downgrading a permission in fake GitHub takes effect within the cache TTL and closes write-capable terminal sockets. | int |
 | AC-ACC-6 | Instance admin can manage accounts but sees no sandbox without GitHub access. | int |
 | AC-ACC-7 | Setup returns a 6-digit recovery code once; recovery with it sets a new password, revokes sessions and issues a new code; three wrong codes disable recovery permanently (also after restart) until a signed-in superadmin regenerates the code with the password. | int, ui |
+| AC-UI-8 | Two users of one sandbox: each sees only their own shells (attaching to the other's shell is 404); in a contained shell `whoami` is the user's login, `id -u` is 0, `sudo id -u` prints 0, and a file written to `~` is in that user's persistent home and invisible to the other user. | int (Linux CI) |
+| AC-UI-9 | The workspace opens with the tools rail hidden; the top-bar toggle shows it. | live (Chrome) |
+| AC-UI-10 | Localhost and loopback links are classified for the sandbox browser, other links for a new tab. | live (Chrome) |
+| AC-UI-11 | The real terminal view fed output that enables mouse tracking renders rows as HTML (no canvas), keeps the mouse for selection, and a double-click selects a word. | live (Chrome) |
+| AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
+| AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude/Codex smoke shows the goal being set. | int, live |
+| AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
+| AC-ROT-8 | With only the other provider available, rotation proposes instead of switching; approving switches; a manual harness change without approval is refused (409); with automatic switching enabled, rotation switches as before. | int |
+| AC-BRW-4 | A page served on the VM's localhost (fixture with a stylesheet, an image and a canvas) is mirrored as DOM in the client: text present in the mirror iframe, image and styles loaded through Yulius, the canvas updating; a click in the mirror reaches the server page; Select mode selects and copies a word; the pixel view can be chosen and left, and a tab that cannot be mirrored falls back to it with a notice. A hostile page that feeds crafted events to the recorder cannot run script in the UI (the mirror iframe is sandboxed `allow-same-origin` only), and the resource endpoint serves write users only, as inert content, and refuses cross-site requests and navigations. | int, live (Chromium) |
+| AC-BRW-5 | A new tab shows the welcome page with the sandbox name and a link to a listening sandbox port. | int, live (Chromium) |
+| AC-BRW-6 | An agent's click reaches viewers with its position and label, and the UI shows the labelled cursor. | int, live (Chromium) |
+| AC-EDT-2 | The file API serves write users only, keeps every path (symbolic links included) inside the folder, hides `.git`, writes atomically and refuses a stale save with 409. | int |
+| AC-EDT-3 | Opt-in browser test: the real UI in headless Chrome opens the editor panel, colors JavaScript, suggests `console` members, saves with Cmd/Ctrl+S, and suggests words in a Python file. | live (Chrome) |
 | AC-PRJ-1 | Creating/importing a sandbox requires a repository of the instance owner; one repository maps to one sandbox. | int |
 | AC-PRJ-2 | Task worktrees contain only the sandbox repository; there is no UI/API to add another repository. | int |
 | AC-PRJ-3 | Creating from each template creates the GitHub repo (fake), pushes the scaffold with the docs format that passes the validator, configures protection, and opens the tab. | int, ui |
@@ -651,7 +659,10 @@ observed. Live provider compatibility and deployment are reported separately fro
   changed, ACC-011), user-scoped shells with per-user root identity (UI-016, U-12), clean-exit UI
   (HRN-002), task deletion (TSK-009), goal mode (TSK-010), harness changes need approval (ROT-004
   changed, ROT-012), account usage (ROT-009), DOM-mirrored browser and welcome page (BRW-005/006),
-  a built-in VS Code-styled editor replacing openvscode-server (EDT-001 changed, EDT-003/004).
+  a built-in VS Code-styled editor replacing openvscode-server (EDT-001 changed, EDT-003/004);
+  later the same day: the agent's cursor (BRW-007), the hidden tools rail (UI-017), link routing
+  (UI-018), HTML terminal text with instant copying and double-click selection (UI-019), text
+  selection in the browser mirror (BRW-005) and the "unknown tab" error (BRW-004).
 
 - 2026-10-07: initial specification from the full transcript, video review, morning notes, draft
   prompt, user clarifications and Product/Studio inspection; self-reviewed (SPEC-003).

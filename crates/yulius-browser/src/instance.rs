@@ -25,6 +25,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use crate::cdp::{CdpClient, CdpConfig, CdpEvent, FrameSink, ScreencastFrame, wait_closed};
 use crate::error::{BrowserError, CdpError};
 use crate::keys;
+use crate::mirror::{self, BINDING, DomBatch, MirrorBuffer};
 use crate::process::{StopTimeouts, Supervised};
 use crate::snapshot;
 use crate::url_policy::normalize_url;
@@ -46,6 +47,12 @@ const MULTI_CLICK_DISTANCE: f64 = 5.0;
 const CONTROL_QUEUE: usize = 64;
 /// Browser events buffered per subscriber.
 const EVENT_QUEUE: usize = 64;
+/// DOM batches queued per mirror subscriber; a lagging viewer resubscribes (full snapshot).
+const DOM_QUEUE: usize = 256;
+/// Largest page resource fetched for a viewer.
+pub const MAX_RESOURCE_BYTES: usize = 20 << 20;
+/// Bytes read per `IO.read` call.
+const IO_READ_CHUNK: u32 = 1 << 20;
 
 const CENTER_FUNCTION: &str = "function (selector) {
   const element = this.querySelector(selector);
@@ -169,7 +176,7 @@ pub struct BoundedScreenshot {
 }
 
 /// Notifications for the server (viewer messages and the UI event stream).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BrowserEvent {
     /// An agent asked the user to act in a tab (`browser.action_requested`).
     ActionRequested {
@@ -188,6 +195,83 @@ pub enum BrowserEvent {
     /// The DevTools connection closed (browser exited or crashed); the next
     /// [`crate::BrowserManager::ensure`] restarts it.
     Disconnected,
+    /// An agent acted in a tab (shown to viewers as the agent's cursor, BRW-007).
+    AgentActivity {
+        /// The tab.
+        tab_id: TabId,
+        /// Position in CSS pixels, when the action has one.
+        x: Option<f64>,
+        /// Position in CSS pixels, when the action has one.
+        y: Option<f64>,
+        /// `click`, `type`, `open` or `navigate`.
+        action: String,
+        /// Who acted (e.g. `#12 Claude Code`).
+        label: String,
+    },
+    /// The viewport of all tabs changed (viewers lay their DOM mirror out at this size).
+    Viewport {
+        /// Width in CSS pixels.
+        width: u32,
+        /// Height in CSS pixels.
+        height: u32,
+    },
+}
+
+/// A page resource fetched by the browser for a viewer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resource {
+    /// HTTP status, when known.
+    pub status: Option<u16>,
+    /// `Content-Type`, when given.
+    pub content_type: Option<String>,
+    /// The bytes.
+    pub body: Vec<u8>,
+}
+
+/// What a DOM subscriber receives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DomEvent {
+    /// New events (or, with `reset`, a new stream).
+    Batch(DomBatch),
+    /// The subscriber fell behind; it must resubscribe for a fresh snapshot.
+    Lagged,
+}
+
+/// The DOM mirror of one tab. Dropping it unsubscribes; the recorder stops when the last
+/// subscriber of a tab is gone.
+#[derive(Debug)]
+pub struct DomSubscription {
+    tab: TabId,
+    initial: Option<DomBatch>,
+    receiver: broadcast::Receiver<DomBatch>,
+    control: mpsc::Sender<TabId>,
+}
+
+impl DomSubscription {
+    /// The tab.
+    #[must_use]
+    pub fn tab_id(&self) -> &TabId {
+        &self.tab
+    }
+
+    /// The next batch (the buffered snapshot first, when one existed); `None` once the tab or
+    /// browser closed.
+    pub async fn recv(&mut self) -> Option<DomEvent> {
+        if let Some(batch) = self.initial.take() {
+            return Some(DomEvent::Batch(batch));
+        }
+        match self.receiver.recv().await {
+            Ok(batch) => Some(DomEvent::Batch(batch)),
+            Err(broadcast::error::RecvError::Lagged(_)) => Some(DomEvent::Lagged),
+            Err(broadcast::error::RecvError::Closed) => None,
+        }
+    }
+}
+
+impl Drop for DomSubscription {
+    fn drop(&mut self) {
+        let _ = self.control.try_send(self.tab.clone());
+    }
 }
 
 /// Pointer input for [`BrowserInstance::dispatch_mouse`], in CSS pixels of the viewport.
@@ -364,12 +448,22 @@ impl Pointer {
     }
 }
 
+/// A tab whose DOM is mirrored to viewers (SPEC-001 BRW-005).
+struct MirrorTab {
+    session: String,
+    script: Option<String>,
+    buffer: MirrorBuffer,
+    tx: broadcast::Sender<DomBatch>,
+    checkout_pending: bool,
+}
+
 struct State {
     tabs: Vec<TabEntry>,
     active: Option<TabId>,
     sessions: HashMap<TabId, String>,
     actions: HashMap<TabId, ActionRequest>,
     screencasts: HashMap<TabId, Screencast>,
+    mirrors: HashMap<TabId, MirrorTab>,
     viewport: (u32, u32),
     pointer: Pointer,
 }
@@ -397,6 +491,7 @@ impl State {
         self.tabs.retain(|entry| &entry.id != tab);
         let had_action = self.actions.remove(tab).is_some();
         self.screencasts.remove(tab);
+        self.mirrors.remove(tab);
         let session = self.sessions.remove(tab);
         if self.active.as_ref() == Some(tab) {
             self.active = self.tabs.last().map(|entry| entry.id.clone());
@@ -436,6 +531,9 @@ pub struct BrowserInstance {
     last_used: Mutex<Instant>,
     process: OnceLock<Supervised>,
     event_task: Mutex<Option<JoinHandle<()>>>,
+    mirror_lock: tokio::sync::Mutex<()>,
+    /// Address of new and blank tabs (the Yulius welcome page, BRW-006).
+    new_tab_url: Mutex<Option<String>>,
 }
 
 impl std::fmt::Debug for BrowserInstance {
@@ -571,6 +669,7 @@ impl BrowserInstance {
                 sessions: HashMap::new(),
                 actions: HashMap::new(),
                 screencasts: HashMap::new(),
+                mirrors: HashMap::new(),
                 viewport: config.viewport,
                 pointer: Pointer::default(),
             }),
@@ -584,6 +683,8 @@ impl BrowserInstance {
             last_used: Mutex::new(Instant::now()),
             process: OnceLock::new(),
             event_task: Mutex::new(None),
+            mirror_lock: tokio::sync::Mutex::new(()),
+            new_tab_url: Mutex::new(None),
         });
         instance.resync().await?;
         let task = tokio::spawn(event_loop(
@@ -768,12 +869,14 @@ impl BrowserInstance {
                     self.forget_tab(&tab);
                 }
             }
+            "Runtime.bindingCalled" => self.on_mirror_batch(event),
             "Target.detachedFromTarget" => {
                 if let Some(session) = event.params.get("sessionId").and_then(Value::as_str) {
                     {
                         let mut state = lock(&self.state);
                         state.sessions.retain(|_, s| s != session);
                         state.screencasts.retain(|_, cast| cast.session != session);
+                        state.mirrors.retain(|_, mirror| mirror.session != session);
                     }
                     self.cdp.remove_frame_sink(session);
                 }
@@ -840,6 +943,7 @@ impl BrowserInstance {
             let mut state = lock(&self.state);
             state.screencasts.clear();
             state.sessions.clear();
+            state.mirrors.clear();
         }
         let _ = self.events_tx.send(BrowserEvent::Disconnected);
     }
@@ -875,11 +979,25 @@ impl BrowserInstance {
                 metrics(width, height),
             )
             .await?;
-        let mut state = lock(&self.state);
-        if !state.has(tab) {
-            return Err(BrowserError::TabNotFound(tab.clone()));
+        let latest = {
+            let mut state = lock(&self.state);
+            if !state.has(tab) {
+                return Err(BrowserError::TabNotFound(tab.clone()));
+            }
+            state.sessions.insert(tab.clone(), session.clone());
+            state.viewport
+        };
+        // A viewport set while this tab was attaching did not reach it (it was not in the
+        // sessions yet): apply the newest one.
+        if latest != (width, height) {
+            self.cdp
+                .call_session(
+                    &session,
+                    "Emulation.setDeviceMetricsOverride",
+                    metrics(latest.0, latest.1),
+                )
+                .await?;
         }
-        state.sessions.insert(tab.clone(), session.clone());
         Ok(session)
     }
 
@@ -925,7 +1043,12 @@ impl BrowserInstance {
     /// [`BrowserError::UrlRefused`], [`BrowserError::TooManyTabs`] or CDP failures.
     pub async fn open(&self, url: &str) -> Result<TabId, BrowserError> {
         self.touch();
-        let url = normalize_url(url)?;
+        // An empty address opens the welcome page (BRW-006), when one is configured.
+        let welcome = lock(&self.new_tab_url).clone();
+        let url = match welcome {
+            Some(welcome) if url.trim().is_empty() => welcome,
+            _ => normalize_url(url)?,
+        };
         self.create_tab(&url).await
     }
 
@@ -1069,6 +1192,361 @@ impl BrowserInstance {
     }
 
     /// Stops every screencast without subscribers.
+    /// Sets the address of new and blank tabs (the welcome page).
+    pub fn set_new_tab_url(&self, url: Option<String>) {
+        *lock(&self.new_tab_url) = url;
+    }
+
+    /// Shows the welcome page in tabs that are still `about:blank` (a fresh browser).
+    pub async fn show_welcome_in_blank_tabs(&self) {
+        let Some(welcome) = lock(&self.new_tab_url).clone() else {
+            return;
+        };
+        let blank: Vec<TabId> = lock(&self.state)
+            .tabs
+            .iter()
+            .filter(|entry| entry.url.is_empty() || entry.url == "about:blank")
+            .map(|entry| entry.id.clone())
+            .collect();
+        for tab in blank {
+            match self.session(&tab).await {
+                Ok(session) => {
+                    if let Err(error) = self.navigate_session(&tab, &session, &welcome).await {
+                        debug!(%error, "showing the welcome page failed");
+                    }
+                }
+                Err(error) => debug!(%error, "showing the welcome page failed"),
+            }
+        }
+    }
+
+    /// Subscribes to a tab's DOM mirror, starting the recorder on first use (BRW-005).
+    ///
+    /// # Errors
+    /// [`BrowserError::TabNotFound`] or CDP failures while installing the recorder.
+    pub async fn subscribe_dom(&self, tab: &TabId) -> Result<DomSubscription, BrowserError> {
+        self.touch();
+        let session = self.session(tab).await?;
+        let _guard = self.mirror_lock.lock().await;
+        let installed = lock(&self.state)
+            .mirrors
+            .get(tab)
+            .is_some_and(|mirror| mirror.session == session);
+        if !installed {
+            self.install_mirror(tab, &session).await?;
+        }
+        let (initial, receiver) = {
+            let state = lock(&self.state);
+            let mirror = state
+                .mirrors
+                .get(tab)
+                .ok_or_else(|| BrowserError::TabNotFound(tab.clone()))?;
+            (mirror.buffer.snapshot(), mirror.tx.subscribe())
+        };
+        if initial.is_none() && installed {
+            // A running recorder without a buffered snapshot sends one on request; a fresh one
+            // snapshots by itself when it starts.
+            if let Err(error) = self
+                .cdp
+                .call_session(
+                    &session,
+                    "Runtime.evaluate",
+                    json!({"expression": mirror::SNAPSHOT_EXPRESSION}),
+                )
+                .await
+            {
+                debug!(%error, "requesting a DOM snapshot failed");
+            }
+        }
+        Ok(DomSubscription {
+            tab: tab.clone(),
+            initial,
+            receiver,
+            control: self.control_tx.clone(),
+        })
+    }
+
+    async fn install_mirror(&self, tab: &TabId, session: &str) -> Result<(), BrowserError> {
+        let script = mirror::injection_script();
+        self.cdp
+            .call_session(session, "Runtime.enable", json!({}))
+            .await?;
+        self.cdp
+            .call_session(session, "Runtime.addBinding", json!({"name": BINDING}))
+            .await?;
+        let added = self
+            .cdp
+            .call_session(
+                session,
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({"source": script}),
+            )
+            .await?;
+        {
+            let mut state = lock(&self.state);
+            if !state.has(tab) {
+                return Err(BrowserError::TabNotFound(tab.clone()));
+            }
+            state.mirrors.insert(
+                tab.clone(),
+                MirrorTab {
+                    session: session.to_owned(),
+                    script: added
+                        .get("identifier")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    buffer: MirrorBuffer::default(),
+                    tx: broadcast::channel(DOM_QUEUE).0,
+                    checkout_pending: false,
+                },
+            );
+        }
+        // The current document gets the recorder now; later documents through the script.
+        if let Err(error) = self
+            .cdp
+            .call_session(session, "Runtime.evaluate", json!({"expression": script}))
+            .await
+        {
+            debug!(%error, "starting the DOM recorder in the current document failed");
+        }
+        Ok(())
+    }
+
+    fn on_mirror_batch(&self, event: &CdpEvent) {
+        if event.params.get("name").and_then(Value::as_str) != Some(BINDING) {
+            return;
+        }
+        let (Some(session), Some(payload)) = (
+            event.session_id.as_deref(),
+            event.params.get("payload").and_then(Value::as_str),
+        ) else {
+            return;
+        };
+        let mut checkout = false;
+        {
+            let mut state = lock(&self.state);
+            let Some(mirror) = state
+                .mirrors
+                .values_mut()
+                .find(|mirror| mirror.session == session)
+            else {
+                return;
+            };
+            match mirror.buffer.push(payload) {
+                Ok((batch, outgrown)) => {
+                    if batch.reset {
+                        mirror.checkout_pending = false;
+                    }
+                    let _ = mirror.tx.send(batch);
+                    if outgrown && !mirror.checkout_pending {
+                        mirror.checkout_pending = true;
+                        checkout = true;
+                    }
+                }
+                Err(error) => debug!(%error, "dropping a DOM mirror batch"),
+            }
+        }
+        if checkout {
+            self.request_snapshot(session);
+        }
+    }
+
+    fn request_snapshot(&self, session: &str) {
+        let cdp = self.cdp.clone();
+        let session = session.to_owned();
+        tokio::spawn(async move {
+            let _ = cdp
+                .call_session(
+                    &session,
+                    "Runtime.evaluate",
+                    json!({"expression": mirror::SNAPSHOT_EXPRESSION}),
+                )
+                .await;
+        });
+    }
+
+    /// Asks every running recorder for a fresh full snapshot (after lost events).
+    fn checkout_mirrors(&self) {
+        let sessions: Vec<String> = {
+            let mut state = lock(&self.state);
+            state
+                .mirrors
+                .values_mut()
+                .map(|mirror| {
+                    mirror.checkout_pending = true;
+                    mirror.session.clone()
+                })
+                .collect()
+        };
+        for session in sessions {
+            self.request_snapshot(&session);
+        }
+    }
+
+    /// Stops recorders nobody watches (CPU and memory of agent-driven pages).
+    async fn stop_unwatched_mirrors(&self) {
+        let _guard = self.mirror_lock.lock().await;
+        let idle: Vec<MirrorTab> = {
+            let mut state = lock(&self.state);
+            let tabs: Vec<TabId> = state
+                .mirrors
+                .iter()
+                .filter(|(_, mirror)| mirror.tx.receiver_count() == 0)
+                .map(|(tab, _)| tab.clone())
+                .collect();
+            tabs.iter()
+                .filter_map(|tab| state.mirrors.remove(tab))
+                .collect()
+        };
+        for mirror in idle {
+            let session = mirror.session.as_str();
+            let _ = self
+                .cdp
+                .call_session(
+                    session,
+                    "Runtime.evaluate",
+                    json!({"expression": mirror::STOP_EXPRESSION}),
+                )
+                .await;
+            if let Some(identifier) = &mirror.script {
+                let _ = self
+                    .cdp
+                    .call_session(
+                        session,
+                        "Page.removeScriptToEvaluateOnNewDocument",
+                        json!({"identifier": identifier}),
+                    )
+                    .await;
+            }
+            let _ = self
+                .cdp
+                .call_session(session, "Runtime.removeBinding", json!({"name": BINDING}))
+                .await;
+        }
+    }
+
+    /// Fetches a page resource with the browser's own network stack (its cookies and the
+    /// VM's loopback), for a viewer's mirror (BRW-005).
+    ///
+    /// # Errors
+    /// [`BrowserError::UrlRefused`] outside http(s), [`BrowserError::TabNotFound`],
+    /// [`BrowserError::NavigationFailed`] when the fetch fails,
+    /// [`BrowserError::ResultTooLarge`] beyond [`MAX_RESOURCE_BYTES`], CDP failures.
+    pub async fn fetch_resource(&self, tab: &TabId, url: &str) -> Result<Resource, BrowserError> {
+        use base64::Engine as _;
+        let url = normalize_url(url)?;
+        if url == "about:blank" {
+            return Err(BrowserError::InvalidInput("not a resource address".into()));
+        }
+        let session = self.session(tab).await?;
+        let tree = self
+            .cdp
+            .call_session(&session, "Page.getFrameTree", json!({}))
+            .await?;
+        let frame = tree
+            .pointer("/frameTree/frame/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| malformed("Page.getFrameTree", "missing frame id"))?;
+        let loaded = self
+            .cdp
+            .call_session(
+                &session,
+                "Network.loadNetworkResource",
+                json!({"frameId": frame, "url": url, "options": {"disableCache": false, "includeCredentials": true}}),
+            )
+            .await?;
+        let resource = loaded.get("resource").cloned().unwrap_or_default();
+        if resource.get("success").and_then(Value::as_bool) != Some(true) {
+            let reason = resource
+                .get("netErrorName")
+                .and_then(Value::as_str)
+                .unwrap_or("the resource could not be loaded");
+            return Err(BrowserError::NavigationFailed(reason.to_owned()));
+        }
+        let status = resource
+            .get("httpStatusCode")
+            .and_then(Value::as_u64)
+            .and_then(|s| u16::try_from(s).ok());
+        let content_type = resource
+            .get("headers")
+            .and_then(Value::as_object)
+            .and_then(|headers| {
+                headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                    .and_then(|(_, value)| value.as_str())
+                    .map(str::to_owned)
+            });
+        let Some(stream) = resource.get("stream").and_then(Value::as_str) else {
+            return Ok(Resource {
+                status,
+                content_type,
+                body: Vec::new(),
+            });
+        };
+        let mut body = Vec::new();
+        let outcome = loop {
+            let chunk = match self
+                .cdp
+                .call_session(
+                    &session,
+                    "IO.read",
+                    json!({"handle": stream, "size": IO_READ_CHUNK}),
+                )
+                .await
+            {
+                Ok(chunk) => chunk,
+                Err(error) => break Err(BrowserError::Cdp(error)),
+            };
+            let data = chunk
+                .get("data")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if chunk.get("base64Encoded").and_then(Value::as_bool) == Some(true) {
+                match base64::engine::general_purpose::STANDARD.decode(data) {
+                    Ok(bytes) => body.extend_from_slice(&bytes),
+                    Err(_) => break Err(malformed("IO.read", "invalid base64")),
+                }
+            } else {
+                body.extend_from_slice(data.as_bytes());
+            }
+            if body.len() > MAX_RESOURCE_BYTES {
+                break Err(BrowserError::ResultTooLarge {
+                    limit: MAX_RESOURCE_BYTES,
+                });
+            }
+            if chunk.get("eof").and_then(Value::as_bool) == Some(true) {
+                break Ok(());
+            }
+        };
+        let _ = self
+            .cdp
+            .call_session(&session, "IO.close", json!({"handle": stream}))
+            .await;
+        outcome.map(|()| Resource {
+            status,
+            content_type,
+            body,
+        })
+    }
+
+    /// Tells viewers that an agent acted in a tab (its cursor and action, BRW-007).
+    pub fn agent_activity(
+        &self,
+        tab: &TabId,
+        position: Option<(f64, f64)>,
+        action: &str,
+        label: &str,
+    ) {
+        let _ = self.events_tx.send(BrowserEvent::AgentActivity {
+            tab_id: tab.clone(),
+            x: position.map(|(x, _)| x),
+            y: position.map(|(_, y)| y),
+            action: action.to_owned(),
+            label: label.to_owned(),
+        });
+    }
+
     async fn stop_unwatched_screencasts(&self) {
         let _guard = self.screencast_lock.lock().await;
         let idle: Vec<String> = {
@@ -1096,6 +1574,12 @@ impl BrowserInstance {
         }
     }
 
+    /// The viewport of all tabs in CSS pixels.
+    #[must_use]
+    pub fn viewport(&self) -> (u32, u32) {
+        lock(&self.state).viewport
+    }
+
     /// Sets the viewport of all tabs and screencasts (the viewer panel size).
     ///
     /// # Errors
@@ -1120,6 +1604,9 @@ impl BrowserInstance {
                 .collect();
             (sessions, casts)
         };
+        let _ = self
+            .events_tx
+            .send(BrowserEvent::Viewport { width, height });
         let calls = sessions
             .iter()
             .map(|s| {
@@ -1297,6 +1784,8 @@ impl BrowserInstance {
             ViewerClientMsg::Viewport { width, height } => {
                 self.set_viewport(width, height).await.map(|()| None)
             }
+            // Per-connection choices, handled by the viewer connection.
+            ViewerClientMsg::View { .. } | ViewerClientMsg::DomResync => Ok(None),
         }
     }
 
@@ -1747,6 +2236,8 @@ async fn event_loop(
                         if let Err(error) = instance.resync().await {
                             warn!(%error, "target resynchronization failed");
                         }
+                        // Lost recorder batches leave mirrors inconsistent: start over.
+                        instance.checkout_mirrors();
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         instance.on_disconnected();
@@ -1757,6 +2248,7 @@ async fn event_loop(
             tab = control.recv() => {
                 let (Some(_), Some(instance)) = (tab, instance.upgrade()) else { return };
                 instance.stop_unwatched_screencasts().await;
+                instance.stop_unwatched_mirrors().await;
             }
             () = wait_closed(&mut closed) => {
                 if let Some(instance) = instance.upgrade() {

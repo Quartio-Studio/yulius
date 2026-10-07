@@ -101,6 +101,11 @@ fn browser_port(args: &ServeArgs) -> Arc<dyn yulius_app::ports::browser::Browser
     });
     let mut config = yulius_browser::BrowserConfig::new(exe, args.data_dir.join("sandboxes"));
     config.no_sandbox = args.chromium_no_sandbox;
+    // New and blank tabs show the welcome page from the internal listener (BRW-006).
+    config.new_tab_url = Some(format!(
+        "http://{}/browser/welcome?sandbox={{sandbox}}",
+        args.internal_bind
+    ));
     Arc::new(ChromiumBrowsers::new(config))
 }
 

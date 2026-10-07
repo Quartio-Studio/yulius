@@ -369,6 +369,17 @@ export function meter(percent, { label, detail } = {}) {
 
 const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/g;
 
+/** Whether `uri` points at the VM itself (localhost, loopback): such links open in the sandbox
+ *  browser, every other link in a new tab of the user's browser (UI-018). */
+export function isLocalUrl(uri) {
+  try {
+    const host = new URL(uri).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0' || host === '::1' || /^127\.\d+\.\d+\.\d+$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Turn http(s) URLs in plain text into links. `onLink(url, event)` decides how a click
  * is handled (Yulius browser links open the browser panel; others a new tab).

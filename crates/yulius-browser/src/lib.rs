@@ -28,6 +28,7 @@ mod error;
 mod instance;
 mod keys;
 mod manager;
+pub mod mirror;
 mod process;
 mod snapshot;
 mod url_policy;
@@ -41,10 +42,11 @@ pub use discovery::{
 };
 pub use error::{BrowserError, CdpError};
 pub use instance::{
-    BOUNDED_SCREENSHOT_STEPS, BoundedScreenshot, BrowserEvent, BrowserInstance, FrameSubscription,
-    InstanceConfig, KeyInput, MouseInput, ScreencastConfig, ScreenshotStep, VIEWPORT_MAX,
-    VIEWPORT_MIN,
+    BOUNDED_SCREENSHOT_STEPS, BoundedScreenshot, BrowserEvent, BrowserInstance, DomEvent,
+    DomSubscription, FrameSubscription, InstanceConfig, KeyInput, MAX_RESOURCE_BYTES, MouseInput,
+    Resource, ScreencastConfig, ScreenshotStep, VIEWPORT_MAX, VIEWPORT_MIN,
 };
 pub use manager::{BrowserConfig, BrowserManager, DEVTOOLS_PORT_FILE, IdleReaper};
+pub use mirror::DomBatch;
 pub use process::StopTimeouts;
 pub use url_policy::{UrlRefused, normalize_url};

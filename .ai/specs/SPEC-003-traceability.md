@@ -162,8 +162,33 @@ where a statement depended on pointing.
 | 13 | Risk of presenting design choices as requirements. | SPEC-002 is labelled engineering assumptions; SPEC-001 A-class rows marked. |
 | 14 | "whatsapp" note unexplained. | U-07: no feature invented. |
 
-Remaining genuine uncertainties are listed in SPEC-001 §9 (U-01…U-11) and SPEC-002 §12 (R-01…R-06).
+Remaining genuine uncertainties are listed in SPEC-001 §9 (U-01…U-12) and SPEC-002 §12 (R-01…R-06).
+
+## 6. Feedback on the deployed instance (F 2026-10-07)
+
+The founder's numbered goal after using the deployed instance, its follow-ups the same day, and
+where each item landed. Later follow-ups win over earlier items (class C).
+
+| # | Feedback (paraphrased) | Requirements |
+| --- | --- | --- |
+| 1 | Per-user VS Code with profile and GitHub import. Replaced later the same day: no VS Code; a much simpler VS Code-styled editor with syntax colors and suggestions for popular languages, a clean per-user view, neither shared nor saved, no profile import. | EDT-001 (changed), EDT-003 |
+| 2 | Delete a task, not only archive it. | TSK-009 |
+| 3 | Leaving the agent session should return to the app and close the task view. | HRN-002 (changed) |
+| 4 | Goal mode selectable and the default. | TSK-010 |
+| 5 | The browser must show real DOM (or a faithful simulation), not a rendered image, and be robust. | BRW-005, ADR-09 |
+| 6 | User-scoped terminals; every user has root, but as a separate user. | UI-016, U-12 |
+| 7 | A welcome page in the browser. | BRW-006 |
+| 8 | The coding editor still did not work. | EDT-004 |
+| 9 | Usage in the accounts section. | ROT-009 |
+| 10 | Changing the harness disabled by default, with explicit approval; rotation between accounts of the same provider stays automatic. | ROT-004 (changed), ROT-012 |
+| 11 | A 6-digit recovery code from setup; three wrong tries end recovery; kept perfectly safe. | ACC-002 (changed), ACC-011, ADR-13 |
+| 12 | Agents' mouse cursor visible in the browser, like the official plugins. | BRW-007 |
+| 13 | The whole right bar hidden by default. | UI-017 |
+| 14 | The "unknown tab" error. | BRW-004 (vanished tabs are not errors) |
+| 15 | Links open in a normal new tab; localhost links in the internal browser. | UI-018 |
+| 16 | TUI, terminal and browser as HTML text with instant copying; double-click selects in the terminal. | UI-019, BRW-005 |
 
 ## Changelog
 
+- 2026-10-07: feedback coverage (§6).
 - 2026-10-07: initial traceability review and self-review log.

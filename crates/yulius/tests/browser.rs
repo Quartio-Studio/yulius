@@ -1,6 +1,7 @@
 //! The shared sandbox browser end to end: the viewer WebSocket, agent MCP tools and the
-//! user-action hand-off, over the real Chromium manager with a fake Chromium launcher and an
-//! in-process fake DevTools server (SPEC-001 BRW-001..004, AC-BRW-1..3).
+//! user-action hand-off, the DOM mirror with its pixel fallback, page resources and the agent's
+//! cursor, over the real Chromium manager with a fake Chromium launcher and an in-process fake
+//! DevTools server (SPEC-001 BRW-001..007, AC-BRW-1..4, AC-BRW-6).
 
 mod support;
 
@@ -177,11 +178,14 @@ async fn viewers_need_write_access_and_drive_a_per_sandbox_browser() -> TestResu
         let anonymous = ws_connect(served.addr, path, &support::Creds::default(), ORIGIN).await;
         assert_eq!(anonymous.as_ref().err().and_then(ws_refusal_status), Some(401));
 
-        // A write user gets the tab list, then JPEG frames of the active tab.
+        // A write user gets the tab list; this fake cannot mirror the DOM, so the viewer is told
+        // and gets JPEG frames of the active tab instead.
         let mut socket = ws_connect(served.addr, path, &f.writer, ORIGIN).await?;
         let tabs = next_json(&mut socket).await?;
         assert_eq!(tabs["type"], "tabs");
         let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let unavailable = wait_json(&mut socket, |m| m["type"] == "dom_unavailable").await?;
+        assert_eq!(unavailable["tab_id"], first.as_str());
         let frame = next_binary(&mut socket).await?;
         let (tab, jpeg) = decode_frame(&frame)?;
         assert_eq!(tab.as_str(), first);
@@ -518,5 +522,231 @@ async fn a_missing_chromium_is_a_clear_error_for_viewers_and_agents() -> TestRes
         matches!(closed, Some(Ok(Message::Close(_))) | None),
         "{closed:?}"
     );
+    Ok(())
+}
+
+/// A raw GET through the router: status, headers and body bytes.
+async fn get_raw(
+    router: &axum::Router,
+    path: &str,
+    creds: &support::Creds,
+    headers: &[(&str, &str)],
+) -> Result<(axum::http::StatusCode, axum::http::HeaderMap, Vec<u8>), Box<dyn std::error::Error>> {
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+    let mut request = axum::http::Request::builder().uri(path);
+    if let Some(cookie) = &creds.cookie {
+        request = request.header("cookie", format!("yulius_session={cookie}"));
+    }
+    if let Some(token) = &creds.bearer {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = router
+        .clone()
+        .oneshot(request.body(axum::body::Body::empty())?)
+        .await?;
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response.into_body().collect().await?.to_bytes().to_vec();
+    Ok((status, headers, body))
+}
+
+#[tokio::test]
+async fn viewers_see_the_live_dom_and_pages_load_resources_through_yulius() -> TestResult {
+    with_fixture(|f| async move {
+        f.fake.enable_mirror();
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        assert_eq!(tabs["type"], "tabs");
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        // The viewport comes first, so the mirror is laid out at the page's size.
+        let viewport = next_json(&mut socket).await?;
+        assert_eq!(
+            (viewport["type"].clone(), viewport["width"].clone()),
+            (json!("viewport"), json!(1280))
+        );
+
+        // The active tab arrives as DOM: a reset batch starting with the page's Meta.
+        let first = wait_json(&mut socket, |m| m["type"] == "dom").await?;
+        assert_eq!(
+            (first["tab_id"].as_str(), first["reset"].clone()),
+            (Some(tab.as_str()), json!(true))
+        );
+        assert_eq!(first["events"][0]["type"], 4, "{first}");
+        assert_eq!(first["events"][1]["type"], 2);
+        assert_eq!(f.fake.calls_for("Runtime.addBinding").len(), 1);
+        assert_eq!(
+            f.fake.calls_for("Page.startScreencast").len(),
+            0,
+            "no pixels while viewing DOM"
+        );
+
+        // A viewport change reaches every viewer; a navigation starts a new stream.
+        send(
+            &mut socket,
+            json!({"type": "viewport", "width": 900, "height": 700}),
+        )
+        .await?;
+        wait_json(&mut socket, |m| {
+            m["type"] == "viewport" && m["width"] == 900
+        })
+        .await?;
+        send(
+            &mut socket,
+            json!({"type": "navigate", "tab_id": tab, "url": "http://localhost:43000/"}),
+        )
+        .await?;
+        let navigated = wait_json(&mut socket, |m| {
+            m["type"] == "dom" && m["events"][0]["data"]["href"] == "http://localhost:43000/"
+        })
+        .await?;
+        assert_eq!(navigated["reset"], true);
+
+        // Pixels on request, DOM again (from the buffered snapshot) after.
+        send(&mut socket, json!({"type": "view", "mode": "pixels"})).await?;
+        let frame = next_binary(&mut socket).await?;
+        assert_eq!(decode_frame(&frame)?.0.as_str(), tab);
+        send(&mut socket, json!({"type": "view", "mode": "dom"})).await?;
+        let again = wait_json(&mut socket, |m| m["type"] == "dom" && m["reset"] == true).await?;
+        assert!(
+            again["events"]
+                .to_string()
+                .contains("page http://localhost:43000/"),
+            "{again}"
+        );
+
+        // An agent's click is shown to viewers with its position and label.
+        let clicked = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_click",
+            json!({"tab_id": tab, "selector": "#login"}),
+        )
+        .await?;
+        assert_eq!(clicked["isError"], false, "{clicked}");
+        let activity = wait_json(&mut socket, |m| m["type"] == "agent_activity").await?;
+        assert_eq!(
+            (activity["action"].clone(), activity["x"].clone()),
+            (json!("click"), json!(100.5))
+        );
+        assert!(
+            activity["label"]
+                .as_str()
+                .is_some_and(|l| l.starts_with('#')),
+            "{activity}"
+        );
+
+        // Page resources load through Yulius for write users, as inert same-origin subresources.
+        let path = format!(
+            "/api/sandboxes/s1/browser/resource?tab={tab}&url={}",
+            "http%3A%2F%2Flocalhost%3A43000%2Flogo.svg"
+        );
+        let (status, headers, body) = get_raw(
+            &f.h.router,
+            &path,
+            &f.writer,
+            &[("sec-fetch-site", "same-origin")],
+        )
+        .await?;
+        assert_eq!(status, 200);
+        assert_eq!(body, yulius_browser::fake::FAKE_RESOURCE);
+        assert_eq!(headers["content-type"], "image/svg+xml");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert!(
+            headers["content-security-policy"]
+                .to_str()?
+                .starts_with("sandbox")
+        );
+        let (status, _, _) = get_raw(
+            &f.h.router,
+            &path,
+            &f.writer,
+            &[("sec-fetch-site", "cross-site")],
+        )
+        .await?;
+        assert_eq!(
+            status, 403,
+            "another site cannot make the sandbox browser fetch"
+        );
+        let (status, _, _) = get_raw(
+            &f.h.router,
+            &path,
+            &f.writer,
+            &[
+                ("sec-fetch-site", "same-origin"),
+                ("sec-fetch-mode", "navigate"),
+            ],
+        )
+        .await?;
+        assert_eq!(status, 403, "resources are not pages");
+        let (status, _, _) = get_raw(&f.h.router, &path, &f.reader, &[]).await?;
+        assert_eq!(status, 403, "read users cannot use the browser");
+        let missing = path.replace("logo.svg", "missing.svg");
+        let (status, _, _) = get_raw(&f.h.router, &missing, &f.writer, &[]).await?;
+        assert!(
+            status.is_client_error() || status.is_server_error(),
+            "{status}"
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn the_welcome_page_names_the_sandbox_and_links_its_listening_ports() -> TestResult {
+    use yulius_app::ports::store::SandboxStore as _;
+    let h = support::harness()?;
+    seed_github_user(&h, "u-alice", "alice").await?;
+    // A sandbox whose port range starts at a port that listens (an OS-assigned one).
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+    let mut sandbox = seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    sandbox.id = yulius_domain::ids::SandboxId::parse("s9")?;
+    sandbox.slug = "welcomed".into();
+    sandbox.repo_name = "welcomed".into();
+    sandbox.port_base = port;
+    sandbox.port_count = 1;
+    h.store.insert_sandbox(&sandbox).await?;
+
+    let anonymous = support::Creds::default();
+    let (status, headers, body) =
+        get_raw(&h.internal, "/browser/welcome?sandbox=s9", &anonymous, &[]).await?;
+    assert_eq!(status, 200);
+    assert!(headers["content-type"].to_str()?.starts_with("text/html"));
+    let page = String::from_utf8(body)?;
+    assert!(page.contains("Browser of welcomed"), "{page}");
+    assert!(
+        page.contains(&format!("href=\"http://localhost:{port}/\"")),
+        "{page}"
+    );
+    let (_, _, ports) = get_raw(
+        &h.internal,
+        "/browser/welcome/ports?sandbox=s9",
+        &anonymous,
+        &[],
+    )
+    .await?;
+    assert!(String::from_utf8(ports)?.contains(&format!("localhost:{port}")));
+
+    // Without a listener the page says how to start one; unknown sandboxes are not found.
+    drop(listener);
+    let (_, _, body) = get_raw(&h.internal, "/browser/welcome?sandbox=s9", &anonymous, &[]).await?;
+    assert!(String::from_utf8(body)?.contains("No dev server is listening"));
+    let (status, _, _) = get_raw(
+        &h.internal,
+        "/browser/welcome?sandbox=nope",
+        &anonymous,
+        &[],
+    )
+    .await?;
+    assert_eq!(status, 404);
+    // The public listener does not serve it (unknown paths get the app shell).
+    let (_, _, public) = get_raw(&h.router, "/browser/welcome?sandbox=s9", &anonymous, &[]).await?;
+    assert!(!String::from_utf8(public)?.contains("Browser of welcomed"));
     Ok(())
 }

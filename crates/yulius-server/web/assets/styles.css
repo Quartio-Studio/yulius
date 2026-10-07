@@ -531,8 +531,28 @@ body.resizing iframe { pointer-events: none; }
 .bp-bar .input { height: 26px; font-family: var(--font-mono); font-size: var(--fs-sm); }
 .bp-attn { margin: 6px; }
 .bp-view { position: relative; flex: 1; min-height: 0; background: #fff; overflow: hidden; }
-.bp-canvas { display: block; width: 100%; height: 100%; object-fit: contain; object-position: top left; background: #1b1f27; outline: none; cursor: default; }
-.bp-canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.bp-canvas { position: absolute; top: 0; left: 0; display: block; background: #1b1f27; }
+.bp-canvas[hidden], .bp-mirror[hidden] { display: none; }
+/* DOM mirror (BRW-005): rrweb's wrapper is scaled to the panel; the input layer sits on top. */
+.bp-mirror { position: absolute; inset: 0; overflow: hidden; background: #fff; }
+.bp-mirror .replayer-wrapper { position: absolute; top: 0; left: 0; }
+.bp-mirror iframe { border: 0; display: block; background: #fff; }
+.bp-mirror .replayer-mouse, .bp-mirror .replayer-mouse-tail { display: none !important; }
+.bp-input { position: absolute; top: 0; left: 0; z-index: 2; outline: none; cursor: default; }
+.bp-input:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.bp-input.pass { pointer-events: none; }
+.bp-viewchip { flex: none; cursor: help; }
+/* The agent's cursor (BRW-007). */
+.bp-agent { position: absolute; z-index: 3; pointer-events: none; transition: left .35s ease, top .35s ease; }
+.bp-agent[hidden] { display: none; }
+.bp-agent-arrow { position: absolute; left: -2px; top: -2px; width: 0; height: 0; border-left: 9px solid #c58af9; border-top: 6px solid transparent; border-bottom: 6px solid transparent; transform: rotate(45deg); transform-origin: 0 50%; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
+.bp-agent-label { position: absolute; left: 12px; top: 10px; white-space: nowrap; padding: 2px 8px; border-radius: 10px; background: #c58af9; color: #160b20; font: 600 11px/1.4 var(--font-sans, system-ui); box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+.bp-agent-ripple { position: absolute; left: -14px; top: -14px; width: 28px; height: 28px; border-radius: 50%; border: 2px solid #c58af9; animation: bp-ripple .7s ease-out forwards; }
+@keyframes bp-ripple { from { transform: scale(.3); opacity: 1; } to { transform: scale(1.6); opacity: 0; } }
+.bp-agent-pill { position: absolute; z-index: 3; top: 8px; left: 50%; transform: translateX(-50%); padding: 4px 12px; border-radius: 12px; background: #c58af9; color: #160b20; font: 600 12px/1.4 var(--font-sans, system-ui); pointer-events: none; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+.bp-agent-pill[hidden] { display: none; }
+.bp-copied { position: absolute; z-index: 3; right: 10px; bottom: 10px; padding: 3px 10px; border-radius: 10px; background: var(--surface-2, #21262d); color: var(--text); font-size: var(--fs-sm); pointer-events: none; }
+.bp-copied[hidden] { display: none; }
 .bp-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--surface); text-align: center; padding: 16px; }
 
 .editor-frame { flex: 1; width: 100%; border: 0; background: #1e1e1e; }

@@ -1602,7 +1602,14 @@ class BrowserSession {
   open(ws) {
     this.viewers.add(ws);
     this.sendTabs();
+    this.domUnavailable(ws);
     this.render();
+  }
+
+  /** The mock renders pixels only: the panel shows its pixel view at once. */
+  domUnavailable(ws) {
+    const active = this.tabs.find((t) => t.active);
+    if (active) ws.push(JSON.stringify({ type: 'dom_unavailable', tab_id: active.id, reason: 'the mock browser renders pixels only' }));
   }
 
   receive(ws, data) {
@@ -1616,12 +1623,16 @@ class BrowserSession {
         this.sendTabs();
         this.render();
         break;
+      case 'view':
+        if (msg.mode === 'dom') this.domUnavailable(ws);
+        break;
       case 'open': {
         this.next += 1;
         for (const t of this.tabs) t.active = false;
-        let host = msg.url;
-        try { host = new URL(msg.url).host || msg.url; } catch { /* keep raw */ }
-        this.tabs.push({ id: `tab-${this.next}`, title: host, url: msg.url, active: true, action_requested: null });
+        const url = msg.url || 'about:blank';
+        let host = url;
+        try { host = new URL(url).host || 'New tab'; } catch { /* keep raw */ }
+        this.tabs.push({ id: `tab-${this.next}`, title: host, url, active: true, action_requested: null });
         this.sendTabs();
         this.render();
         break;

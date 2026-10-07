@@ -92,3 +92,117 @@ pub async fn git_credential(
         }
     }
 }
+
+#[derive(serde::Deserialize)]
+pub struct WelcomeQuery {
+    sandbox: String,
+}
+
+fn escape(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '<' => "&lt;".to_owned(),
+            '>' => "&gt;".to_owned(),
+            '&' => "&amp;".to_owned(),
+            '"' => "&quot;".to_owned(),
+            '\'' => "&#39;".to_owned(),
+            c => c.to_string(),
+        })
+        .collect()
+}
+
+/// `GET /browser/welcome?sandbox=<id>` (loopback): the page new browser tabs open (BRW-006).
+pub async fn browser_welcome(
+    State(app): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<WelcomeQuery>,
+) -> Response {
+    let Ok((slug, first, last, open)) = app.sandbox_listening_ports(&query.sandbox).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let ports: String = if open.is_empty() {
+        format!(
+            "<p class=\"muted\">No dev server is listening on ports {first}–{last} yet. Start one in a shell or ask an agent — for example <code>PORT={first} npm run dev</code>.</p>"
+        )
+    } else {
+        open.iter()
+            .map(|port| format!("<a class=\"port\" href=\"http://localhost:{port}/\"><b>localhost:{port}</b><span>open</span></a>"))
+            .collect()
+    };
+    let sandbox = escape(&slug);
+    let sandbox_id = escape(&query.sandbox);
+    let html = format!(
+        r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Welcome · {sandbox}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {{ color-scheme: dark; }}
+body {{ margin: 0; min-height: 100vh; background: #0a0c10; color: #d8dee9; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; display: flex; align-items: flex-start; justify-content: center; }}
+main {{ width: min(720px, 92vw); padding: 56px 0; }}
+.logo {{ font-weight: 800; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: #79b8ff; }}
+h1 {{ font-size: 28px; margin: 6px 0 4px; color: #f0f6fc; }}
+.muted {{ color: #8b949e; }}
+section {{ margin-top: 28px; padding: 18px 20px; border: 1px solid #21262d; border-radius: 12px; background: #0d1117; }}
+h2 {{ font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #8b949e; margin: 0 0 12px; }}
+.port {{ display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; margin: 6px 0; border-radius: 8px; background: #161b22; color: #f0f6fc; text-decoration: none; border: 1px solid #30363d; }}
+.port:hover {{ border-color: #539bf5; }}
+.port span {{ color: #79b8ff; font-size: 13px; }}
+ul {{ margin: 0; padding-left: 18px; }} li {{ margin: 4px 0; }}
+code {{ background: #161b22; padding: 1px 6px; border-radius: 5px; font-size: 13px; }}
+</style></head>
+<body><main>
+<div class="logo">Yulius</div>
+<h1>Browser of {sandbox}</h1>
+<p class="muted">A real Chromium on the server, shared by this sandbox's people and agents.</p>
+<section><h2>Running in this sandbox</h2><div id="ports">{ports}</div></section>
+<section><h2>Tips</h2><ul>
+<li>Type any address in the bar above; <code>localhost</code> means this sandbox's machine.</li>
+<li>Agents use this same browser. When one clicks or types, you see its cursor.</li>
+<li>Logins (for example AWS) stay in this sandbox's browser profile.</li>
+</ul></section>
+</main>
+<script>
+setInterval(async () => {{
+  try {{
+    const r = await fetch('/browser/welcome/ports?sandbox={sandbox_id}', {{ cache: 'no-store' }});
+    if (r.ok) document.getElementById('ports').innerHTML = await r.text();
+  }} catch (_) {{}}
+}}, 5000);
+</script>
+</body></html>"#
+    );
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        html,
+    )
+        .into_response()
+}
+
+/// `GET /browser/welcome/ports?sandbox=<id>` (loopback): the port list of the welcome page.
+pub async fn browser_welcome_ports(
+    State(app): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<WelcomeQuery>,
+) -> Response {
+    let Ok((_, first, last, open)) = app.sandbox_listening_ports(&query.sandbox).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let body: String = if open.is_empty() {
+        format!(
+            "<p class=\"muted\">No dev server is listening on ports {first}–{last} yet. Start one in a shell or ask an agent — for example <code>PORT={first} npm run dev</code>.</p>"
+        )
+    } else {
+        open.iter()
+            .map(|port| format!("<a class=\"port\" href=\"http://localhost:{port}/\"><b>localhost:{port}</b><span>open</span></a>"))
+            .collect()
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}

@@ -9,7 +9,7 @@
 import { createApi, realTransport, enc } from './api.js';
 import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
-import { h, setChildren, toast, errorToast, placeholder, icon } from './dom.js';
+import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl } from './dom.js';
 import { createTabRow, createSidebar } from './layout.js';
 import { createPanelHost } from './panels.js';
 import { mountTaskView, mountComposer } from './taskview.js';
@@ -303,15 +303,6 @@ function createApp(root, transport) {
       return;
     }
     window.open(uri, '_blank', 'noopener,noreferrer');
-  }
-
-  function isLocalUrl(uri) {
-    try {
-      const host = new URL(uri).hostname.toLowerCase().replace(/^\[|\]$/g, '');
-      return host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0' || host === '::1' || /^127\.\d+\.\d+\.\d+$/.test(host);
-    } catch {
-      return false;
-    }
   }
 
   // ------------------------------------------------------------ routing

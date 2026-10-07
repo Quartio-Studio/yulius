@@ -184,6 +184,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             get(delivery::run),
         )
         .route("/api/sandboxes/{sid}/browser", get(browser::browser))
+        .route(
+            "/api/sandboxes/{sid}/browser/resource",
+            get(browser::resource),
+        )
         .route("/api/sandboxes/{sid}/shells", post(shells::create))
         .route(
             "/api/sandboxes/{sid}/files",
@@ -203,6 +207,11 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
 pub fn internal(_app: Arc<App>) -> Router<AppState> {
     Router::new()
         .route("/internal/healthz", get(|| async { "ok" }))
+        .route("/browser/welcome", get(internal::browser_welcome))
+        .route(
+            "/browser/welcome/ports",
+            get(internal::browser_welcome_ports),
+        )
         .route("/mcp", post(mcp::post).get(mcp::get))
         .route("/hooks/{harness}/{event}", post(internal::hook))
         .route("/internal/git-credential", post(internal::git_credential))

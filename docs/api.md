@@ -318,19 +318,41 @@ the harnesses.
 
 ## Browser, editor, shell
 
-- `WS /api/sandboxes/{sid}/browser` (write): client `{"type":"open","url"}`, `{"type":"navigate",
-  "tab_id","url"}`, `{"type":"activate","tab_id"}`, `{"type":"close","tab_id"}`,
+- `WS /api/sandboxes/{sid}/browser` (write): client `{"type":"open","url"}` (`""` opens the
+  welcome page), `{"type":"navigate","tab_id","url"}`, `{"type":"activate","tab_id"}`,
+  `{"type":"close","tab_id"}`,
   `{"type":"mouse","tab_id","event":"down|up|move|wheel","x","y","button","dx","dy"}`,
   `{"type":"key","tab_id","event":"down|up|char","key","code","text","modifiers"}`,
-  `{"type":"viewport","width","height"}`; server `{"type":"tabs","tabs":[{"id","title","url",
-  "active","action_requested":{"reason","task_id"}|null}]}`, binary JPEG frames prefixed by
-  `u8 3` + 32-byte tab id (ASCII, space padded) + image, `{"type":"action_requested",
+  `{"type":"viewport","width","height"}`, `{"type":"view","mode":"dom|pixels"}` (this
+  connection's view, default `dom`), `{"type":"dom_resync"}` (a fresh snapshot); server
+  `{"type":"tabs","tabs":[{"id","title","url","active","action_requested":{"reason","task_id"}|
+  null}]}`, `{"type":"viewport","width","height"}` (on connect and after every change; lay the
+  mirror out at this size), `{"type":"dom","tab_id","reset","events":[…]}` ([rrweb 2.1.7
+  events](https://github.com/rrweb-io/rrweb); `reset` starts a new stream from a `Meta` and a
+  full snapshot — on connect, navigation, resync or after lost events), `{"type":
+  "dom_unavailable","tab_id","reason"}` (this tab is sent as pixels), binary JPEG frames
+  (pixel view) prefixed by `u8 3` + 32-byte tab id (ASCII, space padded) + image,
+  `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
+  agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested",
   "tab_id","reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|
-  capacity|upstream|internal","message"}`. One browser per sandbox, started on first use;
-  frames are those of the active tab. A slow client loses frames (never the browser); a client
-  that stops reading JSON messages is closed with 4008. Access is re-checked every 60 s (close
-  4003). When Chromium is missing or the browser stops, the server sends an `upstream` error
-  with the reason and closes with 1011.
+  capacity|upstream|internal","message"}`. One browser per sandbox, started on first use; the
+  view is of the active tab. A slow client loses frames (never the browser) and DOM batches are
+  never dropped: a client that stops reading JSON messages is closed with 4008. Access is
+  re-checked every 60 s (close 4003). When Chromium is missing or the browser stops, the server
+  sends an `upstream` error with the reason and closes with 1011.
+  Replay DOM events only in a script-free iframe (rrweb's default sandbox `allow-same-origin`):
+  pages can send crafted events.
+- `GET /api/sandboxes/{sid}/browser/resource?tab&url` (write): a page resource (image,
+  stylesheet, font) fetched by the sandbox browser with its cookies — for mirrored pages whose
+  resources only the VM can reach (localhost, private networks, plain http). Answers with the
+  resource's status and `Content-Type`, `X-Content-Type-Options: nosniff`,
+  `Content-Security-Policy: sandbox; default-src 'none'` and `Cache-Control: private,
+  max-age=300`; at most 20 MiB. Browser requests must be same-origin subresources: a
+  `Sec-Fetch-Site` other than `same-origin` or `Sec-Fetch-Mode: navigate` is 403. 404 while the
+  sandbox browser is not running.
+- New tabs open `GET /browser/welcome?sandbox=<id>` on the internal (loopback) listener: the
+  sandbox name and links to its listening dev-server ports (probed on 127.0.0.1 every 5 s via
+  `/browser/welcome/ports`).
 - Agents print `<public_url>/s/<slug>/browser?tab=<tab_id>` (returned by the
   `browser_request_user_action` MCP tool, which also marks the task `needs_attention` and
   publishes `browser.action_requested`); the web UI opens the browser panel on that tab.

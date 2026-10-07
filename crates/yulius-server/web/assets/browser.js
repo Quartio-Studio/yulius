@@ -1,13 +1,32 @@
-// Sandbox browser panel (BRW-001..004): tab strip, address bar and a canvas showing JPEG
-// frames from WS /api/sandboxes/{sid}/browser, forwarding mouse and keyboard input.
-// The socket is open only while the panel is visible (frames are not streamed when hidden).
+// Sandbox browser panel (BRW-001..007): tab strip, address bar and the active tab of the
+// server-side Chromium shown as live DOM (rrweb mirror, BRW-005) — or, when a page cannot be
+// mirrored or the user asks for it, as JPEG frames. Clicks, wheel and keys go to the real
+// browser; holding Option/Alt (or the Select toggle) lets the mouse select text in the mirror.
+// Page resources served on the VM (localhost, plain http) load through Yulius. Agents' actions
+// show as a labelled cursor (BRW-007). New tabs open the Yulius welcome page (BRW-006).
+// The socket is open only while the panel is visible.
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast } from './dom.js';
 import { ReconnectingSocket, parseBrowserFrame, CLOSE_REVOKED, CLOSE_SERVER_ERROR } from './termsocket.js';
 import { allows } from './status.js';
+import { Replayer } from './vendor/rrweb/rrweb.js';
 
 const MOUSE_BUTTONS = ['left', 'middle', 'right'];
+const WELCOME_PATH = /\/browser\/welcome\?sandbox=/;
+const AGENT_CURSOR_IDLE_MS = 6000;
+/** A tab that sends no DOM within this time is shown as pixels (BRW-005 fallback). */
+const DOM_WAIT_MS = 6000;
+/** Mirror failures on one page before it is shown as pixels instead of resynchronized. */
+const MAX_MIRROR_FAILURES = 3;
+/** rrweb event and source numbers used here. */
+const EV_FULL_SNAPSHOT = 2;
+const EV_INCREMENTAL = 3;
+const EV_META = 4;
+const SRC_MUTATION = 0;
+const SRC_VIEWPORT = 4;
+const SRC_STYLESHEET_RULE = 8;
+const SRC_CANVAS = 9;
 
 /** CDP-style modifier bitmask: Alt=1, Ctrl=2, Meta=4, Shift=8. */
 function modifiers(event) {
@@ -24,6 +43,24 @@ export function normalizeUrl(input) {
   return null;
 }
 
+/** Whether the user's browser cannot load `url` itself (VM loopback, private network, http). */
+export function needsProxy(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  if (parsed.protocol === 'http:') return true;
+  if (parsed.protocol !== 'https:') return false;
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  return host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host === '0.0.0.0'
+    || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+}
+
+let rrwebStyles = false;
+function ensureReplayerStyles() {
+  if (rrwebStyles) return;
+  rrwebStyles = true;
+  document.head.append(h('link', { rel: 'stylesheet', href: '/assets/vendor/rrweb/rrweb.css' }));
+}
+
 /** Create the browser panel view for a sandbox. */
 export function createBrowserPanel(ctx, sandbox) {
   const el = h('div', { class: 'bp' });
@@ -31,12 +68,12 @@ export function createBrowserPanel(ctx, sandbox) {
     setChildren(el, h('div', { class: 'panel-msg' }, icon('lock', { size: 20 }), h('p', null, 'The sandbox browser requires write access on GitHub.')));
     return { el };
   }
+  ensureReplayerStyles();
 
   let tabs = [];
   let socket = null;
   let pendingActivate = null;
   let pendingOpen = null; // URL to open in a new tab once connected (localhost links)
-  let newTabMode = false;
   let lastViewport = null;
   let decoding = false;
   let queuedFrame = null;
@@ -45,7 +82,23 @@ export function createBrowserPanel(ctx, sandbox) {
   let viewportTimer = null;
   let visible = false;
   let lastError = null; // last {code, message} error frame; explains a following close
+  let wantPixels = false; // the user's choice
+  let pixelsReason = null; // the server could not mirror the active tab
+  let selecting = false; // the Select toggle
+  let altHeld = false;
+  let replayer = null;
+  let replayerTab = null;
+  let replayerClock = 0; // events are applied in arrival order, all before this baseline
+  let domTimer = 0;
+  let watchedUrl = null; // the active tab's URL when the view mode was last chosen
+  let mirrorFailures = 0; // on the current page
+  let serverViewport = null; // {width, height} the server last applied to every tab
+  const canvasSeq = new Map(); // mirror node id → newest painted frame
+  let pageSize = { width: 0, height: 0 };
+  const tags = new Map(); // mirror node id → tag name (for attribute rewriting)
   const frames = new Map(); // tab id → last ImageBitmap
+  let lastAgent = null; // {x, y}
+  let agentTimer = 0;
 
   const tabStrip = h('div', { class: 'bp-tabs', role: 'tablist', 'aria-label': 'Browser tabs' });
   const address = h('input', { class: 'input', type: 'text', placeholder: 'Type an address, e.g. localhost:20000 or aws.amazon.com', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Address' });
@@ -53,12 +106,22 @@ export function createBrowserPanel(ctx, sandbox) {
     const tab = activeTab();
     if (tab) send({ type: 'navigate', tab_id: tab.id, url: tab.url });
   });
+  const viewBadge = h('span', { class: 'chip bp-viewchip', hidden: true });
   const attention = h('div', { class: 'banner banner-warn bp-attn small', hidden: true });
-  const canvas = h('canvas', { class: 'bp-canvas', tabindex: '0', 'aria-label': 'Remote browser page (click to interact)' });
+  const mirrorHost = h('div', { class: 'bp-mirror', 'aria-label': 'Remote browser page' });
+  const canvas = h('canvas', { class: 'bp-canvas', hidden: true });
+  const inputLayer = h('div', { class: 'bp-input', tabindex: '0', 'aria-label': 'Remote browser page (click to interact)' });
+  const agentCursor = h('div', { class: 'bp-agent', hidden: true }, h('span', { class: 'bp-agent-arrow' }), h('span', { class: 'bp-agent-label' }));
+  const agentPill = h('div', { class: 'bp-agent-pill', hidden: true });
+  const copied = h('div', { class: 'bp-copied', hidden: true }, 'Copied');
+  let copiedTimer = 0;
   const overlay = h('div', { class: 'bp-overlay' }, 'Connecting to the sandbox browser…');
-  const view = h('div', { class: 'bp-view' }, canvas, overlay);
-  setChildren(el, tabStrip, h('div', { class: 'bp-bar' }, reloadButton, address), attention, view);
+  const stage = h('div', { class: 'bp-view' }, mirrorHost, canvas, inputLayer, agentCursor, agentPill, copied, overlay);
+  setChildren(el, tabStrip, h('div', { class: 'bp-bar' }, reloadButton, address, viewBadge), attention, stage);
   const g = canvas.getContext('2d');
+
+  const selectButton = h('button', { type: 'button', class: 'btn btn-sm', 'aria-pressed': 'false', title: 'Select text in the page (or hold Option/Alt)', onClick: () => { selecting = !selecting; applyPointerMode(); } }, 'Select');
+  const pixelsButton = h('button', { type: 'button', class: 'btn btn-sm', 'aria-pressed': 'false', title: 'Show the page as pixels instead of live DOM', onClick: () => setPixels(!wantPixels) }, 'Pixels');
 
   function activeTab() {
     return tabs.find((t) => t.active) || null;
@@ -68,27 +131,115 @@ export function createBrowserPanel(ctx, sandbox) {
     return socket ? socket.send(message) : false;
   }
 
+  function isWelcome(tab) {
+    return Boolean(tab && WELCOME_PATH.test(tab.url || ''));
+  }
+
+  function showingPixels() {
+    return wantPixels || Boolean(pixelsReason);
+  }
+
+  function setPixels(on) {
+    wantPixels = on;
+    pixelsButton.setAttribute('aria-pressed', String(on));
+    pixelsButton.classList.toggle('active', on);
+    pixelsReason = null;
+    send({ type: 'view', mode: on ? 'pixels' : 'dom' });
+    if (on) clearTimeout(domTimer); else expectDom();
+    applyMode();
+  }
+
+  /** Falls back to pixels when the active tab sends no DOM in time. */
+  function expectDom() {
+    clearTimeout(domTimer);
+    if (showingPixels()) return;
+    domTimer = setTimeout(() => {
+      if (showingPixels() || replayer) return;
+      autoPixels('this page did not send its DOM');
+    }, DOM_WAIT_MS);
+  }
+
+  function autoPixels(reason) {
+    clearTimeout(domTimer);
+    pixelsReason = reason;
+    destroyReplayer();
+    send({ type: 'view', mode: 'pixels' });
+    applyMode();
+  }
+
+  /** After a navigation or tab change, an automatic fallback tries the DOM view again. */
+  function retryDom() {
+    if (wantPixels) return;
+    if (pixelsReason) {
+      pixelsReason = null;
+      send({ type: 'view', mode: 'dom' });
+      applyMode();
+    }
+    expectDom();
+  }
+
+  function applyMode() {
+    const pixels = showingPixels();
+    canvas.hidden = !pixels;
+    mirrorHost.hidden = pixels;
+    viewBadge.hidden = !pixels;
+    viewBadge.textContent = pixelsReason ? 'Pixel view' : 'Pixels';
+    viewBadge.title = pixelsReason ? `This page cannot be mirrored as DOM: ${pixelsReason}` : 'Pixel view (you chose it)';
+    if (pixels) {
+      const tab = activeTab();
+      if (tab && frames.has(tab.id)) draw(frames.get(tab.id));
+    }
+    layout();
+  }
+
+  function applyPointerMode() {
+    const pass = !showingPixels() && (selecting || altHeld);
+    inputLayer.classList.toggle('pass', pass);
+    // rrweb keeps the mirror iframe inert; selecting text needs pointer events (not local
+    // scrolling, which would drift from the server page).
+    if (replayer && replayer.iframe) replayer.iframe.style.pointerEvents = pass ? 'auto' : 'none';
+    selectButton.setAttribute('aria-pressed', String(selecting));
+    selectButton.classList.toggle('active', selecting);
+  }
+
+  /** Text selection in the mirror: Option/Alt tracking, copy on select, no navigation. */
+  function wireMirrorDocument() {
+    const doc = replayer && replayer.iframe ? replayer.iframe.contentDocument : null;
+    if (!doc) return;
+    // Keys and moves go to the mirror while it has focus: keep following Option/Alt there.
+    for (const type of ['keydown', 'keyup', 'pointermove']) doc.addEventListener(type, altWatch, true);
+    // Selecting text never follows a link or submits a form in the mirror.
+    doc.addEventListener('click', (event) => event.preventDefault(), true);
+    doc.addEventListener('mouseup', () => {
+      const text = String(doc.getSelection ? doc.getSelection() : '');
+      if (!text.trim() || !navigator.clipboard) return;
+      navigator.clipboard.writeText(text).then(() => {
+        copied.hidden = false;
+        clearTimeout(copiedTimer);
+        copiedTimer = setTimeout(() => { copied.hidden = true; }, 1200);
+      }, () => {});
+    });
+  }
+
   function renderTabs() {
     const items = tabs.map((tab) => {
       const attn = Boolean(tab.action_requested);
-      const button = h('div', { class: ['bp-tab', tab.active && 'active', attn && 'attention'], role: 'tab', tabindex: '0', 'aria-selected': String(Boolean(tab.active)), title: attn ? `Action requested: ${tab.action_requested.reason}` : tab.url },
+      const title = isWelcome(tab) ? 'Welcome' : (tab.title || tab.url || 'New tab');
+      const button = h('div', { class: ['bp-tab', tab.active && 'active', attn && 'attention'], role: 'tab', tabindex: '0', 'aria-selected': String(Boolean(tab.active)), title: attn ? `Action requested: ${tab.action_requested.reason}` : (isWelcome(tab) ? 'Welcome' : tab.url) },
         attn ? icon('warn', { size: 12 }) : null,
-        h('span', { class: 'bp-tab-title' }, tab.title || tab.url || 'New tab'),
-        iconButton('x', `Close ${tab.title || 'tab'}`, (event) => { event.stopPropagation(); send({ type: 'close', tab_id: tab.id }); }));
-      const activate = () => { if (!tab.active) send({ type: 'activate', tab_id: tab.id }); newTabMode = false; canvas.focus(); };
+        h('span', { class: 'bp-tab-title' }, title),
+        iconButton('x', `Close ${title}`, (event) => { event.stopPropagation(); send({ type: 'close', tab_id: tab.id }); }));
+      const activate = () => { if (!tab.active) send({ type: 'activate', tab_id: tab.id }); inputLayer.focus(); };
       button.addEventListener('click', activate);
       button.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } });
       return button;
     });
-    items.push(iconButton('plus', 'New tab', () => {
-      newTabMode = true;
-      address.value = '';
-      address.placeholder = 'Open a new tab: type an address and press Enter';
-      address.focus();
-    }));
+    // A new tab opens the welcome page; type an address there.
+    items.push(iconButton('plus', 'New tab', () => send({ type: 'open', url: '' })));
     setChildren(tabStrip, items);
     const tab = activeTab();
-    if (document.activeElement !== address) address.value = tab ? tab.url : '';
+    if (document.activeElement !== address) address.value = tab && !isWelcome(tab) ? tab.url : '';
+    address.placeholder = isWelcome(tab) ? 'Welcome — type an address, e.g. localhost:20000' : 'Type an address, e.g. localhost:20000 or aws.amazon.com';
     if (tab && tab.action_requested) {
       attention.hidden = false;
       setChildren(attention, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, `An agent asks for your action here: ${tab.action_requested.reason}`));
@@ -96,15 +247,15 @@ export function createBrowserPanel(ctx, sandbox) {
       attention.hidden = true;
     }
     if (tabs.length === 0) showOverlay(emptyState());
-    else if (tab && frames.has(tab.id)) { overlay.hidden = true; draw(frames.get(tab.id)); } else if (tab) showOverlay('Loading page…');
+    else if (showingPixels() && tab && frames.has(tab.id)) { overlay.hidden = true; draw(frames.get(tab.id)); }
+    else if (!showingPixels() && replayer && replayerTab === (tab && tab.id)) overlay.hidden = true;
+    else if (tab) showOverlay('Loading page…');
   }
 
   function emptyState() {
-    const base = sandbox.port_base;
     return h('div', { class: 'stack', style: { alignItems: 'center' } },
-      h('p', null, 'No open tabs. Type an address above.'),
-      base ? h('p', { class: 'small' }, `Dev servers of this sandbox use ports ${base}–${base + (sandbox.port_count || 1) - 1}. `,
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => send({ type: 'open', url: `http://localhost:${base}/` }) }, `Open localhost:${base}`)) : null);
+      h('p', null, 'No open tabs.'),
+      h('button', { type: 'button', class: 'btn btn-sm', onClick: () => send({ type: 'open', url: '' }) }, 'Open a tab'));
   }
 
   function showOverlay(content) {
@@ -121,11 +272,13 @@ export function createBrowserPanel(ctx, sandbox) {
     }
   }
 
+  // ---------------------------------------------------------------- pixels (fallback)
   function draw(bitmap) {
     if (!bitmap) return;
     if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
       canvas.width = bitmap.width;
       canvas.height = bitmap.height;
+      layout();
     }
     g.drawImage(bitmap, 0, 0);
   }
@@ -139,12 +292,236 @@ export function createBrowserPanel(ctx, sandbox) {
       if (old && old.close) old.close();
       frames.set(frame.tabId, bitmap);
       const tab = activeTab();
-      if (tab && tab.id === frame.tabId) { overlay.hidden = true; draw(bitmap); }
+      if (showingPixels() && tab && tab.id === frame.tabId) { overlay.hidden = true; draw(bitmap); }
     } catch { /* corrupt frame: skip */ }
     decoding = false;
     if (queuedFrame) { const next = queuedFrame; queuedFrame = null; decode(next); }
   }
 
+  // ---------------------------------------------------------------- DOM mirror
+  const proxied = (url) => `/api/sandboxes/${enc(sandbox.id)}/browser/resource?tab=${encodeURIComponent(replayerTab || '')}&url=${encodeURIComponent(url)}`;
+  const rewriteUrl = (url) => (typeof url === 'string' && needsProxy(url) ? proxied(url) : url);
+  const rewriteCss = (css) => (typeof css === 'string' ? css.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (match, quote, url) => (needsProxy(url) ? `url(${quote}${proxied(url)}${quote})` : match)) : css);
+  const rewriteSrcset = (value) => (typeof value === 'string' ? value.split(',').map((part) => {
+    const [url, ...descriptor] = part.trim().split(/\s+/);
+    return [rewriteUrl(url), ...descriptor].join(' ');
+  }).join(', ') : value);
+
+  function rewriteAttributes(tag, attributes) {
+    if (!attributes) return;
+    for (const name of Object.keys(attributes)) {
+      const value = attributes[name];
+      if (value == null) continue;
+      if (name === 'src' || name === 'poster' || name === 'data' || name === 'background' || name === 'xlink:href') attributes[name] = rewriteUrl(value);
+      else if (name === 'srcset') attributes[name] = rewriteSrcset(value);
+      else if (name === 'href' && (tag === 'link' || tag === 'image' || tag === 'use')) attributes[name] = rewriteUrl(value);
+      else if (name === 'style' || name === '_cssText') attributes[name] = rewriteCss(value);
+    }
+  }
+
+  function rewriteNode(node) {
+    if (!node) return;
+    if (node.type === 2) {
+      tags.set(node.id, String(node.tagName || '').toLowerCase());
+      rewriteAttributes(String(node.tagName || '').toLowerCase(), node.attributes);
+    } else if (node.type === 3 && node.isStyle) {
+      node.textContent = rewriteCss(node.textContent);
+    }
+    for (const child of node.childNodes || []) rewriteNode(child);
+  }
+
+  /** Points VM-only resources of an rrweb event at the Yulius resource endpoint. */
+  function rewriteEvent(event) {
+    if (event.type === EV_META && event.data) pageSize = { width: event.data.width || 0, height: event.data.height || 0 };
+    if (event.type === EV_FULL_SNAPSHOT && event.data) rewriteNode(event.data.node);
+    if (event.type !== EV_INCREMENTAL || !event.data) return event;
+    const data = event.data;
+    if (data.source === SRC_MUTATION) {
+      for (const add of data.adds || []) rewriteNode(add.node);
+      for (const change of data.attributes || []) rewriteAttributes(tags.get(change.id) || '', change.attributes);
+    } else if (data.source === SRC_STYLESHEET_RULE) {
+      for (const add of data.adds || []) add.rule = rewriteCss(add.rule);
+    } else if (data.source === SRC_VIEWPORT) {
+      pageSize = { width: data.width || pageSize.width, height: data.height || pageSize.height };
+    }
+    return event;
+  }
+
+  /**
+   * Paints a sampled canvas frame (rrweb's fps sampling: clearRect + drawImage of one encoded
+   * image) from this page. rrweb's own canvas replay needs scripts in the mirror iframe, which
+   * would let a hostile page run code as Yulius; the iframe stays script-free instead.
+   */
+  function paintCanvas(data) {
+    if (!replayer || data.type !== 0 || !Array.isArray(data.commands)) return;
+    const draw = data.commands.find((command) => command && command.property === 'drawImage');
+    const bitmap = draw && Array.isArray(draw.args) ? draw.args[0] : null;
+    const blob = bitmap && bitmap.rr_type === 'ImageBitmap' && Array.isArray(bitmap.args) ? bitmap.args[0] : null;
+    const buffer = blob && blob.rr_type === 'Blob' && Array.isArray(blob.data) ? blob.data[0] : null;
+    if (!buffer || buffer.rr_type !== 'ArrayBuffer' || typeof buffer.base64 !== 'string') return;
+    const node = replayer.getMirror().getNode(data.id);
+    if (!node || node.nodeName !== 'CANVAS') return;
+    const type = /^image\/(png|jpeg|webp)$/.test(blob.type) ? blob.type : 'image/png';
+    let bytes;
+    try { bytes = Uint8Array.from(atob(buffer.base64), (c) => c.charCodeAt(0)); } catch { return; }
+    const seq = (canvasSeq.get(data.id) || 0) + 1;
+    canvasSeq.set(data.id, seq);
+    createImageBitmap(new Blob([bytes], { type })).then((image) => {
+      const context = canvasSeq.get(data.id) === seq && node.isConnected ? node.getContext('2d') : null;
+      if (context) {
+        context.clearRect(0, 0, node.width, node.height);
+        context.drawImage(image, 0, 0);
+      }
+      image.close();
+    }, () => {});
+  }
+
+  /**
+   * Hands one event to the replayer, stamped before the live baseline so it is applied without
+   * delay. rrweb applies added events in microtasks (in order); canvas frames are queued
+   * behind them so the canvas they paint exists.
+   */
+  function apply(event) {
+    if (event.type === EV_INCREMENTAL && event.data && event.data.source === SRC_CANVAS) {
+      const data = event.data;
+      Promise.resolve().then(() => paintCanvas(data));
+      return;
+    }
+    event.timestamp = replayerClock - 1;
+    replayer.addEvent(event);
+  }
+
+  function destroyReplayer() {
+    if (replayer) {
+      try { replayer.destroy(); } catch { /* already gone */ }
+    }
+    replayer = null;
+    replayerTab = null;
+    tags.clear();
+    canvasSeq.clear();
+    mirrorHost.replaceChildren();
+  }
+
+  function onDom(message) {
+    const tab = activeTab();
+    if (!tab || message.tab_id !== tab.id) return;
+    const events = Array.isArray(message.events) ? message.events : [];
+    if (message.reset) {
+      destroyReplayer();
+      replayerTab = message.tab_id;
+      for (const event of events) rewriteEvent(event);
+      if (!events.length) return;
+      try {
+        // Security: never UNSAFE_replayCanvas — it allows scripts in the same-origin mirror
+        // iframe. Events are applied synchronously in arrival order (stamped before the
+        // baseline), so a snapshot with minutes of buffered changes shows the current state
+        // at once and clock differences with the server do not matter.
+        replayer = new Replayer([], { root: mirrorHost, liveMode: true, useVirtualDom: false, mouseTail: false, triggerFocus: false, skipInactive: false, showWarning: false, showDebug: false, pauseAnimation: false });
+        replayerClock = Date.now();
+        replayer.startLive(replayerClock);
+        for (const event of events) apply(event);
+      } catch (error) {
+        console.warn('mirror start failed', error);
+        destroyReplayer();
+        mirrorFailed();
+        return;
+      }
+      clearTimeout(domTimer);
+      pixelsReason = null;
+      // Once rrweb's queued microtasks built the snapshot (its document.open() drops earlier
+      // listeners, its Meta sets the snapshot's size): wire the document, and lay it out at the
+      // newest viewport, which the snapshot may predate (its resize event follows later).
+      const built = replayer;
+      Promise.resolve().then(() => {
+        if (replayer !== built) return;
+        wireMirrorDocument();
+        applyPointerMode();
+        if (serverViewport) resizeMirror(serverViewport.width, serverViewport.height);
+      });
+      applyMode();
+      overlay.hidden = true;
+      layout();
+      return;
+    }
+    if (!replayer || replayerTab !== message.tab_id) return;
+    try {
+      for (const event of events) apply(rewriteEvent(event));
+    } catch (error) {
+      console.warn('mirror replay failed; resynchronizing', error);
+      mirrorFailed();
+    }
+    layout();
+  }
+
+  /** Resynchronizes from a fresh snapshot; a page that keeps failing is shown as pixels. */
+  function mirrorFailed() {
+    mirrorFailures += 1;
+    if (mirrorFailures >= MAX_MIRROR_FAILURES) {
+      autoPixels('the mirror could not show this page');
+      return;
+    }
+    send({ type: 'dom_resync' });
+    expectDom();
+  }
+
+  /**
+   * Lays the mirror out at the page's new viewport now. The mirror is real DOM, so it reflows
+   * like the server page; waiting for the page's resize event (late under load) would map
+   * clicks onto the old layout meanwhile.
+   */
+  function resizeMirror(width, height) {
+    if (!replayer || !width || !height) return;
+    pageSize = { width, height };
+    try { replayer.handleResize({ width, height }); } catch { /* replayer API changed: wait for the event */ }
+    layout();
+  }
+
+  /** Scales the page (mirror or pixels) to fit the panel; the input layer follows it. */
+  function layout() {
+    const rect = stage.getBoundingClientRect();
+    const width = showingPixels() ? canvas.width : (pageSize.width || rect.width);
+    const height = showingPixels() ? canvas.height : (pageSize.height || rect.height);
+    if (!width || !height || !rect.width || !rect.height) return;
+    const scale = Math.min(1, rect.width / width, rect.height / height);
+    const wrapper = mirrorHost.querySelector('.replayer-wrapper');
+    if (wrapper) {
+      wrapper.style.transform = `scale(${scale})`;
+      wrapper.style.transformOrigin = '0 0';
+    }
+    canvas.style.width = `${Math.round(width * scale)}px`;
+    canvas.style.height = `${Math.round(height * scale)}px`;
+    Object.assign(inputLayer.style, { width: `${Math.round(width * scale)}px`, height: `${Math.round(height * scale)}px` });
+    inputLayer.dataset.scale = String(scale);
+    inputLayer.dataset.width = String(width);
+    inputLayer.dataset.height = String(height);
+  }
+
+  // ---------------------------------------------------------------- agent cursor (BRW-007)
+  function onAgent(message) {
+    const tab = activeTab();
+    if (!tab || message.tab_id !== tab.id) return;
+    const scale = Number(inputLayer.dataset.scale || 1);
+    const label = `${message.label || 'Agent'}${message.action === 'type' ? ' · typing' : ''}`;
+    if (message.x != null && message.y != null) lastAgent = { x: message.x, y: message.y };
+    if (lastAgent && (message.action === 'click' || message.action === 'type')) {
+      agentCursor.hidden = false;
+      agentCursor.style.left = `${Math.round(lastAgent.x * scale)}px`;
+      agentCursor.style.top = `${Math.round(lastAgent.y * scale)}px`;
+      agentCursor.querySelector('.bp-agent-label').textContent = label;
+      if (message.action === 'click') {
+        const ripple = h('span', { class: 'bp-agent-ripple' });
+        agentCursor.append(ripple);
+        setTimeout(() => ripple.remove(), 700);
+      }
+    } else {
+      agentPill.hidden = false;
+      agentPill.textContent = `${message.label || 'Agent'} ${message.action === 'open' ? 'opened a tab' : 'navigated'}`;
+    }
+    clearTimeout(agentTimer);
+    agentTimer = setTimeout(() => { agentCursor.hidden = true; agentPill.hidden = true; }, AGENT_CURSOR_IDLE_MS);
+  }
+
+  // ---------------------------------------------------------------- socket
   function onMessage(data) {
     if (typeof data !== 'string') {
       const frame = parseBrowserFrame(data);
@@ -153,9 +530,25 @@ export function createBrowserPanel(ctx, sandbox) {
     }
     let message;
     try { message = JSON.parse(data); } catch { return; }
-    if (message.type === 'tabs' && Array.isArray(message.tabs)) {
+    if (message.type === 'dom') {
+      onDom(message);
+    } else if (message.type === 'tabs' && Array.isArray(message.tabs)) {
+      const before = activeTab();
       tabs = message.tabs;
       for (const id of [...frames.keys()]) if (!tabs.some((t) => t.id === id)) frames.delete(id);
+      const now = activeTab();
+      if (!now || (before && before.id !== now.id) || (replayerTab && replayerTab !== now.id)) {
+        destroyReplayer();
+        watchedUrl = now ? now.url : null;
+        mirrorFailures = 0;
+        if (now) retryDom();
+        applyMode();
+      } else if (now.url !== watchedUrl) {
+        // A navigation: a page that could not be mirrored may be followed by one that can.
+        watchedUrl = now.url;
+        mirrorFailures = 0;
+        if (pixelsReason) retryDom();
+      }
       if (pendingOpen) {
         send({ type: 'open', url: pendingOpen });
         pendingOpen = null;
@@ -168,14 +561,25 @@ export function createBrowserPanel(ctx, sandbox) {
       }
       renderTabs();
       syncActionRequests();
+    } else if (message.type === 'dom_unavailable') {
+      const tab = activeTab();
+      if (tab && tab.id === message.tab_id) {
+        clearTimeout(domTimer);
+        pixelsReason = message.reason || 'unavailable';
+        destroyReplayer();
+        applyMode();
+      }
+    } else if (message.type === 'viewport') {
+      serverViewport = { width: message.width, height: message.height };
+      resizeMirror(message.width, message.height);
+    } else if (message.type === 'agent_activity') {
+      onAgent(message);
     } else if (message.type === 'action_requested') {
       ctx.store.handleEvent({ ...message, type: 'browser.action_requested', sandbox_id: sandbox.id });
     } else if (message.type === 'error') {
       lastError = { code: message.code, message: message.message || '' };
-      // `upstream` precedes a 1011 close when Chromium is missing or the browser stopped:
-      // the overlay explains it, so no toast.
-      // A tab that vanished (browser restarted) is not the user's problem: the tab list
-      // that follows selects another tab.
+      // `upstream` precedes a 1011 close when Chromium is missing or the browser stopped (the
+      // overlay explains it); a tab that vanished is replaced by the next tab list.
       if (message.code !== 'upstream' && message.code !== 'not_found') toast(message.message || 'Browser error', { kind: 'error', detail: message.code ? `code: ${message.code}` : null });
     }
   }
@@ -191,7 +595,15 @@ export function createBrowserPanel(ctx, sandbox) {
     socket = new ReconnectingSocket({
       transport: ctx.transport,
       path: `/api/sandboxes/${enc(sandbox.id)}/browser`,
-      onOpen: () => { lastViewport = null; sendViewport(); },
+      onOpen: () => {
+        lastViewport = null;
+        destroyReplayer();
+        pixelsReason = null;
+        if (wantPixels) send({ type: 'view', mode: 'pixels' });
+        else expectDom();
+        applyMode();
+        sendViewport();
+      },
       onMessage,
       onStatus: (status, detail = {}) => {
         if (status === 'reconnecting' && detail.code === CLOSE_SERVER_ERROR) {
@@ -212,28 +624,34 @@ export function createBrowserPanel(ctx, sandbox) {
   }
 
   function sendViewport() {
-    const rect = view.getBoundingClientRect();
+    const rect = stage.getBoundingClientRect();
     const width = Math.round(rect.width);
     const height = Math.round(rect.height);
     if (width < 50 || height < 50) return;
     if (lastViewport && lastViewport.width === width && lastViewport.height === height) return;
-    if (send({ type: 'viewport', width, height })) lastViewport = { width, height };
+    if (send({ type: 'viewport', width, height })) {
+      lastViewport = { width, height };
+      serverViewport = { width, height };
+      resizeMirror(width, height);
+    }
   }
 
   const observer = new ResizeObserver(() => {
+    layout();
     clearTimeout(viewportTimer);
     viewportTimer = setTimeout(sendViewport, 150);
   });
-  observer.observe(view);
+  observer.observe(stage);
 
-  // ---- input forwarding
+  // ---------------------------------------------------------------- input forwarding
   function point(event) {
-    const rect = canvas.getBoundingClientRect();
-    if (!canvas.width || !canvas.height) return null;
-    const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+    const rect = inputLayer.getBoundingClientRect();
+    const scale = Number(inputLayer.dataset.scale || 1) || 1;
+    const width = Number(inputLayer.dataset.width || 0);
+    const height = Number(inputLayer.dataset.height || 0);
     const x = (event.clientX - rect.left) / scale;
     const y = (event.clientY - rect.top) / scale;
-    if (x < 0 || y < 0 || x > canvas.width || y > canvas.height) return null;
+    if (x < 0 || y < 0 || (width && x > width) || (height && y > height)) return null;
     return { x: Math.round(x), y: Math.round(y) };
   }
 
@@ -244,18 +662,18 @@ export function createBrowserPanel(ctx, sandbox) {
     send({ type: 'mouse', tab_id: tab.id, event: kind, x: p.x, y: p.y, button: MOUSE_BUTTONS[event.button] || 'left', dx: 0, dy: 0, ...extra });
   }
 
-  canvas.addEventListener('pointerdown', (event) => { canvas.focus(); mouse('down', event); });
-  canvas.addEventListener('pointerup', (event) => mouse('up', event));
-  canvas.addEventListener('pointermove', (event) => {
+  inputLayer.addEventListener('pointerdown', (event) => { inputLayer.focus(); mouse('down', event); });
+  inputLayer.addEventListener('pointerup', (event) => mouse('up', event));
+  inputLayer.addEventListener('pointermove', (event) => {
     pendingMove = event;
     if (moveFrame) return;
     moveFrame = requestAnimationFrame(() => { moveFrame = 0; if (pendingMove) mouse('move', pendingMove, { button: 'none' }); pendingMove = null; });
   });
-  canvas.addEventListener('wheel', (event) => {
+  inputLayer.addEventListener('wheel', (event) => {
     event.preventDefault();
     mouse('wheel', event, { button: 'none', dx: Math.round(event.deltaX), dy: Math.round(event.deltaY) });
   }, { passive: false });
-  canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+  inputLayer.addEventListener('contextmenu', (event) => event.preventDefault());
   const keyHandler = (kind) => (event) => {
     const tab = activeTab();
     if (!tab) return;
@@ -265,32 +683,38 @@ export function createBrowserPanel(ctx, sandbox) {
     const text = kind === 'down' ? (event.key.length === 1 ? event.key : event.key === 'Enter' ? '\r' : '') : '';
     send({ type: 'key', tab_id: tab.id, event: kind, key: event.key, code: event.code, text, modifiers: modifiers(event) });
   };
-  canvas.addEventListener('keydown', keyHandler('down'));
-  canvas.addEventListener('keyup', keyHandler('up'));
-  canvas.addEventListener('paste', (event) => {
+  inputLayer.addEventListener('keydown', keyHandler('down'));
+  inputLayer.addEventListener('keyup', keyHandler('up'));
+  inputLayer.addEventListener('paste', (event) => {
     const tab = activeTab();
     const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
     if (!tab || !text) return;
     event.preventDefault();
     send({ type: 'key', tab_id: tab.id, event: 'char', key: '', code: '', text: text.slice(0, 10000), modifiers: 0 });
   });
+  // Option/Alt held: the mouse selects text in the mirror instead of driving the page.
+  const altWatch = (event) => {
+    if (event.altKey !== altHeld) { altHeld = event.altKey; applyPointerMode(); }
+  };
+  window.addEventListener('keydown', altWatch, true);
+  window.addEventListener('keyup', altWatch, true);
+  window.addEventListener('blur', () => { if (altHeld) { altHeld = false; applyPointerMode(); } });
 
   address.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') { newTabMode = false; address.placeholder = 'Type an address'; const tab = activeTab(); address.value = tab ? tab.url : ''; return; }
+    if (event.key === 'Escape') { const tab = activeTab(); address.value = tab && !isWelcome(tab) ? tab.url : ''; return; }
     if (event.key !== 'Enter') return;
     const url = normalizeUrl(address.value);
     if (!url) { toast('Enter a web address, e.g. example.com or localhost:3000.', { kind: 'warn' }); return; }
     const tab = activeTab();
-    if (newTabMode || !tab) send({ type: 'open', url });
+    if (!tab) send({ type: 'open', url });
     else send({ type: 'navigate', tab_id: tab.id, url });
-    newTabMode = false;
     address.blur();
-    canvas.focus();
+    inputLayer.focus();
   });
 
   return {
     el,
-    headExtra: () => [h('span', { class: 'muted xs' }, 'shared by this sandbox')],
+    headExtra: () => [selectButton, pixelsButton, h('span', { class: 'muted xs' }, 'shared by this sandbox')],
     /** opts.tabId: activate that tab once tabs are known (Yulius links, UI-011);
      *  opts.url: open it in a new tab (localhost links from terminals and messages). */
     show(opts = {}) {
@@ -304,19 +728,27 @@ export function createBrowserPanel(ctx, sandbox) {
         if (target && socket && socket.isOpen) { if (!target.active) send({ type: 'activate', tab_id: target.id }); } else pendingActivate = opts.tabId;
       }
       connect();
-      setTimeout(sendViewport, 0);
+      setTimeout(() => { sendViewport(); layout(); }, 0);
     },
     hide() {
       visible = false;
+      clearTimeout(domTimer);
       if (socket) socket.stop();
       socket = null;
+      destroyReplayer();
     },
     destroy() {
       observer.disconnect();
       clearTimeout(viewportTimer);
+      clearTimeout(agentTimer);
+      clearTimeout(domTimer);
+      clearTimeout(copiedTimer);
       cancelAnimationFrame(moveFrame);
+      window.removeEventListener('keydown', altWatch, true);
+      window.removeEventListener('keyup', altWatch, true);
       if (socket) socket.stop();
       socket = null;
+      destroyReplayer();
       for (const bitmap of frames.values()) if (bitmap && bitmap.close) bitmap.close();
       frames.clear();
     },

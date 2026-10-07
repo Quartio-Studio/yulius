@@ -95,7 +95,7 @@ impl From<BrowserFailure> for AppError {
 }
 
 /// Browser notifications for viewers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BrowserNotice {
     /// An agent asked the user to act in a tab.
     ActionRequested {
@@ -113,6 +113,60 @@ pub enum BrowserNotice {
     },
     /// The browser exited or crashed; the next [`BrowserPort::ensure`] restarts it.
     Disconnected,
+    /// An agent acted in a tab (the agent's cursor, BRW-007).
+    AgentActivity {
+        /// The tab.
+        tab_id: TabId,
+        /// Position in CSS pixels, when the action has one.
+        x: Option<f64>,
+        /// Position in CSS pixels, when the action has one.
+        y: Option<f64>,
+        /// `click`, `type`, `open` or `navigate`.
+        action: String,
+        /// Who acted.
+        label: String,
+    },
+    /// The viewport of all tabs changed.
+    Viewport {
+        /// Width in CSS pixels.
+        width: u32,
+        /// Height in CSS pixels.
+        height: u32,
+    },
+}
+
+/// What a DOM mirror subscriber receives (SPEC-001 BRW-005).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DomUpdate {
+    /// rrweb events (JSON texts); with `reset` they start a new stream.
+    Batch {
+        /// The events replace the viewer's stream.
+        reset: bool,
+        /// rrweb events.
+        events: Arc<[Arc<str>]>,
+    },
+    /// The subscriber fell behind and must subscribe again.
+    Lagged,
+}
+
+/// The DOM mirror of one tab; dropping it unsubscribes.
+#[async_trait]
+pub trait BrowserDom: Send {
+    /// The tab.
+    fn tab_id(&self) -> &TabId;
+    /// The next update; `None` once the tab or browser closed.
+    async fn next(&mut self) -> Option<DomUpdate>;
+}
+
+/// A page resource fetched by the sandbox browser for a viewer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedResource {
+    /// HTTP status, when known.
+    pub status: Option<u16>,
+    /// `Content-Type`, when given.
+    pub content_type: Option<String>,
+    /// The bytes.
+    pub body: Vec<u8>,
 }
 
 /// A screenshot that fits the caller's byte budget.
@@ -158,6 +212,8 @@ pub trait BrowserSession: Send + Sync {
     fn touch(&self);
     /// Current tabs in creation order.
     fn tabs(&self) -> Vec<TabInfo>;
+    /// The viewport of all tabs (width, height) in CSS pixels.
+    fn viewport(&self) -> (u32, u32);
     /// The tab list, updated after every change.
     fn watch_tabs(&self) -> watch::Receiver<Vec<TabInfo>>;
     /// User-action and connection notifications.
@@ -166,6 +222,16 @@ pub trait BrowserSession: Send + Sync {
     async fn apply_viewer(&self, message: ViewerClientMsg) -> Result<(), BrowserFailure>;
     /// Subscribes to a tab's screencast.
     async fn frames(&self, tab: &TabId) -> Result<Box<dyn BrowserFrames>, BrowserFailure>;
+    /// Subscribes to a tab's DOM mirror (BRW-005).
+    async fn dom(&self, tab: &TabId) -> Result<Box<dyn BrowserDom>, BrowserFailure>;
+    /// Fetches a page resource with the browser's network stack (cookies, VM loopback).
+    async fn fetch_resource(
+        &self,
+        tab: &TabId,
+        url: &str,
+    ) -> Result<FetchedResource, BrowserFailure>;
+    /// Tells viewers that an agent acted in a tab (BRW-007).
+    fn agent_activity(&self, tab: &TabId, position: Option<(f64, f64)>, action: &str, label: &str);
     /// `browser_tabs`.
     fn tool_tabs(&self) -> TabsResult;
     /// `browser_open`.
