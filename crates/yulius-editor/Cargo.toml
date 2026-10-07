@@ -14,4 +14,27 @@ workspace = true
 [package.metadata.yulius]
 layer = "adapter"
 
+[features]
+# Builds the fake openvscode-server test executable. Never enable in production builds.
+fake = []
+
 [dependencies]
+yulius-domain = { workspace = true }
+nix = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[bin]]
+name = "fake-openvscode-server"
+path = "src/bin/fake_openvscode_server.rs"
+required-features = ["fake"]
+test = false
+doc = false
+
+[[test]]
+name = "editor"
+required-features = ["fake"]

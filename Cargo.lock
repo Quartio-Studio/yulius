@@ -789,6 +789,14 @@ dependencies = [
 [[package]]
 name = "yulius-editor"
 version = "0.1.0"
+dependencies = [
+ "nix",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "yulius-domain",
+]
 
 [[package]]
 name = "yulius-git"
