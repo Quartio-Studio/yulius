@@ -1489,6 +1489,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -2751,10 +2752,29 @@ dependencies = [
 [[package]]
 name = "yulius-git"
 version = "0.1.0"
+dependencies = [
+ "nix 0.31.3",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "yulius-domain",
+]
 
 [[package]]
 name = "yulius-github"
 version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "reqwest",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "yulius-domain",
+]
 
 [[package]]
 name = "yulius-harness"
