@@ -55,6 +55,10 @@ pub struct Hub {
     tx: broadcast::Sender<HubFrame>,
     screen: Mutex<Screen>,
     viewers: AtomicU64,
+    /// Viewer ids handed out to attached viewers.
+    next_viewer: AtomicU64,
+    /// The viewer that controls input focus and PTY size (0 = nobody yet; TSK-006).
+    controller: AtomicU64,
 }
 
 /// A viewer subscription with its starting snapshot.
@@ -81,6 +85,8 @@ impl Hub {
                 seq: 0,
             }),
             viewers: AtomicU64::new(0),
+            next_viewer: AtomicU64::new(1),
+            controller: AtomicU64::new(0),
         }
     }
 
@@ -204,11 +210,71 @@ impl Hub {
     pub fn viewer_count(&self) -> u64 {
         self.viewers.load(Ordering::SeqCst)
     }
+
+    /// A new viewer id (never 0).
+    pub fn new_viewer_id(&self) -> u64 {
+        self.next_viewer.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// The controlling viewer (0 = nobody).
+    #[must_use]
+    pub fn controller(&self) -> u64 {
+        self.controller.load(Ordering::SeqCst)
+    }
+
+    /// Makes `viewer` the controller; tells every viewer when control changed.
+    pub fn take_control(&self, viewer: u64) {
+        if self.controller.swap(viewer, Ordering::SeqCst) != viewer {
+            self.state_changed();
+        }
+    }
+
+    /// Whether `viewer` may resize: it controls, or nobody does yet (it then takes control).
+    pub fn may_resize(&self, viewer: u64) -> bool {
+        match self
+            .controller
+            .compare_exchange(0, viewer, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            Ok(_) => {
+                self.state_changed();
+                true
+            }
+            Err(current) => current == viewer,
+        }
+    }
+
+    /// Releases control when `viewer` leaves.
+    pub fn release(&self, viewer: u64) {
+        if self
+            .controller
+            .compare_exchange(viewer, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.state_changed();
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_follows_the_last_writer_and_is_released_on_leave() {
+        let hub = Hub::new(20, 5);
+        let (a, b) = (hub.new_viewer_id(), hub.new_viewer_id());
+        assert_ne!(a, b);
+        assert_eq!(hub.controller(), 0);
+        assert!(hub.may_resize(a), "the first resizer takes control");
+        assert!(!hub.may_resize(b), "others keep watching at that size");
+        hub.take_control(b);
+        assert_eq!(hub.controller(), b);
+        assert!(!hub.may_resize(a));
+        hub.release(a);
+        assert_eq!(hub.controller(), b, "only the controller's leave releases");
+        hub.release(b);
+        assert_eq!(hub.controller(), 0);
+    }
 
     #[test]
     fn snapshot_then_frames_without_gap() {

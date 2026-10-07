@@ -118,9 +118,11 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
     })?;
     let writer = seed_github_user(&h, "u-w", "alice").await?;
     let reader = seed_github_user(&h, "u-r", "bob").await?;
+    let second = seed_github_user(&h, "u-c", "carol").await?;
     let sandbox = seed_sandbox(&h, "s1", "fixture", "u-w").await?;
     h.github.set_perm("alice", "acme/fixture", perms("write"));
     h.github.set_perm("bob", "acme/fixture", perms("read"));
+    h.github.set_perm("carol", "acme/fixture", perms("write"));
     h.app
         .deps
         .store
@@ -238,6 +240,45 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
     })
     .await?;
     assert!(!wv.screen.contains("ECHO: intruder") && !rv.screen.contains("ECHO: intruder"));
+
+    // TSK-006: the last writer to type controls the terminal; every viewer learns who.
+    let last_state = |v: &Viewer| v.texts.iter().rev().find(|t| t["type"] == "state").cloned();
+    assert_eq!(
+        last_state(&wv).ok_or("writer state")?["controller"],
+        true,
+        "alice typed last"
+    );
+    let mut c = ws_connect(served.addr, &terminal, &second, ORIGIN).await?;
+    let mut cv = Viewer::default();
+    read_until(&mut c, &mut cv, "carol's banner", |v| {
+        v.screen.contains("ECHO: hello viewers")
+    })
+    .await?;
+    assert_eq!(last_state(&cv).ok_or("carol state")?["controller"], false);
+    c.send(Message::Text(
+        json!({"type": "input", "data": "carol here\r", "seq": 1})
+            .to_string()
+            .into(),
+    ))
+    .await?;
+    read_until(&mut c, &mut cv, "carol takes control", |v| {
+        last_state(v).is_some_and(|s| s["controller"] == true)
+    })
+    .await?;
+    read_until(&mut w, &mut wv, "alice loses control", |v| {
+        last_state(v).is_some_and(|s| s["controller"] == false)
+    })
+    .await?;
+    // An explicit "take control" hands it back.
+    w.send(Message::Text(
+        json!({"type": "take_control"}).to_string().into(),
+    ))
+    .await?;
+    read_until(&mut w, &mut wv, "alice takes control back", |v| {
+        last_state(v).is_some_and(|s| s["controller"] == true)
+    })
+    .await?;
+    drop(c);
 
     // AC-ACC-5: a downgrade on GitHub reaches open sockets once the permission cache expires.
     h.github.set_perm("alice", "acme/fixture", perms("read"));

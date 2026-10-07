@@ -50,7 +50,7 @@ async fn send_state(app: &AppState, socket: &mut WebSocket, attach: &TerminalAtt
             cols: state.size.0,
             rows: state.size.1,
             can_write: attach.can_write,
-            controller: attach.can_write,
+            controller: attach.is_controller(),
             status: state.status,
         },
     )
@@ -114,7 +114,7 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut s
                     TerminalClientMsg::Hello { cols, rows, .. } | TerminalClientMsg::Resize { cols, rows } => {
                         if attach.can_write { app.terminal_resize(&ctx, &attach, cols, rows).await } else { Ok(()) }
                     }
-                    TerminalClientMsg::TakeControl => Ok(()),
+                    TerminalClientMsg::TakeControl => app.terminal_take_control(&ctx, &attach).await,
                     TerminalClientMsg::Input { data, seq } => {
                         if seq.is_some() && seq <= last_input_seq { Ok(()) } else {
                             if seq.is_some() { last_input_seq = seq; }

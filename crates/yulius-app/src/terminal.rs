@@ -23,11 +23,22 @@ pub struct TerminalAttach {
     pub subscription: Subscription,
     /// Whether this viewer may type.
     pub can_write: bool,
+    /// This viewer's id within the task's hub.
+    pub viewer_id: u64,
     runtime: Arc<TaskRuntime>,
+}
+
+impl TerminalAttach {
+    /// Whether this viewer currently controls input focus and the PTY size (TSK-006).
+    #[must_use]
+    pub fn is_controller(&self) -> bool {
+        self.runtime.hub.controller() == self.viewer_id
+    }
 }
 
 impl Drop for TerminalAttach {
     fn drop(&mut self) {
+        self.runtime.hub.release(self.viewer_id);
         self.runtime.hub.unsubscribe();
     }
 }
@@ -64,10 +75,12 @@ impl App {
             return Err(AppError::Capacity("too many viewers on this task".into()));
         }
         let subscription = runtime.hub.subscribe();
+        let viewer_id = runtime.hub.new_viewer_id();
         Ok(TerminalAttach {
             task_id: task.id,
             subscription,
             can_write: level.allows(Action::Work),
+            viewer_id,
             runtime,
         })
     }
@@ -113,6 +126,8 @@ impl App {
         if data.len() > 64 * 1024 {
             return Err(AppError::Invalid("input frame too large".into()));
         }
+        // The last viewer to type controls the terminal (TSK-006).
+        attach.runtime.hub.take_control(attach.viewer_id);
         self.send_input(&attach.task_id, data).await
     }
 
@@ -130,7 +145,27 @@ impl App {
         if !attach.can_write || !self.can_work(ctx, &attach.task_id).await {
             return Err(AppError::Forbidden("read-only access".into()));
         }
+        if !attach.runtime.hub.may_resize(attach.viewer_id) {
+            // Another viewer controls the size; this viewer keeps watching at that size.
+            return Ok(());
+        }
         self.resize_run(&attach.task_id, cols, rows).await
+    }
+
+    /// Explicit "take control" by a writer: input focus and size follow this viewer.
+    ///
+    /// # Errors
+    /// `Forbidden` for read-only viewers.
+    pub async fn terminal_take_control(
+        &self,
+        ctx: &AuthContext,
+        attach: &TerminalAttach,
+    ) -> AppResult<()> {
+        if !attach.can_write || !self.can_work(ctx, &attach.task_id).await {
+            return Err(AppError::Forbidden("read-only access".into()));
+        }
+        attach.runtime.hub.take_control(attach.viewer_id);
+        Ok(())
     }
 
     /// Whether the caller still has write access to the task's sandbox.
