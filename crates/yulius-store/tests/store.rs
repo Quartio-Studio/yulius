@@ -106,6 +106,7 @@ fn attempt(id: &str, task: &TaskId, seq: u32) -> Result<AttemptRecord, Box<dyn s
         state: AttemptState::Spawning,
         run_dir: format!("/tmp/{id}"),
         token_hash: format!("hash-{id}"),
+        host_token: yulius_app::model::Sealed(vec![1, 2, 3]),
         ptyhost_pid: None,
         child_pid: None,
         started_at: Timestamp(20),

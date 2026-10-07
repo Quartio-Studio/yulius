@@ -334,8 +334,10 @@ pub struct AttemptRecord {
     pub state: AttemptState,
     /// ptyhost run directory.
     pub run_dir: String,
-    /// SHA-256 hex of the attempt token.
+    /// SHA-256 hex of the agent's MCP/hook token.
     pub token_hash: String,
+    /// Sealed token the server uses to authenticate to the ptyhost (never given to the agent).
+    pub host_token: Sealed,
     /// ptyhost pid.
     pub ptyhost_pid: Option<u32>,
     /// Agent pid.

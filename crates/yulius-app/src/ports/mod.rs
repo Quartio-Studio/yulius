@@ -1,6 +1,7 @@
 //! Ports implemented by adapters and injected at composition.
 
 pub mod github;
+pub mod session;
 pub mod store;
 pub mod store_ext;
 

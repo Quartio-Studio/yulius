@@ -137,7 +137,8 @@ CREATE TABLE attempts (
     launch_kind TEXT NOT NULL,
     state TEXT NOT NULL,
     run_dir TEXT NOT NULL,
-    token_hash TEXT NOT NULL UNIQUE,
+    token_hash TEXT NOT NULL UNIQUE,      -- SHA-256 of the agent's MCP/hook token
+    host_token BLOB NOT NULL,             -- sealed server<->ptyhost token (restart reattach)
     ptyhost_pid INTEGER,
     child_pid INTEGER,
     started_at INTEGER NOT NULL,

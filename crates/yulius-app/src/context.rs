@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::events::EventBus;
 use crate::ports::github::GitHubPort;
@@ -87,6 +87,8 @@ pub struct App {
     pub events: EventBus,
     /// Password-login attempts per client key (rate limiting).
     pub(crate) login_attempts: Mutex<HashMap<String, Vec<i64>>>,
+    /// Wakes idle tasks on new messages (set once by the supervisor).
+    pub message_waker: OnceLock<Arc<dyn crate::coordination::MessageWaker>>,
 }
 
 impl App {
@@ -98,6 +100,7 @@ impl App {
             deps,
             events: EventBus::new(1024),
             login_attempts: Mutex::new(HashMap::new()),
+            message_waker: OnceLock::new(),
         })
     }
 

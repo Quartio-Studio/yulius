@@ -2,8 +2,10 @@
 
 mod admin;
 mod events;
+mod mcp;
 mod sandboxes;
 mod setup_auth;
+mod tasks;
 
 use std::sync::Arc;
 
@@ -37,10 +39,22 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/admin/users/{id}", patch(admin::update_user))
         .route("/api/sandboxes", get(sandboxes::list))
         .route("/api/sandboxes/{sid}", get(sandboxes::get_one))
+        .route("/api/sandboxes/{sid}/tasks", get(tasks::list))
+        .route("/api/archived-tasks", get(tasks::archived))
+        .route("/api/tasks/{tid}", get(tasks::detail))
+        .route("/api/tasks/{tid}/archive", post(tasks::archive))
+        .route("/api/tasks/{tid}/restore", post(tasks::restore))
+        .route("/api/tasks/{tid}/feedback", post(tasks::feedback))
+        .route(
+            "/api/tasks/{tid}/messages",
+            get(tasks::messages).post(tasks::post_message),
+        )
         .route("/api/events", get(events::events))
 }
 
 /// Internal (loopback) routes.
 pub fn internal(_app: Arc<App>) -> Router<AppState> {
-    Router::new().route("/internal/healthz", get(|| async { "ok" }))
+    Router::new()
+        .route("/internal/healthz", get(|| async { "ok" }))
+        .route("/mcp", post(mcp::post).get(mcp::get))
 }
