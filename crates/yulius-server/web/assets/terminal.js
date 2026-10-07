@@ -1,11 +1,14 @@
 // xterm.js terminal bound to a terminal WebSocket (task terminal, sandbox shell,
 // account login). Handles fit/resize, read-only state, control hand-over, links,
-// reconnect banners and exit notices.
+// reconnect banners and exit notices. Text behaves like page text (F 2026-10-07): xterm's DOM
+// renderer, mouse reporting requested by TUIs filtered out unless the viewer hands the mouse
+// to the app, and selections copied to the clipboard as soon as they are made.
 
 import { Terminal } from './vendor/xterm/xterm.mjs';
 import { FitAddon } from './vendor/xterm/addon-fit.mjs';
 import { WebLinksAddon } from './vendor/xterm/addon-web-links.mjs';
 import { TerminalSocket, isEndedStatus, CLOSE_REVOKED } from './termsocket.js';
+import { createMouseFilter } from './mousefilter.js';
 import { h, setChildren } from './dom.js';
 
 const THEME = {
@@ -38,7 +41,21 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
   const host = h('div', { class: 'term-host', style: followServerSize ? { overflowX: 'auto' } : null });
-  const el = h('div', { class: 'term' }, banner, noticeEl, host);
+  const mouseToggle = h('button', { type: 'button', class: 'btn btn-sm term-mouse-toggle', hidden: true });
+  const el = h('div', { class: 'term' }, banner, noticeEl, mouseToggle, host);
+  const mouse = createMouseFilter();
+  // The app asked for mouse reporting: offer to hand the mouse over (text selection otherwise).
+  function renderMouseToggle() {
+    mouseToggle.hidden = !mouse.requested();
+    mouseToggle.textContent = mouse.appMouse() ? 'Mouse: app · select text instead' : 'Mouse: select text · send to app';
+    mouseToggle.title = mouse.appMouse()
+      ? 'Clicks go to the program; Option-drag still selects. Click to select text with the mouse again.'
+      : 'The program asked for the mouse. Clicks select text now; click to send them to the program.';
+  }
+  mouseToggle.addEventListener('click', () => {
+    term.write(mouse.setAppMouse(!mouse.appMouse()));
+    renderMouseToggle();
+  });
 
   const size = fontSize || (window.matchMedia('(max-width: 767px)').matches ? 12 : 13);
   const term = new Terminal({
@@ -49,6 +66,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     scrollback: 5000,
     theme: THEME,
     macOptionIsMeta: true,
+    // While the app has the mouse, Option-drag (macOS) / Shift-drag still selects text.
+    macOptionClickForcesSelection: true,
     disableStdin: true,
     allowProposedApi: false,
     linkHandler: { activate: (event, text) => onLink && onLink(text, event) },
@@ -73,8 +92,18 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     path,
     handlers: {
       getSize: () => proposed() || { cols: term.cols, rows: term.rows },
-      onOutput: (bytes) => term.write(bytes),
-      onSnapshot: (bytes) => { term.reset(); term.write(bytes); },
+      onOutput: (bytes) => {
+        const had = mouse.requested();
+        term.write(mouse.feed(bytes));
+        if (had !== mouse.requested()) renderMouseToggle();
+      },
+      onSnapshot: (bytes) => {
+        mouse.reset();
+        term.reset();
+        term.write(mouse.feed(bytes));
+        if (mouse.appMouse()) term.write(mouse.setAppMouse(true));
+        renderMouseToggle();
+      },
       onState: (message) => {
         state = { ...state, ...message };
         if (message.status && !isEndedStatus(message.status)) exited = null;
@@ -96,6 +125,16 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     },
   });
 
+  // Copy on select, like many terminals: the selection is in the clipboard right away.
+  let copyTimer = 0;
+  term.onSelectionChange(() => {
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => {
+      const text = term.getSelection();
+      if (!text || !navigator.clipboard) return;
+      navigator.clipboard.writeText(text).then(() => showNotice('Copied'), () => {});
+    }, 120);
+  });
   term.onData((data) => send(data));
   term.onBinary((data) => send(data));
 

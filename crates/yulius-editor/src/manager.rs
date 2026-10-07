@@ -1,4 +1,5 @@
-//! On-demand openvscode-server per sandbox (SPEC-002 ADR-10; SPEC-001 EDT-001/002).
+//! On-demand openvscode-server per key — one per (user, sandbox) in Yulius — optionally inside
+//! a containment wrapper (SPEC-002 ADR-10; SPEC-001 EDT-001..004).
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -137,13 +138,70 @@ impl EditorConfig {
     }
 }
 
+/// Everything needed to start one editor. Paths named `*_arg` are as seen by the editor
+/// process (inside containment they differ from host paths); the others are host paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorSpec {
+    /// Slot key: at most one editor runs per key (Yulius: `<sandbox>/<user>`).
+    pub key: String,
+    /// Host path of the connection token file (written 0600 before the start, reused later).
+    pub token_file: PathBuf,
+    /// `--connection-token-file` as seen by the editor.
+    pub token_file_arg: PathBuf,
+    /// Host paths of the user data and extensions directories (created 0700; new profiles get
+    /// [`DEFAULT_SETTINGS`]).
+    pub user_data_dir: PathBuf,
+    /// See [`EditorSpec::user_data_dir`].
+    pub extensions_dir: PathBuf,
+    /// `--user-data-dir` as seen by the editor.
+    pub user_data_arg: PathBuf,
+    /// `--extensions-dir` as seen by the editor.
+    pub extensions_arg: PathBuf,
+    /// Folder opened by default (an existing host directory, bound at the same path).
+    pub workspace_dir: PathBuf,
+    /// Base path the editor serves under (`/s/<sandbox>/editor`).
+    pub base_path: String,
+    /// Command prefix that wraps the editor (e.g. a bubblewrap argv ending in `--`); empty
+    /// runs it directly.
+    pub wrapper: Vec<OsString>,
+    /// Environment on top of the allowlisted host variables (later entries win).
+    pub env: Vec<(OsString, OsString)>,
+}
+
+impl EditorSpec {
+    /// The single-tenant layout: `<data_root>/<sandbox>/{user-data,extensions,connection-token}`,
+    /// no wrapper.
+    #[must_use]
+    pub fn for_sandbox(
+        config: &EditorConfig,
+        sandbox: &SandboxId,
+        workspace_dir: &Path,
+        base_path: &str,
+    ) -> Self {
+        let root = config.data_root.join(sandbox.as_str());
+        Self {
+            key: sandbox.as_str().to_owned(),
+            token_file: root.join(TOKEN_FILE),
+            token_file_arg: root.join(TOKEN_FILE),
+            user_data_dir: root.join("user-data"),
+            extensions_dir: root.join("extensions"),
+            user_data_arg: root.join("user-data"),
+            extensions_arg: root.join("extensions"),
+            workspace_dir: workspace_dir.to_path_buf(),
+            base_path: base_path.to_owned(),
+            wrapper: Vec::new(),
+            env: Vec::new(),
+        }
+    }
+}
+
 /// How to reach a running editor. The reverse proxy forwards `/s/<sandbox>/editor/*` to
 /// `http://127.0.0.1:<port>` unchanged (the editor serves under its base path) and adds
 /// `Cookie: <ConnectionToken::cookie_value>` to every request and WebSocket upgrade, after
 /// removing any `vscode-tkn` cookie sent by the client. The token never reaches the browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorInstance {
-    sandbox: SandboxId,
+    key: String,
     port: u16,
     connection_token: ConnectionToken,
     base_path: String,
@@ -152,10 +210,10 @@ pub struct EditorInstance {
 }
 
 impl EditorInstance {
-    /// The owning sandbox.
+    /// The slot key.
     #[must_use]
-    pub fn sandbox(&self) -> &SandboxId {
-        &self.sandbox
+    pub fn key(&self) -> &str {
+        &self.key
     }
 
     /// Loopback port.
@@ -228,11 +286,11 @@ struct Running {
 
 type Slot = Arc<tokio::sync::Mutex<Option<Running>>>;
 
-/// Owns at most one openvscode-server per sandbox.
+/// Owns at most one openvscode-server per key.
 #[derive(Debug)]
 pub struct EditorManager {
     config: EditorConfig,
-    slots: Mutex<HashMap<SandboxId, Slot>>,
+    slots: Mutex<HashMap<String, Slot>>,
     reserved_ports: Mutex<HashSet<u16>>,
 }
 
@@ -289,31 +347,41 @@ impl EditorManager {
         &self.config
     }
 
-    fn slot(&self, sandbox: &SandboxId) -> Slot {
-        Arc::clone(lock(&self.slots).entry(sandbox.clone()).or_default())
+    fn slot(&self, key: &str) -> Slot {
+        Arc::clone(lock(&self.slots).entry(key.to_owned()).or_default())
     }
 
     /// Returns the sandbox's running editor or starts one serving `workspace_dir` under
-    /// `base_path` (see [`default_base_path`]). A running editor is reused as is; a crashed
-    /// one is reaped and replaced (reusing its persisted token).
+    /// `base_path` with the single-tenant layout ([`EditorSpec::for_sandbox`]).
     ///
     /// # Errors
-    /// Invalid inputs, missing executable, no free port, spawn failure, early exit or a failed
-    /// health check; a failed start leaves no process behind.
+    /// As [`EditorManager::ensure_spec`].
     pub async fn ensure(
         &self,
         sandbox: &SandboxId,
         workspace_dir: &Path,
         base_path: &str,
     ) -> Result<EditorInstance, EditorError> {
-        validate_base_path(base_path)?;
+        let spec = EditorSpec::for_sandbox(&self.config, sandbox, workspace_dir, base_path);
+        self.ensure_spec(&spec).await
+    }
+
+    /// Returns the running editor of `spec.key` or starts one. A running editor is reused as
+    /// is; a crashed one is reaped and replaced (reusing its persisted token).
+    ///
+    /// # Errors
+    /// Invalid inputs, missing executable, no free port, spawn failure, early exit or a failed
+    /// health check; a failed start leaves no process behind.
+    pub async fn ensure_spec(&self, spec: &EditorSpec) -> Result<EditorInstance, EditorError> {
+        validate_base_path(&spec.base_path)?;
+        let workspace_dir = &spec.workspace_dir;
         let is_dir = tokio::fs::metadata(workspace_dir)
             .await
             .is_ok_and(|meta| meta.is_dir());
         if !workspace_dir.is_absolute() || !is_dir {
-            return Err(EditorError::InvalidWorkspace(workspace_dir.to_path_buf()));
+            return Err(EditorError::InvalidWorkspace(workspace_dir.clone()));
         }
-        let slot = self.slot(sandbox);
+        let slot = self.slot(&spec.key);
         let mut guard = slot.lock().await;
         if let Some(running) = guard.as_ref()
             && !running.process.has_exited()
@@ -322,20 +390,25 @@ impl EditorManager {
             return Ok(running.instance.clone());
         }
         if let Some(dead) = guard.take() {
-            warn!(sandbox = %sandbox, "editor exited; restarting");
+            warn!(editor = %spec.key, "editor exited; restarting");
             if let Err(error) = self.release(&dead).await {
-                warn!(sandbox = %sandbox, %error, "could not reap the previous editor");
+                warn!(editor = %spec.key, %error, "could not reap the previous editor");
             }
         }
-        let running = self.launch(sandbox, workspace_dir, base_path).await?;
+        let running = self.launch(spec).await?;
         let instance = running.instance.clone();
         *guard = Some(running);
         Ok(instance)
     }
 
-    /// The sandbox's editor if it is running; never starts one.
+    /// The sandbox's editor (single-tenant key) if it is running; never starts one.
     pub async fn get(&self, sandbox: &SandboxId) -> Option<EditorInstance> {
-        let slot = lock(&self.slots).get(sandbox).cloned()?;
+        self.get_key(sandbox.as_str()).await
+    }
+
+    /// The editor of `key` if it is running; never starts one.
+    pub async fn get_key(&self, key: &str) -> Option<EditorInstance> {
+        let slot = lock(&self.slots).get(key).cloned()?;
         let guard = slot.lock().await;
         guard
             .as_ref()
@@ -346,7 +419,12 @@ impl EditorManager {
     /// Records activity for idle tracking. The proxy calls it per request and periodically
     /// while an editor WebSocket is open. A slot busy starting or stopping is skipped.
     pub fn touch(&self, sandbox: &SandboxId) {
-        let Some(slot) = lock(&self.slots).get(sandbox).cloned() else {
+        self.touch_key(sandbox.as_str());
+    }
+
+    /// [`EditorManager::touch`] by key.
+    pub fn touch_key(&self, key: &str) {
+        let Some(slot) = lock(&self.slots).get(key).cloned() else {
             return;
         };
         if let Ok(guard) = slot.try_lock()
@@ -356,7 +434,7 @@ impl EditorManager {
         }
     }
 
-    fn pick_port(&self, sandbox: &SandboxId, skip: &HashSet<u16>) -> Option<u16> {
+    fn pick_port(&self, key: &str, skip: &HashSet<u16>) -> Option<u16> {
         let (start, end) = (
             *self.config.port_range.start(),
             *self.config.port_range.end(),
@@ -365,7 +443,7 @@ impl EditorManager {
             return None;
         }
         let count = u64::from(end - start) + 1;
-        let offset = spread(sandbox.as_str()) % count;
+        let offset = spread(key) % count;
         let reserved = lock(&self.reserved_ports).clone();
         (0..count)
             .filter_map(|step| u16::try_from(u64::from(start) + (offset + step) % count).ok())
@@ -373,80 +451,88 @@ impl EditorManager {
             .find(|port| std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok())
     }
 
-    async fn launch(
-        &self,
-        sandbox: &SandboxId,
-        workspace_dir: &Path,
-        base_path: &str,
-    ) -> Result<Running, EditorError> {
+    async fn launch(&self, spec: &EditorSpec) -> Result<Running, EditorError> {
         let exe = resolve_program(&self.config.exe, std::env::var_os("PATH").as_deref())
             .ok_or_else(|| EditorError::ExecutableNotFound {
                 searched: self.config.exe.display().to_string(),
             })?;
-        let root = self.config.data_root.join(sandbox.as_str());
-        let user_data = root.join("user-data");
-        let extensions = root.join("extensions");
-        for dir in [&root, &user_data, &extensions] {
+        let token_dir = spec.token_file.parent().ok_or_else(|| {
+            EditorError::Prepare(std::io::Error::other("token file has no parent"))
+        })?;
+        for dir in [token_dir, &spec.user_data_dir, &spec.extensions_dir] {
             create_private_dir(dir)
                 .await
                 .map_err(EditorError::Prepare)?;
         }
-        write_default_settings(&user_data)
+        write_default_settings(&spec.user_data_dir)
             .await
             .map_err(EditorError::Prepare)?;
         // The token outlives restarts so an open workbench can reconnect after an idle stop.
-        let token_file = root.join(TOKEN_FILE);
-        let token = match ConnectionToken::read(&token_file) {
+        let token = match ConnectionToken::read(&spec.token_file) {
             Some(token) => token,
             None => {
                 let token = ConnectionToken::generate()
                     .await
                     .map_err(EditorError::Prepare)?;
-                write_token_file(&token_file, &token).map_err(EditorError::Prepare)?;
+                write_token_file(&spec.token_file, &token).map_err(EditorError::Prepare)?;
                 token
             }
         };
+        let (program, prefix): (PathBuf, Vec<OsString>) = match spec.wrapper.split_first() {
+            Some((program, rest)) => (
+                PathBuf::from(program),
+                rest.iter()
+                    .cloned()
+                    .chain(std::iter::once(exe.clone().into_os_string()))
+                    .collect(),
+            ),
+            None => (exe.clone(), Vec::new()),
+        };
+        let mut env = passed_env();
+        env.extend(spec.env.iter().cloned());
 
         let mut tried = HashSet::new();
         let mut last_exit = None;
         for _ in 0..START_ATTEMPTS {
             let port = self
-                .pick_port(sandbox, &tried)
+                .pick_port(&spec.key, &tried)
                 .ok_or(EditorError::NoFreePort {
                     start: *self.config.port_range.start(),
                     end: *self.config.port_range.end(),
                 })?;
             tried.insert(port);
-            let mut args: Vec<OsString> = vec![
+            let mut args = prefix.clone();
+            args.extend([
                 "--host".into(),
                 "127.0.0.1".into(),
                 "--port".into(),
                 port.to_string().into(),
                 "--connection-token-file".into(),
-            ];
-            args.extend([
-                token_file.clone().into_os_string(),
+                spec.token_file_arg.clone().into_os_string(),
                 "--server-base-path".into(),
-                base_path.into(),
+                spec.base_path.clone().into(),
                 "--user-data-dir".into(),
-                user_data.clone().into_os_string(),
+                spec.user_data_arg.clone().into_os_string(),
                 "--extensions-dir".into(),
-                extensions.clone().into_os_string(),
+                spec.extensions_arg.clone().into_os_string(),
                 "--default-folder".into(),
-                workspace_dir.as_os_str().to_owned(),
+                spec.workspace_dir.clone().into_os_string(),
             ]);
-            let process = Supervised::spawn(&exe, &args, &passed_env(), workspace_dir)
+            let process = Supervised::spawn(&program, &args, &env, &spec.workspace_dir)
                 .map_err(EditorError::Spawn)?;
             lock(&self.reserved_ports).insert(port);
-            match self.wait_healthy(&process, port, base_path, &token).await {
+            match self
+                .wait_healthy(&process, port, &spec.base_path, &token)
+                .await
+            {
                 Ok(()) => {
-                    info!(sandbox = %sandbox, port, pid = process.pid(), "editor started");
+                    info!(editor = %spec.key, port, pid = process.pid(), contained = !spec.wrapper.is_empty(), "editor started");
                     let instance = EditorInstance {
-                        sandbox: sandbox.clone(),
+                        key: spec.key.clone(),
                         port,
                         connection_token: token,
-                        base_path: base_path.to_owned(),
-                        workspace_dir: workspace_dir.to_path_buf(),
+                        base_path: spec.base_path.clone(),
+                        workspace_dir: spec.workspace_dir.clone(),
                         pid: process.pid(),
                     };
                     return Ok(Running {
@@ -520,7 +606,15 @@ impl EditorManager {
     /// # Errors
     /// [`EditorError::NotReaped`] when the process survived SIGKILL.
     pub async fn stop(&self, sandbox: &SandboxId) -> Result<bool, EditorError> {
-        let Some(slot) = lock(&self.slots).get(sandbox).cloned() else {
+        self.stop_key(sandbox.as_str()).await
+    }
+
+    /// [`EditorManager::stop`] by key.
+    ///
+    /// # Errors
+    /// [`EditorError::NotReaped`] when the process survived SIGKILL.
+    pub async fn stop_key(&self, key: &str) -> Result<bool, EditorError> {
+        let Some(slot) = lock(&self.slots).get(key).cloned() else {
             return Ok(false);
         };
         let mut guard = slot.lock().await;
@@ -528,31 +622,31 @@ impl EditorManager {
             return Ok(false);
         };
         self.release(&running).await?;
-        info!(sandbox = %sandbox, "editor stopped");
+        info!(editor = %key, "editor stopped");
         Ok(true)
     }
 
-    /// Stops every editor; returns the sandboxes whose process could not be reaped.
-    pub async fn stop_all(&self) -> Vec<SandboxId> {
-        let sandboxes: Vec<SandboxId> = lock(&self.slots).keys().cloned().collect();
+    /// Stops every editor; returns the keys whose process could not be reaped.
+    pub async fn stop_all(&self) -> Vec<String> {
+        let keys: Vec<String> = lock(&self.slots).keys().cloned().collect();
         let mut failed = Vec::new();
-        for sandbox in sandboxes {
-            if self.stop(&sandbox).await.is_err() {
-                failed.push(sandbox);
+        for key in keys {
+            if self.stop_key(&key).await.is_err() {
+                failed.push(key);
             }
         }
         failed
     }
 
     /// Stops editors idle since before `now - idle_timeout` and reaps crashed ones; busy
-    /// slots are skipped. Returns the stopped sandboxes.
-    pub async fn reap_idle(&self, now: Instant) -> Vec<SandboxId> {
-        let slots: Vec<(SandboxId, Slot)> = lock(&self.slots)
+    /// slots are skipped. Returns the stopped keys.
+    pub async fn reap_idle(&self, now: Instant) -> Vec<String> {
+        let slots: Vec<(String, Slot)> = lock(&self.slots)
             .iter()
-            .map(|(sandbox, slot)| (sandbox.clone(), Arc::clone(slot)))
+            .map(|(key, slot)| (key.clone(), Arc::clone(slot)))
             .collect();
         let mut stopped = Vec::new();
-        for (sandbox, slot) in slots {
+        for (key, slot) in slots {
             let Ok(mut guard) = slot.try_lock() else {
                 continue;
             };
@@ -566,10 +660,10 @@ impl EditorManager {
             }
             if let Some(running) = guard.take() {
                 if let Err(error) = self.release(&running).await {
-                    warn!(sandbox = %sandbox, %error, "idle editor could not be reaped");
+                    warn!(editor = %key, %error, "idle editor could not be reaped");
                 }
-                info!(sandbox = %sandbox, "idle or dead editor stopped");
-                stopped.push(sandbox);
+                info!(editor = %key, "idle or dead editor stopped");
+                stopped.push(key);
             }
         }
         stopped

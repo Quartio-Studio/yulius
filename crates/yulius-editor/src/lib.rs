@@ -22,8 +22,8 @@ mod process;
 mod token;
 
 pub use manager::{
-    EditorConfig, EditorError, EditorInstance, EditorManager, IdleReaper, TOKEN_FILE,
-    default_base_path,
+    DEFAULT_SETTINGS, EditorConfig, EditorError, EditorInstance, EditorManager, EditorSpec,
+    IdleReaper, TOKEN_FILE, default_base_path,
 };
 pub use process::StopTimeouts;
 pub use token::{ConnectionToken, TOKEN_COOKIE};

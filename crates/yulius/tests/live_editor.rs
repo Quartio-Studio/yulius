@@ -194,7 +194,7 @@ async fn boots(
         return Ok(());
     }
     let mut seen = seen.lock().map(|lines| lines.clone()).unwrap_or_default();
-    for log in glob_logs(&data.join("editors/s1/user-data/logs")) {
+    for log in glob_logs(&data.join("users/u-alice/home/.yulius/vscode/data/logs")) {
         seen.push(format!("--- {}", log.display()));
         seen.extend(
             std::fs::read_to_string(&log)
@@ -258,7 +258,11 @@ async fn the_real_editor_boots_through_the_proxy_in_chrome() -> TestResult {
     let h = harness_with(HarnessOptions {
         editor: Some(Arc::new(editors)),
         dir: Some(dir),
-        configure: Some(Box::new(move |config| config.public_url = public_url)),
+        // YULIUS_LIVE_CONTAINED=1: the editor runs in bubblewrap as the user's identity (Linux).
+        configure: Some(Box::new(move |config| {
+            config.public_url = public_url;
+            config.contained = std::env::var("YULIUS_LIVE_CONTAINED").is_ok_and(|v| v == "1");
+        })),
         ..HarnessOptions::default()
     })?;
     seed_github_user(&h, "u-alice", "alice").await?;

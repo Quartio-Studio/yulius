@@ -461,7 +461,7 @@ async fn splice(
         tokio::select! {
             _ = &mut copy => return,
             _ = recheck.tick() => {
-                app.editor_touch(&sid);
+                app.editor_touch(&ctx, &sid);
                 if !app.editor_still_allowed(&ctx, &sid).await {
                     tracing::info!(sandbox = %sid, "closing an editor connection: access revoked");
                     return;

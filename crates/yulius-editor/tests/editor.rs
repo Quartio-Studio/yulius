@@ -314,7 +314,10 @@ async fn idle_editors_are_reaped_and_touch_keeps_them() -> TestResult {
     manager.touch(&sandbox);
     assert!(manager.reap_idle(just_before).await.is_empty());
     let after = Instant::now() + idle + Duration::from_secs(1);
-    assert_eq!(manager.reap_idle(after).await, vec![sandbox.clone()]);
+    assert_eq!(
+        manager.reap_idle(after).await,
+        vec![sandbox.as_str().to_owned()]
+    );
     assert!(!pid_alive(editor.pid()));
     assert!(manager.get(&sandbox).await.is_none());
 

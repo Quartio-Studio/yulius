@@ -23,7 +23,7 @@
 //! group cleanup (on Linux the host also sweeps the child's session).
 
 mod client;
-mod containment;
+pub mod containment;
 mod files;
 mod host;
 mod process;

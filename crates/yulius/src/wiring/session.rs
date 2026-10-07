@@ -21,6 +21,47 @@ use yulius_ptyhost::{
     inspect_run_dir, spawn_host, terminate_recorded, token_sha256_hex,
 };
 
+/// The ptyhost wire form of an app-level containment plan (shared with the editor adapter).
+#[must_use]
+pub fn wire_containment(containment: &Containment) -> wire::Containment {
+    match containment {
+        Containment::None => wire::Containment::None,
+        Containment::Bubblewrap {
+            sandbox_root,
+            home,
+            writable,
+            readonly,
+            binds,
+            identity,
+        } => wire::Containment::Bubblewrap(BubblewrapSpec {
+            sandbox_root: sandbox_root.to_string_lossy().into_owned(),
+            home: home.to_string_lossy().into_owned(),
+            writable: writable
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+            readonly: readonly
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+            share_net: true,
+            binds: binds
+                .iter()
+                .map(|b| wire::BindMount {
+                    source: b.source.to_string_lossy().into_owned(),
+                    dest: b.dest.to_string_lossy().into_owned(),
+                    writable: b.writable,
+                })
+                .collect(),
+            identity: identity.as_ref().map(|i| wire::SandboxIdentity {
+                uid: i.uid,
+                gid: i.gid,
+                hostname: i.hostname.clone(),
+            }),
+        }),
+    }
+}
+
 /// Process host adapter.
 pub struct PtySessionHost {
     /// Executable started as `<exe> ptyhost --run-dir <dir>` (the `yulius` binary).
@@ -87,42 +128,7 @@ impl SessionHost for PtySessionHost {
             write_planned(file).map_err(|e| upstream("cannot write run configuration", e))?;
         }
         let env: BTreeMap<String, String> = plan.env.iter().cloned().collect();
-        let containment = match &plan.containment {
-            Containment::None => wire::Containment::None,
-            Containment::Bubblewrap {
-                sandbox_root,
-                home,
-                writable,
-                readonly,
-                binds,
-                identity,
-            } => wire::Containment::Bubblewrap(BubblewrapSpec {
-                sandbox_root: sandbox_root.to_string_lossy().into_owned(),
-                home: home.to_string_lossy().into_owned(),
-                writable: writable
-                    .iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect(),
-                readonly: readonly
-                    .iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect(),
-                share_net: true,
-                binds: binds
-                    .iter()
-                    .map(|b| wire::BindMount {
-                        source: b.source.to_string_lossy().into_owned(),
-                        dest: b.dest.to_string_lossy().into_owned(),
-                        writable: b.writable,
-                    })
-                    .collect(),
-                identity: identity.as_ref().map(|i| wire::SandboxIdentity {
-                    uid: i.uid,
-                    gid: i.gid,
-                    hostname: i.hostname.clone(),
-                }),
-            }),
-        };
+        let containment = wire_containment(&plan.containment);
         let launch = LaunchSpec {
             version: wire::RECORD_VERSION,
             attempt_id: attempt_id.to_owned(),

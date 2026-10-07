@@ -47,6 +47,9 @@ pub struct AppConfig {
     /// Extra host paths visible read-only inside containment (for example agent CLI install
     /// directories outside `/usr` and `/opt`).
     pub contained_readonly: Vec<PathBuf>,
+    /// Run user editors without containment even when sandboxes are contained (operator
+    /// opt-out; editors are contained by default, SPEC-002 ADR-10).
+    pub editor_uncontained: bool,
     /// Additional frontend origins (for example a desktop app) allowed for WebSockets and CORS
     /// besides the public URL (OPS-002, AC-OPS-2).
     pub allowed_origins: Vec<String>,
@@ -68,6 +71,7 @@ impl AppConfig {
             viewer_recheck_ms: 60_000,
             wake_idle_ms: crate::background::WAKE_IDLE_MS,
             contained_readonly: Vec::new(),
+            editor_uncontained: false,
             allowed_origins: Vec::new(),
             public_url,
             internal_url: internal_url.trim_end_matches('/').to_owned(),

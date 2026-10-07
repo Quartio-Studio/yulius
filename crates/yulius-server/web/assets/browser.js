@@ -35,6 +35,7 @@ export function createBrowserPanel(ctx, sandbox) {
   let tabs = [];
   let socket = null;
   let pendingActivate = null;
+  let pendingOpen = null; // URL to open in a new tab once connected (localhost links)
   let newTabMode = false;
   let lastViewport = null;
   let decoding = false;
@@ -155,6 +156,10 @@ export function createBrowserPanel(ctx, sandbox) {
     if (message.type === 'tabs' && Array.isArray(message.tabs)) {
       tabs = message.tabs;
       for (const id of [...frames.keys()]) if (!tabs.some((t) => t.id === id)) frames.delete(id);
+      if (pendingOpen) {
+        send({ type: 'open', url: pendingOpen });
+        pendingOpen = null;
+      }
       if (pendingActivate) {
         const target = tabs.find((t) => t.id === pendingActivate);
         if (target && !target.active) send({ type: 'activate', tab_id: target.id });
@@ -286,9 +291,14 @@ export function createBrowserPanel(ctx, sandbox) {
   return {
     el,
     headExtra: () => [h('span', { class: 'muted xs' }, 'shared by this sandbox')],
-    /** opts.tabId: activate that tab once tabs are known (Yulius links, UI-011). */
+    /** opts.tabId: activate that tab once tabs are known (Yulius links, UI-011);
+     *  opts.url: open it in a new tab (localhost links from terminals and messages). */
     show(opts = {}) {
       visible = true;
+      if (opts.url) {
+        if (socket && socket.isOpen && tabs.length) send({ type: 'open', url: opts.url });
+        else pendingOpen = opts.url;
+      }
       if (opts.tabId) {
         const target = tabs.find((t) => t.id === opts.tabId);
         if (target && socket && socket.isOpen) { if (!target.active) send({ type: 'activate', tab_id: target.id }); } else pendingActivate = opts.tabId;

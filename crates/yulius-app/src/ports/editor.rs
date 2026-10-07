@@ -1,16 +1,17 @@
-//! Per-sandbox VS Code (openvscode-server) port (SPEC-002 ADR-10; SPEC-001 EDT-001/002).
+//! Personal VS Code (openvscode-server) port (SPEC-002 ADR-10; SPEC-001 EDT-001..004).
 //!
-//! The adapter starts one editor per sandbox on demand, listening on loopback and requiring a
-//! connection token. The interface layer reverse-proxies `/s/{sid}/editor/*` to
-//! [`EditorEndpoint::port`] and adds [`EditorEndpoint::cookie`] to every forwarded request; the
-//! token never reaches the browser.
+//! The adapter starts one editor per (user, sandbox) on demand, listening on loopback and
+//! requiring a connection token, inside the user's sandbox identity when contained. The
+//! interface layer reverse-proxies `/s/{sid}/editor/*` to the caller's editor, adds
+//! [`EditorEndpoint::cookie`] to every forwarded request and hands VS Code's client the token as
+//! a cookie scoped to the editor path (its client must read it).
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use async_trait::async_trait;
-use yulius_domain::ids::SandboxId;
 
 use crate::model::Secret;
+use crate::ports::session::Containment;
 
 /// Why the editor is not reachable.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -33,25 +34,47 @@ pub struct EditorEndpoint {
     pub port: u16,
     /// Base path the editor serves under (`/s/<sandbox>/editor`).
     pub base_path: String,
-    /// `Cookie` pair carrying the connection token (`vscode-tkn=<token>`); send only upstream.
+    /// `Cookie` pair carrying the connection token (`vscode-tkn=<token>`).
     pub cookie: Secret,
 }
 
-/// Owns at most one editor per sandbox.
+/// Everything needed to start (or reuse) one user's editor in one sandbox (SPEC-001 EDT-003).
+/// `*_arg` paths are as seen by the editor process; the others are host paths.
+#[derive(Debug, Clone)]
+pub struct EditorLaunch {
+    /// One editor runs per key (`<sandbox>/<user>`).
+    pub key: String,
+    /// Host path of the persisted connection token.
+    pub token_file: PathBuf,
+    /// The token file as seen by the editor.
+    pub token_file_arg: PathBuf,
+    /// Host path of the user data directory (shared by the user's editors).
+    pub user_data_dir: PathBuf,
+    /// Host path of the extensions directory.
+    pub extensions_dir: PathBuf,
+    /// The user data directory as seen by the editor.
+    pub user_data_arg: PathBuf,
+    /// The extensions directory as seen by the editor.
+    pub extensions_arg: PathBuf,
+    /// Folder opened by default.
+    pub workspace: PathBuf,
+    /// Base path the editor serves under.
+    pub base_path: String,
+    /// Environment of the editor process.
+    pub env: Vec<(String, String)>,
+    /// Containment of the editor process (the user's sandbox identity when contained).
+    pub containment: Containment,
+}
+
+/// Owns the running editors.
 #[async_trait]
 pub trait EditorPort: Send + Sync {
-    /// The sandbox's running editor, started on demand with `workspace` as its default folder
-    /// and serving under `base_path`. A running editor is reused as is.
-    async fn ensure(
-        &self,
-        sandbox: &SandboxId,
-        workspace: &Path,
-        base_path: &str,
-    ) -> Result<EditorEndpoint, EditorFailure>;
+    /// The running editor of `launch.key`, started on demand. A running editor is reused as is.
+    async fn ensure(&self, launch: &EditorLaunch) -> Result<EditorEndpoint, EditorFailure>;
     /// Records activity for idle tracking (per proxied request and while WebSockets are open).
-    fn touch(&self, sandbox: &SandboxId);
-    /// Stops idle editors and reaps crashed ones; returns the stopped sandboxes.
-    async fn reap_idle(&self) -> Vec<SandboxId>;
-    /// Stops every editor (server shutdown); returns sandboxes whose process survived.
-    async fn shutdown_all(&self) -> Vec<SandboxId>;
+    fn touch(&self, key: &str);
+    /// Stops idle editors and reaps crashed ones; returns the stopped keys.
+    async fn reap_idle(&self) -> Vec<String>;
+    /// Stops every editor (server shutdown); returns keys whose process survived.
+    async fn shutdown_all(&self) -> Vec<String>;
 }

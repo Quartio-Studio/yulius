@@ -34,6 +34,8 @@ use crate::ports::session::{Bind, Containment, Identity};
 
 /// Directory of Yulius helper commands inside user processes.
 pub const SANDBOX_BIN: &str = "/yulius/bin";
+/// The host's sudo, replaced by the shim inside user processes.
+const HOST_SUDO: &str = "/usr/bin/sudo";
 
 /// The `sudo` shim: the user already is root (uid 0) inside the sandbox, so `sudo` only drops
 /// its own options and runs the command (`sudo -i`/`-s` or no command start a shell).
@@ -287,11 +289,20 @@ impl App {
                     writable: false,
                 },
                 Bind {
-                    source: bin,
+                    source: bin.clone(),
                     dest: PathBuf::from(SANDBOX_BIN),
                     writable: false,
                 },
-            ],
+            ]
+            .into_iter()
+            // Login shells of uid 0 get a fresh PATH from /etc/profile; the shim also replaces
+            // the host's setuid sudo, which cannot work in an unprivileged namespace.
+            .chain(Path::new(HOST_SUDO).is_file().then(|| Bind {
+                source: bin.join("sudo"),
+                dest: PathBuf::from(HOST_SUDO),
+                writable: false,
+            }))
+            .collect(),
             identity: Some(Identity {
                 uid: 0,
                 gid: 0,

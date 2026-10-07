@@ -12,7 +12,7 @@ use yulius_store::crypto::{MasterKeyCrypto, write_private};
 
 use crate::wiring::browser::ChromiumBrowsers;
 use crate::wiring::clock::SystemClock;
-use crate::wiring::editor::{UnavailableEditor, VsCodeEditors};
+use crate::wiring::editor::VsCodeEditors;
 use crate::wiring::git::GitAdapter;
 use crate::wiring::github_client::GitHubAdapter;
 use crate::wiring::harness::HarnessAdapter;
@@ -66,8 +66,8 @@ pub struct ServeArgs {
     /// Loopback port range for editors, `first-last`.
     #[arg(long, env = "YULIUS_EDITOR_PORTS", default_value = "45000-45999")]
     pub editor_ports: String,
-    /// Allow the editor in contained mode although openvscode-server (and its integrated
-    /// terminal) runs outside the containment boundary.
+    /// Run user editors outside the containment boundary even in contained mode (editors are
+    /// contained as the user's sandbox identity by default).
     #[arg(long, env = "YULIUS_EDITOR_UNCONTAINED", default_value_t = false)]
     pub editor_uncontained: bool,
     /// Extra host paths visible read-only inside containment, colon-separated (for example agent
@@ -121,11 +121,6 @@ fn browser_port(args: &ServeArgs) -> Arc<dyn yulius_app::ports::browser::Browser
 
 /// The editor adapter, or a placeholder explaining why the editor is disabled.
 fn editor_port(args: &ServeArgs) -> Result<Arc<dyn yulius_app::ports::editor::EditorPort>, String> {
-    if args.contained && !args.editor_uncontained {
-        return Ok(Arc::new(UnavailableEditor::new(
-            "the editor is disabled in contained mode because openvscode-server would run outside the sandbox containment; start yulius with --editor-uncontained to accept that",
-        )));
-    }
     let ports = parse_port_range(&args.editor_ports)?;
     let config = yulius_editor::EditorConfig::new(
         args.openvscode_server.clone(),
@@ -175,6 +170,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     let mut config = AppConfig::new(args.data_dir.clone(), &args.public_url, &internal_url, exe);
     config.max_live_sessions = args.max_live_sessions;
     config.contained = args.contained;
+    config.editor_uncontained = args.editor_uncontained;
     config
         .contained_readonly
         .clone_from(&args.contained_readonly);

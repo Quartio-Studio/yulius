@@ -42,12 +42,18 @@ struct Fixture {
 /// alice (write) and bob (read) on `s1` (repository folder, task `t1` with a worktree) and
 /// `s2` (task `t2`). Shells run `/bin/sh` through the real ptyhost.
 async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_with(false).await
+}
+
+/// [`fixture`], optionally with bubblewrap containment (Linux).
+async fn fixture_with(contained: bool) -> Result<Fixture, Box<dyn std::error::Error>> {
     // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("ysh").tempdir_in("/tmp")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let h = harness_with(HarnessOptions {
         session_host: Some(Arc::new(PtySessionHost::new(exe))),
         dir: Some(dir),
+        configure: Some(Box::new(move |config| config.contained = contained)),
         ..HarnessOptions::default()
     })?;
     let data = h.app.config.data_dir.clone();
@@ -237,11 +243,12 @@ async fn scenario(f: &Fixture) -> TestResult {
     read_until(
         &mut socket,
         &mut screen,
-        &format!("home={}", f.data.join("sandboxes/s1/home").display()),
+        // The user's own persistent home, not the sandbox's (UI-016).
+        &format!("home={}", f.data.join("users/u-alice/home").display()),
     )
     .await?;
 
-    // Read users cannot attach either.
+    // Shells are private: read users and other writers cannot see them (UI-016).
     let refused = ws_connect(
         served.addr,
         &format!("/api/shells/{repo_shell}/terminal"),
@@ -251,7 +258,21 @@ async fn scenario(f: &Fixture) -> TestResult {
     .await;
     assert_eq!(
         refused.as_ref().err().and_then(ws_refusal_status),
-        Some(403)
+        Some(404)
+    );
+    let carol = seed_github_user(&f.h, "u-carol", "carol").await?;
+    f.h.github.set_perm("carol", "acme/fixture", perms("write"));
+    let other_writer = ws_connect(
+        served.addr,
+        &format!("/api/shells/{repo_shell}/terminal"),
+        &carol,
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(
+        other_writer.as_ref().err().and_then(ws_refusal_status),
+        Some(404),
+        "another writer cannot attach"
     );
     let cross = ws_connect(
         served.addr,
@@ -383,4 +404,39 @@ async fn server_shutdown_ends_shells_and_restart_removes_orphans() -> TestResult
     assert_eq!(f.h.app.reap_orphan_shells(), 1);
     assert!(!orphan.exists());
     Ok(())
+}
+
+/// A contained shell runs as the user's sandbox identity: their login, root inside the
+/// sandbox, `sudo` works, and files written to `~` land in their own persistent home
+/// (UI-016, AC-UI-8).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn contained_shells_run_as_the_user_with_root_in_their_own_home() -> TestResult {
+    let f = fixture_with(true).await?;
+    let result = async {
+        let served = serve(f.h.router.clone()).await?;
+        let created = create(&f, &f.writer, "s1", None).await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+        let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+        let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+        let mut screen = String::new();
+        input(
+            &mut socket,
+            "echo \"who=$(whoami) uid=$(id -u) sudo=$(sudo id -u) home=$HOME host=$(hostname)\"; echo kept > ~/mine.txt; echo done-$((1+1))\r",
+        )
+        .await?;
+        read_until(&mut socket, &mut screen, "done-2").await?;
+        assert!(
+            screen.contains("who=alice uid=0 sudo=0 home=/home/alice host=fixture"),
+            "{screen}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.data.join("users/u-alice/home/mine.txt"))?,
+            "kept\n"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    f.h.app.stop_workspace_services().await;
+    result
 }

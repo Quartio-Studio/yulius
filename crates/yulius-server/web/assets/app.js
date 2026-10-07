@@ -286,7 +286,23 @@ function createApp(root, transport) {
       return;
     }
     if (link && link.kind === 'route') { navigate(link.path); return; }
-    if (/^https?:\/\//i.test(uri)) window.open(uri, '_blank', 'noopener,noreferrer');
+    if (!/^https?:\/\//i.test(uri)) return;
+    // Pages served on the instance (localhost) open in the sandbox's browser; everything
+    // else in a normal new tab of the user's browser (F 2026-10-07).
+    if (isLocalUrl(uri) && currentSandbox && shell) {
+      shell.panels.open('browser', { url: uri });
+      return;
+    }
+    window.open(uri, '_blank', 'noopener,noreferrer');
+  }
+
+  function isLocalUrl(uri) {
+    try {
+      const host = new URL(uri).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+      return host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0' || host === '::1' || /^127\.\d+\.\d+\.\d+$/.test(host);
+    } catch {
+      return false;
+    }
   }
 
   // ------------------------------------------------------------ routing

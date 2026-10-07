@@ -615,3 +615,7 @@ body.resizing iframe { pointer-events: none; }
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
   .table .hide-phone { display: none; }
 }
+
+/* Terminal mouse hand-over (shown only when the program asked for the mouse). */
+.term-mouse-toggle { position: absolute; top: 6px; right: 16px; z-index: 4; font-size: 11px; opacity: 0; transition: opacity .15s; }
+.term:hover .term-mouse-toggle, .term-mouse-toggle:focus-visible { opacity: .9; }

@@ -166,7 +166,7 @@ fn status_of(head: &str) -> u16 {
 
 fn editor_pid(data: &Path) -> Result<i32, Box<dyn std::error::Error>> {
     Ok(
-        std::fs::read_to_string(data.join("editors/s1/user-data/fake-pid"))?
+        std::fs::read_to_string(data.join("users/u-alice/home/.yulius/vscode/data/fake-pid"))?
             .trim()
             .parse()?,
     )
@@ -225,7 +225,8 @@ async fn proxy_scenario(f: &Fixture) -> TestResult {
         "hop-by-hop headers are stripped: {head}"
     );
     let pid = editor_pid(&data)?;
-    let argv = std::fs::read_to_string(data.join("editors/s1/user-data/fake-argv.txt"))?;
+    let argv =
+        std::fs::read_to_string(data.join("users/u-alice/home/.yulius/vscode/data/fake-argv.txt"))?;
     assert!(
         argv.contains(&data.join("sandboxes/s1/repo").display().to_string()),
         "{argv}"
@@ -233,7 +234,7 @@ async fn proxy_scenario(f: &Fixture) -> TestResult {
     assert!(argv.contains("/s/s1/editor"));
 
     // What the editor receives: the real token, none of the client's credentials.
-    let token = std::fs::read_to_string(data.join("editors/s1/connection-token"))?;
+    let token = std::fs::read_to_string(data.join("editors/s1/u-alice/connection-token"))?;
     let extra = format!(
         "{}Cookie: yulius_session=abc; vscode-tkn=forged; theme=dark\r\nX-Yulius-CSRF: csrf\r\n",
         bearer(&f.writer)
@@ -416,6 +417,46 @@ async fn cookie_sessions_must_be_same_origin_for_state_changing_editor_requests(
         )
         .await?;
         assert_eq!(status_of(&head), 200, "cookie GET");
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    f.h.app.stop_workspace_services().await;
+    result
+}
+
+#[tokio::test]
+async fn every_writer_gets_a_personal_editor_with_a_profile_in_their_home() -> TestResult {
+    let f = fixture(&fake_editor()?).await?;
+    let result = async {
+        let carol = seed_github_user(&f.h, "u-carol", "carol").await?;
+        f.h.github.set_perm("carol", "acme/fixture", perms("write"));
+        let served = serve(f.h.router.clone()).await?;
+        let addr = served.addr;
+        for creds in [&f.writer, &carol] {
+            let (head, _) =
+                raw_request(addr, &get_request(addr, "/s/s1/editor/", &bearer(creds))).await?;
+            assert_eq!(status_of(&head), 200, "{head}");
+        }
+        let data = f.h.app.config.data_dir.clone();
+        let tokens: Vec<String> = ["u-alice", "u-carol"]
+            .iter()
+            .map(|user| {
+                std::fs::read_to_string(data.join(format!("editors/s1/{user}/connection-token")))
+            })
+            .collect::<Result<_, _>>()?;
+        assert_ne!(tokens[0], tokens[1], "separate editors, separate tokens");
+        let pids: Vec<String> = ["u-alice", "u-carol"]
+            .iter()
+            .map(|user| {
+                std::fs::read_to_string(
+                    data.join(format!("users/{user}/home/.yulius/vscode/data/fake-pid")),
+                )
+            })
+            .collect::<Result<_, _>>()?;
+        assert_ne!(pids[0], pids[1], "separate processes");
+        // New profiles start with Yulius' defaults; a user's own settings are kept.
+        let settings = data.join("users/u-carol/home/.yulius/vscode/data/User/settings.json");
+        assert!(std::fs::read_to_string(&settings)?.contains("Default Dark Modern"));
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
