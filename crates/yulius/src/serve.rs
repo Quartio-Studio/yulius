@@ -23,7 +23,12 @@ use crate::wiring::system::SysinfoProbe;
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     /// Data directory (database, keys, sandboxes).
-    #[arg(long, env = "YULIUS_DATA", default_value = "/var/lib/yulius")]
+    #[arg(
+        long,
+        visible_alias = "data",
+        env = "YULIUS_DATA",
+        default_value = "/var/lib/yulius"
+    )]
     pub data_dir: PathBuf,
     /// Public base URL users open (behind the TLS reverse proxy).
     #[arg(

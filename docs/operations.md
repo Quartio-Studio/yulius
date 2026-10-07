@@ -17,7 +17,7 @@ been performed or verified** as part of the implementation work.
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. |
 | `openvscode-server` | editor panel | optional; disabled in contained mode unless `--editor-uncontained`. |
 
-Run `yulius doctor --data /var/lib/yulius [--contained]` to check all of these, the data directory
+Run `yulius doctor --data-dir /var/lib/yulius [--contained]` to check all of these, the data directory
 permissions and the session socket path budget (the data directory path must be short enough that
 `<data>/logins/<uuid>/pty.sock` fits the 103-byte Unix socket path limit).
 
@@ -27,7 +27,7 @@ permissions and the session socket path budget (the data directory path must be 
 cargo build --release -p yulius            # from a checkout; output: target/release/yulius
 sudo install -m 0755 target/release/yulius /usr/local/bin/yulius
 sudo useradd --system --create-home --home-dir /var/lib/yulius --shell /usr/sbin/nologin yulius
-sudo -u yulius yulius doctor --data /var/lib/yulius --contained
+sudo -u yulius yulius doctor --data-dir /var/lib/yulius --contained
 ```
 
 The agent CLIs must be installed for (and logged-in state is never taken from) the `yulius` user:
@@ -145,7 +145,7 @@ re-running imports only new sessions.
 ## 7. Backup and restore
 
 ```sh
-sudo -u yulius yulius backup --data /var/lib/yulius /var/backups/yulius-$(date +%F).db
+sudo -u yulius yulius backup --data-dir /var/lib/yulius /var/backups/yulius-$(date +%F).db
 ```
 
 `backup` writes a consistent SQLite copy (`VACUUM INTO`). Also back up `/var/lib/yulius/master.key`

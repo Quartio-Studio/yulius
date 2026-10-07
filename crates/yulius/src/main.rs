@@ -20,7 +20,12 @@ enum Command {
     /// Write a consistent copy of the database to a file.
     Backup {
         /// Data directory.
-        #[arg(long, env = "YULIUS_DATA", default_value = "/var/lib/yulius")]
+        #[arg(
+            long = "data-dir",
+            visible_alias = "data",
+            env = "YULIUS_DATA",
+            default_value = "/var/lib/yulius"
+        )]
         data_dir: PathBuf,
         /// Destination file (must not exist).
         dest: PathBuf,
@@ -70,7 +75,12 @@ enum Command {
     /// Check this host's prerequisites (git, agent CLIs, containment, browser, editor, data dir).
     Doctor {
         /// Data directory.
-        #[arg(long, env = "YULIUS_DATA", default_value = "/var/lib/yulius")]
+        #[arg(
+            long = "data-dir",
+            visible_alias = "data",
+            env = "YULIUS_DATA",
+            default_value = "/var/lib/yulius"
+        )]
         data: PathBuf,
         /// Require bubblewrap containment.
         #[arg(long, env = "YULIUS_CONTAINED")]
