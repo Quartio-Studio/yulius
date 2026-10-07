@@ -17,7 +17,7 @@ pub struct PullView {
     pub base: String,
     /// Head branch.
     pub head: String,
-    /// `none`, `pending`, `success` or `failure`.
+    /// `none`, `pending`, `success`, `failure`, or `unknown` when the checks could not be read.
     pub checks: String,
 }
 

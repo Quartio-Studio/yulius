@@ -31,9 +31,9 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/terminal.js` | xterm view: fit/resize, controller handover, read-only banner, reconnect/exit banners, web links and OSC 8 links. |
 | `assets/layout.js` | Sandbox tab row (+, Status panel, user menu) and the sidebar (navigation, active task list). |
 | `assets/taskview.js` | Task view (step strip, terminal, phone quick-input bar) and the new-task composer. |
-| `assets/panels.js` | Right rail and resizable panel: Editor (iframe), Shell, Messages; hosts the browser panel. |
+| `assets/panels.js` | Right rail and resizable panel: Editor (iframe, task worktree via `?worktree=`), Shell (sandbox or task worktree), Messages; hosts the browser panel. |
 | `assets/browser.js` | Sandbox browser panel: tabs, address bar, JPEG canvas, mouse/keyboard forwarding. |
-| `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery, deploy runs, promote, sandbox add/remove. |
+| `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery (PR, merge, environment runs and confirmations, promotion), sandbox add/remove. |
 | `assets/status.js` | Status → glyph/tone/label mapping and permitted actions per access level. |
 | `assets/dom.js`, `assets/format.js` | DOM builder (text only, never `innerHTML` with data), icons, toasts, modals, menus; formatting helpers. |
 | `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), git, workflows, skills, automations, MCP, dashboard, admin (users, accounts, GitHub). |
@@ -71,40 +71,56 @@ the real server. Options (combine with `&`): `setup=1` (setup required; token
 `YUL-SETUP-1234`), `signedout=1` (password `correct horse battery`), `role=member|admin`,
 `contained=0` (shows "Not contained"), `github=0` (GitHub App not configured).
 
-The mock has sandboxes with admin, write and read access, tasks in every status, steps,
-messages, accounts with usage, Git data, workflows, skills, automations, MCP servers and
-analytics. Task terminals print TUI-like ANSI output, echo input and answer on Enter; type
+The mock mirrors the real response shapes (it is the UI's offline test bed and
+documentation). It has sandboxes with admin, write and read access (`studio` with the Studio
+preset, `product` with a custom profile whose `dev-vm` environment has a command, read-only
+`sandbox-3` whose Git page shows a degraded-read note), tasks in every status, steps,
+messages, accounts with usage (some unknown), Git data and delivery stages, environment runs,
+workflows, skills, automations, MCP servers and analytics. Importing a repository creates a
+sandbox whose onboarding is `pending` with a resting preparation task (Start preparation /
+Skip). Task terminals print TUI-like ANSI output, echo input and answer on Enter; type
 `/exit` to close a task, `/lag` to force a 4008 reconnect, `/help` for the list. The
 browser panel renders fake pages as JPEG frames (click "Sign in" on the AWS tab).
 
+## Contract with the server
+
+The source of truth for paths and methods is the route table in
+`crates/yulius-server/src/routes/mod.rs`; shapes are the DTOs in
+`crates/yulius-contracts/src/api/` (documented in [docs/api.md](../../../docs/api.md)).
+
+- **Checked automatically.** `crates/yulius/tests/ui_contract.rs` reads these sources at test
+  time: every `/api/...` literal (HTTP calls, WebSocket `path:`s, links) and the editor iframe
+  path must reach a real route with the method used (`api.get|post|put|patch|del`; WebSocket
+  paths and links are `GET`), every route `assets/mock.js` fakes must exist on the server,
+  every imported module must be embedded, and UI routes must fall back to `index.html`.
+  Keep API paths **literal** at the call site (``ctx.api.post(`/api/tasks/${enc(id)}/stop`)``):
+  an interpolation may only fill a whole path segment, never choose the endpoint.
+- **Known gaps.** `GET /api/admin/github` and `POST /api/admin/github/manifest` are documented
+  but not routed yet; the GitHub page then shows the connection facts from `/api/me`
+  (`instance.github_configured`, `owner_login`). The test keeps them in an allowlist that
+  fails once the routes exist.
+- **Events.** The server sends `resync` (not `sandbox.updated`) after sandbox changes and does
+  not push sandbox counters; the store reloads `/api/sandboxes` on `resync` and once
+  (debounced) after task events, and leaves a sandbox that disappeared.
+- **Unknown is not zero.** Usage, token and VM figures that the server reports as `null` render
+  as "—" or "unknown"; analytics show runs without usage separately.
+- **Errors.** `{"error": {code, message}}` becomes `ApiError` (`status`, `code`); bodies without
+  it fall back to the status (`503` → `unavailable`). The editor panel probes
+  `HEAD /s/{sid}/editor/` first so a 503 (openvscode-server missing or disabled in contained
+  mode) or 409 (repository not cloned yet) shows a message instead of a JSON page.
+- **Terminals.** Task terminals, sandbox shells and account logins share one protocol client
+  (`termsocket.js`). Writers are controllers (the server sets `controller = can_write`); a
+  4003 close (access revoked) is final; the login terminal renders the fixed 500-column PTY and
+  scrolls horizontally instead of resizing it; a shell's `exit` frame ends it for good.
+- **Browser.** An `upstream` error followed by a 1011 close (Chromium missing or stopped) shows
+  the reason with a Retry button instead of reconnecting in a loop.
+- **Delivery.** Next actions come from the server (`open_pr`, `merge`, `run_env:<name>`,
+  `confirm_env:<name>`, `promote`); `blocked` actions show disabled with the reason. Profile
+  presets come from `GET /api/delivery/presets`; command environments are run with
+  `POST …/environments/{env}/runs {"confirm":true}` (polled via `GET …/delivery/runs/{id}`),
+  manual verifications confirmed with `POST …/environments/{env}/confirm {"confirm":true}`.
+- **Browser input.** `button` is `left|middle|right|none`; `modifiers` is the CDP bitmask
+  (Alt 1, Ctrl 2, Meta 4, Shift 8); printable keys send `event: "down"` with `text`, paste sends
+  one `event: "char"` with the pasted `text`.
+
 Syntax check without a browser: `node --check` on each file (Node 24 detects ES modules).
-
-## Assumptions about unspecified response shapes
-
-docs/api.md does not define these bodies; the UI renders them defensively (missing fields
-show "—", never zero) and the integrator should confirm or adjust:
-
-- `GET /api/status`: `{"vm": {"cpu_percent", "cpu_count", "memory_used_bytes",
-  "memory_total_bytes", "disk_used_bytes", "disk_total_bytes", "load": [1, 5, 15],
-  "uptime_s"}, "sessions": {"live", "limit", "queued"}, "sandboxes": [{"id", "name",
-  "live_sessions", "disk_bytes"}], "accounts": [Account]}`.
-- `GET /api/analytics/summary?sandbox&from&to` (dates `YYYY-MM-DD`): `{"tasks": {"total",
-  "by_status": {status: n}, "by_harness": {harness: n}}, "tasks_per_day": [{"date",
-  "count"}], "duration_ms": {"median", "p90", "total_active", "total_wall"}, "tokens":
-  {"input", "output", "cache_read", "cache_write"}, "tokens_by_model": [{"model", "input",
-  "output"}], "tokens_by_harness": [{"harness", "input", "output"}], "tokens_by_account":
-  [{"account_label", "input", "output"}], "switches": {"total", "account", "provider"},
-  "feedback": {"correct", "incorrect"}}`. Export links add `sandbox`, `from`, `to` to
-  `/api/analytics/tasks?format=csv|json`.
-- `GET /api/admin/users`: `[{"id", "github_login", "display_name", "is_instance_admin",
-  "disabled", "is_superadmin", "last_seen_at"}]`.
-- Delivery runs: `state` values `running` → `succeeded | failed | error | cancelled`.
-- Browser input: `button` is `left|middle|right|none`; `modifiers` is the CDP bitmask
-  (Alt 1, Ctrl 2, Meta 4, Shift 8); printable keys send `event: "down"` with `text`,
-  paste sends one `event: "char"` with the pasted `text`. The `action_requested` frame is
-  read as `{"type", "tab_id", "reason", "task_id"}`.
-- Instance-scope MCP servers and workflows are created through the sandbox endpoints with
-  `"scope": "instance"` (instance admins only). MCP updates omit `env`/`headers` to keep
-  stored secrets; sending them replaces all values of that map.
-- `POST /api/sandboxes/{sid}/shells` is sent without a body; the editor iframe opens a
-  task worktree with `?folder=<worktree>` (openvscode-server convention).

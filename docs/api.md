@@ -44,7 +44,7 @@ Me = {
 CLI device approval: `POST /api/device/start` → `{"device_code","user_code","verification_url",
 "interval_s","expires_in_s"}`; `POST /api/device/poll {"device_code"}` →
 `{"status":"pending|approved|denied|expired","token":"yul_…|null"}`; `POST /api/device/approve
-{"user_code","approve":bool}` (web session).
+{"user_code","approve":bool}` (web session) → 204.
 
 ## Sandboxes
 
@@ -347,22 +347,24 @@ the harnesses.
 
 | Method | Path | Who | Notes |
 | --- | --- | --- | --- |
-| GET/POST | `/api/admin/users` | superadmin | `{"github_login","display_name?","is_instance_admin?"}` |
-| PATCH | `/api/admin/users/{id}` | superadmin | `{"disabled?","is_instance_admin?"}` |
+| GET/POST | `/api/admin/users` | superadmin | GET → `[AdminUser]` (the superadmin is not listed); POST `{"github_login","display_name?","is_instance_admin?"}` → 201 `AdminUser` |
+| PATCH | `/api/admin/users/{id}` | superadmin | `{"disabled?","is_instance_admin?"}` → `AdminUser` |
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
 | POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic|openai","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
 | PATCH | `/api/admin/accounts/{id}` | instance admin | `{"enabled?","priority?" (0–10000),"label?" (1–80 chars)}` → `Account` |
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
-| GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null"}` |
-| POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub) |
-| GET | `/api/admin/github/manifest/callback?code` | superadmin | stores App credentials, 302 to install |
+| GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null"}` — **not routed yet** (404; the web UI then shows `GET /api/me` `instance` facts) |
+| POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub) — **not routed yet** |
+| GET | `/api/admin/github/manifest/callback?code` | superadmin | stores App credentials, 302 to install — **not routed yet** |
 | GET | `/api/analytics/summary?sandbox&from&to` | read | → `AnalyticsSummary` |
 | GET | `/api/analytics/tasks?format=json|csv&sandbox&from&to` | read | → `[TaskRow]` or CSV |
 | GET | `/api/status` | signed in | → `Status` |
 
 ```json
+AdminUser = {"id","github_login","display_name","is_instance_admin","disabled",
+             "github_linked"}
 Account = {"id","provider","label","enabled","priority",
   "status":"pending_login|ok|relogin|error|limited",
   "usage":{"primary":{"used_percent":42.0,"resets_at":"…","window_minutes":300}|null,
@@ -447,3 +449,8 @@ instance administrators.
 `{"type":"sandbox.updated","sandbox":Sandbox}`, `{"type":"browser.action_requested","sandbox_id",
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
 `{"type":"account.updated","account":Account}` (instance administrators only), `{"type":"resync"}`.
+
+Sandbox views depend on the viewer's access level, so after a sandbox change (import, create,
+onboarding transitions, removal) the server publishes `resync` to that sandbox's viewers (or
+everyone) instead of `sandbox.updated`; clients refetch `/api/sandboxes`. Sandbox `counts` are
+not pushed: clients refetch them (the web UI does so once after a burst of `task.updated`).
