@@ -27,17 +27,17 @@ repository = "https://github.com/Quartio-Studio/yulius-v2"
 [workspace.dependencies]
 # Internal crates
 yulius-domain = { path = "crates/yulius-domain", version = "0.1.0" }
-yulius-contracts = { path = "crates/yulius-contracts" }
-yulius-app = { path = "crates/yulius-app" }
-yulius-store = { path = "crates/yulius-store" }
-yulius-ptyhost = { path = "crates/yulius-ptyhost" }
-yulius-harness = { path = "crates/yulius-harness" }
-yulius-github = { path = "crates/yulius-github" }
-yulius-git = { path = "crates/yulius-git" }
-yulius-browser = { path = "crates/yulius-browser" }
-yulius-editor = { path = "crates/yulius-editor" }
-yulius-import = { path = "crates/yulius-import" }
-yulius-server = { path = "crates/yulius-server" }
+yulius-contracts = { path = "crates/yulius-contracts", version = "0.1.0" }
+yulius-app = { path = "crates/yulius-app", version = "0.1.0" }
+yulius-store = { path = "crates/yulius-store", version = "0.1.0" }
+yulius-ptyhost = { path = "crates/yulius-ptyhost", version = "0.1.0" }
+yulius-harness = { path = "crates/yulius-harness", version = "0.1.0" }
+yulius-github = { path = "crates/yulius-github", version = "0.1.0" }
+yulius-git = { path = "crates/yulius-git", version = "0.1.0" }
+yulius-browser = { path = "crates/yulius-browser", version = "0.1.0" }
+yulius-editor = { path = "crates/yulius-editor", version = "0.1.0" }
+yulius-import = { path = "crates/yulius-import", version = "0.1.0" }
+yulius-server = { path = "crates/yulius-server", version = "0.1.0" }
 # External crates: exact minor pins; the lockfile holds exact versions.
 thiserror = "2.0.21"
 serde = { version = "1.0.229", features = ["derive"] }
