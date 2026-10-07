@@ -67,3 +67,44 @@ async fn write_users_delete_resting_tasks_with_their_records() -> TestResult {
     assert!(!archived.body.to_string().contains("\"t1\""));
     Ok(())
 }
+
+/// ROT-012: a manual move to another harness needs explicit approval; the setting that allows
+/// automatic switches is for instance administrators only.
+#[tokio::test]
+async fn harness_changes_need_explicit_approval() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let refused = call(
+        &h.router,
+        Method::POST,
+        "/api/tasks/t1/continue",
+        Some(json!({"harness": "codex"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert!(
+        refused.body.to_string().contains("approve_harness_change"),
+        "{:?}",
+        refused.body
+    );
+    let approved = call(
+        &h.router,
+        Method::POST,
+        "/api/tasks/t1/continue",
+        Some(json!({"harness": "codex", "approve_harness_change": true})),
+        &alice,
+    )
+    .await?;
+    assert!(
+        !approved.body.to_string().contains("approve_harness_change"),
+        "approval accepted: {:?}",
+        approved.body
+    );
+    let settings = call(&h.router, Method::GET, "/api/admin/settings", None, &alice).await?;
+    assert_eq!(settings.status, StatusCode::FORBIDDEN);
+    Ok(())
+}

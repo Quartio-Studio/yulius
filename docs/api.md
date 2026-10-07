@@ -121,12 +121,13 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness":"claude|codex","workflow_id?","model?","effort?","title?"}` → 201 `TaskSummary` |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness":"claude|codex","mode?":"goal|prompt","workflow_id?","model?","effort?","title?"}` → 201 `TaskSummary`; `mode` defaults to `goal` (TSK-010) |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary` |
-| POST | `/api/tasks/{tid}/continue` | write | `{"harness?","account_id?"}` → `TaskSummary` |
-| POST | `/api/tasks/{tid}/switch` | write | `{"harness?","account_id?"}` → `TaskSummary` |
+| POST | `/api/tasks/{tid}/continue` | write | `{"harness?","account_id?","approve_harness_change?"}` → `TaskSummary`; a harness other than the task's needs `"approve_harness_change": true`, else 409 (ROT-012) |
+| POST | `/api/tasks/{tid}/switch` | write | `{"harness?","account_id?","approve_harness_change?"}` → `TaskSummary`; approval as for continue |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
+| DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
 | POST | `/api/tasks/{tid}/messages` | write | `{"body"}` → `Message` (user → agent, delivered like task messages) |
 | GET | `/api/tasks/{tid}/messages` | read | → `[Message]` |
@@ -141,7 +142,9 @@ TaskSummary = {
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null"},
-  "unread_messages": 0, "archived": false, "account_label": "Claude #2|null"
+  "unread_messages": 0, "archived": false, "account_label": "Claude #2|null",
+  "mode": "goal|prompt",
+  "harness_proposal": {"harness": "codex", "account_id", "account_label|null", "proposed_at"} | null
 }
 TaskDetail = TaskSummary + {
   "spec_path": "docs/specs/2026-10-07-checkout-api.md|null",
@@ -358,6 +361,7 @@ the harnesses.
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
+| GET · PATCH | `/api/admin/settings` | instance admin | `{"auto_harness_switch": bool}` (off by default, ROT-012) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
 | GET | `/api/admin/github/manifest/callback?code&state` | superadmin | converts the code, stores the sealed App credentials and owner, 303 to the App's installation page; failures 303 to `/admin/github?error=…` |

@@ -3,10 +3,10 @@
 
 use yulius_contracts::api::common::UserRef;
 use yulius_contracts::api::tasks::{
-    AttemptView, FeedbackView, MessageFrom, MessageView, Metrics, StepProgress, StepView,
-    SwitchView, TaskDetail, TaskSummary,
+    AttemptView, FeedbackView, HarnessProposalView, MessageFrom, MessageView, Metrics,
+    StepProgress, StepView, SwitchView, TaskDetail, TaskSummary,
 };
-use yulius_domain::ids::{MessageId, SandboxId, TaskId};
+use yulius_domain::ids::{AccountId, MessageId, SandboxId, TaskId};
 use yulius_domain::permission::Action;
 use yulius_domain::task::TaskStatus;
 
@@ -14,7 +14,8 @@ use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    FeedbackRecord, InboxEntry, MessageRecord, MetricsRecord, StepRecord, TaskRecord,
+    FeedbackRecord, HarnessProposal, InboxEntry, MessageRecord, MetricsRecord, StepRecord,
+    TaskRecord,
 };
 use crate::ports::store::TaskFieldUpdate;
 
@@ -143,6 +144,31 @@ impl App {
             unread_messages: unread,
             archived: task.archived_at.is_some(),
             account_label,
+            mode: task.mode.as_str().to_owned(),
+            harness_proposal: self.proposal_view(task).await,
+        })
+    }
+
+    /// The task's pending harness proposal with the proposed account's label.
+    async fn proposal_view(&self, task: &TaskRecord) -> Option<HarnessProposalView> {
+        let proposal: HarnessProposal =
+            serde_json::from_str(task.harness_proposal.as_deref()?).ok()?;
+        let account_label = match AccountId::parse(&proposal.account_id) {
+            Ok(id) => self
+                .deps
+                .store
+                .account(&id)
+                .await
+                .ok()
+                .flatten()
+                .map(|a| a.label),
+            Err(_) => None,
+        };
+        Some(HarnessProposalView {
+            harness: proposal.harness,
+            account_id: proposal.account_id,
+            account_label,
+            proposed_at: rfc3339(yulius_domain::time::Timestamp(proposal.proposed_at)),
         })
     }
 

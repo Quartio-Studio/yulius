@@ -44,6 +44,17 @@ pub trait InstanceStore: Send + Sync {
     async fn set_installation(&self, installation_id: Option<u64>) -> AppResult<()>;
     /// Updates the public URL.
     async fn set_public_url(&self, url: &str) -> AppResult<()>;
+    /// Enables or disables automatic harness switches (ROT-012).
+    async fn set_auto_harness_switch(&self, enabled: bool) -> AppResult<()>;
+    /// Replaces the recovery code hash, clearing failures and the lock (ACC-011).
+    async fn set_recovery_code(&self, hash: &str) -> AppResult<()>;
+    /// Counts a wrong recovery code atomically; at `max_failures` the code is erased and
+    /// recovery locked at `at`. Returns (failures, locked).
+    async fn record_recovery_failure(
+        &self,
+        at: Timestamp,
+        max_failures: u32,
+    ) -> AppResult<(u32, bool)>;
 }
 
 /// Users and GitHub tokens.

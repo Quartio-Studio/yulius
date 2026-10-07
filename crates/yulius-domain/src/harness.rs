@@ -48,6 +48,15 @@ impl Harness {
         }
     }
 
+    /// Human-readable product name.
+    #[must_use]
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+        }
+    }
+
     /// Parses a wire name.
     ///
     /// # Errors

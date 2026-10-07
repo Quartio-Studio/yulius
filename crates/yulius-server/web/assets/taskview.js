@@ -5,7 +5,7 @@ import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { statusInfo, harnessInfo, isLive, allows, taskActions } from './status.js';
-import { openTaskMenu, continueTask } from './actions.js';
+import { openTaskMenu, continueTask, approveHarnessProposal } from './actions.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -82,7 +82,21 @@ export function mountTaskView(ctx, sandbox, task) {
     h('div', { class: 'quickbar-input' }, quickInput, h('button', { type: 'button', class: 'btn btn-primary', onClick: sendQuick }, 'Send')),
     h('div', { class: 'quickbar-keys', role: 'group', 'aria-label': 'Keys' }, QUICK_KEYS.map(([label, seq]) => h('button', { type: 'button', class: 'btn', onClick: () => terminal.sendKeys(seq), 'aria-label': `Send ${label}` }, label))));
 
-  const el = h('div', { class: 'taskview' }, strip, terminal.el, quickbar);
+  // ---- harness change proposal (ROT-012)
+  const proposalBar = h('div', { class: 'proposal-bar', hidden: true, role: 'status' });
+  function renderProposal() {
+    const proposal = current.harness_proposal;
+    const write = allows((ctx.store.sandboxById(sandbox.id) || sandbox).access, 'write');
+    proposalBar.hidden = !proposal;
+    if (!proposal) return;
+    const to = harnessInfo(proposal.harness).name;
+    setChildren(proposalBar,
+      h('span', null, `All ${harnessInfo(current.harness).name} accounts are at their usage limit. Yulius waits for capacity, or this task can move to ${to}.`),
+      write ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => approveHarnessProposal(ctx, current) }, `Switch to ${to}…`) : null);
+  }
+  renderProposal();
+
+  const el = h('div', { class: 'taskview' }, strip, proposalBar, terminal.el, quickbar);
 
   function renderStrip() {
     const steps = current.steps || { done: 0, total: 0, current: null };
@@ -136,6 +150,7 @@ export function mountTaskView(ctx, sandbox, task) {
       if (detail && detail.id === current.id) {
         current = { ...current, ...pickSummary(detail) };
         renderStrip();
+        renderProposal();
       }
     } catch (error) {
       if (error.status !== 404) errorToast(error, 'Could not load task details');
@@ -160,6 +175,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const wasLive = isLive(current.status);
       current = { ...current, ...next };
       renderStrip();
+      renderProposal();
       // A continued task gets a new attempt: reconnect if the socket had ended.
       if (!wasLive && isLive(current.status) && terminal.socket.status !== 'open') terminal.reconnect();
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
@@ -175,7 +191,7 @@ export function mountTaskView(ctx, sandbox, task) {
 }
 
 function pickSummary(detail) {
-  const keys = ['status', 'activity', 'title', 'steps', 'unread_messages', 'account_label', 'harness', 'branch', 'updated_at', 'archived'];
+  const keys = ['status', 'activity', 'title', 'steps', 'unread_messages', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'harness_proposal'];
   const out = {};
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;

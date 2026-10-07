@@ -30,8 +30,8 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::hub::Hub;
 use crate::model::{
-    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MetricsRecord, ProviderSessionRecord,
-    SandboxRecord, Secret, SwitchDecisionRecord, TaskRecord,
+    AccountRecord, AccountStatus, AttemptRecord, HarnessProposal, LaunchKind, MetricsRecord,
+    ProviderSessionRecord, SandboxRecord, Secret, SwitchDecisionRecord, TaskRecord,
 };
 use crate::ports::harness::{
     HarnessLaunch, Observation, SessionMode, TranslationTarget, UsageSnapshot,
@@ -1326,6 +1326,9 @@ impl App {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let attempt = store.live_attempt(task_id).await?;
+        if task.harness_proposal.is_some() {
+            self.clear_harness_proposal(task_id).await;
+        }
         let next = task
             .status
             .apply(TaskEvent::SwitchStarted)
@@ -1742,6 +1745,66 @@ impl App {
         }
     }
 
+    /// Whether an administrator allowed automatic harness switches (off by default).
+    pub(crate) async fn auto_harness_switch(&self) -> bool {
+        self.deps
+            .store
+            .instance()
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|i| i.auto_harness_switch)
+    }
+
+    /// When only another harness has capacity, records a proposal on the task for a user to
+    /// approve (ROT-012) and returns that harness' display name.
+    async fn propose_harness_change(
+        &self,
+        task: &TaskRecord,
+        input: &RotationInput,
+        trigger: Trigger,
+    ) -> Option<&'static str> {
+        let mut crossing = input.clone();
+        crossing.allow_cross_provider = true;
+        let (
+            Decision::Switch {
+                account,
+                provider,
+                cross_provider: true,
+            },
+            _,
+        ) = rotation::decide(&crossing, trigger)
+        else {
+            return None;
+        };
+        let harness = provider.harness();
+        let proposal = HarnessProposal {
+            harness: harness.as_str().to_owned(),
+            account_id: account.as_str().to_owned(),
+            proposed_at: self.now().0,
+        };
+        let json = serde_json::to_string(&proposal).ok()?;
+        let update = TaskFieldUpdate {
+            harness_proposal: Some(Some(json)),
+            ..TaskFieldUpdate::default()
+        };
+        self.deps
+            .store
+            .update_task(&task.id, &update, self.now())
+            .await
+            .ok()?;
+        Some(harness.display_name())
+    }
+
+    /// Clears a pending harness proposal (capacity returned, or any switch happened).
+    pub(crate) async fn clear_harness_proposal(&self, task: &TaskId) {
+        let update = TaskFieldUpdate {
+            harness_proposal: Some(None),
+            ..TaskFieldUpdate::default()
+        };
+        let _ = self.deps.store.update_task(task, &update, self.now()).await;
+    }
+
     /// Applies the rotation policy for a task and acts on the decision (SPEC-001 §7.4).
     pub async fn rotate(
         self: &Arc<Self>,
@@ -1758,10 +1821,12 @@ impl App {
         let Ok(accounts) = self.account_views().await else {
             return;
         };
+        // Harness changes are automatic only when an administrator allowed them (ROT-012).
+        let automatic = self.auto_harness_switch().await;
         let input = RotationInput {
             current: current.clone(),
             task_provider: task.harness.provider(),
-            allow_cross_provider: true,
+            allow_cross_provider: automatic,
             accounts,
             now: self.now(),
             threshold: rotation::DEFAULT_THRESHOLD,
@@ -1791,6 +1856,12 @@ impl App {
                 }
             }
             Decision::Wait { until } => {
+                let proposed = if automatic {
+                    None
+                } else {
+                    self.propose_harness_change(&task, &input, trigger.clone())
+                        .await
+                };
                 if let Ok(next) = task.status.apply(TaskEvent::CapacityExhausted) {
                     let _ = self
                         .deps
@@ -1805,7 +1876,13 @@ impl App {
                         .await;
                 }
                 let when = until.map_or_else(|| "an unknown time".to_owned(), crate::auth::rfc3339);
-                runtime.hub.notice(format!("All connected accounts are at their usage limit. Yulius will continue at {when}."));
+                runtime.hub.notice(match proposed {
+                    Some(other) => format!(
+                        "All {} accounts are at their usage limit. Approve switching this task to {other} in the task view, or Yulius continues here at {when}.",
+                        task.harness.display_name()
+                    ),
+                    None => format!("All connected accounts are at their usage limit. Yulius will continue at {when}."),
+                });
                 self.publish_task(task_id).await;
                 let app = self.clone();
                 let tid = task_id.clone();
@@ -1845,7 +1922,7 @@ impl App {
             let input = RotationInput {
                 current: None,
                 task_provider: task.harness.provider(),
-                allow_cross_provider: true,
+                allow_cross_provider: self.auto_harness_switch().await,
                 accounts,
                 now: self.now(),
                 threshold: rotation::DEFAULT_THRESHOLD,
@@ -1860,6 +1937,7 @@ impl App {
                     let prompt = Some("Usage capacity is available again. Continue the task exactly where you left off.".to_owned());
                     if Some(&account) == current.as_ref() && provider == task.harness.provider() {
                         // Same account recovered: just nudge the live session.
+                        self.clear_harness_proposal(task_id).await;
                         let _ = self
                             .deps
                             .store

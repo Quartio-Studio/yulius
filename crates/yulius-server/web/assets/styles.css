@@ -619,3 +619,7 @@ body.resizing iframe { pointer-events: none; }
 /* Terminal mouse hand-over (shown only when the program asked for the mouse). */
 .term-mouse-toggle { position: absolute; top: 6px; right: 16px; z-index: 4; font-size: 11px; opacity: 0; transition: opacity .15s; }
 .term:hover .term-mouse-toggle, .term-mouse-toggle:focus-visible { opacity: .9; }
+
+/* Harness change waiting for approval (ROT-012). */
+.proposal-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--warn-soft, rgba(217, 180, 64, .12)); font-size: var(--fs-sm); }
+.proposal-bar > span { flex: 1; }

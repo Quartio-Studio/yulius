@@ -54,6 +54,15 @@ pub struct InstanceRecord {
     pub setup_token_hash: Option<String>,
     /// When the superadmin was created.
     pub setup_completed_at: Option<Timestamp>,
+    /// Instance administrators allowed automatic harness switches (ROT-012; off by default).
+    pub auto_harness_switch: bool,
+    /// Argon2id PHC string of the superadmin recovery code (ACC-011); `None` when none is set
+    /// or recovery is locked.
+    pub recovery_hash: Option<String>,
+    /// Consecutive wrong recovery codes.
+    pub recovery_failures: u32,
+    /// When recovery was permanently disabled by too many wrong codes.
+    pub recovery_locked_at: Option<Timestamp>,
 }
 
 /// A user.
@@ -253,6 +262,17 @@ impl TaskMode {
             _ => None,
         }
     }
+}
+
+/// A harness change waiting for a user's approval (stored as JSON on the task, ROT-012).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HarnessProposal {
+    /// Proposed harness wire name.
+    pub harness: String,
+    /// Proposed account.
+    pub account_id: String,
+    /// When it was proposed (ms).
+    pub proposed_at: i64,
 }
 
 /// A task.

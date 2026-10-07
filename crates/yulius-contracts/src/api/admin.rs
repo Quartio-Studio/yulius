@@ -163,3 +163,11 @@ pub struct ManifestCallback {
     #[serde(default)]
     pub state: String,
 }
+
+/// `GET`/`PATCH /api/admin/settings`: instance behavior settings (instance administrators).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct InstanceSettings {
+    /// Rotation may move tasks to another harness without asking (ROT-012; off by default).
+    #[serde(default)]
+    pub auto_harness_switch: bool,
+}

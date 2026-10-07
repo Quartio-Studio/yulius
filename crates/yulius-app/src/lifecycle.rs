@@ -266,12 +266,16 @@ impl App {
             )));
         }
         let harness = req.harness.as_deref().map(parse_harness).transpose()?;
+        require_harness_approval(&task, harness, req)?;
         let account = req
             .account_id
             .as_deref()
             .map(AccountId::parse)
             .transpose()
             .map_err(|_| AppError::Invalid("invalid account".into()))?;
+        if task.harness_proposal.is_some() {
+            self.clear_harness_proposal(&task.id).await;
+        }
         if task.archived_at.is_some() {
             let now = self.now();
             self.deps
@@ -314,6 +318,7 @@ impl App {
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let harness = req.harness.as_deref().map(parse_harness).transpose()?;
+        require_harness_approval(&task, harness, req)?;
         let account = req
             .account_id
             .as_deref()
@@ -335,5 +340,23 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         self.task_summary(&task).await
+    }
+}
+
+/// A change to another harness needs the caller's explicit approval (ROT-012).
+fn require_harness_approval(
+    task: &TaskRecord,
+    harness: Option<Harness>,
+    req: &ContinueTask,
+) -> AppResult<()> {
+    match harness {
+        Some(target) if target != task.harness && !req.approve_harness_change => {
+            Err(AppError::Conflict(format!(
+                "moving this task from {} to {} translates its session; confirm the harness change (approve_harness_change)",
+                task.harness.display_name(),
+                target.display_name()
+            )))
+        }
+        _ => Ok(()),
     }
 }

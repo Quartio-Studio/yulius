@@ -51,6 +51,29 @@ pub struct TaskSummary {
     pub archived: bool,
     /// Label of the account in use.
     pub account_label: Option<String>,
+    /// `goal` or `prompt` (TSK-010).
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// A harness change waiting for approval (ROT-012).
+    #[serde(default)]
+    pub harness_proposal: Option<HarnessProposalView>,
+}
+
+fn default_mode() -> String {
+    "prompt".into()
+}
+
+/// A proposed harness change shown to users with write access.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessProposalView {
+    /// Proposed harness (`claude` or `codex`).
+    pub harness: String,
+    /// Proposed account id.
+    pub account_id: String,
+    /// Label of the proposed account.
+    pub account_label: Option<String>,
+    /// When it was proposed.
+    pub proposed_at: String,
 }
 
 /// `POST /api/sandboxes/{sid}/tasks`.
@@ -72,6 +95,9 @@ pub struct CreateTask {
     /// Title (derived from the prompt when absent).
     #[serde(default)]
     pub title: Option<String>,
+    /// `goal` (default) or `prompt` (TSK-010).
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 /// `POST /api/tasks/{tid}/continue` and `/switch`.
@@ -83,6 +109,10 @@ pub struct ContinueTask {
     /// Target account.
     #[serde(default)]
     pub account_id: Option<String>,
+    /// Explicit approval of a change to another harness (ROT-012); without it such a change
+    /// is refused with 409.
+    #[serde(default)]
+    pub approve_harness_change: bool,
 }
 
 /// One process run.

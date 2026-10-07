@@ -118,7 +118,29 @@ export function mountAccountsPage(ctx) {
   if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'Accounts');
   const frame = pageFrame({ title: 'Accounts', sub: 'organization subscriptions used for rotation', actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => add() }, 'Add account')] });
   const host = h('div');
-  frame.body.append(host, h('p', { class: 'muted xs' }, 'Rotation uses enabled accounts in priority order (lower first), switches before an account is exhausted, then falls back to the other provider.'));
+  // Harness changes are off by default and need a user's approval (ROT-012).
+  const autoSwitch = h('input', { type: 'checkbox', disabled: true });
+  const settingsCard = h('div', { class: 'card stack' },
+    h('label', { class: 'check' }, autoSwitch, h('span', null, 'Switch harness automatically (Claude Code ↔ Codex) when every account of a task’s provider is exhausted')),
+    h('p', { class: 'muted xs' }, 'Off by default: Yulius rotates accounts within the same provider and otherwise asks in the task view before translating a session to the other harness.'));
+  ctx.api.get('/api/admin/settings').then((settings) => {
+    autoSwitch.checked = Boolean(settings && settings.auto_harness_switch);
+    autoSwitch.disabled = false;
+  }).catch((error) => errorToast(error, 'Could not load instance settings'));
+  autoSwitch.addEventListener('change', async () => {
+    autoSwitch.disabled = true;
+    try {
+      const settings = await ctx.api.patch('/api/admin/settings', { auto_harness_switch: autoSwitch.checked });
+      autoSwitch.checked = Boolean(settings && settings.auto_harness_switch);
+      toast(autoSwitch.checked ? 'Automatic harness switching enabled' : 'Harness changes now need approval', { kind: 'ok' });
+    } catch (error) {
+      autoSwitch.checked = !autoSwitch.checked;
+      errorToast(error, 'Could not save the setting');
+    } finally {
+      autoSwitch.disabled = false;
+    }
+  });
+  frame.body.append(settingsCard, host, h('p', { class: 'muted xs' }, 'Rotation uses enabled accounts in priority order (lower first) and switches before an account is exhausted; a change to the other provider needs approval unless enabled above.'));
 
   const patch = async (account, body) => {
     try {
