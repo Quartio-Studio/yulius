@@ -322,3 +322,6 @@ pub fn session_from(set_cookie: &Option<String>) -> Option<String> {
     let first = raw.split(';').next()?;
     first.strip_prefix("yulius_session=").map(str::to_owned)
 }
+
+/// Repository fixtures (real Git over local remotes) for project and import tests.
+pub mod repos;

@@ -55,8 +55,19 @@ CLI device approval: `POST /api/device/start` → `{"device_code","user_code","v
 | POST | `/api/sandboxes` | admin on repo / owner | `{"mode":"import","repo":"owner/name"}` or `{"mode":"create","name","template","description"}` → 201 `Sandbox` |
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
-| POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` |
-| DELETE | `/api/sandboxes/{sid}` | admin | → 204 (GitHub repository untouched) |
+| POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`) |
+| POST | `/api/sandboxes/{sid}/onboarding/approve` | write | → `Sandbox`; starts the preparation task (`pending` → `preparing`); 409 when nothing awaits approval or the task cannot start |
+| DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
+
+`GET /api/github/repositories` lists the App installation's repositories of the instance owner
+that the caller can at least read (needs a GitHub-linked account). Import mode requires a
+repository of the instance owner (`invalid` otherwise) and `admin` or `maintain` on GitHub; it
+clones the repository, picks the profile (`yulius.toml` `[delivery]`, else `product`/`studio` for
+`Quartio-Studio/product`/`studio`, else `standard`) and validates the documentation format: a
+failing project gets `onboarding: "pending"` and a resting preparation task (`origin:
+"onboarding"`). While `pending`/`preparing`, creating other tasks is a 409 (U-08). Create mode
+(instance admins) creates a private repository, pushes the template scaffold to `main` and `dev`,
+and adds rulesets requiring pull requests on both.
 
 ```json
 Sandbox = {
@@ -74,6 +85,22 @@ Profile = {"preset": "standard|product|studio|custom", "integration_branch": "de
            "environments": [{"name": "dev", "after": "integration|production",
                              "command": "…|null", "verify": "manual|command"}]}
 ```
+
+## Import (`yulius import`)
+
+Bearer CLI token or cookie session. The full protocol, bounds and snapshot layout are documented
+in `crates/yulius-contracts/src/import.rs`.
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| POST | `/api/import` | `{"manifest": ImportManifest}` → `{"job_id", "missing": [{"name", "received_bytes"}]}`. Links the repository as a sandbox when needed (admin/maintain; owner repositories only); an unfinished job with the same manifest is reused; files already stored for the sandbox (same `sha256`) are not listed. |
+| PUT | `/api/import/{job}/files/{name}?offset=N` | raw chunk (≤ 8 MiB) with `X-Chunk-Sha256` → `{"name", "received_bytes"}`. `name` is one percent-encoded segment. Repeats are acknowledged; an offset beyond the received length is 409; a wrong digest is 422 (a wrong whole-file digest resets the file to 0). |
+| POST | `/api/import/{job}/complete` | → `{"sandbox_id", "sandbox_url", "tasks_created", "sessions_skipped_existing", "onboarding"}`; 409 while files are incomplete. Idempotent. |
+
+Applying: bundle branches become `import/<login>/<branch>`; the snapshot is committed on
+`import/<login>/snapshot-<YYYY-MM-DD>[-n]` created from the client's `HEAD`; each new session
+becomes an archived task (`origin: "import"`) whose transcript is kept immutably and resumed
+natively on Continue (same or other harness).
 
 ## Tasks
 

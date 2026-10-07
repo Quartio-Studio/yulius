@@ -2,7 +2,9 @@
 
 mod admin;
 mod events;
+mod imports;
 mod mcp;
+mod projects;
 mod sandboxes;
 mod setup_auth;
 mod tasks;
@@ -56,6 +58,24 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             get(tasks::messages).post(tasks::post_message),
         )
         .route("/api/events", get(events::events))
+        .route("/api/github/repositories", get(projects::repositories))
+        .route("/api/templates", get(projects::templates))
+        .route("/api/sandboxes", post(projects::create))
+        .route(
+            "/api/sandboxes/{sid}",
+            axum::routing::delete(projects::remove),
+        )
+        .route(
+            "/api/sandboxes/{sid}/onboarding/skip",
+            post(projects::skip_onboarding),
+        )
+        .route(
+            "/api/sandboxes/{sid}/onboarding/approve",
+            post(projects::approve_onboarding),
+        )
+        .route("/api/import", post(imports::create))
+        .route("/api/import/{job}/files/{name}", imports::chunk_route())
+        .route("/api/import/{job}/complete", post(imports::complete))
 }
 
 /// Internal (loopback) routes.

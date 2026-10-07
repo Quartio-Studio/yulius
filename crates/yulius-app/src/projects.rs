@@ -523,11 +523,19 @@ impl App {
             }
         };
         if onboarding == "pending" {
-            let task = self.create_onboarding_task(&record, user, &report).await?;
-            store
-                .set_onboarding(&record.id, "pending", Some(&task.id))
-                .await?;
-            record.onboarding_task_id = Some(task.id);
+            // The sandbox exists now; a failed meta-task creation leaves it pending (an admin
+            // can skip) instead of reporting the whole import as failed.
+            match self.create_onboarding_task(&record, user, &report).await {
+                Ok(task) => {
+                    store
+                        .set_onboarding(&record.id, "pending", Some(&task.id))
+                        .await?;
+                    record.onboarding_task_id = Some(task.id);
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, sandbox = %record.id, "could not create the preparation task");
+                }
+            }
         }
         store
             .audit(
