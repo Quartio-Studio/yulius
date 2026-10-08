@@ -617,10 +617,8 @@ function createApp(root, transport) {
     if (menuButton) menuButton.setAttribute('aria-expanded', String(open));
     if (!sidebarEl) return;
     const wasInside = sidebarEl.contains(document.activeElement);
-    // Hidden sidebars are inert: the closed phone drawer, and on wider screens the sidebar that
-    // slides away while a tool panel is open (its links would be invisible Tab stops).
-    const collapsed = !phone.matches && Boolean(sidebarEl.closest('.app.panel-open'));
-    sidebarEl.inert = (phone.matches && !open) || collapsed;
+    // The closed phone drawer is inert (its links would be invisible Tab stops).
+    sidebarEl.inert = phone.matches && !open;
     // While the phone drawer is open, the page under its scrim cannot take focus (Esc or the scrim closes it).
     for (const region of document.querySelectorAll('#main, .panel, .rail')) region.inert = phone.matches && open;
     if (phone.matches && open && !wasInside) sidebarEl.querySelector('a[href], button:not([disabled])')?.focus();

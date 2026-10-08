@@ -83,22 +83,29 @@ export function createPanelHost(ctx) {
   let task = null;
   const views = new Map(); // key → view
 
-  // ---- width (default 45 % of the window, resizable, remembered per browser)
+  // ---- width (default 45 % of the work area, resizable, remembered per browser). The work area is
+  // the room the centre and the panel share: the window less the rail and the sidebar, which stays
+  // on wider screens (on phones it is a drawer over the page).
+  function room() {
+    const sidebar = rail.closest('.app')?.querySelector('.sidebar');
+    const side = sidebar && !window.matchMedia('(max-width: 767px)').matches ? sidebar.getBoundingClientRect().width : 0;
+    return Math.max(1, window.innerWidth - rail.getBoundingClientRect().width - side);
+  }
   function defaultWidth(k) {
     const saved = Number(readJson(WIDTH_KEY, 0));
     const fallback = DEFAULT_FRACTION[k] || 0.45;
     const fraction = saved > 0.15 && saved < 0.85 ? Math.max(saved, fallback) : fallback;
-    return Math.round(window.innerWidth * fraction);
+    return Math.round(room() * fraction);
   }
   function applyWidth(px) {
-    // The centre keeps at least 360 px next to the panel and the rail.
-    const max = Math.max(320, window.innerWidth - rail.getBoundingClientRect().width - 360);
+    // The centre keeps at least 360 px next to the panel.
+    const max = Math.max(320, room() - 360);
     const width = Math.max(300, Math.min(max, px));
     panel.style.width = `${width}px`;
-    // The splitter says where it is (WCAG 4.1.2): the panel's share of the window.
-    const share = Math.round((width / window.innerWidth) * 100);
+    // The splitter says where it is (WCAG 4.1.2): the panel's share of the work area.
+    const share = Math.round((width / room()) * 100);
     handle.setAttribute('aria-valuenow', String(share));
-    handle.setAttribute('aria-valuetext', `Panel ${share}% of the window`);
+    handle.setAttribute('aria-valuetext', `Panel ${share}% of the work area`);
     return width;
   }
   handle.addEventListener('pointerdown', (event) => {
@@ -114,7 +121,7 @@ export function createPanelHost(ctx) {
       document.body.classList.remove('resizing');
       handle.removeEventListener('pointermove', move);
       handle.removeEventListener('pointerup', up);
-      writeJson(WIDTH_KEY, panel.getBoundingClientRect().width / window.innerWidth);
+      writeJson(WIDTH_KEY, panel.getBoundingClientRect().width / room());
     };
     handle.addEventListener('pointermove', move);
     handle.addEventListener('pointerup', up);
@@ -122,13 +129,13 @@ export function createPanelHost(ctx) {
   // A double-click resets the width: a way to resize without dragging (WCAG 2.5.7).
   handle.addEventListener('dblclick', () => {
     const width = applyWidth(defaultWidth(kind));
-    writeJson(WIDTH_KEY, width / window.innerWidth);
+    writeJson(WIDTH_KEY, width / room());
   });
   handle.addEventListener('keydown', (event) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
     const width = applyWidth(panel.getBoundingClientRect().width + (event.key === 'ArrowLeft' ? 40 : -40));
-    writeJson(WIDTH_KEY, width / window.innerWidth);
+    writeJson(WIDTH_KEY, width / room());
   });
 
   function viewKey(k) {
@@ -162,9 +169,6 @@ export function createPanelHost(ctx) {
     if (!railVisible) setRailVisible(true);
     if (panel.hidden) {
       panel.hidden = false;
-      // The sidebar slides away while a tool is open, giving the agent and the tool the room.
-      const app = rail.closest('.app');
-      if (app) app.classList.add('panel-open');
       applyWidth(Math.max(defaultWidth(k), panel.getBoundingClientRect().width || 0));
     }
     const savedMax = readJson(MAX_KEY, {}) || {};
@@ -180,7 +184,7 @@ export function createPanelHost(ctx) {
   function close() {
     panel.hidden = true;
     const app = rail.closest('.app');
-    if (app) app.classList.remove('panel-max', 'panel-open');
+    if (app) app.classList.remove('panel-max');
     kind = null;
     for (const button of buttons.values()) {
       button.classList.remove('active');
