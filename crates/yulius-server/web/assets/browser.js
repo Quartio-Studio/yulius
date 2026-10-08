@@ -12,7 +12,7 @@
 // load must cost only the DOM view — the panel then shows pixels — never the whole UI.
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, focusNextRegion } from './dom.js';
 import { ReconnectingSocket, parseBrowserFrame, CLOSE_REVOKED, CLOSE_SERVER_ERROR } from './termsocket.js';
 import { allows } from './status.js';
 
@@ -278,7 +278,17 @@ export function createBrowserPanel(ctx, sandbox) {
     // The real page handles clicks; the mirror never navigates, submits or drags links away.
     doc.addEventListener('click', (event) => event.preventDefault(), true);
     doc.addEventListener('dragstart', (event) => event.preventDefault(), true);
-    doc.addEventListener('keydown', (event) => forwardKey('down', event), true);
+    // The mirror is a same-origin iframe: its key events never reach the window's F6 handler, so
+    // F6 / Shift+F6 leave it here (WCAG 2.1.2 No Keyboard Trap); every other key goes to the page.
+    doc.addEventListener('keydown', (event) => {
+      if (event.key === 'F6' && !event.altKey && !event.metaKey && !event.ctrlKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        focusNextRegion(event.shiftKey);
+        return;
+      }
+      forwardKey('down', event);
+    }, true);
     doc.addEventListener('keyup', (event) => forwardKey('up', event), true);
     doc.addEventListener('paste', (event) => forwardPaste(event), true);
   }
@@ -724,7 +734,7 @@ export function createBrowserPanel(ctx, sandbox) {
    *  text), and the user's own browser shortcuts are left alone. */
   function forwardKey(kind, event) {
     const tab = activeTab();
-    if (!tab) return;
+    if (!tab || event.key === 'F6') return; // F6 moves between regions (app.js), never to the page
     const key = event.key.toLowerCase();
     const command = event.metaKey || event.ctrlKey;
     if (command && ['r', 'w', 't', 'q', 'l', 'n'].includes(key)) return;
