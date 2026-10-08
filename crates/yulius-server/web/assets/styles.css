@@ -767,6 +767,32 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
 @container (max-width: 820px) { .wf-grid { grid-template-columns: minmax(0, 1fr); } .wf-summary { position: static; } }
 @container (max-width: 560px) { .wf-gates { grid-template-columns: minmax(0, 1fr); } .wf-custom { width: 100%; } }
 
+/* MCP → a server (UI-038): known servers to pick, a paste box that fills the form, write-only secrets. */
+.mc-inner { max-width: 900px; }
+.mc-catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.mc-pick:disabled { opacity: 0.6; cursor: default; border-color: var(--border); }
+.mc-logo img { display: block; width: 18px; height: 18px; }
+.mc-logo:has(.logo-on-dark) { background: var(--logo-tile-dark); }
+.mc-mono { font-weight: 600; color: var(--text); }
+.mc-added { display: inline-flex; align-items: center; gap: 2px; margin-left: 8px; color: var(--ok-fg); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 500; }
+.mc-paste-wrap { display: flex; flex-direction: column; gap: 6px; }
+.mc-paste-field { display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; border: 1px dashed var(--border-control); border-radius: var(--radius-lg); background: var(--surface); color: var(--muted); }
+.mc-paste-field:focus-within { border-style: solid; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.mc-paste-field .icon { margin-top: 2px; }
+.mc-paste { min-height: 0; height: auto; padding: 0; border: 0; background: transparent; resize: none; field-sizing: content; max-height: 160px; }
+.mc-paste:focus { border: 0; box-shadow: none; }
+.mc-conn { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.mc-conn .input { width: 100%; height: var(--control-lg); }
+.mc-secret .input { height: var(--control-lg); }
+.mc-stored { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-2); }
+.mc-key { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border-radius: var(--radius-full); background: var(--surface-3); color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.mc-more summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.mc-more[open] summary { margin-bottom: 8px; }
+.mc-test-result:empty { display: none; }
+.mc-ok, .mc-fail { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; }
+.mc-ok { color: var(--ok-fg); }
+.mc-fail { color: var(--danger-fg); }
+
 /* Skills → a skill (UI-033) and the Markdown block editor (mdeditor.js), Notion-like */
 /* New skill (UI-035) borrows the builder's in-place title (.wf-name, .wf-desc) and chips. */
 .sn-setup { display: flex; flex-direction: column; gap: 12px; padding: 12px 0 4px; border-bottom: 1px solid var(--border); }

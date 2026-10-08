@@ -232,6 +232,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-035 | Skills has New skill: a page where you name the skill (turned into a valid skill name, its file path shown), say when Claude Code should use it, pick a template (Checklist, Conventions, Review, Voice and tone, Blank) and where it lives (this repository, or every sandbox for instance administrators), and write it in the block editor; the frontmatter is written for you. Creating needs the proposed `POST /api/sandboxes/{sid}/skills` (docs/api.md). | F 2026-10-08 UI | C | AC-UI-29 |
 | UI-036 | Tasks has no search field: the header says "Press / to search" (a search button on touch screens), and "/" opens a Spotlight-style search over the page: results as you type (by title, number, branch or author; most recently updated first when empty), ↑/↓ to choose, Enter opens the task's overview, ⌘/Ctrl+Enter its session, Esc or a click outside closes; the last row filters the list by the text, shown as a removable chip and kept in the URL (`?q=`). | F 2026-10-08 UI | C | AC-UI-30 |
 | UI-037 | Page filters are tabs with counts, not drop-downs (Skills by source, MCP by scope; empty choices hide); every other list to choose from opens a styled list matching the app's menus (surface, border, radius, accent check) where the browser supports a customizable select, the native control elsewhere. | F 2026-10-08 UI | C | AC-UI-31 |
+| UI-038 | An MCP server is added and edited on its own page with as little typing as possible: pick a known server (Quartio, GitHub, Apify, Context7, Stripe, Supabase; those attached show Added) and only its secret is left, or paste what the server's docs give — a URL, a command line (leading KEY=value become its environment), `claude mcp add …` or `mcpServers` JSON — and the name, connection and secrets fill themselves; remote servers take a URL and a token (sent as Authorization: Bearer), local ones one command line and their variables; stored secrets show by name only and are replaced only on request, never dropped silently; after Add the server opens and is tested at once. | F 2026-10-08 UI | C | AC-UI-32 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -464,7 +465,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | Workflows | List workflows; each opens in a builder (UI-034): templates, steps to click or drag, gates as switches, instruction snippets. |
 | Skills | Catalog (repository skills, instance skills, Open Mercato pack) with source, enable toggle, content view. |
 | Automations | List/create/edit (cron, timezone, prompt, workflow, harness, enabled), run history, Run now. |
-| MCP | Sandbox MCP servers + inherited instance servers; add/edit/test; secrets write-only. |
+| MCP | Sandbox MCP servers + inherited instance servers; test from the list; each server opens on its own page (UI-038): pick a known server or paste its URL, command or JSON; secrets write-only. |
 | Dashboard | Analytics: tasks over time, durations, tokens by model/harness/account, switches, feedback ratio; export. |
 | Status (panel) | VM CPU/RAM/disk/load; per-sandbox sessions and disk; accounts usage bars and resets. |
 | Archived tasks | Archived tasks across accessible sandboxes; restore; open read-only transcript. |
@@ -618,6 +619,7 @@ instance — out of scope).
 | AC-UI-29 | New skill → typing "Release Notes!" shows `.agents/skills/release-notes/SKILL.md`; Create without saying when to use it shows an inline error; with it, the skill is created with `name` and `description` frontmatter and opens in its editor. | ui |
 | AC-UI-30 | On Tasks, "/" opens the search with the focus in it; typing "check" lists the matching tasks; ↓ then Enter opens the second; "12" then ⌘Enter opens task #12's session; the last row sets `?q=check` and a “check” chip, and the list shows only matching tasks. | ui |
 | AC-UI-31 | Skills shows "All 5 · Repository 2 · Instance 1 · Open Mercato 2" as tabs and Repository filters to two; in the automation dialog the Workflow list opens as a styled panel with the chosen item checked. | ui |
+| AC-UI-32 | Add server → GitHub fills `github` and its URL and focuses the token; pasting `claude mcp add supabase -e SUPABASE_ACCESS_TOKEN=tok -- npx -y @supabase/mcp-server-supabase@latest` fills a local server named supabase with that variable; Add opens it and shows the test result with its tools; Apify shows `APIFY_TOKEN ••••` until Replace the values. | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
@@ -726,7 +728,7 @@ observed. Live provider compatibility and deployment are reported separately fro
   the pull request and next delivery step in the task view (UI-030, AC-UI-23); the Git page's task
   review (UI-031, AC-UI-24; the diff and commits need the proposed task changes API); the Tasks
   table and a task's overview (UI-032, AC-UI-25); the skill editor (UI-033, AC-UI-26; saving needs the
-  proposed skill content API); the task terminal's status line (HRN-005, AC-UI-27; proposed for the harness); the workflow builder (UI-034, AC-UI-28); New skill (UI-035, AC-UI-29; needs the proposed skill create API); the Spotlight-style task search (UI-036, AC-UI-30); filter tabs and styled lists (UI-037, AC-UI-31).
+  proposed skill content API); the task terminal's status line (HRN-005, AC-UI-27; proposed for the harness); the workflow builder (UI-034, AC-UI-28); New skill (UI-035, AC-UI-29; needs the proposed skill create API); the Spotlight-style task search (UI-036, AC-UI-30); filter tabs and styled lists (UI-037, AC-UI-31); the MCP server page (UI-038, AC-UI-32).
 
 - 2026-10-08 (UI review, `F 2026-10-08 UI`): the user menu moves to the sidebar's foot and the
   collapsed sidebar is dropped; the tools rail names its tools; the sidebar shows the Yulius

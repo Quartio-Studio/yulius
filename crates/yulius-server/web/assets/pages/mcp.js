@@ -1,15 +1,13 @@
-// MCP page (MCP-001..003): sandbox servers plus inherited instance servers; add, edit,
-// test. Secrets are write-only: the UI shows key names only and never reads values back.
+// MCP page (MCP-001..003): sandbox servers plus inherited instance servers; test from the list.
+// Adding and editing happen on the server's page (mcpedit.js, UI-038). Secrets are write-only:
+// the UI shows key names only and never reads values back.
 
 import { enc } from '../api.js';
-import { h, icon, badge, iconBadge, itemCard, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton, emptyState, invalid, filterTabs } from '../dom.js';
+import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, toggle, setChildren, iconButton, emptyState, filterTabs } from '../dom.js';
+import { navigate } from '../router.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 import { BRAND } from '../brand.js';
-
-const KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-/** Server names: 1–64 letters, digits, `-` or `_`; `yulius` is reserved. */
-const NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Logos of well-known servers (assets/logos, see its README), matched by name, URL or package. */
 const LOGOS = [
@@ -28,12 +26,13 @@ function serverLogo(server) {
 export function mountMcpPage(ctx, sandbox, route) {
   const write = allows(sandbox.access, 'write');
   const instanceAdmin = ctx.isInstanceAdmin();
+  const base = `/s/${encodeURIComponent(sandbox.slug)}/mcp`;
   const scopeFilter = filterTabs({ label: 'Scope', value: route.query.get('scope') || '', onChange: () => setChildren(host, render()),
     options: [{ value: '', label: 'All' }, { value: 'sandbox', label: 'This sandbox', icon: 'folder' }, { value: 'instance', label: 'Every sandbox', icon: 'globe' }] });
   const frame = pageFrame({
     title: 'MCP',
     sub: 'attached once, available to every Claude Code session',
-    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'Add server')],
+    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => navigate(`${base}/new`) }, 'Add server')],
   });
   const host = h('div');
   frame.body.append(h('div', { class: 'toolbar' }, scopeFilter.el, h('span', { class: 'muted small' }, `The ${BRAND.name} tool server is always attached and not listed here.`)), host);
@@ -91,8 +90,8 @@ export function mountMcpPage(ctx, sandbox, route) {
           testButton,
           iconButton('trash', `Remove ${server.name}`, () => remove(server), { class: 'btn-quiet-danger', disabled: !manage, title: manage ? `Remove ${server.name}` : 'Instance servers are managed by instance administrators' }),
         ],
-        onOpen: manage ? () => edit(server) : null,
-        openLabel: `Edit ${server.name}`,
+        onOpen: () => navigate(`${base}/${encodeURIComponent(server.id)}`),
+        openLabel: manage ? `Edit ${server.name}` : `Open ${server.name}`,
         dim: !server.enabled,
       });
     }));
@@ -119,107 +118,6 @@ export function mountMcpPage(ctx, sandbox, route) {
     } catch (error) {
       errorToast(error, 'Could not remove server');
     }
-  }
-
-  /** Key/value editor for secrets; values are never prefilled. */
-  function secretEditor(label, existingKeys) {
-    const rows = [];
-    const host2 = h('div', { class: 'kv-rows' });
-    const replace = h('input', { type: 'checkbox', checked: existingKeys.length === 0 });
-    const addRow = (key = '') => {
-      const k = h('input', { class: 'input mono', value: key, placeholder: 'KEY', 'aria-label': `${label} name` });
-      const v = h('input', { class: 'input mono', type: 'password', placeholder: key ? 'new value (required)' : 'value', autocomplete: 'off', 'aria-label': `${label} value` });
-      const row = { k, v, el: null };
-      row.el = h('div', { class: 'kv-row' }, k, v, iconButton('x', 'Remove', () => { rows.splice(rows.indexOf(row), 1); row.el.remove(); }));
-      rows.push(row);
-      host2.append(row.el);
-    };
-    const section = h('div', { class: 'stack-sm' });
-    const renderSection = () => {
-      setChildren(section,
-        existingKeys.length ? h('div', { class: 'row-wrap small' }, h('span', { class: 'muted' }, 'Stored:'), existingKeys.map((k) => badge(`${k} ••••`))) : null,
-        existingKeys.length ? h('label', { class: 'check small' }, replace, h('span', null, `Replace all ${label.toLowerCase()} (values are write-only; enter every key again)`)) : null,
-        replace.checked ? [host2, h('div', null, h('button', { type: 'button', class: 'btn btn-sm', onClick: () => addRow() }, `Add ${label.toLowerCase().replace(/s$/, '')}`))] : null);
-    };
-    replace.addEventListener('change', () => {
-      if (replace.checked && rows.length === 0) existingKeys.forEach((key) => addRow(key));
-      renderSection();
-    });
-    renderSection();
-    return {
-      el: section,
-      /** undefined = keep stored secrets; object = replace. Throws on invalid input. */
-      value() {
-        if (!replace.checked) return undefined;
-        const out = {};
-        for (const row of rows) {
-          const key = row.k.value.trim();
-          if (!key && !row.v.value) continue;
-          if (!KEY_RE.test(key)) throw new Error(`Invalid ${label.toLowerCase()} name “${key}”.`);
-          if (!row.v.value) throw new Error(`Enter a value for ${key}.`);
-          out[key] = row.v.value;
-        }
-        return out;
-      },
-    };
-  }
-
-  function edit(server) {
-    const name = h('input', { class: 'input', value: server ? server.name : '', maxlength: 64, autofocus: true, placeholder: 'quartio' });
-    const transport = h('select', { class: 'select' }, h('option', { value: 'http' }, 'HTTP (Streamable)'), h('option', { value: 'stdio' }, 'stdio (command)'));
-    transport.value = server ? server.transport : 'http';
-    const url = h('input', { class: 'input mono', value: server ? server.url || '' : '', placeholder: 'https://mcp.example.com/mcp' });
-    const command = h('input', { class: 'input mono', value: server ? server.command || '' : '', placeholder: 'npx' });
-    const args = h('textarea', { class: 'textarea mono', rows: 3, placeholder: 'one argument per line', value: server && server.args ? server.args.join('\n') : '' });
-    const scope = h('select', { class: 'select', disabled: Boolean(server) }, h('option', { value: 'sandbox' }, `This sandbox (${sandbox.name})`), instanceAdmin ? h('option', { value: 'instance' }, 'Whole instance') : null);
-    scope.value = server ? server.scope : (route.query.get('scope') === 'instance' && instanceAdmin ? 'instance' : 'sandbox');
-    const env = secretEditor('Environment variables', server ? server.env_keys || [] : []);
-    const headers = secretEditor('Headers', server ? server.header_keys || [] : []);
-    const httpFields = h('div', { class: 'stack' }, field('URL', url), h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Headers (secret)'), headers.el,
-      h('span', { class: 'field-hint' }, 'Agent sessions receive HTTP secrets only as an Authorization: Bearer token; other headers are used by Test but not yet passed to the harnesses.')));
-    const stdioFields = h('div', { class: 'stack' }, field('Command', command), field('Arguments', args), h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Environment (secret)'), env.el));
-    const sync = () => { httpFields.hidden = transport.value !== 'http'; stdioFields.hidden = transport.value !== 'stdio'; };
-    transport.addEventListener('change', sync);
-    sync();
-    openModal({
-      title: server ? `Edit MCP server · ${server.name}` : 'Add MCP server',
-      wide: true,
-      body: h('div', { class: 'stack' },
-        h('div', { class: 'form-grid' }, field('Name', name), field('Transport', transport), field('Scope', scope)),
-        httpFields, stdioFields,
-        h('p', { class: 'muted xs' }, 'Secrets are write-only: stored encrypted and never shown again. Leaving “Replace” unticked keeps the stored values. A sandbox server overrides an instance server of the same name.')),
-      actions: [
-        { label: 'Cancel', value: false },
-        { label: server ? 'Save' : 'Add', kind: 'primary', run: async () => {
-          const trimmed = name.value.trim();
-          if (!NAME_RE.test(trimmed)) return invalid(name, 'Use 1–64 letters, digits, “-” or “_”.');
-          if (trimmed.toLowerCase() === 'yulius') return invalid(name, `“yulius” is reserved for the built-in ${BRAND.name} tool server.`);
-          const body = {
-            name: name.value.trim(),
-            transport: transport.value,
-            command: transport.value === 'stdio' ? command.value.trim() || null : null,
-            args: transport.value === 'stdio' ? args.value.split('\n').map((s) => s.trim()).filter(Boolean) : [],
-            url: transport.value === 'http' ? url.value.trim() || null : null,
-            enabled: server ? server.enabled : true,
-          };
-          if (!server) body.scope = scope.value;
-          try {
-            const envValue = transport.value === 'stdio' ? env.value() : undefined;
-            if (envValue !== undefined) body.env = envValue;
-            const headerValue = transport.value === 'http' ? headers.value() : undefined;
-            if (headerValue !== undefined) body.headers = headerValue;
-          } catch (error) {
-            toast(error.message, { kind: 'warn' });
-            return false;
-          }
-          if (server) await ctx.api.put(`/api/mcp/${enc(server.id)}`, body);
-          else await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/mcp`, body);
-          toast(server ? 'Server saved.' : 'Server added.', { kind: 'ok' });
-          reload();
-          return true;
-        } },
-      ],
-    });
   }
 
   return { el: frame.el, key: `mcp:${sandbox.id}:${route.query.get('scope') || ''}` };

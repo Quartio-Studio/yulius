@@ -24,6 +24,7 @@ import { mountTaskInfoView } from './pages/taskinfo.js';
 import { mountSkillEditor } from './pages/skilledit.js';
 import { mountSkillCreator } from './pages/skillnew.js';
 import { mountWorkflowEditor } from './pages/workflowedit.js';
+import { mountMcpEditor } from './pages/mcpedit.js';
 import { mountWorkflowsPage } from './pages/workflows.js';
 import { mountSkillsPage } from './pages/skills.js';
 import { mountAutomationsPage } from './pages/automations.js';
@@ -491,6 +492,9 @@ function createApp(root, transport) {
         break;
       case 'workflow':
         setCenter(`workflow:${sandbox.id}:${route.workflow}`, () => mountWorkflowEditor(ctx, sandbox, route.workflow));
+        break;
+      case 'mcpServer':
+        setCenter(`mcp:${sandbox.id}:${route.server}`, () => mountMcpEditor(ctx, sandbox, route.server));
         break;
       case 'taskInfo': {
         await ensureTasks(sandbox);

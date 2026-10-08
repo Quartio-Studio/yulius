@@ -96,6 +96,7 @@ export function matchRoute(path, query = new URLSearchParams()) {
     if (parts.length === 4 && third === 'tasks' && /^\d+$/.test(fourth)) return { ...base, name: 'taskInfo', slug: second, page: 'tasks', number: Number(fourth) };
     if (parts.length === 4 && third === 'skills') return { ...base, name: 'skill', slug: second, page: 'skills', skill: fourth };
     if (parts.length === 4 && third === 'workflows') return { ...base, name: 'workflow', slug: second, page: 'workflows', workflow: fourth };
+    if (parts.length === 4 && third === 'mcp') return { ...base, name: 'mcpServer', slug: second, page: 'mcp', server: fourth };
     if (parts.length === 5 && third === 'git' && fourth === 't' && /^\d+$/.test(parts[4])) return { ...base, name: 'gitTask', slug: second, page: 'git', number: Number(parts[4]) };
     if (parts.length === 3 && third === 'browser') return { ...base, name: 'composer', slug: second, browserTab: query.get('tab') || '' };
     if (parts.length === 3 && SANDBOX_PAGES.has(third)) return { ...base, name: 'page', slug: second, page: third };
