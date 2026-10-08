@@ -222,13 +222,13 @@ export function mountTasksPage(ctx, sandbox) {
             h('span', { class: 'tl-title' }, task.title || `Task #${task.number}`),
             task.unread_messages ? h('span', { class: 'task-unread', title: `${task.unread_messages} unread messages` }, String(task.unread_messages)) : null,
             task.origin && task.origin !== 'ui' ? h('span', { class: 'tl-origin' }, ORIGINS[task.origin] || task.origin) : null),
+          // One sentence only: the number and branch stay in the tooltip and in search.
           h('span', { class: 'tl-sub' },
             h('span', { class: 'tl-what' }, detailLine(task, info)),
-            h('span', { class: 'tl-id' }, ` · #${task.number}`),
-            task.branch ? h('span', { class: 'tl-branch' }, ` · ${task.branch}`) : null,
             h('span', { class: 'tl-sub-time' }, ` · ${relShort(task.updated_at)}`)))),
       prChip(pulls.get(task.id)),
-      login ? h('span', { class: 'avatar tl-avatar', title: login, 'aria-label': `Started by ${login}` }, initials(login)) : h('span', { class: 'tl-avatar' }),
+      // Only someone else's task shows its author; your own would repeat your initials on every row.
+      login && login !== myLogin() ? h('span', { class: 'avatar tl-avatar', title: `Started by ${login}`, 'aria-label': `Started by ${login}` }, initials(login)) : h('span', { class: 'tl-avatar' }),
       h('span', { class: 'tl-time', title: `Updated ${dateTime(task.updated_at)} · created ${dateTime(task.created_at)}` }, relShort(task.updated_at)),
       h('span', { class: 'tl-actions' },
         actions.archive ? iconButton('archive', 'Archive', () => archiveTask(ctx, task), { class: 'tl-action' }) : null,
