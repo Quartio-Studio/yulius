@@ -96,8 +96,8 @@
   --agent-ink: var(--violet-ink);
   --harness-claude: var(--peach-300);
   /* data */
-  --series-1: #3987e5;
-  --series-1-hover: #5b9eef;
+  --series-1: var(--brand-500);       /* charts, meters and progress follow the brand */
+  --series-1-hover: var(--brand-400);
   --grid: #262c36;
   --axis: #3a4250;
   /* overlays and depth */
