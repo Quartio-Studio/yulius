@@ -384,16 +384,55 @@ def brand_name_errors(js, name, label="web script"):
     return errors
 
 
+STATIC_IMPORT = re.compile(r"""(?:^|[;\n])\s*(?:import|export)\s+(?:[^'"();]*?\s+from\s+)?(['"])([^'"]+)\1""")
+MODULE_PRELOAD = re.compile(r'[ \t]*<link rel="modulepreload" href="([^"]+)">\n')
+APP_SCRIPT = '<script type="module" src="/assets/app.js"></script>'
+
+
+def startup_modules(web_assets, entry="app.js"):
+    """Modules the app loads before it can paint: app.js's static imports, followed transitively.
+
+    Dynamic import() (the mock, the terminal core, the editor) is left out: those load later.
+    """
+    web_assets = web_assets.resolve()
+    order, seen, queue = [], set(), [(web_assets / entry).resolve()]
+    while queue:
+        path = queue.pop(0)
+        if path in seen or not path.exists():
+            continue
+        seen.add(path)
+        order.append(path)
+        for _, spec in STATIC_IMPORT.findall(_code(path.read_text())):
+            if spec.startswith("."):
+                queue.append((path.parent / spec).resolve())
+    return ["/assets/" + str(path.relative_to(web_assets)) for path in order[1:]]
+
+
+def preload_lines(web_assets):
+    return "".join(f'  <link rel="modulepreload" href="{href}">\n' for href in startup_modules(web_assets))
+
+
+def preload_errors(index_html, web_assets, label=INDEX):
+    """index.html preloads exactly the start-up modules, so the browser fetches them in one wave."""
+    if MODULE_PRELOAD.findall(index_html) != startup_modules(web_assets):
+        return [f"{label}: modulepreload links do not match app.js's static imports; run scripts/check_repository.py --sync-brand"]
+    return []
+
+
 def sync_brand():
-    """Rewrite index.html's brand parts from brand.js and tokens.css."""
+    """Rewrite index.html's generated parts: brand (brand.js, tokens.css) and module preloads."""
     path = ROOT / INDEX
     index_html = path.read_text()
     for key, expected in brand_head((ROOT / BRAND).read_text(), (ROOT / TOKENS).read_text()).items():
         index_html, count = re.subn(BRAND_PATTERNS[key], lambda _: expected, index_html, count=1)
         if not count:
             raise ValueError(f"{INDEX}: no {key} element to update")
+    index_html = MODULE_PRELOAD.sub("", index_html)
+    if APP_SCRIPT not in index_html:
+        raise ValueError(f"{INDEX}: no app.js module script to preload for")
+    index_html = index_html.replace(f"  {APP_SCRIPT}", preload_lines((ROOT / STYLESHEET).parent) + f"  {APP_SCRIPT}", 1)
     path.write_text(index_html)
-    print(f"{INDEX} now matches brand.js and tokens.css")
+    print(f"{INDEX} now matches brand.js, tokens.css and app.js's imports")
 
 
 IMPORT_STATEMENT = re.compile(r"import\s*\{([^}]*)\}\s*from\s*'([^']+)'")
@@ -455,6 +494,7 @@ def ui_errors():
     errors.extend(contrast_errors((ROOT / TOKENS).read_text()))
     errors.extend(brand_errors((ROOT / INDEX).read_text(), (ROOT / BRAND).read_text(), (ROOT / TOKENS).read_text()))
     errors.extend(module_errors((ROOT / STYLESHEET).parent))
+    errors.extend(preload_errors((ROOT / INDEX).read_text(), (ROOT / STYLESHEET).parent))
     node = shutil.which("node")
     if node:  # syntax of every web script, when Node is installed (it is optional here)
         for path in sorted((ROOT / STYLESHEET).parent.glob("**/*.js")):

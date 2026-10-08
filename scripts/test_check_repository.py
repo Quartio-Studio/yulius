@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
-from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, module_errors, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
 
 
 def package(name, layer, dependencies=()):
@@ -168,6 +168,21 @@ class ModuleTests(unittest.TestCase):
             self.assertTrue(any("missing" in e and "does not export" in e for e in errors))
             self.assertTrue(any("other" in e and "never uses" in e for e in errors))
         self.assertEqual(module_errors((ROOT / STYLESHEET).parent), [])
+
+    def test_preloads_follow_static_imports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pages").mkdir()
+            (root / "app.js").write_text("import { a } from './a.js';\nimport './pages/p.js';\nconst lazy = () => import('./lazy.js');\n")
+            (root / "a.js").write_text("// pages/*.js are pages\nexport { b } from './b.js';\n// import { x } from './commented.js';\nexport const a = 1; /* note */\n")
+            (root / "b.js").write_text("export const b = 2;\n")
+            (root / "pages" / "p.js").write_text("import { a } from '../a.js';\n")
+            (root / "lazy.js").write_text("export const z = 0;\n")
+            self.assertEqual(startup_modules(root), ["/assets/a.js", "/assets/pages/p.js", "/assets/b.js"])
+            good = '<link rel="modulepreload" href="/assets/a.js">\n<link rel="modulepreload" href="/assets/pages/p.js">\n<link rel="modulepreload" href="/assets/b.js">\n'
+            self.assertEqual(preload_errors(good, root), [])
+            self.assertTrue(preload_errors(good.replace("/assets/b.js", "/assets/lazy.js"), root))
+        self.assertEqual(preload_errors((ROOT / INDEX).read_text(), (ROOT / STYLESHEET).parent), [])
 
 
 if __name__ == "__main__":

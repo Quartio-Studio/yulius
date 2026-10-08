@@ -85,7 +85,9 @@ and component in the current theme and computes contrast as you change things.
    palette on purpose (agents' output colours mean something).
 3. **Sync and check** — run `python3 scripts/check_repository.py --sync-brand`: it rewrites the
    brand parts of `index.html` (title, theme colour, favicon, no-script text — what shows before the
-   app's scripts run) from `brand.js` and the dark tokens. Then open `/design` in both themes and run
+   app's scripts run) from `brand.js` and the dark tokens, and its `modulepreload` links from
+   `app.js`'s static imports (so the browser fetches every start-up module in one wave; run it after
+   adding or removing an import too). Then open `/design` in both themes and run
    `python3 scripts/check_repository.py --ui` (no Rust needed; `scripts/dev check` runs it too): it fails if `index.html` and the brand disagree, or if any text or control
    edge in any theme drops below WCAG contrast (text 4.5:1; state marks, focus, control edges 3:1),
    listing what to fix.
