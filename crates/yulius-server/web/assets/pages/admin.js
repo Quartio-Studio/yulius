@@ -187,7 +187,7 @@ export function mountAccountsPage(ctx, route) {
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.provider || '').localeCompare(b.provider || '') || (a.priority ?? 0) - (b.priority ?? 0));
     if (accounts.length === 0) return h('div', { class: 'card placeholder' }, 'No accounts yet. Add a Claude subscription; you complete Claude’s own sign-in.');
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
-      const priority = h('input', { class: 'input', type: 'number', min: 0, max: 10000, value: String(account.priority ?? 0), style: { width: '80px', height: '24px' }, 'aria-label': `Priority of ${account.label}` });
+      const priority = h('input', { class: 'input', type: 'number', min: 0, max: 10000, value: String(account.priority ?? 0), style: { width: '80px', height: 'var(--control-sm)' }, 'aria-label': `Priority of ${account.label}` });
       priority.addEventListener('change', async () => {
         const value = Number(priority.value);
         if (!Number.isInteger(value) || value < 0 || value > 10000) { priority.value = String(account.priority ?? 0); toast('Priority is a whole number from 0 to 10000.', { kind: 'warn' }); return; }

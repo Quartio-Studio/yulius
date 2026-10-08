@@ -70,6 +70,14 @@ tables, menus, popovers, toasts, modals, tiles), `--radius-xl` 16 (the composer,
 `--radius-full` (pills: badges, chips, counters, switches, progress bars). Circles use `50%`. No
 other border-radius values.
 
+## Control heights (design system, step 3)
+
+Every button, input, select, picker and clickable row is `--control-sm` 24 (small buttons, inline
+row actions and selects), `--control-md` 28 (default: buttons, inputs, selects, segments, menu items,
+list rows), `--control-lg` 32 (top bar, composer pickers and Start, navigation, rail, status rows) or
+`--control-xl` 40 (New task, the user button, sign-in, and controls on phones). Layout bars (tab row,
+panel and step-strip headers, editor chrome) keep their own heights.
+
 ## Routes
 
 | Path | View |
