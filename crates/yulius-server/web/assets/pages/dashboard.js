@@ -88,7 +88,7 @@ export function renderSummary(data) {
       stat('Median duration', duration(durationStats.median ?? null), durationStats.p90 !== undefined ? `p90 ${duration(durationStats.p90)}` : null),
       stat('Active agent time', duration(durationStats.total_active ?? null), durationStats.total_wall !== undefined ? `wall ${duration(durationStats.total_wall)}` : null),
       stat('Tokens', compact(totalTokens), `in ${compact(tokens.input)} · out ${compact(tokens.output)}${Number.isFinite(tokens.cache_read) ? ` · cache read ${compact(tokens.cache_read)}` : ''}${unknownRuns ? ` · ${unknownRuns} run${unknownRuns === 1 ? '' : 's'} without usage` : ''}`),
-      stat('Switches', int(switches.total), 'between Claude accounts'),
+      stat('Switches', int(switches.total), 'between AI accounts'),
       stat('Feedback correct', fbTotal ? `${Math.round(((feedback.correct || 0) / fbTotal) * 100)}%` : '—', fbTotal ? `${feedback.correct || 0} of ${fbTotal} rated` : 'no feedback yet')),
     card('Tasks per day', columnChart(perDay.map((d) => ({ label: d.date, value: d.count })), { unit: 'tasks' })),
     h('div', { class: 'grid-2' },

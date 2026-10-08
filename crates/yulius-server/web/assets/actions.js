@@ -344,15 +344,16 @@ export async function runEnvironment(ctx, sandbox, envName) {
   const env = environmentOf(sandbox, envName);
   const command = env && env.command;
   const ok = await confirmDialog({
-    title: command ? `Run ${envName}` : `Confirm ${envName}`,
+    // One verb per action, from the button to the dialog to the toast: Deploy, Mark verified.
+    title: command ? `Deploy to ${envName}?` : `Mark ${envName} verified?`,
     message: h('div', { class: 'stack-sm' },
       command
-        ? h('p', null, `This runs the “${envName}” command for ${sandbox.name} on the server now (as /bin/sh -c in the sandbox clone, outside sandbox containment).`)
-        : h('p', null, `“${envName}” has no command. Confirming records that you verified it.`),
+        ? h('p', null, `This runs ${envName}’s deploy command for ${sandbox.name} on the server now. It runs on the server itself, outside the sandbox’s isolation.`)
+        : h('p', null, `${envName} has no deploy command. This records that you checked it works.`),
       command ? h('pre', { class: 'code-view' }, command) : null,
-      env && env.verify === 'manual' && command ? h('p', { class: 'muted small' }, 'This environment is verified manually: confirm it after checking the result.') : null),
-    checkbox: command ? `I want to run ${envName} now.` : `I verified ${envName}.`,
-    confirmLabel: command ? `Run ${envName}` : `Confirm ${envName}`,
+      env && env.verify === 'manual' && command ? h('p', { class: 'muted small' }, `After it finishes, check ${envName} and mark it verified.`) : null),
+    checkbox: command ? `I want to deploy to ${envName} now.` : `I checked that ${envName} works.`,
+    confirmLabel: command ? `Deploy to ${envName}` : 'Mark verified',
     danger: Boolean(command),
   });
   if (!ok) return null;
@@ -370,15 +371,15 @@ export async function runEnvironment(ctx, sandbox, envName) {
 /** Confirm a manual verification (`confirm_env:<name>`): POST …/environments/{env}/confirm. */
 export async function confirmEnvironment(ctx, sandbox, envName) {
   const ok = await confirmDialog({
-    title: `Confirm ${envName}`,
-    message: `Record that you verified “${envName}” for ${sandbox.name}. Tasks waiting for this environment advance.`,
-    checkbox: `I verified ${envName}.`,
-    confirmLabel: `Confirm ${envName}`,
+    title: `Mark ${envName} verified?`,
+    message: `This records that you checked ${envName} works for ${sandbox.name}. The tasks waiting there move on.`,
+    checkbox: `I checked that ${envName} works.`,
+    confirmLabel: 'Mark verified',
   });
   if (!ok) return null;
   try {
     const run = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/delivery/environments/${enc(envName)}/confirm`, { confirm: true });
-    toast(`${envName} confirmed`, { kind: 'ok' });
+    toast(`${envName} marked verified`, { kind: 'ok' });
     return run;
   } catch (error) {
     errorToast(error, `Confirming ${envName} refused`);

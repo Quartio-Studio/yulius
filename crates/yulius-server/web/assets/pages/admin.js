@@ -171,7 +171,7 @@ export function mountAccountsPage(ctx, route) {
   if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'AI accounts');
   const frame = pageFrame({ title: 'AI accounts', sub: `Claude subscriptions the agents run on; ${BRAND.name} rotates between them`, actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => add() }, 'Connect account')] });
   const host = h('div');
-  frame.body.append(host, h('p', { class: 'muted xs' }, 'Rotation uses enabled Claude accounts in priority order (lower first) and switches to the next one before an account is exhausted, resuming the same session.'));
+  frame.body.append(host, h('p', { class: 'muted xs' }, 'Rotation uses enabled AI accounts in priority order (lower first) and switches to the next one before an account is exhausted, resuming the same session.'));
 
   const patch = async (account, body) => {
     try {
@@ -292,7 +292,7 @@ export function mountGithubPage(ctx) {
         h('div', { class: 'row' }, badge('connected', 'ok'), h('strong', null, config.owner_login || '?')),
         h('dl', { class: 'kv' }, h('dt', null, 'GitHub App'), h('dd', null, config.app_slug || '—'), h('dt', null, 'Owner'), h('dd', null, config.owner_login || '—')),
         config.install_url ? h('div', null, h('a', { class: 'btn btn-primary', href: config.install_url, target: '_blank', rel: 'noopener noreferrer' }, 'Install / configure repositories')) : null,
-        h('p', { class: 'muted small' }, 'Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and connect provider accounts.'));
+        h('p', { class: 'muted small' }, 'Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and connect AI accounts.'));
     }
     return manifestForm(ctx);
   });
@@ -306,7 +306,7 @@ function instanceSummary(ctx) {
   return h('div', { class: 'card card-pad stack narrow' },
     h('div', { class: 'row' }, connected ? badge('connected', 'ok') : badge('not connected', 'warn'), instance.owner_login ? h('strong', null, instance.owner_login) : null, instance.owner_kind ? badge(instance.owner_kind) : null),
     connected
-      ? h('p', { class: 'text-2' }, 'This instance has a GitHub App. Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and connect provider accounts.')
+      ? h('p', { class: 'text-2' }, 'This instance has a GitHub App. Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and connect AI accounts.')
       : h('p', { class: 'text-2' }, 'This instance has no GitHub App yet, so sandboxes cannot be imported or created.'),
     h('p', { class: 'muted small' }, 'GitHub App setup (the manifest flow) is not available in this server version: GET /api/admin/github answered 404.'));
 }

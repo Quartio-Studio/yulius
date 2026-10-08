@@ -396,7 +396,7 @@ async function openProfileEditor(ctx, sandbox) {
   const production = h('input', { class: 'input mono', value: profile.production_branch || '' });
   const merge = h('select', { class: 'select' }, ['squash', 'merge', 'rebase'].map((m) => h('option', { value: m }, m)));
   merge.value = profile.merge || 'squash';
-  const promoteSel = h('select', { class: 'select' }, ['merge_commit', 'fast_forward'].map((m) => h('option', { value: m }, m)));
+  const promoteSel = h('select', { class: 'select' }, [['merge_commit', 'Through a release pull request'], ['fast_forward', 'Move production forward to match']].map(([m, label]) => h('option', { value: m }, label)));
   promoteSel.value = profile.promote || 'merge_commit';
   const autoPromote = h('input', { type: 'checkbox', checked: Boolean(profile.auto_promote) });
   const requireChecks = h('input', { type: 'checkbox', checked: profile.require_checks !== false });
@@ -434,8 +434,8 @@ async function openProfileEditor(ctx, sandbox) {
     title: `Delivery profile · ${sandbox.name}`,
     wide: true,
     body: h('div', { class: 'stack' },
-      h('div', { class: 'form-grid' }, field('Preset', preset), field('Integration branch', integration), field('Production branch', production), field('Merge method', merge), field('Promotion', promoteSel)),
-      h('label', { class: 'check' }, autoPromote, h('span', null, `Promote automatically after a merge through ${BRAND.name} (continuous, e.g. Studio)`)),
+      h('div', { class: 'form-grid' }, field('Preset', preset), field('Integration branch', integration), field('Production branch', production), field('Merge method', merge), field('Release to production', promoteSel)),
+      h('label', { class: 'check' }, autoPromote, h('span', null, `Release automatically after each merge through ${BRAND.name} (continuous, like Studio)`)),
       h('label', { class: 'check' }, requireChecks, h('span', null, 'Merges wait for green checks')),
       h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Environments'), envHost),
       h('p', { class: 'muted xs' }, 'Environment commands are shell text run on the server (/bin/sh -c in the sandbox clone) when someone confirms a run. Every reader of this sandbox can see them: keep secrets out. Changing any setting of a named preset makes the profile “custom”.')),
