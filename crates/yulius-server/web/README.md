@@ -78,6 +78,11 @@ list rows), `--control-lg` 32 (top bar, composer pickers and Start, navigation, 
 `--control-xl` 40 (New task, the user button, sign-in, and controls on phones). Layout bars (tab row,
 panel and step-strip headers, editor chrome) keep their own heights.
 
+## Spacing (design system, step 4)
+
+Padding, margin and gap use the 4 px scale only: 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48 (and 0).
+The single exception is a 1 px margin that nudges an icon optically.
+
 ## Routes
 
 | Path | View |
