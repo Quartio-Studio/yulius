@@ -304,10 +304,11 @@ p { margin: 0; }
 /* Task list rows read like a chat list (WhatsApp, cmux): a state tile, a 16 px title with the age
    on the right, then what is happening or what to do, with the unread count under the age. */
 .task-group { display: flex; flex-direction: column; gap: 2px; padding-top: 12px; }
+/* A group's head is a band of its own (its background and edge set it apart from the tasks below). */
 .task-group-head {
   position: sticky; top: 0; z-index: var(--z-raised);
-  display: flex; align-items: center; gap: 12px; height: var(--control-lg); padding: 0 12px; border: 0; background: var(--surface);
-  color: var(--text-2); font: inherit; font-size: var(--fs); line-height: var(--lh); font-weight: 600; text-align: left;
+  display: flex; align-items: center; gap: 12px; height: var(--control-md); padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-2); color: var(--text-2); font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; text-align: left;
 }
 .task-group-head.group-needs .nav-slot, .task-group-head.group-needs .task-group-count { color: var(--warn-fg); }
 button.task-group-head { cursor: pointer; border-radius: var(--radius); }
@@ -879,7 +880,7 @@ summary { cursor: pointer; }
 .tl { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: clip; }
 .tl-group + .tl-group { border-top: 1px solid var(--border); }
 .tl-group-title { margin: 0; font: inherit; position: sticky; top: 0; z-index: var(--z-sticky); }
-.tl-group-head { display: flex; align-items: center; gap: 8px; width: 100%; height: var(--control-lg); padding: 0 16px; border: 0; border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font: inherit; font-size: var(--fs); line-height: var(--lh); font-weight: 600; cursor: pointer; text-align: left; }
+.tl-group-head { display: flex; align-items: center; gap: 8px; width: 100%; height: var(--control-lg); padding: 0 16px; border: 0; border-bottom: 1px solid var(--border); background: var(--surface-3); color: var(--text-2); font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; cursor: pointer; text-align: left; }
 .tl-group-head:hover { color: var(--text); }
 .tl-group-head[aria-expanded="false"] { border-bottom: 0; }
 .tl-group-count { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
