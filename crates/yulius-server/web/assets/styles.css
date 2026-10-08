@@ -505,9 +505,11 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .stepstrip-toggle .icon { transition: transform var(--duration-fast) var(--ease); }
 .stepstrip.open .stepstrip-toggle .icon { transform: rotate(90deg); }
 .step-label { display: flex; gap: 6px; min-width: 0; align-items: baseline; }
-.step-count { color: var(--text); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.step-current { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.step-task { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30%; }
+.step-count { flex: none; color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The task title leads and keeps its room; the step name truncates first. */
+.step-current { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-task { flex: 0 1 auto; min-width: 0; color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step-task-num { margin-right: 6px; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
 .step-progress { width: 120px; height: 4px; border-radius: var(--radius-full); background: var(--accent-track); overflow: hidden; flex: none; }
 .step-progress-fill { height: 100%; background: var(--series-1); border-radius: var(--radius-full); transition: width var(--duration-slow) var(--ease); }
 .strip-status { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); white-space: nowrap; }
@@ -857,7 +859,7 @@ a.settings-tile:hover { background: var(--surface-3); border-color: var(--border
 
   .quickbar { display: flex; }
   .step-progress { width: 60px; }
-  .step-task { display: none; }
+  .step-current { display: none; }
   .composer { padding-top: 16px; }
   .composer-kbd { display: none; }
   .page-inner { padding: 12px 12px 32px; }
