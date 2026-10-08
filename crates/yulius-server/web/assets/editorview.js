@@ -133,7 +133,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   let active = null;
   const expanded = new Map(); // dir path → entries | null (loading)
 
-  const folder = h('select', { class: 'select', style: { height: '24px', width: 'auto', fontSize: '12px' }, 'aria-label': 'Folder' });
+  const folder = h('select', { class: 'select', style: { height: '24px', width: 'auto', fontSize: 'var(--fs-sm)' }, 'aria-label': 'Folder' });
   function folderOptions() {
     const task = getTask();
     const current = folder.value;

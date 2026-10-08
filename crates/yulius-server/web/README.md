@@ -43,6 +43,25 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/vendor/` | Vendored xterm.js; see [vendor/README.md](assets/vendor/README.md). |
 | `assets/logos/` | Logos of well-known services shown on the MCP page; sources in [logos/README.md](assets/logos/README.md). |
 
+## Typography (design system, step 1)
+
+One type scale lives on `:root` in `assets/styles.css`; components use only these tokens:
+
+| Token | Size / line height | Use |
+| --- | --- | --- |
+| `--fs-xs` / `--lh-xs` | 11 / 16 | captions: badges, counters, kbd, timestamps, table headers |
+| `--fs-sm` / `--lh-sm` | 12 / 16 | secondary lines, hints, meta |
+| `--fs` / `--lh` | 13 / 20 | body, the UI default |
+| `--fs-md` / `--lh-md` | 14 / 22 | prose and item titles (the prompt, server names) |
+| `--fs-lg` / `--lh-lg` | 16 / 24 | section, panel and modal titles |
+| `--fs-xl` / `--lh-xl` | 20 / 28 | page titles, wordmark, tile values |
+| `--fs-2xl` / `--lh-2xl` | 24 / 32 | display numbers |
+
+Weights are 400, 500 and 600 only (`strong` is 600). Families are `--font` (system UI) and
+`--font-mono`; xterm and Monaco keep their own 12–13 px mono sizes. A rule that sets a size also
+sets the matching line height. Never write a font-size, line-height or font-family literal
+outside `:root`.
+
 ## Routes
 
 | Path | View |

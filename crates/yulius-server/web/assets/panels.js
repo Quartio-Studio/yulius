@@ -271,7 +271,7 @@ function createShellView(ctx, sandbox, getTask) {
   function folderSelect() {
     const task = getTask();
     if (!task && where === 'task') where = '';
-    const select = h('select', { class: 'select', style: { height: '24px', width: 'auto', fontSize: '12px' }, 'aria-label': 'Shell folder' },
+    const select = h('select', { class: 'select', style: { height: '24px', width: 'auto', fontSize: 'var(--fs-sm)' }, 'aria-label': 'Shell folder' },
       h('option', { value: '' }, 'Sandbox repository'),
       task ? h('option', { value: 'task' }, `Task #${task.number} worktree`) : null);
     select.value = where;
