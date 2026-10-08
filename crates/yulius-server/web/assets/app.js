@@ -194,6 +194,7 @@ function createApp(root, transport) {
     const backdrop = h('div', { class: 'drawer-backdrop', onClick: () => document.body.classList.remove('drawer-open') });
     appEl.append(tabRow.el, sidebar.el, center, panels.panel, panels.rail);
     setChildren(root, appEl, backdrop);
+    syncDrawer();
     ctx.openNewTask = () => openNewTask();
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
     ctx.railVisible = () => panels.railVisible;
@@ -468,6 +469,23 @@ function createApp(root, transport) {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') document.body.classList.remove('drawer-open');
   });
+
+  // Phone drawer (WCAG 2.4.3, 4.1.2): while closed the off-screen sidebar is inert (not tabbable);
+  // opening it moves focus in, closing it from inside returns focus to the menu button.
+  function syncDrawer() {
+    const phone = window.matchMedia('(max-width: 767px)');
+    const open = document.body.classList.contains('drawer-open');
+    const sidebarEl = document.getElementById('sidebar');
+    const menuButton = document.querySelector('.hamburger');
+    if (menuButton) menuButton.setAttribute('aria-expanded', String(open));
+    if (!sidebarEl) return;
+    const wasInside = sidebarEl.contains(document.activeElement);
+    sidebarEl.inert = phone.matches && !open;
+    if (phone.matches && open && !wasInside) sidebarEl.querySelector('a[href], button:not([disabled])')?.focus();
+    if (phone.matches && !open && wasInside && menuButton) menuButton.focus();
+  }
+  new MutationObserver(syncDrawer).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  window.matchMedia('(max-width: 767px)').addEventListener('change', syncDrawer);
 
   // F6 / Shift+F6 move between regions; captured before the terminal and the browser view, which
   // keep every other key (WCAG 2.1.2: no keyboard trap).

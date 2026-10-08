@@ -228,6 +228,8 @@ export function errorToast(error, prefix) {
  * Returns {dialog, body, close(result), result: Promise}.
  */
 export function openModal({ title, body, actions = [], wide = false, full = false, onClose, dismissible = true, className }) {
+  // Focus returns where it was when the dialog opened (WCAG 2.4.3), or to the main heading.
+  const returnTo = document.activeElement;
   let resolve;
   const result = new Promise((r) => { resolve = r; });
   const bodyEl = h('div', { class: 'modal-body' }, body);
@@ -243,6 +245,8 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
     closed = true;
     if (dialog.open) dialog.close();
     dialog.remove();
+    if (returnTo instanceof HTMLElement && returnTo.isConnected && returnTo !== document.body) returnTo.focus({ preventScroll: true });
+    else focusMainHeading();
     if (onClose) onClose(value);
     resolve(value);
   }
@@ -345,7 +349,12 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       : h('span', { class: 'menu-label' }, item.label);
     const check = choice ? h('span', { class: 'menu-check' }, item.checked ? icon('check', { size: 14 }) : null) : null;
     const select = () => {
-      if (!item.keepOpen) { closeMenu(); if (item.onSelect) item.onSelect(); return; }
+      if (!item.keepOpen) {
+        closeMenu();
+        if (anchor instanceof HTMLElement && anchor.isConnected) anchor.focus({ preventScroll: true });
+        if (item.onSelect) item.onSelect();
+        return;
+      }
       if (choice) {
         item.checked = !item.checked;
         el.setAttribute('aria-checked', String(item.checked));
@@ -413,8 +422,44 @@ export function toggle({ checked, onChange, label, disabled }) {
   return h('span', { class: 'switch' }, input, h('span', { class: 'switch-track', 'aria-hidden': 'true' }));
 }
 
+/** Focus the main view's heading (made focusable for this) when focus would otherwise be lost. */
+export function focusMainHeading() {
+  const heading = document.querySelector('#main h1');
+  if (!heading) return;
+  heading.tabIndex = -1;
+  heading.focus({ preventScroll: true });
+}
+
+/**
+ * Popover focus (bell, Status): focus moves into the panel when it opens, the panel closes when
+ * focus leaves it for somewhere other than its trigger, and Esc returns focus to the trigger.
+ * Returns a cleanup function.
+ */
+export function popoverFocus(panel, trigger, close) {
+  panel.tabIndex = -1;
+  const first = panel.querySelector(FOCUSABLE);
+  (first || panel).focus({ preventScroll: true });
+  const onOut = (event) => {
+    const next = event.relatedTarget;
+    if (next && !panel.contains(next) && !trigger.contains(next)) close();
+  };
+  panel.addEventListener('focusout', onOut);
+  return () => panel.removeEventListener('focusout', onOut);
+}
+
+/** Rebuild `container` with `rebuild()` and put focus back on the same control, if it had it. */
+export function keepFocus(container, rebuild) {
+  const before = [...container.querySelectorAll(FOCUSABLE)];
+  const index = before.indexOf(document.activeElement);
+  rebuild();
+  if (index < 0) return;
+  const after = [...container.querySelectorAll(FOCUSABLE)];
+  const target = after[Math.min(index, after.length - 1)] || container;
+  target.focus({ preventScroll: true });
+}
+
 const REGIONS = ['.tabrow', '.sidebar', '#main', '.panel:not([hidden])', '.rail:not([hidden])'];
-const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE = 'a[href], summary, button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
  * Moves keyboard focus to the next (or previous) page region — tab row, sidebar, main, tool

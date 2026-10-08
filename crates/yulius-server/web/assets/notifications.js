@@ -4,7 +4,7 @@
 // notices. Built from the event stream the UI already receives; toasts still show. Kept per
 // user in this browser and bounded, so a reload keeps the history.
 
-import { h, icon, setChildren } from './dom.js';
+import { h, icon, setChildren, popoverFocus } from './dom.js';
 import { relShort, dateTime } from './format.js';
 import { statusInfo } from './status.js';
 import { readJson, writeJson } from './store.js';
@@ -36,6 +36,7 @@ export function createNotificationCenter(ctx) {
   const button = h('button', { type: 'button', class: 'btn-icon notif-btn', title: 'Notifications', 'aria-label': 'Notifications', 'aria-haspopup': 'dialog', 'aria-expanded': 'false' }, icon('bell'), badge);
   let pop = null;
   let onDoc = null;
+  let offFocus = null;
   let onKey = null;
 
   function save() {
@@ -108,6 +109,7 @@ export function createNotificationCenter(ctx) {
     document.body.append(pop);
     button.setAttribute('aria-expanded', 'true');
     renderPanel();
+    offFocus = popoverFocus(pop, button, close);
     onDoc = (event) => { if (pop && !pop.contains(event.target) && !button.contains(event.target)) close(); };
     onKey = (event) => { if (event.key === 'Escape') { close(); button.focus(); } };
     setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);
@@ -115,6 +117,8 @@ export function createNotificationCenter(ctx) {
   }
 
   function close() {
+    if (offFocus) offFocus();
+    offFocus = null;
     document.removeEventListener('pointerdown', onDoc, true);
     document.removeEventListener('keydown', onKey);
     if (pop) pop.remove();

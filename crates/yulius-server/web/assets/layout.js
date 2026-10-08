@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
 import { taskInfo, allows } from './status.js';
 import { href } from './router.js';
@@ -33,7 +33,7 @@ export function createTabRow(ctx) {
       ctx.navigate(`/s/${encodeURIComponent(select.value)}`);
     }
   } });
-  const hamburger = iconButton('menu', 'Open navigation', () => document.body.classList.toggle('drawer-open'), { class: 'hamburger' });
+  const hamburger = iconButton('menu', 'Open navigation', () => document.body.classList.toggle('drawer-open'), { class: 'hamburger', 'aria-controls': 'sidebar', 'aria-expanded': 'false' });
   const addButton = iconButton('plus', 'Add sandbox: create or import a repository', () => openSandboxDialog(ctx), { class: 'tab-add' });
   const contained = h('span', { class: 'chip chip-warn', hidden: true, title: 'Host mode: agent sessions on this server are not isolated in an OS sandbox, so an agent can reach files outside its sandbox.' }, icon('warn', { size: 12 }), h('span', { class: 'chip-text' }, 'Not contained'));
   const eventDot = h('span', { class: 'ev-dot', title: 'Live updates connected' });
@@ -176,6 +176,7 @@ function openUserMenu(ctx, anchor) {
 
 /** Hidden-by-default Status panel with VM metrics and account usage (UI-007, AC-STA-1). */
 function createStatusPanel(ctx, button) {
+  let offFocus = null;
   let el = null;
   let timer = null;
   let onDoc = null;
@@ -185,7 +186,7 @@ function createStatusPanel(ctx, button) {
     if (!el) return;
     try {
       const data = await ctx.api.get('/api/status');
-      if (el) setChildren(el, renderStatus(data || {}));
+      if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {})));
     } catch (error) {
       if (el) setChildren(el, h('div', { class: 'status-section' }, h('div', { class: 'placeholder placeholder-error' }, error.message)));
     }
@@ -195,6 +196,7 @@ function createStatusPanel(ctx, button) {
     el = h('div', { class: 'status-pop', role: 'dialog', 'aria-label': 'Status' }, h('div', { class: 'placeholder placeholder-loading' }, 'Loading status…'));
     document.body.append(el);
     button.setAttribute('aria-expanded', 'true');
+    offFocus = popoverFocus(el, button, close);
     load();
     timer = setInterval(load, 10000);
     onDoc = (event) => { if (el && !el.contains(event.target) && !button.contains(event.target)) close(); };
@@ -206,6 +208,8 @@ function createStatusPanel(ctx, button) {
   function close() {
     clearInterval(timer);
     timer = null;
+    if (offFocus) offFocus();
+    offFocus = null;
     document.removeEventListener('pointerdown', onDoc, true);
     document.removeEventListener('keydown', onKey);
     if (el) el.remove();
@@ -410,7 +414,7 @@ export function createSidebar(ctx) {
   const avatar = h('span', { class: 'avatar', 'aria-hidden': 'true' }, '?');
   const userName = h('span', { class: 'user-name' });
   const userButton = h('button', { type: 'button', class: 'user-btn', 'aria-label': 'User menu', 'aria-haspopup': 'menu', onClick: () => openUserMenu(ctx, userButton) }, avatar, userName);
-  const el = h('aside', { class: 'sidebar' },
+  const el = h('aside', { class: 'sidebar', id: 'sidebar' },
     h('div', { class: 'sidebar-full', style: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 } },
       h('div', { class: 'sidebar-top' }, brand, newTask),
       nav,
@@ -435,11 +439,17 @@ export function createSidebar(ctx) {
     newTask.dataset.route = slug ? `/s/${slug}` : '/';
     newTask.href = href(newTask.dataset.route);
     newTask.classList.toggle('disabled', !slug);
-    setChildren(nav, NAV.map(([page, label, iconName]) => {
+    // Links are built once and updated in place, so a focused link keeps focus across routes.
+    if (!nav.children.length) nav.append(...NAV.map(([, label, iconName]) => h('a', { class: 'nav-item' }, icon(iconName, { size: 16 }), h('span', null, label))));
+    NAV.forEach(([page], i) => {
+      const link = nav.children[i];
       const path = slug ? `/s/${slug}/${page}` : '/';
-      const active = route && route.name === 'page' && route.page === page;
-      return h('a', { class: ['nav-item', active && 'active'], href: href(path), dataset: { route: path }, 'aria-current': active ? 'page' : null }, icon(iconName, { size: 16 }), h('span', null, label));
-    }));
+      const active = Boolean(route && route.name === 'page' && route.page === page);
+      link.href = href(path);
+      link.dataset.route = path;
+      link.classList.toggle('active', active);
+      if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
+    });
   }
 
   // Active tasks (UI-005), grouped so what needs the user comes first: "Needs you", "Working",
