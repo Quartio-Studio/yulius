@@ -86,6 +86,7 @@ const ICONS = {
   'st-crashed': [['path', { d: 'M12 4l9 15.5H3z' }], ['path', { d: 'M12 10v4.2' }], ['circle', { cx: 12, cy: 17, r: 1, fill: 'currentColor', stroke: 'none' }]],
   'st-failed': [['circle', { cx: 12, cy: 12, r: 8.5 }], ['path', { d: 'M9 9l6 6M15 9l-6 6' }]],
   'st-closed': [['circle', { cx: 12, cy: 12, r: 8.5 }], ['path', { d: 'M8.5 12.2l2.4 2.4 4.6-5' }]],
+  trash: [['path', { d: 'M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2' }]],
   tasks: [['path', { d: 'M9 6h11M9 12h11M9 18h11' }], ['path', { d: 'M3.5 6l1.2 1.2L7 5M3.5 12l1.2 1.2L7 11M3.5 18l1.2 1.2L7 17' }]],
   branch: [['circle', { cx: 6, cy: 5.5, r: 2.2 }], ['circle', { cx: 6, cy: 18.5, r: 2.2 }], ['circle', { cx: 18, cy: 8, r: 2.2 }], ['path', { d: 'M6 7.7v8.6M18 10.2c0 4-4.5 3.8-9.8 6.6' }]],
   zap: [['path', { d: 'M13 2.5L4.5 13.5H12l-1 8 8.5-11H12z' }]],
@@ -384,6 +385,32 @@ export function field(label, control, hint) {
 export function toggle({ checked, onChange, label, disabled }) {
   const input = h('input', { type: 'checkbox', class: 'switch-input', checked, disabled, 'aria-label': label, onChange: (e) => onChange(e.target.checked, input) });
   return h('span', { class: 'switch' }, input, h('span', { class: 'switch-track', 'aria-hidden': 'true' }));
+}
+
+/** A badge with an icon in front. */
+export function iconBadge(iconName, text, tone, title) {
+  const el = badge(text, tone, title);
+  el.prepend(icon(iconName, { size: 11 }));
+  return el;
+}
+
+/**
+ * A card for one item in a list (workflows, skills…): an icon tile, the title with badges, a
+ * description and optional extra content, and controls on the right. With `onOpen` the title is
+ * a button stretched over the whole card (click or Enter anywhere opens it) and a chevron shows;
+ * `controls` (toggles, icon buttons) keep their own clicks above it.
+ */
+export function itemCard({ iconName, title, badges = [], description, extra, controls = [], onOpen, openLabel, dim = false }) {
+  const name = onOpen
+    ? h('button', { type: 'button', class: 'item-name item-open', 'aria-label': openLabel || null, onClick: onOpen }, title)
+    : h('span', { class: 'item-name' }, title);
+  return h('div', { class: ['item-card', onOpen && 'clickable', dim && 'off'] },
+    h('span', { class: 'item-icon', 'aria-hidden': 'true' }, icon(iconName, { size: 18 })),
+    h('div', { class: 'item-main' },
+      h('div', { class: 'item-title' }, name, badges),
+      description ? h('div', { class: 'item-desc' }, description) : null,
+      extra || null),
+    h('div', { class: 'item-controls' }, controls, onOpen ? h('span', { class: 'item-chevron', 'aria-hidden': 'true' }, icon('right', { size: 16 })) : null));
 }
 
 /** A task state mark: the state's SVG icon in its tone (statusInfo from status.js). */

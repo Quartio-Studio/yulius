@@ -1,7 +1,7 @@
 // Workflows page (AUT-004): reusable task recipes — initial steps, instructions, gates.
 
 import { enc } from '../api.js';
-import { h, badge, openModal, field, toast, confirmDialog, errorToast } from '../dom.js';
+import { h, openModal, field, toast, confirmDialog, errorToast, iconButton, iconBadge, itemCard } from '../dom.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
@@ -20,18 +20,26 @@ export function mountWorkflowsPage(ctx, sandbox) {
   const reload = loader(host, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`), (list) => {
     const workflows = Array.isArray(list) ? list : [];
     if (workflows.length === 0) return h('div', { class: 'card placeholder' }, 'No workflows yet. A workflow seeds a task’s steps, instructions and required gates.');
-    return h('div', { class: 'card list' }, workflows.map((wf) => {
+    return h('div', { class: 'item-list' }, workflows.map((wf) => {
       const canEdit = write && (wf.scope !== 'instance' || instanceAdmin);
       const gates = wf.gates || {};
-      return h('div', { class: 'list-item' },
-        h('div', { class: 'list-main' },
-          h('div', { class: 'list-title' }, wf.name, badge(wf.scope || 'sandbox', wf.scope === 'instance' ? 'violet' : ''),
-            gates.require_spec ? badge('spec required', 'accent') : null, gates.require_tests ? badge('tests required', 'accent') : null),
-          h('div', { class: 'list-sub' }, wf.description || ''),
-          h('div', { class: 'list-sub' }, Array.isArray(wf.steps) && wf.steps.length ? wf.steps.map((s, i) => `${i + 1}. ${s}`).join('   ') : 'No initial steps')),
-        h('div', { class: 'list-actions' },
-          h('button', { type: 'button', class: 'btn btn-sm', disabled: !canEdit, title: canEdit ? null : 'Instance workflows are managed by instance administrators', onClick: () => edit(wf) }, 'Edit'),
-          h('button', { type: 'button', class: 'btn btn-sm btn-danger', disabled: !canEdit, onClick: () => remove(wf) }, 'Delete')));
+      const steps = Array.isArray(wf.steps) ? wf.steps : [];
+      return itemCard({
+        iconName: 'workflow',
+        title: wf.name,
+        badges: [
+          wf.scope === 'instance' ? iconBadge('globe', 'Whole instance', 'violet', 'Available in every sandbox') : iconBadge('folder', 'This sandbox', '', 'Available in this sandbox only'),
+          gates.require_spec ? iconBadge('book', 'Spec required', '', 'The task must write a spec before it can be delivered') : null,
+          gates.require_tests ? iconBadge('check', 'Tests required', '', 'The task must add or run tests before it can be delivered') : null,
+        ],
+        description: wf.description || null,
+        extra: steps.length
+          ? h('ol', { class: 'steps-line', 'aria-label': 'Steps' }, steps.map((step, i) => h('li', null, h('span', { class: 'step-num' }, String(i + 1)), step)))
+          : h('div', { class: 'item-meta' }, 'No starting steps'),
+        controls: canEdit ? [iconButton('trash', `Delete ${wf.name}`, () => remove(wf), { class: 'btn-quiet-danger' })] : [],
+        onOpen: canEdit ? () => edit(wf) : null,
+        openLabel: `Edit workflow ${wf.name}`,
+      });
     }));
   });
 
