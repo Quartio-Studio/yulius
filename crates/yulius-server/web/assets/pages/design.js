@@ -7,6 +7,7 @@ import { statusInfo } from '../status.js';
 import { BRAND } from '../brand.js';
 import { THEME_CHOICES, themeChoice, setThemeChoice, token, onThemeChange } from '../theme.js';
 import { pageFrame } from './common.js';
+import { NEW_TASK_KEYS } from '../shortcuts.js';
 
 const COLOR_GROUPS = [
   ['Surfaces', ['--term-bg', '--bg', '--surface', '--surface-2', '--surface-3', '--surface-hover', '--canvas']],
@@ -109,7 +110,7 @@ export function mountDesignPage(ctx) {
           toggle({ checked: true, label: 'Sample switch, on', onChange: () => {} }),
           toggle({ checked: false, label: 'Sample switch, off', onChange: () => {} }),
           h('button', { type: 'button', class: 'chip-btn' }, icon('target', { size: 14 }), h('span', { class: 'chip-label' }, 'Picker chip'), icon('down', { size: 12 })),
-          h('span', { class: 'kbd' }, '⌘⇧O'))),
+          h('span', { class: 'kbd' }, NEW_TASK_KEYS))),
       section('Badges, banners, meters', null,
         h('div', { class: 'row-wrap' }, badge('neutral'), badge('accent', 'accent'), badge('ok', 'ok'), badge('warn', 'warn'), badge('danger', 'danger'), badge('violet', 'violet'),
           iconBadge('globe', 'Whole instance', 'violet'), iconBadge('lock', 'Secret', ''), h('span', { class: 'plan-badge' }, 'Max 20x')),

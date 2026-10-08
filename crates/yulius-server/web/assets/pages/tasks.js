@@ -14,6 +14,7 @@ import { readJson, writeJson } from '../store.js';
 import { enc } from '../api.js';
 import { initials } from '../layout.js';
 import { pageFrame, dataTable, loader } from './common.js';
+import { NEW_TASK_KEYS } from '../shortcuts.js';
 
 function statusCell(task) {
   const info = statusInfo(task);
@@ -75,7 +76,7 @@ export function mountTasksPage(ctx, sandbox) {
   let pulls = new Map();
 
   const frame = pageFrame({ title: 'Tasks', sub: sandbox.name, actions: [
-    h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, '⌘⇧O')),
+    h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, NEW_TASK_KEYS)),
   ] });
   const tabs = h('div', { class: 'tl-tabs', role: 'radiogroup', 'aria-label': 'Task state' });
   const chips = h('div', { class: 'tl-chips' });

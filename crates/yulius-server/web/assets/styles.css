@@ -510,6 +510,13 @@ body.resizing iframe { pointer-events: none; }
 .usage-pct.tone-unknown { color: var(--muted); }
 .account-foot { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 
+/* keyboard shortcut sheet (UI-029) */
+.shortcuts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px 32px; }
+.shortcuts-title { margin-bottom: 8px; font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; color: var(--text); }
+.shortcuts-list { display: grid; grid-template-columns: 144px 1fr; gap: 6px 12px; align-items: baseline; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.shortcuts-list dt { white-space: nowrap; }
+.shortcuts-list dd { margin: 0; color: var(--text-2); }
+
 /* notification center (UI-020) */
 .notif-btn { position: relative; }
 .notif-badge {

@@ -27,10 +27,10 @@ import { mountDashboardPage } from './pages/dashboard.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
 import { mountDesignPage } from './pages/design.js';
+import { IS_MAC, showShortcuts } from './shortcuts.js';
 
 const params = new URLSearchParams(window.location.search);
 const MOCK = params.get('mock') === '1';
-const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
 const LAST_SANDBOX_KEY = 'yulius.lastSandbox';
 
 const SANDBOX_PAGES = {
@@ -571,6 +571,17 @@ function createApp(root, transport) {
     event.preventDefault();
     event.stopPropagation();
     openNewTask();
+  }, true);
+
+  // The shortcut sheet (UI-029): ⌘/ on macOS, Ctrl+/ elsewhere — except in the terminal, where
+  // Ctrl+/ belongs to the shell (undo in readline and emacs).
+  window.addEventListener('keydown', (event) => {
+    if (!shell || event.altKey || event.shiftKey || event.repeat || event.key !== '/') return;
+    if (IS_MAC ? !(event.metaKey && !event.ctrlKey) : !(event.ctrlKey && !event.metaKey)) return;
+    if (!IS_MAC && event.target instanceof Element && event.target.closest('.xterm')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    showShortcuts();
   }, true);
 
   /** Opens the current sandbox's composer and puts the cursor in the prompt. */

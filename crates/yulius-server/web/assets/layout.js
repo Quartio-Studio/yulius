@@ -9,6 +9,7 @@ import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions
 import { createNotificationCenter } from './notifications.js';
 import { BRAND } from './brand.js';
 import { readJson, writeJson } from './store.js';
+import { NEW_TASK_KEYS, NEW_TASK_ARIA } from './shortcuts.js';
 
 const NAV = [
   ['tasks', 'Tasks', 'tasks'],
@@ -431,8 +432,8 @@ export function createSidebar(ctx) {
   const brand = h('a', { class: 'sidebar-brand', href: href('/'), dataset: { route: '/' }, title: BRAND.name },
     h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 34 })),
     h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, BRAND.name), h('span', { class: 'brand-by' }, BRAND.tagline)));
-  const shortcut = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? '⌘⇧O' : 'Ctrl+Shift+O';
-  const newTask = h('a', { class: 'btn btn-newtask', href: '#', dataset: { route: '/' }, title: `New task (${shortcut})`, 'aria-keyshortcuts': shortcut === '⌘⇧O' ? 'Meta+Shift+O' : 'Control+Shift+O' },
+  const shortcut = NEW_TASK_KEYS;
+  const newTask = h('a', { class: 'btn btn-newtask', href: '#', dataset: { route: '/' }, title: `New task (${shortcut})`, 'aria-keyshortcuts': NEW_TASK_ARIA },
     h('span', { class: 'newtask-plus', 'aria-hidden': 'true' }, icon('plus', { size: 16 })), h('span', null, 'New task'), h('span', { class: 'newtask-key', 'aria-hidden': 'true' }, shortcut));
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sandbox' });
   const list = h('div', { class: 'task-list', 'aria-label': 'Active tasks' });

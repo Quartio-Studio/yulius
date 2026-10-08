@@ -9,6 +9,7 @@ import { initials } from '../layout.js';
 import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from '../models.js';
 import { pageFrame } from './common.js';
 import { DESKTOP_KEY } from '../notifications.js';
+import { showShortcuts, SHEET_KEYS } from '../shortcuts.js';
 import { THEME_CHOICES, themeChoice, setThemeChoice } from '../theme.js';
 import { BRAND } from '../brand.js';
 
@@ -108,6 +109,7 @@ export function mountSettingsPage(ctx) {
       row('pulse', 'Default effort for new tasks', 'How hard the agent thinks by default', effortButton),
       row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right', railToggle),
       row('terminal', 'Terminal screen reader support', 'Lets screen readers read terminal output; applies to terminals opened next', screenReaderToggle),
+      row('target', 'Keyboard shortcuts', `Every shortcut in one list (${SHEET_KEYS})`, h('button', { type: 'button', class: 'btn btn-sm', onClick: showShortcuts }, 'Show')),
       row('target', 'Single-key shortcuts', 'On the Tasks page: / to search, j and k to move, . for a task’s menu', keysToggle),
       row('bell', 'Desktop notifications', desktopNote, desktopToggle),
       row('clock', 'Notification history', notifCount, clearButton),
