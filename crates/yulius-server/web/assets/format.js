@@ -36,15 +36,21 @@ export function relLong(iso, now = Date.now()) {
   return future ? `in ${text}` : `${text} ago`;
 }
 
+// Formatters are built once: toLocaleString with options builds a new one on every call, which
+// made date tooltips most of the cost of re-rendering long task lists (PERF-06).
+const DATE_TIME = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+const WEEKDAY = new Intl.DateTimeFormat(undefined, { weekday: 'long' });
+const MONTH_DAY = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
+
 /** Local date-time for tooltips and tables. */
 export function dateTime(iso) {
   if (!iso) return '—';
   const t = new Date(iso);
   if (Number.isNaN(t.getTime())) return String(iso);
-  return t.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return DATE_TIME.format(t);
 }
 
-/** Duration from milliseconds: "45 s", "12 min", "1 h 05 min", "2 d 3 h". */
 /**
  * When a usage limit resets, the way Claude says it: "Resets at 5:50 PM" within a day,
  * "Resets Friday 10:00 AM" within a week, otherwise "Resets Oct 12".
@@ -53,13 +59,14 @@ export function resetLabel(iso, now = Date.now()) {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return '';
   const ahead = t - now;
-  const time = new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const time = TIME.format(t);
   if (ahead <= 0) return 'Resetting now';
   if (ahead < 20 * 3600e3 && new Date(t).getDate() === new Date(now).getDate()) return `Resets at ${time}`;
-  if (ahead < 6.5 * 86400e3) return `Resets ${new Date(t).toLocaleDateString(undefined, { weekday: 'long' })} ${time}`;
-  return `Resets ${new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+  if (ahead < 6.5 * 86400e3) return `Resets ${WEEKDAY.format(t)} ${time}`;
+  return `Resets ${MONTH_DAY.format(t)}`;
 }
 
+/** Duration from milliseconds: "45 s", "12 min", "1 h 05 min", "2 d 3 h". */
 export function duration(ms) {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
   const s = Math.round(ms / 1000);
