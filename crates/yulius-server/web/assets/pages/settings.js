@@ -33,7 +33,8 @@ export function mountSettingsPage(ctx) {
   const instanceAdmin = superadmin || Boolean(user.is_instance_admin);
   const role = superadmin ? 'Superadmin' : instanceAdmin ? 'Instance administrator' : 'Member';
   const name = user.display_name || user.login || 'Signed in';
-  const open = (path) => h('a', { class: 'btn btn-sm', href: href(path), dataset: { route: path } }, 'Open');
+  // Each control is named for its row, so a list of links or buttons reads apart (WCAG 2.4.4).
+  const open = (path, what) => h('a', { class: 'btn btn-sm', href: href(path), dataset: { route: path }, 'aria-label': `Open ${what}` }, 'Open');
 
   // Preferences: the composer's defaults, the tools rail and the notification history.
   let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
@@ -42,9 +43,9 @@ export function mountSettingsPage(ctx) {
   const effortButton = h('button', { type: 'button', class: 'chip-btn', 'aria-haspopup': 'menu' });
   const renderPicks = () => {
     const found = findModel(modelId);
-    modelButton.replaceChildren(h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
+    modelButton.replaceChildren(h('span', { class: 'sr-only' }, 'Model for new tasks: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
     const effort = findEffort(effortId);
-    effortButton.replaceChildren(h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
+    effortButton.replaceChildren(h('span', { class: 'sr-only' }, 'Effort for new tasks: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
   };
   modelButton.addEventListener('click', () => openMenu(modelButton, modelMenuItems(modelId, (id) => { modelId = id; writeJson(MODEL_PREF_KEY, id); renderPicks(); })));
   effortButton.addEventListener('click', () => openMenu(effortButton, effortMenuItems(effortId, (id) => { effortId = id; writeJson(EFFORT_PREF_KEY, id); renderPicks(); })));
@@ -62,7 +63,7 @@ export function mountSettingsPage(ctx) {
     if (ctx.notifications) ctx.notifications.clear();
     renderNotif();
     toast('Notification history cleared.', { kind: 'ok' });
-  } }, 'Clear');
+  }, 'aria-label': 'Clear notification history' }, 'Clear');
   const renderNotif = () => {
     const n = ctx.notifications ? ctx.notifications.count() : 0;
     notifCount.textContent = n ? `${n} in history` : 'Empty';
@@ -75,8 +76,8 @@ export function mountSettingsPage(ctx) {
       h('div', { class: 'settings-identity' },
         h('span', { class: 'avatar settings-avatar', 'aria-hidden': 'true' }, initials(name)),
         h('div', null, h('div', { class: 'settings-name' }, name), h('div', { class: 'muted small' }, [user.login ? `@${user.login}` : null, role].filter(Boolean).join(' · ')))),
-      row('archive', 'Archived tasks', 'Tasks you archived, with restore', open('/archived')),
-      row('key', 'CLI device approval', 'Approve “yulius login” from a terminal', open('/device')),
+      row('archive', 'Archived tasks', 'Tasks you archived, with restore', open('/archived', 'archived tasks')),
+      row('key', 'CLI device approval', 'Approve “yulius login” from a terminal', open('/device', 'CLI device approval')),
       row('logout', 'Sign out', 'End this session in this browser', h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.signOut() }, 'Sign out'))),
     section('gear', 'Preferences', 'kept in this browser',
       row('contrast', 'Appearance', 'Dark, light, or follow your system', appearance),
@@ -85,7 +86,7 @@ export function mountSettingsPage(ctx) {
       row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right', railToggle),
       row('target', 'Single-key shortcuts', 'On the Tasks page: / to search, j and k to move, . for a task’s menu', keysToggle),
       row('bell', 'Notification history', notifCount, clearButton),
-      row('contrast', 'Design system', 'Colours, type, components and themes in one place', open('/design'))),
+      row('contrast', 'Design system', 'Colours, type, components and themes in one place', open('/design', 'the design system'))),
   );
 
   if (instanceAdmin) {
