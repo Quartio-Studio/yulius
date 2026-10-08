@@ -618,7 +618,8 @@ export function meter(percent, { label, detail } = {}) {
   const tone = !known ? 'unknown' : value >= 90 ? 'danger' : value >= 70 ? 'warn' : 'ok';
   return h('div', { class: ['meter', `meter-${tone}`] },
     h('div', { class: 'meter-row' }, h('span', { class: 'meter-label' }, label || ''), h('span', { class: 'meter-value' }, known ? `${value.toFixed(value < 10 ? 1 : 0)}%` : 'unknown')),
-    h('div', { class: 'meter-track', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': known ? value : null, 'aria-valuetext': known ? `${Math.round(value)}%` : 'unknown', 'aria-label': label || 'usage' },
+    // A meter needs a value: an unknown one reports 0 with the text 'unknown'.
+    h('div', { class: 'meter-track', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': known ? value : 0, 'aria-valuetext': known ? `${Math.round(value)}%` : 'unknown', 'aria-label': label || 'usage' },
       h('div', { class: 'meter-fill', style: { width: `${value}%` } })),
     detail ? h('div', { class: 'meter-detail' }, detail) : null,
   );

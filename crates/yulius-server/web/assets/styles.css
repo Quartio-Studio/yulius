@@ -19,7 +19,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--accent-fg); text-decoration: none; } /* link text: the text-safe accent (4.5:1) */
 a:hover { text-decoration: underline; }
 /* Links inside running text are underlined, not told apart by colour alone (WCAG 1.4.1). */
-p a, li a, .msg-body a, .banner-text a, .toast-msg a, .step-note a { text-decoration: underline; text-underline-offset: 2px; }
+p a, li a, .msg-body a, .banner-text a, .toast-msg a, .step-note a, .item-meta a { text-decoration: underline; text-underline-offset: 2px; }
 /* Focus: a ring with a gap; the transparent outline is what forced-colors (high contrast) modes draw. */
 :focus-visible { outline: 2px solid transparent; outline-offset: 2px; box-shadow: var(--focus); }
 [hidden] { display: none !important; }
@@ -468,7 +468,8 @@ body.resizing iframe { pointer-events: none; }
 /* One account: avatar, who, plan and state; usage windows as horizontal rows (ROT-009). */
 .account-card, .account-fold { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); }
 /* Off or paused things dim their graphics, never their text below 4.5:1 (WCAG 1.4.3). */
-.account-card.disabled .account-avatar, .account-card.disabled .meter, .account-fold.disabled .account-avatar { opacity: 0.5; }
+.account-card.disabled .meter { opacity: 0.5; }
+.account-card.disabled .account-avatar, .account-fold.disabled .account-avatar { color: var(--muted); }
 .account-card.disabled, .account-fold.disabled { color: var(--text-2); }
 .account-head { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 12px 12px; }
 .account-fold > summary { list-style: none; cursor: pointer; border-radius: var(--radius-lg); }

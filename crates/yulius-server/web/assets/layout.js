@@ -269,7 +269,7 @@ function usageBar(percent, label) {
   const known = Number.isFinite(percent);
   const value = known ? Math.max(0, Math.min(100, percent)) : 0;
   return h('div', { class: ['meter', `meter-${toneOf(percent)}`] },
-    h('div', { class: 'meter-track', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': known ? value : null, 'aria-label': label },
+    h('div', { class: 'meter-track', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': known ? value : 0, 'aria-valuetext': known ? `${Math.round(value)}% used` : 'unknown', 'aria-label': label },
       h('div', { class: 'meter-fill', style: { width: `${value}%` } })));
 }
 
