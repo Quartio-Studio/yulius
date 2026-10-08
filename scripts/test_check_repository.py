@@ -144,5 +144,18 @@ class BrandNameTests(unittest.TestCase):
         self.assertEqual(brand_name_errors("headers['X-Acme-CSRF'] = t; // Acme notes\ntoast(`${BRAND.name} restarted`);", "Acme"), [])
 
 
+
+class BypassTests(unittest.TestCase):
+    def test_closed_bypasses(self):
+        for rule in ("color: var(--x, #f00)", "background: crimson", "border-color: Cyan", "animation: spin 1s linear", "color: color(display-p3 1 0 0)"):
+            self.assertTrue(style_errors(f".a {{ {rule}; }}"), rule)
+        self.assertEqual(style_errors(".a { color: var(--text); border-color: transparent; animation: spin var(--duration-spin) linear infinite; }"), [])
+        self.assertTrue(inline_style_errors("el.style.color = '#ff0000';"))
+        self.assertTrue(inline_style_errors("el.style.setProperty('width', '640px');"))
+        self.assertEqual(inline_style_errors("el.style.width = `${pct}%`; el.style.opacity = '0.6';"), [])
+        css = (ROOT / TOKENS).read_text().replace('[data-theme="light"]', "[data-theme=light]")
+        self.assertIn("light", theme_tokens(css))
+
+
 if __name__ == "__main__":
     unittest.main()

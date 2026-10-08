@@ -106,8 +106,9 @@ BRAND_PATTERNS = {
     "icon": r'<link rel="icon" href="[^"]*">',
     "noscript": r"<noscript>[^<]*</noscript>",
 }
-COLOUR_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(|"
-                            r"\b(?:white|black|red|green|blue|yellow|orange|purple|pink|gray|grey|silver|navy|teal)\b")
+NAMED_COLOURS = "aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow yellowgreen".split()
+COLOUR_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(|"
+                            r"(?<![\w-])(?:" + "|".join(NAMED_COLOURS) + r")(?![\w-])", re.I)
 
 
 def style_errors(css, label=STYLESHEET):
@@ -119,7 +120,7 @@ def style_errors(css, label=STYLESHEET):
         prop, value = match.group(1), match.group(2).strip()
         line = css.count("\n", 0, match.start()) + 1
         where = f"{label}:{line}: {prop}: {value}"
-        if COLOUR_LITERAL.search(re.sub(r"var\([^)]*\)", "", value)):
+        if COLOUR_LITERAL.search(re.sub(r"var\(--[\w-]+\)", "", value)):
             errors.append(f"{where} (colours come from tokens.css roles)")
         elif prop == "font-size" and not re.fullmatch(r"var\(--fs(-[a-z0-9]+)?\)|inherit", value):
             errors.append(f"{where} (use a --fs-* token)")
@@ -131,7 +132,7 @@ def style_errors(css, label=STYLESHEET):
             errors.append(f"{where} (shorthand needs --fs-* and --font tokens)")
         elif prop == "font-weight" and value not in WEIGHTS:
             errors.append(f"{where} (weights are 400, 500, 600)")
-        elif prop in ("transition", "transition-duration") and re.search(r"(?<![\w-])\d*\.?\d+m?s\b", value):
+        elif prop in ("transition", "transition-duration", "animation", "animation-duration") and re.search(r"(?<![\w-])\d*\.?\d+m?s\b", value):
             errors.append(f"{where} (use the --duration* motion tokens)")
         elif prop == "z-index" and not re.fullmatch(r"var\(--z-[a-z-]+\)|0|auto|-1", value):
             errors.append(f"{where} (use a --z-* layer token)")
@@ -168,6 +169,8 @@ def control_height_errors(css, label=STYLESHEET):
 # Text pairs need 4.5:1 and non-text (state marks, focus, control edges) 3:1 (WCAG 2.2 1.4.3,
 # 1.4.11). A background "a/b" is a translucent role a composited over b.
 CONTRAST_PAIRS = [
+    ("--accent-ink", "--accent-strong", 4.5), ("--accent-ink", "--accent-hover", 4.5),
+    ("--accent-fg", "--surface", 4.5), ("--accent-fg", "--bg", 4.5),
     ("--text", "--selection/--surface", 4.5),
     ("--term-fg", "--term-selection", 4.5),
     *((fg, bg, 4.5) for fg in ("--text", "--text-2", "--muted", "--text-faint") for bg in ("--bg", "--surface", "--surface-2")),
@@ -242,7 +245,7 @@ def theme_tokens(css):
     base, themes = {}, {}
     for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
         decls = dict((k.strip(), v.strip()) for k, v in re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", body))
-        names = re.findall(r'data-theme="(\w+)"', selector)
+        names = re.findall(r"data-theme=[\"']?(\w+)", selector)
         if ":root" in selector:
             base.update(decls)
         for name in names:
@@ -292,9 +295,17 @@ STYLE_OBJECT = re.compile(r"style:\s*\{([^{}]*)\}")
 FIXED_STYLE_VALUE = re.compile(r"""(['"])[^'"]*?(?:\d(?:px|rem|em|%|vh|vw)\b|#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\()[^'"]*\1""")
 
 
+STYLE_WRITE = re.compile(r"""\.style\.[\w]+\s*=\s*(['"])([^'"]*)\1|\.style\.setProperty\([^,]+,\s*(['"])([^'"]*)\3|\.style\.cssText\s*=""")
+
+
 def inline_style_errors(js, label="web script"):
     """Inline styles may carry computed values only; fixed lengths and colours belong in styles.css."""
     errors = []
+    for match in STYLE_WRITE.finditer(js):
+        value = match[2] if match[2] is not None else (match[4] or "")
+        if match[0].endswith("=") and "cssText" in match[0] or FIXED_STYLE_VALUE.search(f"'{value}'"):
+            number = js.count("\n", 0, match.start()) + 1
+            errors.append(f"{label}:{number}: fixed value written to an element's style; use a class in styles.css and tokens")
     for match in STYLE_OBJECT.finditer(js):
         if FIXED_STYLE_VALUE.search(match[1]):
             number = js.count("\n", 0, match.start()) + 1

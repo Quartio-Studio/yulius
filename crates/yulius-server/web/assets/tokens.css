@@ -275,6 +275,10 @@
   --duration: 200ms;
   --duration-slow: 300ms;  /* progress fills and the agent's cursor */
   --duration-instant: 0.01ms; /* what reduced motion collapses every animation to */
+  --duration-spin: 0.9s;      /* one turn of a spinner */
+  --duration-spin-slow: 1.6s; /* one turn of a slower spinner (switching account) */
+  --duration-pulse: 1.6s;     /* one pulse of an attention highlight */
+  --duration-ripple: 0.7s;    /* the agent's click ripple in the browser view */
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* Layout */
