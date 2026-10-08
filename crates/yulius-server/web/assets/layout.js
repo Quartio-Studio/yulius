@@ -285,6 +285,10 @@ export function accountUsage(account) {
  * the signed-in user at its foot, which opens the user menu.
  */
 export function createSidebar(ctx) {
+  // The logo slot holds the favicon's Y until Yulius has a real logo.
+  const brand = h('a', { class: 'sidebar-brand', href: href('/'), dataset: { route: '/' }, title: 'Yulius' },
+    h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 20 })),
+    h('span', { class: 'brand-name' }, 'Yulius'));
   const newTask = h('a', { class: 'btn btn-primary btn-newtask', href: '#', dataset: { route: '/' } }, icon('plus', { size: 14 }), 'New task');
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sandbox' });
   const count = h('span', null, '');
@@ -294,7 +298,7 @@ export function createSidebar(ctx) {
   const userButton = h('button', { type: 'button', class: 'user-btn', 'aria-label': 'User menu', 'aria-haspopup': 'menu', onClick: () => openUserMenu(ctx, userButton) }, avatar, userName);
   const el = h('aside', { class: 'sidebar' },
     h('div', { class: 'sidebar-full', style: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 } },
-      h('div', { class: 'sidebar-top' }, newTask),
+      h('div', { class: 'sidebar-top' }, brand, newTask),
       nav,
       h('div', { class: 'sidebar-sep' }, h('span', null, 'Active tasks'), count),
       list),
