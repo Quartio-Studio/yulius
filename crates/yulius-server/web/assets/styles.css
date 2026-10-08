@@ -495,7 +495,7 @@ body.resizing iframe { pointer-events: none; }
   background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); font-weight: 600; line-height: var(--lh-xs); text-align: center;
   box-shadow: 0 0 0 2px var(--bg);
 }
-.notif-pop { width: min(400px, calc(100vw - 16px)); }
+.notif-pop { width: min(400px, calc(100vw - 16px)); scroll-padding-top: 56px; } /* rows never hide under the sticky head (2.4.11) */
 .notif-head { position: sticky; top: 0; display: flex; align-items: center; gap: 6px; padding: 12px 12px 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .notif-head h3 { font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; }
 .notif-list { display: flex; flex-direction: column; padding: 4px; }
