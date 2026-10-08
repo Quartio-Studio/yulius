@@ -393,7 +393,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ [Quartio Studio] [Product] [Sandbox 3] [+]          (thin tab row) Status ▾ ☺ │ ≤ 36 px
+│ [Quartio Studio] [Product] [Sandbox 3] [+]            (thin tab row) Status ▾ │ ≤ 36 px
 ├────────────┬──────────────────────────────────────────────────────────┬──────┤
 │ + New task │ ▸ Step 3/7 · Implement checkout API     ▾ (step strip)   │ 🌐   │
 │ Tasks      ├──────────────────────────────────────────────────────────┤ </>  │
@@ -407,15 +407,18 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 │ ● checkout │                                                          │      │
 │ ◐ 3D model │                                                          │      │
 │ ! login    │                                                          │      │
+│ ─────────  │                                                          │      │
+│ ☺ M. Karp  │                                                          │      │
 └────────────┴──────────────────────────────────────────────────────────┴──────┘
 ```
 
 - Sandbox tab row: accessible sandboxes in user-defined order; overflow scrolls; "+" opens
-  Create/Import. Right side: `Status` (opens the Status panel), user menu (Archived tasks, CLI
-  access, Sign out; admin entries: Users, Accounts, GitHub, Instance MCP, Instance skills).
-- Left sidebar (≈ 220 px, collapsible): New task, navigation, then the active task list with status
+  Create/Import. Right side: `Status` (opens the Status panel) and the tools toggle (UI-017).
+- Left sidebar (≈ 220 px): New task, navigation, then the active task list with status
   icons (● working, ○ waiting for input, ! needs attention, ↻ switching, ■ stopped/closed, ✕ failed,
-  ⧗ queued), harness glyph (C/X), relative time, unread-message badge.
+  ⧗ queued), harness glyph (C/X), relative time, unread-message badge. Its foot shows the signed-in
+  user (avatar and name), which opens the user menu (Archived tasks, CLI access, Sign out; admin
+  entries: Users, Accounts, GitHub, Instance MCP, Instance skills).
 - Center: the selected task's terminal fills all remaining space. A one-line step strip sits above
   it (collapsible). No other header.
 - Right rail (≈ 40 px icons): Browser, Editor, Shell, Messages. Clicking expands a resizable panel

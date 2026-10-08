@@ -1,12 +1,11 @@
-// Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with Status panel and user
-// menu, and the collapsible left sidebar with navigation and the active task list.
+// Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
+// left sidebar with navigation, the active task list and the user menu at its foot.
 
 import { h, icon, iconButton, openMenu, setChildren, meter, errorToast, badge } from './dom.js';
 import { relShort, relLong, bytes, duration, windowLabel, dateTime } from './format.js';
 import { statusInfo, harnessInfo, allows } from './status.js';
 import { href } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions.js';
-import { readJson, writeJson } from './store.js';
 
 const NAV = [
   ['tasks', 'Tasks'],
@@ -20,7 +19,7 @@ const NAV = [
 
 // ---------------------------------------------------------------- tab row
 
-/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, user menu. */
+/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, tools toggle. */
 export function createTabRow(ctx) {
   const tabs = h('nav', { class: 'tabrow-tabs', 'aria-label': 'Sandboxes' });
   const select = h('select', { class: 'select tab-select', 'aria-label': 'Sandbox', onChange: () => {
@@ -36,7 +35,6 @@ export function createTabRow(ctx) {
   const contained = h('span', { class: 'chip chip-warn', hidden: true, title: 'Host mode: agent sessions are not isolated by an OS sandbox on this server (SPEC-002 SEC-001).' }, icon('warn', { size: 12 }), h('span', { class: 'chip-text' }, 'Not contained'));
   const eventDot = h('span', { class: 'ev-dot', title: 'Live updates connected' });
   const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and account usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), icon('down', { size: 12 }));
-  const avatar = h('button', { type: 'button', class: 'avatar', 'aria-label': 'User menu', 'aria-haspopup': 'menu' }, '?');
   // Shows/hides the right tool rail (browser, editor, shell, messages); hidden by default.
   const toolsButton = iconButton('tools', 'Show tools (browser, editor, shell, messages)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
   const toolsDot = h('span', { class: 'rail-dot', hidden: true });
@@ -51,7 +49,6 @@ export function createTabRow(ctx) {
   };
   const statusPanel = createStatusPanel(ctx, statusButton);
   statusButton.addEventListener('click', () => statusPanel.toggle());
-  avatar.addEventListener('click', () => openUserMenu(ctx, avatar));
 
   const el = h('header', { class: 'tabrow' },
     h('div', { class: 'brand', title: 'Yulius' }, 'Y'),
@@ -59,7 +56,7 @@ export function createTabRow(ctx) {
     tabs,
     select,
     addButton,
-    h('div', { class: 'tabrow-right' }, contained, statusButton, toolsButton, avatar),
+    h('div', { class: 'tabrow-right' }, contained, statusButton, toolsButton),
   );
 
   let currentSlug = null;
@@ -118,10 +115,6 @@ export function createTabRow(ctx) {
   function renderMe() {
     const me = ctx.store.state.me;
     if (!me) return;
-    const user = me.user || {};
-    const name = user.display_name || user.login || '?';
-    avatar.textContent = initials(name);
-    avatar.title = `${name}${user.login ? ` (@${user.login})` : ''}`;
     contained.hidden = !(me.instance && me.instance.contained === false);
   }
 
@@ -171,7 +164,7 @@ function openUserMenu(ctx, anchor) {
     );
   }
   items.push({ separator: true }, { label: 'Sign out', onSelect: () => ctx.signOut() });
-  openMenu(anchor, items, { align: 'end' });
+  openMenu(anchor, items);
 }
 
 // ---------------------------------------------------------------- status panel
@@ -287,39 +280,38 @@ export function accountUsage(account) {
 
 // ---------------------------------------------------------------- sidebar
 
-const COLLAPSE_KEY = 'yulius.sidebarCollapsed';
-
-/** Left sidebar: New task, navigation, active task list with status icons (UI-004, UI-005). */
-export function createSidebar(ctx, appEl) {
+/**
+ * Left sidebar: New task, navigation, active task list with status icons (UI-004, UI-005) and
+ * the signed-in user at its foot, which opens the user menu.
+ */
+export function createSidebar(ctx) {
   const newTask = h('a', { class: 'btn btn-primary btn-newtask', href: '#', dataset: { route: '/' } }, icon('plus', { size: 14 }), 'New task');
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sandbox' });
   const count = h('span', null, '');
   const list = h('div', { class: 'task-list', role: 'list', 'aria-label': 'Active tasks' });
-  const mini = h('div', { class: 'sidebar-mini', 'aria-label': 'Active tasks' });
-  const collapseButton = iconButton('sidebar', 'Collapse sidebar', () => setCollapsed(!collapsed), { class: 'collapse-btn' });
+  const avatar = h('span', { class: 'avatar', 'aria-hidden': 'true' }, '?');
+  const userName = h('span', { class: 'user-name' });
+  const userButton = h('button', { type: 'button', class: 'user-btn', 'aria-label': 'User menu', 'aria-haspopup': 'menu', onClick: () => openUserMenu(ctx, userButton) }, avatar, userName);
   const el = h('aside', { class: 'sidebar' },
     h('div', { class: 'sidebar-full', style: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 } },
       h('div', { class: 'sidebar-top' }, newTask),
       nav,
       h('div', { class: 'sidebar-sep' }, h('span', null, 'Active tasks'), count),
       list),
-    mini,
-    h('div', { class: 'sidebar-foot' }, collapseButton),
+    h('div', { class: 'sidebar-foot' }, userButton),
   );
 
   let sandbox = null;
   let route = null;
-  let collapsed = Boolean(readJson(COLLAPSE_KEY, false));
   const rows = new Map();
 
-  function setCollapsed(value) {
-    collapsed = value;
-    writeJson(COLLAPSE_KEY, value);
-    appEl.classList.toggle('sidebar-collapsed', value);
-    collapseButton.setAttribute('aria-label', value ? 'Expand sidebar' : 'Collapse sidebar');
-    collapseButton.title = value ? 'Expand sidebar' : 'Collapse sidebar';
+  function renderUser() {
+    const user = (ctx.store.state.me && ctx.store.state.me.user) || {};
+    const name = user.display_name || user.login || '?';
+    avatar.textContent = initials(name);
+    userName.textContent = name;
+    userButton.title = `${name}${user.login ? ` (@${user.login})` : ''}`;
   }
-  setCollapsed(collapsed);
 
   function renderNav() {
     const slug = sandbox ? encodeURIComponent(sandbox.slug) : null;
@@ -354,8 +346,7 @@ export function createSidebar(ctx, appEl) {
         openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, row.task);
       });
       anchor.addEventListener('click', () => document.body.classList.remove('drawer-open'));
-      const miniLink = h('a', { class: 'mini-task' }, h('span', { class: 'glyph' }));
-      row = { anchor, glyph, title, harness, time, unread, miniLink, task };
+      row = { anchor, glyph, title, harness, time, unread, task };
       rows.set(task.id, row);
     }
     row.task = task;
@@ -381,20 +372,12 @@ export function createSidebar(ctx, appEl) {
     row.unread.hidden = !task.unread_messages;
     row.unread.textContent = task.unread_messages ? String(task.unread_messages) : '';
     row.unread.title = task.unread_messages ? `${task.unread_messages} unread messages` : '';
-    row.miniLink.href = row.anchor.href;
-    row.miniLink.dataset.route = path;
-    row.miniLink.title = row.anchor.title;
-    row.miniLink.classList.toggle('active', Boolean(active));
-    const miniGlyph = row.miniLink.firstChild;
-    miniGlyph.className = `glyph tone-${info.tone}`;
-    miniGlyph.textContent = info.glyph;
     return row;
   }
 
   function renderTasks() {
     if (!sandbox) {
       setChildren(list, h('div', { class: 'placeholder' }, 'No sandbox selected.'));
-      mini.replaceChildren();
       count.textContent = '';
       return;
     }
@@ -410,7 +393,6 @@ export function createSidebar(ctx, appEl) {
     if (tasks.length === 0) {
       rows.clear();
       setChildren(list, h('div', { class: 'placeholder small' }, 'No active tasks. Start one with “New task”.'));
-      mini.replaceChildren();
       return;
     }
     const seen = new Set();
@@ -420,7 +402,6 @@ export function createSidebar(ctx, appEl) {
     const current = [...list.children];
     if (current.length !== ordered.length || ordered.some((row, i) => current[i] !== row.anchor)) {
       setChildren(list, ordered.map((row) => row.anchor));
-      setChildren(mini, ordered.map((row) => row.miniLink));
     }
   }
 
@@ -436,6 +417,7 @@ export function createSidebar(ctx, appEl) {
       if (!nextSandbox || !sandbox || nextSandbox.id !== sandbox.id) rows.clear();
       route = nextRoute;
       sandbox = nextSandbox;
+      renderUser();
       renderNav();
       renderTasks();
     },

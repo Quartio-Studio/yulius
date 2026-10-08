@@ -179,7 +179,7 @@ function createApp(root, transport) {
   function buildShell() {
     const appEl = h('div', { class: 'app' });
     const tabRow = createTabRow(ctx);
-    const sidebar = createSidebar(ctx, appEl);
+    const sidebar = createSidebar(ctx);
     const center = h('main', { class: 'center', id: 'main' });
     const panels = createPanelHost(ctx);
     const backdrop = h('div', { class: 'drawer-backdrop', onClick: () => document.body.classList.remove('drawer-open') });
