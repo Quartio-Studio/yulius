@@ -263,7 +263,9 @@ export function mountTasksPage(ctx, sandbox) {
   // Keyboard: "/" focuses search, j/k move between tasks, "." opens the focused task's menu.
   const typing = (target) => target.closest('input, textarea, select, [contenteditable="true"], .xterm');
   function onKey(event) {
-    if (event.metaKey || event.ctrlKey || event.altKey || !frame.el.isConnected) return;
+    if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented || !frame.el.isConnected) return;
+    // Single-key shortcuts only while focus is on this page, not in a tool panel (WCAG 2.1.4).
+    if (event.target !== document.body && !frame.el.contains(event.target)) return;
     if (event.key === '/' && !typing(event.target)) { event.preventDefault(); search.focus(); search.select(); return; }
     if (typing(event.target)) return;
     const links = [...listHost.querySelectorAll('.tl-link')];
