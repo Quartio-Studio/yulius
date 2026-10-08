@@ -371,7 +371,9 @@ p { margin: 0; }
 .rail-btn.active { background: var(--accent-soft); color: var(--text); }
 .rail-label { font-size: var(--fs); white-space: nowrap; }
 .rail-badge { min-width: 16px; height: 16px; margin-left: auto; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
-.rail-dot { width: 8px; height: 8px; margin-left: auto; border-radius: 50%; background: var(--warn); flex: none; }
+/* The attention dot sits on its icon (tools toggle); in the named rail it ends the row. */
+.rail-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 2px var(--bg); }
+.rail .rail-dot { position: static; margin-left: auto; flex: none; box-shadow: none; }
 .panel { grid-area: panel; position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--surface); border-left: 1px solid var(--border); }
 .panel[hidden] { display: none; }
 .panel-resize { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 5; touch-action: none; }
@@ -681,7 +683,7 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
   .rail-btn { width: 34px; height: 34px; justify-content: center; padding: 0; }
   .rail-label { display: none; }
   .rail-badge { position: absolute; top: 1px; right: 0; min-width: 14px; height: 14px; margin: 0; padding: 0 3px; font-size: 9px; }
-  .rail-dot { position: absolute; top: 4px; right: 4px; margin: 0; box-shadow: 0 0 0 2px var(--bg); }
+  .rail .rail-dot { position: absolute; top: 4px; right: 4px; margin: 0; box-shadow: 0 0 0 2px var(--bg); }
 
   .sidebar {
     position: fixed; z-index: 800; top: 0; bottom: 0; left: 0; width: min(300px, 86vw);
