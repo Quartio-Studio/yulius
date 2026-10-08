@@ -403,10 +403,14 @@ Account = {"id","provider","label","enabled","priority",
   "status":"pending_login|ok|relogin|error|limited",
   "usage":{"primary":{"used_percent":42.0,"resets_at":"…","window_minutes":300}|null,
            "secondary":{…}|null,"observed_at":"…|null"},
-  "last_error":"…|null","in_use_by":0}
+  "last_error":"…|null","in_use_by":0,
+  "email":"…|null","plan":"Pro|Max 5x|Max 20x|…|null"}
 ```
 
-Unknown usage is `null`, never zero. Credentials are never returned.
+Unknown usage is `null`, never zero. Credentials are never returned. `email` (the provider sign-in,
+administrators only) and `plan` (the subscription tier) are planned for UI-022: the web UI shows
+them when present, but **the server does not report them yet** (only the mock does), so today they
+are absent and the UI falls back to the label and provider.
 
 **Login terminal.** Each login runs Claude Code's own sign-in (`claude setup-token`) with a
 temporary config directory in a server-owned PTY 500 columns

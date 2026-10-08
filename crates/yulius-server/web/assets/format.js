@@ -45,6 +45,21 @@ export function dateTime(iso) {
 }
 
 /** Duration from milliseconds: "45 s", "12 min", "1 h 05 min", "2 d 3 h". */
+/**
+ * When a usage limit resets, the way Claude says it: "Resets at 5:50 PM" within a day,
+ * "Resets Friday 10:00 AM" within a week, otherwise "Resets Oct 12".
+ */
+export function resetLabel(iso, now = Date.now()) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const ahead = t - now;
+  const time = new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (ahead <= 0) return 'Resetting now';
+  if (ahead < 20 * 3600e3 && new Date(t).getDate() === new Date(now).getDate()) return `Resets at ${time}`;
+  if (ahead < 6.5 * 86400e3) return `Resets ${new Date(t).toLocaleDateString(undefined, { weekday: 'long' })} ${time}`;
+  return `Resets ${new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+}
+
 export function duration(ms) {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
   const s = Math.round(ms / 1000);

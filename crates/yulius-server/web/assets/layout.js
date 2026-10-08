@@ -2,7 +2,7 @@
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
 import { h, icon, iconButton, openMenu, setChildren, errorToast } from './dom.js';
-import { relShort, relLong, bytes, duration, dateTime } from './format.js';
+import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
 import { statusInfo, harnessInfo, allows } from './status.js';
 import { href } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions.js';
@@ -245,14 +245,27 @@ function usageBar(percent, label) {
 
 const percentText = (percent) => (Number.isFinite(percent) ? `${Math.round(percent)}%` : '—');
 
-/** "5-hour limit", "Weekly limit"… from a provider usage window. */
+/** The names Claude uses for its usage windows: "Current session" (5 h), "This week"… */
 function limitName(minutes, fallback) {
   if (!minutes) return fallback;
-  if (minutes === 10080) return 'Weekly limit';
-  if (minutes === 1440) return 'Daily limit';
-  if (minutes % 1440 === 0) return `${minutes / 1440}-day limit`;
-  if (minutes % 60 === 0) return `${minutes / 60}-hour limit`;
-  return `${minutes}-minute limit`;
+  if (minutes === 300) return 'Current session';
+  if (minutes === 10080) return 'This week';
+  if (minutes === 1440) return 'Today';
+  if (minutes % 1440 === 0) return `${minutes / 1440}-day window`;
+  if (minutes % 60 === 0) return `${minutes / 60}-hour window`;
+  return `${minutes}-minute window`;
+}
+
+/** Keeps a <details> open or closed across the panel's refresh (per browser). */
+function rememberOpen(details, key, openByDefault) {
+  const saved = readJson(STATUS_OPEN_KEY, {}) || {};
+  details.open = key in saved ? Boolean(saved[key]) : openByDefault;
+  details.addEventListener('toggle', () => {
+    const next = readJson(STATUS_OPEN_KEY, {}) || {};
+    next[key] = details.open;
+    writeJson(STATUS_OPEN_KEY, next);
+  });
+  return details;
 }
 
 /** One machine tile: icon and name, a big value, a bar and a detail line. */
@@ -266,16 +279,9 @@ function statTile(iconName, name, value, percent, detail) {
 
 /** A collapsible status section whose open state survives the panel's refresh. */
 function statusSection(key, iconName, title, summary, body, openByDefault) {
-  const saved = readJson(STATUS_OPEN_KEY, {}) || {};
-  const details = h('details', { class: 'status-section status-fold', open: key in saved ? Boolean(saved[key]) : openByDefault },
+  return rememberOpen(h('details', { class: 'status-section status-fold' },
     h('summary', null, icon('right', { size: 12 }), icon(iconName, { size: 15 }), h('h3', null, title), h('span', { class: 'status-summary-text' }, summary)),
-    h('div', { class: 'status-fold-body' }, body));
-  details.addEventListener('toggle', () => {
-    const next = readJson(STATUS_OPEN_KEY, {}) || {};
-    next[key] = details.open;
-    writeJson(STATUS_OPEN_KEY, next);
-  });
-  return details;
+    h('div', { class: 'status-fold-body' }, body)), key, openByDefault);
 }
 
 /**
@@ -332,40 +338,56 @@ export function renderStatus(data) {
       h('div', { class: 'status-facts' }, facts)),
     sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
     statusSection('accounts', 'user', 'Accounts', accounts.length ? accountSummary : 'none connected',
-      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No accounts connected.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map(accountUsage)), troubled.length > 0 || accounts.length <= 3),
+      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No accounts connected.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map((a) => accountUsage(a, { foldable: true, open: troubled.includes(a) }))), troubled.length > 0 || accounts.length <= 3),
   ];
 }
 
-/** Account usage block shared by the Status panel and the Accounts page. */
-export function accountUsage(account) {
+/** Initials for an account's avatar: from the email's name part, else from the label. */
+function accountInitials(account) {
+  const source = account.email ? account.email.split('@')[0] : (account.label || account.id || '?');
+  const parts = String(source).split(/[^A-Za-z0-9]+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  return (parts.length > 1 ? parts[0][0] + parts[1][0] : parts[0].slice(0, 2)).toUpperCase();
+}
+
+/**
+ * One account, shared by the Status panel (foldable: a row that expands) and the Accounts page:
+ * an avatar with initials, label, email and plan (when the provider reports them), its state when
+ * it is not ready, and each usage window as a horizontal row like Claude's own usage page.
+ */
+export function accountUsage(account, { foldable = false, open = false } = {}) {
   const usage = account.usage || {};
   const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
   const state = account.enabled === false
     ? { icon: 'x', tone: 'muted', label: 'Disabled' }
     : ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
-  const limitRow = (w, fallback) => {
+  const usageRow = (w, fallback) => {
     const name = limitName(w && w.window_minutes, fallback);
     const used = w ? w.used_percent : null;
-    return h('div', { class: 'limit-row' },
-      h('span', { class: 'limit-name' }, name),
+    return h('div', { class: 'usage-row' },
+      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? resetLabel(w.resets_at) : Number.isFinite(used) ? '' : 'Not known yet')),
       usageBar(used, name),
-      h('span', { class: ['limit-value', `tone-${toneOf(used)}`] }, percentText(used)),
-      h('span', { class: 'limit-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? `resets ${relLong(w.resets_at)}` : ''));
+      h('span', { class: ['usage-pct', `tone-${toneOf(used)}`] }, Number.isFinite(used) ? `${Math.round(used)}% used` : '—'));
   };
-  const showProvider = provider && !String(account.label || '').toLowerCase().includes(String(provider).toLowerCase());
-  return h('div', { class: ['account-card', account.enabled === false && 'disabled'] },
-    h('div', { class: 'account-head' },
-      icon('user', { size: 15 }),
-      h('strong', { class: 'ellipsis' }, account.label || account.id),
-      showProvider ? h('span', { class: 'muted xs' }, provider) : null,
-      h('span', { class: ['account-state', `state-${state.tone}`] }, icon(state.icon, { size: 12 }), state.label),
-      h('span', { class: 'spacer' }),
-      account.in_use_by ? h('span', { class: 'status-count live', title: `${account.in_use_by} live tasks use this account` }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'}`) : null),
-    account.last_error ? h('div', { class: 'account-error' }, account.last_error) : null,
-    limitRow(usage.primary, 'Short-term limit'),
-    limitRow(usage.secondary, 'Long-term limit'),
-    h('div', { class: 'muted xs' }, usage.observed_at ? `updated ${relLong(usage.observed_at)}` : 'usage not known yet'),
-  );
+  const primary = usage.primary;
+  const head = [
+    h('span', { class: 'avatar account-avatar', 'aria-hidden': 'true' }, accountInitials(account)),
+    h('span', { class: 'account-who' },
+      h('span', { class: 'account-name' }, h('strong', { class: 'ellipsis' }, account.label || account.id), account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
+      h('span', { class: 'account-sub' }, account.email || provider)),
+    state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`] }, icon(state.icon, { size: 12 }), state.label) : null,
+    foldable ? h('span', { class: 'account-glance', title: 'Current session' }, usageBar(primary ? primary.used_percent : null, 'Current session'), h('span', { class: ['usage-pct', `tone-${toneOf(primary ? primary.used_percent : null)}`] }, primary && Number.isFinite(primary.used_percent) ? `${Math.round(primary.used_percent)}%` : '—')) : null,
+    foldable ? icon('down', { size: 14 }) : null,
+  ];
+  const body = h('div', { class: 'account-body' },
+    account.last_error ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.last_error)) : null,
+    usageRow(usage.primary, 'Current session'),
+    usageRow(usage.secondary, 'Longer window'),
+    h('div', { class: 'account-foot' },
+      account.in_use_by ? h('span', { class: 'status-count live' }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'} on this account`) : h('span', null, 'No tasks right now'),
+      h('span', null, usage.observed_at ? `Updated ${relLong(usage.observed_at)}` : 'Usage not known yet')));
+  if (!foldable) return h('div', { class: ['account-card', account.enabled === false && 'disabled'] }, h('div', { class: 'account-head' }, head), body);
+  return rememberOpen(h('details', { class: ['account-fold', account.enabled === false && 'disabled'] }, h('summary', { class: 'account-head' }, head), body), `account:${account.id}`, open);
 }
 
 // ---------------------------------------------------------------- sidebar
