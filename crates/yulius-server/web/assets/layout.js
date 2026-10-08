@@ -55,7 +55,6 @@ export function createTabRow(ctx) {
   statusButton.addEventListener('click', () => statusPanel.toggle());
 
   const el = h('header', { class: 'tabrow' },
-    h('div', { class: 'brand', title: 'Yulius' }, 'Y'),
     hamburger,
     tabs,
     select,

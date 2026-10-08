@@ -253,9 +253,8 @@ p { margin: 0; }
 /* sandbox tab row: thin (≤ 36 px), overflow scrolls (UI-008) */
 .tabrow {
   grid-area: tabs; display: flex; align-items: stretch; gap: 4px; min-width: 0;
-  height: var(--tabrow-h); padding: 0 6px 0 0; background: var(--bg); border-bottom: 1px solid var(--border);
+  height: var(--tabrow-h); padding: 0 6px 0 8px; background: var(--bg); border-bottom: 1px solid var(--border);
 }
-.brand { display: flex; align-items: center; justify-content: center; width: var(--sidebar-mini-w); flex: none; color: var(--accent); font-weight: 700; font-size: 14px; letter-spacing: -0.02em; }
 .tabrow-tabs { display: flex; align-items: stretch; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .tabrow-tabs::-webkit-scrollbar { display: none; }
 .tab {
@@ -781,7 +780,6 @@ a.settings-tile:hover { background: var(--surface-3); border-color: var(--border
     grid-template-rows: var(--tabrow-h) minmax(0, 1fr);
     grid-template-areas: "tabs rail" "main main";
   }
-  .brand { display: none; }
   .hamburger { display: inline-flex; align-self: center; width: 36px; height: 36px; margin-left: 4px; }
   .tabrow { padding-right: 2px; gap: 2px; border-bottom: 1px solid var(--border); }
   .tabrow-right { gap: 4px; padding-right: 0; }
