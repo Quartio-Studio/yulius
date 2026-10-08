@@ -49,6 +49,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   const size = fontSize || (window.matchMedia('(max-width: 767px)').matches ? 12 : 13);
   const term = new Terminal({
     fontFamily: token('--font-mono'), // the same typeface as the UI's code (tokens.css)
+    fontWeight: 400,
+    fontWeightBold: 600, // a weight the UI scale (and a brand font's files) provides
     fontSize: size,
     lineHeight: 1.15,
     cursorBlink: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,

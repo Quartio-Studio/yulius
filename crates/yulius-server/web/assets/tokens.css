@@ -258,12 +258,14 @@
 /* ---------------------------------------------------------------- Brand typeface (optional)
    Self-hosted only (no font CDNs: the serving contract allows this origin alone). Put the .woff2
    files in assets/fonts/, uncomment and rename, then name the family first in --font above.
+   A static font needs one @font-face per weight the UI uses (400, 500, 600); a weight range such as
+   "400 600" is only for a variable font file — on a static file it makes every weight look the same.
 
-@font-face {
-  font-family: "Brand Sans";
-  src: url("/assets/fonts/brand-sans.woff2") format("woff2");
-  font-weight: 400 600;
-  font-style: normal;
-  font-display: swap;
-}
+Static files, one per weight:
+@font-face { font-family: "Brand Sans"; src: url("/assets/fonts/brand-sans-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Brand Sans"; src: url("/assets/fonts/brand-sans-500.woff2") format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "Brand Sans"; src: url("/assets/fonts/brand-sans-600.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+
+Or one variable file:
+@font-face { font-family: "Brand Sans"; src: url("/assets/fonts/brand-sans-var.woff2") format("woff2-variations"); font-weight: 100 900; font-display: swap; }
 */

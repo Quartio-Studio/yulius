@@ -74,7 +74,8 @@ and component in the current theme and computes contrast as you change things.
 Fonts are self-hosted (no CDNs). Put the `.woff2` files in `assets/fonts/`, enable the `@font-face`
 template at the end of `tokens.css`, and put the family first in `--font` (UI text) and/or
 `--font-mono` (code, terminals and the editor read it too). Keep the weights the scale uses (400,
-500, 600) and check `/design`.
+500, 600): a static font needs one `@font-face` per weight; a weight range is only for a variable
+font (on a static file it makes every weight identical). Then check `/design`.
 
 ### How the tokens are layered (`assets/tokens.css`)
 
