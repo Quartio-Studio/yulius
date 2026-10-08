@@ -2,7 +2,7 @@
 // the same code the app uses. Change tokens.css or brand.js and this page shows the result in both
 // themes; contrast ratios are computed live with the WCAG formula the repository check uses.
 
-import { h, icon, iconButton, badge, iconBadge, toggle, meter, statusMark, itemCard, ICON_NAMES, setChildren, toast } from '../dom.js';
+import { h, icon, iconButton, badge, iconBadge, toggle, meter, statusMark, itemCard, ICON_NAMES, setChildren, toast, keepFocus } from '../dom.js';
 import { statusInfo } from '../status.js';
 import { BRAND } from '../brand.js';
 import { THEME_CHOICES, themeChoice, setThemeChoice, token, onThemeChange } from '../theme.js';
@@ -69,7 +69,8 @@ export function mountDesignPage(ctx) {
         h('span', { class: 'ds-swatch-text' }, h('code', null, name), h('span', { class: 'muted xs mono' }, value),
           ratio ? h('span', { class: ['xs', ratio >= 4.5 ? 'ds-pass' : 'ds-fail'] }, `${ratio.toFixed(2)}:1 on ${name === '--term-fg' ? 'terminal' : 'surface'}`) : null));
     };
-    setChildren(body,
+    // The theme switch rebuilds the page; keyboard focus stays on the same control.
+    keepFocus(body, () => setChildren(body,
       section('Brand', 'brand.js: name, tagline and mark; colours are the --brand-* ramp in tokens.css.',
         h('div', { class: 'row-wrap ds-brand' },
           h('span', { class: 'sidebar-brand', style: { padding: 0 } }, h('span', { class: 'brand-logo' }, icon('logo', { size: 28 })), h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, BRAND.name), h('span', { class: 'brand-by' }, BRAND.tagline))),
@@ -103,7 +104,7 @@ export function mountDesignPage(ctx) {
           iconButton('trash', 'Quiet danger', () => toast('Quiet danger'), { class: 'btn-quiet-danger' })),
         h('div', { class: 'row-wrap' },
           h('input', { class: 'input ds-input', placeholder: 'Input with placeholder' }),
-          h('select', { class: 'select ds-select' }, h('option', null, 'Select')),
+          h('select', { class: 'select ds-select', 'aria-label': 'Sample select' }, h('option', null, 'Select')),
           h('div', { class: 'seg' }, ['One', 'Two', 'Three'].map((label, i) => h('label', null, h('input', { type: 'radio', name: 'ds-seg', checked: i === 0 }), label))),
           toggle({ checked: true, label: 'Sample switch, on', onChange: () => {} }),
           toggle({ checked: false, label: 'Sample switch, off', onChange: () => {} }),
@@ -121,7 +122,7 @@ export function mountDesignPage(ctx) {
         h('div', { class: 'item-list' },
           itemCard({ iconName: 'workflow', title: 'Feature', badges: [iconBadge('globe', 'Whole instance', 'violet'), iconBadge('check', 'Tests required', '')], description: 'Spec, implementation, tests and a pull request.', extra: h('ol', { class: 'steps-line' }, ['Write spec', 'Implement', 'Test'].map((s, i) => h('li', null, h('span', { class: 'step-num' }, String(i + 1)), s))), controls: [iconButton('trash', 'Delete', () => toast('Delete'), { class: 'btn-quiet-danger' })], onOpen: () => toast('Opened') }),
           itemCard({ iconName: 'book', title: 'A disabled item', description: 'Dimmed, still readable.', dim: true, controls: [toggle({ checked: false, label: 'A disabled item enabled', onChange: () => {} })], onOpen: () => toast('Opened') }))),
-    );
+    ));
   }
 
   render();
