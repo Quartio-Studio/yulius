@@ -205,6 +205,8 @@ p { margin: 0; }
 .menu-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
 .menu-desc { color: var(--muted); font-size: var(--fs-xs); white-space: normal; }
 .menu-check { display: inline-flex; width: 14px; flex: none; color: var(--accent); }
+.menu-icon { display: inline-flex; width: 16px; flex: none; color: var(--muted); }
+.menu-item:hover .menu-icon, .menu-item:focus-visible .menu-icon { color: var(--text-2); }
 .menu-item.rich .menu-check { margin-top: 2px; }
 .menu-sep { height: 1px; margin: 4px 2px; background: var(--border); }
 .menu-header { padding: 6px 10px 4px; color: var(--muted); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.04em; }

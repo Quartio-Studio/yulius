@@ -76,6 +76,13 @@ const ICONS = {
   sidebar: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M9 4v16' }]],
   tools: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M15 4v16' }]],
   logo: [['path', { d: 'M6.75 6L12 12.75 17.25 6M12 12.75v6' }]],
+  archive: [['rect', { x: 3, y: 4, width: 18, height: 5, rx: 1.5 }], ['path', { d: 'M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4' }]],
+  key: [['circle', { cx: 8, cy: 15, r: 4 }], ['path', { d: 'M10.8 12.2L20 3M16 7l3 3M14 9l2 2' }]],
+  gear: [['circle', { cx: 12, cy: 12, r: 3 }], ['path', { d: 'M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z' }]],
+  users: [['circle', { cx: 9, cy: 8, r: 3.5 }], ['path', { d: 'M2.5 20c1.2-3.4 3.7-5.2 6.5-5.2s5.3 1.8 6.5 5.2M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.9c1.6.6 2.8 2.3 3.5 5.1' }]],
+  plug: [['path', { d: 'M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4' }]],
+  book: [['path', { d: 'M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5zM4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5' }]],
+  logout: [['path', { d: 'M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4' }]],
   cpu: [['rect', { x: 6, y: 6, width: 12, height: 12, rx: 2 }], ['rect', { x: 9.5, y: 9.5, width: 5, height: 5, rx: 0.5 }], ['path', { d: 'M9.5 3v3M14.5 3v3M9.5 18v3M14.5 18v3M3 9.5h3M3 14.5h3M18 9.5h3M18 14.5h3' }]],
   memory: [['rect', { x: 3, y: 7, width: 18, height: 9, rx: 1.5 }], ['path', { d: 'M7.5 10v3M12 10v3M16.5 10v3M6 16v3M10 16v3M14 16v3M18 16v3' }]],
   disk: [['rect', { x: 3, y: 5, width: 18, height: 14, rx: 2 }], ['path', { d: 'M3 13.5h18M7 16.5h4' }], ['circle', { cx: 17, cy: 16.5, r: 0.9, fill: 'currentColor' }]],
@@ -290,7 +297,7 @@ export function closeMenu() {
 
 /**
  * Show a menu at an anchor element or {x, y} point.
- * items: [{label, onSelect, disabled, danger, hint, description, checked, header, separator, href}]
+ * items: [{label, onSelect, disabled, danger, hint, description, checked, icon, header, separator, href}]
  * `description` adds a second line; `checked` (true/false) makes the item a choice with a check mark.
  */
 export function openMenu(anchor, items, { align = 'start' } = {}) {
@@ -306,6 +313,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       : h('span', { class: 'menu-label' }, item.label);
     const el = h('button', { type: 'button', role: choice ? 'menuitemradio' : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', item.description && 'rich'], disabled: item.disabled, title: item.title || null, onClick: () => { closeMenu(); item.onSelect && item.onSelect(); } },
       choice ? h('span', { class: 'menu-check' }, item.checked ? icon('check', { size: 14 }) : null) : null,
+      item.icon ? h('span', { class: 'menu-icon' }, icon(item.icon, { size: 15 })) : null,
       label, item.hint ? h('span', { class: 'menu-hint' }, item.hint) : null);
     menu.append(el);
   }

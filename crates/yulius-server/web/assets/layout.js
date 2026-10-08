@@ -154,20 +154,20 @@ function openUserMenu(ctx, anchor) {
   const sandbox = ctx.currentSandbox() || ctx.store.state.sandboxes[0] || null;
   const items = [
     { header: `${user.display_name || user.login || 'Signed in'}${user.login ? ` · @${user.login}` : ''}${superadmin ? ' · superadmin' : ''}` },
-    { label: 'Archived tasks', onSelect: () => ctx.navigate('/archived') },
-    { label: 'CLI device approval', onSelect: () => ctx.navigate('/device') },
+    { label: 'Archived tasks', icon: 'archive', onSelect: () => ctx.navigate('/archived') },
+    { label: 'CLI device approval', icon: 'key', onSelect: () => ctx.navigate('/device') },
   ];
   if (instanceAdmin) {
     items.push({ separator: true }, { header: 'Administration' });
-    if (superadmin) items.push({ label: 'Users', onSelect: () => ctx.navigate('/admin/users') });
-    items.push({ label: 'Accounts', onSelect: () => ctx.navigate('/admin/accounts') });
-    if (superadmin) items.push({ label: 'GitHub connection', onSelect: () => ctx.navigate('/admin/github') });
+    if (superadmin) items.push({ label: 'Users', icon: 'users', onSelect: () => ctx.navigate('/admin/users') });
+    items.push({ label: 'Accounts', icon: 'user', onSelect: () => ctx.navigate('/admin/accounts') });
+    if (superadmin) items.push({ label: 'GitHub connection', icon: 'github', onSelect: () => ctx.navigate('/admin/github') });
     items.push(
-      { label: 'Instance MCP', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/mcp?scope=instance`) },
-      { label: 'Instance skills', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills?source=instance`) },
+      { label: 'Instance MCP', icon: 'plug', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/mcp?scope=instance`) },
+      { label: 'Instance skills', icon: 'book', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills?source=instance`) },
     );
   }
-  items.push({ separator: true }, { label: 'Sign out', onSelect: () => ctx.signOut() });
+  items.push({ separator: true }, { label: 'Sign out', icon: 'logout', onSelect: () => ctx.signOut() });
   openMenu(anchor, items);
 }
 
