@@ -55,13 +55,14 @@ export function mountMcpPage(ctx, sandbox, route) {
   function render() {
     const shown = servers.filter((s) => !scopeFilter.value || s.scope === scopeFilter.value);
     if (shown.length === 0) return h('div', { class: 'card placeholder' }, servers.length ? 'No server in this scope.' : 'No MCP servers yet. Add e.g. the Quartio MCP (HTTP) or the Apify MCP (stdio).');
-    return h('div', { class: 'card list' }, shown.map((server) => {
+    return h('div', { class: 'server-list' }, shown.map((server) => {
       const testResult = h('div', { class: 'small' });
-      return h('div', { class: 'list-item', style: { alignItems: 'flex-start' } },
+      return h('div', { class: ['server-card', !server.enabled && 'off'] },
         toggle({ checked: server.enabled, disabled: !canManage(server), label: `${server.enabled ? 'Disable' : 'Enable'} ${server.name}`, onChange: async (checked, input) => {
           try {
             await ctx.api.put(`/api/mcp/${enc(server.id)}`, { ...baseBody(server), enabled: checked });
             server.enabled = checked;
+            input.closest('.server-card').classList.toggle('off', !checked);
           } catch (error) {
             input.checked = !checked;
             errorToast(error, 'Could not update server');
