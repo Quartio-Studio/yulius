@@ -5,7 +5,7 @@
 // checks, author and age on the right. Filters (state tabs with counts, Author and Origin
 // multi-select, search) live in the URL so a filtered view can be shared as a link.
 
-import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu } from '../dom.js';
+import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
@@ -137,7 +137,13 @@ export function mountTasksPage(ctx, sandbox) {
   function render() {
     syncUrl();
     const tasks = ctx.store.tasksOf(sandbox.id);
-    if (tasks === null) { setChildren(listHost, h('div', { class: 'placeholder placeholder-loading' }, 'Loading…')); return; }
+    if (tasks === null) {
+      const error = ctx.store.tasksError(sandbox.id);
+      setChildren(listHost, error
+        ? loadError(`Couldn’t load the tasks of ${sandbox.name}: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
+        : h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
+      return;
+    }
     const me = myLogin();
     const q = search.value.trim().toLowerCase();
     const items = tasks.map((task) => { const info = taskInfo(task, ctx.store.state.actionRequests); return { task, info, group: groupOf(task, info) }; });

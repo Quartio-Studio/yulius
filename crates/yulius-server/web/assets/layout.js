@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus, loadError } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
 import { taskInfo, activityLine, allows } from './status.js';
 import { href } from './router.js';
@@ -546,7 +546,10 @@ export function createSidebar(ctx) {
     const all = ctx.store.tasksOf(sandbox.id);
     if (all === null) {
       shape = '';
-      setChildren(list, h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
+      const error = ctx.store.tasksError(sandbox.id);
+      setChildren(list, error
+        ? loadError(`Couldn’t load tasks: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
+        : h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
       return;
     }
     // A task the user left normally is done for now: it stays under Tasks (with Continue) but

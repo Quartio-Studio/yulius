@@ -507,6 +507,12 @@ export function itemCard({ iconName, iconEl, title, badges = [], description, ex
     h('div', { class: 'item-controls' }, controls, onOpen ? h('span', { class: 'item-chevron', 'aria-hidden': 'true' }, icon('right', { size: 16 })) : null));
 }
 
+/** A load that failed, said inline with a way out (not a spinner forever or a vanished toast). */
+export function loadError(text, retry) {
+  return h('div', { class: 'banner banner-danger load-error', role: 'alert' }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, text),
+    retry ? h('button', { type: 'button', class: 'btn btn-sm', onClick: retry }, 'Try again') : null);
+}
+
 /** A task state mark: the state's SVG icon in its tone (statusInfo from status.js). */
 export function statusMark(info, size = 14) {
   return h('span', { class: ['glyph', `tone-${info.tone}`], role: 'img', 'aria-label': info.label, title: info.label }, icon(info.icon, { size }));

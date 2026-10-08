@@ -397,6 +397,12 @@ function createApp(root, transport) {
       case 'task': {
         await ensureTasks(sandbox);
         if (currentRoute !== route) return;
+        if (store.tasksOf(sandbox.id) === null && store.tasksError(sandbox.id)) {
+          // The list failed to load: say so, rather than "Task #12 was not found".
+          message(`tasks-error:${sandbox.id}:${route.number}`, `Couldn’t load the tasks of ${sandbox.name}: ${store.tasksError(sandbox.id).message}`,
+            h('button', { type: 'button', class: 'btn btn-sm space-top', onClick: () => store.loadTasks(sandbox.id).then(() => refreshRoute(), () => {}) }, 'Try again'));
+          break;
+        }
         task = await findTaskByNumber(sandbox, route.number);
         if (currentRoute !== route) return;
         if (!task) { message(`missing-task:${sandbox.id}:${route.number}`, `Task #${route.number} was not found in ${sandbox.name}.`); break; }

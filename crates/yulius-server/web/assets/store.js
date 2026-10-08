@@ -34,6 +34,7 @@ export function createStore(api) {
     me: null,
     sandboxes: [],
     tasks: new Map(), // sandbox id → Map(task id → TaskSummary)
+    taskErrors: new Map(), // sandbox id → the error of its last failed list load
     actionRequests: new Map(), // sandbox id → Map(tab id → {reason, task_id})
     eventsStatus: 'closed',
   };
@@ -93,7 +94,16 @@ export function createStore(api) {
   }
 
   async function loadTasks(sandboxId) {
-    const list = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
+    let list;
+    try {
+      list = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
+    } catch (error) {
+      // Lists show this with a retry instead of "Loading…" forever.
+      state.taskErrors.set(sandboxId, error);
+      emit('tasks', sandboxId);
+      throw error;
+    }
+    state.taskErrors.delete(sandboxId);
     const map = new Map();
     for (const task of Array.isArray(list) ? list : []) if (!task.archived) map.set(task.id, task);
     state.tasks.set(sandboxId, map);
@@ -215,6 +225,7 @@ export function createStore(api) {
     upsertTask,
     removeTask,
     tasksOf,
+    tasksError: (sandboxId) => state.taskErrors.get(sandboxId) || null,
     findTask,
     clearActionRequest,
     handleEvent,
