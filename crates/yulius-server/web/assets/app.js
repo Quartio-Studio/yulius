@@ -116,8 +116,10 @@ function createApp(root, transport) {
   function renderSignIn() {
     const loc = currentLocation();
     const next = loc.path === '/signin' ? loc.query.get('next') || '/' : loc.full;
-    const error = loc.query.get('error');
-    navigate(`/signin?next=${encodeURIComponent(next)}${error ? `&error=${encodeURIComponent(error)}` : ''}`, { replace: true });
+    // The server never sends ?error= here, so a crafted link must not put its own words on the
+    // sign-in page (content spoofing): any value shows one fixed sentence.
+    const error = loc.query.get('error') ? 'Sign-in did not complete. Try again.' : null;
+    navigate(`/signin?next=${encodeURIComponent(next)}`, { replace: true });
     setChildren(root, mountSignIn(ctx, { next, error, onDone: (me, target) => signedIn(me, target) }).el);
   }
 
