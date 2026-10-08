@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus, loadError, coalesce } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
 import { taskInfo, activityLine, allows } from './status.js';
 import { href } from './router.js';
@@ -224,7 +224,7 @@ function createStatusPanel(ctx, button) {
     button.setAttribute('aria-expanded', 'true');
     offFocus = popoverFocus(el, button, close);
     load();
-    timer = setInterval(load, 10000);
+    timer = setInterval(() => { if (!pollPaused()) load(); }, 10000);
     onDoc = (event) => { if (el && !el.contains(event.target) && !button.contains(event.target)) close(); };
     onKey = (event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); button.focus(); } };
     setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);

@@ -593,6 +593,11 @@ export function itemCard({ iconName, iconEl, title, badges = [], description, ex
     h('div', { class: 'item-controls' }, controls, onOpen ? h('span', { class: 'item-chevron', 'aria-hidden': 'true' }, icon('right', { size: 16 })) : null));
 }
 
+/** True while polling would be wasted: the tab is hidden or the browser is offline (PERF-12). */
+export function pollPaused() {
+  return document.hidden || navigator.onLine === false;
+}
+
 /**
  * Coalesces repaints driven by live events (PERF-02): any number of calls before the next frame
  * run `fn` once, and runs are at least `minInterval` ms apart, so a burst of task events repaints a

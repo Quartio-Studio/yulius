@@ -5,7 +5,7 @@
 // checks, author and age on the right. Filters (state tabs with counts, Author and Origin
 // multi-select, search) live in the URL so a filtered view can be shared as a link.
 
-import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce } from '../dom.js';
+import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, pollPaused } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
@@ -277,7 +277,9 @@ export function mountTasksPage(ctx, sandbox) {
   }
 
   // Pull requests and checks: one read per sandbox, refreshed every minute and on focus.
+  let pullsAt = 0;
   async function loadPulls() {
+    pullsAt = Date.now();
     try {
       const git = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`);
       if (!alive) return; // the page was left while the read was in flight
@@ -317,9 +319,12 @@ export function mountTasksPage(ctx, sandbox) {
     if (search.value) { search.value = ''; render(); } else search.blur();
   });
   document.addEventListener('keydown', onKey);
-  const onFocus = () => loadPulls();
+  // Pull requests refresh every minute while the page is in view and online, and when you come
+  // back to it (at most every 15 s), not while the tab is hidden (PERF-12).
+  const onFocus = () => { if (!pollPaused() && Date.now() - pullsAt > 15_000) loadPulls(); };
   window.addEventListener('focus', onFocus);
-  const timer = setInterval(loadPulls, 60_000);
+  document.addEventListener('visibilitychange', onFocus);
+  const timer = setInterval(() => { if (!pollPaused()) loadPulls(); }, 60_000);
   // Live events repaint at most every 200 ms; the user's own clicks and keys render at once.
   const repaint = coalesce(render, { minInterval: 200 });
   const offs = [
@@ -344,6 +349,7 @@ export function mountTasksPage(ctx, sandbox) {
     offs.forEach((off) => off());
     document.removeEventListener('keydown', onKey);
     window.removeEventListener('focus', onFocus);
+    document.removeEventListener('visibilitychange', onFocus);
     clearInterval(timer);
   } };
 }
