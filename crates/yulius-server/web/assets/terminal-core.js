@@ -48,7 +48,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     renderMouseToggle();
   });
 
-  const size = fontSize || px(isPhone() ? '--fs-sm' : '--fs'); // the UI's body size, from tokens.css
+  const termSize = () => fontSize || px(isPhone() ? '--fs-sm' : '--fs-term'); // tokens.css
+  const size = termSize();
   const term = new Terminal({
     fontFamily: token('--font-mono'), // the same typeface as the UI's code (tokens.css)
     fontWeight: 400,
@@ -75,9 +76,11 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   const offTheme = onThemeChange(() => {
     term.options.theme = terminalColors();
     const font = token('--font-mono');
-    if (font && term.options.fontFamily !== font) {
-      term.options.fontFamily = font;
-      if (opened) applySize(); // new glyph widths: fit the grid again
+    const nextSize = termSize();
+    if ((font && term.options.fontFamily !== font) || (nextSize && term.options.fontSize !== nextSize)) {
+      if (font) term.options.fontFamily = font;
+      if (nextSize) term.options.fontSize = nextSize;
+      if (opened) applySize(); // new glyph sizes: fit the grid again
     }
   });
   const fit = new FitAddon();

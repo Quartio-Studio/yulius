@@ -258,6 +258,7 @@
   --fs-lg: 16px;  --lh-lg: 24px;   /* section, panel and modal titles */
   --fs-xl: 20px;  --lh-xl: 28px;   /* page titles, wordmark, tile values */
   --fs-2xl: 24px; --lh-2xl: 32px;  /* display numbers */
+  --fs-term: var(--fs);            /* terminals on wider screens (phones use --fs-sm) */
 
   /* Control heights: every button, input, select, picker and clickable row. */
   --control-sm: 24px;  /* small buttons, inline row actions, inline selects */
