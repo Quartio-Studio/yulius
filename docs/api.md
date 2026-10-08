@@ -230,6 +230,22 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   and `blocked` to `GitOverview.tasks[]` lets it skip those reads (it uses them when present);
   a `release` summary (production and integration heads, what is waiting, the last release:
   who, when, which tasks) would let it say *when* and *by whom* production last changed.
+- **Task changes (proposed).** The Git page's review of a task (UI-031: Git → a task → Changes,
+  Commits, Branch, then "Go to task") reads two endpoints the server does not have yet; until it
+  does, the review says so. `GET /api/tasks/{tid}/changes` (read) → `TaskChanges`, the task
+  worktree (committed and uncommitted) against the merge base with `origin/<integration>`;
+  `GET /api/tasks/{tid}/commits` (read) → `[TaskCommit]`, the task branch's commits not on the
+  integration branch, newest first. Large diffs may be cut (`truncated: true`); binary files carry
+  no hunks.
+
+  ```json
+  TaskChanges = {"base":"<integration>","head":"<task branch>","base_sha","head_sha",
+    "ahead":0,"behind":0,"uncommitted":0,"truncated":false,
+    "files":[{"path","old_path":"…|null","status":"added|modified|deleted|renamed",
+      "insertions":0,"deletions":0,"binary":false,
+      "hunks":[{"header":"@@ -12,7 +12,19 @@","lines":[{"kind":"ctx|add|del","old":12|null,"new":12|null,"text":"…"}]}]}]}
+  TaskCommit = {"sha","subject","author","at","files":0,"insertions":0,"deletions":0}
+  ```
 - **Stage reconciliation.** Reading a task's delivery aligns the stored stage with GitHub: a PR
   opened, merged or closed outside Yulius moves the stage (`none`→`pr_open`, →`merged_integration`,
   `pr_open`→`none`). `env_done` carries the environment in `environment`. `blocked` lists the

@@ -105,6 +105,8 @@ const ICONS = {
   disk: [['rect', { x: 3, y: 5, width: 18, height: 14, rx: 2 }], ['path', { d: 'M3 13.5h18M7 16.5h4' }], ['circle', { cx: 17, cy: 16.5, r: 0.9, fill: 'currentColor' }]],
   clock: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 7v5l3 2' }]],
   shield: [['path', { d: 'M12 3l7 3v5.5c0 4.5-3 7.8-7 9.5-4-1.7-7-5-7-9.5V6z' }]],
+  file: [['path', { d: 'M6.5 3h7.5l4.5 4.5V21h-12z' }], ['path', { d: 'M14 3v4.5h4.5' }]],
+  wrap: [['path', { d: 'M4 6h16M4 12h13a3 3 0 0 1 0 6h-4M4 18h5' }], ['path', { d: 'M15 16l-2 2 2 2' }]],
   folder: [['path', { d: 'M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.2h7.5A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z' }]],
   user: [['circle', { cx: 12, cy: 8, r: 3.8 }], ['path', { d: 'M4.5 20c1.4-3.6 4.3-5.5 7.5-5.5s6.1 1.9 7.5 5.5' }]],
   contrast: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 3a9 9 0 0 0 0 18z', fill: 'currentColor', stroke: 'none' }]],

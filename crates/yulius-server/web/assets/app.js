@@ -19,6 +19,7 @@ import { openSandboxDialog } from './actions.js';
 import { mountSetup, mountSignIn } from './pages/auth.js';
 import { mountTasksPage, mountArchivedPage, mountDevicePage } from './pages/tasks.js';
 import { mountGitPage } from './pages/git.js';
+import { mountGitTaskView } from './pages/gittask.js';
 import { mountWorkflowsPage } from './pages/workflows.js';
 import { mountSkillsPage } from './pages/skills.js';
 import { mountAutomationsPage } from './pages/automations.js';
@@ -477,6 +478,17 @@ function createApp(root, transport) {
         if (currentRoute !== route) return;
         if (!task) { message(`missing-task:${sandbox.id}:${route.number}`, `Task #${route.number} was not found in ${sandbox.name}.`); break; }
         setCenter(`task:${task.id}`, () => mountTaskView(ctx, sandbox, task), { paper: false });
+        break;
+      }
+      case 'gitTask': {
+        // Git → a task's changes: found like a task (archived and closed ones included).
+        await ensureTasks(sandbox);
+        if (currentRoute !== route) return;
+        const reviewed = await findTaskByNumber(sandbox, route.number);
+        if (currentRoute !== route) return;
+        if (!reviewed) { message(`missing-task:${sandbox.id}:${route.number}`, `Task #${route.number} was not found in ${sandbox.name}.`); break; }
+        const view = setCenter(`git-task:${reviewed.id}`, () => mountGitTaskView(ctx, sandbox, reviewed, route));
+        if (view.update) view.update(route);
         break;
       }
       case 'composer':

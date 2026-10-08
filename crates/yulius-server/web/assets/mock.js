@@ -659,6 +659,86 @@ route('GET', `/api/sandboxes/${ID}/git`, ({ db, p }) => {
   };
 });
 route('GET', `/api/tasks/${ID}/delivery`, ({ db, p }) => delivery(db, taskOf(db, p[0])));
+// A task's changes and commits (proposed API, docs/api.md "Task changes"): synthetic but
+// consistent with the overview's counts, so the Git page's review shows believable diffs.
+const CHANGE_FILES = [
+  ['src/api/checkout.rs', 'rs'], ['src/domain/tax.rs', 'rs'], ['src/api/cart.rs', 'rs'], ['tests/checkout_test.rs', 'rs'],
+  ['web/src/pages/Checkout.tsx', 'tsx'], ['web/src/components/CartSummary.tsx', 'tsx'], ['web/src/api/client.ts', 'ts'],
+  ['docs/specs/checkout.md', 'md'], ['migrations/0007_tax_rules.sql', 'sql'], ['Cargo.toml', 'toml'], ['src/lib.rs', 'rs'],
+  ['web/src/styles/checkout.css', 'css'], ['.agents/skills/checkout/SKILL.md', 'md'], ['config/tax.yaml', 'yaml'],
+  ['src/domain/money.rs', 'rs'], ['web/src/hooks/useCart.ts', 'ts'], ['README.md', 'md'], ['src/api/mod.rs', 'rs'],
+  ['web/src/components/TaxBreakdown.tsx', 'tsx'], ['tests/tax_rules_test.rs', 'rs'], ['src/domain/discount.rs', 'rs'],
+  ['web/src/pages/Cart.tsx', 'tsx'], ['docs/adr/0012-tax-engine.md', 'md'],
+];
+const CODE = {
+  rs: ['use crate::domain::{Cart, Money};', 'pub fn cart_total(cart: &Cart, rules: &TaxRules) -> Result<Money, CheckoutError> {', '    let subtotal = cart.subtotal();', '    let tax = rules.tax_for(&cart.region)?;', '    let discount = cart.discount().unwrap_or_default();', '    Ok(subtotal + tax - discount)', '}', '', '#[derive(Debug, Clone, PartialEq)]', 'pub struct TaxLine { pub label: String, pub amount: Money }', 'impl TaxRules {', '    pub fn for_region(region: &Region) -> Option<&TaxRule> {', '        self.rules.iter().find(|rule| rule.applies_to(region))', '    }', '}', '#[test]', 'fn totals_include_tax() {', '    assert_eq!(cart_total(&cart(), &rules()).unwrap(), Money::eur(12_30));', '}'],
+  tsx: ["import { useCart } from '../hooks/useCart';", 'export function CartSummary({ cart }: Props) {', '  const { total, tax } = useCart(cart);', '  return (', '    <section className="cart-summary">', '      <TaxBreakdown lines={tax.lines} />', '      <p className="total">{format(total)}</p>', '    </section>', '  );', '}', '', "const format = (money: Money) => money.toLocaleString('en', { style: 'currency', currency: money.currency });"],
+  ts: ["export async function getCart(id: string): Promise<Cart> {", "  const res = await fetch(`/api/carts/${id}`);", "  if (!res.ok) throw new ApiError(res.status, await res.text());", '  return res.json();', '}', '', 'export type Cart = { id: string; lines: CartLine[]; region: string };'],
+  md: ['# Checkout', '', '## Goal', 'Customers see the tax for their region before they pay.', '', '## Plan', '- [x] Tax rules per region', '- [x] Cart totals with tax', '- [ ] Checkout page shows the breakdown', '', 'Totals are computed on the server; the page only formats them.'],
+  sql: ['CREATE TABLE tax_rules (', '  id BIGSERIAL PRIMARY KEY,', '  region TEXT NOT NULL,', '  rate_basis_points INTEGER NOT NULL,', '  valid_from DATE NOT NULL', ');', 'CREATE INDEX tax_rules_region ON tax_rules (region, valid_from);'],
+  toml: ['[dependencies]', 'rust_decimal = "1.36"', 'serde = { version = "1", features = ["derive"] }', 'thiserror = "2"'],
+  css: ['.cart-summary {', '  display: grid;', '  gap: 8px;', '}', '.cart-summary .total { font-weight: 600; }'],
+  yaml: ['regions:', '  - code: PL', '    rate: 23', '  - code: DE', '    rate: 19', '  - code: FR', '    rate: 20'],
+};
+function taskChanges(db, task) {
+  const sandbox = sandboxOf(db, task.sandbox_id);
+  const n = task.number;
+  const count = (n * 7) % 23 + 1;
+  let adds = (n * 131) % 900 + 12;
+  let dels = (n * 37) % 200;
+  const files = [];
+  for (let i = 0; i < count; i += 1) {
+    const [path, ext] = CHANGE_FILES[(i + n) % CHANGE_FILES.length];
+    const left = count - i;
+    const reserve = adds >= left ? left - 1 : 0; // every later file keeps at least one line when it can
+    const add = i === count - 1 ? Math.max(0, adds) : Math.max(adds >= left ? 1 : 0, Math.min(adds - reserve, Math.round(adds / left * (0.6 + ((i * 7 + n) % 9) / 10))));
+    const del = i === count - 1 ? dels : Math.min(dels, Math.round(dels / left * (((i * 5 + n) % 7) / 4)));
+    adds -= add;
+    dels -= del;
+    const status = del === 0 && i % 3 === 0 ? 'added' : 'modified';
+    const lines = CODE[ext] || CODE.ts;
+    const hunks = [];
+    let oldLine = status === 'added' ? 0 : 10 + ((i * 13) % 40);
+    let newLine = status === 'added' ? 1 : oldLine;
+    let a = add;
+    let d = del;
+    let k = i;
+    while (a > 0 || d > 0) {
+      const chunkA = Math.min(a, 6 + ((k * 3) % 14));
+      const chunkD = Math.min(d, (k * 2) % 5);
+      const body = [];
+      if (status !== 'added') for (let c = 0; c < 3; c += 1) body.push({ kind: 'ctx', old: oldLine + c, new: newLine + c, text: lines[(k + c) % lines.length] });
+      const oStart = oldLine;
+      const nStart = newLine;
+      if (status !== 'added') { oldLine += 3; newLine += 3; }
+      for (let c = 0; c < chunkD; c += 1) body.push({ kind: 'del', old: oldLine++, new: null, text: lines[(k + c + 5) % lines.length] });
+      for (let c = 0; c < chunkA; c += 1) body.push({ kind: 'add', old: null, new: newLine++, text: lines[(k + c + 2) % lines.length] });
+      const oldCount = body.filter((l) => l.kind !== 'add').length;
+      const newCount = body.filter((l) => l.kind !== 'del').length;
+      hunks.push({ header: `@@ -${oStart},${oldCount} +${nStart},${newCount} @@`, lines: body });
+      a -= chunkA;
+      d -= chunkD;
+      oldLine += 20 + (k % 30);
+      newLine += 20 + (k % 30);
+      k += 1;
+    }
+    files.push({ path, old_path: null, status, insertions: add, deletions: del, binary: false, hunks });
+  }
+  const profile = sandbox.profile || {};
+  return { base: profile.integration_branch || sandbox.default_branch, head: task.branch, base_sha: '2c9e41f07a1d', head_sha: `${(n * 2654435761 >>> 0).toString(16)}f00d`, ahead: (n * 3) % 11 + 1, behind: n % 3, uncommitted: n % 4 === 0 ? 2 : 0, files, truncated: false };
+}
+function taskCommits(task) {
+  const n = task.number;
+  const subjects = [`feat: ${task.title.toLowerCase()}`, 'test: cover the new rules', 'refactor: split the handler', 'docs: update the task spec', 'fix: rounding of tax lines', 'chore: format'];
+  const count = (n * 3) % 11 + 1;
+  return Array.from({ length: Math.min(count, 12) }, (_, i) => ({
+    sha: `${((n * 40503 + i * 2654435761) >>> 0).toString(16).padStart(8, '0')}${'ab12cd34ef56ab78cd90ef12ab34cd56'.slice(0, 32)}`,
+    subject: subjects[i % subjects.length], author: `task #${n} (claude)`, at: iso((i * 37 + 5) * MIN), files: (i * 3) % 7 + 1, insertions: (i * 41 + n) % 160 + 3, deletions: (i * 13 + n) % 40,
+  }));
+}
+route('GET', `/api/tasks/${ID}/changes`, ({ db, p }) => { const task = taskOf(db, p[0]); return task.branch ? taskChanges(db, task) : json(404, { error: { code: 'not_found', message: 'This task has no branch yet.' } }); });
+route('GET', `/api/tasks/${ID}/commits`, ({ db, p }) => { const task = taskOf(db, p[0]); return task.branch ? taskCommits(task) : []; });
+
 route('POST', `/api/tasks/${ID}/delivery/pr`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);

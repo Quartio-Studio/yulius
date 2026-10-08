@@ -352,11 +352,17 @@ export function mountGitPage(ctx, sandbox) {
       line = env && envs.production.length ? `Released · ${env.slice(env.indexOf(':') + 1)}: needs a check` : 'Live';
     }
     const attention = item.column !== 'built' && (next.length > 0 || (pr && pr.state === 'open' && pr.checks === 'failure'));
-    const files = item.row.files_changed ? `${plural(item.row.files_changed, 'file')} changed · +${item.row.insertions ?? 0} −${item.row.deletions ?? 0}` : null;
-    return h('div', { class: ['dl-card-task', attention && 'attention'] },
-      h('div', { class: 'dl-card-title' }, taskLink(item, false), attention ? h('span', { class: 'dl-dot', title: 'Needs an action' }, h('span', { class: 'sr-only' }, 'Needs an action')) : null),
+    const files = item.row.files_changed ? h('span', { class: 'dl-diffstat', title: item.row.branch || null },
+      h('span', { class: 'muted' }, plural(item.row.files_changed, 'file')), ' ', h('span', { class: 'gt-add' }, `+${item.row.insertions ?? 0}`), ' ', h('span', { class: 'gt-del' }, `−${item.row.deletions ?? 0}`)) : null;
+    // The card opens the task's changes (diff, commits, branch); "Go to task" is there.
+    const review = item.task ? `/s/${encodeURIComponent(sandbox.slug)}/git/t/${item.task.number}` : null;
+    const title = review
+      ? h('a', { class: 'dl-task dl-card-link', href: href(review), dataset: { route: review } }, h('span', { class: 'muted' }, `#${item.task.number} `), item.row.title)
+      : taskLink(item, false);
+    return h('div', { class: ['dl-card-task', attention && 'attention', review && 'clickable'] },
+      h('div', { class: 'dl-card-title' }, title, attention ? h('span', { class: 'dl-dot', title: 'Needs an action' }, h('span', { class: 'sr-only' }, 'Needs an action')) : null),
       h('div', { class: 'dl-card-line' }, line),
-      h('div', { class: 'dl-card-meta' }, prChip(pr), files ? h('span', { class: 'xs muted', title: `${item.row.branch || ''}` }, files) : null,
+      h('div', { class: 'dl-card-meta' }, prChip(pr), files,
         item.task && (item.column !== 'built' || (item.info && item.info.group === 'ended')) ? h('button', { type: 'button', class: 'link-btn xs dl-deliver', onClick: () => openDeliveryDialog(ctx, item.task) }, 'Deliver…') : null));
   }
 

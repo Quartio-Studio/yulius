@@ -92,6 +92,8 @@ export function matchRoute(path, query = new URLSearchParams()) {
   if (first === 's' && second) {
     if (parts.length === 2) return { ...base, name: 'composer', slug: second };
     if (parts.length === 4 && third === 't' && /^\d+$/.test(fourth)) return { ...base, name: 'task', slug: second, number: Number(fourth) };
+    // Git → a task's changes (diff, commits, branch) before opening its session.
+    if (parts.length === 5 && third === 'git' && fourth === 't' && /^\d+$/.test(parts[4])) return { ...base, name: 'gitTask', slug: second, page: 'git', number: Number(parts[4]) };
     if (parts.length === 3 && third === 'browser') return { ...base, name: 'composer', slug: second, browserTab: query.get('tab') || '' };
     if (parts.length === 3 && SANDBOX_PAGES.has(third)) return { ...base, name: 'page', slug: second, page: third };
   }
