@@ -53,6 +53,7 @@
   --peach-300: #f2b58a;
   --peach-700: #9a4f1a;
   --white: #ffffff;
+  --logo-tile-dark: #15181e; /* behind light-coloured third-party marks, in both themes */
 }
 
 /* ---------------------------------------------------------------- Layer 2: dark theme (default) */

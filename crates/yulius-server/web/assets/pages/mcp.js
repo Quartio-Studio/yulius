@@ -13,7 +13,7 @@ const NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Logos of well-known servers (assets/logos, see its README), matched by name, URL or package. */
 const LOGOS = [
-  { src: '/assets/logos/quartio.svg', label: 'Quartio', test: /quartio/i },
+  { src: '/assets/logos/quartio.svg', label: 'Quartio', test: /quartio/i, onDark: true }, // a light mark: always on a dark tile
   { src: '/assets/logos/apify.svg', label: 'Apify', test: /apify/i },
 ];
 
@@ -21,7 +21,7 @@ const LOGOS = [
 function serverLogo(server) {
   const haystack = [server.name, server.url, server.command, ...(server.args || [])].filter(Boolean).join(' ');
   const known = LOGOS.find((logo) => logo.test.test(haystack));
-  return known ? h('img', { src: known.src, alt: '', width: 22, height: 22 }) : icon(server.transport === 'http' ? 'globe' : 'terminal', { size: 18 });
+  return known ? h('img', { class: known.onDark ? 'logo-on-dark' : null, src: known.src, alt: '', width: 22, height: 22 }) : icon(server.transport === 'http' ? 'globe' : 'terminal', { size: 18 });
 }
 
 /** Mount the MCP page; ?scope=instance pre-filters (admin "Instance MCP" entry). */
