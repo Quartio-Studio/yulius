@@ -602,6 +602,8 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .step-note { grid-column: 2 / 4; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .step-audit { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: nowrap; }
 
+.term-lazy { display: contents; } /* terminal.js: the view loads into it on demand */
+.term-load-error { display: flex; align-items: center; gap: 12px; margin: auto; color: var(--text-2); }
 .term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .term-host { flex: 1; min-height: 0; padding: 4px 0 0 6px; overflow: hidden; }
 .term-host .xterm { height: 100%; }

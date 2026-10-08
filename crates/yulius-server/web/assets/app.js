@@ -2,7 +2,7 @@
 // composition of the global layout. Plain ES modules, no build step (SPEC-002 ADR-01).
 //
 // Module map: api.js (HTTP client), router.js (routes), store.js (state + event stream),
-// termsocket.js (WebSocket protocols), terminal.js (xterm view), layout.js (tab row,
+// termsocket.js (WebSocket protocols), terminal.js (xterm view, loaded on demand), layout.js (tab row,
 // sidebar, status), panels.js + browser.js (right rail), taskview.js (task + composer),
 // actions.js (task actions, dialogs), pages/*.js (pages), mock.js (?mock=1 backend).
 
@@ -28,6 +28,7 @@ import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admi
 import { mountSettingsPage } from './pages/settings.js';
 import { mountDesignPage } from './pages/design.js';
 import { IS_MAC, showShortcuts } from './shortcuts.js';
+import { preloadTerminal } from './terminal.js';
 
 const params = new URLSearchParams(window.location.search);
 const MOCK = params.get('mock') === '1';
@@ -138,6 +139,9 @@ function createApp(root, transport) {
     }
     buildShell();
     store.startEvents();
+    // The terminal (xterm) is not part of the first paint; fetch it once the browser is idle so the
+    // first task opens without waiting for it (PERF-04).
+    (window.requestIdleCallback || ((fn) => setTimeout(fn, 1500)))(() => preloadTerminal());
     const user = (me && me.user) || {};
     // A forgotten superadmin password can be reset with a recovery code (ACC-011), so the
     // warning appears only while no code exists (UX-12); the composer shows it too.
