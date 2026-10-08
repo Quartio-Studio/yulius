@@ -191,6 +191,11 @@ const STAGES = [
   ['production_done', 'Live'],
 ];
 
+/** A delivery stage in words ("In review", "Live"). */
+export function stageLabel(stage) {
+  return (STAGES.find(([s]) => s === stage) || [null, stage || 'Unknown'])[1];
+}
+
 const CHECKS = {
   success: ['checks passed', 'ok'],
   failure: ['checks failed', 'danger'],

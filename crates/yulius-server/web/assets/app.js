@@ -20,6 +20,7 @@ import { mountSetup, mountSignIn } from './pages/auth.js';
 import { mountTasksPage, mountArchivedPage, mountDevicePage } from './pages/tasks.js';
 import { mountGitPage } from './pages/git.js';
 import { mountGitTaskView } from './pages/gittask.js';
+import { mountTaskInfoView } from './pages/taskinfo.js';
 import { mountWorkflowsPage } from './pages/workflows.js';
 import { mountSkillsPage } from './pages/skills.js';
 import { mountAutomationsPage } from './pages/automations.js';
@@ -478,6 +479,15 @@ function createApp(root, transport) {
         if (currentRoute !== route) return;
         if (!task) { message(`missing-task:${sandbox.id}:${route.number}`, `Task #${route.number} was not found in ${sandbox.name}.`); break; }
         setCenter(`task:${task.id}`, () => mountTaskView(ctx, sandbox, task), { paper: false });
+        break;
+      }
+      case 'taskInfo': {
+        await ensureTasks(sandbox);
+        if (currentRoute !== route) return;
+        const shown = await findTaskByNumber(sandbox, route.number);
+        if (currentRoute !== route) return;
+        if (!shown) { message(`missing-task:${sandbox.id}:${route.number}`, `Task #${route.number} was not found in ${sandbox.name}.`); break; }
+        setCenter(`task-info:${shown.id}`, () => mountTaskInfoView(ctx, sandbox, shown));
         break;
       }
       case 'gitTask': {

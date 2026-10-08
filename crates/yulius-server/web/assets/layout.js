@@ -471,7 +471,7 @@ export function createSidebar(ctx) {
     NAV.forEach(([page], i) => {
       const link = nav.children[i];
       const path = slug ? `/s/${slug}/${page}` : '/';
-      const active = Boolean(route && (route.name === 'page' || route.name === 'gitTask') && route.page === page);
+      const active = Boolean(route && ['page', 'gitTask', 'taskInfo'].includes(route.name) && route.page === page);
       link.href = href(path);
       link.dataset.route = path;
       link.classList.toggle('active', active);

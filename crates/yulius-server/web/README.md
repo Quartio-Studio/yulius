@@ -42,6 +42,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/layout.js` | Sandbox tab row (+, Status panel, notifications, tools toggle) and the sidebar (wordmark, navigation, active task list, user menu at its foot). |
 | `assets/notifications.js` | Notification center (UI-020, UI-028): the bell, its panel with the All / Unread filter, and entries derived from the event stream; kept per user in `localStorage`, bounded to 100; optional OS notifications while the tab is hidden. |
 | `assets/pages/gittask.js` | Git → a task's review (UI-031): Changes (file tree, unified or split diff, wrap), Commits, Branch and Go to task; reads the proposed `/api/tasks/{tid}/changes` and `/commits`. |
+| `assets/pages/taskinfo.js` | Tasks → a task's overview (UI-032): state, times, plan, changes, usage, details and sessions, with Review changes and Go to task. |
 | `assets/shortcuts.js` | Keyboard shortcuts (UI-029): platform key names (`NEW_TASK_KEYS`, `IS_MAC`) and the ⌘/ sheet listing every shortcut — update it when a handler changes. |
 | `assets/taskview.js` | Task view (step strip, terminal, phone quick-input bar) and the new-task composer (rounded prompt box with mode, workflow, model and effort pickers). |
 | `assets/quotes.js` | 40 quotes about building great things (well-documented authors only); one shows at random above the composer. |

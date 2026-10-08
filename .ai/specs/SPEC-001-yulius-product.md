@@ -226,6 +226,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-029 | Every keyboard shortcut is listed in one sheet, opened with ⌘/ (Ctrl+/ outside the terminal, where it belongs to the shell) or from Settings; shortcuts are shown in the platform's own key names (⌘⇧O on macOS, Ctrl+Shift+O elsewhere) wherever the UI mentions them. | F 2026-10-08 UI | C | AC-UI-22 |
 | UI-030 | The task view's strip shows the task's pull request with its checks (passed, failed, running), which opens the delivery details, and the next delivery step as a button when it is to merge or, for a closed task, to open the pull request; members with read access see the chip without the button. | F 2026-10-08 UI | C | AC-UI-23 |
 | UI-031 | On the Git page a task card opens the task's review instead of its session: Changes (the diff against the integration branch, uncommitted files included, with a file tree, unified or split layout and line wrapping), Commits and Branch (position against the integration branch, head, pull request, compare on GitHub), with "Go to task" at the top. Needs the task changes API (docs/api.md, proposed). | F 2026-10-08 UI | C | AC-UI-24 |
+| UI-032 | The Tasks page is a one-line table (task, status in words, branch, changes, pull request, author, started, updated; fewer columns as it narrows), and a row opens the task's overview instead of its session: state and what it needs, start, running and active time, last change, plan progress, changes (linking to the review), tokens, the plan's steps, details (author, origin, mode, account, models, turns, branch, pull request, delivery, spec, worktree) and its sessions, with "Review changes" and "Go to task" at the top. Group heads in the sidebar and on the Tasks page are bands of their own. | F 2026-10-08 UI | C | AC-UI-25 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -604,6 +605,7 @@ instance — out of scope).
 | AC-UI-22 | ⌘/ (Ctrl+/) opens the shortcut sheet and pressing it again closes it; on Windows and Linux the Tasks page and sidebar show "Ctrl+Shift+O", not "⌘⇧O". | ui |
 | AC-UI-23 | A task whose pull request is open with passing checks shows "#<n> ✓" and "Merge…" in its strip; with failing checks it shows "#<n> ✗" and no Merge; a task that crashed or failed to start shows no "Open pull request…". | ui |
 | AC-UI-24 | Clicking a Git board card opens /s/<sandbox>/git/t/<n> with the Changes tab: a file tree with per-file counts and the diff in unified layout; Split shows removals beside additions; a file in the tree scrolls to its diff; "Go to task" opens the task; the tab is kept in the URL. | ui |
+| AC-UI-25 | Clicking a task on the Tasks page opens /s/<sandbox>/tasks/<n> showing its start date, running time, plan progress, changes and sessions; "Go to task" opens its session and "Review changes" its Git review. | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
@@ -710,7 +712,8 @@ observed. Live provider compatibility and deployment are reported separately fro
   Advanced (UI-027, AC-UI-20); notification filter, per-row read and opt-in desktop notifications
   (UI-028, AC-UI-21); a keyboard shortcut sheet (UI-029, AC-UI-22);
   the pull request and next delivery step in the task view (UI-030, AC-UI-23); the Git page's task
-  review (UI-031, AC-UI-24; the diff and commits need the proposed task changes API).
+  review (UI-031, AC-UI-24; the diff and commits need the proposed task changes API); the Tasks
+  table and a task's overview (UI-032, AC-UI-25).
 
 - 2026-10-08 (UI review, `F 2026-10-08 UI`): the user menu moves to the sidebar's foot and the
   collapsed sidebar is dropped; the tools rail names its tools; the sidebar shows the Yulius

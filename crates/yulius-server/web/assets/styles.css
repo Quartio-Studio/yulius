@@ -632,6 +632,35 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
   .gt-commit > :nth-child(n + 3) { grid-column: 2; }
 }
 
+/* Tasks → a task's overview (UI-032) */
+.ti-inner { max-width: 1280px; }
+.ti-body { display: flex; flex-direction: column; gap: 12px; }
+.ti-what { color: var(--text-2); }
+.ti-what.ti-needs { color: var(--warn-fg); font-weight: 500; }
+/* Six facts: three by two, one row of six when there is room, two by three on phones. */
+.ti-body { container-type: inline-size; }
+.ti-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@container (min-width: 1100px) { .ti-facts { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+@container (max-width: 520px) { .ti-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ti-value { font-size: var(--fs-xl); line-height: var(--lh-xl); }
+.ti-progress { display: block; height: 4px; margin-top: 4px; border-radius: var(--radius-full); background: var(--accent-track); overflow: hidden; }
+.ti-progress-fill { display: block; height: 100%; background: var(--series-1); }
+.ti-columns { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.ti-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+.ti-card-title { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.ti-steps { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.ti-step { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); }
+.ti-step:first-child { border-top: 0; padding-top: 0; }
+.ti-step-text { display: flex; flex-direction: column; gap: 2px; }
+.ti-step.st-done .ti-step-text > :first-child { color: var(--text-2); }
+.ti-step.st-in_progress .ti-step-text > :first-child { font-weight: 600; }
+.ti-kv { grid-template-columns: max-content minmax(0, 1fr); row-gap: 8px; }
+.ti-kv dd { overflow-wrap: anywhere; }
+.ti-person { display: inline-flex; align-items: center; gap: 6px; }
+.ti-avatar.avatar { width: 20px; height: 20px; font-size: var(--fs-xs); }
+.ti-sessions { width: 100%; }
+@media (max-width: 900px) { .ti-columns { grid-template-columns: minmax(0, 1fr); } }
+
 /* keyboard shortcut sheet (UI-029) */
 .shortcuts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px 32px; }
 .shortcuts-title { margin-bottom: 8px; font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; color: var(--text); }
