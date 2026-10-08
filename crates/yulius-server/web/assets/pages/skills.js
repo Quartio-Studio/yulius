@@ -1,5 +1,5 @@
 // Skills page (SKL-005): catalog with source badges and the enable toggle; a skill opens in its
-// editor (pages/skilledit.js, UI-033).
+// editor (pages/skilledit.js, UI-033); New skill opens pages/skillnew.js (UI-035).
 
 import { enc } from '../api.js';
 import { h, toggle, toast, errorToast, setChildren, iconBadge, itemCard, emptyState } from '../dom.js';
@@ -14,7 +14,11 @@ export const SOURCE_BADGE = { repository: ['branch', 'Repository', ''], instance
 /** Mount the Skills page; ?source=instance pre-filters (admin "Instance skills" entry). */
 export function mountSkillsPage(ctx, sandbox, route) {
   const write = allows(sandbox.access, 'write');
-  const frame = pageFrame({ title: 'Skills', sub: 'one catalog for Claude Code — activated automatically by relevance' });
+  const frame = pageFrame({
+    title: 'Skills',
+    sub: 'one catalog for Claude Code — activated automatically by relevance',
+    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills/new`) }, 'New skill')],
+  });
   const source = h('select', { class: 'select', 'aria-label': 'Source filter' }, SOURCES.map(([v, l]) => h('option', { value: v }, l)));
   source.value = route.query.get('source') || '';
   const search = h('input', { class: 'input', type: 'search', placeholder: 'Search skills…', 'aria-label': 'Search skills' });
@@ -28,7 +32,7 @@ export function mountSkillsPage(ctx, sandbox, route) {
     frame.sub.textContent = `${shown.length} of ${skills.length} · activated automatically by relevance`;
     if (shown.length === 0) return skills.length
       ? emptyState({ iconName: 'book', title: 'No skill matches', text: 'Try another word or source.' })
-      : emptyState({ iconName: 'book', title: 'No skills yet', text: 'Skills are instructions Claude Code loads when they are relevant. Add them to the repository under .agents/skills or .claude/skills.' });
+      : emptyState({ iconName: 'book', title: 'No skills yet', text: 'Skills are instructions Claude Code loads when they are relevant. Create one here, or add it to the repository under .agents/skills or .claude/skills.' });
     return h('div', { class: 'item-list' }, shown.map((skill) => {
       // Repository skills are always available inside the repository (PUT → 422);
       // instance skills are toggled by instance administrators.

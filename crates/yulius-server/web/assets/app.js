@@ -22,6 +22,7 @@ import { mountGitPage } from './pages/git.js';
 import { mountGitTaskView } from './pages/gittask.js';
 import { mountTaskInfoView } from './pages/taskinfo.js';
 import { mountSkillEditor } from './pages/skilledit.js';
+import { mountSkillCreator } from './pages/skillnew.js';
 import { mountWorkflowEditor } from './pages/workflowedit.js';
 import { mountWorkflowsPage } from './pages/workflows.js';
 import { mountSkillsPage } from './pages/skills.js';
@@ -484,7 +485,9 @@ function createApp(root, transport) {
         break;
       }
       case 'skill':
-        setCenter(`skill:${sandbox.id}:${route.skill}`, () => mountSkillEditor(ctx, sandbox, route.skill));
+        // Skills → New skill; "new" is reserved, so no skill can hide the page.
+        if (route.skill === 'new') setCenter(`skill-new:${sandbox.id}`, () => mountSkillCreator(ctx, sandbox));
+        else setCenter(`skill:${sandbox.id}:${route.skill}`, () => mountSkillEditor(ctx, sandbox, route.skill));
         break;
       case 'workflow':
         setCenter(`workflow:${sandbox.id}:${route.workflow}`, () => mountWorkflowEditor(ctx, sandbox, route.workflow));

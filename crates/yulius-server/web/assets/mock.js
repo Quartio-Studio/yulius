@@ -912,6 +912,20 @@ route('GET', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p }) => {
   if (skill.content === undefined) skill.content = skillContent(skill);
   return { name: skill.name, content: skill.content };
 });
+// POST creates a skill (proposed API, docs/api.md): the repository's .agents/skills or the instance store.
+route('POST', `/api/sandboxes/${ID}/skills`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const name = String(body.name || '');
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name) || name.length > 64 || name === 'new') fail(422, 'invalid', 'name must be lowercase letters, digits and hyphens');
+  if (body.source === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance skills are managed by instance administrators');
+  if (body.source !== 'instance' && body.source !== 'repository') fail(422, 'invalid', 'source must be repository or instance');
+  if (db.skills.some((s) => s.name === name)) fail(409, 'conflict', 'a skill with this name exists');
+  if (typeof body.content !== 'string' || body.content.length > 512 * 1024) fail(422, 'invalid', 'content is the whole SKILL.md, at most 512 KiB');
+  const description = body.content.match(/^---\n[\s\S]*?^description:\s*(.+)$[\s\S]*?\n---/m);
+  const skill = { name, description: description ? description[1].replace(/^["']|["']$/g, '').trim() : '', source: body.source, path: body.source === 'instance' ? `instance/skills/${name}/SKILL.md` : `.agents/skills/${name}/SKILL.md`, enabled: true, content: body.content };
+  db.skills.push(skill);
+  return json(201, { name, content: skill.content });
+});
 // PUT {enabled} toggles a skill; PUT {content} saves its SKILL.md (proposed API, docs/api.md).
 route('PUT', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');

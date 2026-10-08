@@ -726,6 +726,13 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
 @container (max-width: 560px) { .wf-gates { grid-template-columns: minmax(0, 1fr); } .wf-custom { width: 100%; } }
 
 /* Skills → a skill (UI-033) and the Markdown block editor (mdeditor.js), Notion-like */
+/* New skill (UI-035) borrows the builder's in-place title (.wf-name, .wf-desc) and chips. */
+.sn-setup { display: flex; flex-direction: column; gap: 12px; padding: 12px 0 4px; border-bottom: 1px solid var(--border); }
+.sn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.sn-row > .wf-label { width: 80px; flex: none; }
+.sn-templates { display: flex; flex-wrap: wrap; gap: 6px; }
+.sn-template { border-style: solid; }
+.seg label .icon, .seg label svg { flex: none; }
 .se-inner { max-width: 960px; }
 .se-head .gt-title-row { flex-wrap: wrap; }
 .se-badges { display: inline-flex; gap: 6px; }
