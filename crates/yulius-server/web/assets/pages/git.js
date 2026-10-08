@@ -62,6 +62,11 @@ function prChip(pr) {
     icon('branch', { size: 12 }), `#${pr.number}`, check ? h('span', { class: `tone-${check[1]}` }, icon(check[0], { size: 12 })) : null);
 }
 
+// Each task's delivery, kept across visits to the page (PERF-09): read again only when its row in
+// the overview or the sandbox's latest environment run changed, after 5 minutes, or after an action.
+const DELIVERY_TTL_MS = 5 * 60_000;
+const deliveryCache = new Map(); // task id → { sig, at, delivery }
+
 /** Mount the Git page for a sandbox. */
 export function mountGitPage(ctx, sandbox) {
   const write = allows(sandbox.access, 'write');
@@ -109,7 +114,17 @@ export function mountGitPage(ctx, sandbox) {
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
       // The overview has no stages yet, so each task's delivery is read once (docs/api.md);
       // a server that adds `stage` to the overview rows skips these reads.
-      const deliveries = await mapLimited(rows, 4, (row) => (row.stage ? row : ctx.api.get(`/api/tasks/${enc(row.task_id)}/delivery`).catch(() => null)));
+      const runsHead = JSON.stringify((Array.isArray(runs) ? runs : []).slice(0, 3).map((r) => [r.id, r.state, r.status]));
+      const now = Date.now();
+      const deliveries = await mapLimited(rows, 4, async (row) => {
+        if (row.stage) return row;
+        const sig = `${JSON.stringify(row)}|${runsHead}`;
+        const hit = deliveryCache.get(row.task_id);
+        if (hit && hit.sig === sig && now - hit.at < DELIVERY_TTL_MS) return hit.delivery;
+        const delivery = await ctx.api.get(`/api/tasks/${enc(row.task_id)}/delivery`).catch(() => null);
+        if (delivery) deliveryCache.set(row.task_id, { sig, at: now, delivery });
+        return delivery;
+      });
       if (!current()) return;
       model = { git, runs: Array.isArray(runs) ? runs : [], items: rows.map((row, i) => ({ row, delivery: deliveries[i] })) };
       render();
@@ -118,7 +133,8 @@ export function mountGitPage(ctx, sandbox) {
       setChildren(body, h('div', { class: 'banner banner-danger' }, icon('warn'), h('span', { class: 'banner-text' }, `Could not read Git: ${error.message}`), h('button', { type: 'button', class: 'btn btn-sm', onClick: load }, 'Retry')));
     }
   }
-  const afterAction = () => load();
+  // An action (merge, deploy, verify, release) changes deliveries: read them all again.
+  const afterAction = () => { deliveryCache.clear(); load(); };
 
   function renderIntro() {
     const profile = sb().profile || {};
