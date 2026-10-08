@@ -228,7 +228,8 @@ export function mountAccountsPage(ctx, route) {
               errorToast(error, 'Could not start re-login');
             }
           } }, 'Re-login'),
-          h('button', { type: 'button', class: 'btn btn-sm btn-danger', onClick: async () => {
+          // Removal is refused while tasks use the account: say so instead of offering it (UX2-12).
+          h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', disabled: account.in_use_by > 0, title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} use this account; stop them or switch them away first` : null, onClick: async () => {
             if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: account.in_use_by ? `${account.in_use_by} live task(s) use it: removal is refused until they stop or switch away.` : 'Its stored credentials are deleted and a running login is cancelled.', confirmLabel: 'Remove', danger: true }))) return;
             try {
               await ctx.api.del(`/api/admin/accounts/${enc(account.id)}`);
