@@ -421,8 +421,10 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
   entries: Users, Accounts, GitHub, Instance MCP, Instance skills).
 - Center: the selected task's terminal fills all remaining space. A one-line step strip sits above
   it (collapsible). No other header.
-- Right rail (≈ 40 px icons): Browser, Editor, Shell, Messages. Clicking expands a resizable panel
-  (default 45% width); clicking again collapses. Default collapsed (UI-002).
+- Right rail (≈ 128 px; icons only on phones): Browser, Editor, Shell, Messages, each shown with
+  its icon and name so a newcomer recognizes them. Clicking expands a resizable panel (default 45%
+  width); clicking again collapses. Default collapsed (UI-002); the whole rail is hidden until the
+  tools toggle shows it (UI-017).
 - Without a selected task the center shows the new-task composer: prompt, Goal / Prompt mode,
   workflow, optional model/effort, Start (tasks run Claude Code).
 
