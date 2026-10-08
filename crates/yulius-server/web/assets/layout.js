@@ -582,7 +582,7 @@ export function createSidebar(ctx) {
   ctx.store.on('browser-action', (event) => { if (sandbox && event.sandbox_id === sandbox.id) renderTasks(); });
   // Refresh relative times twice a minute (single bounded timer).
   setInterval(() => {
-    for (const row of rows.values()) row.sub.textContent = subline(row.task, row.info);
+    for (const row of rows.values()) row.age.textContent = relShort(row.task.updated_at);
   }, 30000);
 
   return {
