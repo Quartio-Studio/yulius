@@ -1,7 +1,7 @@
 // Skills page (SKL-005): catalog with source badges, enable toggle and content viewer.
 
 import { enc } from '../api.js';
-import { h, openModal, toggle, toast, errorToast, setChildren, placeholder, iconBadge, itemCard } from '../dom.js';
+import { h, openModal, toggle, toast, errorToast, setChildren, placeholder, iconBadge, itemCard, emptyState } from '../dom.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
@@ -24,7 +24,9 @@ export function mountSkillsPage(ctx, sandbox, route) {
     const q = search.value.trim().toLowerCase();
     const shown = skills.filter((s) => (!source.value || s.source === source.value) && (!q || `${s.name} ${s.description}`.toLowerCase().includes(q)));
     frame.sub.textContent = `${shown.length} of ${skills.length} · activated automatically by relevance`;
-    if (shown.length === 0) return h('div', { class: 'card placeholder' }, skills.length ? 'No skill matches.' : 'No skills found. Repository skills live in .agents/skills or .claude/skills.');
+    if (shown.length === 0) return skills.length
+      ? emptyState({ iconName: 'book', title: 'No skill matches', text: 'Try another word or source.' })
+      : emptyState({ iconName: 'book', title: 'No skills yet', text: 'Skills are instructions Claude Code loads when they are relevant. Add them to the repository under .agents/skills or .claude/skills.' });
     return h('div', { class: 'item-list' }, shown.map((skill) => {
       // Repository skills are always available inside the repository (PUT → 422);
       // instance skills are toggled by instance administrators.

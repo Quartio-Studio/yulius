@@ -1,7 +1,7 @@
 // Workflows page (AUT-004): reusable task recipes — initial steps, instructions, gates.
 
 import { enc } from '../api.js';
-import { h, openModal, field, toast, confirmDialog, errorToast, iconButton, iconBadge, itemCard } from '../dom.js';
+import { h, openModal, field, toast, confirmDialog, errorToast, iconButton, iconBadge, itemCard, emptyState } from '../dom.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
@@ -19,7 +19,7 @@ export function mountWorkflowsPage(ctx, sandbox) {
 
   const reload = loader(host, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`), (list) => {
     const workflows = Array.isArray(list) ? list : [];
-    if (workflows.length === 0) return h('div', { class: 'card placeholder' }, 'No workflows yet. A workflow seeds a task’s steps, instructions and required gates.');
+    if (workflows.length === 0) return emptyState({ iconName: 'workflow', title: 'No workflows yet', text: 'A workflow seeds a task’s steps, instructions and required gates — pick one when you start a task.', action: write ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => edit(null) }, 'New workflow') : null });
     return h('div', { class: 'item-list' }, workflows.map((wf) => {
       const canEdit = write && (wf.scope !== 'instance' || instanceAdmin);
       const gates = wf.gates || {};

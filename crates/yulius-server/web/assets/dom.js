@@ -538,6 +538,18 @@ export function singleFlight(fn) {
   };
 }
 
+/**
+ * The one empty state (Primer blankslate): an icon, a title, one line of what this is for, and the
+ * action that fills it. Used wherever a list is empty, so every empty page looks and reads alike.
+ */
+export function emptyState({ iconName = 'tasks', title, text, action }) {
+  return h('div', { class: 'empty-state' },
+    h('span', { class: 'empty-icon', 'aria-hidden': 'true' }, icon(iconName, { size: 20 })),
+    h('p', { class: 'empty-title' }, title),
+    text ? h('p', { class: 'empty-text' }, text) : null,
+    action || null);
+}
+
 /** A load that failed, said inline with a way out (not a spinner forever or a vanished toast). */
 export function loadError(text, retry) {
   return h('div', { class: 'banner banner-danger load-error', role: 'alert' }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, text),

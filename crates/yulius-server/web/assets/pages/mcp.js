@@ -2,7 +2,7 @@
 // test. Secrets are write-only: the UI shows key names only and never reads values back.
 
 import { enc } from '../api.js';
-import { h, icon, badge, iconBadge, itemCard, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton } from '../dom.js';
+import { h, icon, badge, iconBadge, itemCard, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton, emptyState } from '../dom.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 import { BRAND } from '../brand.js';
@@ -47,7 +47,9 @@ export function mountMcpPage(ctx, sandbox, route) {
 
   function render() {
     const shown = servers.filter((s) => !scopeFilter.value || s.scope === scopeFilter.value);
-    if (shown.length === 0) return h('div', { class: 'card placeholder' }, servers.length ? 'No server in this scope.' : 'No MCP servers yet. Add e.g. the Quartio MCP (HTTP) or the Apify MCP (stdio).');
+    if (shown.length === 0) return servers.length
+      ? emptyState({ iconName: 'plug', title: 'No server in this scope', text: 'Choose “All servers” to see every server.' })
+      : emptyState({ iconName: 'plug', title: 'No MCP servers yet', text: 'Attach a tool server once and every Claude Code session gets it — for example the Quartio MCP (HTTP) or the Apify MCP (local command).', action: write ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => edit(null) }, 'Add server') : null });
     return h('div', { class: 'item-list' }, shown.map((server) => {
       const testResult = h('div', { class: 'small' });
       const manage = canManage(server);

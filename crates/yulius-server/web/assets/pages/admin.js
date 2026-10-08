@@ -2,7 +2,7 @@
 // with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, badge, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren } from '../dom.js';
+import { h, badge, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, emptyState } from '../dom.js';
 import { createTerminalView } from '../terminal.js';
 import { accountUsage } from '../layout.js';
 import { pageFrame, loader, dataTable } from './common.js';
@@ -186,7 +186,7 @@ export function mountAccountsPage(ctx, route) {
 
   const reload = loader(host, () => ctx.api.get('/api/admin/accounts'), (list) => {
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.provider || '').localeCompare(b.provider || '') || (a.priority ?? 0) - (b.priority ?? 0));
-    if (accounts.length === 0) return h('div', { class: 'card placeholder' }, 'No accounts yet. Add a Claude subscription; you complete Claude’s own sign-in.');
+    if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No AI accounts yet', text: 'Connect a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.' });
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
       const priority = h('input', { type: 'number', min: 0, max: 10000, value: String(account.priority ?? 0), class: 'input input-priority', 'aria-label': `Priority of ${account.label}` });
       priority.addEventListener('change', async () => {

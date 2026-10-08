@@ -1,7 +1,7 @@
 // Automations page (AUT-001..005): cron schedules with UTC offset, run history, Run now.
 
 import { enc } from '../api.js';
-import { h, badge, iconBadge, itemCard, iconButton, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, placeholder } from '../dom.js';
+import { h, badge, iconBadge, itemCard, iconButton, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, placeholder, emptyState } from '../dom.js';
 import { relLong, dateTime, describeCron, cronValid, utcOffset } from '../format.js';
 import { allows } from '../status.js';
 import { href } from '../router.js';
@@ -43,7 +43,7 @@ export function mountAutomationsPage(ctx, sandbox) {
 
   const reload = loader(host, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/automations`), (list) => {
     const items = Array.isArray(list) ? list : [];
-    if (items.length === 0) return h('div', { class: 'card placeholder' }, 'No automations. Example: every day at 09:00, create a task that implements yesterday’s customer feedback.');
+    if (items.length === 0) return emptyState({ iconName: 'zap', title: 'No automations yet', text: 'Start tasks on a schedule — for example, every day at 09:00 a task that works through yesterday’s customer feedback.', action: write ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => edit(null) }, 'New automation') : null });
     return h('div', { class: 'item-list' }, items.map((a) => itemCard({
       iconName: 'zap',
       title: a.name,

@@ -777,6 +777,11 @@ summary { cursor: pointer; }
 .tl-action { width: var(--control-sm); height: var(--control-sm); }
 .tl-more { display: block; width: 100%; height: var(--control-lg); padding: 0 16px 0 48px; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--accent-fg); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
 .tl-more:hover { background: var(--surface-hover); }
+.empty-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 48px 16px; border: 1px dashed var(--border-strong); border-radius: var(--radius-lg); text-align: center; }
+.empty-state p { margin: 0; max-width: 480px; }
+.empty-icon { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; margin-bottom: 4px; border-radius: 50%; background: var(--surface-3); color: var(--text-2); }
+.empty-title { font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
+.empty-text { color: var(--muted); }
 .tl-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 48px 16px; text-align: center; }
 .tl-empty p { margin: 0; }
 .tl-empty-title { font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
