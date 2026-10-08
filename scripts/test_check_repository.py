@@ -163,7 +163,8 @@ class ModuleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "a.js").write_text("export function used() {}\nexport const other = 1;\n")
-            (root / "b.js").write_text("import { used, missing, other } from './a.js';\nused();\n")
+            (root / "a.js").write_text("export function used() {}\nexport const other = 1;\nexport const spread = {};\n")
+            (root / "b.js").write_text("import { used, missing, other, spread } from './a.js';\nused();\nconst x = { ...spread };\nx.other = 2;\n")
             errors = module_errors(root, root)
             self.assertTrue(any("missing" in e and "does not export" in e for e in errors))
             self.assertTrue(any("other" in e and "never uses" in e for e in errors))

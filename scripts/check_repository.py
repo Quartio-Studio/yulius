@@ -470,7 +470,8 @@ def module_errors(web_assets, label_root=ROOT):
                 if missing:
                     errors.append(f"{label}: imports {', '.join(missing)} that {spec} does not export")
             body = IMPORT_STATEMENT.sub("", code)
-            unused = [n for n in imported if not re.search(r"(?<![\w$.])" + re.escape(n) + r"(?![\w$])", body)]
+            # A use is the name not after another word or a property dot ("...name" spread counts).
+            unused = [n for n in imported if not re.search(r"(?<![\w$])(?<![^.]\.)" + re.escape(n) + r"(?![\w$])", body)]
             if unused:
                 errors.append(f"{label}: imports {', '.join(unused)} from {spec} but never uses it")
     return errors
