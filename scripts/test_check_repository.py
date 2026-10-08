@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
-from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, inline_style_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
 
 
 def package(name, layer, dependencies=()):
@@ -125,6 +125,14 @@ class InlineStyleTests(unittest.TestCase):
         self.assertEqual(inline_style_errors("h('i', { style: { width: `${pct}%`, '--cols': String(n), color: 'var(--ok)' } })"), [])
         self.assertTrue(inline_style_errors("h('i', { style: { maxWidth: '640px' } })"))
         self.assertTrue(inline_style_errors("h('i', { style: { color: '#ff0000' } })"))
+
+
+
+class ControlHeightTests(unittest.TestCase):
+    def test_controls_use_tokens(self):
+        self.assertEqual(control_height_errors(".btn { height: var(--control-md); } .tab-dot { height: 7px; } .btn.busy::after { height: 12px; }"), [])
+        self.assertTrue(control_height_errors(".ed-tab { height: 30px; }"))
+        self.assertEqual(control_height_errors((ROOT / STYLESHEET).read_text()), [])
 
 
 if __name__ == "__main__":

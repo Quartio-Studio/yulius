@@ -107,7 +107,9 @@ editor re-colour from the same tokens (`theme.js` → `terminalColors()`, the Mo
 (hex, `rgb()`/`hsl()`/…, named colours), font sizes, line heights, families and weights outside the
 type scale, radii outside the tokens, padding/margin/gap off the spacing scale, and literal transition
 timings. It resolves `tokens.css` per theme and checks the contrast of every text/background role
-pair and of state marks and control edges. Control heights are a convention, not checked yet.
+pair and of state marks and control edges, and that buttons, inputs, selects and tabs use a
+`--control-*` height (at least 24 px targets, WCAG 2.5.8). Scripts may not set fixed lengths or
+colours in inline styles, nor show requirement IDs in UI text.
 
 ### Components
 

@@ -143,6 +143,26 @@ def style_errors(css, label=STYLESHEET):
     return errors
 
 
+CONTROL_SUBJECT = re.compile(r"(?:\.btn[\w-]*|\.input|\.select|\.textarea|\.tab|[\w-]+-tabs?)(?![\w-])")
+
+
+def control_height_errors(css, label=STYLESHEET):
+    """Buttons, inputs, selects and tabs take a --control-* height: one rhythm, and targets of at
+    least 24 px (WCAG 2.2 2.5.8)."""
+    errors = []
+    css = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), css, flags=re.S)
+    for rule in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+        subjects = [part.split()[-1] for part in rule[1].split(",") if part.strip()]
+        if not any(CONTROL_SUBJECT.search(subject) and "::" not in subject for subject in subjects):
+            continue
+        for height in re.finditer(r"(?<![\w-])height\s*:\s*([^;]+)", rule[2]):
+            value = height[1].strip()
+            if not re.fullmatch(r"var\(--control-(sm|md|lg|xl)\)|auto|100%|inherit", value):
+                line = css.count("\n", 0, rule.start(2) + height.start()) + 1
+                errors.append(f"{label}:{line}: height: {value} (controls use a --control-* height)")
+    return errors
+
+
 # Text pairs need 4.5:1 and non-text (state marks, focus, control edges) 3:1 (WCAG 2.2 1.4.3,
 # 1.4.11). A background "a/b" is a translucent role a composited over b.
 CONTRAST_PAIRS = [
@@ -352,6 +372,7 @@ def check():
     for path in skills:
         errors.extend(skill_errors(path))
     errors.extend(style_errors((ROOT / STYLESHEET).read_text()))
+    errors.extend(control_height_errors((ROOT / STYLESHEET).read_text()))
     for path in sorted((ROOT / STYLESHEET).parent.glob("**/*.js")):
         if "vendor" not in path.parts:
             errors.extend(copy_errors(path.read_text(), str(path.relative_to(ROOT))))
