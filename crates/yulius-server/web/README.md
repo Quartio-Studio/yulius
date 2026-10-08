@@ -95,17 +95,24 @@ and component in the current theme and computes contrast as you change things.
 The assets are compiled into the server binary (`build.rs` embeds `web/`), so a rebrand ships with
 the next server build and deploy.
 
-### Brand lab: try directions before choosing
+### Brand lab: preview whole brand proposals
 
-Open the app with `?lab=1` (mock mode: `/?mock=1&lab=1`) and a panel lets you try the brand live on
-the real screens, in both themes: eight starting directions, then the accent's hue, strength and
-brightness, the greys' tint and the dark background's depth, the text, title and code typefaces
-(from Google Fonts, in the lab only), the corner radius and the wordmark. It checks every text and
-control-edge contrast in both themes as you go and warns when the accent sits next to a state colour
-(error red, warning amber, success green, the "your turn" blue). Each setting is in the URL
-(`?lab=<direction>` or `?lab=<settings>`), so a variant is a link you can share. **Copy settings**
-gives the tokens to write into `tokens.css` (and the typefaces to self-host); `lab.js` loads only
-when the URL asks for it and is not part of the app's start-up.
+Open the app with `?lab=1` (mock mode: `/?mock=1&lab=1`) and a panel restyles it live on the real
+screens, in both themes, without a rebuild:
+
+- **Proposals** are complete brands: any tokens of `tokens.css` — both themes' colours, state
+  colours, typefaces, type scale, control heights, radii, motion. Built-in ones live in
+  `assets/lab-proposals.js` (`?lab=<id>` opens one). **Paste proposal…** previews a JSON proposal at
+  once (kept in this browser); **Copy template** gives the JSON shape filled with the values in view,
+  for a designer or an assistant to fill in.
+- **Directions and sliders** generate a brand from a few values (accent hue, strength and
+  brightness, the greys' tint, dark depth, typefaces, radius, wordmark).
+- **Checks** measure the repository's contrast pairs (text 4.5:1, edges 3:1) in both themes as you
+  go; directions also warn when the accent sits next to a state colour.
+
+Typefaces come from Google Fonts in the lab only. **Copy settings** gives the tokens to write into
+`tokens.css` (and the typefaces to self-host). `lab.js` loads only when the URL asks for it and is
+not part of the app's start-up.
 
 ### Brand typeface
 

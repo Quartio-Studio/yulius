@@ -1,12 +1,15 @@
 // Brand lab: a development aid for choosing the brand on the real screens. It loads only with
-// ?lab in the URL (?lab=1, ?lab=<direction> or a copied ?lab=<settings> link) and overrides the
-// brand tokens of tokens.css live: the accent ramp, the neutrals of both themes, the typefaces,
-// the radii and the wordmark. It checks text contrast in both themes and copies the result, which
+// ?lab in the URL (?lab=1, ?lab=<proposal>, ?lab=<direction> or a copied ?lab=<settings> link) and
+// overrides tokens.css live. Proposals (lab-proposals.js, or pasted as JSON) set any tokens — colours
+// of both themes, typefaces, type scale, radii, motion; directions are generated from a few sliders.
+// It measures the repository's contrast pairs in both themes as you go and copies the result, which
 // is then written into tokens.css and brand.js for good. Fonts come from Google Fonts here only;
 // shipped fonts are self-hosted (web/README.md, "Brand typeface").
 
-import { h, icon, setChildren, toast, keepFocus } from './dom.js';
-import { applyTheme, activeTheme, setThemeChoice, token } from './theme.js';
+import { h, icon, setChildren, toast, keepFocus, openModal, invalid } from './dom.js';
+import { applyTheme, activeTheme, setThemeChoice } from './theme.js';
+import { readJson, writeJson } from './store.js';
+import { PROPOSALS } from './lab-proposals.js';
 
 // ------------------------------------------------------------------ colour
 
@@ -99,12 +102,19 @@ const CODE_FONTS = {
 };
 
 const loadedFonts = new Set();
-/** Loads a Google Fonts family (lab only) and resolves when its glyphs can be measured. */
+/**
+ * Loads a Google Fonts family (lab only) and resolves when its glyphs can be measured. A family the
+ * lists above do not know is asked for in the UI's weights, then as it comes if that fails.
+ */
 function loadFont(name, entry) {
-  if (!entry || !entry[0]) return Promise.resolve();
-  if (!loadedFonts.has(entry[0])) {
-    loadedFonts.add(entry[0]);
-    document.head.append(h('link', { rel: 'stylesheet', href: `https://fonts.googleapis.com/css2?family=${entry[0]}&display=swap`, dataset: { labFont: name } }));
+  if (!name || name === 'System' || name === 'Same as text') return Promise.resolve();
+  const spec = entry ? entry[0] : `${name.trim().replace(/\s+/g, '+')}${WEIGHTS}`;
+  if (!spec) return Promise.resolve();
+  if (!loadedFonts.has(spec)) {
+    loadedFonts.add(spec);
+    const plain = spec.split(':')[0];
+    document.head.append(h('link', { rel: 'stylesheet', href: `https://fonts.googleapis.com/css2?family=${spec}&display=swap`, dataset: { labFont: name },
+      onError: () => { if (plain !== spec) document.head.append(h('link', { rel: 'stylesheet', href: `https://fonts.googleapis.com/css2?family=${plain}&display=swap` })); } }));
   }
   return document.fonts.load(`500 16px "${name}"`).catch(() => {});
 }
@@ -187,40 +197,101 @@ const block = (selector, vars) => `${selector} {\n${Object.entries(vars).map(([k
 
 const HUES = [[25, 'the error red'], [75, 'the warning amber'], [145, 'the success green'], [255, 'the “your turn” blue']];
 
-function checks(s) {
-  const t = tokensOf(s);
-  const out = [];
-  const pair = (theme, label, fg, bg, min) => { const ratio = contrast(fg, bg); if (ratio < min) out.push(`${theme}: ${label} ${ratio.toFixed(2)}:1 (needs ${min}:1)`); };
-  const d = t.dark;
-  const l = t.light;
-  for (const [name, label] of [['--text', 'text'], ['--text-2', 'secondary text'], ['--muted', 'muted text'], ['--text-faint', 'faint text']]) {
-    pair('Dark', label, d[name], d['--surface'], 4.5);
-    pair('Light', label, l[name], l['--bg'], 4.5);
+/** A direction's accent next to a state colour reads as that state (or the state as brand). */
+function hueNotes(s) {
+  if (!s || s.chroma < 0.06) return [];
+  return HUES.filter(([hue]) => Math.abs(((s.hue - hue + 540) % 360) - 180) < 20)
+    .map(([, what]) => `The accent is close to ${what}; states may read as brand (or the reverse).`);
+}
+
+// The main pairs of scripts/check_repository.py CONTRAST_PAIRS: [text or edge, background (layers
+// over the last, left to right), minimum ratio].
+const PAIRS = [
+  ['--text', '--surface', 4.5], ['--text', '--bg', 4.5], ['--text-2', '--surface', 4.5],
+  ['--muted', '--surface', 4.5], ['--muted', '--bg', 4.5], ['--muted', '--surface-hover', 4.5], ['--muted', '--surface-3', 4.5],
+  ['--text-faint', '--surface', 4.5], ['--accent-fg', '--surface', 4.5], ['--accent-fg', '--bg', 4.5],
+  ['--accent-fg', '--accent-soft/--surface', 4.5], ['--accent-ink', '--accent', 4.5], ['--accent-ink', '--accent-hover', 4.5],
+  ['--ok-fg', '--surface', 4.5], ['--warn-fg', '--surface', 4.5], ['--danger-fg', '--surface', 4.5], ['--info-fg', '--surface', 4.5],
+  ['--warn-fg', '--warn-soft/--surface', 4.5], ['--danger-fg', '--danger-soft/--surface', 4.5], ['--info-fg', '--info-soft/--surface', 4.5],
+  ['--term-fg', '--term-bg', 4.5], ['--ansi-bright-black', '--term-bg', 4.5],
+  ['--border-control', '--surface', 3], ['--accent', '--bg', 3],
+];
+
+/** A computed colour (rgb(), rgba() or color(srgb …)) as [r, g, b] 0–255 and alpha 0–1. */
+function rgba(value) {
+  const n = (value.match(/[\d.]+/g) || ['0', '0', '0']).map(Number);
+  const scale = value.startsWith('color(') ? 255 : 1;
+  return [n[0] * scale, n[1] * scale, n[2] * scale, n.length > 3 ? n[3] : 1];
+}
+const over = (top, bottom) => [0, 1, 2].map((i) => top[i] * top[3] + bottom[i] * (1 - top[3])).concat(1);
+const toHex = (c) => `#${c.slice(0, 3).map((v) => Math.round(clamp(v, 0, 255)).toString(16).padStart(2, '0')).join('')}`;
+
+/** Every pair, measured as the browser resolves the tokens now, in a dark and a light island. */
+function measure() {
+  const failures = [];
+  for (const theme of ['dark', 'light']) {
+    const island = h('div', { 'data-theme': theme, hidden: true });
+    document.body.append(island);
+    const read = (name) => {
+      const probe = h('span');
+      probe.style.color = `var(${name})`;
+      island.append(probe);
+      const colour = rgba(getComputedStyle(probe).color);
+      probe.remove();
+      return colour;
+    };
+    for (const [fg, bg, min] of PAIRS) {
+      const layers = bg.split('/');
+      let back = read(layers[layers.length - 1]);
+      for (const layer of layers.slice(0, -1).reverse()) back = over(read(layer), back);
+      const ratio = contrast(toHex(over(read(fg), back)), toHex(back));
+      if (ratio < min - 0.005) failures.push(`${theme === 'dark' ? 'Dark' : 'Light'}: ${fg} on ${bg.replace('/', ' over ')} is ${ratio.toFixed(2)}:1 (needs ${min}:1)`);
+    }
+    island.remove();
   }
-  pair('Dark', 'links and accent text', t.ramp[300], d['--surface'], 4.5);
-  pair('Dark', 'text on accent buttons', t.ramp.ink, t.ramp[500], 4.5);
-  pair('Dark', 'accent against the page (focus, buttons)', t.ramp[500], d['--surface'], 3);
-  pair('Dark', 'input edges', d['--border-control'], d['--surface'], 3);
-  pair('Light', 'links and accent text', t.ramp[700], l['--bg'], 4.5);
-  pair('Light', 'text on accent buttons', l['--accent-ink'], t.ramp[700], 4.5);
-  pair('Light', 'accent against the page (focus, buttons)', t.ramp[700], l['--bg'], 3);
-  pair('Light', 'input edges', l['--border-control'], l['--bg'], 3);
-  // State colours stay fixed; the new surfaces must still carry them.
-  for (const [role, dark, light] of [['success', '--green-300', '--green-700'], ['warning', '--amber-300', '--amber-700'], ['error', '--red-300', '--red-700'], ['your turn', '--info-300', '--info-700']]) {
-    const dk = token(dark);
-    const lt = token(light);
-    if (/^#[0-9a-f]{6}$/i.test(dk)) pair('Dark', `${role} text`, dk, d['--surface'], 4.5);
-    if (/^#[0-9a-f]{6}$/i.test(lt)) pair('Light', `${role} text`, lt, l['--bg'], 4.5);
-  }
-  const notes = [];
-  if (s.chroma >= 0.06) {
-    for (const [hue, what] of HUES) {
-      const distance = Math.abs(((s.hue - hue + 540) % 360) - 180);
-      if (distance < 20) notes.push(`The accent is close to ${what}; states may read as brand (or the reverse).`);
+  return failures;
+}
+
+/** A token's value in a theme, as declared (var() resolved), read from an island. */
+function tokenIn(theme, name) {
+  const island = h('div', { 'data-theme': theme, hidden: true });
+  document.body.append(island);
+  const value = getComputedStyle(island).getPropertyValue(name).trim();
+  island.remove();
+  return value;
+}
+
+// ------------------------------------------------------------------ proposals
+
+const PASTED_KEY = 'yulius.lab.proposals'; // proposals pasted in this browser
+const TOKEN_NAME = /^--[a-z0-9-]+$/;
+const SAFE_VALUE = /^[^{};<>]*$/;
+
+function pastedProposals() {
+  const list = readJson(PASTED_KEY, []);
+  return Array.isArray(list) ? list.filter((p) => p && typeof p.id === 'string') : [];
+}
+
+const allProposals = () => [...PROPOSALS, ...pastedProposals()];
+
+/** A pasted proposal, checked: token names only, no value that could leave its declaration. */
+function cleanProposal(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Paste one JSON object, as “Copy template” gives it.');
+  const slug = String(raw.id || raw.name || 'proposal').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'proposal';
+  const out = { id: PROPOSALS.some((p) => p.id === slug) ? `pasted-${slug}` : slug, name: String(raw.name || slug), note: String(raw.note || ''), fonts: {}, shared: {}, light: {}, dark: {}, pasted: true };
+  for (const key of ['text', 'display', 'mono']) if (raw.fonts && typeof raw.fonts[key] === 'string') out.fonts[key] = raw.fonts[key].slice(0, 60);
+  for (const part of ['shared', 'light', 'dark']) {
+    for (const [name, value] of Object.entries(raw[part] || {})) {
+      if (!TOKEN_NAME.test(name)) throw new Error(`${part}: “${name}” is not a token name (--like-this).`);
+      if (typeof value !== 'string' || !SAFE_VALUE.test(value)) throw new Error(`${part}: ${name} needs a CSS value without { } ; < >.`);
+      out[part][name] = value;
     }
   }
-  return { failures: out, notes };
+  if (!Object.keys(out.shared).length && !Object.keys(out.light).length && !Object.keys(out.dark).length) throw new Error('No tokens: put them under shared, light and dark.');
+  return out;
 }
+
+const proposalCss = (p) => [block(':root, [data-theme]', p.shared || {}), block(':root, [data-theme="dark"]', p.dark || {}), block('[data-theme="light"]', p.light || {})].join('\n');
 
 // ------------------------------------------------------------------ state in the URL
 
@@ -247,84 +318,108 @@ function writeUrl(value) {
 export function startLab(value) {
   const style = h('style', { id: 'brand-lab' });
   document.head.append(style);
-  const preset = DIRECTIONS.find((d) => d.id === value);
-  let settings = preset ? { ...preset.s } : (value && value !== '1' ? decode(value) : null);
-  let direction = preset ? preset.id : null;
+  // What is shown: tokens.css as it is, a proposal, or a direction from the sliders.
+  let mode = { kind: 'current' };
+  if (allProposals().some((p) => p.id === value)) mode = { kind: 'proposal', id: value };
+  else if (DIRECTIONS.some((d) => d.id === value)) mode = { kind: 'direction', id: value, settings: { ...DIRECTIONS.find((d) => d.id === value).s } };
+  else if (value && value !== '1' && decode(value)) mode = { kind: 'direction', id: null, settings: decode(value) };
   let open = true;
   let side = 'right';
+  let slidersOpen = mode.kind === 'direction';
   let writeTimer = null;
+  let checkFrame = 0;
 
   const panel = h('aside', { class: 'lab', 'aria-label': 'Brand lab' });
   document.body.append(panel);
+  const checksHost = h('div', { class: 'lab-checks', 'aria-live': 'polite' });
+  const choiceButtons = new Map(); // 'current' | proposal id | 'direction:<id>' → button
+
+  const proposal = () => (mode.kind === 'proposal' ? allProposals().find((p) => p.id === mode.id) || null : null);
+  const sameAs = (id) => mode.kind === 'direction' && JSON.stringify(DIRECTIONS.find((d) => d.id === id).s) === JSON.stringify(mode.settings);
+  const urlValue = () => (mode.kind === 'proposal' ? mode.id : mode.kind === 'direction' ? (mode.id && sameAs(mode.id) ? mode.id : encode(mode.settings)) : '1');
 
   async function apply() {
-    if (!settings) {
-      style.textContent = '';
-    } else {
-      const t = tokensOf(settings);
+    const p = proposal();
+    if (p) style.textContent = proposalCss(p);
+    else if (mode.kind === 'direction') {
+      const t = tokensOf(mode.settings);
       style.textContent = [block(':root, [data-theme]', t.shared), block(':root, [data-theme="dark"]', t.dark), block('[data-theme="light"]', t.light)].join('\n');
-      await Promise.all([[settings.font, TEXT_FONTS[settings.font]], [settings.display, DISPLAY_FONTS[settings.display]], [settings.mono, CODE_FONTS[settings.mono]]].map(([name, entry]) => loadFont(name, entry)));
-    }
+    } else style.textContent = '';
     applyTheme(); // terminals, the editor, the favicon and theme-color follow
+    scheduleChecks();
     clearTimeout(writeTimer);
-    writeTimer = setTimeout(() => writeUrl(direction && settings && sameAs(direction) ? direction : settings ? encode(settings) : '1'), 300);
+    writeTimer = setTimeout(() => writeUrl(urlValue()), 300);
+    const fonts = p ? [[p.fonts.text, TEXT_FONTS[p.fonts.text]], [p.fonts.display, DISPLAY_FONTS[p.fonts.display]], [p.fonts.mono, CODE_FONTS[p.fonts.mono]]]
+      : mode.kind === 'direction' ? [[mode.settings.font, TEXT_FONTS[mode.settings.font]], [mode.settings.display, DISPLAY_FONTS[mode.settings.display]], [mode.settings.mono, CODE_FONTS[mode.settings.mono]]] : [];
+    await Promise.all(fonts.map(([name, entry]) => loadFont(name, entry)));
+    if (fonts.length) { applyTheme(); scheduleChecks(); } // measured again with the real glyphs
   }
 
-  const sameAs = (id) => JSON.stringify(DIRECTIONS.find((d) => d.id === id).s) === JSON.stringify(settings);
+  function scheduleChecks() {
+    cancelAnimationFrame(checkFrame);
+    checkFrame = requestAnimationFrame(() => {
+      const failures = measure();
+      const notes = mode.kind === 'direction' ? hueNotes(mode.settings) : [];
+      setChildren(checksHost,
+        failures.length
+          ? h('ul', { class: 'lab-fails' }, failures.map((f) => h('li', null, icon('warn', { size: 12 }), f)))
+          : h('p', { class: 'lab-ok' }, icon('check', { size: 12 }), 'All text and control edges meet WCAG AA in both themes.'),
+        notes.map((note) => h('p', { class: 'lab-note' }, note)));
+    });
+  }
 
-  // A control changes one setting and refreshes only the checks and the direction marks, so a
-  // slider keeps its drag and a select its focus.
-  function set(key, value) {
-    settings = { ...settings, [key]: value };
+  function markChoices() {
+    for (const [key, button] of choiceButtons) {
+      const on = key === 'current' ? mode.kind === 'current'
+        : key.startsWith('direction:') ? sameAs(key.slice('direction:'.length))
+          : mode.kind === 'proposal' && mode.id === key;
+      button.classList.toggle('on', on);
+      button.setAttribute('aria-checked', String(on));
+    }
+  }
+
+  function choose(next) {
+    mode = next;
+    if (mode.kind === 'direction') slidersOpen = true;
     apply();
-    refresh();
+    keepFocus(panel, render);
+  }
+
+  // A slider or select changes one setting of the direction in view and refreshes only the checks
+  // and the marks, so a slider keeps its drag and a select its focus.
+  function set(key, value) {
+    mode = { ...mode, settings: { ...mode.settings, [key]: value } };
+    apply();
+    markChoices();
   }
 
   function slider(label, key, min, max, step, show) {
-    const value = settings[key];
+    const value = mode.settings[key];
     const output = h('output', { class: 'lab-value' }, show(value));
     const input = h('input', { type: 'range', min, max, step, value, 'aria-label': label, onInput: (event) => { output.textContent = show(Number(event.target.value)); set(key, Number(event.target.value)); } });
     return h('label', { class: 'lab-field' }, h('span', { class: 'lab-label' }, label, output), input);
   }
 
-  const checksHost = h('div', { class: 'lab-checks', 'aria-live': 'polite' });
-  const directionButtons = new Map(); // direction id (or 'current') → button
-
-  function refresh() {
-    for (const [id, button] of directionButtons) {
-      const on = id === 'current' ? !settings : Boolean(settings) && direction === id && sameAs(id);
-      button.classList.toggle('on', on);
-      button.setAttribute('aria-checked', String(on));
-    }
-    if (!settings) { setChildren(checksHost); return; }
-    const result = checks(settings);
-    setChildren(checksHost,
-      result.failures.length
-        ? h('ul', { class: 'lab-fails' }, result.failures.map((f) => h('li', null, icon('warn', { size: 12 }), f)))
-        : h('p', { class: 'lab-ok' }, icon('check', { size: 12 }), 'All text meets WCAG AA in both themes.'),
-      result.notes.map((note) => h('p', { class: 'lab-note' }, note)));
-  }
-
-  function choose(id) {
-    const d = DIRECTIONS.find((x) => x.id === id);
-    settings = d ? { ...d.s } : null;
-    direction = d ? d.id : null;
-    apply();
-    keepFocus(panel, render);
-  }
-
   function select(label, key, options) {
-    const input = h('select', { class: 'select', 'aria-label': label, onChange: (event) => set(key, event.target.value) }, Object.keys(options).map((name) => h('option', { value: name, selected: settings[key] === name }, name)));
+    const input = h('select', { class: 'select', 'aria-label': label, onChange: (event) => set(key, event.target.value) }, Object.keys(options).map((name) => h('option', { value: name, selected: mode.settings[key] === name }, name)));
     return h('label', { class: 'lab-field' }, h('span', { class: 'lab-label' }, label), input);
   }
 
-  function swatches(s) {
-    const t = tokensOf(s);
-    return h('span', { class: 'lab-swatches', 'aria-hidden': 'true' }, [t.dark['--bg'], t.dark['--surface-3'], t.ramp[500], t.light['--bg'], t.ramp[700]].map((colour) => {
+  function dots(colours) {
+    return h('span', { class: 'lab-swatches', 'aria-hidden': 'true' }, colours.filter(Boolean).map((colour) => {
       const dot = h('span', { class: 'lab-swatch' });
       dot.style.setProperty('--lab-swatch', colour);
       return dot;
     }));
+  }
+
+  const proposalDots = (p) => dots([p.dark['--bg'], p.dark['--accent-fg'], p.light['--bg'], p.light['--accent'], p.light['--accent-fg']]);
+  const directionDots = (s) => { const t = tokensOf(s); return dots([t.dark['--bg'], t.dark['--surface-3'], t.ramp[500], t.light['--bg'], t.ramp[700]]); };
+
+  function choiceButton(key, name, note, extra, run, remove) {
+    const button = h('button', { type: 'button', role: 'radio', class: 'lab-direction', onClick: run }, h('span', { class: 'lab-direction-name' }, name, extra), note ? h('span', { class: 'lab-direction-note' }, note) : null);
+    choiceButtons.set(key, button);
+    return remove ? h('div', { class: 'lab-choice' }, button, h('button', { type: 'button', class: 'btn-icon lab-remove', 'aria-label': `Remove ${name}`, title: `Remove ${name}`, onClick: remove }, icon('x', { size: 12 }))) : button;
   }
 
   async function copy(text, what) {
@@ -336,36 +431,81 @@ export function startLab(value) {
     }
   }
 
+  /** The proposal in view, or a skeleton of today's values in the proposal format. */
+  function template() {
+    const p = proposal();
+    if (p) {
+      const { pasted, ...rest } = p;
+      return { ...rest, id: `${p.id}-2`, name: `${p.name} (copy)` };
+    }
+    if (mode.kind === 'direction') {
+      const t = tokensOf(mode.settings);
+      return { id: 'my-proposal', name: 'My proposal', note: '', fonts: { text: mode.settings.font, display: mode.settings.display, mono: mode.settings.mono }, shared: t.shared, light: t.light, dark: t.dark };
+    }
+    const keys = PROPOSALS[0];
+    const out = { id: 'my-proposal', name: 'My proposal', note: '', fonts: { text: 'System', display: 'System', mono: 'System' }, shared: {}, light: {}, dark: {} };
+    for (const part of ['shared', 'light', 'dark']) for (const name of Object.keys(keys[part])) out[part][name] = tokenIn(part === 'shared' ? activeTheme() : part, name);
+    return out;
+  }
+
   function exported() {
-    const t = tokensOf(settings);
-    return JSON.stringify({ direction, settings, tokens: { shared: t.shared, dark: t.dark, light: t.light } }, null, 2);
+    const p = proposal();
+    if (p) { const { pasted, ...rest } = p; return JSON.stringify(rest, null, 2); }
+    if (mode.kind === 'direction') { const t = tokensOf(mode.settings); return JSON.stringify({ direction: mode.id, settings: mode.settings, tokens: { shared: t.shared, dark: t.dark, light: t.light } }, null, 2); }
+    return JSON.stringify(template(), null, 2);
+  }
+
+  function pasteDialog() {
+    const area = h('textarea', { class: 'textarea mono', rows: 14, spellcheck: 'false', 'aria-label': 'Proposal JSON', placeholder: '{ "name": "…", "fonts": { … }, "shared": { … }, "light": { … }, "dark": { … } }' });
+    openModal({
+      title: 'Paste a brand proposal',
+      wide: true,
+      body: h('div', { class: 'stack-sm' },
+        h('p', { class: 'text-2' }, 'JSON in the shape “Copy template” gives: any tokens of tokens.css under shared (both themes), light and dark, and Google Fonts names under fonts. It is kept in this browser.'),
+        h('label', { class: 'field' }, area)),
+      actions: [
+        { label: 'Cancel', value: false },
+        { label: 'Preview', kind: 'primary', run: () => {
+          let parsed;
+          try { parsed = JSON.parse(area.value); } catch (error) { return invalid(area, `Not valid JSON: ${error.message}`); }
+          let clean;
+          try { clean = cleanProposal(parsed); } catch (error) { return invalid(area, error.message); }
+          writeJson(PASTED_KEY, [...pastedProposals().filter((p) => p.id !== clean.id), clean]);
+          choose({ kind: 'proposal', id: clean.id });
+          return true;
+        } },
+      ],
+    });
+  }
+
+  function removePasted(id) {
+    writeJson(PASTED_KEY, pastedProposals().filter((p) => p.id !== id));
+    if (mode.kind === 'proposal' && mode.id === id) { choose({ kind: 'current' }); return; }
+    keepFocus(panel, render);
   }
 
   function render() {
     panel.classList.toggle('lab-left', side === 'left');
+    choiceButtons.clear();
     const head = h('div', { class: 'lab-head' },
       h('button', { type: 'button', class: 'lab-title', 'aria-expanded': String(open), onClick: () => { open = !open; render(); } }, icon(open ? 'down' : 'right', { size: 14 }), 'Brand lab'),
       h('span', { class: 'spacer' }),
       h('button', { type: 'button', class: 'btn-icon', 'aria-label': side === 'right' ? 'Move to the left' : 'Move to the right', title: side === 'right' ? 'Move to the left' : 'Move to the right', onClick: () => { side = side === 'right' ? 'left' : 'right'; render(); } }, icon(side === 'right' ? 'left' : 'right', { size: 14 })));
     if (!open) { setChildren(panel, head); return; }
 
-    directionButtons.clear();
-    const directionButton = (id, name, note, extra) => {
-      const button = h('button', { type: 'button', role: 'radio', class: 'lab-direction', onClick: () => choose(id) }, h('span', { class: 'lab-direction-name' }, name, extra), h('span', { class: 'lab-direction-note' }, note));
-      directionButtons.set(id, button);
-      return button;
-    };
-    const directions = h('div', { class: 'lab-directions', role: 'radiogroup', 'aria-label': 'Direction' },
-      directionButton('current', 'Current', 'tokens.css as it is', null),
-      DIRECTIONS.map((d) => directionButton(d.id, d.name, d.note, swatches(d.s))));
-
     const theme = activeTheme();
     const themeSeg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Theme' }, ['dark', 'light'].map((name) => h('label', null,
       h('input', { type: 'radio', name: 'lab-theme', checked: theme === name, onChange: () => { setThemeChoice(name); render(); } }), name === 'dark' ? 'Dark' : 'Light')));
 
-    const body = [h('div', { class: 'lab-row' }, h('span', { class: 'lab-label' }, 'Theme'), themeSeg), h('h3', { class: 'lab-section' }, 'Direction'), directions];
-    if (settings) {
-      body.push(
+    const proposals = h('div', { class: 'lab-list', role: 'radiogroup', 'aria-label': 'Proposal' },
+      choiceButton('current', 'Current', 'tokens.css as it is', null, () => choose({ kind: 'current' })),
+      allProposals().map((p) => choiceButton(p.id, p.name, p.note, proposalDots(p), () => choose({ kind: 'proposal', id: p.id }), p.pasted ? () => removePasted(p.id) : null)));
+
+    const sliders = h('details', { class: 'lab-sliders', open: slidersOpen, onToggle: (event) => { slidersOpen = event.target.open; } },
+      h('summary', { class: 'lab-section' }, 'Directions and sliders'),
+      h('div', { class: 'lab-directions', role: 'radiogroup', 'aria-label': 'Direction' },
+        DIRECTIONS.map((d) => choiceButton(`direction:${d.id}`, d.name, d.note, directionDots(d.s), () => choose({ kind: 'direction', id: d.id, settings: { ...d.s } })))),
+      mode.kind === 'direction' ? [
         h('h3', { class: 'lab-section' }, 'Colour'),
         slider('Accent hue', 'hue', 0, 359, 1, (v) => `${v}°`),
         slider('Accent strength', 'chroma', 0, 0.25, 0.005, (v) => v.toFixed(3)),
@@ -379,19 +519,30 @@ export function startLab(value) {
         select('Code and terminal', 'mono', CODE_FONTS),
         h('h3', { class: 'lab-section' }, 'Shape'),
         slider('Corner radius', 'radius', 0, 14, 1, (v) => `${v} px`),
-        h('label', { class: 'lab-row' }, h('span', { class: 'lab-label' }, 'Wordmark in capitals'), h('input', { type: 'checkbox', checked: settings.caps, onChange: (event) => set('caps', event.target.checked) })),
+        h('label', { class: 'lab-row' }, h('span', { class: 'lab-label' }, 'Wordmark in capitals'), h('input', { type: 'checkbox', checked: mode.settings.caps, onChange: (event) => set('caps', event.target.checked) })),
         slider('Wordmark tracking', 'tracking', 0, 0.4, 0.01, (v) => `${v.toFixed(2)} em`),
-        h('h3', { class: 'lab-section' }, 'Checks'),
-        checksHost,
-        h('div', { class: 'lab-actions' },
-          h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => copy(exported(), 'Settings') }, 'Copy settings'),
-          h('button', { type: 'button', class: 'btn btn-sm', onClick: () => copy(window.location.href, 'Link') }, 'Copy link')),
-        h('p', { class: 'lab-note' }, 'Fonts load from Google Fonts in the lab only; the chosen ones get self-hosted. The editor takes a new code font when it opens next.'));
-    }
+      ] : h('p', { class: 'lab-note' }, 'Pick a direction to tune it with sliders.'));
+
+    const body = [
+      h('div', { class: 'lab-row' }, h('span', { class: 'lab-label' }, 'Theme'), themeSeg),
+      h('h3', { class: 'lab-section' }, 'Proposals'),
+      proposals,
+      h('div', { class: 'lab-actions' },
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: pasteDialog }, 'Paste proposal…'),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => copy(JSON.stringify(template(), null, 2), 'Template') }, 'Copy template')),
+      h('h3', { class: 'lab-section' }, 'Checks'),
+      checksHost,
+      mode.kind === 'current' ? null : h('div', { class: 'lab-actions' },
+        h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => copy(exported(), 'Settings') }, 'Copy settings'),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => copy(window.location.href, 'Link') }, 'Copy link')),
+      sliders,
+      h('p', { class: 'lab-note' }, 'Fonts load from Google Fonts in the lab only; the chosen ones get self-hosted. The editor takes a new code font when it opens next.'),
+    ];
     const scroll = panel.querySelector('.lab-body')?.scrollTop || 0;
     setChildren(panel, head, h('div', { class: 'lab-body' }, body));
     panel.querySelector('.lab-body').scrollTop = scroll;
-    refresh();
+    markChoices();
+    scheduleChecks();
   }
 
   apply();

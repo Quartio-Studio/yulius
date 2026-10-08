@@ -531,6 +531,14 @@ body.resizing iframe { pointer-events: none; }
 .lab-value { color: var(--muted); font-variant-numeric: tabular-nums; }
 .lab-field input[type="range"] { width: 100%; accent-color: var(--accent); }
 .lab-directions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.lab-list { display: flex; flex-direction: column; gap: 6px; }
+.lab-list .lab-direction { width: 100%; }
+.lab-choice { position: relative; }
+.lab-choice .lab-direction { padding-right: 32px; }
+.lab-remove { position: absolute; top: 4px; right: 4px; }
+.lab-sliders { display: flex; flex-direction: column; gap: 8px; }
+.lab-sliders[open] > summary { margin-bottom: 8px; }
+.lab-sliders > * + * { margin-top: 8px; }
 .lab-direction { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: left; font-family: inherit; cursor: pointer; }
 .lab-direction:hover { border-color: var(--border-strong); }
 .lab-direction.on { border-color: var(--accent); box-shadow: var(--focus-inset); }
