@@ -42,6 +42,20 @@ export const QUOTES = [
   { text: 'If it hurts, do it more often.', author: 'Martin Fowler' },
   { text: 'Any fool can write code that a computer can understand. Good programmers write code that humans can understand.', author: 'Martin Fowler' },
   { text: 'Everyone knows that debugging is twice as hard as writing a program in the first place.', author: 'Brian Kernighan' },
+  // Richard W. Hamming, verbatim: Numerical Methods for Scientists and Engineers (1962), the talk
+  // “You and Your Research” (Bell Labs, 1986) and The Art of Doing Science and Engineering (1997).
+  { text: 'The purpose of computing is insight, not numbers.', author: 'Richard W. Hamming' },
+  { text: 'In science, if you know what you are doing, you should not be doing it. In engineering, if you do not know what you are doing, you should not be doing it.', author: 'Richard W. Hamming' },
+  { text: 'In a lifetime of many, many independent choices, small and large, a career with a vision will get you a distance proportional to n, while no vision will get you only the distance √n.', author: 'Richard W. Hamming' },
+  { text: 'If you do not work on an important problem, it’s unlikely you’ll do important work.', author: 'Richard W. Hamming' },
+  { text: 'It’s not the consequence that makes a problem important, it is that you have a reasonable attack.', author: 'Richard W. Hamming' },
+  { text: 'Knowledge and productivity are like compound interest.', author: 'Richard W. Hamming' },
+  { text: 'Great scientists tolerate ambiguity very well.', author: 'Richard W. Hamming' },
+  { text: 'The particular thing you do is luck, but that you do something is not.', author: 'Richard W. Hamming' },
+  { text: 'Given two people with exactly the same ability, the one person who manages day in and day out to get in one more hour of thinking will be tremendously more productive over a lifetime.', author: 'Richard W. Hamming' },
+  { text: 'It is not sufficient to do a job, you have to sell it.', author: 'Richard W. Hamming' },
+  { text: 'Most great scientists have tremendous drive.', author: 'Richard W. Hamming' },
+  { text: 'One of the characteristics of successful scientists is having courage.', author: 'Richard W. Hamming' },
 ];
 
 /** A random quote, avoiding the one shown last in this browser tab. */
