@@ -81,9 +81,13 @@ function createApp(root, transport) {
 
   async function start() {
     setChildren(root, h('main', { class: 'auth' }, placeholder(`Loading ${BRAND.name}…`, 'loading')));
+    // Both asked at once: one round trip before the app shows instead of two (PERF-11).
+    const setupRead = api.get('/api/setup/status', { allow401: true });
+    const meRead = api.get('/api/me', { allow401: true });
+    meRead.catch(() => {}); // answered below, or not needed when setup is required
     let setup;
     try {
-      setup = await api.get('/api/setup/status', { allow401: true });
+      setup = await setupRead;
     } catch (error) {
       fatal(error);
       return;
@@ -93,7 +97,7 @@ function createApp(root, transport) {
       return;
     }
     try {
-      const me = await api.get('/api/me', { allow401: true });
+      const me = await meRead;
       await signedIn(me);
     } catch (error) {
       if (error.status === 401) renderSignIn();
