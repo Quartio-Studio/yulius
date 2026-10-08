@@ -133,7 +133,7 @@ export function createBrowserPanel(ctx, sandbox) {
   const mirrorHost = h('div', { class: 'bp-mirror', 'aria-label': 'Remote browser page' });
   const canvas = h('canvas', { class: 'bp-canvas', hidden: true });
   // Pixel view only: the canvas cannot take input itself.
-  const inputLayer = h('div', { class: 'bp-input', tabindex: '0', hidden: true, 'aria-label': 'Remote browser page (click to interact)' });
+  const inputLayer = h('div', { class: 'bp-input', tabindex: '0', hidden: true, 'aria-label': 'Remote browser page (click to interact)', 'aria-description': 'Keys go to the page. Press F6 to move to the next area, Shift+F6 to go back.', title: 'F6 moves to the next area' });
   const agentCursor = h('div', { class: 'bp-agent', hidden: true }, h('span', { class: 'bp-agent-arrow' }), h('span', { class: 'bp-agent-label' }));
   const agentPill = h('div', { class: 'bp-agent-pill', hidden: true });
   const copied = h('div', { class: 'bp-copied', hidden: true }, 'Copied');

@@ -245,6 +245,12 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     start() {
       if (opened || destroyed) return;
       term.open(host);
+      // The terminal keeps Tab and Esc; say how to leave it (WCAG 2.1.2 asks that the way out be told).
+      const input = host.querySelector('.xterm-helper-textarea');
+      if (input) {
+        input.setAttribute('aria-description', 'Terminal. Press F6 to move to the next area, Shift+F6 to go back.');
+        input.title = 'F6 moves to the next area';
+      }
       opened = true;
       observer.observe(host);
       applySize();
