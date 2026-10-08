@@ -1,12 +1,13 @@
 // Skills page (SKL-005): catalog with source badges, enable toggle and content viewer.
 
 import { enc } from '../api.js';
-import { h, badge, openModal, toggle, toast, errorToast, setChildren, placeholder } from '../dom.js';
+import { h, openModal, toggle, toast, errorToast, setChildren, placeholder, iconBadge, itemCard } from '../dom.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
 const SOURCES = [['', 'All sources'], ['repository', 'Repository'], ['instance', 'Instance'], ['open-mercato', 'Open Mercato']];
-const SOURCE_TONE = { repository: '', instance: 'violet', 'open-mercato': 'accent' };
+/** How each source reads: icon, label and tone of its badge. */
+const SOURCE_BADGE = { repository: ['branch', 'Repository', ''], instance: ['globe', 'Whole instance', 'violet'], 'open-mercato': ['book', 'Open Mercato', ''] };
 
 /** Mount the Skills page; ?source=instance pre-filters (admin "Instance skills" entry). */
 export function mountSkillsPage(ctx, sandbox, route) {
@@ -24,20 +25,23 @@ export function mountSkillsPage(ctx, sandbox, route) {
     const shown = skills.filter((s) => (!source.value || s.source === source.value) && (!q || `${s.name} ${s.description}`.toLowerCase().includes(q)));
     frame.sub.textContent = `${shown.length} of ${skills.length} · activated automatically by relevance`;
     if (shown.length === 0) return h('div', { class: 'card placeholder' }, skills.length ? 'No skill matches.' : 'No skills found. Repository skills live in .agents/skills or .claude/skills.');
-    return h('div', { class: 'card list' }, shown.map((skill) => {
+    return h('div', { class: 'item-list' }, shown.map((skill) => {
       // Repository skills are always available inside the repository (PUT → 422);
       // instance skills are toggled by instance administrators.
       const repository = skill.source === 'repository';
       const canToggle = write && !repository && (skill.source !== 'instance' || ctx.isInstanceAdmin());
       const why = repository ? 'Repository skills are always available inside the repository' : !write ? 'Requires write access' : skill.source === 'instance' && !ctx.isInstanceAdmin() ? 'Instance skills are managed by instance administrators' : null;
-      return h('div', { class: 'list-item' },
-        h('div', { class: 'list-main' },
-          h('div', { class: 'list-title' }, h('button', { type: 'button', class: 'btn-ghost btn btn-sm', style: { padding: 0, height: 'auto', fontWeight: 600, color: 'var(--text)' }, onClick: () => view(skill) }, skill.name), badge(skill.source, SOURCE_TONE[skill.source] || '')),
-          h('div', { class: 'list-sub', style: { whiteSpace: 'normal' } }, skill.description || ''),
-          skill.path ? h('div', { class: 'list-sub mono' }, skill.path) : null),
-        h('div', { class: 'list-actions' },
-          h('button', { type: 'button', class: 'btn btn-sm', onClick: () => view(skill) }, 'View'),
-          h('span', { title: why }, toggle({ checked: skill.enabled, disabled: !canToggle, label: `${skill.enabled ? 'Disable' : 'Enable'} ${skill.name}`, onChange: async (checked, input) => {
+      const [badgeIcon, badgeLabel, badgeTone] = SOURCE_BADGE[skill.source] || ['book', skill.source, ''];
+      return itemCard({
+        iconName: 'book',
+        title: skill.name,
+        badges: [iconBadge(badgeIcon, badgeLabel, badgeTone)],
+        description: skill.description || null,
+        extra: skill.path ? h('div', { class: 'item-meta mono' }, skill.path) : null,
+        onOpen: () => view(skill),
+        openLabel: `Open skill ${skill.name}`,
+        dim: !skill.enabled,
+        controls: [h('span', { title: why || (skill.enabled ? 'On: Claude Code may use it' : 'Off') }, toggle({ checked: skill.enabled, disabled: !canToggle, label: `${skill.enabled ? 'Disable' : 'Enable'} ${skill.name}`, onChange: async (checked, input) => {
             try {
               await ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/skills/${enc(skill.name)}`, { enabled: checked });
               skill.enabled = checked;
@@ -46,7 +50,8 @@ export function mountSkillsPage(ctx, sandbox, route) {
               input.checked = !checked;
               errorToast(error, 'Could not change skill');
             }
-          } }))));
+          } }))],
+      });
     }));
   }
 
