@@ -139,8 +139,8 @@ function createApp(root, transport) {
       });
     }
     if (user.is_superadmin && me.instance && me.instance.github_configured === false) {
-      ctx.notifications.add({ kind: 'info', title: 'Connect this instance to GitHub', detail: 'Needed to create and import projects.', route: '/admin/github', key: 'notice:github', once: true });
-      toast('Connect this instance to GitHub to create and import projects.', { kind: 'info', timeout: 12000, action: { label: 'Connect GitHub', run: () => navigate('/admin/github') } });
+      ctx.notifications.add({ kind: 'info', title: 'Connect this instance to GitHub', detail: 'Needed to create and import sandboxes.', route: '/admin/github', key: 'notice:github', once: true });
+      toast('Connect this instance to GitHub to create and import sandboxes.', { kind: 'info', timeout: 12000, action: { label: 'Connect GitHub', run: () => navigate('/admin/github') } });
     }
     const loc = currentLocation();
     if (next) navigate(next, { replace: true });
@@ -438,16 +438,16 @@ function createApp(root, transport) {
       notes.push(h('div', { class: 'banner banner-info' }, icon('globe'), h('span', { class: 'banner-text' }, 'First connect this instance to a GitHub organization or account.'), h('a', { class: 'btn btn-sm', href: href('/admin/github'), dataset: { route: '/admin/github' } }, 'Connect GitHub')));
     }
     if (user.github_linked === false) {
-      notes.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Project content needs a GitHub-linked account. Sign in with GitHub to see repositories you can access.'), h('a', { class: 'btn btn-sm', href: '/api/auth/github/start?next=/' }, 'Sign in with GitHub')));
+      notes.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Sandbox content needs a GitHub-linked account. Sign in with GitHub to see the repositories you can access.'), h('a', { class: 'btn btn-sm', href: '/api/auth/github/start?next=/' }, 'Sign in with GitHub')));
     }
     return {
       el: h('div', { class: 'composer' }, h('div', { class: 'composer-card' },
         h('h1', { class: 'composer-title' }, 'No sandboxes yet'),
-        h('p', { class: 'text-2' }, 'A sandbox is one GitHub repository with its own tasks, browser and editor. Import an existing repository or create a new project from a template.'),
+        h('p', { class: 'text-2' }, 'A sandbox is one GitHub repository with its own tasks, browser and editor. Import an existing repository or create a new one from a template.'),
         notes,
         h('div', { class: 'row-wrap' },
           h('button', { type: 'button', class: 'btn btn-primary', onClick: () => openSandboxDialog(ctx, 'import') }, 'Import repository'),
-          h('button', { type: 'button', class: 'btn', onClick: () => openSandboxDialog(ctx, 'create') }, 'Create project')))),
+          h('button', { type: 'button', class: 'btn', onClick: () => openSandboxDialog(ctx, 'create') }, 'Create from template')))),
     };
   }
 

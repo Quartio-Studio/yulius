@@ -306,7 +306,7 @@ function instanceSummary(ctx) {
     h('div', { class: 'row' }, connected ? badge('connected', 'ok') : badge('not connected', 'warn'), instance.owner_login ? h('strong', null, instance.owner_login) : null, instance.owner_kind ? badge(instance.owner_kind) : null),
     connected
       ? h('p', { class: 'text-2' }, 'This instance has a GitHub App. Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and connect provider accounts.')
-      : h('p', { class: 'text-2' }, 'This instance has no GitHub App yet, so projects cannot be imported or created.'),
+      : h('p', { class: 'text-2' }, 'This instance has no GitHub App yet, so sandboxes cannot be imported or created.'),
     h('p', { class: 'muted small' }, 'GitHub App setup (the manifest flow) is not available in this server version: GET /api/admin/github answered 404.'));
 }
 

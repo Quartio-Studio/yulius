@@ -450,14 +450,14 @@ export function openSandboxDialog(ctx, mode = 'import') {
   const tabCreate = h('input', { type: 'radio', name: 'sb-mode', value: 'create', checked: startMode === 'create', disabled: !canCreate });
   const content = h('div', { class: 'stack' });
   const body = h('div', { class: 'stack' },
-    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Mode' }, h('label', null, tabImport, 'Import repository'), h('label', { title: canCreate ? null : 'Only instance administrators can create projects' }, tabCreate, 'Create project')),
+    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Mode' }, h('label', null, tabImport, 'Import repository'), h('label', { title: canCreate ? null : 'Only instance administrators can create sandboxes from a template' }, tabCreate, 'Create from template')),
     content);
   let submitButton;
   let selectedRepo = null;
   let repos = null;
   let templates = null;
-  const nameInput = h('input', { class: 'input', placeholder: 'my-project', maxlength: 100, autocomplete: 'off' });
-  const descInput = h('input', { class: 'input', placeholder: 'One sentence about the project (optional)', maxlength: 300 });
+  const nameInput = h('input', { class: 'input', placeholder: 'my-sandbox', maxlength: 100, autocomplete: 'off' });
+  const descInput = h('input', { class: 'input', placeholder: 'One sentence about the sandbox (optional)', maxlength: 300 });
   const nameError = h('span', { class: 'field-error' });
   let templateValue = null;
 
@@ -478,7 +478,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
   const renderImport = async () => {
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Filter repositories…', 'aria-label': 'Filter repositories' });
     const list = h('div', { class: 'card list', style: { maxHeight: '320px', overflow: 'auto' } }, placeholder('Loading repositories…', 'loading'));
-    setChildren(content, search, list, h('p', { class: 'muted xs' }, 'Importing needs admin or maintain permission on the repository, which must belong to the instance owner. Yulius clones it and checks the documentation format; a project that does not follow it gets a preparation task first.'));
+    setChildren(content, search, list, h('p', { class: 'muted xs' }, 'Importing needs admin or maintain permission on the repository, which must belong to the instance owner. Yulius clones it and checks the documentation format; a sandbox that does not follow it gets a preparation task first.'));
     const draw = () => {
       if (!repos) return;
       const q = search.value.trim().toLowerCase();

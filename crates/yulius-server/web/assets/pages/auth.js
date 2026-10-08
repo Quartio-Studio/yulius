@@ -198,7 +198,7 @@ export function mountSignIn(ctx, { next, onDone, error }) {
   const card = h('div', { class: 'auth-card' },
     h('div', { class: 'auth-logo' }, 'Yulius'),
     h('h1', { class: 'auth-title' }, 'Sign in'),
-    h('p', { class: 'text-2' }, 'Members sign in with GitHub. Project access mirrors your GitHub repository permissions.'),
+    h('p', { class: 'text-2' }, 'Members sign in with GitHub. Sandbox access mirrors your GitHub repository permissions.'),
     githubButton,
     errorBox,
     h('div', { class: 'divider' }, 'or'),

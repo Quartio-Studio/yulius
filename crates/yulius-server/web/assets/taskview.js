@@ -297,7 +297,7 @@ export function mountComposer(ctx, sandbox) {
       const pending = sb.onboarding === 'pending';
       items.push(h('div', { class: 'banner banner-info' }, icon('refresh'),
         h('span', { class: 'banner-text' },
-          h('strong', null, pending ? 'This project needs preparation. ' : 'Preparing this project. '),
+          h('strong', null, pending ? 'This sandbox needs preparation. ' : 'Preparing this sandbox. '),
           pending
             ? 'The repository does not follow the Yulius documentation format yet. Start the preparation task to adapt it; new tasks can start once it lands.'
             : 'A preparation task adapts the imported repository to the Yulius format; new tasks can start once it lands.',
@@ -310,7 +310,7 @@ export function mountComposer(ctx, sandbox) {
     const disabled = !write || blocked;
     startButton.disabled = disabled;
     prompt.disabled = disabled;
-    startButton.title = blocked ? 'Blocked until project preparation finishes' : !write ? 'Requires write access' : '';
+    startButton.title = blocked ? 'Blocked until the sandbox preparation finishes' : !write ? 'Requires write access' : '';
   }
 
   async function approveOnboarding() {
@@ -326,7 +326,7 @@ export function mountComposer(ctx, sandbox) {
 
   async function skipOnboarding() {
     const ok = await confirmDialog({
-      title: 'Skip project preparation?',
+      title: 'Skip sandbox preparation?',
       message: 'Tasks may start before the repository follows the Yulius documentation format. The preparation task keeps its history.',
       confirmLabel: 'Skip for now',
     });
