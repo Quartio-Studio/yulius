@@ -363,6 +363,17 @@ button.task-group-head:hover { color: var(--text); }
 .glyph.tone-working .icon, .glyph.tone-running .icon { animation: spin 0.9s linear infinite; }
 .glyph.tone-switching .icon { animation: spin 1.6s linear infinite; }
 @keyframes pulse { 50% { opacity: 0.6; } }
+/* Windows high-contrast (forced colours): switches, segments and status dots keep their state and
+   focus visible with system colours (WCAG 1.4.11, 2.4.7). */
+@media (forced-colors: active) {
+  .switch-track { border: 1px solid CanvasText; }
+  .switch-track::after { forced-color-adjust: none; background: CanvasText; }
+  .switch-input:checked + .switch-track { forced-color-adjust: none; background: Highlight; border-color: Highlight; }
+  .switch-input:checked + .switch-track::after { background: HighlightText; }
+  .switch-input:focus-visible + .switch-track, .seg label:has(input:focus-visible) { outline: 2px solid Highlight; outline-offset: 2px; }
+  .seg label:has(input:checked) { outline: 2px solid CanvasText; outline-offset: -2px; }
+  .tab-dot, .rail-dot, .ev-dot, .dl-dot, .task-unread { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+}
 /* Reduced motion: no animation or transition anywhere (WCAG 2.3.3). */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: var(--duration-instant) !important; animation-iteration-count: 1 !important; transition-duration: var(--duration-instant) !important; scroll-behavior: auto !important; }
