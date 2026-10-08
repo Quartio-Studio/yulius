@@ -5,13 +5,12 @@
 // checks, author and age on the right. Filters (state tabs with counts, Author and Origin
 // multi-select, search) live in the URL so a filtered view can be shared as a link.
 
-import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, pollPaused } from '../dom.js';
+import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, prChip } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
 import { href, currentLocation, replaceQuietly } from '../router.js';
 import { readJson, writeJson } from '../store.js';
-import { enc } from '../api.js';
 import { initials } from '../layout.js';
 import { pageFrame, dataTable, loader } from './common.js';
 import { NEW_TASK_KEYS } from '../shortcuts.js';
@@ -33,11 +32,6 @@ const GROUPS = [
   { id: 'closed', name: 'Closed', icon: 'st-closed' },
 ];
 const ORIGINS = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task' };
-const CHECKS = {
-  success: { icon: 'check', tone: 'ok', label: 'checks passed' },
-  failure: { icon: 'x', tone: 'danger', label: 'checks failed' },
-  pending: { icon: 'clock', tone: 'warn', label: 'checks running' },
-};
 const CLOSED_PREVIEW = 5;
 // Long groups show this many rows, then "Show more" adds a page (PERF-03: hundreds of rows made
 // every repaint and keystroke slow).
@@ -53,15 +47,8 @@ function groupOf(task, info) {
 /** The second line: what is happening or what to do, in words (status.js activityLine). */
 const detailLine = (task, info) => activityLine(task, info);
 
-/** Pull request chip: number and checks, opening GitHub. Empty (not "—") when there is none. */
-function prChip(pr) {
-  if (!pr) return h('span', { class: 'tl-pr' });
-  const merged = pr.state === 'merged';
-  const checks = merged || pr.state === 'closed' ? null : CHECKS[pr.checks];
-  const label = `Pull request #${pr.number} · ${pr.state}${checks ? ` · ${checks.label}` : ''}`;
-  return h('span', { class: 'tl-pr' }, h('a', { class: ['tl-pr-chip', merged && 'merged', pr.state === 'closed' && 'closed'], href: pr.url, target: '_blank', rel: 'noopener noreferrer', title: label, 'aria-label': label },
-    icon('branch', { size: 12 }), `#${pr.number}`, checks ? h('span', { class: `tone-${checks.tone}` }, icon(checks.icon, { size: 12 })) : null));
-}
+/** The pull request cell: its chip (opening GitHub), empty (not "—") when there is none. */
+const prCell = (pr) => h('span', { class: 'tl-pr' }, pr ? prChip(pr) : null);
 
 /** Tasks of one sandbox: grouped list with filters. */
 export function mountTasksPage(ctx, sandbox) {
@@ -76,7 +63,6 @@ export function mountTasksPage(ctx, sandbox) {
   const stored = readJson(COLLAPSED_KEY, []);
   const collapsed = new Set(Array.isArray(stored) ? stored : []);
   const shownCount = new Map(); // group id → rows shown after "Show more"
-  let pulls = new Map();
 
   const frame = pageFrame({ title: 'Tasks', sub: sandbox.name, actions: [
     h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, NEW_TASK_KEYS)),
@@ -236,7 +222,7 @@ export function mountTasksPage(ctx, sandbox) {
   let rowCache = new Map(); // task id → { key, el }
   let nextRows = new Map();
   function cachedRow(item) {
-    const pr = pulls.get(item.task.id) || null;
+    const pr = ctx.store.pullsOf(sandbox.id).get(item.task.id) || null;
     const key = JSON.stringify([item.task, item.info, item.group, pr, sandbox.access, myLogin(), relShort(item.task.updated_at)]);
     const hit = rowCache.get(item.task.id);
     const el = hit && hit.key === key ? hit.el : rowView(item);
@@ -261,7 +247,7 @@ export function mountTasksPage(ctx, sandbox) {
           h('span', { class: 'tl-sub' },
             h('span', { class: 'tl-what' }, detailLine(task, info)),
             h('span', { class: 'tl-sub-time' }, ` · ${relShort(task.updated_at)}`)))),
-      prChip(pulls.get(task.id)),
+      prCell(ctx.store.pullsOf(sandbox.id).get(task.id)),
       // Only someone else's task shows its author; your own would repeat your initials on every row.
       login && login !== myLogin() ? h('span', { class: 'avatar tl-avatar', role: 'img', title: `Started by ${login}`, 'aria-label': `Started by ${login}` }, initials(login)) : h('span', { class: 'tl-avatar' }),
       h('span', { class: 'tl-time', title: `Updated ${dateTime(task.updated_at)} · created ${dateTime(task.created_at)}` }, relShort(task.updated_at)),
@@ -276,18 +262,8 @@ export function mountTasksPage(ctx, sandbox) {
     return row;
   }
 
-  // Pull requests and checks: one read per sandbox, refreshed every minute and on focus.
-  let pullsAt = 0;
-  const reads = new AbortController(); // leaving the page cancels its reads in flight (PERF-13)
-  async function loadPulls() {
-    pullsAt = Date.now();
-    try {
-      const git = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`, { signal: reads.signal });
-      if (!alive) return; // the page was left while the read was in flight
-      pulls = new Map((git.tasks || []).filter((t) => t.pr).map((t) => [t.task_id, t.pr]));
-      render();
-    } catch { /* PR chips stay empty; the list works without them */ }
-  }
+  // Pull requests and checks: the store keeps them fresh while this page (or the sidebar) shows them.
+  const unwatchPulls = ctx.store.watchPulls(sandbox.id);
 
   // Keyboard: "/" focuses search, j/k move between tasks, "." opens the focused task's menu.
   const typing = (target) => target.closest('input, textarea, select, [contenteditable="true"], .xterm');
@@ -320,20 +296,14 @@ export function mountTasksPage(ctx, sandbox) {
     if (search.value) { search.value = ''; render(); } else search.blur();
   });
   document.addEventListener('keydown', onKey);
-  // Pull requests refresh every minute while the page is in view and online, and when you come
-  // back to it (at most every 15 s), not while the tab is hidden (PERF-12).
-  const onFocus = () => { if (!pollPaused() && Date.now() - pullsAt > 15_000) loadPulls(); };
-  window.addEventListener('focus', onFocus);
-  document.addEventListener('visibilitychange', onFocus);
-  const timer = setInterval(() => { if (!pollPaused()) loadPulls(); }, 60_000);
   // Live events repaint at most every 200 ms; the user's own clicks and keys render at once.
   const repaint = coalesce(render, { minInterval: 200 });
   const offs = [
     ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) repaint(); }),
     ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) repaint(); }),
+    ctx.store.on('pulls', (sid) => { if (sid === sandbox.id) repaint(); }),
   ];
   render();
-  loadPulls();
   // A link to this page with other filters (the nav link, a shared URL) updates it in place.
   function update(route) {
     const next = route.query;
@@ -345,14 +315,11 @@ export function mountTasksPage(ctx, sandbox) {
   }
   return { el: frame.el, key: `tasks:${sandbox.id}`, update, destroy: () => {
     alive = false;
-    reads.abort();
+    unwatchPulls();
     repaint.cancel();
     clearTimeout(searchTimer);
     offs.forEach((off) => off());
     document.removeEventListener('keydown', onKey);
-    window.removeEventListener('focus', onFocus);
-    document.removeEventListener('visibilitychange', onFocus);
-    clearInterval(timer);
   } };
 }
 

@@ -315,33 +315,29 @@ button.task-group-head:hover { color: var(--text); }
 .task-group-count { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; }
 .task-group-head.group-ended .task-group-count { margin-left: auto; }
 .task-group-head.group-ended .task-group-count + .icon { margin-left: 4px; }
-.task-row { position: relative; border-radius: var(--radius-lg); }
+/* Sidebar task rows: one compact line — state icon on the nav icons' axis, pull request, title on
+   the nav labels' axis, unread count, age (the kebab takes the age's place on hover). */
+.task-row { position: relative; border-radius: var(--radius); }
 .task-row:hover, .task-row:focus-within { background: var(--surface-3); }
+.task-row.active { background: var(--accent-soft); }
 /* Long lists: rows off screen skip layout and paint (PERF-03). That contains each row's painting,
    so the focus ring is drawn inside the row, not around it. */
-.task-row, .tl-row { content-visibility: auto; contain-intrinsic-size: auto 72px; }
-.task-link:focus-visible { border-radius: var(--radius-lg); box-shadow: var(--focus-inset); }
-.task-row.active { background: var(--accent-soft); }
-.task-link { display: flex; align-items: flex-start; gap: 12px; padding: 12px; color: var(--text); text-decoration: none; }
+.task-row, .tl-row { content-visibility: auto; }
+.task-row { contain-intrinsic-size: auto 32px; }
+.tl-row { contain-intrinsic-size: auto 72px; }
+.task-link { display: flex; align-items: center; gap: 12px; height: var(--control-lg); padding: 0 12px; color: var(--text-2); text-decoration: none; }
 .task-link:hover { text-decoration: none; }
-.task-mark { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; color: var(--muted); }
-.task-row[data-tone="attention"] .task-mark, .task-row[data-tone="stopped-abnormal"] .task-mark { background: var(--warn-soft); }
-.task-row[data-tone="waiting"] .task-mark { background: var(--info-soft); }
-.task-row[data-tone="working"] .task-mark, .task-row[data-tone="running"] .task-mark { background: var(--ok-soft); }
-.task-row[data-tone="switching"] .task-mark { background: var(--violet-soft); }
-.task-row[data-tone="failed"] .task-mark { background: var(--danger-soft); }
-.task-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.task-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; }
-.task-group.group-ended .task-title { color: var(--text-2); font-weight: 500; }
-.task-age { flex: none; margin-left: auto; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; }
-.task-row[data-group="needs"] .task-age { color: var(--warn-fg); }
-.task-sub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); line-height: var(--lh-md); color: var(--text-2); font-variant-numeric: tabular-nums; }
-/* What the user must do is the point of a "Needs you" row: up to two lines, in brighter text. */
-.task-row[data-group="needs"] .task-sub { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; color: var(--text); }
-.task-unread { flex: none; align-self: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: var(--radius-full); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); line-height: var(--lh); font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
+.task-link:focus-visible { border-radius: var(--radius); box-shadow: var(--focus-inset); }
+.task-row:hover .task-link, .task-row.active .task-link, .task-row:focus-within .task-link { color: var(--text); }
+.task-mark { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; color: var(--muted); }
+.task-chips { display: inline-flex; flex: none; gap: 4px; }
+.task-chips:empty { display: none; }
+.task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); line-height: var(--lh-md); }
+.task-group.group-ended .task-row:not(:hover):not(.active) .task-link { color: var(--muted); }
+.task-age { flex: none; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; }
+.task-unread { flex: none; display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: var(--radius-full); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; }
 .task-unread[hidden] { display: none; }
-.task-kebab { position: absolute; right: 8px; top: 8px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
+.task-kebab { position: absolute; right: 6px; top: 4px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
 /* The menu's button stays visible while its menu is open, so Escape can return focus to it. */
 .task-row:hover .task-kebab, .task-row:focus-within .task-kebab, .task-kebab[aria-expanded="true"] { visibility: visible; }
 .task-row:hover .task-age, .task-row:focus-within .task-age { visibility: hidden; }
@@ -1151,8 +1147,8 @@ a.dl-task:hover { text-decoration: underline; }
   .drawer-backdrop { position: fixed; inset: 0; z-index: var(--z-drawer-scrim); background: var(--scrim); }
   body.drawer-open .drawer-backdrop { display: block; }
   /* Touch: the row's actions and the notification buttons are full-size targets. */
-  .task-link { padding: 8px 48px 8px 8px; }
-  .task-kebab { visibility: visible; top: 6px; right: 2px; width: var(--control-xl); height: var(--control-xl); background: transparent; }
+  .task-link { height: var(--control-xl); padding: 0 48px 0 12px; }
+  .task-kebab { visibility: visible; top: 0; right: 2px; width: var(--control-xl); height: var(--control-xl); background: transparent; }
   .notif-head .btn-sm { height: var(--control-xl); padding: 0 12px; }
   .task-row:hover .task-unread { visibility: visible; }
   .nav-item { height: var(--control-xl); }

@@ -664,6 +664,26 @@ export function statusMark(info, size = 14) {
   return h('span', { class: ['glyph', `tone-${info.tone}`], role: 'img', 'aria-label': info.label, title: info.label }, icon(info.icon, { size }));
 }
 
+const PR_CHECKS = {
+  success: ['check', 'ok', 'checks passed'],
+  failure: ['x', 'danger', 'checks failed'],
+  pending: ['clock', 'warn', 'checks running'],
+};
+
+/**
+ * A pull request chip: branch icon, number and checks. A link to GitHub, or (`link: false`) a plain
+ * chip that can sit inside another link, such as a sidebar row.
+ */
+export function prChip(pr, { link = true } = {}) {
+  const merged = pr.state === 'merged';
+  const checks = merged || pr.state === 'closed' ? null : PR_CHECKS[pr.checks];
+  const label = `Pull request #${pr.number} · ${pr.state}${checks ? ` · ${checks[2]}` : ''}`;
+  const parts = [icon('branch', { size: 12 }), `#${pr.number}`, checks ? h('span', { class: `tone-${checks[1]}` }, icon(checks[0], { size: 12 })) : null];
+  const cls = ['tl-pr-chip', merged && 'merged', pr.state === 'closed' && 'closed'];
+  if (link) return h('a', { class: cls, href: pr.url, target: '_blank', rel: 'noopener noreferrer', title: label, 'aria-label': label }, parts);
+  return h('span', { class: cls, title: label }, parts, h('span', { class: 'sr-only' }, ` pull request, ${pr.state}${checks ? `, ${checks[2]}` : ''}`));
+}
+
 /** Small colored badge. */
 export function badge(text, tone = '', title) {
   return h('span', { class: ['badge', tone && `badge-${tone}`], title: title || null }, text);

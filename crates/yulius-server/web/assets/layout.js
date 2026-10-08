@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
 import { taskInfo, activityLine, allows } from './status.js';
 import { href } from './router.js';
@@ -495,12 +495,15 @@ export function createSidebar(ctx) {
   function rowFor(task) {
     let row = rows.get(task.id);
     if (!row) {
+      // One line: state icon, pull request, title, unread count, age. What the task needs is said by
+      // the icon, the tooltip and (for screen readers) the hidden sentence after the title.
       const mark = h('span', { class: 'task-mark' });
+      const chips = h('span', { class: 'task-chips' });
       const title = h('span', { class: 'task-title' });
+      const sub = h('span', { class: 'sr-only' });
       const unread = h('span', { class: 'task-unread' });
       const age = h('span', { class: 'task-age' });
-      const sub = h('span', { class: 'task-sub' });
-      const link = h('a', { class: 'task-link' }, mark, h('span', { class: 'task-text' }, h('span', { class: 'task-line' }, title, age), h('span', { class: 'task-line task-line-2' }, sub, unread)));
+      const link = h('a', { class: 'task-link' }, mark, chips, title, sub, unread, age);
       const kebab = iconButton('more', 'Task actions', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -512,14 +515,15 @@ export function createSidebar(ctx) {
         openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, row.task);
       });
       link.addEventListener('click', () => document.body.classList.remove('drawer-open'));
-      row = { el, link, mark, title, unread, age, sub, task };
+      row = { el, link, mark, chips, title, unread, age, sub, task };
       rows.set(task.id, row);
     }
     row.task = task;
     row.info = rowInfo(task);
     // Repaint only a row whose content would change (PERF-02): the key holds all it shows.
     const active = Boolean(route && route.name === 'task' && route.number === task.number);
-    const key = JSON.stringify([task, row.info, active, relShort(task.updated_at), sandbox.slug]);
+    row.pr = ctx.store.pullsOf(sandbox.id).get(task.id) || null;
+    const key = JSON.stringify([task, row.info, active, relShort(task.updated_at), sandbox.slug, row.pr]);
     if (row.key !== key) {
       row.key = key;
       paintRow(row, active);
@@ -538,10 +542,11 @@ export function createSidebar(ctx) {
     row.el.dataset.group = info.group;
     row.el.dataset.tone = info.tone;
     row.link.title = `#${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${dateTime(task.updated_at)}`;
-    setChildren(row.mark, statusMark(info, 18));
+    setChildren(row.mark, statusMark(info, 16));
+    setChildren(row.chips, row.pr ? prChip(row.pr, { link: false }) : null);
     row.title.textContent = task.title || `Task #${task.number}`;
-    // Colour stays on the state icon; the words say what is happening or what to do.
-    row.sub.textContent = activityLine(task, info);
+    // Colour stays on the state icon; the words (tooltip, screen readers) say what to do.
+    row.sub.textContent = `, ${activityLine(task, info)}`;
     row.age.textContent = relShort(task.updated_at);
     row.age.title = `Last change ${dateTime(task.updated_at)}`;
     row.unread.hidden = !task.unread_messages;
@@ -602,8 +607,10 @@ export function createSidebar(ctx) {
   }
 
   const repaint = coalesce(() => renderTasks(), { minInterval: 150 });
+  let unwatchPulls = null;
   const offs = [
     ctx.store.on('tasks', (sandboxId) => { if (sandbox && sandboxId === sandbox.id) repaint(); }),
+    ctx.store.on('pulls', (sandboxId) => { if (sandbox && sandboxId === sandbox.id) repaint(); }),
     ctx.store.on('browser-action', (event) => { if (sandbox && event.sandbox_id === sandbox.id) repaint(); }),
   ];
   // Refresh relative times twice a minute (single bounded timer).
@@ -614,9 +621,15 @@ export function createSidebar(ctx) {
   return {
     el,
     /** Sign-out: unsubscribe and stop the timer. */
-    destroy() { offs.forEach((off) => off()); repaint.cancel(); clearInterval(ageTimer); },
+    destroy() { offs.forEach((off) => off()); repaint.cancel(); clearInterval(ageTimer); if (unwatchPulls) unwatchPulls(); },
     update(nextRoute, nextSandbox) {
-      if (!nextSandbox || !sandbox || nextSandbox.id !== sandbox.id) { rows.clear(); shape = ''; }
+      if (!nextSandbox || !sandbox || nextSandbox.id !== sandbox.id) {
+        rows.clear();
+        shape = '';
+        // The rows show the sandbox's pull requests: keep them fresh while it is the one in view.
+        if (unwatchPulls) unwatchPulls();
+        unwatchPulls = nextSandbox ? ctx.store.watchPulls(nextSandbox.id) : null;
+      }
       route = nextRoute;
       sandbox = nextSandbox;
       renderUser();
