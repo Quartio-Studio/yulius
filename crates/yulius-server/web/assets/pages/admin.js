@@ -97,7 +97,7 @@ function tokenTotals(account) {
 export function recoveryCard(ctx) {
   const state = h('p', { class: 'text-2' }, 'Checking…');
   const generate = h('button', { type: 'button', class: 'btn btn-sm' }, 'Generate new code…');
-  const card = h('div', { class: 'card stack-sm' }, h('strong', null, 'Superadmin recovery code'), state, h('div', { class: 'row' }, generate));
+  const card = h('div', { class: 'card card-pad stack-sm' }, h('strong', null, 'Superadmin recovery code'), state, h('div', { class: 'row' }, generate));
   const refresh = () => ctx.api.get('/api/auth/recovery').then((s) => {
     state.textContent = s.available
       ? `A recovery code is set (${s.attempts_left} of 3 attempts left). Generating a new one replaces it.`
