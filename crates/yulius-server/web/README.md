@@ -41,6 +41,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/mock.js` | In-memory backend and fake WebSockets used with `?mock=1`. |
 | `assets/styles.css` | Design tokens (CSS variables) and all layout, including the phone layout (< 768 px). |
 | `assets/vendor/` | Vendored xterm.js; see [vendor/README.md](assets/vendor/README.md). |
+| `assets/logos/` | Logos of well-known services shown on the MCP page; sources in [logos/README.md](assets/logos/README.md). |
 
 ## Routes
 

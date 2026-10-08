@@ -614,6 +614,8 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .list-title { font-weight: 500; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .list-sub { color: var(--muted); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.server-logo { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; flex: none; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); color: var(--text-2); }
+.server-logo img { display: block; }
 
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .table { width: 100%; border-collapse: collapse; font-size: var(--fs); }

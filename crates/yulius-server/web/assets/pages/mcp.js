@@ -2,13 +2,34 @@
 // test. Secrets are write-only: the UI shows key names only and never reads values back.
 
 import { enc } from '../api.js';
-import { h, badge, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton } from '../dom.js';
+import { h, icon, badge, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton } from '../dom.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 /** Server names: 1–64 letters, digits, `-` or `_`; `yulius` is reserved. */
 const NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Logos of well-known servers (assets/logos, see its README), matched by name, URL or package. */
+const LOGOS = [
+  { src: '/assets/logos/quartio.svg', label: 'Quartio', test: /quartio/i },
+  { src: '/assets/logos/apify.svg', label: 'Apify', test: /apify/i },
+];
+
+/** The server's logo when it is a known service, else an icon for its transport. */
+function serverLogo(server) {
+  const haystack = [server.name, server.url, server.command, ...(server.args || [])].filter(Boolean).join(' ');
+  const known = LOGOS.find((logo) => logo.test.test(haystack));
+  return h('span', { class: 'server-logo', title: known ? known.label : server.transport === 'http' ? 'HTTP server' : 'Local command (stdio)' },
+    known ? h('img', { src: known.src, alt: '', width: 22, height: 22 }) : icon(server.transport === 'http' ? 'globe' : 'terminal', { size: 18 }));
+}
+
+/** A badge with an icon in front. */
+function iconBadge(iconName, text, tone, title) {
+  const el = badge(text, tone, title);
+  el.prepend(icon(iconName, { size: 11 }));
+  return el;
+}
 
 /** Mount the MCP page; ?scope=instance pre-filters (admin "Instance MCP" entry). */
 export function mountMcpPage(ctx, sandbox, route) {
@@ -46,13 +67,16 @@ export function mountMcpPage(ctx, sandbox, route) {
             errorToast(error, 'Could not update server');
           }
         } }),
+        serverLogo(server),
         h('div', { class: 'list-main' },
-          h('div', { class: 'list-title' }, server.name, badge(server.scope, server.scope === 'instance' ? 'violet' : ''), badge(server.transport, 'accent')),
+          h('div', { class: 'list-title' }, server.name,
+            server.scope === 'instance' ? iconBadge('globe', 'instance', 'violet', 'Attached to every sandbox of this instance') : iconBadge('folder', 'sandbox', '', 'Attached to this sandbox only'),
+            iconBadge(server.transport === 'http' ? 'external' : 'terminal', server.transport, 'accent', server.transport === 'http' ? 'Remote server over HTTP' : 'Local command over stdio')),
           h('div', { class: 'list-sub mono' }, server.transport === 'http' ? server.url || '' : [server.command, ...(server.args || [])].filter(Boolean).join(' ')),
           (server.env_keys || []).length || (server.header_keys || []).length
             ? h('div', { class: 'chips', style: { marginTop: '2px' } },
-              (server.env_keys || []).map((k) => badge(`env ${k} ••••`, '', 'Secret value is stored encrypted and never shown')),
-              (server.header_keys || []).map((k) => badge(`header ${k} ••••`, '', 'Secret value is stored encrypted and never shown')))
+              (server.env_keys || []).map((k) => iconBadge('lock', `env ${k} ••••`, '', 'Secret value is stored encrypted and never shown')),
+              (server.header_keys || []).map((k) => iconBadge('lock', `header ${k} ••••`, '', 'Secret value is stored encrypted and never shown')))
             : null,
           testResult),
         h('div', { class: 'list-actions' },
