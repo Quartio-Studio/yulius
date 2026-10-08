@@ -10,7 +10,7 @@ import { WebLinksAddon } from './vendor/xterm/addon-web-links.mjs';
 import { TerminalSocket, isEndedStatus, CLOSE_REVOKED } from './termsocket.js';
 import { createMouseFilter } from './mousefilter.js';
 import { h, icon, setChildren } from './dom.js';
-import { terminalColors, onThemeChange, token } from './theme.js';
+import { terminalColors, onThemeChange, token, isPhone, px } from './theme.js';
 
 
 /**
@@ -46,7 +46,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     renderMouseToggle();
   });
 
-  const size = fontSize || (window.matchMedia('(max-width: 767px)').matches ? 12 : 13);
+  const size = fontSize || px(isPhone() ? '--fs-sm' : '--fs'); // the UI's body size, from tokens.css
   const term = new Terminal({
     fontFamily: token('--font-mono'), // the same typeface as the UI's code (tokens.css)
     fontWeight: 400,

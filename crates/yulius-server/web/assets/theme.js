@@ -7,6 +7,15 @@ import { readJson, writeJson } from './store.js';
 import { faviconUrl } from './brand.js';
 
 const KEY = 'yulius.theme';
+
+/** The phone layout's media query: the one breakpoint scripts share with styles.css (767 px). */
+export const PHONE = '(max-width: 767px)';
+/** True while the phone layout applies. */
+export const isPhone = () => window.matchMedia(PHONE).matches;
+/** A size token in pixels, e.g. px('--fs') → 13. */
+export function px(name) {
+  return parseFloat(token(name)) || 0;
+}
 export const THEME_CHOICES = [
   { id: 'dark', name: 'Dark' },
   { id: 'light', name: 'Light' },

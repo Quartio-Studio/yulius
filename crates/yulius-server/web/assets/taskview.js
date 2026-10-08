@@ -12,6 +12,7 @@ import { href } from './router.js';
 import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
 import { randomQuote } from './quotes.js';
 import { BRAND } from './brand.js';
+import { isPhone } from './theme.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STRIP_KEY = 'yulius.stepsOpen';
@@ -96,7 +97,7 @@ export function mountTaskView(ctx, sandbox, task) {
   const attention = h('div', { class: 'attention-bar', role: 'status', hidden: true });
   function renderAttention() {
     const info = taskInfo(current, ctx.store.state.actionRequests);
-    const reply = () => (window.matchMedia('(max-width: 767px)').matches ? quickInput.focus() : terminal.focus());
+    const reply = () => (isPhone() ? quickInput.focus() : terminal.focus());
     let content = null;
     if (info.request) {
       content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
@@ -186,7 +187,7 @@ export function mountTaskView(ctx, sandbox, task) {
     key: `task:${task.id}`,
     start() {
       terminal.start();
-      if (!window.matchMedia('(max-width: 767px)').matches) setTimeout(() => terminal.focus(), 50);
+      if (!isPhone()) setTimeout(() => terminal.focus(), 50);
     },
     update(next) {
       const wasLive = isLive(current.status);
@@ -425,7 +426,7 @@ export function mountComposer(ctx, sandbox) {
   return {
     el,
     key: `composer:${sandbox.id}`,
-    start() { if (!prompt.disabled && !window.matchMedia('(max-width: 767px)').matches) prompt.focus(); },
+    start() { if (!prompt.disabled && !isPhone()) prompt.focus(); },
     destroy() { destroyers.forEach((off) => off()); },
   };
 }

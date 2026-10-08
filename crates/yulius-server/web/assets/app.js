@@ -9,7 +9,7 @@
 import { createApi, realTransport, enc } from './api.js';
 import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
-import { applyTheme } from './theme.js';
+import { applyTheme, PHONE } from './theme.js';
 import { BRAND } from './brand.js';
 import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError } from './dom.js';
 import { createTabRow, createSidebar } from './layout.js';
@@ -505,7 +505,7 @@ function createApp(root, transport) {
   // Phone drawer (WCAG 2.4.3, 4.1.2): while closed the off-screen sidebar is inert (not tabbable);
   // opening it moves focus in, closing it from inside returns focus to the menu button.
   function syncDrawer() {
-    const phone = window.matchMedia('(max-width: 767px)');
+    const phone = window.matchMedia(PHONE);
     const open = document.body.classList.contains('drawer-open');
     const sidebarEl = document.getElementById('sidebar');
     const menuButton = document.querySelector('.hamburger');
@@ -520,7 +520,7 @@ function createApp(root, transport) {
     if (phone.matches && !open && wasInside && menuButton) menuButton.focus();
   }
   new MutationObserver(syncDrawer).observe(document.body, { attributes: true, attributeFilter: ['class'] });
-  window.matchMedia('(max-width: 767px)').addEventListener('change', syncDrawer);
+  window.matchMedia(PHONE).addEventListener('change', syncDrawer);
 
   // F6 / Shift+F6 move between regions; captured before the terminal and the browser view, which
   // keep every other key (WCAG 2.1.2: no keyboard trap).

@@ -51,7 +51,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), git, workflows, skills, automations, MCP, dashboard, admin (users, accounts, GitHub), settings. |
 | `assets/mock.js` | In-memory backend and fake WebSockets used with `?mock=1`. |
 | `assets/brand.js` | Brand identity in one place: product name, tagline and mark (the SVG path used by the sidebar, sign-in, favicon and tab title). |
-| `assets/boot.js` | The only classic script: runs in `<head>` before the first paint and applies the stored theme, so a light or system theme never flashes dark. |
+| `assets/boot.js` | The only classic script: runs in `<head>` after the stylesheets and before the first paint, applies the stored theme (no dark flash for light or system) and sets the browser's theme colour from the tokens. |
 | `assets/theme.js` | Theme choice (dark, light, system) per browser: sets `data-theme`, the colour-scheme and theme-color metas, and re-colours terminals and editors from the tokens. |
 | `assets/tokens.css` | Design tokens: brand and palette, colour roles per theme (dark, light), derived tints, and the type, control, radius, elevation and motion scales. |
 | `assets/styles.css` | Components and layout (including the phone layout < 768 px), using only roles and scales from `tokens.css`. |

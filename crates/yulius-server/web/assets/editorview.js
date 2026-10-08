@@ -9,7 +9,7 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field } from './dom.js';
 import { allows } from './status.js';
-import { token, activeTheme, onThemeChange } from './theme.js';
+import { token, activeTheme, onThemeChange, px } from './theme.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
 const LANGUAGE_SERVICES = new Set(['javascript', 'typescript', 'json', 'css', 'scss', 'less', 'html']);
@@ -318,7 +318,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       theme: 'yulius',
       automaticLayout: true,
       fontFamily: token('--font-mono'),
-      fontSize: 13,
+      fontSize: px('--fs'),
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       renderWhitespace: 'selection',
