@@ -11,7 +11,7 @@ import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppL
 import { createStore, readJson, writeJson } from './store.js';
 import { applyTheme } from './theme.js';
 import { BRAND } from './brand.js';
-import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl } from './dom.js';
+import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion } from './dom.js';
 import { createTabRow, createSidebar } from './layout.js';
 import { createPanelHost } from './panels.js';
 import { mountTaskView, mountComposer } from './taskview.js';
@@ -467,6 +467,15 @@ function createApp(root, transport) {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') document.body.classList.remove('drawer-open');
   });
+
+  // F6 / Shift+F6 move between regions; captured before the terminal and the browser view, which
+  // keep every other key (WCAG 2.1.2: no keyboard trap).
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== 'F6' || event.altKey || event.metaKey || event.ctrlKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    focusNextRegion(event.shiftKey);
+  }, true);
 
   // New task (UI-023): ⌘⇧O / Ctrl+Shift+O anywhere — browsers keep ⌘N for a new window — and ⌘N
   // on macOS where the browser passes it (installed app, full screen). Ctrl+N stays with the

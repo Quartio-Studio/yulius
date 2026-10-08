@@ -390,6 +390,25 @@ export function toggle({ checked, onChange, label, disabled }) {
   return h('span', { class: 'switch' }, input, h('span', { class: 'switch-track', 'aria-hidden': 'true' }));
 }
 
+const REGIONS = ['.tabrow', '.sidebar', '#main', '.panel:not([hidden])', '.rail:not([hidden])'];
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Moves keyboard focus to the next (or previous) page region — tab row, sidebar, main, tool
+ * panel, rail — skipping regions that are hidden or collapsed. F6 / Shift+F6 call it, so the
+ * terminal and the remote browser view, which keep Tab and Esc for themselves, never trap focus.
+ */
+export function focusNextRegion(backwards = false) {
+  const regions = REGIONS.map((sel) => document.querySelector(sel)).filter((el) => el && el.getBoundingClientRect().width > 0);
+  if (!regions.length) return;
+  const current = regions.findIndex((el) => el.contains(document.activeElement));
+  for (let step = 1; step <= regions.length; step += 1) {
+    const region = regions[(current + (backwards ? -step : step) + regions.length * 2) % regions.length];
+    const target = [...region.querySelectorAll(FOCUSABLE)].find((el) => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+    if (target) { target.focus(); return; }
+  }
+}
+
 /** A badge with an icon in front. */
 export function iconBadge(iconName, text, tone, title) {
   const el = badge(text, tone, title);
