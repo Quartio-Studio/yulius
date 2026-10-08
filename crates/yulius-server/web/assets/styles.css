@@ -471,6 +471,8 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .composer { flex: 1; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 8vh 16px 24px; background: var(--bg); }
 .composer-card { width: min(760px, 100%); display: flex; flex-direction: column; gap: 12px; }
 .composer-title { font-size: 18px; font-weight: 600; }
+.composer-repo { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.composer-repo .icon { flex: none; }
 .composer-prompt { min-height: 140px; font-size: 14px; }
 .composer-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .composer-row .field { flex: 1 1 180px; }

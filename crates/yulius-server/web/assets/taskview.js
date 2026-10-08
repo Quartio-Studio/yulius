@@ -209,7 +209,7 @@ export function mountComposer(ctx, sandbox) {
 
   const el = h('div', { class: 'composer' },
     h('div', { class: 'composer-card' },
-      h('div', { class: 'row' }, h('h1', { class: 'composer-title' }, 'New task'), h('span', { class: 'muted small ellipsis' }, sandbox.repo ? `in ${sandbox.repo.owner}/${sandbox.repo.name}` : `in ${sandbox.name}`)),
+      h('div', { class: 'row' }, h('h1', { class: 'composer-title' }, 'New task'), h('span', { class: 'composer-repo muted small' }, 'in', sandbox.repo ? icon('github', { size: 14 }) : null, h('span', { class: 'ellipsis' }, sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name))),
       banner,
       prompt,
       h('div', { class: 'composer-row' },
