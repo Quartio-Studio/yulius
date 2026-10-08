@@ -996,7 +996,6 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .composer-quote blockquote { margin: 0; color: var(--text-2); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 500; letter-spacing: -0.01em; text-wrap: balance; }
 .composer-quote figcaption { margin-top: 8px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .composer-card { width: min(760px, 100%); display: flex; flex-direction: column; gap: 12px; }
-.brand-niche { display: none; }
 .composer-title { font-family: var(--font-display); }
 /* The composer's top bar: sandbox › New task on the left, the repository and its branch on the right. */
 .composer { position: relative; }
@@ -1643,11 +1642,12 @@ a.dl-task:hover { text-decoration: underline; }
 .kv-line { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: var(--fs-sm); line-height: var(--lh-sm); }
 
 /* ---------------------------------------------------------------- Brand details
-   Shapes a brand proposal adds beyond tokens, keyed on data-brand (set by the brand lab). Roma —
-   smoke and chalk: the mark in an arched niche, a symmetric composer, quotes set like inscriptions,
-   group heads as softly rounded bands of spaced capitals. */
-[data-brand="roma"] .composer-card { align-items: stretch; }
-[data-brand="roma"] .brand-niche {
+   The brand's shapes beyond tokens (Roma, smoke and chalk): the mark in an arched niche over the
+   composer with smoke rising in it (brandfx.js), a symmetric composer, quotes set like inscriptions,
+   group heads as softly rounded bands of spaced capitals. A brand-lab proposal may add its own,
+   keyed on data-brand (set by the lab). */
+.composer-card { align-items: stretch; }
+.brand-niche {
   display: flex; align-items: center; justify-content: center; align-self: center; width: 104px; height: 136px; margin-bottom: 24px;
   border: 1px solid var(--border-strong); border-radius: var(--radius-full) var(--radius-full) var(--radius-sm) var(--radius-sm);
   background: radial-gradient(90% 70% at 50% 28%, var(--overlay-active), transparent 72%), var(--surface); color: var(--brand-mark);
@@ -1656,15 +1656,15 @@ a.dl-task:hover { text-decoration: underline; }
   box-shadow: inset 0 0 0 8px var(--surface), inset 0 0 0 9px var(--border), var(--shadow-sm);
 }
 /* The smoke (brandfx.js) fills the inner arch, behind the mark. */
-[data-brand="roma"] .brand-niche-fx { position: absolute; inset: 8px; width: calc(100% - 16px); height: calc(100% - 16px); border-radius: var(--radius-full) var(--radius-full) 0 0; }
-[data-brand="roma"] .brand-niche .icon { position: relative; z-index: var(--z-raised); }
-[data-brand="roma"] .composer-quote { margin-bottom: 40px; text-align: center; }
-[data-brand="roma"] .composer-quote blockquote { color: var(--text); font-family: var(--font-display); font-weight: 400; letter-spacing: 0; }
-[data-brand="roma"] .composer-quote figcaption { margin-top: 12px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); letter-spacing: 0.24em; text-transform: uppercase; }
-[data-brand="roma"] .composer-hint { text-align: center; }
-[data-brand="roma"] .task-group-head {
+.brand-niche-fx { position: absolute; inset: 8px; width: calc(100% - 16px); height: calc(100% - 16px); border-radius: var(--radius-full) var(--radius-full) 0 0; }
+.brand-niche .icon { position: relative; z-index: var(--z-raised); }
+.composer-quote { margin-bottom: 40px; text-align: center; }
+.composer-quote blockquote { color: var(--text); font-family: var(--font-display); font-weight: 400; letter-spacing: 0; }
+.composer-quote figcaption { margin-top: 12px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); letter-spacing: 0.24em; text-transform: uppercase; }
+.composer-hint { text-align: center; }
+.task-group-head {
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2);
   color: var(--muted); font-weight: 500; letter-spacing: 0.18em;
 }
-[data-brand="roma"] button.task-group-head:hover { color: var(--text); }
+button.task-group-head:hover { color: var(--text); }
 

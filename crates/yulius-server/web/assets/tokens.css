@@ -16,47 +16,48 @@
 
 /* ---------------------------------------------------------------- Layer 1: brand and palette */
 :root {
-  /* Brand: the accent hue, light (top) to dark. Dark theme: text 200–300, fills 400–600, terminal
-     selection 800. Light theme: fills and text 600–800, selections 200. */
-  --brand-200: #b5d7ff;
-  --brand-300: #8cc2ff;
-  --brand-400: #6aaeff;
-  --brand-500: #4c9dff;
-  --brand-600: #2f7fe0;
-  --brand-700: #1f63c4;
-  --brand-800: #174f9e;
-  --brand-ink: #051424;    /* text on a --brand-500 fill */
+  /* Brand (Roma, "smoke and chalk"): no accent hue. The ramp runs from chalk (top) to smoke: chalk
+     is the accent on the dark theme (buttons, focus, links), smoke ink on the light one. */
+  --brand-200: #f9f6f1;
+  --brand-300: #efebe1;
+  --brand-400: #e2ded5;
+  --brand-500: #d4d0c8;
+  --brand-600: #484746;
+  --brand-700: #252423;
+  --brand-800: #181716;
+  --brand-ink: #100f0e;    /* text on a --brand-500 fill */
 
-  /* Palette: state hues. Info ("your turn") is its own blue, so it never depends on the brand. */
-  --info-200: #b5d7ff;
-  --info-300: #8cc2ff;
-  --info-500: #4c9dff;
-  --info-700: #1f63c4;
-  --info-800: #174f9e;
-  --green-300: #7fdc8e;
-  --green-500: #45c35a;
-  --green-600: #1f8a3b;
-  --green-700: #17692b;
-  --amber-200: #f4d08a;
-  --amber-300: #f2c66b;
-  --amber-500: #e5ab33;
-  --amber-600: #bc8113;
-  --amber-700: #8a5a00;
-  --amber-800: #6b4500;
-  --red-200: #ffb2ac;
-  --red-300: #ff9a93;
-  --red-500: #f2665e;
-  --red-600: #d03b33;
-  --red-700: #a8261f;
-  --violet-300: #c7b5ff;
-  --violet-400: #c58af9;
-  --violet-500: #a98cf6;
-  --violet-600: #7c5ce0;
-  --violet-650: #8556f0;
-  --violet-700: #6440c9;
-  --violet-ink: #160b20;
+  /* Palette: state hues in Roman pigments — verdigris (green), yellow ochre (amber), cinnabar (red),
+     Egyptian blue (info, "your turn") and Tyrian purple (violet). */
+  --info-200: #c5e1ff;
+  --info-300: #a2cfff;
+  --info-500: #73a9e1;
+  --info-700: #2c6194;
+  --info-800: #124a7b;
+  --green-300: #95deae;
+  --green-500: #6fb789;
+  --green-600: #438c60;
+  --green-700: #236e44;
+  --amber-200: #ffd79a;
+  --amber-300: #f6c16b;
+  --amber-500: #ce9a43;
+  --amber-600: #a17003;
+  --amber-700: #7c5500;
+  --amber-800: #604100;
+  --red-200: #ffd2ca;
+  --red-300: #ffb5a8;
+  --red-500: #f47c6b;
+  --red-600: #c35141;
+  --red-700: #a13124;
+  --violet-300: #f7aef0;
+  --violet-400: #e39bdc;
+  --violet-500: #cf88c8;
+  --violet-600: #a15e9c;
+  --violet-650: #955290;
+  --violet-700: #82417d;
+  --violet-ink: #0c0b0a;
   --white: #ffffff;
-  --logo-tile-dark: #15181e; /* behind light-coloured third-party marks, in both themes */
+  --logo-tile-dark: #191918; /* behind light-coloured third-party marks, in both themes */
 }
 
 /* ---------------------------------------------------------------- Layer 2: dark theme (default) */
@@ -64,136 +65,142 @@
 [data-theme="dark"] {
   color-scheme: dark;
   /* surfaces, darkest to lightest */
-  --term-bg: #0a0c10;      /* terminal and editor wells */
-  --bg: #0b0d11;           /* the canvas */
-  --surface: #11141a;      /* sidebar, panels, cards */
-  --surface-2: #171b23;    /* menus, popovers, raised controls */
-  --surface-3: #1f2530;    /* neutral fills: secondary buttons, badges */
-  --surface-hover: #232a36;
-  --canvas: #1b1f27;       /* behind the pixel browser view */
+  --term-bg: #0c0b0a;      /* terminal and editor wells */
+  --bg: #100f0e;           /* the canvas */
+  --surface: #191918;      /* sidebar, panels, cards */
+  --surface-2: #201f1e;    /* menus, popovers, raised controls */
+  --surface-3: #292827;    /* neutral fills: secondary buttons, badges */
+  --surface-hover: #2e2e2d;
+  --canvas: #1e1d1c;       /* behind the pixel browser view */
   --mirror-bg: var(--white); /* web pages in the browser panel are white */
   /* lines */
-  --border: #252b36;
-  --border-strong: #343c4a;
-  --border-control: #606878;  /* edges of inputs, selects, switches: ≥ 3:1 (WCAG 1.4.11) */
+  --border: #2c2b2a;
+  --border-strong: #3f3e3d;
+  --border-control: #7e7b76;  /* edges of inputs, selects, switches: ≥ 3:1 (WCAG 1.4.11) */
   /* ink, strongest to faintest (all ≥ 4.5:1 on --surface, faint ≥ 3:1 for placeholders) */
-  --text: #e3e7ee;
-  --text-2: #b7bfcc;
-  --muted: #8d96a6;
-  --text-faint: #7b8493;      /* placeholders and tertiary text, still ≥ 4.5:1 */
-  --on-solid: var(--white); /* knobs and marks on solid fills */
+  --text: #efebe1;
+  --text-2: #d1cdc5;
+  --muted: #afaca5;
+  --text-faint: #a19e98;      /* placeholders and tertiary text, still ≥ 4.5:1 */
+  --on-solid: #100f0e; /* knobs and marks on solid fills */
   /* accent */
-  --accent: var(--brand-500);
-  --accent-hover: var(--brand-400);
-  --accent-strong: var(--brand-600);
-  --accent-fg: var(--brand-300);       /* accent-coloured text on dark surfaces */
-  --accent-fg-strong: var(--brand-200);
-  --accent-ink: var(--brand-ink);      /* text on --accent */
+  --accent: #e9e4da;
+  --accent-hover: #f6f3ec;
+  --accent-strong: #d4d0c8;
+  --accent-fg: #efebe1;       /* accent-coloured text on dark surfaces */
+  --accent-fg-strong: #f9f6f1;
+  --accent-ink: #100f0e;      /* text on --accent */
   /* states */
-  --ok: var(--green-500);
-  --ok-fg: var(--green-300);
-  --warn: var(--amber-500);
-  --warn-fg: var(--amber-300);
-  --warn-fg-strong: var(--amber-200);
-  --danger: var(--red-500);
-  --danger-fg: var(--red-300);
-  --danger-fg-strong: var(--red-200);
-  --violet: var(--violet-500);
-  --violet-fg: var(--violet-300);
-  --info: var(--info-500);
-  --info-fg: var(--info-300);
-  --info-fg-strong: var(--info-200);
-  --agent: var(--violet-400);          /* the agent's cursor in the browser */
-  --agent-ink: var(--violet-ink);
+  --ok: #6fb789;
+  --ok-fg: #9bd4ae;
+  --warn: #e8b45e;
+  --warn-fg: #f3c67f;
+  --warn-fg-strong: #fdd89f;
+  --danger: #df6a59;
+  --danger-fg: #f79b8c;
+  --danger-fg-strong: #ffbaae;
+  --violet: #c27cbb;
+  --violet-fg: #dfa9da;
+  --info: #6da3da;
+  --info-fg: #9ac5f3;
+  --info-fg-strong: #badbfe;
+  --agent: #cf88c8;          /* the agent's cursor in the browser */
+  --agent-ink: #0c0b0a;
   /* data */
-  --series-1: var(--brand-500);       /* charts, meters and progress follow the brand */
-  --series-1-hover: var(--brand-400);
-  --grid: #262c36;
-  --axis: #3a4250;
+  --series-1: #cecac2;       /* charts, meters and progress follow the brand */
+  --series-1-hover: #efebe1;
+  --grid: #282726;
+  --axis: #3e3d3c;
   /* overlays and depth */
-  --backdrop: rgba(3, 5, 8, 0.66);
-  --scrim: rgba(0, 0, 0, 0.55);
-  --overlay-hover: rgba(255, 255, 255, 0.04);
-  --overlay-active: rgba(255, 255, 255, 0.08);
-  --shadow-color: rgba(0, 0, 0, 0.45);
-  --shadow-soft-color: rgba(0, 0, 0, 0.25);
-  --highlight: rgba(255, 255, 255, 0.02);
+  --backdrop: rgba(8, 8, 7, 0.72);
+  --scrim: rgba(0, 0, 0, 0.6);
+  --overlay-hover: rgba(240, 235, 225, 0.05);
+  --overlay-active: rgba(240, 235, 225, 0.09);
+  --shadow-color: rgba(0, 0, 0, 0.55);
+  --shadow-soft-color: rgba(0, 0, 0, 0.32);
+  --highlight: rgba(240, 235, 225, 0.03);
   /* terminal (xterm) and editor (Monaco) read these when they start and on theme changes */
-  --term-fg: #d8dee9;
-  --term-cursor: #e6edf3;
-  --term-selection: var(--brand-800);
-  --ansi-black: #1c2128;   --ansi-bright-black: #737b86;
-  --ansi-red: #f47067;     --ansi-bright-red: #ff938a;
-  --ansi-green: #57c26a;   --ansi-bright-green: #7ee28f;
-  --ansi-yellow: #d9b440;  --ansi-bright-yellow: #f0d070;
-  --ansi-blue: #539bf5;    --ansi-bright-blue: #79b8ff;
-  --ansi-magenta: #c58af9; --ansi-bright-magenta: #dcabff;
-  --ansi-cyan: #56c8d8;    --ansi-bright-cyan: #8ce4ef;
-  --ansi-white: #c9d1d9;   --ansi-bright-white: #f0f6fc;
+  --term-fg: #e5e1d9;
+  --term-cursor: #f5f1ea;
+  --term-selection: #403c39;
+  --ansi-black: #252423;   --ansi-bright-black: #8e8c87;
+  --ansi-red: #ed7665;     --ansi-bright-red: #fea292;
+  --ansi-green: #75be8f;   --ansi-bright-green: #a1dbb4;
+  --ansi-yellow: #e8b45e;  --ansi-bright-yellow: #fbd08e;
+  --ansi-blue: #6da3da;    --ansi-bright-blue: #97c2f0;
+  --ansi-magenta: #c882c2; --ansi-bright-magenta: #e1a7db;
+  --ansi-cyan: #6fc1c5;    --ansi-bright-cyan: #96dce0;
+  --ansi-white: #cdcac3;   --ansi-bright-white: #f5f1ea;
+  /* material: a fine grain and a soft light from above over the canvas, pages, sidebar and rail */
+  --texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.94 0 0 0 0 0.92 0 0 0 0 0.88 0 0 0 0.075 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  --light: radial-gradient(120% 60% at 50% -12%, rgba(240, 235, 225, 0.075), rgba(240, 235, 225, 0.02) 45%, transparent 70%);
 }
 
 /* ---------------------------------------------------------------- Layer 2: light theme */
 [data-theme="light"] {
   color-scheme: light;
-  --term-bg: #fbfbfc;
-  --bg: #f4f5f7;
-  --surface: #ffffff;
-  --surface-2: #ffffff;
-  --surface-3: #eceef2;
-  --surface-hover: #e6e9ee;
-  --canvas: #e9ecf0;
+  --term-bg: #f9f6f1;
+  --bg: #efebe1;
+  --surface: #f7f4ed;
+  --surface-2: #fcfaf5;
+  --surface-3: #e6e1d8;
+  --surface-hover: #e1dcd2;
+  --canvas: #e8e4dc;
   --mirror-bg: var(--white);
-  --border: #e1e4ea;
-  --border-strong: #c7ccd5;
-  --border-control: #868d98;
-  --text: #15181e;
-  --text-2: #3b424e;
-  --muted: #5a6270;
-  --text-faint: #69707c;
-  --on-solid: var(--white);
-  --accent: var(--brand-700);
-  --accent-hover: var(--brand-800);
-  --accent-strong: var(--brand-800);
-  --accent-fg: var(--brand-700);
-  --accent-fg-strong: var(--brand-800);
-  --accent-ink: var(--white);
-  --ok: var(--green-600);
-  --ok-fg: var(--green-700);
-  --warn: var(--amber-600);
-  --warn-fg: var(--amber-700);
-  --warn-fg-strong: var(--amber-800);
-  --danger: var(--red-600);
-  --danger-fg: var(--red-700);
-  --danger-fg-strong: var(--red-700);
-  --violet: var(--violet-600);
-  --violet-fg: var(--violet-700);
-  --info: var(--info-700);
-  --info-fg: var(--info-700);
-  --info-fg-strong: var(--info-800);
-  --agent: var(--violet-650);
-  --agent-ink: var(--white);
-  --series-1: var(--brand-600);
-  --series-1-hover: var(--brand-700);
-  --grid: #e3e6eb;
-  --axis: #c7ccd5;
-  --backdrop: rgba(15, 18, 24, 0.4);
-  --scrim: rgba(15, 18, 24, 0.35);
-  --overlay-hover: rgba(0, 0, 0, 0.04);
-  --overlay-active: rgba(0, 0, 0, 0.07);
-  --shadow-color: rgba(16, 24, 40, 0.16);
-  --shadow-soft-color: rgba(16, 24, 40, 0.08);
-  --highlight: rgba(255, 255, 255, 0.6);
-  --term-fg: #1f2329;
-  --term-cursor: #1f2329;
-  --term-selection: var(--brand-200);
-  --ansi-black: #24292f;   --ansi-bright-black: #57606a;
-  --ansi-red: #cf222e;     --ansi-bright-red: #a40e26;
-  --ansi-green: #116329;   --ansi-bright-green: #1a7f37;
-  --ansi-yellow: #7d4e00;  --ansi-bright-yellow: #633c01;
-  --ansi-blue: #0969da;    --ansi-bright-blue: #0550ae;
-  --ansi-magenta: #8250df; --ansi-bright-magenta: #6639ba;
-  --ansi-cyan: #1b7c83;    --ansi-bright-cyan: #136061;
-  --ansi-white: #57606a;   --ansi-bright-white: #24292f;
+  --border: #d9d5cd;
+  --border-strong: #c1bdb5;
+  --border-control: #7a7772;
+  --text: #171412;
+  --text-2: #373532;
+  --muted: #565350;
+  --text-faint: #63605d;
+  --on-solid: #f9f6f1;
+  --accent: #191714;
+  --accent-hover: #2d2b28;
+  --accent-strong: #0c0b09;
+  --accent-fg: #191714;
+  --accent-fg-strong: #0c0b09;
+  --accent-ink: #f6f3ec;
+  --ok: #2a7449;
+  --ok-fg: #095c34;
+  --warn: #ad7c1d;
+  --warn-fg: #724d00;
+  --warn-fg-strong: #593c00;
+  --danger: #af3e30;
+  --danger-fg: #97271b;
+  --danger-fg-strong: #861309;
+  --violet: #884783;
+  --violet-fg: #70306c;
+  --info: #2c6194;
+  --info-fg: #194f81;
+  --info-fg-strong: #023f6f;
+  --agent: #8f4d89;
+  --agent-ink: #f9f6f1;
+  --series-1: #302d2b;
+  --series-1-hover: #13110f;
+  --grid: #dbd7cf;
+  --axis: #bbb7af;
+  --backdrop: rgba(24, 22, 20, 0.38);
+  --scrim: rgba(24, 22, 20, 0.32);
+  --overlay-hover: rgba(30, 28, 26, 0.045);
+  --overlay-active: rgba(30, 28, 26, 0.08);
+  --shadow-color: rgba(30, 26, 20, 0.16);
+  --shadow-soft-color: rgba(30, 26, 20, 0.08);
+  --highlight: rgba(255, 253, 248, 0.6);
+  --term-fg: #1f1c1a;
+  --term-cursor: #1f1c1a;
+  --term-selection: #d6d0c5;
+  --ansi-black: #222120;   --ansi-bright-black: #5d5a57;
+  --ansi-red: #a8372a;     --ansi-bright-red: #8d1c11;
+  --ansi-green: #1b683e;   --ansi-bright-green: #00572f;
+  --ansi-yellow: #845a00;  --ansi-bright-yellow: #674600;
+  --ansi-blue: #265b8d;    --ansi-bright-blue: #124a7b;
+  --ansi-magenta: #7c3b77; --ansi-bright-magenta: #6a2a66;
+  --ansi-cyan: #147175;    --ansi-bright-cyan: #04585c;
+  --ansi-white: #5d5a57;   --ansi-bright-white: #222120;
+  /* material: a fine grain and a soft light from above over the canvas, pages, sidebar and rail */
+  --texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0 0.07 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  --light: radial-gradient(120% 60% at 50% -12%, rgba(255, 253, 248, 0.7), transparent 65%);
 }
 
 /* ---------------------------------------------------------------- Layer 3 and scales */
@@ -205,7 +212,7 @@
   --selection: color-mix(in srgb, var(--accent) 35%, transparent); /* selected text, in the brand */
   --brand-mark: var(--text);   /* the logo mark: monochrome, like the brand's own lockup */
   --wordmark-case: uppercase;  /* the wordmark as set in the lockup: capitals, wide tracking */
-  --wordmark-tracking: 0.22em;
+  --wordmark-tracking: 0.32em;
   --accent-border: color-mix(in srgb, var(--accent) 40%, transparent);
   --accent-border-strong: color-mix(in srgb, var(--accent) 60%, transparent);
   --accent-track: color-mix(in srgb, var(--series-1) 20%, transparent);
@@ -229,13 +236,8 @@
   --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); /* a gap, then the ring: visible on accent fills too */
   --focus-inset: inset 0 0 0 2px var(--accent); /* focus inside a row, menu item or segment */
 
-  /* Material: a brand may lay a fine texture and a soft light over the large surfaces (the canvas,
-     pages, the sidebar and the rail); both are images (a grain, a gradient) and off by default. */
-  --texture: none;
-  --light: none;
-
   /* Icons: the same 24-unit shapes at any size draw a stroke this thick on screen. */
-  --icon-stroke: 1.4px;
+  --icon-stroke: 1.25px;
 
   /* Layers: inside a component, then the page's floating layers from low to high. Modal dialogs
      use the browser's top layer, above all of these. */
@@ -253,16 +255,16 @@
      A brand typeface goes first in --font (titles and the wordmark follow it unless --font-display
      names a display face; --font-mono is used by terminals and the editor too); declare its files with
      @font-face at the end of this file (web/README.md). */
-  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-display: var(--font); /* titles and the wordmark: a brand display face may go here */
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  --font: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Tenor Sans", "Instrument Sans", system-ui, sans-serif; /* titles and the wordmark: a brand display face may go here */
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   --fs-xs: 11px;  --lh-xs: 16px;   /* captions: badges, counters, kbd, timestamps */
-  --fs-sm: 12px;  --lh-sm: 16px;   /* secondary lines, hints, meta */
-  --fs: 13px;     --lh: 20px;      /* body: the UI default */
-  --fs-md: 14px;  --lh-md: 22px;   /* prose and item titles: the prompt, card and server names */
-  --fs-lg: 16px;  --lh-lg: 24px;   /* section, panel and modal titles */
-  --fs-xl: 20px;  --lh-xl: 28px;   /* page titles, wordmark, tile values */
-  --fs-2xl: 24px; --lh-2xl: 32px;  /* display numbers */
+  --fs-sm: 12px;  --lh-sm: 18px;   /* secondary lines, hints, meta */
+  --fs: 14px;     --lh: 20px;      /* body: the UI default */
+  --fs-md: 15px;  --lh-md: 22px;   /* prose and item titles: the prompt, card and server names */
+  --fs-lg: 17px;  --lh-lg: 24px;   /* section, panel and modal titles */
+  --fs-xl: 22px;  --lh-xl: 28px;   /* page titles, wordmark, tile values */
+  --fs-2xl: 28px; --lh-2xl: 36px;  /* display numbers */
   --fs-term: var(--fs);            /* terminals on wider screens (phones use --fs-sm) */
 
   /* Control heights: every button, input, select, picker and clickable row. */
@@ -272,10 +274,10 @@
   --control-xl: 40px;  /* prominent (New task, user, sign-in) and every control on touch screens */
 
   /* Radii by role (circles may use 50%). */
-  --radius-sm: 4px;      /* small: kbd, tiny tiles, menu items, nav and list rows */
-  --radius: 6px;         /* controls: buttons, inputs, segments, banners, inline boxes */
-  --radius-lg: 10px;     /* containers: cards, tables, menus, popovers, toasts, modals, tiles */
-  --radius-xl: 16px;     /* the composer and the sign-in card */
+  --radius-sm: 6px;      /* small: kbd, tiny tiles, menu items, nav and list rows */
+  --radius: 8px;         /* controls: buttons, inputs, segments, banners, inline boxes */
+  --radius-lg: 12px;     /* containers: cards, tables, menus, popovers, toasts, modals, tiles */
+  --radius-xl: 20px;     /* the composer and the sign-in card */
   --radius-full: 999px;  /* pills: badges, chips, counters, switches, progress bars */
 
   /* Motion: three durations, one easing; all of it stops under prefers-reduced-motion. */
@@ -295,17 +297,22 @@
   --rail-w: 140px;
 }
 
-/* ---------------------------------------------------------------- Brand typeface (optional)
-   Self-hosted only (no font CDNs: the serving contract allows this origin alone). Put the .woff2
-   files in assets/fonts/, uncomment and rename, then name the family first in --font above.
-   A static font needs one @font-face per weight the UI uses (400, 500, 600); a weight range such as
-   "400 600" is only for a variable font file — on a static file it makes every weight look the same.
-
-Static files, one per weight:
-@font-face { font-family: "Brand Sans"; src: url("/assets/fonts/brand-sans-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
-@font-face { font-family: "Brand Sans"; src: url("/assets/fonts/brand-sans-500.woff2") format("woff2"); font-weight: 500; font-display: swap; }
-@font-face { font-family: "Brand Sans"; src: url("/assets/fonts/brand-sans-600.woff2") format("woff2"); font-weight: 600; font-display: swap; }
-
-Or one variable file:
-@font-face { font-family: "Brand Sans"; src: url("/assets/fonts/brand-sans-var.woff2") format("woff2-variations"); font-weight: 100 900; font-display: swap; }
-*/
+/* ---------------------------------------------------------------- Brand typefaces
+   Self-hosted only (no font CDNs: the serving contract allows this origin alone): Instrument Sans
+   (interface), Tenor Sans (titles and the wordmark: Roman capital proportions) and IBM Plex Mono
+   (terminals, the editor, code), all SIL Open Font License 1.1 (assets/fonts/LICENSE.*), from the
+   Fontsource 5.3.0 packages; Latin and Latin Extended subsets, one file per weight the UI uses. */
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-ext-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-ext-500.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-500.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-ext-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "Tenor Sans"; src: url("/assets/fonts/tenor-sans-latin-ext-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "Tenor Sans"; src: url("/assets/fonts/tenor-sans-latin-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-ext-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-ext-500.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-500.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-ext-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }

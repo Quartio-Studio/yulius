@@ -80,13 +80,15 @@ and component in the current theme and computes contrast as you change things.
    The sidebar wordmark, sign-in/setup screens, browser tab title, favicon and every sentence that
    names the product follow (`BRAND.name`; the check rejects the name written anywhere else).
 2. **`assets/tokens.css`, Layer 1** — the brand ramp `--brand-200 … --brand-800` and `--brand-ink`
-   (text on a `--brand-500` fill). The dark theme uses 200–300 for text, 400–600 for fills, charts
-   and progress, and 800 for the terminal selection; the light theme uses 600–800 for fills and
-   text and 200 for selections — keep the ramp's lightness steps. The state palette (green, amber,
-   red, violet and the info blue for "your turn": both themes take their state colours from it)
-   is independent of the brand on purpose, so a warm brand never makes "your turn" read as a
-   warning or an error; keep the brand hue clearly apart from amber and red. Terminal ANSI colours are a fixed
-   palette on purpose (agents' output colours mean something).
+   (text on a `--brand-500` fill), then the state palette. The current brand, **Roma — smoke and
+   chalk**, has no accent hue: the ramp runs from chalk to smoke, chalk is the accent on the dark
+   theme (primary buttons, focus, links, charts) and smoke ink on the light one; the themes' roles
+   (Layer 2) hold the matte smoky black, its one lighter intermediate dark and the chalk inks. The
+   state palette is Roman pigments — verdigris, yellow ochre, cinnabar, Egyptian blue ("your
+   turn") and Tyrian purple — independent of the brand on purpose, so a brand never makes "your
+   turn" read as a warning or an error. Terminal ANSI colours are a fixed palette on purpose
+   (agents' output colours mean something). Each theme also sets `--texture` and `--light` (a fine
+   grain and a soft light over the canvas, pages, sidebar and rail).
 3. **Sync and check** — run `python3 scripts/check_repository.py --sync-brand`: it rewrites the
    brand parts of `index.html` (title, theme colour, favicon, no-script text — what shows before the
    app's scripts run) from `brand.js` and the dark tokens, and its `modulepreload` links from
@@ -98,6 +100,15 @@ and component in the current theme and computes contrast as you change things.
 
 The assets are compiled into the server binary (`build.rs` embeds `web/`), so a rebrand ships with
 the next server build and deploy.
+
+### Brand details beyond tokens
+
+A few shapes are the brand's own and live at the end of `styles.css` ("Brand details"): the mark
+in an arched niche over the composer, the composer's quote set like an inscription, the sidebar's
+group heads as softly rounded bands of spaced capitals. In the niche, `brandfx.js` lets smoke rise
+(WebGPU, the vendored `shaders` library without its telemetry; only with a GPU adapter, never under
+reduced motion or data saving, paused in hidden tabs). A brand-lab proposal can add its own details
+keyed on `data-brand`.
 
 ### Brand lab: preview whole brand proposals
 
@@ -120,8 +131,11 @@ not part of the app's start-up.
 
 ### Brand typeface
 
-Fonts are self-hosted (no CDNs). Put the `.woff2` files in `assets/fonts/`, enable the `@font-face`
-template at the end of `tokens.css`, and put the family first in `--font` (UI text),
+Fonts are self-hosted (no CDNs). The brand's are Instrument Sans (UI text), Tenor Sans (titles and
+the wordmark, for its Roman capital proportions) and IBM Plex Mono (code, terminals, the editor):
+`.woff2` files from Fontsource 5.3.0 in `assets/fonts/` (Latin and Latin Extended, one per weight,
+with their SIL Open Font License texts), declared at the end of `tokens.css`. To change one, put
+its `.woff2` files in `assets/fonts/`, replace its `@font-face` rules, and put the family first in `--font` (UI text),
 `--font-display` (page, dialog and sign-in titles and the wordmark; it follows `--font` until set)
 and/or `--font-mono` (code, terminals and the editor read it too). Keep the weights the scale uses (400,
 500, 600): a static font needs one `@font-face` per weight; a weight range is only for a variable

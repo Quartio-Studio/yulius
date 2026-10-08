@@ -1,6 +1,7 @@
 """Negative cases prove boundary and integrity checks fail closed."""
 from pathlib import Path
 import tempfile
+import re
 import unittest
 from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
 
@@ -95,7 +96,10 @@ class ContrastContracts(unittest.TestCase):
         self.assertEqual((round(r), round(g), round(b), round(a, 2)), (76, 157, 255, 0.14))
 
     def test_low_contrast_role_is_reported_per_theme(self):
-        css = (ROOT / TOKENS).read_text().replace("--text-faint: #69707c;", "--text-faint: #c0c4cc;")
+        # A pale --text-faint in the light theme only (whatever the palette): reported for [light].
+        tokens = (ROOT / TOKENS).read_text()
+        light = tokens.index('[data-theme="light"]')
+        css = tokens[:light] + re.sub(r"--text-faint: [^;]+;", "--text-faint: #c0c4cc;", tokens[light:], count=1)
         self.assertTrue(any("[light]: --text-faint" in e for e in contrast_errors(css)))
 
     def test_shipped_tokens_meet_contrast(self):
