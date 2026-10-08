@@ -535,11 +535,11 @@ body.resizing iframe { pointer-events: none; }
 /* DOM mirror (BRW-005): rrweb's wrapper is scaled to the panel; the input layer sits on top. */
 .bp-mirror { position: absolute; inset: 0; overflow: hidden; background: #fff; }
 .bp-mirror .replayer-wrapper { position: absolute; top: 0; left: 0; }
-.bp-mirror iframe { border: 0; display: block; background: #fff; }
+.bp-mirror iframe { border: 0; display: block; background: #fff; pointer-events: auto !important; }
 .bp-mirror .replayer-mouse, .bp-mirror .replayer-mouse-tail { display: none !important; }
 .bp-input { position: absolute; top: 0; left: 0; z-index: 2; outline: none; cursor: default; }
+.bp-input[hidden] { display: none; }
 .bp-input:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
-.bp-input.pass { pointer-events: none; }
 .bp-viewchip { flex: none; cursor: help; }
 /* The agent's cursor (BRW-007). */
 .bp-agent { position: absolute; z-index: 3; pointer-events: none; transition: left .35s ease, top .35s ease; }

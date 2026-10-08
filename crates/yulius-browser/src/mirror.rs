@@ -62,7 +62,8 @@ pub fn injection_script() -> String {
       else if (!timer) timer = setTimeout(flush, 40);
     }},
     recordCanvas: true,
-    sampling: {{ canvas: 2, mousemove: false, mouseInteraction: false, scroll: 100, media: 800, input: 'last' }},
+    // Inputs are recorded on every change so typed text streams into the mirror at once.
+    sampling: {{ canvas: 2, mousemove: false, mouseInteraction: false, scroll: 100, media: 800 }},
     dataURLOptions: {{ type: 'image/webp', quality: 0.7 }},
     inlineStylesheet: true,
     collectFonts: true,

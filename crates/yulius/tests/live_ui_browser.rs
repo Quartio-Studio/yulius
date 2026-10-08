@@ -3,7 +3,8 @@
 //! browser running the real UI. The new tab shows the welcome page as DOM with a link to the
 //! sandbox port that listens; following it mirrors the page served on the VM's loopback with its
 //! stylesheet and image (loaded through Yulius) and a canvas that keeps updating; a click in the
-//! mirror reaches the real page; in Select mode a double-click selects and copies a word; an
+//! mirror reaches the real page; text in the mirror selects like a page (double-click and drag,
+//! copied at once); typing into a field reaches the real page and streams back; an
 //! agent's click shows its cursor; the pixel view can be chosen
 //! and left; and a hostile page that feeds crafted events to the recorder's binding cannot run
 //! script in the UI (the mirror iframe stays script-free). A second test checks
@@ -139,6 +140,7 @@ fn fixture_site() -> Router {
 <body><h1 id="title">Fixture page</h1><img id="logo" src="/logo.svg" width="40" height="40">
 <button id="go" onclick="document.getElementById('title').textContent='Clicked!'" style="position:absolute;left:100px;top:160px;width:140px;height:44px">Click me</button>
 <canvas id="paint" width="60" height="30" style="position:absolute;left:300px;top:20px"></canvas>
+<input id="name" style="position:absolute;left:100px;top:240px;width:160px">
 <script>
 const g = document.getElementById('paint').getContext('2d');
 g.fillStyle = 'rgb(255, 0, 0)'; g.fillRect(0, 0, 60, 30);
@@ -305,14 +307,12 @@ async fn the_browser_panel_mirrors_pages_as_dom() -> TestResult {
         until(&cdp, session, "the page's styles", &format!("(() => {{ const d = {mirror}; const t = d?.querySelector('#title'); return t && d.defaultView.getComputedStyle(t).color === 'rgb(1, 2, 3)'; }})()")).await?;
         // The canvas keeps updating (sampled frames painted by the UI, not by the iframe).
         until(&cdp, session, "the updated canvas", &format!("(() => {{ const c = {mirror}?.querySelector('#paint'); if (!c) return false; const p = c.getContext('2d').getImageData(5, 5, 1, 1).data; return p[0] < 50 && p[1] > 150; }})()")).await?;
-        // Select mode: a double-click selects a word of the mirror and copies it at once.
+        // The mirror is a real page: a double-click selects a word and copies it at once.
         cdp.call(
             "Browser.grantPermissions",
             json!({ "origin": format!("http://{addr}"), "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"] }),
         )
         .await?;
-        let select = "[...document.querySelectorAll('button')].find((b) => b.textContent === 'Select')";
-        eval(&cdp, session, &format!("{select}.click(), true")).await?;
         let word = eval(&cdp, session, &format!("(() => {{ const frame = document.querySelector('.bp-mirror iframe'); const d = {mirror}; const text = d.querySelector('#title').firstChild; const range = d.createRange(); range.setStart(text, 1); range.setEnd(text, 4); const b = range.getBoundingClientRect(); const f = frame.getBoundingClientRect(); const scale = f.width / frame.offsetWidth; return {{ x: f.left + (b.left + b.width / 2) * scale, y: f.top + (b.top + b.height / 2) * scale }}; }})()")).await?;
         let (x, y) = (word["x"].as_f64().ok_or("x")?, word["y"].as_f64().ok_or("y")?);
         for count in [1, 2] {
@@ -323,10 +323,30 @@ async fn the_browser_panel_mirrors_pages_as_dom() -> TestResult {
         }
         until(&cdp, session, "the selected word", &format!("{mirror}.getSelection().toString().trim() === 'Fixture'")).await?;
         until(&cdp, session, "the copy notice", "!document.querySelector('.bp-copied').hidden").await?;
-        eval(&cdp, session, &format!("{select}.click(), true")).await?;
+        // Dragging selects across words (starting outside the current selection, as on any page).
+        eval(&cdp, session, &format!("{mirror}.getSelection().removeAllRanges(), true")).await?;
+        let span = eval(&cdp, session, &format!("(() => {{ const frame = document.querySelector('.bp-mirror iframe'); const d = {mirror}; const text = d.querySelector('#title').firstChild; const point = (offset) => {{ const r = d.createRange(); r.setStart(text, offset); r.setEnd(text, offset + 1); const b = r.getBoundingClientRect(); const f = frame.getBoundingClientRect(); const scale = f.width / frame.offsetWidth; return [f.left + (b.left + 1) * scale, f.top + (b.top + b.height / 2) * scale]; }}; return {{ from: point(0), to: point(text.data.length - 1) }}; }})()")).await?;
+        let (fx, fy) = (span["from"][0].as_f64().ok_or("from")?, span["from"][1].as_f64().ok_or("from")?);
+        let (tx, ty) = (span["to"][0].as_f64().ok_or("to")?, span["to"][1].as_f64().ok_or("to")?);
+        cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": "mousePressed", "x": fx, "y": fy, "button": "left", "clickCount": 1 })).await?;
+        for step in 1..=5 {
+            let x = fx + (tx + 8.0 - fx) * f64::from(step) / 5.0;
+            cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": "mouseMoved", "x": x, "y": ty, "button": "left", "buttons": 1 })).await?;
+        }
+        cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": "mouseReleased", "x": tx + 8.0, "y": ty, "button": "left", "clickCount": 1 })).await?;
+        until(&cdp, session, "the dragged selection", &format!("{mirror}.getSelection().toString().trim() === 'Fixture page'")).await?;
         // A click in the mirror reaches the real page; the mirror shows the change.
         click_in_mirror(&cdp, session, "#go").await?;
         until(&cdp, session, "the click result in the mirror", &format!("{mirror}?.querySelector('#title')?.textContent === 'Clicked!'")).await?;
+        // Typing into a field of the mirror reaches the real page; its value streams back.
+        click_in_mirror(&cdp, session, "#name").await?;
+        for (key, code) in [("A", "KeyA"), ("d", "KeyD"), ("a", "KeyA")] {
+            for kind in ["keyDown", "keyUp"] {
+                let text = if kind == "keyDown" { key } else { "" };
+                cdp.call_session(session, "Input.dispatchKeyEvent", json!({ "type": kind, "key": key, "code": code, "text": text })).await?;
+            }
+        }
+        until(&cdp, session, "the typed value in the mirror", &format!("{mirror}?.querySelector('#name')?.value === 'Ada'")).await?;
         // An agent's click shows its cursor.
         let browser = h.app.browser_session(&SandboxId::parse("s1")?).await?;
         let tab = browser.tabs().into_iter().find(|t| t.active).ok_or("active tab")?;

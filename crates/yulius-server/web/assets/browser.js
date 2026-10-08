@@ -1,7 +1,8 @@
 // Sandbox browser panel (BRW-001..007): tab strip, address bar and the active tab of the
 // server-side Chromium shown as live DOM (rrweb mirror, BRW-005) — or, when a page cannot be
-// mirrored or the user asks for it, as JPEG frames. Clicks, wheel and keys go to the real
-// browser; holding Option/Alt (or the Select toggle) lets the mouse select text in the mirror.
+// mirrored or the user asks for it, as JPEG frames. The mirror is a real page in the user's
+// browser: text selects and copies natively, hover and cursors work, and clicks, drags, keys and
+// wheel are forwarded to the real browser, whose changes stream back into the mirror.
 // Page resources served on the VM (localhost, plain http) load through Yulius. Agents' actions
 // show as a labelled cursor (BRW-007). New tabs open the Yulius welcome page (BRW-006).
 // The socket is open only while the panel is visible.
@@ -27,6 +28,7 @@ const SRC_MUTATION = 0;
 const SRC_VIEWPORT = 4;
 const SRC_STYLESHEET_RULE = 8;
 const SRC_CANVAS = 9;
+const SRC_SELECTION = 14;
 
 /** CDP-style modifier bitmask: Alt=1, Ctrl=2, Meta=4, Shift=8. */
 function modifiers(event) {
@@ -84,8 +86,6 @@ export function createBrowserPanel(ctx, sandbox) {
   let lastError = null; // last {code, message} error frame; explains a following close
   let wantPixels = false; // the user's choice
   let pixelsReason = null; // the server could not mirror the active tab
-  let selecting = false; // the Select toggle
-  let altHeld = false;
   let replayer = null;
   let replayerTab = null;
   let replayerClock = 0; // events are applied in arrival order, all before this baseline
@@ -110,7 +110,8 @@ export function createBrowserPanel(ctx, sandbox) {
   const attention = h('div', { class: 'banner banner-warn bp-attn small', hidden: true });
   const mirrorHost = h('div', { class: 'bp-mirror', 'aria-label': 'Remote browser page' });
   const canvas = h('canvas', { class: 'bp-canvas', hidden: true });
-  const inputLayer = h('div', { class: 'bp-input', tabindex: '0', 'aria-label': 'Remote browser page (click to interact)' });
+  // Pixel view only: the canvas cannot take input itself.
+  const inputLayer = h('div', { class: 'bp-input', tabindex: '0', hidden: true, 'aria-label': 'Remote browser page (click to interact)' });
   const agentCursor = h('div', { class: 'bp-agent', hidden: true }, h('span', { class: 'bp-agent-arrow' }), h('span', { class: 'bp-agent-label' }));
   const agentPill = h('div', { class: 'bp-agent-pill', hidden: true });
   const copied = h('div', { class: 'bp-copied', hidden: true }, 'Copied');
@@ -120,7 +121,6 @@ export function createBrowserPanel(ctx, sandbox) {
   setChildren(el, tabStrip, h('div', { class: 'bp-bar' }, reloadButton, address, viewBadge), attention, stage);
   const g = canvas.getContext('2d');
 
-  const selectButton = h('button', { type: 'button', class: 'btn btn-sm', 'aria-pressed': 'false', title: 'Select text in the page (or hold Option/Alt)', onClick: () => { selecting = !selecting; applyPointerMode(); } }, 'Select');
   const pixelsButton = h('button', { type: 'button', class: 'btn btn-sm', 'aria-pressed': 'false', title: 'Show the page as pixels instead of live DOM', onClick: () => setPixels(!wantPixels) }, 'Pixels');
 
   function activeTab() {
@@ -180,6 +180,7 @@ export function createBrowserPanel(ctx, sandbox) {
 
   function applyMode() {
     const pixels = showingPixels();
+    applyInputMode();
     canvas.hidden = !pixels;
     mirrorHost.hidden = pixels;
     viewBadge.hidden = !pixels;
@@ -192,25 +193,53 @@ export function createBrowserPanel(ctx, sandbox) {
     layout();
   }
 
-  function applyPointerMode() {
-    const pass = !showingPixels() && (selecting || altHeld);
-    inputLayer.classList.toggle('pass', pass);
-    // rrweb keeps the mirror iframe inert; selecting text needs pointer events (not local
-    // scrolling, which would drift from the server page).
-    if (replayer && replayer.iframe) replayer.iframe.style.pointerEvents = pass ? 'auto' : 'none';
-    selectButton.setAttribute('aria-pressed', String(selecting));
-    selectButton.classList.toggle('active', selecting);
+  /** The pixel view takes input through an overlay; the DOM mirror takes it directly. */
+  function applyInputMode() {
+    inputLayer.hidden = !showingPixels();
   }
 
-  /** Text selection in the mirror: Option/Alt tracking, copy on select, no navigation. */
+  /** Focus for keyboard input: the mirror page or the pixel overlay. */
+  function focusPage() {
+    if (showingPixels()) inputLayer.focus();
+    else if (replayer && replayer.iframe && replayer.iframe.contentWindow) replayer.iframe.contentWindow.focus();
+  }
+
+  /**
+   * The mirror document behaves like the page: native selection, copy, hover and cursors stay
+   * local; presses, moves, wheel and keys go to the real browser at the same CSS coordinates
+   * (the mirror is laid out at the page's viewport). Its own navigation is suppressed.
+   */
   function wireMirrorDocument() {
     const doc = replayer && replayer.iframe ? replayer.iframe.contentDocument : null;
     if (!doc) return;
-    // Keys and moves go to the mirror while it has focus: keep following Option/Alt there.
-    for (const type of ['keydown', 'keyup', 'pointermove']) doc.addEventListener(type, altWatch, true);
-    // Selecting text never follows a link or submits a form in the mirror.
-    doc.addEventListener('click', (event) => event.preventDefault(), true);
-    doc.addEventListener('mouseup', () => {
+    const at = (event) => ({ x: Math.round(event.clientX), y: Math.round(event.clientY) });
+    let pressed = false;
+    let pendingMoveEvent = null;
+    let mirrorMoveFrame = 0;
+    doc.addEventListener('mousedown', (event) => {
+      if (event.button === 2) return; // the local context menu (Copy) stays
+      pressed = true;
+      const p = at(event);
+      sendMouse('down', p.x, p.y, MOUSE_BUTTONS[event.button] || 'left');
+    }, true);
+    doc.addEventListener('mousemove', (event) => {
+      pendingMoveEvent = event;
+      if (mirrorMoveFrame) return;
+      mirrorMoveFrame = requestAnimationFrame(() => {
+        mirrorMoveFrame = 0;
+        const move = pendingMoveEvent;
+        pendingMoveEvent = null;
+        if (!move) return;
+        const p = at(move);
+        sendMouse('move', p.x, p.y, pressed && (move.buttons & 1) ? 'left' : 'none');
+      });
+    }, true);
+    doc.addEventListener('mouseup', (event) => {
+      if (event.button === 2) return;
+      pressed = false;
+      const p = at(event);
+      sendMouse('up', p.x, p.y, MOUSE_BUTTONS[event.button] || 'left');
+      // Instant copy of a selection (also after a double-click).
       const text = String(doc.getSelection ? doc.getSelection() : '');
       if (!text.trim() || !navigator.clipboard) return;
       navigator.clipboard.writeText(text).then(() => {
@@ -218,7 +247,18 @@ export function createBrowserPanel(ctx, sandbox) {
         clearTimeout(copiedTimer);
         copiedTimer = setTimeout(() => { copied.hidden = true; }, 1200);
       }, () => {});
-    });
+    }, true);
+    doc.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      const p = at(event);
+      sendMouse('wheel', p.x, p.y, 'none', { dx: Math.round(event.deltaX), dy: Math.round(event.deltaY) });
+    }, { capture: true, passive: false });
+    // The real page handles clicks; the mirror never navigates, submits or drags links away.
+    doc.addEventListener('click', (event) => event.preventDefault(), true);
+    doc.addEventListener('dragstart', (event) => event.preventDefault(), true);
+    doc.addEventListener('keydown', (event) => forwardKey('down', event), true);
+    doc.addEventListener('keyup', (event) => forwardKey('up', event), true);
+    doc.addEventListener('paste', (event) => forwardPaste(event), true);
   }
 
   function renderTabs() {
@@ -229,7 +269,7 @@ export function createBrowserPanel(ctx, sandbox) {
         attn ? icon('warn', { size: 12 }) : null,
         h('span', { class: 'bp-tab-title' }, title),
         iconButton('x', `Close ${title}`, (event) => { event.stopPropagation(); send({ type: 'close', tab_id: tab.id }); }));
-      const activate = () => { if (!tab.active) send({ type: 'activate', tab_id: tab.id }); inputLayer.focus(); };
+      const activate = () => { if (!tab.active) send({ type: 'activate', tab_id: tab.id }); focusPage(); };
       button.addEventListener('click', activate);
       button.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } });
       return button;
@@ -382,6 +422,8 @@ export function createBrowserPanel(ctx, sandbox) {
    * behind them so the canvas they paint exists.
    */
   function apply(event) {
+    // The viewer's own text selection belongs to the viewer: the page's is not replayed.
+    if (event.type === EV_INCREMENTAL && event.data && event.data.source === SRC_SELECTION) return;
     if (event.type === EV_INCREMENTAL && event.data && event.data.source === SRC_CANVAS) {
       const data = event.data;
       Promise.resolve().then(() => paintCanvas(data));
@@ -435,7 +477,7 @@ export function createBrowserPanel(ctx, sandbox) {
       Promise.resolve().then(() => {
         if (replayer !== built) return;
         wireMirrorDocument();
-        applyPointerMode();
+        applyInputMode();
         if (serverViewport) resizeMirror(serverViewport.width, serverViewport.height);
       });
       applyMode();
@@ -644,6 +686,35 @@ export function createBrowserPanel(ctx, sandbox) {
   observer.observe(stage);
 
   // ---------------------------------------------------------------- input forwarding
+  function sendMouse(kind, x, y, button, extra = {}) {
+    const tab = activeTab();
+    if (!tab) return;
+    send({ type: 'mouse', tab_id: tab.id, event: kind, x, y, button, dx: 0, dy: 0, ...extra });
+  }
+
+  /** Keys go to the real page; copy and paste stay with the user's browser (paste is sent as
+   *  text), and the user's own browser shortcuts are left alone. */
+  function forwardKey(kind, event) {
+    const tab = activeTab();
+    if (!tab) return;
+    const key = event.key.toLowerCase();
+    const command = event.metaKey || event.ctrlKey;
+    if (command && ['r', 'w', 't', 'q', 'l', 'n'].includes(key)) return;
+    if (command && ['c', 'x', 'v'].includes(key)) return;
+    if (!(command && key === 'a')) event.preventDefault(); // select-all: local and remote
+    const text = kind === 'down' ? (event.key.length === 1 ? event.key : event.key === 'Enter' ? '\r' : '') : '';
+    send({ type: 'key', tab_id: tab.id, event: kind, key: event.key, code: event.code, text, modifiers: modifiers(event) });
+  }
+
+  function forwardPaste(event) {
+    const tab = activeTab();
+    const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
+    if (!tab || !text) return;
+    event.preventDefault();
+    send({ type: 'key', tab_id: tab.id, event: 'char', key: '', code: '', text: text.slice(0, 10000), modifiers: 0 });
+  }
+
+  // Pixel view: map overlay coordinates back to the page.
   function point(event) {
     const rect = inputLayer.getBoundingClientRect();
     const scale = Number(inputLayer.dataset.scale || 1) || 1;
@@ -655,50 +726,30 @@ export function createBrowserPanel(ctx, sandbox) {
     return { x: Math.round(x), y: Math.round(y) };
   }
 
-  function mouse(kind, event, extra = {}) {
-    const tab = activeTab();
+  function overlayMouse(kind, event, button, extra = {}) {
     const p = point(event);
-    if (!tab || !p) return;
-    send({ type: 'mouse', tab_id: tab.id, event: kind, x: p.x, y: p.y, button: MOUSE_BUTTONS[event.button] || 'left', dx: 0, dy: 0, ...extra });
+    if (p) sendMouse(kind, p.x, p.y, button, extra);
   }
 
-  inputLayer.addEventListener('pointerdown', (event) => { inputLayer.focus(); mouse('down', event); });
-  inputLayer.addEventListener('pointerup', (event) => mouse('up', event));
+  inputLayer.addEventListener('pointerdown', (event) => { inputLayer.focus(); overlayMouse('down', event, MOUSE_BUTTONS[event.button] || 'left'); });
+  inputLayer.addEventListener('pointerup', (event) => overlayMouse('up', event, MOUSE_BUTTONS[event.button] || 'left'));
   inputLayer.addEventListener('pointermove', (event) => {
     pendingMove = event;
     if (moveFrame) return;
-    moveFrame = requestAnimationFrame(() => { moveFrame = 0; if (pendingMove) mouse('move', pendingMove, { button: 'none' }); pendingMove = null; });
+    moveFrame = requestAnimationFrame(() => {
+      moveFrame = 0;
+      if (pendingMove) overlayMouse('move', pendingMove, pendingMove.buttons & 1 ? 'left' : 'none');
+      pendingMove = null;
+    });
   });
   inputLayer.addEventListener('wheel', (event) => {
     event.preventDefault();
-    mouse('wheel', event, { button: 'none', dx: Math.round(event.deltaX), dy: Math.round(event.deltaY) });
+    overlayMouse('wheel', event, 'none', { dx: Math.round(event.deltaX), dy: Math.round(event.deltaY) });
   }, { passive: false });
   inputLayer.addEventListener('contextmenu', (event) => event.preventDefault());
-  const keyHandler = (kind) => (event) => {
-    const tab = activeTab();
-    if (!tab) return;
-    const browserShortcut = (event.metaKey || event.ctrlKey) && ['r', 'w', 't', 'q', 'l', 'n'].includes(event.key.toLowerCase());
-    if (browserShortcut) return;
-    event.preventDefault();
-    const text = kind === 'down' ? (event.key.length === 1 ? event.key : event.key === 'Enter' ? '\r' : '') : '';
-    send({ type: 'key', tab_id: tab.id, event: kind, key: event.key, code: event.code, text, modifiers: modifiers(event) });
-  };
-  inputLayer.addEventListener('keydown', keyHandler('down'));
-  inputLayer.addEventListener('keyup', keyHandler('up'));
-  inputLayer.addEventListener('paste', (event) => {
-    const tab = activeTab();
-    const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
-    if (!tab || !text) return;
-    event.preventDefault();
-    send({ type: 'key', tab_id: tab.id, event: 'char', key: '', code: '', text: text.slice(0, 10000), modifiers: 0 });
-  });
-  // Option/Alt held: the mouse selects text in the mirror instead of driving the page.
-  const altWatch = (event) => {
-    if (event.altKey !== altHeld) { altHeld = event.altKey; applyPointerMode(); }
-  };
-  window.addEventListener('keydown', altWatch, true);
-  window.addEventListener('keyup', altWatch, true);
-  window.addEventListener('blur', () => { if (altHeld) { altHeld = false; applyPointerMode(); } });
+  inputLayer.addEventListener('keydown', (event) => forwardKey('down', event));
+  inputLayer.addEventListener('keyup', (event) => forwardKey('up', event));
+  inputLayer.addEventListener('paste', forwardPaste);
 
   address.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') { const tab = activeTab(); address.value = tab && !isWelcome(tab) ? tab.url : ''; return; }
@@ -709,12 +760,12 @@ export function createBrowserPanel(ctx, sandbox) {
     if (!tab) send({ type: 'open', url });
     else send({ type: 'navigate', tab_id: tab.id, url });
     address.blur();
-    inputLayer.focus();
+    focusPage();
   });
 
   return {
     el,
-    headExtra: () => [selectButton, pixelsButton, h('span', { class: 'muted xs' }, 'shared by this sandbox')],
+    headExtra: () => [pixelsButton, h('span', { class: 'muted xs' }, 'shared by this sandbox')],
     /** opts.tabId: activate that tab once tabs are known (Yulius links, UI-011);
      *  opts.url: open it in a new tab (localhost links from terminals and messages). */
     show(opts = {}) {
@@ -744,8 +795,6 @@ export function createBrowserPanel(ctx, sandbox) {
       clearTimeout(domTimer);
       clearTimeout(copiedTimer);
       cancelAnimationFrame(moveFrame);
-      window.removeEventListener('keydown', altWatch, true);
-      window.removeEventListener('keyup', altWatch, true);
       if (socket) socket.stop();
       socket = null;
       destroyReplayer();
