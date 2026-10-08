@@ -326,7 +326,8 @@ button.task-group-head:hover { color: var(--text); }
 .task-unread { flex: none; align-self: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: var(--radius-full); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); line-height: var(--lh); font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
 .task-unread[hidden] { display: none; }
 .task-kebab { position: absolute; right: 8px; top: 8px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
-.task-row:hover .task-kebab, .task-row:focus-within .task-kebab { visibility: visible; }
+/* The menu's button stays visible while its menu is open, so Escape can return focus to it. */
+.task-row:hover .task-kebab, .task-row:focus-within .task-kebab, .task-kebab[aria-expanded="true"] { visibility: visible; }
 .task-row:hover .task-age, .task-row:focus-within .task-age { visibility: hidden; }
 .sidebar-foot { padding: 6px; border-top: 1px solid var(--border); }
 .sidebar-foot .user-btn { gap: 12px; padding: 0 12px; border-radius: var(--radius-lg); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
@@ -753,7 +754,7 @@ summary { cursor: pointer; }
 .tl-time { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); text-align: right; font-variant-numeric: tabular-nums; }
 .tl-row.group-needs .tl-time { color: var(--warn-fg); }
 .tl-actions { display: flex; justify-content: flex-end; gap: 4px; visibility: hidden; }
-.tl-row:hover .tl-actions, .tl-row:focus-within .tl-actions { visibility: visible; }
+.tl-row:hover .tl-actions, .tl-row:focus-within .tl-actions, .tl-actions:has([aria-expanded="true"]) { visibility: visible; }
 @media (hover: none) { .tl-actions { visibility: visible; } }
 .tl-action { width: var(--control-sm); height: var(--control-sm); }
 .tl-more { display: block; width: 100%; height: var(--control-lg); padding: 0 16px 0 48px; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--accent-fg); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }

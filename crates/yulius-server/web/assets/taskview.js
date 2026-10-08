@@ -43,7 +43,7 @@ export function mountTaskView(ctx, sandbox, task) {
   const progress = h('div', { class: 'step-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100 }, progressFill);
   const statusEl = h('span', { class: 'strip-status' });
   const toggleButton = h('button', { type: 'button', class: 'stepstrip-toggle', 'aria-expanded': String(stripOpen) }, icon('right', { size: 14 }), stripLabel);
-  const kebab = iconButton('more', 'Task actions', () => openTaskMenu(ctx, kebab, current));
+  const kebab = iconButton('more', 'Task actions', () => openTaskMenu(ctx, kebab, current), { 'aria-haspopup': 'menu' });
   const stepList = h('div', { class: 'steplist', hidden: !stripOpen });
   const strip = h('div', { class: ['stepstrip', stripOpen && 'open'] },
     h('div', { class: 'stepstrip-main' }, toggleButton, progress, statusEl, kebab),

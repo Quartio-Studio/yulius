@@ -487,7 +487,7 @@ export function createSidebar(ctx) {
         event.preventDefault();
         event.stopPropagation();
         openTaskMenu(ctx, kebab, row.task);
-      }, { class: 'task-kebab' });
+      }, { class: 'task-kebab', 'aria-haspopup': 'menu' });
       const el = h('div', { class: 'task-row', role: 'listitem' }, link, kebab);
       el.addEventListener('contextmenu', (event) => {
         event.preventDefault();

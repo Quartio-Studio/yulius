@@ -360,8 +360,8 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     const check = choice ? h('span', { class: 'menu-check' }, item.checked ? icon('check', { size: 14 }) : null) : null;
     const select = () => {
       if (!item.keepOpen) {
-        closeMenu();
         if (anchor instanceof HTMLElement && anchor.isConnected) anchor.focus({ preventScroll: true });
+        closeMenu();
         if (item.onSelect) item.onSelect();
         return;
       }
@@ -391,7 +391,9 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   menu.style.top = `${top}px`;
   const onDoc = (event) => { if (!menu.contains(event.target)) closeMenu(); };
   const onKey = (event) => {
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeMenu(); if (anchor instanceof HTMLElement) anchor.focus(); return; }
+    // Focus goes back to the button before the menu closes (a button shown only while its menu is
+    // open would hide first and could not take focus).
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       const buttons = [...menu.querySelectorAll('.menu-item:not(:disabled)')];

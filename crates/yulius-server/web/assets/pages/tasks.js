@@ -224,7 +224,7 @@ export function mountTasksPage(ctx, sandbox) {
     const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`;
     const login = task.created_by && task.created_by.login;
     const actions = taskActions(task, sandbox.access);
-    const kebab = iconButton('more', 'Task actions', () => openTaskMenu(ctx, kebab, task), { class: 'tl-action' });
+    const kebab = iconButton('more', `Actions for ${task.title || `task #${task.number}`}`, () => openTaskMenu(ctx, kebab, task), { class: 'tl-action', 'aria-haspopup': 'menu' });
     const row = h('li', { class: ['tl-row', `group-${group}`], dataset: { taskId: task.id, tone: info.tone } },
       h('a', { class: 'tl-link', href: href(path), dataset: { route: path }, title: `#${task.number} ${task.title}${task.branch ? ` · ${task.branch}` : ''}` },
         h('span', { class: 'tl-mark' }, statusMark(info, 18)),
