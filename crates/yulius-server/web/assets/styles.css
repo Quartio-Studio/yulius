@@ -34,7 +34,7 @@ p { margin: 0; }
 .xs { font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .nowrap { white-space: nowrap; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.stack { display: flex; flex-direction: column; gap: 8px; }
+.stack { display: flex; flex-direction: column; gap: 12px; }
 .stack-sm { display: flex; flex-direction: column; gap: 6px; }
 .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .row-wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -302,7 +302,7 @@ p { margin: 0; }
   display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; margin: 0 4px; flex: none;
   border-radius: 50%; background: var(--accent); color: var(--accent-ink);
 }
-.nav { display: flex; flex-direction: column; padding: 4px 6px; gap: 2px; }
+.nav { display: flex; flex-direction: column; padding: 4px 6px; gap: 4px; }
 .nav-item { display: flex; align-items: center; gap: 12px; height: var(--control-xl); padding: 0 12px; border-radius: var(--radius-lg); color: var(--text-2); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
 .nav-slot { display: inline-flex; align-items: center; justify-content: center; width: 36px; flex: none; }
 .nav-item .icon { color: var(--muted); }
@@ -311,11 +311,11 @@ p { margin: 0; }
 .nav-item:hover .icon, .nav-item.active .icon { color: var(--text-2); }
 .nav-item:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
 .nav-item.active { background: var(--accent-soft); color: var(--text); }
-.task-list { flex: 1 0 auto; padding: 4px 6px 8px; border-top: 1px solid var(--border); margin-top: 8px; }
+.task-list { flex: 1 0 auto; padding: 8px 6px 12px; border-top: 1px solid var(--border); margin-top: 8px; }
 /* Active tasks (UI-005): groups — Needs you, Working, Stopped — of two-line rows. */
 /* Task list rows read like a chat list (WhatsApp, cmux): a state tile, a 16 px title with the age
    on the right, then what is happening or what to do, with the unread count under the age. */
-.task-group { display: flex; flex-direction: column; gap: 2px; padding-top: 12px; }
+.task-group { display: flex; flex-direction: column; gap: 2px; padding-top: 16px; }
 /* A group's head is a band of its own (its background and edge set it apart from the tasks below). */
 .task-group-head {
   position: sticky; top: 0; z-index: var(--z-raised);
@@ -336,9 +336,9 @@ button.task-group-head:hover { color: var(--text); }
 /* Long lists: rows off screen skip layout and paint (PERF-03). That contains each row's painting,
    so the focus ring is drawn inside the row, not around it. */
 .task-row, .tl-row { content-visibility: auto; }
-.task-row { contain-intrinsic-size: auto 32px; }
+.task-row { contain-intrinsic-size: auto 36px; }
 .tl-row { contain-intrinsic-size: auto 72px; }
-.task-link { display: flex; align-items: center; gap: 12px; height: var(--control-lg); padding: 0 12px; color: var(--text-2); text-decoration: none; }
+.task-link { display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 12px; color: var(--text-2); text-decoration: none; }
 .task-link:hover { text-decoration: none; }
 .task-link:focus-visible { border-radius: var(--radius); box-shadow: var(--focus-inset); }
 .task-row:hover .task-link, .task-row.active .task-link, .task-row:focus-within .task-link { color: var(--text); }
@@ -1042,18 +1042,18 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 /* Material: a brand's soft light and texture (tokens --light, --texture; none by default). */
 .composer, .page, .auth { background-image: var(--light), var(--texture); }
 .sidebar, .rail { background-image: var(--texture); }
-.page-inner { padding: 16px 20px 32px; max-width: 1280px; display: flex; flex-direction: column; gap: 12px; }
+.page-inner { padding: 24px 32px 40px; max-width: 1280px; display: flex; flex-direction: column; gap: 16px; }
 .page-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 30px; }
 .page-title { font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 600; margin-right: 6px; }
 .page-sub { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .page-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .toolbar .input, .toolbar .select { width: auto; min-width: 140px; height: var(--control-md); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); min-width: 0; }
-.card-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.card-head { display: flex; align-items: center; gap: 8px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .card-title { font-weight: 600; font-size: var(--fs); line-height: var(--lh); }
-.card-body { padding: 12px 16px; }
-.card-pad { padding: 12px 16px; }
+.card-body { padding: 16px 20px; }
+.card-pad { padding: 16px 20px; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
 .list { display: flex; flex-direction: column; }
 .list-item { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--border); min-width: 0; }
@@ -1109,7 +1109,7 @@ summary { cursor: pointer; }
 .env-row { display: grid; grid-template-columns: 1fr 1fr 2fr 1fr auto; gap: 6px; align-items: center; }
 
 /* Tasks page (pages/tasks.js): toolbar, then a grouped list of two-line rows */
-.tl-toolbar { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+.tl-toolbar { display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap; }
 .tl-tabs { display: flex; gap: 2px; }
 .tl-tab { display: inline-flex; align-items: center; gap: 6px; height: var(--control-lg); padding: 0 12px; border: 0; border-radius: var(--radius-full); background: transparent; color: var(--text-2); font: inherit; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; cursor: pointer; white-space: nowrap; }
 .tl-tab:hover { background: var(--surface-3); color: var(--text); }
@@ -1131,7 +1131,7 @@ summary { cursor: pointer; }
 .tl { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: clip; }
 .tl-group + .tl-group { border-top: 1px solid var(--border); }
 .tl-group-title { margin: 0; font: inherit; position: sticky; top: 0; z-index: var(--z-sticky); }
-.tl-group-head { display: flex; align-items: center; gap: 8px; width: 100%; height: var(--control-lg); padding: 0 16px; border: 0; border-bottom: 1px solid var(--border); background: var(--surface-3); color: var(--text-2); font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; cursor: pointer; text-align: left; }
+.tl-group-head { display: flex; align-items: center; gap: 8px; width: 100%; height: var(--control-xl); padding: 0 20px; border: 0; border-bottom: 1px solid var(--border); background: var(--surface-3); color: var(--text-2); font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; cursor: pointer; text-align: left; }
 .tl-group-head:hover { color: var(--text); }
 .tl-group-head[aria-expanded="false"] { border-bottom: 0; }
 .tl-group-count { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
@@ -1142,16 +1142,16 @@ summary { cursor: pointer; }
    narrows (container queries on .tl). */
 .tl { container-type: inline-size; }
 .tl-row, .tl-columns {
-  display: grid; align-items: center; gap: 12px; padding: 0 8px 0 0;
+  display: grid; align-items: center; gap: 20px; padding: 0 16px 0 0;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) minmax(0, 1.1fr) 96px 104px 28px 48px 48px 64px;
 }
 .tl-row { position: relative; border-top: 1px solid var(--border); }
 .tl-row:first-child { border-top: 0; }
 .tl-row:hover, .tl-row:focus-within { background: var(--surface-hover); }
-.tl-columns { height: var(--control-lg); border-bottom: 1px solid var(--border); color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
-.tl-columns > :first-child { padding-left: 16px; }
+.tl-columns { height: var(--control-xl); border-bottom: 1px solid var(--border); color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.tl-columns > :first-child { padding-left: 20px; }
 .tl-columns > :nth-child(5), .tl-columns > :nth-child(7), .tl-columns > :nth-child(8) { text-align: right; }
-.tl-link { display: flex; align-items: center; gap: 12px; min-width: 0; height: 44px; padding: 0 0 0 12px; color: var(--text); text-decoration: none; }
+.tl-link { display: flex; align-items: center; gap: 12px; min-width: 0; height: 52px; padding: 0 0 0 16px; color: var(--text); text-decoration: none; }
 .tl-link:hover { text-decoration: none; }
 .tl-link::after { content: ""; position: absolute; inset: 0; }
 .tl-link:focus-visible { box-shadow: none; }
@@ -1165,11 +1165,11 @@ summary { cursor: pointer; }
 .tl-branch { font-family: var(--font-mono); }
 .tl-diff { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .tl-started { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
-@container (max-width: 1000px) {
+@container (max-width: 1060px) {
   .tl-row, .tl-columns { grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) 96px 104px 28px 48px 64px; }
   .tl-branch, .tl-started, .tl-columns > :nth-child(3), .tl-columns > :nth-child(7) { display: none; }
 }
-@container (max-width: 720px) {
+@container (max-width: 760px) {
   .tl-row, .tl-columns { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 104px 48px 64px; }
   .tl-diff, .tl-avatar, .tl-columns > :nth-child(4), .tl-columns > :nth-child(6) { display: none; }
 }
@@ -1318,7 +1318,7 @@ a.dl-task:hover { text-decoration: underline; }
 .ds-select { max-width: 200px; }
 
 /* Item cards (dom.js itemCard): workflows, skills… — the whole card opens the item. */
-.item-list { display: flex; flex-direction: column; gap: 8px; }
+.item-list { display: flex; flex-direction: column; gap: 12px; }
 .item-card {
   position: relative; display: flex; align-items: center; gap: 16px; min-width: 0; padding: 16px 20px;
   border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface);
