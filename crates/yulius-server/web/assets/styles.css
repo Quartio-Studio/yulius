@@ -842,9 +842,22 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .composer-quote blockquote { margin: 0; color: var(--text-2); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 500; letter-spacing: -0.01em; text-wrap: balance; }
 .composer-quote figcaption { margin-top: 8px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .composer-card { width: min(760px, 100%); display: flex; flex-direction: column; gap: 12px; }
-.composer-title { font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 600; }
-.composer-repo { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
-.composer-repo .icon { flex: none; }
+.composer-title { font-family: var(--font-display); }
+/* The composer's top bar: sandbox › New task on the left, the repository and its branch on the right. */
+.composer { position: relative; }
+.composer-top { position: absolute; top: 16px; left: 24px; right: 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.composer-crumbs ol { display: flex; align-items: center; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.composer-crumbs li { display: inline-flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); }
+.composer-crumbs a { color: var(--text-2); font-size: var(--fs-lg); line-height: var(--lh-lg); text-decoration: none; }
+.composer-crumbs a:hover { color: var(--text); text-decoration: none; }
+.composer-crumbs .composer-title { margin: 0; color: var(--text); font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 500; }
+.composer-repo-bar { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.composer-repo-link { display: inline-flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-2); font-size: var(--fs-lg); line-height: var(--lh-lg); text-decoration: none; }
+.composer-repo-link:hover { color: var(--text); text-decoration: none; }
+.composer-repo-link .icon, .composer-branch .icon { flex: none; }
+.composer-repo-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-branch { display: inline-flex; flex: none; align-items: center; gap: 6px; height: var(--control-lg); padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-md); line-height: var(--lh-md); }
+@media (max-width: 767px) { .composer-top { position: static; align-self: stretch; flex-wrap: wrap; margin-bottom: 16px; } }
 /* The prompt box (UI-021): a rounded chat box with the task's choices along its bottom edge. */
 .composer-box {
   display: flex; flex-direction: column; border: 1px solid var(--border-control); border-radius: var(--radius-xl);

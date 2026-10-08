@@ -282,10 +282,21 @@ export function mountComposer(ctx, sandbox) {
   const hint = h('span', { class: 'composer-kbd' }, ' · ', h('span', { class: 'kbd' }, 'Enter'), ' to start, ', h('span', { class: 'kbd' }, 'Shift'), ' + ', h('span', { class: 'kbd' }, 'Enter'), ' for a new line');
 
   const quote = randomQuote();
-  const el = h('div', { class: 'composer' },
+  // The top bar: where you are (sandbox › New task, the page's heading) on the left; the GitHub
+  // repository (opening it) and the branch new tasks start from on the right.
+  const baseBranch = (sandbox.profile && sandbox.profile.integration_branch) || sandbox.default_branch || 'main';
+  const tasksPath = `/s/${encodeURIComponent(sandbox.slug)}/tasks`;
+  const repoBar = h('div', { class: 'composer-top' },
+    h('nav', { class: 'composer-crumbs', 'aria-label': 'Breadcrumb' }, h('ol', null,
+      h('li', null, h('a', { href: href(tasksPath), dataset: { route: tasksPath } }, sandbox.name)),
+      h('li', { 'aria-current': 'page' }, icon('right', { size: 14 }), h('h1', { class: 'composer-title' }, 'New task')))),
+    sandbox.repo ? h('div', { class: 'composer-repo-bar' },
+      h('a', { class: 'composer-repo-link', href: sandbox.repo.url, target: '_blank', rel: 'noopener noreferrer', title: `Open ${sandbox.repo.owner}/${sandbox.repo.name} on GitHub` },
+        icon('github', { size: 18 }), h('span', null, `${sandbox.repo.owner} / ${sandbox.repo.name}`)),
+      h('span', { class: 'composer-branch', title: `New tasks branch from ${baseBranch}` }, icon('branch', { size: 16 }), h('span', null, baseBranch))) : null);
+  const el = h('div', { class: 'composer' }, repoBar,
     h('div', { class: 'composer-card' },
       h('figure', { class: 'composer-quote' }, h('blockquote', null, `“${quote.text}”`), h('figcaption', null, `— ${quote.author}`)),
-      h('div', { class: 'row' }, h('h1', { class: 'composer-title' }, 'New task'), h('span', { class: 'composer-repo muted small' }, 'in', sandbox.repo ? icon('github', { size: 14 }) : null, h('span', { class: 'ellipsis' }, sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name))),
       banner,
       h('div', { class: 'composer-box' },
         prompt,
