@@ -1,12 +1,13 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, meter, errorToast, badge } from './dom.js';
-import { relShort, relLong, bytes, duration, windowLabel, dateTime } from './format.js';
+import { h, icon, iconButton, openMenu, setChildren, errorToast } from './dom.js';
+import { relShort, relLong, bytes, duration, dateTime } from './format.js';
 import { statusInfo, harnessInfo, allows } from './status.js';
 import { href } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
+import { readJson, writeJson } from './store.js';
 
 const NAV = [
   ['tasks', 'Tasks'],
@@ -218,43 +219,120 @@ function pct(used, total) {
   return Number.isFinite(used) && Number.isFinite(total) && total > 0 ? (used / total) * 100 : null;
 }
 
+const STATUS_OPEN_KEY = 'yulius.statusOpen';
+/** Account states as a person reads them: icon, tone and a plain label. */
+const ACCOUNT_STATES = {
+  ok: { icon: 'check', tone: 'ok', label: 'Ready' },
+  limited: { icon: 'clock', tone: 'warn', label: 'Limit reached' },
+  relogin: { icon: 'lock', tone: 'warn', label: 'Sign in again' },
+  pending_login: { icon: 'lock', tone: 'warn', label: 'Not signed in' },
+  error: { icon: 'warn', tone: 'danger', label: 'Error' },
+};
+
+function toneOf(percent) {
+  if (!Number.isFinite(percent)) return 'unknown';
+  return percent >= 90 ? 'danger' : percent >= 70 ? 'warn' : 'ok';
+}
+
+/** A bare usage bar (the number is shown next to it). Unknown renders hatched, never as zero. */
+function usageBar(percent, label) {
+  const known = Number.isFinite(percent);
+  const value = known ? Math.max(0, Math.min(100, percent)) : 0;
+  return h('div', { class: ['meter', `meter-${toneOf(percent)}`] },
+    h('div', { class: 'meter-track', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': known ? value : null, 'aria-label': label },
+      h('div', { class: 'meter-fill', style: { width: `${value}%` } })));
+}
+
+const percentText = (percent) => (Number.isFinite(percent) ? `${Math.round(percent)}%` : '—');
+
+/** "5-hour limit", "Weekly limit"… from a provider usage window. */
+function limitName(minutes, fallback) {
+  if (!minutes) return fallback;
+  if (minutes === 10080) return 'Weekly limit';
+  if (minutes === 1440) return 'Daily limit';
+  if (minutes % 1440 === 0) return `${minutes / 1440}-day limit`;
+  if (minutes % 60 === 0) return `${minutes / 60}-hour limit`;
+  return `${minutes}-minute limit`;
+}
+
+/** One machine tile: icon and name, a big value, a bar and a detail line. */
+function statTile(iconName, name, value, percent, detail) {
+  return h('div', { class: ['stat-tile', `stat-${toneOf(percent)}`] },
+    h('div', { class: 'stat-head' }, icon(iconName, { size: 15 }), h('span', null, name)),
+    h('div', { class: 'stat-value' }, value),
+    usageBar(percent, name),
+    h('div', { class: 'stat-detail' }, detail || ' '));
+}
+
+/** A collapsible status section whose open state survives the panel's refresh. */
+function statusSection(key, iconName, title, summary, body, openByDefault) {
+  const saved = readJson(STATUS_OPEN_KEY, {}) || {};
+  const details = h('details', { class: 'status-section status-fold', open: key in saved ? Boolean(saved[key]) : openByDefault },
+    h('summary', null, icon('right', { size: 12 }), icon(iconName, { size: 15 }), h('h3', null, title), h('span', { class: 'status-summary-text' }, summary)),
+    h('div', { class: 'status-fold-body' }, body));
+  details.addEventListener('toggle', () => {
+    const next = readJson(STATUS_OPEN_KEY, {}) || {};
+    next[key] = details.open;
+    writeJson(STATUS_OPEN_KEY, next);
+  });
+  return details;
+}
+
 /**
- * Render GET /api/status (`StatusView`: vm, sessions, sandboxes, accounts, contained).
- * VM fields are null when unknown (CPU needs two readings) and render as "—"/"unknown",
- * never as zero. Account id/priority/last_error/in_use_by are present for admins only.
+ * Render GET /api/status (`StatusView`: vm, sessions, sandboxes, accounts, contained) so it reads
+ * in seconds: one health line, machine tiles, then sandboxes and accounts as collapsible lists.
+ * VM fields are null when unknown (CPU needs two readings) and render as "—"/"unknown", never as
+ * zero. Account id/priority/last_error/in_use_by are present for admins only.
  */
 export function renderStatus(data) {
   const vm = data.vm || {};
   const memPct = pct(vm.memory_used_bytes, vm.memory_total_bytes);
   const diskPct = pct(vm.disk_used_bytes, vm.disk_total_bytes);
   const sessions = data.sessions || {};
+  const sessionsPct = Number.isFinite(sessions.live) && sessions.limit ? pct(sessions.live, sessions.limit) : null;
   const sandboxes = Array.isArray(data.sandboxes) ? data.sandboxes : [];
   const accounts = Array.isArray(data.accounts) ? data.accounts : [];
-  const load = Array.isArray(vm.load) ? vm.load.map((v) => Number(v).toFixed(2)).join(' · ') : Number.isFinite(vm.load_1m) ? Number(vm.load_1m).toFixed(2) : '—';
+  const load = Array.isArray(vm.load) ? vm.load.map((v) => Number(v).toFixed(2)) : Number.isFinite(vm.load_1m) ? [Number(vm.load_1m).toFixed(2)] : null;
+
+  // One line that says whether anything needs a person; those accounts are listed first.
+  const troubled = accounts.filter((a) => a.enabled !== false && a.status && a.status !== 'ok');
+  const hot = [vm.cpu_percent, memPct, diskPct].some((v) => Number.isFinite(v) && v >= 90);
+  let health = { tone: 'ok', icon: 'check', text: 'Everything is running normally' };
+  if (data.contained === false) health = { tone: 'warn', icon: 'shield', text: 'Host mode: agent sessions are not isolated' };
+  if (hot) health = { tone: 'warn', icon: 'warn', text: 'The machine is under heavy load' };
+  if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'account needs' : 'accounts need'} attention` };
+
+  const facts = [
+    h('span', { class: 'status-fact', title: 'Time since the machine started' }, icon('clock', { size: 13 }), Number.isFinite(vm.uptime_s) ? `Up ${duration(vm.uptime_s * 1000)}` : 'Uptime unknown'),
+    load ? h('span', { class: 'status-fact', title: 'Load average over 1, 5 and 15 minutes' }, icon('pulse', { size: 13 }), `Load ${load.join(' · ')}`) : null,
+    h('span', { class: ['status-fact', data.contained === false && 'fact-warn'], title: 'Containment: agent sessions run in an OS sandbox (SPEC-002 SEC-001)' }, icon('shield', { size: 13 }), data.contained === true ? 'Isolated' : data.contained === false ? 'Not isolated' : 'Isolation unknown'),
+  ];
+
+  const liveTotal = sandboxes.reduce((n, s) => n + (Number.isFinite(s.live_sessions) ? s.live_sessions : 0), 0);
+  const busy = sandboxes.filter((s) => s.live_sessions > 0).length;
+  const sandboxRows = sandboxes.map((s) => h('div', { class: 'status-row' },
+    icon('folder', { size: 15 }),
+    h('span', { class: 'status-row-name' }, s.name || s.slug || s.id),
+    Number.isFinite(s.live_sessions) && s.live_sessions > 0
+      ? h('span', { class: 'status-count live', title: `${s.live_sessions} live sessions` }, h('span', { class: 'live-dot' }), `${s.live_sessions} running`)
+      : h('span', { class: 'status-count' }, Number.isFinite(s.live_sessions) ? 'idle' : '—')));
+
+  const ready = accounts.filter((a) => a.enabled !== false && a.status === 'ok').length;
+  const accountSummary = [`${ready} ready`, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean).join(' · ');
+
   return [
+    h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
     h('div', { class: 'status-section' },
       h('h3', null, 'Machine'),
-      h('div', { class: 'status-grid' },
-        meter(vm.cpu_percent ?? null, { label: `CPU${vm.cpu_count ? ` · ${vm.cpu_count} cores` : ''}` }),
-        meter(memPct, { label: 'Memory', detail: vm.memory_total_bytes ? `${bytes(vm.memory_used_bytes)} of ${bytes(vm.memory_total_bytes)}` : null }),
-        meter(diskPct, { label: 'Disk', detail: vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null }),
-        h('dl', { class: 'kv' },
-          h('dt', null, 'Load'), h('dd', null, load),
-          h('dt', null, 'Uptime'), h('dd', null, Number.isFinite(vm.uptime_s) ? duration(vm.uptime_s * 1000) : '—'),
-          h('dt', null, 'Sessions'), h('dd', null, Number.isFinite(sessions.live) ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}${sessions.queued ? ` · ${sessions.queued} queued` : ''}` : '—'),
-          h('dt', null, 'Containment'), h('dd', null, data.contained === true ? 'on' : data.contained === false ? 'off (host mode)' : '—'))),
-    ),
-    sandboxes.length ? h('div', { class: 'status-section' },
-      h('h3', null, 'Sandboxes'),
-      h('table', { class: 'table' },
-        h('thead', null, h('tr', null, h('th', null, 'Sandbox'), h('th', { class: 'num' }, 'Live sessions'))),
-        h('tbody', null, sandboxes.map((s) => h('tr', null,
-          h('td', { class: 'title-cell' }, s.name || s.slug || s.id),
-          h('td', { class: 'num' }, Number.isFinite(s.live_sessions) ? String(s.live_sessions) : '—')))))) : null,
-    h('div', { class: 'status-section' },
-      h('h3', null, 'Accounts'),
-      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No accounts connected.') : accounts.map(accountUsage),
-    ),
+      h('div', { class: 'stat-tiles' },
+        statTile('cpu', 'CPU', percentText(vm.cpu_percent), vm.cpu_percent, vm.cpu_count ? `${vm.cpu_count} cores` : null),
+        statTile('memory', 'Memory', percentText(memPct), memPct, vm.memory_total_bytes ? `${bytes(vm.memory_used_bytes)} of ${bytes(vm.memory_total_bytes)}` : null),
+        statTile('disk', 'Disk', diskPct === null ? 'unknown' : percentText(diskPct), diskPct, vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null),
+        statTile('terminal', 'Sessions', Number.isFinite(sessions.live) ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}` : '—', sessionsPct, sessions.queued ? `${sessions.queued} queued` : 'agent sessions running')),
+      h('div', { class: 'status-facts' }, facts)),
+    sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
+    statusSection('accounts', 'user', 'Accounts', accounts.length ? accountSummary : 'none connected',
+      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No accounts connected.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map(accountUsage)), troubled.length > 0 || accounts.length <= 3),
   ];
 }
 
@@ -262,22 +340,31 @@ export function renderStatus(data) {
 export function accountUsage(account) {
   const usage = account.usage || {};
   const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
-  const tone = { ok: 'ok', relogin: 'warn', limited: 'warn', error: 'danger' }[account.status] || '';
-  const windowMeter = (w, name) => w ? meter(w.used_percent ?? null, {
-    label: `${name}${w.window_minutes ? ` · ${windowLabel(w.window_minutes)}` : ''}`,
-    detail: w.resets_at ? `resets ${relLong(w.resets_at)} (${dateTime(w.resets_at)})` : null,
-  }) : meter(null, { label: name });
-  return h('div', { class: 'stack-sm', style: { opacity: account.enabled === false ? 0.55 : 1 } },
-    h('div', { class: 'row' },
+  const state = account.enabled === false
+    ? { icon: 'x', tone: 'muted', label: 'Disabled' }
+    : ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
+  const limitRow = (w, fallback) => {
+    const name = limitName(w && w.window_minutes, fallback);
+    const used = w ? w.used_percent : null;
+    return h('div', { class: 'limit-row' },
+      h('span', { class: 'limit-name' }, name),
+      usageBar(used, name),
+      h('span', { class: ['limit-value', `tone-${toneOf(used)}`] }, percentText(used)),
+      h('span', { class: 'limit-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? `resets ${relLong(w.resets_at)}` : ''));
+  };
+  const showProvider = provider && !String(account.label || '').toLowerCase().includes(String(provider).toLowerCase());
+  return h('div', { class: ['account-card', account.enabled === false && 'disabled'] },
+    h('div', { class: 'account-head' },
+      icon('user', { size: 15 }),
       h('strong', { class: 'ellipsis' }, account.label || account.id),
-      badge(provider, 'accent'),
-      badge(account.status || 'unknown', tone),
-      account.enabled === false ? badge('disabled') : null,
+      showProvider ? h('span', { class: 'muted xs' }, provider) : null,
+      h('span', { class: ['account-state', `state-${state.tone}`] }, icon(state.icon, { size: 12 }), state.label),
       h('span', { class: 'spacer' }),
-      account.in_use_by ? h('span', { class: 'muted xs' }, `${account.in_use_by} in use`) : null),
-    h('div', { class: 'status-grid' }, windowMeter(usage.primary, 'Primary'), windowMeter(usage.secondary, 'Secondary')),
-    usage.observed_at ? h('div', { class: 'muted xs' }, `provider usage as of ${relLong(usage.observed_at)}`) : h('div', { class: 'muted xs' }, 'provider usage not known yet'),
-    account.last_error ? h('div', { class: 'field-error' }, account.last_error) : null,
+      account.in_use_by ? h('span', { class: 'status-count live', title: `${account.in_use_by} live tasks use this account` }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'}`) : null),
+    account.last_error ? h('div', { class: 'account-error' }, account.last_error) : null,
+    limitRow(usage.primary, 'Short-term limit'),
+    limitRow(usage.secondary, 'Long-term limit'),
+    h('div', { class: 'muted xs' }, usage.observed_at ? `updated ${relLong(usage.observed_at)}` : 'usage not known yet'),
   );
 }
 

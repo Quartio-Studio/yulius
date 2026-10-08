@@ -398,6 +398,58 @@ body.resizing iframe { pointer-events: none; }
 .status-section:last-child { border-bottom: 0; }
 .status-section h3 { font-size: var(--fs-xs); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
 .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+/* Status panel, readable in seconds: health line, machine tiles, collapsible lists. */
+.status-health { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
+.health-ok { color: #7fdc8e; }
+.health-warn { color: #f2c66b; background: var(--warn-soft); }
+.stat-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.stat-tile { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.stat-head { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--fs-sm); }
+.stat-warn .stat-head .icon { color: var(--warn); }
+.stat-danger .stat-head .icon { color: var(--danger); }
+.stat-value { font-size: 18px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stat-unknown .stat-value { color: var(--muted); font-size: var(--fs); font-weight: 500; }
+.stat-detail { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--text-2); font-size: var(--fs-sm); }
+.status-fact { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+.status-fact .icon { color: var(--muted); }
+.status-fact.fact-warn, .status-fact.fact-warn .icon { color: #f2c66b; }
+.status-fold { gap: 0; }
+.status-fold > summary { display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; color: var(--text-2); }
+.status-fold > summary::-webkit-details-marker { display: none; }
+.status-fold > summary > .icon:first-child { color: var(--muted); transition: transform 0.15s ease; }
+.status-fold[open] > summary > .icon:first-child { transform: rotate(90deg); }
+.status-fold > summary h3 { flex: none; }
+.status-summary-text { margin-left: auto; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+.status-fold-body { padding-top: 10px; }
+.status-rows { display: flex; flex-direction: column; }
+.status-row { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 2px; border-top: 1px solid var(--border); }
+.status-row:first-child { border-top: 0; }
+.status-row .icon { color: var(--muted); flex: none; }
+.status-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-count { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.status-count.live { color: var(--text); }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.account-list { display: flex; flex-direction: column; gap: 8px; }
+.account-card { display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.account-card.disabled { opacity: 0.55; }
+/* On the Accounts page the block already sits in a card. */
+.card .account-card { padding: 0; border: 0; background: transparent; }
+.account-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.account-head > .icon { color: var(--muted); flex: none; }
+.account-state { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: 10px; font-size: var(--fs-xs); font-weight: 600; white-space: nowrap; }
+.state-ok { background: var(--ok-soft); color: #7fdc8e; }
+.state-warn { background: var(--warn-soft); color: #f2c66b; }
+.state-danger { background: var(--danger-soft); color: #ff9a93; }
+.state-muted { background: var(--surface-3); color: var(--muted); }
+.account-error { color: #ff9a93; font-size: var(--fs-sm); }
+.limit-row { display: grid; grid-template-columns: 104px minmax(60px, 1fr) 40px auto; align-items: center; gap: 10px; font-size: var(--fs-sm); }
+.limit-name { color: var(--text-2); white-space: nowrap; }
+.limit-value { text-align: right; font-variant-numeric: tabular-nums; }
+.limit-value.tone-warn { color: #f2c66b; }
+.limit-value.tone-danger { color: #ff9a93; }
+.limit-value.tone-unknown { color: var(--muted); }
+.limit-reset { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; min-width: 92px; }
 
 /* notification center (UI-020) */
 .notif-btn { position: relative; }
