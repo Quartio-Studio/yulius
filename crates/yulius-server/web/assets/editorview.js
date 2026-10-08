@@ -317,6 +317,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     editor = monaco.editor.create(host, {
       theme: 'yulius',
       automaticLayout: true,
+      fontFamily: token('--font-mono'),
       fontSize: 13,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,

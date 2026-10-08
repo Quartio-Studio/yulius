@@ -10,9 +10,8 @@ import { WebLinksAddon } from './vendor/xterm/addon-web-links.mjs';
 import { TerminalSocket, isEndedStatus, CLOSE_REVOKED } from './termsocket.js';
 import { createMouseFilter } from './mousefilter.js';
 import { h, icon, setChildren } from './dom.js';
-import { terminalColors, onThemeChange } from './theme.js';
+import { terminalColors, onThemeChange, token } from './theme.js';
 
-const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
 
 /**
  * Create a terminal view. Options:
@@ -49,7 +48,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
 
   const size = fontSize || (window.matchMedia('(max-width: 767px)').matches ? 12 : 13);
   const term = new Terminal({
-    fontFamily: MONO,
+    fontFamily: token('--font-mono'), // the same typeface as the UI's code (tokens.css)
     fontSize: size,
     lineHeight: 1.15,
     cursorBlink: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,

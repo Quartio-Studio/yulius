@@ -11,7 +11,8 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
   `/signin`, `/device`, `/archived`, `/settings`, `/design`, `/admin/*` and `/s/*` — except anything under `/api/`.
 - Serve `assets/**` at `/assets/...` with the usual content types (`.js` and `.mjs` as
   `text/javascript`, `.css`, `.png`). Assets are referenced by absolute `/assets/` paths.
-- Nothing is loaded from other origins: no CDNs, fonts or external images. A strict
+- Nothing is loaded from other origins: no CDNs, remote fonts or external images (a brand font is
+  self-hosted under `assets/fonts/`). A strict
   `Content-Security-Policy` such as `default-src 'self'; img-src 'self' data: blob:;
   style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-src 'self'` works (inline
   `style` attributes are used for dynamic widths; there are no inline scripts).
@@ -67,6 +68,13 @@ and component in the current theme and computes contrast as you change things.
    `scripts/dev check`: it fails if `index.html` and the brand disagree, or if any text or control
    edge in any theme drops below WCAG contrast (text 4.5:1; state marks, focus, control edges 3:1),
    listing what to fix.
+
+### Brand typeface
+
+Fonts are self-hosted (no CDNs). Put the `.woff2` files in `assets/fonts/`, enable the `@font-face`
+template at the end of `tokens.css`, and put the family first in `--font` (UI text) and/or
+`--font-mono` (code, terminals and the editor read it too). Keep the weights the scale uses (400,
+500, 600) and check `/design`.
 
 ### How the tokens are layered (`assets/tokens.css`)
 
