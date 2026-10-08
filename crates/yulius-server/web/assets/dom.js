@@ -216,7 +216,7 @@ export function toast(message, { kind = 'info', action, timeout = 5000, detail }
   const host = toastHost();
   while (host.children.length >= MAX_TOASTS) host.firstElementChild.remove();
   const close = () => el.remove();
-  const el = h('div', { class: ['toast', `toast-${kind}`] },
+  const el = h('div', { class: ['toast', `toast-${kind}`], role: kind === 'error' ? 'alert' : null },
     h('div', { class: 'toast-body' }, h('div', { class: 'toast-msg' }, message), detail ? h('div', { class: 'toast-detail' }, detail) : null),
     action ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => { close(); action.run(); } }, action.label) : null,
     iconButton('x', 'Dismiss', close, { class: 'toast-x' }),
@@ -487,12 +487,22 @@ export function popoverFocus(panel, trigger, close) {
   panel.tabIndex = -1;
   const first = panel.querySelector(FOCUSABLE);
   (first || panel).focus({ preventScroll: true });
-  const onOut = (event) => {
-    const next = event.relatedTarget;
-    if (next && !panel.contains(next) && !trigger.contains(next)) close();
+  // Decide after the move: a re-render (keepFocus) puts focus back inside within the same task.
+  const onOut = () => setTimeout(() => {
+    const now = document.activeElement;
+    if (!panel.isConnected) return;
+    if (!panel.contains(now) && !trigger.contains(now)) close();
+  }, 0);
+  // Tab past either end returns to the button that opened the panel and closes it.
+  const onKey = (event) => {
+    if (event.key !== 'Tab') return;
+    const items = [...panel.querySelectorAll(FOCUSABLE)].filter((el) => el.getClientRects().length);
+    const atEnd = event.shiftKey ? document.activeElement === items[0] || document.activeElement === panel : document.activeElement === items[items.length - 1];
+    if (atEnd) { event.preventDefault(); trigger.focus(); close(); }
   };
   panel.addEventListener('focusout', onOut);
-  return () => panel.removeEventListener('focusout', onOut);
+  panel.addEventListener('keydown', onKey);
+  return () => { panel.removeEventListener('focusout', onOut); panel.removeEventListener('keydown', onKey); };
 }
 
 /** Rebuild `container` with `rebuild()` and put focus back on the same control, if it had it. */
