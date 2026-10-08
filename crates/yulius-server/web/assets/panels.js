@@ -91,7 +91,8 @@ export function createPanelHost(ctx) {
     return Math.round(window.innerWidth * fraction);
   }
   function applyWidth(px) {
-    const max = Math.max(320, window.innerWidth - 360);
+    // The centre keeps at least 360 px next to the panel and the rail.
+    const max = Math.max(320, window.innerWidth - rail.getBoundingClientRect().width - 360);
     const width = Math.max(300, Math.min(max, px));
     panel.style.width = `${width}px`;
     // The splitter says where it is (WCAG 4.1.2): the panel's share of the window.
