@@ -1,6 +1,6 @@
 // Shared page scaffolding: frame, tables, async loading.
 
-import { h, setChildren, placeholder, loadError } from '../dom.js';
+import { h, setChildren, placeholder, loadError, keepFocus } from '../dom.js';
 
 /** Page frame: title row with actions, then the content area. Returns {el, body, actions}. */
 export function pageFrame({ title, sub, actions = [] }) {
@@ -50,7 +50,8 @@ export function loader(container, fetcher, render) {
     try {
       const data = await fetcher();
       if (mine !== generation) return;
-      setChildren(container, render(data));
+      // A reload after an action (a switch, Run now) keeps keyboard focus on the same control.
+      keepFocus(container, () => setChildren(container, render(data)));
       hasContent = true;
     } catch (error) {
       if (mine !== generation) return;

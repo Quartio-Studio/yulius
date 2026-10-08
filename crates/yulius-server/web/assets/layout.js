@@ -114,7 +114,7 @@ export function createTabRow(ctx) {
       a.addEventListener('dragend', () => { dragId = null; });
       return a;
     });
-    setChildren(tabs, anchors);
+    keepFocus(tabs, () => setChildren(tabs, anchors)); // counts refresh often; focus stays
     const active = tabs.querySelector('.tab.active');
     if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 

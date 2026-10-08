@@ -129,10 +129,14 @@ export function mountGitPage(ctx, sandbox) {
       [profile.auto_promote ? 'Live' : 'Released', profile.auto_promote ? `${profile.production_branch || 'production'} moves forward automatically` : `someone releases to ${profile.production_branch || 'production'}`],
       ...envs.production.map((e) => [`Confirmed: ${e.name}`, 'someone confirms it worked']),
     ];
-    setChildren(intro,
+    // Keep the explainer open and focus where it was across live re-renders.
+    const wasOpen = Boolean(intro.querySelector('details')?.open);
+    keepFocus(intro, () => setChildren(intro,
       h('p', { class: 'dl-sentence' }, profileSentence(profile)),
       h('details', { class: 'dl-how' }, h('summary', null, 'How this works'),
-        h('ol', { class: 'dl-flow' }, steps.map(([name, what], i) => h('li', null, h('span', { class: 'step-num' }, String(i + 1)), h('span', null, h('strong', null, name), h('span', { class: 'muted' }, ` · ${what}`)))))));
+        h('ol', { class: 'dl-flow' }, steps.map(([name, what], i) => h('li', null, h('span', { class: 'step-num' }, String(i + 1)), h('span', null, h('strong', null, name), h('span', { class: 'muted' }, ` · ${what}`))))))));
+    const how = intro.querySelector('details');
+    if (how) how.open = wasOpen;
   }
 
   function render() {
