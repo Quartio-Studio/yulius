@@ -215,6 +215,7 @@
   --shadow: 0 8px 28px var(--shadow-color);
   --shadow-raised: 0 1px 0 var(--highlight), 0 6px 20px var(--shadow-soft-color);
   --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); /* a gap, then the ring: visible on accent fills too */
+  --focus-inset: inset 0 0 0 2px var(--accent); /* focus inside a row, menu item or segment */
 
   /* Icons: the same 24-unit shapes at any size draw a stroke this thick on screen. */
   --icon-stroke: 1.4px;
