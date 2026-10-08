@@ -163,17 +163,20 @@ export function mountTaskView(ctx, sandbox, task) {
       detail.spec_path ? h('div', { class: 'muted xs steplist-spec' }, 'Spec: ', h('code', null, detail.spec_path)) : null);
   }
 
+  let alive = true;
   async function loadDetail() {
     try {
-      detail = await ctx.api.get(`/api/tasks/${enc(current.id)}`);
+      const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`);
+      if (!alive) return; // the view was left while the read was in flight
+      detail = fresh;
       if (detail && detail.id === current.id) {
         current = { ...current, ...pickSummary(detail) };
         renderStrip();
       }
     } catch (error) {
-      if (error.status !== 404) errorToast(error, 'Could not load task details');
+      if (alive && error.status !== 404) errorToast(error, 'Could not load task details');
     }
-    renderStepList();
+    if (alive) renderStepList();
   }
 
   destroyers.push(ctx.store.on('steps', (taskId) => { if (taskId === current.id) loadDetail(); }));
@@ -201,6 +204,7 @@ export function mountTaskView(ctx, sandbox, task) {
     get task() { return current; },
     get detail() { return detail; },
     destroy() {
+      alive = false;
       destroyers.forEach((off) => off());
       terminal.destroy();
     },
