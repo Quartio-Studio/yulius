@@ -1645,7 +1645,7 @@ a.dl-task:hover { text-decoration: underline; }
 /* ---------------------------------------------------------------- Brand details
    Shapes a brand proposal adds beyond tokens, keyed on data-brand (set by the brand lab). Roma —
    smoke and chalk: the mark in an arched niche, a symmetric composer, quotes set like inscriptions,
-   group heads as spaced capitals over a hairline instead of bands. */
+   group heads as softly rounded bands of spaced capitals. */
 [data-brand="roma"] .composer-card { align-items: stretch; }
 [data-brand="roma"] .brand-niche {
   display: flex; align-items: center; justify-content: center; align-self: center; width: 104px; height: 136px; margin-bottom: 24px;
@@ -1663,8 +1663,8 @@ a.dl-task:hover { text-decoration: underline; }
 [data-brand="roma"] .composer-quote figcaption { margin-top: 12px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); letter-spacing: 0.24em; text-transform: uppercase; }
 [data-brand="roma"] .composer-hint { text-align: center; }
 [data-brand="roma"] .task-group-head {
-  border: 0; border-radius: 0; color: var(--muted); font-weight: 500; letter-spacing: 0.18em;
-  background: linear-gradient(var(--border-strong), var(--border-strong)) left bottom / 100% 1px no-repeat, var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2);
+  color: var(--muted); font-weight: 500; letter-spacing: 0.18em;
 }
 [data-brand="roma"] button.task-group-head:hover { color: var(--text); }
 
