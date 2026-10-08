@@ -497,6 +497,8 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
   font: inherit; font-size: 14px; line-height: 1.5; resize: none; outline: none;
 }
 .composer-prompt::placeholder { color: #6c7584; }
+/* The box shows focus; the prompt itself draws no ring (the global :focus-visible would). */
+.composer-prompt:focus-visible { box-shadow: none; }
 .composer-prompt:disabled { cursor: not-allowed; }
 .composer-tools { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 6px 8px 8px 10px; }
 .chip-btn {
@@ -505,12 +507,14 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
   font: inherit; font-size: var(--fs-sm); cursor: pointer; white-space: nowrap;
 }
 .chip-btn:hover, .chip-btn:focus-visible, .chip-btn[aria-expanded="true"] { background: var(--surface-3); color: var(--text); }
+.chip-btn:focus-visible { border-radius: 15px; }
 .chip-btn .chip-label { overflow: hidden; text-overflow: ellipsis; }
 .chip-btn .icon { flex: none; }
 .chip-btn.plain { border-color: transparent; }
 .chip-btn.plain.muted-chip { color: var(--muted); }
 .composer-right { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .composer-send { width: 34px; height: 34px; margin-left: 4px; padding: 0; border-radius: 50%; }
+.composer-send:focus-visible { border-radius: 50%; }
 .composer-hint { padding: 0 6px; }
 
 /* ---------------------------------------------------------------- pages */
