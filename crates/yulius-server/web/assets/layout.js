@@ -54,6 +54,7 @@ export function createTabRow(ctx) {
   ctx.notifications = notifications;
   const statusPanel = createStatusPanel(ctx, statusButton);
   statusButton.addEventListener('click', () => statusPanel.toggle());
+  ctx.openStatus = () => statusPanel.open();
 
   const el = h('header', { class: 'tabrow' },
     hamburger,
@@ -212,7 +213,7 @@ function createStatusPanel(ctx, button) {
     button.setAttribute('aria-expanded', 'false');
   }
 
-  return { toggle: () => (el ? close() : open()), close };
+  return { toggle: () => (el ? close() : open()), open: () => { if (!el) open(); }, close };
 }
 
 function pct(used, total) {

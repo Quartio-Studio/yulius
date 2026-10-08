@@ -4,7 +4,7 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder, openMenu, statusMark } from './dom.js';
 import { createTerminalView } from './terminal.js';
-import { statusInfo, harnessInfo, isLive, allows, taskActions } from './status.js';
+import { statusInfo, harnessInfo, isLive, allows, taskActions, endedMessage } from './status.js';
 import { openTaskMenu, continueTask } from './actions.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
@@ -63,9 +63,16 @@ export function mountTaskView(ctx, sandbox, task) {
     path: `/api/tasks/${enc(task.id)}/terminal`,
     onLink: (uri, event) => ctx.openLink(uri, event),
     readOnlyLabel: () => readOnlyText(ctx.store.sandboxById(sandbox.id) || sandbox),
-    exitActions: () => (taskActions(current, sandbox.access).continue || allows(sandbox.access, 'write'))
-      ? [{ label: 'Continue', run: () => continueTask(ctx, current) }]
-      : [],
+    exitMessage: (exit) => endedMessage(exit.status || current.status),
+    exitActions: (exit) => {
+      const message = endedMessage(exit.status || current.status);
+      const actions = [];
+      if (message.accounts && ctx.openStatus) actions.push({ label: 'Check AI accounts', run: () => ctx.openStatus() });
+      if (taskActions(current, sandbox.access).continue || allows(sandbox.access, 'write')) {
+        actions.push({ label: message.retry ? 'Try again' : 'Continue', run: () => continueTask(ctx, current) });
+      }
+      return actions;
+    },
   });
 
   // ---- phone quick input

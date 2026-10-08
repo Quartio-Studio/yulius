@@ -18,6 +18,29 @@ const FAIL_LABELS = {
   failed_precondition: 'Failed (precondition)',
 };
 
+const SAFE = 'Its branch and changes are safe.';
+const ENDED_MESSAGES = {
+  closed: { tone: 'info', text: 'This task is closed. Its branch and changes are kept.' },
+  stopped_cancelled: { tone: 'info', text: `You stopped this task. ${SAFE}` },
+  stopped_crashed: { tone: 'warn', text: `The agent stopped unexpectedly. ${SAFE}` },
+  stopped_lost: { tone: 'warn', text: `The agent's process was lost. ${SAFE}` },
+  stopped_switch_failed: { tone: 'warn', text: `Moving to another AI account failed, so the agent stopped. ${SAFE}`, accounts: true },
+  stopped_switch_timeout: { tone: 'warn', text: `Moving to another AI account took too long, so the agent stopped. ${SAFE}`, accounts: true },
+  stopped_server_lost: { tone: 'warn', text: `Yulius restarted while the agent was working. ${SAFE}` },
+  failed_spawn_error: { tone: 'error', text: 'Claude Code could not start — usually an AI account must sign in again, or no slot is free.', accounts: true, retry: true },
+  failed_start_timeout: { tone: 'error', text: 'Claude Code took too long to start — usually an AI account must sign in again, or the machine is busy.', accounts: true, retry: true },
+  failed_precondition: { tone: 'error', text: 'The task could not start because the sandbox is not ready yet.', retry: true },
+};
+
+/**
+ * What to tell the user when a task's session has ended (UX-02): a plain sentence with a `tone`
+ * ('info' | 'warn' | 'error'), whether checking the AI accounts may help (`accounts`), and
+ * whether the next step is to try again rather than continue (`retry`).
+ */
+export function endedMessage(status) {
+  return ENDED_MESSAGES[status] || { tone: 'info', text: `The agent's session ended. ${SAFE}` };
+}
+
 /** True while a task has (or is about to have) a running session. */
 export function isLive(status) {
   return LIVE_STATUSES.has(status);

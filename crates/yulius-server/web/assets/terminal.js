@@ -21,12 +21,13 @@ const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberat
  *   readOnlyLabel()            banner text when the server says can_write=false
  *   onState(state), onExit(exit), onNotice(text)
  *   exitActions(exit)          optional [{label, run}] shown in the exit banner
+ *   exitMessage(exit)          optional {tone, text} for the exit banner (status.js endedMessage)
  *   followServerSize           render at the PTY size from `state` and never ask the server
  *                              to resize (account login terminals: fixed 500 columns so
  *                              tokens and URLs never wrap; the view scrolls horizontally)
  * Call start() after the element is in the document; destroy() when done.
  */
-export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, fontSize, followServerSize = false }) {
+export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, fontSize, followServerSize = false }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
   const host = h('div', { class: 'term-host', style: followServerSize ? { overflowX: 'auto' } : null });
@@ -185,10 +186,11 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     noticeTimer = setTimeout(() => { noticeEl.hidden = true; }, 6000);
   }
 
-  function bannerRow(kind, text, actions = []) {
+  const BANNER_ICONS = { readonly: 'lock', warn: 'warn', error: 'st-failed' };
+  function bannerRow(kind, text, actions = [], details = '') {
     return h('div', { class: ['term-banner-row', `term-banner-${kind}`] },
-      kind === 'readonly' ? icon('lock', { size: 14 }) : null,
-      h('span', { class: 'term-banner-text' }, text),
+      BANNER_ICONS[kind] ? icon(BANNER_ICONS[kind], { size: 14 }) : null,
+      h('span', { class: 'term-banner-text' }, text, details ? h('span', { class: 'term-banner-details', title: 'Technical details' }, details) : null),
       ...actions.map((a) => h('button', { type: 'button', class: 'btn btn-sm', onClick: a.run }, a.label)));
   }
 
@@ -207,8 +209,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       rows.push(bannerRow('info', 'Connecting…'));
     }
     if (exited) {
-      const code = exited.code === null || exited.code === undefined ? '' : ` (exit ${exited.code})`;
-      rows.push(bannerRow('info', `Session ended: ${exited.status || 'closed'}${code}.`, exitActions ? exitActions(exited) : []));
+      const message = exitMessage ? exitMessage(exited) : { tone: 'info', text: 'The session ended.' };
+      const details = [exited.status, exited.code === null || exited.code === undefined ? null : `exit ${exited.code}`].filter(Boolean).join(' · ');
+      rows.push(bannerRow(message.tone, message.text, exitActions ? exitActions(exited) : [], details));
     } else if (conn === 'open' && !state.can_write) {
       rows.push(bannerRow('readonly', readOnlyLabel ? readOnlyLabel() : 'Read-only'));
     } else if (conn === 'open' && state.can_write && !state.controller && state.cols && !followServerSize) {

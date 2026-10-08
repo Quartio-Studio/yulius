@@ -532,9 +532,11 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .term-host .xterm-viewport { background-color: var(--term-bg) !important; }
 .term-banner { flex: none; display: flex; flex-direction: column; }
 .term-banner-row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; font-size: var(--fs-sm); line-height: var(--lh-sm); border-bottom: 1px solid var(--border); }
+.term-banner-row > .icon { flex: none; }
 .term-banner-text { flex: 1; min-width: 0; }
+.term-banner-details { margin-left: 8px; color: var(--muted); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .term-banner-info { background: var(--surface-2); color: var(--text-2); }
-.term-banner-warn { background: var(--warn-soft); color: var(--warn-fg); }
+.term-banner-warn { background: var(--warn-soft); color: var(--warn-fg-strong); }
 .term-banner-error { background: var(--danger-soft); color: var(--danger-fg-strong); }
 .term-banner-readonly { background: var(--surface-2); color: var(--text-2); }
 .term-notice { position: absolute; top: 8px; right: 14px; z-index: 4; max-width: 70%; padding: 6px 12px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--border-strong); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }
