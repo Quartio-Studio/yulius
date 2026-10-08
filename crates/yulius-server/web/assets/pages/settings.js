@@ -8,6 +8,7 @@ import { readJson, writeJson } from '../store.js';
 import { initials } from '../layout.js';
 import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from '../models.js';
 import { pageFrame } from './common.js';
+import { DESKTOP_KEY } from '../notifications.js';
 import { THEME_CHOICES, themeChoice, setThemeChoice } from '../theme.js';
 import { BRAND } from '../brand.js';
 
@@ -56,8 +57,8 @@ export function mountSettingsPage(ctx) {
     choice.name)));
 
   const railToggle = toggle({ checked: ctx.railVisible ? ctx.railVisible() : false, label: 'Show the tools rail', onChange: (checked) => { if (ctx.setRailVisible) ctx.setRailVisible(checked); } });
-  // WCAG 2.1.4: single-character shortcuts can be turned off (pages/tasks.js reads this key).
   const screenReaderToggle = toggle({ checked: readJson('yulius.terminalScreenReader', false) === true, label: 'Terminal screen reader support', onChange: (checked) => writeJson('yulius.terminalScreenReader', checked) });
+  // WCAG 2.1.4: single-character shortcuts can be turned off (pages/tasks.js reads this key).
   const keysToggle = toggle({ checked: readJson('yulius.singleKeyShortcuts', true) !== false, label: 'Single-key shortcuts', onChange: (checked) => writeJson('yulius.singleKeyShortcuts', checked) });
   const notifCount = h('span', { class: 'muted xs' });
   const clearButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => {
@@ -71,6 +72,27 @@ export function mountSettingsPage(ctx) {
     clearButton.disabled = n === 0;
   };
   renderNotif();
+  // Desktop notifications need the browser's permission, asked only when switched on.
+  const supported = typeof Notification !== 'undefined' && window.isSecureContext;
+  const desktopNote = h('span', null, supported
+    ? 'While this tab is in the background: tasks that need you, failures, messages'
+    : 'Not available here: the browser needs HTTPS (or localhost) and notification support');
+  const desktopToggle = toggle({
+    checked: supported && readJson(DESKTOP_KEY, false) === true && Notification.permission === 'granted',
+    disabled: !supported,
+    label: 'Desktop notifications',
+    onChange: async (checked, input) => {
+      if (!checked) { writeJson(DESKTOP_KEY, false); return; }
+      const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+      if (permission !== 'granted') {
+        input.checked = false;
+        writeJson(DESKTOP_KEY, false);
+        desktopNote.textContent = 'Blocked by the browser: allow notifications for this site in its settings, then switch this on again';
+        return;
+      }
+      writeJson(DESKTOP_KEY, true);
+    },
+  });
 
   frame.body.append(
     section('user', 'Your account', null,
@@ -87,7 +109,8 @@ export function mountSettingsPage(ctx) {
       row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right', railToggle),
       row('terminal', 'Terminal screen reader support', 'Lets screen readers read terminal output; applies to terminals opened next', screenReaderToggle),
       row('target', 'Single-key shortcuts', 'On the Tasks page: / to search, j and k to move, . for a task’s menu', keysToggle),
-      row('bell', 'Notification history', notifCount, clearButton),
+      row('bell', 'Desktop notifications', desktopNote, desktopToggle),
+      row('clock', 'Notification history', notifCount, clearButton),
       row('contrast', 'Design system', 'Colours, type, components and themes in one place', open('/design', 'the design system'))),
   );
 

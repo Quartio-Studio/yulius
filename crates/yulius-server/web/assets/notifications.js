@@ -2,9 +2,10 @@
 // list behind the bell in the tab row — tasks waiting for input, needing attention or failing,
 // browser action requests, agent messages, automation runs, account problems and instance
 // notices. Built from the event stream the UI already receives; toasts still show. Kept per
-// user in this browser and bounded, so a reload keeps the history.
+// user in this browser and bounded, so a reload keeps the history. With desktop notifications
+// on (Settings), entries also reach the operating system while the tab is in the background.
 
-import { h, icon, setChildren, popoverFocus } from './dom.js';
+import { h, icon, iconButton, setChildren, popoverFocus, keepFocus } from './dom.js';
 import { relShort, dateTime } from './format.js';
 import { statusInfo } from './status.js';
 import { readJson, writeJson } from './store.js';
@@ -14,6 +15,9 @@ const KINDS = new Set(['info', 'ok', 'warn', 'error']);
 /** Task tones that notify when a task enters them, and the notification kind. */
 const TASK_TONES = { waiting: 'info', attention: 'warn', failed: 'error', 'stopped-abnormal': 'error' };
 const ACCOUNT_PROBLEMS = { relogin: 'needs to sign in again', limited: 'reached its usage limit', error: 'reports an error' };
+/** Settings → Preferences: also notify through the operating system while the tab is hidden. */
+export const DESKTOP_KEY = 'yulius.desktopNotifications';
+const FILTER_KEY = 'yulius.notifications.filter';
 
 function sanitize(list) {
   if (!Array.isArray(list)) return [];
@@ -38,6 +42,7 @@ export function createNotificationCenter(ctx) {
   let onDoc = null;
   let offFocus = null;
   let onKey = null;
+  let filter = readJson(FILTER_KEY, 'all') === 'unread' ? 'unread' : 'all';
 
   function save() {
     writeJson(storageKey, items);
@@ -53,7 +58,24 @@ export function createNotificationCenter(ctx) {
     badge.textContent = count > 99 ? '99+' : String(count);
     button.title = count ? `Notifications (${count} unread)` : 'Notifications';
     button.setAttribute('aria-label', button.title);
-    if (pop) renderPanel();
+    if (pop) keepFocus(pop, renderPanel);
+  }
+
+  /** An OS notification for an entry, only while the user is not looking at the app. */
+  function desktop(entry) {
+    if (readJson(DESKTOP_KEY, false) !== true || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    if (document.visibilityState === 'visible' && document.hasFocus()) return;
+    try {
+      const note = new Notification(entry.title, { body: entry.detail || '', tag: entry.key || entry.id, icon: document.querySelector('link[rel="icon"]')?.href });
+      note.onclick = () => {
+        window.focus();
+        markRead((n) => n.id === entry.id);
+        if (entry.route) ctx.navigate(entry.route);
+        note.close();
+      };
+    } catch {
+      // Some mobile browsers only allow notifications from a service worker; the bell still has it.
+    }
   }
 
   /**
@@ -73,6 +95,7 @@ export function createNotificationCenter(ctx) {
     if (items.length > MAX_ITEMS) items.length = MAX_ITEMS;
     save();
     render();
+    desktop(items[0]);
   }
 
   function markRead(predicate) {
@@ -84,24 +107,33 @@ export function createNotificationCenter(ctx) {
   // ------------------------------------------------------------ panel
 
   function renderPanel() {
+    const count = unread();
+    const choice = (value, label) => h('label', null, h('input', { type: 'radio', name: 'notif-filter', value, checked: filter === value, onChange: () => { filter = value; writeJson(FILTER_KEY, value); keepFocus(pop, renderPanel); } }), label);
     const head = h('div', { class: 'notif-head' },
       h('h2', null, 'Notifications'),
       h('span', { class: 'spacer' }),
-      h('button', { type: 'button', class: 'btn btn-sm', disabled: unread() === 0, onClick: () => markRead(() => true) }, 'Mark all read'),
-      h('button', { type: 'button', class: 'btn btn-sm', disabled: items.length === 0, onClick: () => { items = []; save(); render(); } }, 'Clear'));
-    const rows = items.map((n) => h(n.route ? 'button' : 'div', {
-      type: n.route ? 'button' : null,
-      class: ['notif-row', `notif-${n.kind}`, !n.read && 'unread'],
-      onClick: n.route ? () => { markRead((m) => m.id === n.id); close(); ctx.navigate(n.route); } : null,
-    },
-    h('span', { class: 'notif-mark', 'aria-hidden': 'true' }),
-    h('span', { class: 'notif-text' },
-      h('span', { class: 'notif-title' }, n.title),
-      n.detail ? h('span', { class: 'notif-detail' }, n.detail) : null),
-    h('span', { class: 'notif-time', title: dateTime(n.at) }, relShort(n.at))));
-    setChildren(pop, head, items.length
-      ? h('div', { class: 'notif-list' }, rows)
-      : h('div', { class: 'notif-empty' }, 'Nothing yet. Tasks that wait for you, agent messages and browser requests show up here.'));
+      h('button', { type: 'button', class: 'btn btn-sm', disabled: count === 0, onClick: () => markRead(() => true) }, 'Mark all read'),
+      h('button', { type: 'button', class: 'btn btn-sm', disabled: items.length === 0, onClick: () => { items = []; save(); render(); } }, 'Clear'),
+      h('div', { class: 'seg notif-filter', role: 'radiogroup', 'aria-label': 'Show' }, choice('all', 'All'), choice('unread', count ? `Unread (${count})` : 'Unread')));
+    const shown = filter === 'unread' ? items.filter((n) => !n.read) : items;
+    // One row = the entry (a button when it leads somewhere) plus its own "Mark read" button,
+    // side by side rather than nested.
+    const rows = shown.map((n) => h('div', { class: ['notif-row', `notif-${n.kind}`, !n.read && 'unread'] },
+      h(n.route ? 'button' : 'div', {
+        type: n.route ? 'button' : null,
+        class: 'notif-open',
+        onClick: n.route ? () => { markRead((m) => m.id === n.id); close(); ctx.navigate(n.route); } : null,
+      },
+      h('span', { class: 'notif-mark', 'aria-hidden': 'true' }),
+      h('span', { class: 'notif-text' },
+        h('span', { class: 'notif-title' }, n.read ? null : h('span', { class: 'sr-only' }, 'Unread: '), n.title),
+        n.detail ? h('span', { class: 'notif-detail' }, n.detail) : null),
+      h('span', { class: 'notif-time', title: dateTime(n.at) }, relShort(n.at))),
+      n.read ? h('span', { class: 'notif-read-space', 'aria-hidden': 'true' }) : iconButton('check', `Mark “${n.title}” read`, () => markRead((m) => m.id === n.id), { class: 'notif-read' })));
+    const empty = filter === 'unread' && items.length
+      ? 'No unread notifications.'
+      : 'Nothing yet. Tasks that wait for you, agent messages and browser requests show up here.';
+    setChildren(pop, head, shown.length ? h('div', { class: 'notif-list' }, rows) : h('div', { class: 'notif-empty' }, empty));
   }
 
   function open() {
