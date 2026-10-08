@@ -482,7 +482,7 @@ export function createSidebar(ctx) {
       const unread = h('span', { class: 'task-unread' });
       const age = h('span', { class: 'task-age' });
       const sub = h('span', { class: 'task-sub' });
-      const link = h('a', { class: 'task-link' }, mark, h('span', { class: 'task-text' }, h('span', { class: 'task-line' }, title, unread, age), sub));
+      const link = h('a', { class: 'task-link' }, mark, h('span', { class: 'task-text' }, h('span', { class: 'task-line' }, title, age), h('span', { class: 'task-line task-line-2' }, sub, unread)));
       const kebab = iconButton('more', 'Task actions', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -513,15 +513,16 @@ export function createSidebar(ctx) {
     row.link.setAttribute('aria-current', active ? 'page' : 'false');
     row.el.classList.toggle('active', Boolean(active));
     row.el.dataset.group = info.group;
+    row.el.dataset.tone = info.tone;
     row.link.title = `#${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${dateTime(task.updated_at)}`;
-    setChildren(row.mark, statusMark(info));
+    setChildren(row.mark, statusMark(info, 18));
     row.title.textContent = task.title || `Task #${task.number}`;
     // Colour stays on the state icon; the words say what is happening or what to do.
     row.sub.textContent = activityLine(task, info);
     row.age.textContent = relShort(task.updated_at);
     row.age.title = `Last change ${dateTime(task.updated_at)}`;
     row.unread.hidden = !task.unread_messages;
-    setChildren(row.unread, task.unread_messages ? [icon('mail', { size: 11 }), String(task.unread_messages)] : null);
+    row.unread.textContent = task.unread_messages ? String(task.unread_messages) : '';
     row.unread.title = task.unread_messages ? `${task.unread_messages} unread message${task.unread_messages === 1 ? '' : 's'} from other agents` : '';
   }
 

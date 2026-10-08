@@ -280,38 +280,47 @@ p { margin: 0; }
 .nav-item:hover .icon, .nav-item.active .icon { color: var(--text-2); }
 .nav-item:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
 .nav-item.active { background: var(--accent-soft); color: var(--text); }
-.task-list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 6px 8px; border-top: 1px solid var(--border); margin-top: 8px; }
+.task-list { flex: 1 0 auto; padding: 4px 6px 8px; border-top: 1px solid var(--border); margin-top: 8px; }
 /* Active tasks (UI-005): groups — Needs you, Working, Stopped — of two-line rows. */
-.task-group { display: flex; flex-direction: column; gap: 2px; padding-top: 8px; }
+/* Task list rows read like a chat list (WhatsApp, cmux): a state tile, a 16 px title with the age
+   on the right, then what is happening or what to do, with the unread count under the age. */
+.task-group { display: flex; flex-direction: column; gap: 2px; padding-top: 12px; }
 .task-group-head {
-  display: flex; align-items: center; gap: 6px; height: var(--control-sm); padding: 0 8px; border: 0; background: transparent;
-  color: var(--muted); font: inherit; font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; text-align: left;
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; gap: 8px; height: var(--control-md); padding: 0 12px; border: 0; background: var(--surface);
+  color: var(--text-2); font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; text-align: left;
 }
 .task-group-head.group-needs > .icon, .task-group-head.group-needs .task-group-count { color: var(--warn-fg); }
-button.task-group-head { cursor: pointer; border-radius: var(--radius-sm); }
-button.task-group-head:hover { color: var(--text-2); }
+button.task-group-head { cursor: pointer; border-radius: var(--radius); }
+button.task-group-head:hover { color: var(--text); }
 .task-group-count { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; }
 .task-group-head.group-ended .task-group-count { margin-left: auto; }
 .task-group-head.group-ended .task-group-count + .icon { margin-left: 4px; }
-.task-row { position: relative; border-radius: var(--radius-sm); }
+.task-row { position: relative; border-radius: var(--radius-lg); }
 .task-row:hover, .task-row:focus-within { background: var(--surface-3); }
 .task-row.active { background: var(--accent-soft); }
-.task-link { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; color: var(--text); text-decoration: none; }
+.task-link { display: flex; align-items: flex-start; gap: 12px; padding: 12px; color: var(--text); text-decoration: none; }
 .task-link:hover { text-decoration: none; }
-.task-mark { display: inline-flex; flex: none; margin-top: 2px; }
+.task-mark { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; background: var(--surface-3); }
+.task-row[data-tone="attention"] .task-mark, .task-row[data-tone="stopped-abnormal"] .task-mark { background: var(--warn-soft); }
+.task-row[data-tone="waiting"] .task-mark { background: var(--accent-soft); }
+.task-row[data-tone="working"] .task-mark, .task-row[data-tone="running"] .task-mark { background: var(--ok-soft); }
+.task-row[data-tone="switching"] .task-mark { background: var(--violet-soft); }
+.task-row[data-tone="failed"] .task-mark { background: var(--danger-soft); }
 .task-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.task-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.task-age { flex: none; margin-left: auto; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-variant-numeric: tabular-nums; }
-.task-row:hover .task-age, .task-row:focus-within .task-age { visibility: hidden; }
+.task-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; }
+.task-group.group-ended .task-title { color: var(--text-2); font-weight: 500; }
+.task-age { flex: none; margin-left: auto; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; }
+.task-row[data-group="needs"] .task-age { color: var(--warn-fg); }
+.task-sub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); line-height: var(--lh-md); color: var(--text-2); font-variant-numeric: tabular-nums; }
 /* What the user must do is the point of a "Needs you" row: up to two lines, in brighter text. */
-.task-row[data-group="needs"] .task-sub { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; color: var(--text-2); }
-.task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.task-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
-.task-group.group-ended .task-title { color: var(--text-2); font-weight: 400; }
-.task-unread { flex: none; display: inline-flex; align-items: center; gap: 2px; height: 16px; padding: 0 6px; border-radius: var(--radius-full); background: var(--surface-3); color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 500; font-variant-numeric: tabular-nums; }
-.task-kebab { position: absolute; right: 4px; top: 4px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
+.task-row[data-group="needs"] .task-sub { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; color: var(--text); }
+.task-unread { flex: none; align-self: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: var(--radius-full); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); line-height: var(--lh); font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
+.task-unread[hidden] { display: none; }
+.task-kebab { position: absolute; right: 8px; top: 8px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
 .task-row:hover .task-kebab, .task-row:focus-within .task-kebab { visibility: visible; }
-.task-row:hover .task-unread, .task-row:focus-within .task-unread { visibility: hidden; }
+.task-row:hover .task-age, .task-row:focus-within .task-age { visibility: hidden; }
 .sidebar-foot { padding: 6px; border-top: 1px solid var(--border); }
 .user-btn {
   display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; height: var(--control-xl); padding: 0 6px;
@@ -655,7 +664,8 @@ summary { cursor: pointer; }
 .input-priority { width: 80px; height: var(--control-sm); }
 .code-input { max-width: 220px; text-transform: uppercase; }
 .overlay-message { align-items: center; max-width: 420px; text-align: center; }
-.sidebar-full { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* Brand, nav and tasks scroll as one, so on a short screen the task list can take the full height. */
+.sidebar-full { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .login-terminal { display: flex; flex-direction: column; flex: 1; min-height: 320px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .steplist-note { padding: 6px 0; }
 .steplist-spec { padding-top: 6px; }
