@@ -683,7 +683,8 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .settings-tile { display: flex; align-items: flex-start; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); color: var(--text); }
 .settings-tile .icon { color: var(--accent); flex: none; margin-top: 1px; }
 a.settings-tile:hover { background: var(--surface-3); border-color: var(--border-strong); text-decoration: none; }
-.settings-tile.disabled { opacity: 0.5; cursor: not-allowed; }
+.settings-tile.disabled { cursor: not-allowed; color: var(--text-2); }
+.settings-tile.disabled .icon { color: var(--muted); }
 .settings-tile-title { font-weight: 600; }
 
 /* Helpers the scripts use instead of inline styles (scripts keep only computed values inline). */

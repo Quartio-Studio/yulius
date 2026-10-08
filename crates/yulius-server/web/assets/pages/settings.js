@@ -96,7 +96,8 @@ export function mountSettingsPage(ctx) {
     const slug = sandbox ? encodeURIComponent(sandbox.slug) : null;
     const tile = (iconName, title, description, path) => path
       ? h('a', { class: 'settings-tile', href: href(path), dataset: { route: path } }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, description)))
-      : h('div', { class: 'settings-tile disabled', title: 'Open a sandbox first' }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, description)));
+      // Unavailable: the reason is written on the tile (not only in a tooltip) and the text stays readable.
+      : h('div', { class: 'settings-tile disabled', 'aria-disabled': 'true' }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, `${description} — open a sandbox first`)));
     frame.body.append(section('shield', 'Administration', `this ${BRAND.name} instance`,
       row('user', 'Connect an AI account', 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here', h('a', { class: 'btn btn-primary btn-sm', href: href('/admin/accounts?add=1'), dataset: { route: '/admin/accounts?add=1' } }, icon('plus', { size: 14 }), 'Connect account')),
       h('div', { class: 'settings-tiles' },
