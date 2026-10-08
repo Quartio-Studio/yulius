@@ -166,9 +166,9 @@ export function openLoginTerminal(ctx, loginId, label, onFinish) {
 }
 
 /** Instance admin: provider accounts with usage, enable/priority, re-login, add. */
-export function mountAccountsPage(ctx) {
-  if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'Accounts');
-  const frame = pageFrame({ title: 'Accounts', sub: 'organization subscriptions used for rotation', actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => add() }, 'Add account')] });
+export function mountAccountsPage(ctx, route) {
+  if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'AI accounts');
+  const frame = pageFrame({ title: 'AI accounts', sub: 'Claude subscriptions the agents run on; Yulius rotates between them', actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => add() }, 'Connect account')] });
   const host = h('div');
   frame.body.append(host, h('p', { class: 'muted xs' }, 'Rotation uses enabled Claude accounts in priority order (lower first) and switches to the next one before an account is exhausted, resuming the same session.'));
 
@@ -259,6 +259,11 @@ export function mountAccountsPage(ctx) {
   }
 
   const off = ctx.store.on('account', () => reload());
+  // Settings → "Connect account" lands here with ?add=1: open the dialog right away.
+  if (route && route.query && route.query.get('add') === '1') {
+    setTimeout(add, 0);
+    ctx.navigate('/admin/accounts', { replace: true });
+  }
   return { el: frame.el, key: 'admin:accounts', destroy: off };
 }
 

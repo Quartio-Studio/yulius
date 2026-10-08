@@ -414,7 +414,7 @@ function createApp(root, transport) {
         setCenter(`device:${route.query.toString()}`, () => mountDevicePage(ctx, route));
         break;
       case 'admin':
-        setCenter(`admin:${route.page}`, () => ADMIN_PAGES[route.page](ctx));
+        setCenter(`admin:${route.page}`, () => ADMIN_PAGES[route.page](ctx, route));
         break;
       default:
         message('notfound', 'Page not found.', h('div', { style: { marginTop: '10px' } }, h('a', { href: href('/'), dataset: { route: '/' } }, 'Go to your workspace')));

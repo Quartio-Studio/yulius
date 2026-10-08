@@ -84,9 +84,10 @@ export function mountSettingsPage(ctx) {
       ? h('a', { class: 'settings-tile', href: href(path), dataset: { route: path } }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, description)))
       : h('div', { class: 'settings-tile disabled', title: 'Open a sandbox first' }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, description)));
     frame.body.append(section('shield', 'Administration', 'this Yulius instance',
+      row('user', 'Connect an AI account', 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here', h('a', { class: 'btn btn-primary btn-sm', href: href('/admin/accounts?add=1'), dataset: { route: '/admin/accounts?add=1' } }, icon('plus', { size: 14 }), 'Connect account')),
       h('div', { class: 'settings-tiles' },
         superadmin ? tile('users', 'Users', 'Who may sign in', '/admin/users') : null,
-        tile('user', 'Accounts', 'Claude subscriptions, usage and rotation', '/admin/accounts'),
+        tile('user', 'AI accounts', 'Connected Claude subscriptions, usage and rotation', '/admin/accounts'),
         superadmin ? tile('github', 'GitHub connection', 'The GitHub App and its installations', '/admin/github') : null,
         tile('plug', 'Instance MCP', 'Tool servers for every sandbox', slug ? `/s/${slug}/mcp?scope=instance` : null),
         tile('book', 'Instance skills', 'Skills for every sandbox', slug ? `/s/${slug}/skills?source=instance` : null))));

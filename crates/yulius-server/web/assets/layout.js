@@ -160,7 +160,7 @@ function openUserMenu(ctx, anchor) {
   if (instanceAdmin) {
     items.push({ separator: true }, { header: 'Administration' });
     if (superadmin) items.push({ label: 'Users', icon: 'users', onSelect: () => ctx.navigate('/admin/users') });
-    items.push({ label: 'Accounts', icon: 'user', onSelect: () => ctx.navigate('/admin/accounts') });
+    items.push({ label: 'AI accounts', icon: 'user', onSelect: () => ctx.navigate('/admin/accounts') });
     if (superadmin) items.push({ label: 'GitHub connection', icon: 'github', onSelect: () => ctx.navigate('/admin/github') });
     items.push(
       { label: 'Instance MCP', icon: 'plug', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/mcp?scope=instance`) },
@@ -337,7 +337,7 @@ export function renderStatus(data) {
         statTile('terminal', 'Sessions', Number.isFinite(sessions.live) ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}` : '—', sessionsPct, sessions.queued ? `${sessions.queued} queued` : 'agent sessions running')),
       h('div', { class: 'status-facts' }, facts)),
     sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
-    statusSection('accounts', 'user', 'Accounts', accounts.length ? accountSummary : 'none connected',
+    statusSection('accounts', 'user', 'AI accounts', accounts.length ? accountSummary : 'none connected',
       accounts.length === 0 ? h('div', { class: 'muted small' }, 'No accounts connected.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map((a) => accountUsage(a, { foldable: true, open: troubled.includes(a) }))), troubled.length > 0 || accounts.length <= 3),
   ];
 }
