@@ -104,7 +104,7 @@ function createApp(root, transport) {
   function fatal(error) {
     setChildren(root, h('div', { class: 'auth' }, h('div', { class: 'auth-card' },
       h('div', { class: 'auth-logo' }, BRAND.name),
-      h('div', { class: 'banner banner-danger' }, icon('warn'), h('span', { class: 'banner-text' }, `The server is not reachable: ${error.message}`)),
+      h('div', { class: 'banner banner-danger' }, icon('warn'), h('span', { class: 'banner-text' }, error.status >= 500 ? `The server had a problem (${error.message}). Try again in a moment.` : `The server is not reachable: ${error.message}`)),
       h('button', { type: 'button', class: 'btn btn-primary', onClick: start }, 'Try again'))));
   }
 

@@ -223,8 +223,9 @@ export function toast(message, { kind = 'info', action, timeout = 5000, detail }
 /** Toast for a failed request: shows the server's error message and code. */
 export function errorToast(error, prefix) {
   const message = error && error.message ? error.message : String(error);
-  const code = error && error.code ? error.code : null;
-  toast(prefix ? `${prefix}: ${message}` : message, { kind: 'error', detail: code && code !== 'error' ? `code: ${code}` : null, timeout: 8000 });
+  // The server's sentence is shown; its machine code is not (it stays in the console for support).
+  if (error && error.code) console.warn(`${prefix || 'Error'}: ${error.code}`, error);
+  toast(prefix ? `${prefix}: ${message}` : message, { kind: 'error', timeout: 8000 });
 }
 
 // ---------------------------------------------------------------- dialogs

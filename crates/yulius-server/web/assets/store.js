@@ -17,7 +17,14 @@ const COUNTS_REFRESH_MS = 1500;
 function readJson(key, fallback) {
   try {
     const raw = window.localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
+    if (!raw) return fallback;
+    const value = JSON.parse(raw);
+    // A stored value of the wrong shape (edited by hand, an older version) falls back instead of
+    // breaking the page: arrays stay arrays, objects stay objects, and so on.
+    if (fallback !== null && fallback !== undefined) {
+      if (Array.isArray(fallback) !== Array.isArray(value) || typeof value !== typeof fallback || value === null) return fallback;
+    }
+    return value;
   } catch {
     return fallback;
   }
