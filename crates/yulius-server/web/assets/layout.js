@@ -10,13 +10,13 @@ import { createNotificationCenter } from './notifications.js';
 import { readJson, writeJson } from './store.js';
 
 const NAV = [
-  ['tasks', 'Tasks'],
-  ['git', 'Git'],
-  ['workflows', 'Workflows'],
-  ['skills', 'Skills'],
-  ['automations', 'Automations'],
-  ['mcp', 'MCP'],
-  ['dashboard', 'Dashboard'],
+  ['tasks', 'Tasks', 'tasks'],
+  ['git', 'Git', 'branch'],
+  ['workflows', 'Workflows', 'workflow'],
+  ['skills', 'Skills', 'book'],
+  ['automations', 'Automations', 'zap'],
+  ['mcp', 'MCP', 'plug'],
+  ['dashboard', 'Dashboard', 'chart'],
 ];
 
 // ---------------------------------------------------------------- tab row
@@ -434,10 +434,10 @@ export function createSidebar(ctx) {
     newTask.dataset.route = slug ? `/s/${slug}` : '/';
     newTask.href = href(newTask.dataset.route);
     newTask.classList.toggle('disabled', !slug);
-    setChildren(nav, NAV.map(([page, label]) => {
+    setChildren(nav, NAV.map(([page, label, iconName]) => {
       const path = slug ? `/s/${slug}/${page}` : '/';
       const active = route && route.name === 'page' && route.page === page;
-      return h('a', { class: ['nav-item', active && 'active'], href: href(path), dataset: { route: path }, 'aria-current': active ? 'page' : null }, label);
+      return h('a', { class: ['nav-item', active && 'active'], href: href(path), dataset: { route: path }, 'aria-current': active ? 'page' : null }, icon(iconName, { size: 16 }), h('span', null, label));
     }));
   }
 

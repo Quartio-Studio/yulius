@@ -306,7 +306,9 @@ p { margin: 0; }
   border-radius: 50%; background: var(--accent); color: var(--accent-ink);
 }
 .nav { display: flex; flex-direction: column; padding: 4px 6px; gap: 1px; }
-.nav-item { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 8px; border-radius: var(--radius-sm); color: var(--text-2); }
+.nav-item { display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 8px; border-radius: var(--radius-sm); color: var(--text-2); }
+.nav-item .icon { color: var(--muted); flex: none; }
+.nav-item:hover .icon, .nav-item.active .icon { color: var(--text-2); }
 .nav-item:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
 .nav-item.active { background: var(--accent-soft); color: var(--text); }
 .sidebar-sep { display: flex; align-items: center; justify-content: space-between; margin: 8px 8px 2px; padding: 6px 6px 0; border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.05em; }
