@@ -218,7 +218,7 @@ export function mountComposer(ctx, sandbox) {
   const modeHint = h('span');
   const banner = h('div', { class: 'stack-sm' });
   const startButton = h('button', { type: 'button', class: 'btn btn-primary composer-send', 'aria-label': 'Start task', title: 'Start task' }, icon('up', { size: 18 }));
-  const hint = h('span', { class: 'composer-kbd' }, ' · ', h('span', { class: 'kbd' }, navigator.platform && navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'), ' + ', h('span', { class: 'kbd' }, 'Enter'), ' to start');
+  const hint = h('span', { class: 'composer-kbd' }, ' · ', h('span', { class: 'kbd' }, 'Enter'), ' to start, ', h('span', { class: 'kbd' }, 'Shift'), ' + ', h('span', { class: 'kbd' }, 'Enter'), ' for a new line');
 
   const el = h('div', { class: 'composer' },
     h('div', { class: 'composer-card' },
@@ -367,8 +367,15 @@ export function mountComposer(ctx, sandbox) {
   }
 
   startButton.addEventListener('click', start);
+  // Enter starts (the Claude and Codex convention), Shift+Enter adds a line, ⌘/Ctrl+Enter also
+  // starts. On touch screens Enter adds a line and the Start button sends. IME composition wins.
+  const finePointer = window.matchMedia('(pointer: fine)').matches;
   prompt.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); start(); }
+    if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+    if (event.metaKey || event.ctrlKey || (finePointer && !event.shiftKey && !event.altKey)) {
+      event.preventDefault();
+      start();
+    }
   });
 
   ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`).then((list) => {
