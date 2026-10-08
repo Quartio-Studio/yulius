@@ -8,6 +8,7 @@ import { readJson, writeJson } from '../store.js';
 import { initials } from '../layout.js';
 import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from '../models.js';
 import { pageFrame } from './common.js';
+import { THEME_CHOICES, themeChoice, setThemeChoice } from '../theme.js';
 
 function section(iconName, title, description, ...content) {
   return h('section', { class: 'settings-section' },
@@ -48,6 +49,10 @@ export function mountSettingsPage(ctx) {
   effortButton.addEventListener('click', () => openMenu(effortButton, effortMenuItems(effortId, (id) => { effortId = id; writeJson(EFFORT_PREF_KEY, id); renderPicks(); })));
   renderPicks();
 
+  const appearance = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Appearance' }, THEME_CHOICES.map((choice) => h('label', null,
+    h('input', { type: 'radio', name: 'appearance', value: choice.id, checked: themeChoice() === choice.id, onChange: () => setThemeChoice(choice.id) }),
+    choice.name)));
+
   const railToggle = toggle({ checked: ctx.railVisible ? ctx.railVisible() : false, label: 'Show the tools rail', onChange: (checked) => { if (ctx.setRailVisible) ctx.setRailVisible(checked); } });
   const notifCount = h('span', { class: 'muted xs' });
   const clearButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => {
@@ -71,6 +76,7 @@ export function mountSettingsPage(ctx) {
       row('key', 'CLI device approval', 'Approve “yulius login” from a terminal', open('/device')),
       row('logout', 'Sign out', 'End this session in this browser', h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.signOut() }, 'Sign out'))),
     section('gear', 'Preferences', 'kept in this browser',
+      row('contrast', 'Appearance', 'Dark, light, or follow your system', appearance),
       row('target', 'Default model for new tasks', 'What the composer starts with', modelButton),
       row('pulse', 'Default effort for new tasks', 'How hard the agent thinks by default', effortButton),
       row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right', railToggle),

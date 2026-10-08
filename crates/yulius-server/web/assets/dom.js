@@ -94,6 +94,7 @@ const ICONS = {
   shield: [['path', { d: 'M12 3l7 3v5.5c0 4.5-3 7.8-7 9.5-4-1.7-7-5-7-9.5V6z' }]],
   folder: [['path', { d: 'M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.2h7.5A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z' }]],
   user: [['circle', { cx: 12, cy: 8, r: 3.8 }], ['path', { d: 'M4.5 20c1.4-3.6 4.3-5.5 7.5-5.5s6.1 1.9 7.5 5.5' }]],
+  contrast: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 3a9 9 0 0 0 0 18z', fill: 'currentColor', stroke: 'none' }]],
   target: [['circle', { cx: 12, cy: 12, r: 8 }], ['circle', { cx: 12, cy: 12, r: 3.5 }]],
   workflow: [['circle', { cx: 6, cy: 6, r: 2.5 }], ['circle', { cx: 18, cy: 18, r: 2.5 }], ['path', { d: 'M8.5 6H14a3 3 0 0 1 3 3v6.5' }]],
   up: [['path', { d: 'M12 19V5M6 11l6-6 6 6' }]],

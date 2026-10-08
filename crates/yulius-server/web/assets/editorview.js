@@ -9,6 +9,7 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field } from './dom.js';
 import { allows } from './status.js';
+import { token, activeTheme, onThemeChange } from './theme.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
 const LANGUAGE_SERVICES = new Set(['javascript', 'typescript', 'json', 'css', 'scss', 'less', 'html']);
@@ -58,13 +59,20 @@ function loadMonaco() {
   return monacoPromise;
 }
 
-function setupMonaco(monaco) {
-  monaco.editor.defineTheme('yulius-dark', {
-    base: 'vs-dark',
+function defineEditorTheme(monaco) {
+  const well = token('--term-bg');
+  monaco.editor.defineTheme('yulius', {
+    base: activeTheme() === 'light' ? 'vs' : 'vs-dark',
     inherit: true,
     rules: [],
-    colors: { 'editor.background': '#0a0c10', 'editorGutter.background': '#0a0c10', 'minimap.background': '#0a0c10' },
+    colors: { 'editor.background': well, 'editorGutter.background': well, 'minimap.background': well },
   });
+}
+
+function setupMonaco(monaco) {
+  // The editor's colours come from tokens.css and follow theme changes (theme.js).
+  defineEditorTheme(monaco);
+  onThemeChange(() => { defineEditorTheme(monaco); monaco.editor.setTheme('yulius'); });
   for (const [language, words] of Object.entries(KEYWORDS)) {
     const keywords = words.split(' ');
     monaco.languages.registerCompletionItemProvider(language, {
@@ -307,7 +315,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       return false;
     }
     editor = monaco.editor.create(host, {
-      theme: 'yulius-dark',
+      theme: 'yulius',
       automaticLayout: true,
       fontSize: 13,
       minimap: { enabled: false },

@@ -9,6 +9,7 @@
 import { createApi, realTransport, enc } from './api.js';
 import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
+import { applyTheme } from './theme.js';
 import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl } from './dom.js';
 import { createTabRow, createSidebar } from './layout.js';
 import { createPanelHost } from './panels.js';
@@ -491,6 +492,7 @@ function createApp(root, transport) {
 }
 
 async function boot() {
+  applyTheme();
   let transport = realTransport();
   if (MOCK) {
     const mock = await import('./mock.js');

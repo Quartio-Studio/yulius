@@ -10,18 +10,7 @@ import { WebLinksAddon } from './vendor/xterm/addon-web-links.mjs';
 import { TerminalSocket, isEndedStatus, CLOSE_REVOKED } from './termsocket.js';
 import { createMouseFilter } from './mousefilter.js';
 import { h, setChildren } from './dom.js';
-
-const THEME = {
-  background: '#0a0c10',
-  foreground: '#d8dee9',
-  cursor: '#e6edf3',
-  cursorAccent: '#0a0c10',
-  selectionBackground: '#2b4a74',
-  black: '#1c2128', red: '#f47067', green: '#57c26a', yellow: '#d9b440',
-  blue: '#539bf5', magenta: '#c58af9', cyan: '#56c8d8', white: '#c9d1d9',
-  brightBlack: '#6e7681', brightRed: '#ff938a', brightGreen: '#7ee28f', brightYellow: '#f0d070',
-  brightBlue: '#79b8ff', brightMagenta: '#dcabff', brightCyan: '#8ce4ef', brightWhite: '#f0f6fc',
-};
+import { terminalColors, onThemeChange } from './theme.js';
 
 const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
 
@@ -64,7 +53,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     lineHeight: 1.15,
     cursorBlink: true,
     scrollback: 5000,
-    theme: THEME,
+    theme: terminalColors(),
     macOptionIsMeta: true,
     // While the app has the mouse, Option-drag (macOS) / Shift-drag still selects text.
     macOptionClickForcesSelection: true,
@@ -72,6 +61,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     allowProposedApi: false,
     linkHandler: { activate: (event, text) => onLink && onLink(text, event) },
   });
+  // Colours come from tokens.css and follow theme changes (theme.js).
+  const offTheme = onThemeChange(() => { term.options.theme = terminalColors(); });
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.loadAddon(new WebLinksAddon((event, uri) => onLink && onLink(uri, event)));
@@ -270,6 +261,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       cancelAnimationFrame(resizeFrame);
       observer.disconnect();
       socket.close();
+      offTheme();
       term.dispose();
     },
   };
