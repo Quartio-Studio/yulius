@@ -7,6 +7,7 @@ import { statusInfo, allows } from './status.js';
 import { href } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
+import { BRAND } from './brand.js';
 import { readJson, writeJson } from './store.js';
 
 const NAV = [
@@ -397,9 +398,9 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
  */
 export function createSidebar(ctx) {
   // The logo slot holds the favicon's Y until Yulius has a real logo.
-  const brand = h('a', { class: 'sidebar-brand', href: href('/'), dataset: { route: '/' }, title: 'Yulius' },
+  const brand = h('a', { class: 'sidebar-brand', href: href('/'), dataset: { route: '/' }, title: BRAND.name },
     h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 20 })),
-    h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, 'Yulius'), h('span', { class: 'brand-by' }, 'by Quartio team')));
+    h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, BRAND.name), h('span', { class: 'brand-by' }, BRAND.tagline)));
   const shortcut = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? '⌘⇧O' : 'Ctrl+Shift+O';
   const newTask = h('a', { class: 'btn btn-newtask', href: '#', dataset: { route: '/' }, title: `New task (${shortcut})`, 'aria-keyshortcuts': shortcut === '⌘⇧O' ? 'Meta+Shift+O' : 'Control+Shift+O' },
     h('span', { class: 'newtask-plus', 'aria-hidden': 'true' }, icon('plus', { size: 14 })), h('span', null, 'New task'), h('span', { class: 'newtask-key', 'aria-hidden': 'true' }, shortcut));

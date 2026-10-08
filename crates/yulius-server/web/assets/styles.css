@@ -740,7 +740,7 @@ a.settings-tile:hover { background: var(--surface-3); border-color: var(--border
 
 .auth { height: 100vh; height: 100dvh; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 10vh 16px 32px; background: var(--bg); }
 .auth-card { width: min(460px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); }
-.auth-logo { font-size: var(--fs-2xl); line-height: var(--lh-2xl); font-weight: 600; color: var(--accent); letter-spacing: -0.02em; }
+.auth-logo { display: flex; align-items: center; gap: 12px; font-size: var(--fs-2xl); line-height: var(--lh-2xl); font-weight: 600; color: var(--text); letter-spacing: -0.02em; }
 .auth-title { font-size: var(--fs-xl); line-height: var(--lh-xl); }
 .warning-box { display: flex; gap: 8px; padding: 12px; border-radius: var(--radius); border: 1px solid var(--danger-border); background: var(--danger-soft); color: var(--danger-fg-strong); }
 .warning-box strong { color: var(--text); }

@@ -3,6 +3,12 @@
 // (ACC-002/011): shown once at setup and after a recovery; "Forgot password?" uses it.
 
 import { h, icon, field, setChildren, errorToast, toast } from '../dom.js';
+import { BRAND } from '../brand.js';
+
+/** The product's mark and name (brand.js) at the top of the sign-in and setup cards. */
+function brandLockup() {
+  return h('div', { class: 'auth-logo' }, h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 20 })), BRAND.name);
+}
 
 const MIN_PASSWORD = 12;
 
@@ -18,7 +24,7 @@ export function recoveryCodeCard(code, { title = 'Your recovery code', continueL
     try { await navigator.clipboard.writeText(code); toast('Recovery code copied', { kind: 'ok' }); } catch { /* clipboard unavailable */ }
   } }, 'Copy');
   return h('div', { class: 'auth-card recovery-card' },
-    h('div', { class: 'auth-logo' }, 'Yulius'),
+    brandLockup(),
     h('h1', { class: 'auth-title' }, title),
     h('div', { class: 'recovery-code', 'aria-label': `Recovery code ${code.split('').join(' ')}` }, code.slice(0, 3), h('span', { class: 'recovery-gap' }), code.slice(3)),
     h('div', { class: 'row', style: { justifyContent: 'center' } }, copy),
@@ -57,7 +63,7 @@ export function mountSetup(ctx, { onDone }) {
 
   const form = h('form', { class: 'auth-card', novalidate: true },
     h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'superadmin', hidden: true, readOnly: true, tabindex: '-1', 'aria-hidden': 'true' }),
-    h('div', { class: 'auth-logo' }, 'Yulius'),
+    brandLockup(),
     h('h1', { class: 'auth-title' }, 'Set up this instance'),
     h('p', { class: 'text-2' }, 'Create the single superadmin. You need the one-time setup token printed on the server console.'),
     field('Setup token', token),
@@ -119,7 +125,7 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
   for (const input of [code, password, confirm]) input.addEventListener('input', validate);
   const form = h('form', { class: 'auth-card', novalidate: true },
     h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'superadmin', hidden: true, readOnly: true, tabindex: '-1', 'aria-hidden': 'true' }),
-    h('div', { class: 'auth-logo' }, 'Yulius'),
+    brandLockup(),
     h('h1', { class: 'auth-title' }, 'Reset the superadmin password'),
     status,
     field('Recovery code', code, 'The 6 digits shown when the instance was set up.'),
@@ -196,7 +202,7 @@ export function mountSignIn(ctx, { next, onDone, error }) {
   const forgot = h('button', { type: 'button', class: 'btn-link small', onClick: () => showRecovery() }, 'Forgot password?');
   const details = h('details', null, h('summary', { class: 'muted small', style: { cursor: 'pointer' } }, 'Superadmin password'), h('div', { class: 'stack-sm', style: { marginTop: '8px' } }, form, forgot));
   const card = h('div', { class: 'auth-card' },
-    h('div', { class: 'auth-logo' }, 'Yulius'),
+    brandLockup(),
     h('h1', { class: 'auth-title' }, 'Sign in'),
     h('p', { class: 'text-2' }, 'Members sign in with GitHub. Sandbox access mirrors your GitHub repository permissions.'),
     githubButton,

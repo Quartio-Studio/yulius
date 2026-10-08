@@ -4,6 +4,7 @@
 // re-colour on the `yulius:theme` event.
 
 import { readJson, writeJson } from './store.js';
+import { faviconUrl } from './brand.js';
 
 const KEY = 'yulius.theme';
 export const THEME_CHOICES = [
@@ -40,6 +41,8 @@ export function applyTheme() {
   if (scheme) scheme.content = theme;
   const color = document.querySelector('meta[name="theme-color"]');
   if (color) color.content = token('--bg');
+  const favicon = document.querySelector('link[rel="icon"]');
+  if (favicon) favicon.href = faviconUrl(token('--surface'), token('--accent'));
   window.dispatchEvent(new CustomEvent('yulius:theme', { detail: { theme } }));
 }
 

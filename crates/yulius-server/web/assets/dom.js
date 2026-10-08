@@ -2,6 +2,8 @@
 // Every piece of server or user data is inserted with textContent or attributes,
 // never through innerHTML, so API content cannot inject markup.
 
+import { BRAND } from './brand.js';
+
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /** Apply attributes/properties/listeners to an element. */
@@ -75,7 +77,7 @@ const ICONS = {
   pulse: [['path', { d: 'M3 12h4l3-7 4 14 3-7h4' }]],
   sidebar: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M9 4v16' }]],
   tools: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M15 4v16' }]],
-  logo: [['path', { d: 'M6.75 6L12 12.75 17.25 6M12 12.75v6' }]],
+  logo: [['path', { d: BRAND.mark }]],
   /* task states (status.js): one shape per state so colour is never the only cue */
   'st-working': [['circle', { cx: 12, cy: 12, r: 6, fill: 'currentColor', stroke: 'none' }]],
   'st-input': [['path', { d: 'M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4 3.5V16h0.5A2.5 2.5 0 0 1 5 13.5z' }]],

@@ -10,6 +10,7 @@ import { createApi, realTransport, enc } from './api.js';
 import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
 import { applyTheme } from './theme.js';
+import { BRAND } from './brand.js';
 import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl } from './dom.js';
 import { createTabRow, createSidebar } from './layout.js';
 import { createPanelHost } from './panels.js';
@@ -101,7 +102,7 @@ function createApp(root, transport) {
 
   function fatal(error) {
     setChildren(root, h('div', { class: 'auth' }, h('div', { class: 'auth-card' },
-      h('div', { class: 'auth-logo' }, 'Yulius'),
+      h('div', { class: 'auth-logo' }, BRAND.name),
       h('div', { class: 'banner banner-danger' }, icon('warn'), h('span', { class: 'banner-text' }, `The server is not reachable: ${error.message}`)),
       h('button', { type: 'button', class: 'btn btn-primary', onClick: start }, 'Try again'))));
   }
@@ -257,7 +258,7 @@ function createApp(root, transport) {
     const parts = [];
     if (currentTask) parts.push(`#${currentTask.number} ${currentTask.title}`);
     if (currentSandbox) parts.push(currentSandbox.name);
-    parts.push('Yulius');
+    parts.push(BRAND.name);
     document.title = `${attention ? `(${attention}) ` : ''}${parts.join(' · ')}`;
   }
 
@@ -506,5 +507,5 @@ async function boot() {
 boot().catch((error) => {
   console.error(error);
   const root = document.getElementById('app');
-  if (root) root.textContent = `Yulius failed to start: ${error.message}`;
+  if (root) root.textContent = `${BRAND.name} failed to start: ${error.message}`;
 });
