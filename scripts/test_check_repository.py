@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
-from check_repository import STYLESHEET, ROOT, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, contrast_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
 
 
 def package(name, layer, dependencies=()):
@@ -85,3 +85,21 @@ class StyleContracts(unittest.TestCase):
 
     def test_shipped_stylesheet_follows_the_scales(self):
         self.assertEqual(style_errors((ROOT / STYLESHEET).read_text()), [])
+
+
+class ContrastContracts(unittest.TestCase):
+    def test_wcag_ratio_matches_reference_values(self):
+        self.assertAlmostEqual(contrast_ratio((0, 0, 0, 1), (255, 255, 255, 1)), 21.0, places=2)
+        self.assertAlmostEqual(contrast_ratio((118, 118, 118, 1), (255, 255, 255, 1)), 4.54, places=2)
+
+    def test_tokens_resolve_through_var_and_color_mix(self):
+        env = theme_tokens(":root { --brand: #4c9dff; } :root, [data-theme=\"dark\"] { --accent: var(--brand); } :root { --soft: color-mix(in srgb, var(--accent) 14%, transparent); }")["dark"]
+        r, g, b, a = _resolve("--soft", env)
+        self.assertEqual((round(r), round(g), round(b), round(a, 2)), (76, 157, 255, 0.14))
+
+    def test_low_contrast_role_is_reported_per_theme(self):
+        css = (ROOT / TOKENS).read_text().replace("--text-faint: #69707c;", "--text-faint: #c0c4cc;")
+        self.assertTrue(any("[light]: --text-faint" in e for e in contrast_errors(css)))
+
+    def test_shipped_tokens_meet_contrast(self):
+        self.assertEqual(contrast_errors((ROOT / TOKENS).read_text()), [])

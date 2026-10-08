@@ -86,7 +86,8 @@ Padding, margin and gap use the 4 px scale only: 2, 4, 6, 8, 12, 16, 20, 24, 32,
 The single exception is a 1 px margin that nudges an icon optically.
 
 `scripts/check_repository.py` (`scripts/dev check`) enforces the colour, type, radius and spacing
-rules on `assets/styles.css`; control heights are not checked yet.
+rules on `assets/styles.css`, and checks the WCAG contrast of each theme in `assets/tokens.css`
+(text 4.5:1; state marks, focus and control edges 3:1). Control heights are not checked yet.
 
 ## Routes
 

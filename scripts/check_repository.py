@@ -132,6 +132,107 @@ def style_errors(css, label=STYLESHEET):
     return errors
 
 
+# Text pairs need 4.5:1 and non-text (state marks, focus, control edges) 3:1 (WCAG 2.2 1.4.3,
+# 1.4.11). A background "a/b" is a translucent role a composited over b.
+CONTRAST_PAIRS = [
+    *((fg, bg, 4.5) for fg in ("--text", "--text-2", "--muted", "--text-faint") for bg in ("--bg", "--surface", "--surface-2")),
+    ("--text", "--surface-3", 4.5), ("--muted", "--surface-hover", 4.5),
+    ("--accent-ink", "--accent", 4.5), ("--term-fg", "--term-bg", 4.5), ("--ansi-bright-black", "--term-bg", 4.5),
+    *((f"--{hue}-fg", bg, 4.5) for hue in ("accent", "ok", "warn", "danger", "violet") for bg in ("--surface", f"--{hue}-soft/--surface")),
+    ("--warn-fg-strong", "--warn-soft/--surface", 4.5), ("--danger-fg-strong", "--danger-soft/--surface", 4.5),
+    ("--accent-fg-strong", "--accent-soft/--surface", 4.5), ("--agent-ink", "--agent", 4.5),
+    *((mark, bg, 3.0) for mark in ("--accent", "--ok", "--warn", "--danger", "--violet") for bg in ("--bg", "--surface")),
+    ("--border-control", "--bg", 3.0), ("--border-control", "--surface", 3.0), ("--border-control", "--surface-2", 3.0),
+]
+
+
+def _rgba(text):
+    text = text.strip()
+    if text.startswith("#"):
+        h = text[1:]
+        h = "".join(c * 2 for c in h) if len(h) in (3, 4) else h
+        parts = [int(h[i:i + 2], 16) for i in range(0, len(h), 2)]
+        return (*parts[:3], parts[3] / 255 if len(parts) == 4 else 1.0)
+    m = re.fullmatch(r"rgba?\(\s*([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)(?:[ ,/]+([\d.]+))?\s*\)", text)
+    if m:
+        return (float(m[1]), float(m[2]), float(m[3]), float(m[4]) if m[4] else 1.0)
+    if text == "transparent":
+        return (0.0, 0.0, 0.0, 0.0)
+    raise ValueError(f"unsupported colour {text!r}")
+
+
+def _resolve(name, env, seen=()):
+    if name in seen or name not in env:
+        raise ValueError(f"unresolved token {name}")
+    value = env[name]
+    value = re.sub(r"var\((--[\w-]+)\)", lambda m: _format(_resolve(m[1], env, seen + (name,))), value)
+    m = re.fullmatch(r"color-mix\(in srgb,\s*(.+?)\s+([\d.]+)%,\s*(.+)\)", value.strip())
+    if m:
+        a, share, b = _rgba(m[1]), float(m[2]) / 100, _rgba(m[3])
+        # Premultiplied mix, as in CSS Color 5.
+        alpha = a[3] * share + b[3] * (1 - share)
+        if alpha == 0:
+            return (0.0, 0.0, 0.0, 0.0)
+        rgb = [(a[i] * a[3] * share + b[i] * b[3] * (1 - share)) / alpha for i in range(3)]
+        return (*rgb, alpha)
+    return _rgba(value)
+
+
+def _format(rgba):
+    return f"rgba({rgba[0]}, {rgba[1]}, {rgba[2]}, {rgba[3]})"
+
+
+def _over(top, bottom):
+    a = top[3]
+    return tuple(top[i] * a + bottom[i] * (1 - a) for i in range(3)) + (1.0,)
+
+
+def _luminance(rgba):
+    def channel(c):
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (channel(v) for v in rgba[:3])
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(fg, bg):
+    fg = _over(fg, bg)
+    hi, lo = sorted((_luminance(fg), _luminance(bg)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def theme_tokens(css):
+    """Resolvable token maps per theme from tokens.css: {'dark': {...}, 'light': {...}}."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    base, themes = {}, {}
+    for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        decls = dict((k.strip(), v.strip()) for k, v in re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", body))
+        names = re.findall(r'data-theme="(\w+)"', selector)
+        if ":root" in selector:
+            base.update(decls)
+        for name in names:
+            themes.setdefault(name, {}).update(decls)
+    return {name: {**base, **decls} for name, decls in themes.items()}
+
+
+def contrast_errors(css, label=TOKENS):
+    errors = []
+    for theme, env in theme_tokens(css).items():
+        for fg, bg, minimum in CONTRAST_PAIRS:
+            try:
+                parts = bg.split("/")
+                back = _resolve(parts[-1], env)
+                for layer in reversed(parts[:-1]):
+                    back = _over(_resolve(layer, env), back)
+                ratio = contrast_ratio(_resolve(fg, env), back)
+            except ValueError as error:
+                errors.append(f"{label} [{theme}]: {error}")
+                continue
+            if ratio < minimum:
+                errors.append(f"{label} [{theme}]: {fg} on {bg} is {ratio:.2f}:1, needs {minimum}:1")
+    return errors
+
+
 def output(command):
     return subprocess.check_output(command, cwd=ROOT, text=True).strip()
 
@@ -165,6 +266,7 @@ def check():
     for path in skills:
         errors.extend(skill_errors(path))
     errors.extend(style_errors((ROOT / STYLESHEET).read_text()))
+    errors.extend(contrast_errors((ROOT / TOKENS).read_text()))
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     cargo = ["rustup", "run", channel, "cargo"]
     metadata = json.loads(output(cargo + ["metadata", "--locked", "--no-deps", "--format-version", "1"]))
