@@ -203,6 +203,16 @@ p { margin: 0; }
   grid-template-areas: "tabs tabs tabs tabs" "side main panel rail";
 }
 .app.no-sandbox { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 0 0; }
+/* While a tool panel is open the sidebar slides away (desktop); closing the panel brings it back. */
+@media (min-width: 768px) {
+  .app { transition: grid-template-columns var(--duration) var(--ease); }
+  .app.panel-open { grid-template-columns: 0 minmax(0, 1fr) auto var(--rail-w); }
+  .app.panel-open.panel-max { grid-template-columns: 0 0 minmax(0, 1fr) var(--rail-w); }
+  .app .sidebar { overflow: hidden; }
+  .app .sidebar > * { width: var(--sidebar-w); flex-shrink: 0; }
+  .app.panel-open .sidebar { border-right-width: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .app { transition: none; } }
 
 /* sandbox tab row: thin (≤ 36 px), overflow scrolls (UI-008) */
 .tabrow {

@@ -433,7 +433,8 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 - Right rail (≈ 128 px; icons only on phones): Browser, Editor, Shell, Messages, each shown with
   its icon and name so a newcomer recognizes them. Clicking expands a resizable panel (default 45%
   width); clicking again collapses. Default collapsed (UI-002); the whole rail is hidden until the
-  tools toggle shows it (UI-017).
+  tools toggle shows it (UI-017). While a panel is open the left sidebar slides away (animated, desktop
+  only) so the agent's terminal and the tool get the room; closing the panel brings it back.
 - Without a selected task the center shows the new-task composer (UI-021): a rounded prompt box
   whose bottom edge holds the task's choices as compact pickers — Goal / Prompt mode, workflow,
   model and effort — and a round Start button (tasks run Claude Code). The model is chosen from a

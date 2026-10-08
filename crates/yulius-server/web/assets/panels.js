@@ -152,6 +152,9 @@ export function createPanelHost(ctx) {
     if (!railVisible) setRailVisible(true);
     if (panel.hidden) {
       panel.hidden = false;
+      // The sidebar slides away while a tool is open, giving the agent and the tool the room.
+      const app = rail.closest('.app');
+      if (app) app.classList.add('panel-open');
       applyWidth(Math.max(defaultWidth(k), panel.getBoundingClientRect().width || 0));
     }
     const savedMax = readJson(MAX_KEY, {}) || {};
@@ -167,7 +170,7 @@ export function createPanelHost(ctx) {
   function close() {
     panel.hidden = true;
     const app = rail.closest('.app');
-    if (app) app.classList.remove('panel-max');
+    if (app) app.classList.remove('panel-max', 'panel-open');
     kind = null;
     for (const button of buttons.values()) {
       button.classList.remove('active');
