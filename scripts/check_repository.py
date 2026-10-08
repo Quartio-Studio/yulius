@@ -166,6 +166,8 @@ def control_height_errors(css, label=STYLESHEET):
 # Text pairs need 4.5:1 and non-text (state marks, focus, control edges) 3:1 (WCAG 2.2 1.4.3,
 # 1.4.11). A background "a/b" is a translucent role a composited over b.
 CONTRAST_PAIRS = [
+    ("--text", "--selection/--surface", 4.5),
+    ("--term-fg", "--term-selection", 4.5),
     *((fg, bg, 4.5) for fg in ("--text", "--text-2", "--muted", "--text-faint") for bg in ("--bg", "--surface", "--surface-2")),
     ("--text", "--surface-3", 4.5), ("--muted", "--surface-hover", 4.5),
     ("--accent-ink", "--accent", 4.5), ("--term-fg", "--term-bg", 4.5), ("--ansi-bright-black", "--term-bg", 4.5),

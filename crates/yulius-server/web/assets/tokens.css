@@ -111,7 +111,7 @@
   /* terminal (xterm) and editor (Monaco) read these when they start and on theme changes */
   --term-fg: #d8dee9;
   --term-cursor: #e6edf3;
-  --term-selection: #2b4a74;
+  --term-selection: var(--brand-800);
   --ansi-black: #1c2128;   --ansi-bright-black: #737b86;
   --ansi-red: #f47067;     --ansi-bright-red: #ff938a;
   --ansi-green: #57c26a;   --ansi-bright-green: #7ee28f;
@@ -174,7 +174,7 @@
   --highlight: rgba(255, 255, 255, 0.6);
   --term-fg: #1f2329;
   --term-cursor: #1f2329;
-  --term-selection: #c8dcff;
+  --term-selection: var(--brand-200);
   --ansi-black: #24292f;   --ansi-bright-black: #57606a;
   --ansi-red: #cf222e;     --ansi-bright-red: #a40e26;
   --ansi-green: #116329;   --ansi-bright-green: #1a7f37;
@@ -190,6 +190,7 @@
   /* Derived roles: tints of a role colour, so they follow the theme and the brand. */
   --text-disabled: color-mix(in srgb, var(--muted) 50%, transparent);
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --selection: color-mix(in srgb, var(--accent) 35%, transparent); /* selected text, in the brand */
   --accent-border: color-mix(in srgb, var(--accent) 40%, transparent);
   --accent-border-strong: color-mix(in srgb, var(--accent) 60%, transparent);
   --accent-track: color-mix(in srgb, var(--series-1) 20%, transparent);
