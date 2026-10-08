@@ -5,7 +5,7 @@
 // can be maximized over the center.
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, errorToast, placeholder, singleFlight } from './dom.js';
+import { h, icon, iconButton, setChildren, errorToast, placeholder, singleFlight, keepFocus } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { createBrowserPanel } from './browser.js';
 import { createEditorView } from './editorview.js';
@@ -338,7 +338,7 @@ function createShellView(ctx, sandbox, getTask) {
 
 /** Task messages (COM-005: users see messages) with a send box. */
 function createMessagesView(ctx, sandbox, task) {
-  const list = h('div', { class: 'msg-list', 'aria-live': 'polite' }, placeholder('Loading messages…', 'loading'));
+  const list = h('div', { class: 'msg-list', role: 'log', 'aria-live': 'polite', 'aria-label': 'Messages' }, placeholder('Loading messages…', 'loading'));
   const input = h('textarea', { class: 'textarea', rows: 3, placeholder: `Message #${task.number} — delivered to the agent like a task message`, 'aria-label': 'Message', maxlength: 20000 });
   const send = h('button', { type: 'button', class: 'btn btn-primary btn-sm' }, icon('send', { size: 13 }), 'Send');
   const write = allows(sandbox.access, 'write');
@@ -349,11 +349,21 @@ function createMessagesView(ctx, sandbox, task) {
   const messages = new Map();
   const myLogin = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null;
 
+  // New messages are appended, not the whole list rebuilt: focus and reading position stay, and the
+  // log announces only what is new.
+  const rendered = new Map(); // message id → element
   function render() {
     const sorted = [...messages.values()].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-    if (sorted.length === 0) { setChildren(list, placeholder('No messages yet. Tasks message each other here; you can message the agent too.')); return; }
+    if (sorted.length === 0) { rendered.clear(); setChildren(list, placeholder('No messages yet. Tasks message each other here; you can message the agent too.')); return; }
     const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 24;
-    setChildren(list, sorted.map((m) => messageView(ctx, m, myLogin)));
+    const fresh = sorted.filter((m) => !rendered.has(m.id));
+    const last = sorted.filter((m) => rendered.has(m.id)).pop();
+    if (rendered.size && fresh.every((m) => !last || String(m.created_at) >= String(last.created_at))) {
+      for (const m of fresh) { const el = messageView(ctx, m, myLogin); rendered.set(m.id, el); list.append(el); }
+    } else {
+      rendered.clear();
+      keepFocus(list, () => setChildren(list, sorted.map((m) => { const el = messageView(ctx, m, myLogin); rendered.set(m.id, el); return el; })));
+    }
     if (atBottom) list.scrollTop = list.scrollHeight;
   }
 
@@ -365,6 +375,7 @@ function createMessagesView(ctx, sandbox, task) {
       render();
       list.scrollTop = list.scrollHeight;
     } catch (error) {
+      rendered.clear();
       setChildren(list, placeholder(error.message, 'error'));
     }
   }
