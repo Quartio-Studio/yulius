@@ -12,7 +12,7 @@ export function mountWorkflowsPage(ctx, sandbox) {
   const frame = pageFrame({
     title: 'Workflows',
     sub: 'selectable when starting a task',
-    actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'New workflow')],
+    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'New workflow')],
   });
   const host = h('div');
   frame.body.append(host);

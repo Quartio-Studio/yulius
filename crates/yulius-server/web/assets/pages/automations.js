@@ -27,7 +27,7 @@ export function mountAutomationsPage(ctx, sandbox) {
   const frame = pageFrame({
     title: 'Automations',
     sub: 'scheduled tasks — agents can create them too',
-    actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'New automation')],
+    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'New automation')],
   });
   const host = h('div');
   frame.body.append(host);

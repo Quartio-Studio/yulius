@@ -20,7 +20,7 @@ function forbidden(ctx, what) {
 /** Superadmin: admit users by GitHub login, disable them, mark instance admins. */
 export function mountUsersPage(ctx) {
   if (!ctx.isSuperadmin()) return forbidden(ctx, 'Users');
-  const frame = pageFrame({ title: 'Users', sub: 'only admitted GitHub users can sign in', actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => add() }, 'Admit user')] });
+  const frame = pageFrame({ title: 'Users', sub: 'only admitted GitHub users can sign in', actions: [h('button', { type: 'button', class: 'btn btn-primary', onClick: () => add() }, 'Admit user')] });
   const host = h('div');
   frame.body.append(recoveryCard(ctx), host);
 
@@ -169,7 +169,7 @@ export function openLoginTerminal(ctx, loginId, label, onFinish) {
 /** Instance admin: provider accounts with usage, enable/priority, re-login, add. */
 export function mountAccountsPage(ctx, route) {
   if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'AI accounts');
-  const frame = pageFrame({ title: 'AI accounts', sub: `Claude subscriptions the agents run on; ${BRAND.name} rotates between them`, actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => add() }, 'Connect account')] });
+  const frame = pageFrame({ title: 'AI accounts', sub: `Claude subscriptions the agents run on; ${BRAND.name} rotates between them`, actions: [h('button', { type: 'button', class: 'btn btn-primary', onClick: () => add() }, 'Connect account')] });
   const host = h('div');
   frame.body.append(host, h('p', { class: 'muted xs' }, 'Rotation uses enabled AI accounts in priority order (lower first) and switches to the next one before an account is exhausted, resuming the same session.'));
 

@@ -33,7 +33,7 @@ export function mountMcpPage(ctx, sandbox, route) {
   const frame = pageFrame({
     title: 'MCP',
     sub: 'attached once, available to every Claude Code session',
-    actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'Add server')],
+    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'Add server')],
   });
   const host = h('div');
   frame.body.append(h('div', { class: 'toolbar' }, scopeFilter, h('span', { class: 'muted small' }, `The ${BRAND.name} tool server is always attached and not listed here.`)), host);
