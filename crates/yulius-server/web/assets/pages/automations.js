@@ -2,7 +2,7 @@
 
 import { enc } from '../api.js';
 import { h, badge, iconBadge, itemCard, iconButton, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, placeholder, emptyState, invalid } from '../dom.js';
-import { relLong, dateTime, describeCron, cronValid, utcOffset } from '../format.js';
+import { relLong, dateTime, describeCron, cronValid, utcOffset, parseSchedule, scheduleCron, WEEKDAYS } from '../format.js';
 import { allows } from '../status.js';
 import { href } from '../router.js';
 import { pageFrame, loader, dataTable } from './common.js';
@@ -124,8 +124,42 @@ export function mountAutomationsPage(ctx, sandbox) {
 
   function edit(a) {
     const name = h('input', { class: 'input', value: a ? a.name : '', maxlength: 100, autofocus: true });
-    const cron = h('input', { class: 'input mono', value: a ? a.cron : '0 9 * * *', placeholder: 'min hour day month weekday' });
-    const cronHint = h('span', { class: 'field-hint' });
+    const cron = h('input', { class: 'input mono', value: a ? a.cron : '0 9 * * 1-5', placeholder: 'min hour day month weekday' });
+    const cronHint = h('p', { class: 'field-hint', 'aria-live': 'polite' });
+    // Presets write the cron expression; the raw expression stays under Advanced (UX2-15).
+    const initial = parseSchedule(cron.value);
+    const repeats = h('select', { class: 'select' }, [['daily', 'Every day'], ['weekdays', 'Every weekday (Mon–Fri)'], ['weekly', 'Once a week'], ['hourly', 'Every hour'], ['custom', 'Custom (cron)']].map(([value, label]) => h('option', { value }, label)));
+    repeats.value = initial.kind;
+    const at = h('input', { class: 'input', type: 'time', value: initial.time || '09:00', required: true });
+    const day = h('select', { class: 'select' }, WEEKDAYS.map((label, index) => h('option', { value: String(index) }, label)));
+    day.value = String(initial.day ?? 1);
+    const minute = h('input', { class: 'input', type: 'number', min: 0, max: 59, value: String(initial.minute ?? 0) });
+    const atField = field('At', at);
+    const dayField = field('On', day);
+    const minuteField = field('Minutes past the hour', minute);
+    const advanced = h('details', { class: 'advanced', open: initial.kind === 'custom' }, h('summary', { class: 'muted small' }, 'Advanced'), field('Cron schedule', cron, 'Five fields: minute hour day-of-month month day-of-week.'));
+    const showFields = () => {
+      const kind = repeats.value;
+      atField.hidden = kind === 'hourly' || kind === 'custom';
+      dayField.hidden = kind !== 'weekly';
+      minuteField.hidden = kind !== 'hourly';
+      if (kind === 'custom') advanced.open = true;
+    };
+    const fromPreset = () => {
+      const expr = scheduleCron({ kind: repeats.value, time: at.value, day: Number(day.value), minute: minute.value });
+      if (expr) cron.value = expr;
+      showFields();
+      updateHint();
+    };
+    for (const control of [repeats, at, day, minute]) { control.addEventListener('change', fromPreset); control.addEventListener('input', fromPreset); }
+    cron.addEventListener('input', () => {
+      const parsed = parseSchedule(cron.value);
+      repeats.value = parsed.kind;
+      if (parsed.time) at.value = parsed.time;
+      if (parsed.day !== undefined) day.value = String(parsed.day);
+      if (parsed.minute !== undefined) minute.value = String(parsed.minute);
+      showFields();
+    });
     const offset = h('select', { class: 'select' }, offsetOptions(a ? a.utc_offset_minutes : null).map((m) => h('option', { value: String(m) }, utcOffset(m))));
     offset.value = String(a ? a.utc_offset_minutes : -new Date().getTimezoneOffset());
     const prompt = h('textarea', { class: 'textarea', rows: 6, placeholder: 'What the created task should do, e.g. “Implement yesterday’s customer feedback from the Quartio MCP.”', value: a ? a.prompt : '' });
@@ -135,24 +169,27 @@ export function mountAutomationsPage(ctx, sandbox) {
     const updateHint = () => {
       const ok = cronValid(cron.value);
       cron.setAttribute('aria-invalid', ok ? 'false' : 'true');
-      cronHint.textContent = ok ? `${describeCron(cron.value)} (${utcOffset(Number(offset.value))})` : 'Five fields: minute hour day-of-month month day-of-week.';
+      cronHint.textContent = ok ? `Runs: ${describeCron(cron.value)} (${utcOffset(Number(offset.value))}). A fixed offset does not follow daylight saving time.` : 'The cron expression needs five fields.';
     };
     cron.addEventListener('input', updateHint);
     offset.addEventListener('change', updateHint);
+    showFields();
     updateHint();
     openModal({
       title: a ? `Edit automation · ${a.name}` : 'New automation',
       wide: true,
       body: h('div', { class: 'stack' },
         h('div', { class: 'form-grid' }, field('Name', name), field('Workflow', workflow)),
-        h('div', { class: 'form-grid' }, h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Cron schedule'), cron, cronHint), field('Time zone (UTC offset)', offset)),
+        h('div', { class: 'form-grid' }, field('Repeats', repeats), atField, dayField, minuteField, field('Time zone (UTC offset)', offset)),
+        cronHint,
+        advanced,
         field('Prompt', prompt),
         h('label', { class: 'check' }, enabled, h('span', null, 'Enabled'))),
       actions: [
         { label: 'Cancel', value: false },
         { label: a ? 'Save' : 'Create', kind: 'primary', run: async () => {
           if (!name.value.trim()) return invalid(name, 'Give the automation a name.');
-          if (!cronValid(cron.value)) return invalid(cron, 'A schedule has five fields: minute, hour, day, month, weekday — for example “0 9 * * 1-5”.');
+          if (!cronValid(cron.value)) { advanced.open = true; return invalid(cron, 'A schedule has five fields: minute, hour, day, month, weekday — for example “0 9 * * 1-5”.'); }
           if (!prompt.value.trim()) return invalid(prompt, 'Say what the task should do.');
           const body = { name: name.value.trim(), cron: cron.value.trim().split(/\s+/).join(' '), utc_offset_minutes: Number(offset.value), prompt: prompt.value.trim(), workflow_id: workflow.value || null, enabled: enabled.checked };
           if (a) await ctx.api.put(`/api/automations/${enc(a.id)}`, body);

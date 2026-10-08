@@ -135,6 +135,38 @@ export function describeCron(expr) {
   return expr;
 }
 
+/** The weekday names, Sunday first (cron numbering). */
+export const WEEKDAYS = DOW;
+
+/**
+ * Reads a cron expression as one of the schedule presets (daily, weekdays, weekly, hourly) or
+ * 'custom' when it is any other shape. Times are "HH:MM".
+ */
+export function parseSchedule(expr) {
+  const parts = String(expr || '').trim().split(/\s+/);
+  if (parts.length !== 5) return { kind: 'custom' };
+  const [min, hour, dom, mon, dow] = parts;
+  const num = (v, max) => /^\d+$/.test(v) && Number(v) <= max;
+  if (!num(min, 59) || dom !== '*' || mon !== '*') return { kind: 'custom' };
+  if (hour === '*' && dow === '*') return { kind: 'hourly', minute: Number(min) };
+  if (!num(hour, 23)) return { kind: 'custom' };
+  const time = `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`;
+  if (dow === '*') return { kind: 'daily', time };
+  if (dow === '1-5') return { kind: 'weekdays', time };
+  if (num(dow, 7)) return { kind: 'weekly', time, day: Number(dow) % 7 };
+  return { kind: 'custom' };
+}
+
+/** The cron expression for a schedule preset; null for 'custom'. */
+export function scheduleCron({ kind, time = '09:00', day = 1, minute = 0 }) {
+  const [hh, mm] = String(time || '09:00').split(':').map((v) => Number(v) || 0);
+  if (kind === 'hourly') return `${Math.min(59, Math.max(0, Math.round(Number(minute) || 0)))} * * * *`;
+  if (kind === 'daily') return `${mm} ${hh} * * *`;
+  if (kind === 'weekdays') return `${mm} ${hh} * * 1-5`;
+  if (kind === 'weekly') return `${mm} ${hh} * * ${day}`;
+  return null;
+}
+
 /** Plural helper: plural(3, 'task') → "3 tasks". */
 export function plural(n, word, many) {
   return `${n} ${n === 1 ? word : many || `${word}s`}`;

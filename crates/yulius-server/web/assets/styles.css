@@ -689,6 +689,7 @@ a.settings-tile:hover { background: var(--surface-3); border-color: var(--border
 
 /* Helpers the scripts use instead of inline styles (scripts keep only computed values inline). */
 summary { cursor: pointer; }
+.advanced[open] > summary { margin-bottom: 8px; }
 .items-center { align-items: center; }
 .justify-center { justify-content: center; }
 .space-top { margin-top: 8px; }

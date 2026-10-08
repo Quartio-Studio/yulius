@@ -221,6 +221,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-024 | The Tasks page groups tasks as Needs you → Working → Stopped → Closed with the sidebar's rules (browser requests count as Needs you); each row says its state in words with the step, number and branch, and shows its pull request with checks, author and age. Filters: state tabs with counts, Author and Origin multi-select, search (`/`); the filters are kept in the page URL. | F 2026-10-08 UI | C | AC-UI-17 |
 | UI-025 | The Git page explains delivery in plain language: one sentence on how the sandbox ships (from its profile); what is live in production and what is waiting to go live, with the environment steps and the release button (disabled with its reason); "Needs you" rows with one reason and one action each; a board of where every task is (Being built → In review → On integration, not live → Live, columns from the profile); recent deploys, verifications and commits. The release confirmation lists the tasks that go live. | F 2026-10-08 UI | C | AC-UI-18 |
 | UI-026 | A task that needs the user shows a bar under its step strip that says what is needed: a browser request with its reason and an "Open browser tab" button that opens the requesting tab; a question or a wait for input with a "Reply" button that focuses the terminal (the quick input on phones). | F 2026-10-08 UI | C | AC-UI-19 |
+| UI-027 | New and edited automations pick their schedule from presets — every day, every weekday, once a week (with the day), every hour — at a time, and the page says in words when it runs; the raw cron expression stays available under "Advanced", and typing one selects the matching preset (or Custom). | F 2026-10-08 UI | C | AC-UI-20 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -594,6 +595,7 @@ instance — out of scope).
 | AC-UI-17 | A task waiting for input is under Needs you on both the sidebar and the Tasks page; opening the Tasks page with `?author=anna-q` shows only anna-q's tasks and the Author chip reads "Author: anna-q". | ui |
 | AC-UI-18 | For a sandbox whose integration environment is not yet verified, the Git page shows the waiting tasks and a disabled release button saying "Unlocks when <environment> is verified"; after the environment is marked verified, the button is enabled and its confirmation lists those tasks. | ui |
 | AC-UI-19 | When an agent requests a browser action for its task, the task view shows the reason, and "Open browser tab" opens the browser panel on the requesting tab. | ui |
+| AC-UI-20 | Choosing "Once a week", Wednesday, 17:30 writes the cron "30 17 * * 3" and shows "Every Wednesday at 17:30"; typing "0 8 * * 1-5" selects "Every weekday" at 08:00. | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
@@ -695,6 +697,9 @@ observed. Live provider compatibility and deployment are reported separately fro
   later the same day: the agent's cursor (BRW-007), the hidden tools rail (UI-017), link routing
   (UI-018), HTML terminal text with instant copying and double-click selection (UI-019), text
   selection in the browser mirror (BRW-005) and the "unknown tab" error (BRW-004).
+
+- 2026-10-08 (UI audit wave 3, `F 2026-10-08 UI`): automation schedules from presets with cron under
+  Advanced (UI-027, AC-UI-20).
 
 - 2026-10-08 (UI review, `F 2026-10-08 UI`): the user menu moves to the sidebar's foot and the
   collapsed sidebar is dropped; the tools rail names its tools; the sidebar shows the Yulius
