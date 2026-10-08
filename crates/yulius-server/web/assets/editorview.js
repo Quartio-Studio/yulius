@@ -61,10 +61,13 @@ function loadMonaco() {
 
 // Monaco's chrome follows the tokens (brand, theme), not VS Code's blue (VS Code theme colour ids).
 function defineEditorTheme(monaco) {
-  const c = (name) => hexToken(name);
+  // Colours as seen where the editor sits: a theme island (e.g. a dark work area on a light page) counts.
+  const scope = document.querySelector('.ed-host') || document.body;
+  const c = (name) => hexToken(name, scope);
   const well = c('--term-bg');
+  const scheme = getComputedStyle(scope).colorScheme || activeTheme();
   monaco.editor.defineTheme('yulius', {
-    base: activeTheme() === 'light' ? 'vs' : 'vs-dark',
+    base: scheme.includes('light') ? 'vs' : 'vs-dark',
     inherit: true,
     rules: [],
     colors: {
@@ -340,6 +343,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       errorToast(error, 'The editor could not be loaded');
       return false;
     }
+    defineEditorTheme(monaco); // the host is in place now: take its theme
     editor = monaco.editor.create(host, {
       theme: 'yulius',
       automaticLayout: true,

@@ -74,7 +74,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   });
   // Colours and the code typeface come from tokens.css and follow theme and brand changes (theme.js).
   const offTheme = onThemeChange(() => {
-    term.options.theme = terminalColors();
+    term.options.theme = terminalColors(host.isConnected ? host : undefined); // a theme island counts
     const font = token('--font-mono');
     const nextSize = termSize();
     if ((font && term.options.fontFamily !== font) || (nextSize && term.options.fontSize !== nextSize)) {
@@ -256,6 +256,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     start() {
       if (opened || destroyed) return;
       term.open(host);
+      term.options.theme = terminalColors(host); // attached now: colours as seen where it sits
       // The terminal keeps Tab and Esc; say how to leave it (WCAG 2.1.2 asks that the way out be told).
       const input = host.querySelector('.xterm-helper-textarea');
       if (input) {

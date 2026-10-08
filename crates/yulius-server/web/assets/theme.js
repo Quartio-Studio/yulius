@@ -12,9 +12,9 @@ const KEY = 'yulius.theme';
 export const PHONE = '(max-width: 767px)';
 /** True while the phone layout applies. */
 export const isPhone = () => window.matchMedia(PHONE).matches;
-/** A size token in pixels, e.g. px('--fs') → 13. */
-export function px(name) {
-  return parseFloat(token(name)) || 0;
+/** A size token in pixels, e.g. px('--fs') → 13 (read on `el`, default the page). */
+export function px(name, el) {
+  return parseFloat(token(name, el)) || 0;
 }
 export const THEME_CHOICES = [
   { id: 'dark', name: 'Dark' },
@@ -36,9 +36,12 @@ export function activeTheme() {
   return choice;
 }
 
-/** A token's current value, e.g. token('--surface') → '#11141a'. */
-export function token(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+/**
+ * A token's current value, e.g. token('--surface') → '#11141a'. Read on `el` (default the page), so
+ * an element inside a theme island ([data-theme] on a part of the page) gets that island's value.
+ */
+export function token(name, el = document.documentElement) {
+  return getComputedStyle(el).getPropertyValue(name).trim();
 }
 
 /** Applies the active theme to the page and tells terminals and editors. */
@@ -72,11 +75,11 @@ export function onThemeChange(fn) {
  * A colour token as #rrggbb or #rrggbbaa (editors want hex; tokens may be var() or color-mix()):
  * the browser resolves it on a probe element.
  */
-export function hexToken(name) {
+export function hexToken(name, el = document.body) {
   const probe = document.createElement('span');
   probe.style.color = `var(${name})`;
   probe.hidden = true;
-  document.body.append(probe);
+  el.append(probe);
   const rgb = getComputedStyle(probe).color;
   probe.remove();
   // rgb()/rgba() give 0–255 channels; color(srgb …) (from color-mix) gives 0–1.
@@ -87,19 +90,20 @@ export function hexToken(name) {
   return `#${hex(parts[0] * scale)}${hex(parts[1] * scale)}${hex(parts[2] * scale)}${alpha === 'ff' ? '' : alpha}`;
 }
 
-/** xterm.js colours from the tokens. */
-export function terminalColors() {
+/** xterm.js colours from the tokens, as seen on `el` (the terminal's element; default the page). */
+export function terminalColors(el) {
+  const t = (name) => token(name, el);
   return {
-    background: token('--term-bg'),
-    foreground: token('--term-fg'),
-    cursor: token('--term-cursor'),
-    cursorAccent: token('--term-bg'),
-    selectionBackground: token('--term-selection'),
-    black: token('--ansi-black'), red: token('--ansi-red'), green: token('--ansi-green'), yellow: token('--ansi-yellow'),
-    blue: token('--ansi-blue'), magenta: token('--ansi-magenta'), cyan: token('--ansi-cyan'), white: token('--ansi-white'),
-    brightBlack: token('--ansi-bright-black'), brightRed: token('--ansi-bright-red'), brightGreen: token('--ansi-bright-green'),
-    brightYellow: token('--ansi-bright-yellow'), brightBlue: token('--ansi-bright-blue'), brightMagenta: token('--ansi-bright-magenta'),
-    brightCyan: token('--ansi-bright-cyan'), brightWhite: token('--ansi-bright-white'),
+    background: t('--term-bg'),
+    foreground: t('--term-fg'),
+    cursor: t('--term-cursor'),
+    cursorAccent: t('--term-bg'),
+    selectionBackground: t('--term-selection'),
+    black: t('--ansi-black'), red: t('--ansi-red'), green: t('--ansi-green'), yellow: t('--ansi-yellow'),
+    blue: t('--ansi-blue'), magenta: t('--ansi-magenta'), cyan: t('--ansi-cyan'), white: t('--ansi-white'),
+    brightBlack: t('--ansi-bright-black'), brightRed: t('--ansi-bright-red'), brightGreen: t('--ansi-bright-green'),
+    brightYellow: t('--ansi-bright-yellow'), brightBlue: t('--ansi-bright-blue'), brightMagenta: t('--ansi-bright-magenta'),
+    brightCyan: t('--ansi-bright-cyan'), brightWhite: t('--ansi-bright-white'),
   };
 }
 
