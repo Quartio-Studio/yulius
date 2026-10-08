@@ -661,6 +661,29 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
 .ti-sessions { width: 100%; }
 @media (max-width: 900px) { .ti-columns { grid-template-columns: minmax(0, 1fr); } }
 
+/* Spotlight-style search (UI-036): a floating panel near the top, results under the field. */
+.spot { width: min(640px, calc(100vw - 32px)); max-height: min(560px, calc(100vh - 96px)); margin: 14vh auto auto; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--border-strong); border-radius: var(--radius-xl); background: var(--surface); color: var(--text); box-shadow: var(--shadow); overflow: hidden; }
+.spot:not([open]) { display: none; }
+.spot::backdrop { background: var(--backdrop); backdrop-filter: blur(4px); }
+.spot-field { display: flex; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--border); color: var(--muted); }
+.spot-input { flex: 1; min-width: 0; height: 56px; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-lg); line-height: var(--lh-lg); }
+.spot-input:focus { outline: 2px solid transparent; }
+.spot-input::placeholder { color: var(--text-faint); }
+.spot-list { flex: 1; min-height: 0; margin: 0; padding: 8px; overflow-y: auto; list-style: none; }
+.spot-item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 8px 12px; border-radius: var(--radius); cursor: pointer; }
+.spot-item[aria-selected="true"] { background: var(--accent-soft); }
+.spot-mark { display: inline-flex; color: var(--muted); }
+.spot-text { display: flex; flex-direction: column; min-width: 0; }
+.spot-title, .spot-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spot-sub { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.spot-meta { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; }
+.spot-more { margin-top: 4px; border-top: 1px solid var(--border); border-radius: 0 0 var(--radius) var(--radius); color: var(--text-2); }
+.spot-empty { padding: 24px 12px; color: var(--muted); text-align: center; }
+.spot-foot { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 8px 16px; border-top: 1px solid var(--border); background: var(--surface-2); color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.spot-foot > span { display: inline-flex; align-items: center; gap: 4px; }
+@media (hover: none) { .spot-foot { display: none; } }
+@media (max-width: 767px) { .spot { margin-top: 16px; } }
+
 /* Workflows → a workflow builder (UI-034): templates, steps to click or drag, gates as switches. */
 .wf-inner { max-width: 1180px; }
 .wf-head .gt-title-row { align-items: flex-start; flex-wrap: wrap; }
@@ -1049,11 +1072,6 @@ summary { cursor: pointer; }
 .tl-summary { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; }
 .link-btn { padding: 0; border: 0; background: none; color: var(--accent-fg); font: inherit; cursor: pointer; }
 .link-btn:hover { text-decoration: underline; }
-.tl-search-box { display: flex; align-items: center; gap: 8px; width: 260px; height: var(--control-lg); padding: 0 8px; border: 1px solid var(--border-control); border-radius: var(--radius); background: var(--surface); color: var(--muted); }
-.tl-search-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); outline: 2px solid transparent; outline-offset: 1px; }
-.tl-search { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent; box-shadow: none; }
-.tl-search:focus, .tl-search:focus-visible { border: 0; box-shadow: none; }
-.tl-search-box:focus-within .tl-search-key { display: none; }
 .tl { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: clip; }
 .tl-group + .tl-group { border-top: 1px solid var(--border); }
 .tl-group-title { margin: 0; font: inherit; position: sticky; top: 0; z-index: var(--z-sticky); }
@@ -1128,11 +1146,15 @@ summary { cursor: pointer; }
 .tl-empty-title { font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
 .tl-footer a { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .tl-footer a:hover { color: var(--text); }
+/* "/" opens the search (UI-036): the header only says so; on touch screens it is a search button. */
+.tl-find { display: inline-flex; align-items: center; gap: 8px; height: var(--control-lg); padding: 0 8px; border: 0; border-radius: var(--radius); background: transparent; color: var(--muted); font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); cursor: pointer; }
+.tl-find:hover { background: var(--surface-2); color: var(--text); }
+.tl-find-text { display: inline-flex; align-items: center; gap: 4px; }
 .kbd-on-accent { margin-left: 4px; border-color: transparent; background: var(--accent-strong); color: var(--accent-ink); }
 @media (max-width: 767px) {
   .tl-tabs { order: 1; width: 100%; overflow-x: auto; scrollbar-width: none; }
-  .page-actions:has(.tl-search-box) { width: 100%; flex-wrap: nowrap; }
-  .tl-search-box { width: auto; flex: 1; min-width: 0; height: var(--control-xl); }
+  .tl-find { width: var(--control-xl); height: var(--control-xl); justify-content: center; padding: 0; }
+  .tl-find-text { display: none; }
   .tl-chips { order: 3; }
   .tl-summary { order: 4; width: 100%; }
   .tl-tab { height: var(--control-lg); }
@@ -1141,7 +1163,6 @@ summary { cursor: pointer; }
   .tl-pr, .tl-avatar, .tl-time, .tl-cell, .tl-columns, .tl-actions .tl-action:not(:last-child) { display: none; }
   .page-actions .kbd-on-accent { display: none; }
   .tl-action { width: var(--control-xl); height: var(--control-xl); }
-  .tl-search-key { display: none; }
 }
 
 /* Git page (pages/git.js): delivery at a glance */

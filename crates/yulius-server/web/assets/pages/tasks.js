@@ -3,13 +3,15 @@
 // The overview is a grouped list, not a table: Needs you → Working → Stopped → Closed, with the
 // sidebar's exact rules (status.js taskInfo). Each row reads in words, with its pull request and
 // checks, author and age on the right. Filters (state tabs with counts, Author and Origin
-// multi-select, search) live in the URL so a filtered view can be shared as a link.
+// multi-select, search) live in the URL so a filtered view can be shared as a link. Search is not a
+// field: "/" opens a Spotlight-style search (spotlight.js, UI-036) that jumps to a task or filters.
 
 import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, prChip } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
-import { href, currentLocation, replaceQuietly } from '../router.js';
+import { href, navigate, currentLocation, replaceQuietly } from '../router.js';
+import { openSpotlight } from '../spotlight.js';
 import { readJson, writeJson } from '../store.js';
 import { initials } from '../layout.js';
 import { pageFrame, dataTable, loader } from './common.js';
@@ -63,19 +65,17 @@ export function mountTasksPage(ctx, sandbox) {
   const stored = readJson(COLLAPSED_KEY, []);
   const collapsed = new Set(Array.isArray(stored) ? stored : []);
   const shownCount = new Map(); // group id → rows shown after "Show more"
+  let searchQuery = query.get('q') || ''; // the list's text filter, set from the search's last row
 
   const frame = pageFrame({ title: 'Tasks', sub: sandbox.name, actions: [
+    h('button', { type: 'button', class: 'tl-find', 'aria-keyshortcuts': '/', 'aria-label': 'Search tasks', onClick: () => openSearch() }, icon('search', { size: 14 }), h('span', { class: 'tl-find-text', 'aria-hidden': 'true' }, 'Press', h('span', { class: 'kbd' }, '/'), 'to search')),
     h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, NEW_TASK_KEYS)),
   ] });
   const tabs = h('div', { class: 'tl-tabs', role: 'radiogroup', 'aria-label': 'Task state' });
   const chips = h('div', { class: 'tl-chips' });
   const summary = h('span', { class: 'tl-summary', 'aria-live': 'polite' });
-  const search = h('input', { class: 'input tl-search', type: 'search', placeholder: 'Search tasks', value: query.get('q') || '', 'aria-label': 'Search tasks (press / to focus)', 'aria-keyshortcuts': '/' });
-  const searchBox = h('label', { class: 'tl-search-box' }, icon('search', { size: 14 }), search, h('span', { class: 'kbd tl-search-key', 'aria-hidden': 'true' }, '/'));
   const listHost = h('div', { class: 'tl' });
   const footer = h('div', { class: 'tl-footer' }, h('a', { href: href('/archived'), dataset: { route: '/archived' } }, 'View archived tasks', icon('right', { size: 12 })));
-  // Search sits in the header next to New task, so the filter row stays on one line.
-  frame.actions.prepend(searchBox);
   frame.body.append(h('div', { class: 'tl-toolbar' }, tabs, chips, summary), listHost, footer);
 
   function syncUrl() {
@@ -83,18 +83,18 @@ export function mountTasksPage(ctx, sandbox) {
     if (filters.state !== 'all') params.set('state', filters.state);
     if (filters.authors.size) params.set('author', [...filters.authors].join(','));
     if (filters.origins.size) params.set('origin', [...filters.origins].join(','));
-    if (search.value.trim()) params.set('q', search.value.trim());
+    if (searchQuery) params.set('q', searchQuery);
     const qs = params.toString();
     if (alive) replaceQuietly(qs ? `${base}?${qs}` : base);
   }
 
   const myLogin = () => (ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null);
-  const filtered = () => filters.state !== 'all' || filters.authors.size || filters.origins.size || search.value.trim();
+  const filtered = () => filters.state !== 'all' || filters.authors.size || filters.origins.size || searchQuery;
   function clearFilters() {
     filters.state = 'all';
     filters.authors.clear();
     filters.origins.clear();
-    search.value = '';
+    searchQuery = '';
     render();
   }
 
@@ -124,7 +124,42 @@ export function mountTasksPage(ctx, sandbox) {
   }
   const authorChip = filterChip('Author', filters.authors, (login) => (login === myLogin() ? `Me (${login})` : login));
   const originChip = filterChip('Origin', filters.origins, (id) => ORIGINS[id] || id);
-  chips.append(authorChip.el, originChip.el);
+  // The text filter, once the search's "Show all matching" row set it: reopens the search, or clears.
+  const searchChip = h('span', { class: 'tl-chip-group', hidden: true },
+    h('button', { type: 'button', class: ['chip-btn', 'tl-chip', 'active'], onClick: () => openSearch(searchQuery) }, icon('search', { size: 12 }), h('span', { class: 'chip-label' })),
+    iconButton('x', 'Clear search', () => { searchQuery = ''; render(); }, { class: 'tl-chip-clear' }));
+  chips.append(searchChip, authorChip.el, originChip.el);
+
+  const matchesText = (task, q) => `#${task.number} ${task.title} ${task.branch || ''} ${(task.created_by && task.created_by.login) || ''}`.toLowerCase().includes(q);
+  /** "/" — search every task of the sandbox; Enter opens its overview, ⌘↵ its session. */
+  function openSearch(initial = '') {
+    openSpotlight({
+      label: `Search tasks in ${sandbox.name}`,
+      placeholder: `Search tasks in ${sandbox.name}`,
+      initial,
+      search: (text) => {
+        const q = text.toLowerCase();
+        const tasks = ctx.store.tasksOf(sandbox.id) || [];
+        const number = /^#?\d+$/.test(q) ? Number(q.replace('#', '')) : null;
+        const score = (t) => (t.number === number ? 0 : (t.title || '').toLowerCase().startsWith(q) ? 1 : 2);
+        const found = q
+          ? tasks.filter((t) => matchesText(t, q)).sort((a, b) => score(a) - score(b) || String(b.updated_at).localeCompare(String(a.updated_at)))
+          : [...tasks].sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+        return found.slice(0, 12).map((task) => {
+          const info = taskInfo(task, ctx.store.state.actionRequests);
+          return {
+            mark: statusMark(info, 16),
+            title: task.title || `Task #${task.number}`,
+            sub: `#${task.number} · ${detailLine(task, info)}`,
+            meta: relShort(task.updated_at),
+            onPick: () => navigate(`/s/${encodeURIComponent(sandbox.slug)}/tasks/${task.number}`),
+            onAlt: () => navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`),
+          };
+        });
+      },
+      more: (text) => (text ? { title: `Show every task matching “${text}” in the list`, onPick: () => { searchQuery = text; render(); } } : null),
+    });
+  }
 
   function render() {
     if (!alive) return;
@@ -138,7 +173,7 @@ export function mountTasksPage(ctx, sandbox) {
       return;
     }
     const me = myLogin();
-    const q = search.value.trim().toLowerCase();
+    const q = searchQuery.toLowerCase();
     const items = tasks.map((task) => { const info = taskInfo(task, ctx.store.state.actionRequests); return { task, info, group: groupOf(task, info) }; });
 
     // Author and origin choices come from all tasks, so a choice never disappears while selected.
@@ -150,7 +185,7 @@ export function mountTasksPage(ctx, sandbox) {
 
     const matches = items.filter(({ task }) => (!filters.authors.size || filters.authors.has(task.created_by && task.created_by.login))
       && (!filters.origins.size || filters.origins.has(task.origin))
-      && (!q || `#${task.number} ${task.title} ${task.branch || ''} ${(task.created_by && task.created_by.login) || ''}`.toLowerCase().includes(q)));
+      && (!q || matchesText(task, q)));
     const byGroup = new Map(GROUPS.map((g) => [g.id, matches.filter((item) => item.group === g.id)]));
     const visible = filters.state === 'all' ? matches : byGroup.get(filters.state);
 
@@ -170,6 +205,8 @@ export function mountTasksPage(ctx, sandbox) {
         } }, h('span', { class: `tl-tab-icon tab-${tab.id}` }, icon(tab.icon, { size: 14 })), tab.name, h('span', { class: 'tl-tab-count' }, String(tab.size)));
     })));
     authorChip.update(authors);
+    searchChip.hidden = !searchQuery;
+    searchChip.querySelector('.chip-label').textContent = `“${searchQuery}”`;
     originChip.update(origins);
     setChildren(summary, filtered()
       ? [`Showing ${visible.length} of ${tasks.length}`, ' · ', h('button', { type: 'button', class: 'link-btn', onClick: clearFilters }, 'Clear filters')]
@@ -186,7 +223,7 @@ export function mountTasksPage(ctx, sandbox) {
     }
     if (!visible.length) {
       setChildren(listHost, h('div', { class: 'tl-empty' },
-        h('p', { class: 'tl-empty-title' }, q ? `No tasks match “${search.value.trim()}”` : 'No tasks match these filters'),
+        h('p', { class: 'tl-empty-title' }, q ? `No tasks match “${searchQuery}”` : 'No tasks match these filters'),
         h('p', { class: 'muted' }, 'The counts on the tabs show where the matches are.'),
         h('button', { type: 'button', class: 'btn', onClick: clearFilters }, 'Clear filters')));
       return;
@@ -269,14 +306,14 @@ export function mountTasksPage(ctx, sandbox) {
   // Pull requests and checks: the store keeps them fresh while this page (or the sidebar) shows them.
   const unwatchPulls = ctx.store.watchPulls(sandbox.id);
 
-  // Keyboard: "/" focuses search, j/k move between tasks, "." opens the focused task's menu.
+  // Keyboard: "/" opens the search, j/k move between tasks, "." opens the focused task's menu.
   const typing = (target) => target.closest('input, textarea, select, [contenteditable="true"], .xterm');
   function onKey(event) {
     if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented || !frame.el.isConnected) return;
     if (readJson('yulius.singleKeyShortcuts', true) === false) return; // turned off in Settings (WCAG 2.1.4)
     // Single-key shortcuts only while focus is on this page, not in a tool panel (WCAG 2.1.4).
     if (event.target !== document.body && !frame.el.contains(event.target)) return;
-    if (event.key === '/' && !typing(event.target)) { event.preventDefault(); search.focus(); search.select(); return; }
+    if (event.key === '/' && !typing(event.target)) { event.preventDefault(); openSearch(); return; }
     if (typing(event.target)) return;
     const links = [...listHost.querySelectorAll('.tl-link')];
     const index = links.indexOf(document.activeElement);
@@ -290,15 +327,6 @@ export function mountTasksPage(ctx, sandbox) {
       links[index].closest('.tl-row').querySelector('.tl-actions .tl-action:last-child')?.click();
     }
   }
-  // Typing filters after a short pause, not on every keystroke.
-  let searchTimer = null;
-  search.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(render, 120); });
-  search.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    clearTimeout(searchTimer);
-    if (search.value) { search.value = ''; render(); } else search.blur();
-  });
   document.addEventListener('keydown', onKey);
   // Live events repaint at most every 200 ms; the user's own clicks and keys render at once.
   const repaint = coalesce(render, { minInterval: 200 });
@@ -314,14 +342,13 @@ export function mountTasksPage(ctx, sandbox) {
     filters.state = GROUPS.some((g) => g.id === next.get('state')) ? next.get('state') : 'all';
     filters.authors.clear(); (next.get('author') || '').split(',').filter(Boolean).forEach((a) => filters.authors.add(a));
     filters.origins.clear(); (next.get('origin') || '').split(',').filter(Boolean).forEach((o) => filters.origins.add(o));
-    search.value = next.get('q') || '';
+    searchQuery = next.get('q') || '';
     render();
   }
   return { el: frame.el, key: `tasks:${sandbox.id}`, update, destroy: () => {
     alive = false;
     unwatchPulls();
     repaint.cancel();
-    clearTimeout(searchTimer);
     offs.forEach((off) => off());
     document.removeEventListener('keydown', onKey);
   } };
