@@ -39,6 +39,9 @@ const CHECKS = {
   pending: { icon: 'clock', tone: 'warn', label: 'checks running' },
 };
 const CLOSED_PREVIEW = 5;
+// Long groups show this many rows, then "Show more" adds a page (PERF-03: hundreds of rows made
+// every repaint and keystroke slow).
+const GROUP_PAGE = 50;
 const COLLAPSED_KEY = 'yulius.tasksCollapsed';
 
 /** Which list group a task is in: the sidebar's groups, with Closed apart from Stopped. */
@@ -72,7 +75,7 @@ export function mountTasksPage(ctx, sandbox) {
   let alive = true;
   const stored = readJson(COLLAPSED_KEY, []);
   const collapsed = new Set(Array.isArray(stored) ? stored : []);
-  let closedExpanded = false;
+  const shownCount = new Map(); // group id → rows shown after "Show more"
   let pulls = new Map();
 
   const frame = pageFrame({ title: 'Tasks', sub: sandbox.name, actions: [
@@ -204,11 +207,14 @@ export function mountTasksPage(ctx, sandbox) {
     }
 
     const sections = [];
+    nextRows = new Map();
     for (const group of GROUPS) {
       const list = filters.state === 'all' ? byGroup.get(group.id) : (filters.state === group.id ? visible : []);
       if (!list.length) continue;
       const open = filters.state === group.id || !collapsed.has(group.id);
-      const shown = group.id === 'closed' && !closedExpanded && filters.state === 'all' && !q ? list.slice(0, CLOSED_PREVIEW) : list;
+      const limit = shownCount.get(group.id) || (group.id === 'closed' && filters.state === 'all' && !q ? CLOSED_PREVIEW : GROUP_PAGE);
+      const shown = list.slice(0, limit);
+      const more = Math.min(list.length - shown.length, GROUP_PAGE);
       const headId = `tl-head-${group.id}`;
       sections.push(h('section', { class: ['tl-group', `group-${group.id}`], 'aria-labelledby': headId },
         h('h2', { class: 'tl-group-title' }, h('button', { type: 'button', id: headId, class: 'tl-group-head', 'aria-expanded': String(open), onClick: () => {
@@ -216,12 +222,26 @@ export function mountTasksPage(ctx, sandbox) {
           writeJson(COLLAPSED_KEY, [...collapsed]);
           render();
         } }, icon(open ? 'down' : 'right', { size: 12 }), icon(group.icon, { size: 14 }), h('span', { class: 'tl-group-name' }, group.name), h('span', { class: 'tl-group-count' }, String(list.length)))),
-        open ? h('ul', { class: 'tl-rows' }, shown.map((item) => rowView(item))) : null,
-        open && shown.length < list.length ? h('button', { type: 'button', class: 'tl-more', onClick: () => { closedExpanded = true; render(); } }, `Show ${list.length - shown.length} more`) : null));
+        open ? h('ul', { class: 'tl-rows' }, shown.map((item) => cachedRow(item))) : null,
+        open && shown.length < list.length ? h('button', { type: 'button', class: 'tl-more', onClick: () => { shownCount.set(group.id, shown.length + more); render(); } }, more < list.length - shown.length ? `Show ${more} more (${list.length - shown.length} hidden)` : `Show ${more} more`) : null));
     }
+    rowCache = nextRows;
     if (focusedId) setChildren(listHost, sections);
     else keepFocus(listHost, () => setChildren(listHost, sections));
     if (focusedId) listHost.querySelector(`[data-task-id="${CSS.escape(focusedId)}"] .tl-link`)?.focus({ preventScroll: true });
+  }
+
+  // A repaint reuses the row of every task whose row would come out the same (the key holds all a
+  // row depends on), so a burst of events rebuilds only the rows that changed (PERF-02).
+  let rowCache = new Map(); // task id → { key, el }
+  let nextRows = new Map();
+  function cachedRow(item) {
+    const pr = pulls.get(item.task.id) || null;
+    const key = JSON.stringify([item.task, item.info, item.group, pr, sandbox.access, myLogin(), relShort(item.task.updated_at)]);
+    const hit = rowCache.get(item.task.id);
+    const el = hit && hit.key === key ? hit.el : rowView(item);
+    nextRows.set(item.task.id, { key, el });
+    return el;
   }
 
   function rowView({ task, info, group }) {
@@ -287,10 +307,13 @@ export function mountTasksPage(ctx, sandbox) {
       links[index].closest('.tl-row').querySelector('.tl-actions .tl-action:last-child')?.click();
     }
   }
-  search.addEventListener('input', render);
+  // Typing filters after a short pause, not on every keystroke.
+  let searchTimer = null;
+  search.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(render, 120); });
   search.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     event.preventDefault();
+    clearTimeout(searchTimer);
     if (search.value) { search.value = ''; render(); } else search.blur();
   });
   document.addEventListener('keydown', onKey);
@@ -317,6 +340,7 @@ export function mountTasksPage(ctx, sandbox) {
   return { el: frame.el, key: `tasks:${sandbox.id}`, update, destroy: () => {
     alive = false;
     repaint.cancel();
+    clearTimeout(searchTimer);
     offs.forEach((off) => off());
     document.removeEventListener('keydown', onKey);
     window.removeEventListener('focus', onFocus);
