@@ -516,20 +516,25 @@ export function createSidebar(ctx) {
       rows.set(task.id, row);
     }
     row.task = task;
-    paintRow(row);
+    row.info = rowInfo(task);
+    // Repaint only a row whose content would change (PERF-02): the key holds all it shows.
+    const active = Boolean(route && route.name === 'task' && route.number === task.number);
+    const key = JSON.stringify([task, row.info, active, relShort(task.updated_at), sandbox.slug]);
+    if (row.key !== key) {
+      row.key = key;
+      paintRow(row, active);
+    }
     return row;
   }
 
-  function paintRow(row) {
+  function paintRow(row, active) {
     const task = row.task;
-    const info = rowInfo(task);
-    row.info = info;
+    const info = row.info;
     const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`;
-    const active = route && route.name === 'task' && route.number === task.number;
     row.link.href = href(path);
     row.link.dataset.route = path;
     row.link.setAttribute('aria-current', active ? 'page' : 'false');
-    row.el.classList.toggle('active', Boolean(active));
+    row.el.classList.toggle('active', active);
     row.el.dataset.group = info.group;
     row.el.dataset.tone = info.tone;
     row.link.title = `#${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${dateTime(task.updated_at)}`;
