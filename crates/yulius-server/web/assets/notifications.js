@@ -85,7 +85,7 @@ export function createNotificationCenter(ctx) {
 
   function renderPanel() {
     const head = h('div', { class: 'notif-head' },
-      h('h3', null, 'Notifications'),
+      h('h2', null, 'Notifications'),
       h('span', { class: 'spacer' }),
       h('button', { type: 'button', class: 'btn btn-sm', disabled: unread() === 0, onClick: () => markRead(() => true) }, 'Mark all read'),
       h('button', { type: 'button', class: 'btn btn-sm', disabled: items.length === 0, onClick: () => { items = []; save(); render(); } }, 'Clear'));

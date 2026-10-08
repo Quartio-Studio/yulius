@@ -15,6 +15,7 @@ import { BRAND } from './brand.js';
 import { isPhone } from './theme.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
+const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
 const STRIP_KEY = 'yulius.stepsOpen';
 
 // Phone quick-input keys (SPEC-001 §6.4).
@@ -115,7 +116,9 @@ export function mountTaskView(ctx, sandbox, task) {
   }
   destroyers.push(ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderAttention(); }));
 
-  const el = h('div', { class: 'taskview' }, strip, attention, terminal.el, quickbar);
+  // The view's heading for screen readers and the page title (the strip shows it visually).
+  const heading = h('h1', { class: 'sr-only' }, `#${task.number} ${task.title || ''}`);
+  const el = h('div', { class: 'taskview' }, heading, strip, attention, terminal.el, quickbar);
 
   function renderStrip() {
     renderAttention();
@@ -156,7 +159,7 @@ export function mountTaskView(ctx, sandbox, task) {
     }
     setChildren(stepList,
       steps.map((step) => h('div', { class: ['step-item', `st-${step.status}`] },
-        h('span', { class: 'step-mark', 'aria-label': step.status }, STEP_MARK[step.status] || '·'),
+        h('span', { class: 'step-mark', role: 'img', 'aria-label': STEP_LABEL[step.status] || step.status }, STEP_MARK[step.status] || '·'),
         h('span', { class: 'step-title' }, step.title),
         h('span', { class: 'step-audit', title: dateTime(step.updated_at) }, [step.updated_by, step.updated_at ? relLong(step.updated_at) : null].filter(Boolean).join(' · ')),
         step.note ? h('span', { class: 'step-note' }, step.note) : null)),

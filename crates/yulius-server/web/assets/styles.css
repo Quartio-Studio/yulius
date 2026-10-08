@@ -427,7 +427,7 @@ body.resizing iframe { pointer-events: none; }
 }
 .status-section { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
 .status-section:last-child { border-bottom: 0; }
-.status-section h3 { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+.status-section h2 { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
 .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
 /* Status panel, readable in seconds: health line, machine tiles, collapsible lists. */
 .status-health { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); font-weight: 600; }
@@ -450,7 +450,7 @@ body.resizing iframe { pointer-events: none; }
 .status-fold > summary::-webkit-details-marker { display: none; }
 .status-fold > summary > .icon:first-child { color: var(--muted); transition: transform var(--duration-fast) var(--ease); }
 .status-fold[open] > summary > .icon:first-child { transform: rotate(90deg); }
-.status-fold > summary h3 { flex: none; }
+.status-fold > summary h2 { flex: none; }
 .status-summary-text { margin-left: auto; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: nowrap; }
 .status-fold-body { padding-top: 12px; }
 .status-rows { display: flex; flex-direction: column; }
@@ -513,7 +513,7 @@ body.resizing iframe { pointer-events: none; }
 }
 .notif-pop { width: min(400px, calc(100vw - 16px)); scroll-padding-top: 56px; } /* rows never hide under the sticky head (2.4.11) */
 .notif-head { position: sticky; top: 0; display: flex; align-items: center; gap: 6px; padding: 12px 12px 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
-.notif-head h3 { font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; }
+.notif-head h2 { font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; }
 .notif-list { display: flex; flex-direction: column; padding: 4px; }
 .notif-row {
   display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: start; gap: 8px; width: 100%;

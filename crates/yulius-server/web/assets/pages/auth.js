@@ -104,7 +104,7 @@ export function mountSetup(ctx, { onDone }) {
     }
   });
 
-  const root = h('div', { class: 'auth' }, form);
+  const root = h('main', { class: 'auth' }, form);
   return { el: root };
 }
 
@@ -211,7 +211,7 @@ export function mountSignIn(ctx, { next, onDone, error }) {
     details);
   if (error) details.open = false;
   setChildren(card.querySelector('.field-error'), error || '');
-  const root = h('div', { class: 'auth' }, card);
+  const root = h('main', { class: 'auth' }, card);
   function showRecovery() {
     setChildren(root, recoveryForm(ctx, {
       onBack: () => setChildren(root, card),

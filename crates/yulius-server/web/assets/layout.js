@@ -297,7 +297,7 @@ function statTile(iconName, name, value, percent, detail) {
 /** A collapsible status section whose open state survives the panel's refresh. */
 function statusSection(key, iconName, title, summary, body, openByDefault) {
   return rememberOpen(h('details', { class: 'status-section status-fold' },
-    h('summary', null, icon('right', { size: 12 }), icon(iconName, { size: 15 }), h('h3', null, title), h('span', { class: 'status-summary-text' }, summary)),
+    h('summary', null, icon('right', { size: 12 }), icon(iconName, { size: 15 }), h('h2', null, title), h('span', { class: 'status-summary-text' }, summary)),
     h('div', { class: 'status-fold-body' }, body)), key, openByDefault);
 }
 
@@ -346,7 +346,7 @@ export function renderStatus(data) {
   return [
     h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
     h('div', { class: 'status-section' },
-      h('h3', null, 'Machine'),
+      h('h2', null, 'Machine'),
       h('div', { class: 'stat-tiles' },
         statTile('cpu', 'CPU', percentText(vm.cpu_percent), vm.cpu_percent, vm.cpu_count ? `${vm.cpu_count} cores` : null),
         statTile('memory', 'Memory', percentText(memPct), memPct, vm.memory_total_bytes ? `${bytes(vm.memory_used_bytes)} of ${bytes(vm.memory_total_bytes)}` : null),

@@ -22,7 +22,7 @@ export function dataTable(columns, rows, { onRowClick, empty = 'Nothing here yet
   if (!rows || rows.length === 0) return h('div', { class: 'card' }, placeholder(empty));
   return h('div', { class: 'table-wrap' },
     h('table', { class: 'table' },
-      h('thead', null, h('tr', null, columns.map((c) => h('th', { class: [c.class, c.phoneHide && 'hide-phone'] }, c.label)))),
+      h('thead', null, h('tr', null, columns.map((c) => h('th', { class: [c.class, c.phoneHide && 'hide-phone'] }, c.label || h('span', { class: 'sr-only' }, 'Actions'))))),
       h('tbody', null, rows.map((row) => {
         const tr = h('tr', { class: [onRowClick && 'clickable', rowClass && rowClass(row)] },
           columns.map((c) => h('td', { class: [c.class, c.phoneHide && 'hide-phone'] }, c.render(row))));
