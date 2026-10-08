@@ -103,10 +103,12 @@ export function createStore(api) {
 
   function upsertTask(task) {
     if (!task || !task.id) return;
-    let map = state.tasks.get(task.sandbox_id);
+    // Only a full load creates a sandbox's list: a list built from live events alone would show
+    // just the tasks that changed and look complete. Watchers of the task still hear about it.
+    const map = state.tasks.get(task.sandbox_id);
     if (!map) {
-      map = new Map();
-      state.tasks.set(task.sandbox_id, map);
+      emit('task', task);
+      return;
     }
     if (task.archived) map.delete(task.id);
     else map.set(task.id, task);
