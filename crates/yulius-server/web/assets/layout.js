@@ -131,15 +131,19 @@ export function createTabRow(ctx) {
     contained.hidden = !(me.instance && me.instance.contained === false);
   }
 
-  ctx.store.on('sandboxes', renderTabs);
-  ctx.store.on('events-status', (status) => {
-    const ok = status === 'open';
-    eventDot.classList.toggle('off', !ok);
-    eventDot.title = ok ? 'Live updates connected' : 'Live updates reconnecting…';
-  });
+  const offs = [
+    ctx.store.on('sandboxes', renderTabs),
+    ctx.store.on('events-status', (status) => {
+      const ok = status === 'open';
+      eventDot.classList.toggle('off', !ok);
+      eventDot.title = ok ? 'Live updates connected' : 'Live updates reconnecting…';
+    }),
+  ];
 
   return {
     el,
+    /** Sign-out: unsubscribe and close the Status panel. */
+    destroy() { offs.forEach((off) => off()); statusPanel.close(); },
     update(slug) {
       currentSlug = slug;
       renderTabs();
@@ -578,15 +582,19 @@ export function createSidebar(ctx) {
       g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, grouped.get(g.id).map((r) => r.el)))));
   }
 
-  ctx.store.on('tasks', (sandboxId) => { if (sandbox && sandboxId === sandbox.id) renderTasks(); });
-  ctx.store.on('browser-action', (event) => { if (sandbox && event.sandbox_id === sandbox.id) renderTasks(); });
+  const offs = [
+    ctx.store.on('tasks', (sandboxId) => { if (sandbox && sandboxId === sandbox.id) renderTasks(); }),
+    ctx.store.on('browser-action', (event) => { if (sandbox && event.sandbox_id === sandbox.id) renderTasks(); }),
+  ];
   // Refresh relative times twice a minute (single bounded timer).
-  setInterval(() => {
+  const ageTimer = setInterval(() => {
     for (const row of rows.values()) row.age.textContent = relShort(row.task.updated_at);
   }, 30000);
 
   return {
     el,
+    /** Sign-out: unsubscribe and stop the timer. */
+    destroy() { offs.forEach((off) => off()); clearInterval(ageTimer); },
     update(nextRoute, nextSandbox) {
       if (!nextSandbox || !sandbox || nextSandbox.id !== sandbox.id) { rows.clear(); shape = ''; }
       route = nextRoute;

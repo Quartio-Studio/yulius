@@ -215,12 +215,16 @@ export function createPanelHost(ctx) {
     buttons.get('messages').disabled = !sandbox;
   }
 
-  ctx.store.on('browser-action', updateBadges);
-  ctx.store.on('task', (t) => { if (task && t.id === task.id) { task = t; updateBadges(); } });
+  const offs = [
+    ctx.store.on('browser-action', updateBadges),
+    ctx.store.on('task', (t) => { if (task && t.id === task.id) { task = t; updateBadges(); } }),
+  ];
 
   return {
     rail,
     panel,
+    /** Sign-out: drop every tool view (terminals, browser, editor) and unsubscribe. */
+    destroy() { offs.forEach((off) => off()); destroyWhere(() => true); },
     get railVisible() { return railVisible; },
     setRailVisible,
     /** Applies the remembered rail visibility once the rail is in the document. */

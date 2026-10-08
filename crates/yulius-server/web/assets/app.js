@@ -11,7 +11,7 @@ import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppL
 import { createStore, readJson, writeJson } from './store.js';
 import { applyTheme, PHONE } from './theme.js';
 import { BRAND } from './brand.js';
-import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError } from './dom.js';
+import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError, closeMenu } from './dom.js';
 import { createTabRow, createSidebar } from './layout.js';
 import { createPanelHost } from './panels.js';
 import { mountTaskView, mountComposer } from './taskview.js';
@@ -181,7 +181,13 @@ function createApp(root, transport) {
     store.stopEvents();
     if (centerView && centerView.destroy) centerView.destroy();
     centerView = null;
-    if (shell) shell.panels.setContext(null, null);
+    // Close open menus and dialogs, then tear the shell down (no timers or listeners survive).
+    closeMenu();
+    document.querySelectorAll('dialog[open]').forEach((d) => { d.close(); d.remove(); });
+    if (shell) {
+      shell.panels.setContext(null, null);
+      for (const part of [shell.tabRow, shell.sidebar, shell.panels]) if (part && part.destroy) part.destroy();
+    }
     if (ctx.notifications) ctx.notifications.destroy();
     ctx.notifications = null;
     shell = null;
