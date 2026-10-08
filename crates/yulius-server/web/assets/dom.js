@@ -514,6 +514,23 @@ export function itemCard({ iconName, iconEl, title, badges = [], description, ex
     h('div', { class: 'item-controls' }, controls, onOpen ? h('span', { class: 'item-chevron', 'aria-hidden': 'true' }, icon('right', { size: 16 })) : null));
 }
 
+/**
+ * Wraps an async action so a repeated press (Enter twice, a double click) does not run it again
+ * while the first is in flight: costly side effects such as starting a task happen once.
+ */
+export function singleFlight(fn) {
+  let busy = false;
+  return async (...args) => {
+    if (busy) return undefined;
+    busy = true;
+    try {
+      return await fn(...args);
+    } finally {
+      busy = false;
+    }
+  };
+}
+
 /** A load that failed, said inline with a way out (not a spinner forever or a vanished toast). */
 export function loadError(text, retry) {
   return h('div', { class: 'banner banner-danger load-error', role: 'alert' }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, text),

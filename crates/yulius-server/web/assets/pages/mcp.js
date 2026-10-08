@@ -52,6 +52,7 @@ export function mountMcpPage(ctx, sandbox, route) {
       const testResult = h('div', { class: 'small' });
       const manage = canManage(server);
       const testButton = h('button', { type: 'button', class: 'btn btn-sm', disabled: !canTest(server), title: canTest(server) ? 'Connect and list tools (HTTP ≤ 5 s, stdio ≤ 10 s)' : server.scope === 'instance' && !instanceAdmin ? 'Instance servers are tested by instance administrators' : server.transport === 'stdio' && contained ? 'On a contained instance stdio tests need an instance administrator' : 'Requires write access', onClick: async () => {
+        if (testButton.classList.contains('busy')) return; // one test at a time
         testButton.classList.add('busy');
         try {
           const result = await ctx.api.post(`/api/mcp/${enc(server.id)}/test`);

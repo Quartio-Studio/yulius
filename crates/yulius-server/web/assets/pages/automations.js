@@ -79,7 +79,13 @@ export function mountAutomationsPage(ctx, sandbox) {
   }
 
   /** One run now, also when disabled; the response is the AutomationRun. */
+  const running = new Set();
   async function runNow(a) {
+    if (running.has(a.id)) return; // one run per press
+    running.add(a.id);
+    try { await runNowOnce(a); } finally { running.delete(a.id); }
+  }
+  async function runNowOnce(a) {
     try {
       const run = await ctx.api.post(`/api/automations/${enc(a.id)}/run`);
       const state = run && run.state;

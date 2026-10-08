@@ -32,7 +32,12 @@ export function openTaskMenu(ctx, anchor, task) {
 
 // Every API path is a literal at its call site so tests/ui_contract.rs can check it
 // against the server's router.
+const inFlight = new Set(); // "<task id>:<verb>" while that request runs: a repeat is ignored
+
 async function taskPost(ctx, task, verb, request, okMessage) {
+  const key = `${task.id}:${verb}`;
+  if (inFlight.has(key)) return null;
+  inFlight.add(key);
   try {
     const updated = await request();
     if (updated && updated.id) ctx.store.upsertTask(updated);
@@ -41,6 +46,8 @@ async function taskPost(ctx, task, verb, request, okMessage) {
   } catch (error) {
     errorToast(error, `Could not ${verb} task #${task.number}`);
     return null;
+  } finally {
+    inFlight.delete(key);
   }
 }
 

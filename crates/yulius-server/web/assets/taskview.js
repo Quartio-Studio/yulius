@@ -2,7 +2,7 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder, openMenu, statusMark } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder, openMenu, statusMark, singleFlight } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { statusInfo, taskInfo, isLive, allows, taskActions, endedMessage } from './status.js';
 import { openTaskMenu, continueTask } from './actions.js';
@@ -373,7 +373,8 @@ export function mountComposer(ctx, sandbox) {
     }
   }
 
-  async function start() {
+  // One task per press: Enter twice must not start two sessions (singleFlight).
+  const start = singleFlight(async () => {
     const text = prompt.value.trim();
     if (!text) { prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
     const body = { prompt: text, mode };
@@ -397,7 +398,7 @@ export function mountComposer(ctx, sandbox) {
       startButton.classList.remove('busy');
       renderBanner();
     }
-  }
+  });
 
   startButton.addEventListener('click', start);
   // Enter starts (the Claude and Codex convention), Shift+Enter adds a line, ⌘/Ctrl+Enter also

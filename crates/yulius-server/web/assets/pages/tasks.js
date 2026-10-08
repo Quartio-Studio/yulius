@@ -5,7 +5,7 @@
 // checks, author and age on the right. Filters (state tabs with counts, Author and Origin
 // multi-select, search) live in the URL so a filtered view can be shared as a link.
 
-import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError } from '../dom.js';
+import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError, singleFlight } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
@@ -344,7 +344,7 @@ export function mountDevicePage(ctx, route) {
   const frame = pageFrame({ title: 'CLI device approval', sub: 'authorize `yulius import` and other CLI sessions' });
   const code = h('input', { placeholder: 'ABCD-EFGH', autocomplete: 'off', spellcheck: 'false', value: route.query.get('code') || route.query.get('user_code') || '', class: 'input mono code-input', 'aria-label': 'User code' });
   const result = h('div', { role: 'status' });
-  const decide = (approve) => async () => {
+  const decide = (approve) => singleFlight(async () => {
     const userCode = code.value.trim().toUpperCase();
     if (!userCode) { code.focus(); return; }
     try {
@@ -354,7 +354,7 @@ export function mountDevicePage(ctx, route) {
     } catch (error) {
       errorToast(error, 'Approval failed');
     }
-  };
+  });
   frame.body.append(h('div', { class: 'card card-pad stack narrow' },
     h('p', { class: 'text-2' }, 'Enter the code shown by the CLI. Approve only codes you started yourself; the CLI gets a token with your permissions.'),
     h('div', { class: 'row-wrap' }, code, h('button', { type: 'button', class: 'btn btn-primary', onClick: decide(true) }, 'Approve'), h('button', { type: 'button', class: 'btn', onClick: decide(false) }, 'Deny')),

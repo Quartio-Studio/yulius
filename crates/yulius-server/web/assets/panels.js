@@ -5,7 +5,7 @@
 // can be maximized over the center.
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, errorToast, placeholder } from './dom.js';
+import { h, icon, iconButton, setChildren, errorToast, placeholder, singleFlight } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { createBrowserPanel } from './browser.js';
 import { createEditorView } from './editorview.js';
@@ -355,7 +355,7 @@ function createMessagesView(ctx, sandbox, task) {
     }
   }
 
-  async function submit() {
+  const submit = singleFlight(async () => {
     const text = input.value.trim();
     if (!text) return;
     send.disabled = true;
@@ -370,7 +370,7 @@ function createMessagesView(ctx, sandbox, task) {
     } finally {
       send.disabled = false;
     }
-  }
+  });
 
   send.addEventListener('click', submit);
   input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(); } });
