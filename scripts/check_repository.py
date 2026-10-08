@@ -397,6 +397,13 @@ def sync_brand():
 
 
 IMPORT_STATEMENT = re.compile(r"import\s*\{([^}]*)\}\s*from\s*'([^']+)'")
+
+
+def _code(js):
+    """Script source without comments: line comments first, so a "/*" inside one (pages/*.js)
+    does not open a block comment."""
+    code = "\n".join(line for line in js.splitlines() if not line.lstrip().startswith("//"))
+    return re.sub(r"/\*.*?\*/", "", code, flags=re.S)
 EXPORT_NAME = re.compile(r"^export\s+(?:async\s+)?(?:function\*?|const|let|var|class)\s+([\w$]+)", re.M)
 EXPORT_LIST = re.compile(r"^export\s*\{([^}]*)\}", re.M)
 
@@ -414,8 +421,7 @@ def module_errors(web_assets, label_root=ROOT):
     files = {p.resolve(): p.read_text() for p in web_assets.glob("**/*.js") if "vendor" not in p.parts}
     for path, js in files.items():
         label = str(path.relative_to(label_root.resolve())) if path.is_relative_to(label_root.resolve()) else path.name
-        code = re.sub(r"/\*.*?\*/", "", js, flags=re.S)
-        code = "\n".join(line for line in code.splitlines() if not line.lstrip().startswith("//"))
+        code = _code(js)
         for names, spec in IMPORT_STATEMENT.findall(code):
             target = (path.parent / spec).resolve()
             imported = [part.split(" as ")[-1].strip() for part in names.split(",") if part.strip()]
