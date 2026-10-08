@@ -2,7 +2,7 @@
 // test. Secrets are write-only: the UI shows key names only and never reads values back.
 
 import { enc } from '../api.js';
-import { h, icon, badge, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton } from '../dom.js';
+import { h, icon, badge, iconBadge, itemCard, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton } from '../dom.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
@@ -20,15 +20,7 @@ const LOGOS = [
 function serverLogo(server) {
   const haystack = [server.name, server.url, server.command, ...(server.args || [])].filter(Boolean).join(' ');
   const known = LOGOS.find((logo) => logo.test.test(haystack));
-  return h('span', { class: 'server-logo', title: known ? known.label : server.transport === 'http' ? 'HTTP server' : 'Local command (stdio)' },
-    known ? h('img', { src: known.src, alt: '', width: 22, height: 22 }) : icon(server.transport === 'http' ? 'globe' : 'terminal', { size: 18 }));
-}
-
-/** A badge with an icon in front. */
-function iconBadge(iconName, text, tone, title) {
-  const el = badge(text, tone, title);
-  el.prepend(icon(iconName, { size: 11 }));
-  return el;
+  return known ? h('img', { src: known.src, alt: '', width: 22, height: 22 }) : icon(server.transport === 'http' ? 'globe' : 'terminal', { size: 18 });
 }
 
 /** Mount the MCP page; ?scope=instance pre-filters (admin "Instance MCP" entry). */
@@ -55,48 +47,50 @@ export function mountMcpPage(ctx, sandbox, route) {
   function render() {
     const shown = servers.filter((s) => !scopeFilter.value || s.scope === scopeFilter.value);
     if (shown.length === 0) return h('div', { class: 'card placeholder' }, servers.length ? 'No server in this scope.' : 'No MCP servers yet. Add e.g. the Quartio MCP (HTTP) or the Apify MCP (stdio).');
-    return h('div', { class: 'server-list' }, shown.map((server) => {
+    return h('div', { class: 'item-list' }, shown.map((server) => {
       const testResult = h('div', { class: 'small' });
-      return h('div', { class: ['server-card', !server.enabled && 'off'] },
-        toggle({ checked: server.enabled, disabled: !canManage(server), label: `${server.enabled ? 'Disable' : 'Enable'} ${server.name}`, onChange: async (checked, input) => {
-          try {
-            await ctx.api.put(`/api/mcp/${enc(server.id)}`, { ...baseBody(server), enabled: checked });
-            server.enabled = checked;
-            input.closest('.server-card').classList.toggle('off', !checked);
-          } catch (error) {
-            input.checked = !checked;
-            errorToast(error, 'Could not update server');
-          }
-        } }),
-        serverLogo(server),
-        h('div', { class: 'list-main' },
-          h('div', { class: 'list-title' }, server.name,
-            server.scope === 'instance' ? iconBadge('globe', 'instance', 'violet', 'Attached to every sandbox of this instance') : iconBadge('folder', 'sandbox', '', 'Attached to this sandbox only'),
-            iconBadge(server.transport === 'http' ? 'external' : 'terminal', server.transport, 'accent', server.transport === 'http' ? 'Remote server over HTTP' : 'Local command over stdio')),
-          h('div', { class: 'list-sub mono' }, server.transport === 'http' ? server.url || '' : [server.command, ...(server.args || [])].filter(Boolean).join(' ')),
-          (server.env_keys || []).length || (server.header_keys || []).length
-            ? h('div', { class: 'chips', style: { marginTop: '2px' } },
-              (server.env_keys || []).map((k) => iconBadge('lock', `env ${k} ••••`, '', 'Secret value is stored encrypted and never shown')),
-              (server.header_keys || []).map((k) => iconBadge('lock', `header ${k} ••••`, '', 'Secret value is stored encrypted and never shown')))
-            : null,
-          testResult),
-        h('div', { class: 'list-actions' },
-          h('button', { type: 'button', class: 'btn btn-sm', disabled: !canTest(server), title: canTest(server) ? 'Connect and list tools (HTTP ≤ 5 s, stdio ≤ 10 s)' : server.scope === 'instance' && !instanceAdmin ? 'Instance servers are tested by instance administrators' : server.transport === 'stdio' && contained ? 'On a contained instance stdio tests need an instance administrator' : 'Requires write access', onClick: async (event) => {
-            const button = event.currentTarget;
-            button.classList.add('busy');
+      const manage = canManage(server);
+      const testButton = h('button', { type: 'button', class: 'btn btn-sm', disabled: !canTest(server), title: canTest(server) ? 'Connect and list tools (HTTP ≤ 5 s, stdio ≤ 10 s)' : server.scope === 'instance' && !instanceAdmin ? 'Instance servers are tested by instance administrators' : server.transport === 'stdio' && contained ? 'On a contained instance stdio tests need an instance administrator' : 'Requires write access', onClick: async () => {
+        testButton.classList.add('busy');
+        try {
+          const result = await ctx.api.post(`/api/mcp/${enc(server.id)}/test`);
+          setChildren(testResult, result.ok
+            ? h('span', { class: 'row-wrap' }, badge('ok', 'ok'), h('span', { class: 'muted' }, `${(result.tools || []).length} tools: ${(result.tools || []).slice(0, 12).join(', ')}${(result.tools || []).length > 12 ? '…' : ''}`))
+            : h('span', { class: 'row-wrap' }, badge('failed', 'danger'), h('span', { class: 'field-error' }, result.error || 'unknown error')));
+        } catch (error) {
+          errorToast(error, 'Test failed');
+        } finally {
+          testButton.classList.remove('busy');
+        }
+      } }, 'Test');
+      const secrets = [...(server.env_keys || []).map((k) => `env ${k}`), ...(server.header_keys || []).map((k) => `header ${k}`)];
+      return itemCard({
+        iconEl: serverLogo(server),
+        title: server.name,
+        badges: [
+          server.scope === 'instance' ? iconBadge('globe', 'Whole instance', 'violet', 'Attached to every sandbox of this instance') : iconBadge('folder', 'This sandbox', '', 'Attached to this sandbox only'),
+          iconBadge(server.transport === 'http' ? 'globe' : 'terminal', server.transport === 'http' ? 'HTTP' : 'Local command', '', server.transport === 'http' ? 'Remote server over HTTP' : 'Local command over stdio'),
+        ],
+        description: h('span', { class: 'mono' }, server.transport === 'http' ? server.url || '' : [server.command, ...(server.args || [])].filter(Boolean).join(' ')),
+        extra: [secrets.length ? h('div', { class: 'chips' }, secrets.map((k) => iconBadge('lock', `${k} ••••`, '', 'Secret value is stored encrypted and never shown'))) : null, testResult],
+        controls: [
+          toggle({ checked: server.enabled, disabled: !manage, label: `${server.enabled ? 'Disable' : 'Enable'} ${server.name}`, onChange: async (checked, input) => {
             try {
-              const result = await ctx.api.post(`/api/mcp/${enc(server.id)}/test`);
-              setChildren(testResult, result.ok
-                ? h('span', { class: 'row-wrap' }, badge('ok', 'ok'), h('span', { class: 'muted' }, `${(result.tools || []).length} tools: ${(result.tools || []).slice(0, 12).join(', ')}${(result.tools || []).length > 12 ? '…' : ''}`))
-                : h('span', { class: 'row-wrap' }, badge('failed', 'danger'), h('span', { class: 'field-error' }, result.error || 'unknown error')));
+              await ctx.api.put(`/api/mcp/${enc(server.id)}`, { ...baseBody(server), enabled: checked });
+              server.enabled = checked;
+              input.closest('.item-card').classList.toggle('off', !checked);
             } catch (error) {
-              errorToast(error, 'Test failed');
-            } finally {
-              button.classList.remove('busy');
+              input.checked = !checked;
+              errorToast(error, 'Could not update server');
             }
-          } }, 'Test'),
-          h('button', { type: 'button', class: 'btn btn-sm', disabled: !canManage(server), title: canManage(server) ? null : 'Instance servers are managed by instance administrators', onClick: () => edit(server) }, 'Edit'),
-          h('button', { type: 'button', class: 'btn btn-sm btn-danger', disabled: !canManage(server), onClick: () => remove(server) }, 'Delete')));
+          } }),
+          testButton,
+          iconButton('trash', `Remove ${server.name}`, () => remove(server), { class: 'btn-quiet-danger', disabled: !manage, title: manage ? `Remove ${server.name}` : 'Instance servers are managed by instance administrators' }),
+        ],
+        onOpen: manage ? () => edit(server) : null,
+        openLabel: `Edit ${server.name}`,
+        dim: !server.enabled,
+      });
     }));
   }
 

@@ -1,7 +1,7 @@
 // Automations page (AUT-001..005): cron schedules with UTC offset, run history, Run now.
 
 import { enc } from '../api.js';
-import { h, badge, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, placeholder } from '../dom.js';
+import { h, badge, iconBadge, itemCard, iconButton, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, placeholder } from '../dom.js';
 import { relLong, dateTime, describeCron, cronValid, utcOffset } from '../format.js';
 import { allows } from '../status.js';
 import { href } from '../router.js';
@@ -44,28 +44,34 @@ export function mountAutomationsPage(ctx, sandbox) {
   const reload = loader(host, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/automations`), (list) => {
     const items = Array.isArray(list) ? list : [];
     if (items.length === 0) return h('div', { class: 'card placeholder' }, 'No automations. Example: every day at 09:00, create a task that implements yesterday’s customer feedback.');
-    return h('div', { class: 'card list' }, items.map((a) => h('div', { class: 'list-item' },
-      toggle({ checked: a.enabled, disabled: !write, label: `${a.enabled ? 'Disable' : 'Enable'} ${a.name}`, onChange: async (checked, input) => {
-        try {
-          await ctx.api.put(`/api/automations/${enc(a.id)}`, { ...editable(a), enabled: checked });
-          a.enabled = checked;
-          toast(`${a.name} ${checked ? 'enabled' : 'paused'}`, { kind: 'ok' });
-        } catch (error) {
-          input.checked = !checked;
-          errorToast(error, 'Could not update automation');
-        }
-      } }),
-      h('div', { class: 'list-main' },
-        h('div', { class: 'list-title' }, a.name, a.created_via === 'agent' ? badge('created by agent', 'violet') : null),
-        h('div', { class: 'list-sub' }, `${describeCron(a.cron)} · ${utcOffset(a.utc_offset_minutes)} · `, h('code', null, a.cron)),
-        h('div', { class: 'list-sub' },
-          a.enabled && a.next_run_at ? h('span', { title: dateTime(a.next_run_at) }, `next ${relLong(a.next_run_at)}`) : h('span', null, a.enabled ? 'not scheduled' : 'paused'),
-          a.last_run ? [' · last: ', runBadge(a.last_run.state), ' ', h('span', { title: dateTime(a.last_run.scheduled_for) }, relLong(a.last_run.scheduled_for)), ' ', taskLink(a.last_run.task_id)] : ' · never ran')),
-      h('div', { class: 'list-actions' },
-        h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, onClick: () => runNow(a) }, 'Run now'),
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => history(a) }, 'History'),
-        h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, onClick: () => edit(a) }, 'Edit'),
-        h('button', { type: 'button', class: 'btn btn-sm btn-danger', disabled: !write, onClick: () => remove(a) }, 'Delete')))));
+    return h('div', { class: 'item-list' }, items.map((a) => itemCard({
+      iconName: 'zap',
+      title: a.name,
+      badges: [a.created_via === 'agent' ? iconBadge('tools', 'Created by an agent', 'violet', 'An agent created this automation') : null],
+      description: [`${describeCron(a.cron)} · ${utcOffset(a.utc_offset_minutes)} `, h('code', { class: 'muted' }, a.cron)],
+      extra: h('div', { class: 'item-meta' },
+        a.enabled && a.next_run_at ? h('span', { title: dateTime(a.next_run_at) }, `Next run ${relLong(a.next_run_at)}`) : h('span', null, a.enabled ? 'Not scheduled' : 'Paused'),
+        a.last_run ? [' · last ', h('span', { title: dateTime(a.last_run.scheduled_for) }, relLong(a.last_run.scheduled_for)), ': ', runBadge(a.last_run.state), ' ', taskLink(a.last_run.task_id)] : ' · never ran'),
+      controls: [
+        toggle({ checked: a.enabled, disabled: !write, label: `${a.enabled ? 'Pause' : 'Enable'} ${a.name}`, onChange: async (checked, input) => {
+          try {
+            await ctx.api.put(`/api/automations/${enc(a.id)}`, { ...editable(a), enabled: checked });
+            a.enabled = checked;
+            input.closest('.item-card').classList.toggle('off', !checked);
+            toast(`${a.name} ${checked ? 'enabled' : 'paused'}`, { kind: 'ok' });
+          } catch (error) {
+            input.checked = !checked;
+            errorToast(error, 'Could not update automation');
+          }
+        } }),
+        h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, title: write ? 'Create a task from this automation now' : 'Requires write access', onClick: () => runNow(a) }, 'Run now'),
+        iconButton('clock', `Run history of ${a.name}`, () => history(a)),
+        iconButton('trash', `Delete ${a.name}`, () => remove(a), { class: 'btn-quiet-danger', disabled: !write }),
+      ],
+      onOpen: write ? () => edit(a) : () => history(a),
+      openLabel: write ? `Edit ${a.name}` : `Run history of ${a.name}`,
+      dim: !a.enabled,
+    })));
   });
 
   function editable(a) {

@@ -493,12 +493,12 @@ export function iconBadge(iconName, text, tone, title) {
  * a button stretched over the whole card (click or Enter anywhere opens it) and a chevron shows;
  * `controls` (toggles, icon buttons) keep their own clicks above it.
  */
-export function itemCard({ iconName, title, badges = [], description, extra, controls = [], onOpen, openLabel, dim = false }) {
+export function itemCard({ iconName, iconEl, title, badges = [], description, extra, controls = [], onOpen, openLabel, dim = false }) {
   const name = onOpen
     ? h('button', { type: 'button', class: 'item-name item-open', 'aria-label': openLabel || null, onClick: onOpen }, title)
     : h('span', { class: 'item-name' }, title);
   return h('div', { class: ['item-card', onOpen && 'clickable', dim && 'off'] },
-    h('span', { class: 'item-icon', 'aria-hidden': 'true' }, icon(iconName, { size: 18 })),
+    h('span', { class: 'item-icon', 'aria-hidden': 'true' }, iconEl || icon(iconName, { size: 18 })),
     h('div', { class: 'item-main' },
       h('div', { class: 'item-title' }, name, badges),
       description ? h('div', { class: 'item-desc' }, description) : null,
