@@ -380,6 +380,36 @@ body.resizing iframe { pointer-events: none; }
 .status-section:last-child { border-bottom: 0; }
 .status-section h3 { font-size: var(--fs-xs); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
 .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+
+/* notification center (UI-020) */
+.notif-btn { position: relative; }
+.notif-badge {
+  position: absolute; top: 0; right: -2px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px;
+  background: var(--accent); color: var(--accent-ink); font-size: 9px; font-weight: 700; line-height: 15px; text-align: center;
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.notif-pop { width: min(400px, calc(100vw - 16px)); }
+.notif-head { position: sticky; top: 0; display: flex; align-items: center; gap: 6px; padding: 10px 12px 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.notif-head h3 { font-size: var(--fs); font-weight: 600; }
+.notif-list { display: flex; flex-direction: column; padding: 4px; }
+.notif-row {
+  display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: start; gap: 10px; width: 100%;
+  padding: 8px 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-2);
+  font: inherit; text-align: left;
+}
+button.notif-row { cursor: pointer; }
+button.notif-row:hover, button.notif-row:focus-visible { background: var(--surface-3); color: var(--text); }
+.notif-row.unread { color: var(--text); }
+.notif-mark { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: transparent; }
+.notif-row.unread .notif-mark { background: var(--accent); }
+.notif-row.unread.notif-warn .notif-mark { background: var(--warn); }
+.notif-row.unread.notif-error .notif-mark { background: var(--danger); }
+.notif-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.notif-title { overflow-wrap: anywhere; }
+.notif-row.unread .notif-title { font-weight: 600; }
+.notif-detail { color: var(--muted); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.notif-time { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.notif-empty { padding: 28px 20px; color: var(--muted); text-align: center; font-size: var(--fs-sm); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: var(--fs-sm); }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }

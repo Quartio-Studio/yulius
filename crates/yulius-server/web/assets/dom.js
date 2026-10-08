@@ -76,6 +76,7 @@ const ICONS = {
   sidebar: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M9 4v16' }]],
   tools: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M15 4v16' }]],
   logo: [['path', { d: 'M6.75 6L12 12.75 17.25 6M12 12.75v6' }]],
+  bell: [['path', { d: 'M6 9a6 6 0 0 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9' }], ['path', { d: 'M10.3 20.5a2 2 0 0 0 3.4 0' }]],
   maximize: [['path', { d: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5' }]],
   minimize: [['path', { d: 'M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5' }]],
   check: [['path', { d: 'M5 12.5l4.5 4.5L19 7.5' }]],

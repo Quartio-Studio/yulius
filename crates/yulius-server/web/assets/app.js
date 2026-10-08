@@ -129,6 +129,7 @@ function createApp(root, transport) {
     store.startEvents();
     const user = (me && me.user) || {};
     if (user.is_superadmin && !readJson('yulius.passwordAck', false)) {
+      ctx.notifications.add({ kind: 'warn', title: 'Your superadmin password cannot be recovered', detail: 'Store it in several safe places.', key: 'notice:password', once: true });
       toast('Your superadmin password cannot be recovered. Store it in several safe places.', {
         kind: 'warn',
         timeout: 0,
@@ -136,6 +137,7 @@ function createApp(root, transport) {
       });
     }
     if (user.is_superadmin && me.instance && me.instance.github_configured === false) {
+      ctx.notifications.add({ kind: 'info', title: 'Connect this instance to GitHub', detail: 'Needed to create and import projects.', route: '/admin/github', key: 'notice:github', once: true });
       toast('Connect this instance to GitHub to create and import projects.', { kind: 'info', timeout: 12000, action: { label: 'Connect GitHub', run: () => navigate('/admin/github') } });
     }
     const loc = currentLocation();
@@ -168,6 +170,8 @@ function createApp(root, transport) {
     if (centerView && centerView.destroy) centerView.destroy();
     centerView = null;
     if (shell) shell.panels.setContext(null, null);
+    if (ctx.notifications) ctx.notifications.destroy();
+    ctx.notifications = null;
     shell = null;
     store.state.me = null;
     unsubscribers.splice(0).forEach((off) => off());
@@ -218,6 +222,7 @@ function createApp(root, transport) {
           await store.loadSandboxes();
           if (currentSandbox && !store.sandboxById(currentSandbox.id)) {
             toast(`${currentSandbox.name} was removed or is no longer visible to you.`, { kind: 'info' });
+            ctx.notifications.add({ kind: 'info', title: `${currentSandbox.name} was removed or is no longer visible to you` });
             navigate('/', { replace: true });
             return;
           }

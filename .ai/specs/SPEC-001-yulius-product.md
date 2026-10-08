@@ -22,6 +22,7 @@ Companion documents:
 | `K` | User clarifications in the 2026-10-07 goal | Rust implementation; Product dev VM; Studio continuous; support both simply; robustness. |
 | `F 2026-10-07` | Founder feedback after using the deployed instance (2026-10-07 goal: ten items, then the recovery code, five additions — agent cursor, hidden tools rail, the "unknown tab" error, link routing, HTML text with instant copying — and a simpler editor instead of per-user VS Code) | Later than every other source; supersedes them where it conflicts (class C). |
 | `F 2026-10-08` | Founder decision of 2026-10-08: "prune Codex support and switching providers; we use only Claude; if Codex gets better, we'll support it" | Latest source; supersedes every Codex and cross-provider statement (class C). |
+| `F 2026-10-08 UI` | Founder UI review of 2026-10-08, given item by item while using the web UI (user menu in the sidebar, named tools, wordmark, notification center, composer pickers) | Latest source for the interface; supersedes earlier layout statements where it conflicts (class C). |
 | `R:product`, `R:studio` | Read-only inspection of `/Users/mrfishpl/Desktop/quartio/product` and `/studio` | Structure, instructions, workflows. |
 
 Raw sources, frame captures and research notes stay outside Git (local notes). This document
@@ -213,6 +214,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-017 | The whole right tool rail (browser, editor, shell, messages) is hidden by default; a top-bar toggle shows it and the choice is remembered per browser. | F 2026-10-07 (supersedes the visible icon rail of UI-002) | C | AC-UI-9 |
 | UI-018 | Links in terminals, messages and pages open in a new tab of the user's browser; links to the VM itself (localhost, loopback addresses) open in the sandbox browser instead, since only it can reach them. | F 2026-10-07 | C | AC-UI-10 |
 | UI-019 | Terminal and TUI text is HTML text in the user's browser, not an image: a selection is copied at once, and a double-click selects a word even when the program (e.g., Claude Code) switched on mouse reporting; the mouse can be handed to the program on request. | F 2026-10-07 | C | AC-UI-11 |
+| UI-020 | A notification center behind a bell in the tab row collects, per user, what happened while the user looked elsewhere: tasks that wait for input, need attention or fail, browser action requests, agent messages, automation runs, account problems and instance notices. Unread entries are counted on the bell; an entry opens its task, browser tab or page; entries can be marked read or cleared. Toasts still appear. | F 2026-10-08 UI | C | AC-UI-12 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -413,7 +415,8 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 ```
 
 - Sandbox tab row: accessible sandboxes in user-defined order; overflow scrolls; "+" opens
-  Create/Import. Right side: `Status` (opens the Status panel) and the tools toggle (UI-017).
+  Create/Import. Right side: `Status` (opens the Status panel), the notification bell with its
+  unread count (UI-020) and the tools toggle (UI-017).
 - Left sidebar (≈ 220 px): New task, navigation, then the active task list with status
   icons (● working, ○ waiting for input, ! needs attention, ↻ switching, ■ stopped/closed, ✕ failed,
   ⧗ queued), harness glyph (C/X), relative time, unread-message badge. Its foot shows the signed-in
@@ -571,6 +574,7 @@ instance — out of scope).
 | AC-UI-9 | The workspace opens with the tools rail hidden; the top-bar toggle shows it. | live (Chrome) |
 | AC-UI-10 | Localhost and loopback links are classified for the sandbox browser, other links for a new tab. | live (Chrome) |
 | AC-UI-11 | The real terminal view fed output that enables mouse tracking renders rows as HTML (no canvas), keeps the mouse for selection, and a double-click selects a word. | live (Chrome) |
+| AC-UI-12 | A task entering "waiting for input" and a browser action request each add an unread entry to the bell (not for the task being watched); clicking an entry opens its task or tab and marks it read; the list survives a reload. | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
@@ -672,6 +676,10 @@ observed. Live provider compatibility and deployment are reported separately fro
   later the same day: the agent's cursor (BRW-007), the hidden tools rail (UI-017), link routing
   (UI-018), HTML terminal text with instant copying and double-click selection (UI-019), text
   selection in the browser mirror (BRW-005) and the "unknown tab" error (BRW-004).
+
+- 2026-10-08 (UI review, `F 2026-10-08 UI`): the user menu moves to the sidebar's foot and the
+  collapsed sidebar is dropped; the tools rail names its tools; the sidebar shows the Yulius
+  wordmark; a notification center behind a bell (UI-020, AC-UI-12).
 
 - 2026-10-08 (`F 2026-10-08`): Yulius runs Claude Code only. Codex support, provider switching
   and session translation are pruned and deferred until Codex improves (TSK-001/003, ROT-001/004/

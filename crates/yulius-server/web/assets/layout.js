@@ -6,6 +6,7 @@ import { relShort, relLong, bytes, duration, windowLabel, dateTime } from './for
 import { statusInfo, harnessInfo, allows } from './status.js';
 import { href } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions.js';
+import { createNotificationCenter } from './notifications.js';
 
 const NAV = [
   ['tasks', 'Tasks'],
@@ -19,7 +20,7 @@ const NAV = [
 
 // ---------------------------------------------------------------- tab row
 
-/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, tools toggle. */
+/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, notifications, tools toggle. */
 export function createTabRow(ctx) {
   const tabs = h('nav', { class: 'tabrow-tabs', 'aria-label': 'Sandboxes' });
   const select = h('select', { class: 'select tab-select', 'aria-label': 'Sandbox', onChange: () => {
@@ -47,6 +48,8 @@ export function createTabRow(ctx) {
     toolsButton.title = visible ? 'Hide tools' : 'Show tools (browser, editor, shell, messages)';
     toolsButton.setAttribute('aria-label', toolsButton.title);
   };
+  const notifications = createNotificationCenter(ctx);
+  ctx.notifications = notifications;
   const statusPanel = createStatusPanel(ctx, statusButton);
   statusButton.addEventListener('click', () => statusPanel.toggle());
 
@@ -56,7 +59,7 @@ export function createTabRow(ctx) {
     tabs,
     select,
     addButton,
-    h('div', { class: 'tabrow-right' }, contained, statusButton, toolsButton),
+    h('div', { class: 'tabrow-right' }, contained, statusButton, notifications.button, toolsButton),
   );
 
   let currentSlug = null;

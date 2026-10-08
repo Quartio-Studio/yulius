@@ -188,9 +188,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 15 | Links open in a normal new tab; localhost links in the internal browser. | UI-018 |
 | 16 | TUI, terminal and browser as HTML text with instant copying; double-click selects in the terminal. | UI-019, BRW-005 |
 | 17 | (2026-10-08, `F 2026-10-08`) Prune Codex support and provider switching now; only Claude is used; Codex returns if it gets better. Supersedes the harness approval of item 10. | TSK-001/003, ROT-001/004/007/012, ROT-005/006 withdrawn, IMP-003/004, COM-002, SKL-004, MCP-001, ADR-05/06 |
+| 18 | (2026-10-08, `F 2026-10-08 UI`) All notifications in one place, behind an icon next to Status. | UI-020 |
 
 ## Changelog
 
+- 2026-10-08: the notification center from the UI review (§6 item 18).
 - 2026-10-08: the Claude-only decision (§6 item 17).
 - 2026-10-07: feedback coverage (§6).
 - 2026-10-07: initial traceability review and self-review log.
