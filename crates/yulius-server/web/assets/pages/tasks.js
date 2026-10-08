@@ -82,7 +82,9 @@ export function mountTasksPage(ctx, sandbox) {
   const searchBox = h('label', { class: 'tl-search-box' }, icon('search', { size: 14 }), search, h('span', { class: 'kbd tl-search-key', 'aria-hidden': 'true' }, '/'));
   const listHost = h('div', { class: 'tl' });
   const footer = h('div', { class: 'tl-footer' }, h('a', { href: href('/archived'), dataset: { route: '/archived' } }, 'View archived tasks', icon('right', { size: 12 })));
-  frame.body.append(h('div', { class: 'tl-toolbar' }, tabs, chips, summary, searchBox), listHost, footer);
+  // Search sits in the header next to New task, so the filter row stays on one line.
+  frame.actions.prepend(searchBox);
+  frame.body.append(h('div', { class: 'tl-toolbar' }, tabs, chips, summary), listHost, footer);
 
   function syncUrl() {
     const params = new URLSearchParams();
@@ -212,9 +214,9 @@ export function mountTasksPage(ctx, sandbox) {
     const login = task.created_by && task.created_by.login;
     const actions = taskActions(task, sandbox.access);
     const kebab = iconButton('more', 'Task actions', () => openTaskMenu(ctx, kebab, task), { class: 'tl-action' });
-    const row = h('li', { class: ['tl-row', `group-${group}`], dataset: { taskId: task.id } },
+    const row = h('li', { class: ['tl-row', `group-${group}`], dataset: { taskId: task.id, tone: info.tone } },
       h('a', { class: 'tl-link', href: href(path), dataset: { route: path }, title: `#${task.number} ${task.title}${task.branch ? ` · ${task.branch}` : ''}` },
-        h('span', { class: 'tl-mark' }, statusMark(info, 16)),
+        h('span', { class: 'tl-mark' }, statusMark(info, 18)),
         h('span', { class: 'tl-text' },
           h('span', { class: 'tl-line' },
             h('span', { class: 'tl-title' }, task.title || `Task #${task.number}`),

@@ -32,7 +32,7 @@ export function createPanelHost(ctx) {
   const rail = h('nav', { class: 'rail', 'aria-label': 'Tools' });
   for (const [kind, iconName, label] of KINDS) {
     // Named, not icon-only, so a newcomer sees what each tool is (phones show icons only).
-    const button = h('button', { type: 'button', class: 'btn-icon rail-btn', 'aria-label': label, title: label, 'aria-pressed': 'false', onClick: () => toggle(kind) }, icon(iconName, { size: 18 }), h('span', { class: 'rail-label' }, label));
+    const button = h('button', { type: 'button', class: 'btn-icon rail-btn', 'aria-label': label, title: label, 'aria-pressed': 'false', onClick: () => toggle(kind) }, icon(iconName, { size: 20 }), h('span', { class: 'rail-label' }, label));
     const dot = h('span', { class: kind === 'messages' ? 'rail-badge' : 'rail-dot', hidden: true });
     button.append(dot);
     buttons.set(kind, button);

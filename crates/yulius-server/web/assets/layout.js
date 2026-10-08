@@ -412,11 +412,11 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
 export function createSidebar(ctx) {
   // The logo slot holds the favicon's Y until Yulius has a real logo.
   const brand = h('a', { class: 'sidebar-brand', href: href('/'), dataset: { route: '/' }, title: BRAND.name },
-    h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 20 })),
+    h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 22 })),
     h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, BRAND.name), h('span', { class: 'brand-by' }, BRAND.tagline)));
   const shortcut = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? '⌘⇧O' : 'Ctrl+Shift+O';
   const newTask = h('a', { class: 'btn btn-newtask', href: '#', dataset: { route: '/' }, title: `New task (${shortcut})`, 'aria-keyshortcuts': shortcut === '⌘⇧O' ? 'Meta+Shift+O' : 'Control+Shift+O' },
-    h('span', { class: 'newtask-plus', 'aria-hidden': 'true' }, icon('plus', { size: 14 })), h('span', null, 'New task'), h('span', { class: 'newtask-key', 'aria-hidden': 'true' }, shortcut));
+    h('span', { class: 'newtask-plus', 'aria-hidden': 'true' }, icon('plus', { size: 16 })), h('span', null, 'New task'), h('span', { class: 'newtask-key', 'aria-hidden': 'true' }, shortcut));
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sandbox' });
   const list = h('div', { class: 'task-list', 'aria-label': 'Active tasks' });
   const avatar = h('span', { class: 'avatar', 'aria-hidden': 'true' }, '?');
@@ -449,7 +449,7 @@ export function createSidebar(ctx) {
     newTask.href = href(newTask.dataset.route);
     newTask.classList.toggle('disabled', !slug);
     // Links are built once and updated in place, so a focused link keeps focus across routes.
-    if (!nav.children.length) nav.append(...NAV.map(([, label, iconName]) => h('a', { class: 'nav-item' }, icon(iconName, { size: 16 }), h('span', null, label))));
+    if (!nav.children.length) nav.append(...NAV.map(([, label, iconName]) => h('a', { class: 'nav-item' }, h('span', { class: 'nav-slot' }, icon(iconName, { size: 20 })), h('span', null, label))));
     NAV.forEach(([page], i) => {
       const link = nav.children[i];
       const path = slug ? `/s/${slug}/${page}` : '/';
@@ -527,7 +527,7 @@ export function createSidebar(ctx) {
   }
 
   function groupHead(group, size) {
-    const label = [icon(group.icon, { size: 14 }), h('span', { class: 'task-group-name' }, group.name), h('span', { class: 'task-group-count' }, String(size))];
+    const label = [h('span', { class: 'nav-slot' }, icon(group.icon, { size: 16 })), h('span', { class: 'task-group-name' }, group.name), h('span', { class: 'task-group-count' }, String(size))];
     if (group.id !== 'ended') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label);
     return h('button', { type: 'button', class: ['task-group-head', 'group-ended'], 'aria-expanded': String(endedOpen), onClick: () => {
       endedOpen = !endedOpen;
