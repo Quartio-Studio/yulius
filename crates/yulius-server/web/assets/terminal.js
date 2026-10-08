@@ -11,6 +11,7 @@ import { TerminalSocket, isEndedStatus, CLOSE_REVOKED } from './termsocket.js';
 import { createMouseFilter } from './mousefilter.js';
 import { h, icon, setChildren } from './dom.js';
 import { terminalColors, onThemeChange, token, isPhone, px } from './theme.js';
+import { readJson } from './store.js';
 
 
 /**
@@ -59,6 +60,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     // Agents print 256-colour and true-colour text that bypasses the theme; xterm lifts any cell
     // below WCAG AA against its background, in both themes.
     minimumContrastRatio: 4.5,
+    // Settings → Preferences: an accessible text mirror of the screen for screen readers (it costs
+    // some speed, so it is opt-in).
+    screenReaderMode: readJson('yulius.terminalScreenReader', false) === true,
     macOptionIsMeta: true,
     // While the app has the mouse, Option-drag (macOS) / Shift-drag still selects text.
     macOptionClickForcesSelection: true,
