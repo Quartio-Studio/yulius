@@ -866,15 +866,66 @@ route('GET', `/api/sandboxes/${ID}/delivery/runs/${ID}`, ({ db, p }) => {
 // ---- Skills, workflows, automations, MCP
 
 route('GET', `/api/sandboxes/${ID}/skills`, ({ db, p }) => { sandboxOf(db, p[0]); return db.skills; });
+// A believable SKILL.md: frontmatter, headings, steps, a checklist, a code block and a table.
+function skillContent(skill) {
+  return `---
+name: ${skill.name}
+description: ${skill.description}
+---
+
+# ${skill.name}
+
+Use this skill when the task matches the description above. Keep changes small and **verify them** before you report.
+
+## Steps
+
+1. Read \`AGENTS.md\` and the task spec.
+2. Make the smallest complete change.
+3. Verify with tests and report *evidence*, not intentions.
+
+## Checklist
+
+- [x] The spec names the goal and the plan
+- [ ] Tests cover the new behaviour
+- [ ] The PR description links the spec
+
+> Ask before changing public APIs or the database schema.
+
+## Commands
+
+\`\`\`bash
+cargo test --workspace
+scripts/dev check
+\`\`\`
+
+| Check | When |
+| --- | --- |
+| Unit tests | every change |
+| UI contracts | web changes |
+
+See [the contributing guide](https://example.com/contributing) for the details.
+`;
+}
 route('GET', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p }) => {
   const skill = db.skills.find((s) => s.name === p[1]);
   if (!skill) fail(404, 'not_found', 'not found');
-  return { name: skill.name, content: `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n# ${skill.name}\n\n1. Read AGENTS.md and the task spec.\n2. Make the smallest complete change.\n3. Verify with tests and report evidence.\n` };
+  if (skill.content === undefined) skill.content = skillContent(skill);
+  return { name: skill.name, content: skill.content };
 });
+// PUT {enabled} toggles a skill; PUT {content} saves its SKILL.md (proposed API, docs/api.md).
 route('PUT', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   const skill = db.skills.find((s) => s.name === p[1]);
   if (!skill) fail(404, 'not_found', 'not found');
+  if (typeof body.content === 'string') {
+    if (skill.source === 'open-mercato') fail(422, 'invalid', 'the Open Mercato pack is read-only');
+    if (skill.source === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance skills are managed by instance administrators');
+    if (body.content.length > 512 * 1024) fail(413, 'too_large', 'a skill is at most 512 KiB');
+    skill.content = body.content;
+    const description = body.content.match(/^---\n[\s\S]*?^description:\s*(.+)$[\s\S]*?\n---/m);
+    if (description) skill.description = description[1].replace(/^["']|["']$/g, '').trim();
+    return { name: skill.name, content: skill.content };
+  }
   if (skill.source === 'repository') fail(422, 'invalid', 'repository skills are always available inside the repository');
   if (skill.source === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance skills are managed by instance administrators');
   skill.enabled = Boolean(body.enabled);

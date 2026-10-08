@@ -661,6 +661,70 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
 .ti-sessions { width: 100%; }
 @media (max-width: 900px) { .ti-columns { grid-template-columns: minmax(0, 1fr); } }
 
+/* Skills → a skill (UI-033) and the Markdown block editor (mdeditor.js), Notion-like */
+.se-inner { max-width: 960px; }
+.se-head .gt-title-row { flex-wrap: wrap; }
+.se-badges { display: inline-flex; gap: 6px; }
+.se-status { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.se-status.se-dirty { color: var(--warn-fg); }
+.se-status.se-error { color: var(--danger-fg); }
+.se-source[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); }
+.se-body { padding: 8px 0 32px; }
+.md-editor { position: relative; max-width: 760px; margin: 0 auto; color: var(--text); }
+.md-props { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.md-props:empty { display: none; }
+.md-prop-list { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 4px 12px; align-items: start; margin: 0; }
+.md-prop-list dt { padding: 4px 0; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.md-prop-list dd { margin: 0; }
+.md-prop { width: 100%; padding: 2px 8px; border: 1px solid transparent; border-radius: var(--radius); background: transparent; color: var(--text); font: inherit; font-size: var(--fs-md); line-height: var(--lh-md); resize: vertical; }
+.md-prop:hover { background: var(--surface-hover); }
+.md-prop:focus { border-color: var(--border-control); background: var(--surface); }
+.md-prop-raw { display: flex; flex-direction: column; gap: 4px; }
+.md-blocks { display: flex; flex-direction: column; gap: 2px; min-height: 240px; padding-bottom: 48px; cursor: text; counter-reset: md-ol; }
+.md-readonly .md-blocks { cursor: default; }
+.md-block { position: relative; display: flex; align-items: flex-start; gap: 8px; border-radius: var(--radius-sm); }
+.md-text { flex: 1; min-width: 0; padding: 2px 4px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-lg); line-height: var(--lh-lg); outline: 2px solid transparent; }
+.md-text:focus-visible { box-shadow: none; }
+.md-block[data-type="p"] .md-text:empty:focus::before,
+.md-block:not([data-type="p"]) .md-text:empty::before { content: attr(data-placeholder); color: var(--text-faint); pointer-events: none; }
+.md-block[data-type="h1"] { margin-top: 16px; }
+.md-block[data-type="h2"] { margin-top: 12px; }
+.md-block[data-type="h3"] { margin-top: 8px; }
+.md-block[data-type="h1"] .md-text { font-family: var(--font-display); font-size: var(--fs-2xl); line-height: var(--lh-2xl); font-weight: 600; }
+.md-block[data-type="h2"] .md-text { font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 600; }
+.md-block[data-type="h3"] .md-text { font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; }
+.md-block[data-type="ul"]::before, .md-block[data-type="ol"]::before { flex: none; width: 20px; padding-top: 2px; color: var(--text-2); font-size: var(--fs-lg); line-height: var(--lh-lg); text-align: right; }
+.md-block[data-type="ul"]::before { content: "•"; }
+.md-block[data-type="ol"] { counter-increment: md-ol; }
+.md-block[data-type="ol"]::before { content: counter(md-ol) "."; font-variant-numeric: tabular-nums; }
+.md-block:not([data-type="ol"]) { counter-reset: md-ol; }
+.md-block[data-level] { margin-left: calc(24px * var(--md-depth, 0)); }
+.md-block[data-level="1"] { --md-depth: 1; }
+.md-block[data-level="2"] { --md-depth: 2; }
+.md-block[data-level="3"] { --md-depth: 3; }
+.md-block[data-level="4"] { --md-depth: 4; }
+.md-check { flex: none; width: 16px; height: 16px; margin: 4px 2px 0; accent-color: var(--accent); }
+.md-done .md-text { color: var(--muted); text-decoration: line-through; }
+.md-block[data-type="quote"] .md-text { padding-left: 12px; border-left: 3px solid var(--border-strong); color: var(--text-2); }
+.md-block[data-type="code"], .md-block[data-type="raw"] { flex-direction: column; gap: 0; margin: 4px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
+.md-code { width: 100%; margin: 0; padding: 4px 12px 12px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh); white-space: pre-wrap; tab-size: 2; }
+.md-lang { align-self: flex-end; width: 120px; margin: 4px 8px 0 0; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: var(--lh-xs); text-align: right; }
+.md-raw-label { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); letter-spacing: 0.04em; text-transform: uppercase; }
+.md-block[data-type="hr"] { padding: 8px 0; }
+.md-block[data-type="hr"] hr { flex: 1; margin: 0; border: 0; border-top: 1px solid var(--border-strong); }
+.md-block[data-type="hr"]:focus-visible { box-shadow: var(--focus-inset); }
+.md-text code { padding: 0 4px; border-radius: var(--radius-sm); background: var(--surface-3); font-family: var(--font-mono); font-size: inherit; }
+.md-text a { color: var(--accent-fg); text-decoration: underline; text-underline-offset: 2px; }
+.md-source { display: block; width: 100%; min-height: 60vh; padding: 12px; border: 1px solid var(--border-control); border-radius: var(--radius); background: var(--surface); color: var(--text); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh); resize: vertical; }
+.md-frontmatter { min-height: 0; }
+.md-toolbar { position: absolute; z-index: var(--z-menu); display: flex; gap: 2px; padding: 4px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2); box-shadow: var(--shadow); }
+.md-tool { min-width: 28px; height: var(--control-sm); padding: 0 6px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); cursor: pointer; }
+.md-tool:hover { background: var(--surface-hover); }
+.md-tool-bold { font-weight: 600; }
+.md-tool-italic { font-style: italic; }
+.md-tool-strike { text-decoration: line-through; }
+.md-tool-code { font-family: var(--font-mono); }
+
 /* keyboard shortcut sheet (UI-029) */
 .shortcuts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px 32px; }
 .shortcuts-title { margin-bottom: 8px; font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; color: var(--text); }

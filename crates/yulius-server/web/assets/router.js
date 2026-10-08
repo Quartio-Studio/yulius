@@ -94,6 +94,7 @@ export function matchRoute(path, query = new URLSearchParams()) {
     if (parts.length === 4 && third === 't' && /^\d+$/.test(fourth)) return { ...base, name: 'task', slug: second, number: Number(fourth) };
     // Tasks → a task's overview, and Git → a task's changes, before opening its session.
     if (parts.length === 4 && third === 'tasks' && /^\d+$/.test(fourth)) return { ...base, name: 'taskInfo', slug: second, page: 'tasks', number: Number(fourth) };
+    if (parts.length === 4 && third === 'skills') return { ...base, name: 'skill', slug: second, page: 'skills', skill: fourth };
     if (parts.length === 5 && third === 'git' && fourth === 't' && /^\d+$/.test(parts[4])) return { ...base, name: 'gitTask', slug: second, page: 'git', number: Number(parts[4]) };
     if (parts.length === 3 && third === 'browser') return { ...base, name: 'composer', slug: second, browserTab: query.get('tab') || '' };
     if (parts.length === 3 && SANDBOX_PAGES.has(third)) return { ...base, name: 'page', slug: second, page: third };

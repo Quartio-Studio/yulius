@@ -298,6 +298,7 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 | GET | `/api/sandboxes/{sid}/skills` | read | `[{"name","description","source":"repository|instance|open-mercato","path","enabled"}]` |
 | GET | `/api/sandboxes/{sid}/skills/{name}` | read | `{"name","content"}` (`SKILL.md`, at most 512 KiB) |
 | PUT | `/api/sandboxes/{sid}/skills/{name}` | write (instance skills: instance admin) | `{"enabled":bool}` → 204. Repository skills → 422 (always available inside the repository). |
+| PUT | `/api/sandboxes/{sid}/skills/{name}` (proposed) | write (instance skills: instance admin) | `{"content"}` (the whole `SKILL.md`, at most 512 KiB) → `{"name","content"}`; repository skills are written into the repository, instance skills into the instance store; the Open Mercato pack → 422 (read-only). The web UI's skill editor (UI-033) saves with it; the catalog's `description` follows the saved frontmatter. |
 | GET/POST | `/api/sandboxes/{sid}/workflows` | read/write | `Workflow`; POST → 201. `"scope":"instance"` creates an instance workflow (instance admins). |
 | PUT/DELETE | `/api/workflows/{id}` | write (instance: admin) | PUT replaces name, description, steps, instructions, gates → `Workflow`; DELETE → 204 |
 | GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201 |

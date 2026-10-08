@@ -1,13 +1,15 @@
-// Skills page (SKL-005): catalog with source badges, enable toggle and content viewer.
+// Skills page (SKL-005): catalog with source badges and the enable toggle; a skill opens in its
+// editor (pages/skilledit.js, UI-033).
 
 import { enc } from '../api.js';
-import { h, openModal, toggle, toast, errorToast, setChildren, placeholder, iconBadge, itemCard, emptyState } from '../dom.js';
+import { h, toggle, toast, errorToast, setChildren, iconBadge, itemCard, emptyState } from '../dom.js';
+import { navigate } from '../router.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
 const SOURCES = [['', 'All sources'], ['repository', 'Repository'], ['instance', 'Instance'], ['open-mercato', 'Open Mercato']];
 /** How each source reads: icon, label and tone of its badge. */
-const SOURCE_BADGE = { repository: ['branch', 'Repository', ''], instance: ['globe', 'Whole instance', 'violet'], 'open-mercato': ['book', 'Open Mercato', ''] };
+export const SOURCE_BADGE = { repository: ['branch', 'Repository', ''], instance: ['globe', 'Whole instance', 'violet'], 'open-mercato': ['book', 'Open Mercato', ''] };
 
 /** Mount the Skills page; ?source=instance pre-filters (admin "Instance skills" entry). */
 export function mountSkillsPage(ctx, sandbox, route) {
@@ -40,7 +42,7 @@ export function mountSkillsPage(ctx, sandbox, route) {
         badges: [iconBadge(badgeIcon, badgeLabel, badgeTone)],
         description: skill.description || null,
         extra: skill.path ? h('div', { class: 'item-meta mono' }, skill.path) : null,
-        onOpen: () => view(skill),
+        onOpen: () => navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills/${encodeURIComponent(skill.name)}`),
         openLabel: `Open skill ${skill.name}`,
         dim: !skill.enabled,
         controls: [h('span', { title: why || (skill.enabled ? 'On: Claude Code may use it' : 'Off') }, toggle({ checked: skill.enabled, disabled: !canToggle, label: `${skill.name} enabled`, onChange: async (checked, input) => {
@@ -64,15 +66,6 @@ export function mountSkillsPage(ctx, sandbox, route) {
   const rerender = () => setChildren(host, render());
   search.addEventListener('input', rerender);
   source.addEventListener('change', rerender);
-
-  function view(skill) {
-    const content = h('pre', { class: 'code-view' }, '');
-    const modal = openModal({ title: `${skill.name} · ${skill.source}`, wide: true, body: h('div', { class: 'stack' }, skill.path ? h('div', { class: 'muted small mono' }, skill.path) : null, placeholder('Loading…', 'loading')), actions: [{ label: 'Close' }] });
-    ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/skills/${enc(skill.name)}`).then((data) => {
-      content.textContent = data && data.content ? data.content : '';
-      setChildren(modal.body, skill.path ? h('div', { class: 'muted small mono space-bottom' }, skill.path) : null, content);
-    }).catch((error) => setChildren(modal.body, placeholder(error.message, 'error')));
-  }
 
   return { el: frame.el, key: `skills:${sandbox.id}:${route.query.get('source') || ''}`, reload };
 }

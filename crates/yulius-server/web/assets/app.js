@@ -21,6 +21,7 @@ import { mountTasksPage, mountArchivedPage, mountDevicePage } from './pages/task
 import { mountGitPage } from './pages/git.js';
 import { mountGitTaskView } from './pages/gittask.js';
 import { mountTaskInfoView } from './pages/taskinfo.js';
+import { mountSkillEditor } from './pages/skilledit.js';
 import { mountWorkflowsPage } from './pages/workflows.js';
 import { mountSkillsPage } from './pages/skills.js';
 import { mountAutomationsPage } from './pages/automations.js';
@@ -481,6 +482,9 @@ function createApp(root, transport) {
         setCenter(`task:${task.id}`, () => mountTaskView(ctx, sandbox, task), { paper: false });
         break;
       }
+      case 'skill':
+        setCenter(`skill:${sandbox.id}:${route.skill}`, () => mountSkillEditor(ctx, sandbox, route.skill));
+        break;
       case 'taskInfo': {
         await ensureTasks(sandbox);
         if (currentRoute !== route) return;
