@@ -886,6 +886,15 @@ a.dl-task:hover { text-decoration: underline; }
 .item-controls { position: relative; z-index: 1; display: flex; align-items: center; gap: 8px; flex: none; }
 .item-chevron { display: inline-flex; color: var(--muted); }
 .item-card.clickable:hover .item-chevron { color: var(--text-2); }
+/* Phones: the text takes the full width and the controls move to their own row (UX2-05). */
+@media (max-width: 767px) {
+  .item-card { flex-wrap: wrap; align-items: flex-start; }
+  .item-main { flex: 1 1 calc(100% - 52px); }
+  .item-controls { flex: 1 1 100%; justify-content: flex-end; padding-top: 8px; border-top: 1px solid var(--border); }
+  .term-banner-row { flex-wrap: wrap; padding: 8px 12px; }
+  .term-banner-text { flex: 1 1 100%; }
+  .item-card .item-meta { white-space: normal; }
+}
 .btn-quiet-danger { color: var(--muted); }
 .btn-quiet-danger:hover:not(:disabled) { color: var(--danger-fg); background: var(--danger-soft); }
 /* A workflow's steps as a readable sequence: ① Write spec → ② Implement → ③ Test */
