@@ -158,9 +158,10 @@ p { margin: 0; }
   display: flex; align-items: center; gap: 12px; width: 100%; height: var(--control-md); padding: 0 12px;
   border: 0; border-radius: var(--radius-sm); background: transparent; text-align: left; cursor: pointer;
 }
-.menu-item:hover:not(:disabled) { background: var(--surface-hover); }
+.menu-item:hover:not([aria-disabled="true"]) { background: var(--surface-hover); }
 .menu-item:focus-visible { background: var(--surface-hover); box-shadow: var(--focus-inset); outline: 2px solid transparent; outline-offset: -2px; }
-.menu-item:disabled { color: var(--muted); opacity: 0.6; cursor: not-allowed; }
+.menu-item[aria-disabled="true"] { color: var(--muted); cursor: not-allowed; }
+.menu-item[aria-disabled="true"] .menu-icon { opacity: 0.6; }
 .menu-item.danger { color: var(--danger-fg); }
 .menu-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-hint { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }

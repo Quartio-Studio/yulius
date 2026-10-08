@@ -371,11 +371,14 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     if (item.separator) { menu.append(h('div', { class: 'menu-sep', role: 'separator' })); continue; }
     if (item.header) { menu.append(h('div', { class: 'menu-header' }, item.header)); continue; }
     const choice = typeof item.checked === 'boolean';
-    const label = item.description
-      ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc' }, item.description))
+    // A disabled item says why on its second line, not only in a mouse tooltip.
+    const description = item.description || (item.disabled && item.title ? item.title : null);
+    const label = description
+      ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc' }, description))
       : h('span', { class: 'menu-label' }, item.label);
     const check = choice ? h('span', { class: 'menu-check' }, item.checked ? icon('check', { size: 14 }) : null) : null;
     const select = () => {
+      if (item.disabled) return;
       if (!item.keepOpen) {
         if (anchor instanceof HTMLElement && anchor.isConnected) anchor.focus({ preventScroll: true });
         closeMenu();
@@ -389,7 +392,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       }
       if (item.onSelect) item.onSelect();
     };
-    const el = h('button', { type: 'button', role: choice ? (item.keepOpen ? 'menuitemcheckbox' : 'menuitemradio') : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', item.description && 'rich'], disabled: item.disabled, title: item.title || null, onClick: select },
+    const el = h('button', { type: 'button', role: choice ? (item.keepOpen ? 'menuitemcheckbox' : 'menuitemradio') : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', description && 'rich'], 'aria-disabled': item.disabled ? 'true' : null, title: item.title || null, onClick: select },
       check,
       item.icon ? h('span', { class: 'menu-icon' }, icon(item.icon, { size: 15 })) : null,
       label, item.hint ? h('span', { class: 'menu-hint' }, item.hint) : null);
@@ -411,13 +414,24 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     // Focus goes back to the button before the menu closes (a button shown only while its menu is
     // open would hide first and could not take focus).
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      const buttons = [...menu.querySelectorAll('.menu-item:not(:disabled)')];
-      const index = buttons.indexOf(document.activeElement);
-      const next = event.key === 'ArrowDown' ? (index + 1) % buttons.length : (index - 1 + buttons.length) % buttons.length;
-      if (buttons[next]) buttons[next].focus();
+    // APG menu: arrows wrap, Home/End jump, a letter moves to the next item starting with it,
+    // Tab leaves (closing the menu). Disabled items stay focusable so their reason can be read.
+    const buttons = [...menu.querySelectorAll('.menu-item')];
+    const index = buttons.indexOf(document.activeElement);
+    let next = -1;
+    if (event.key === 'ArrowDown') next = (index + 1) % buttons.length;
+    else if (event.key === 'ArrowUp') next = (index - 1 + buttons.length) % buttons.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = buttons.length - 1;
+    else if (event.key === 'Tab') { event.preventDefault(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
+    else if (event.key.length === 1 && /\S/.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      const letter = event.key.toLowerCase();
+      for (let step = 1; step <= buttons.length; step += 1) {
+        const candidate = buttons[(index + step) % buttons.length];
+        if ((candidate.querySelector('.menu-label')?.textContent || '').trim().toLowerCase().startsWith(letter)) { next = buttons.indexOf(candidate); break; }
+      }
     }
+    if (next >= 0 && buttons[next]) { event.preventDefault(); buttons[next].focus(); }
   };
   const onResize = () => closeMenu();
   setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);
@@ -434,7 +448,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       if (button) button.setAttribute('aria-expanded', 'false');
     },
   };
-  const first = menu.querySelector('.menu-item:not(:disabled)');
+  const first = menu.querySelector('.menu-item:not([aria-disabled="true"])') || menu.querySelector('.menu-item');
   if (first) first.focus({ preventScroll: true });
   return menu;
 }
