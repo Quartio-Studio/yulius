@@ -78,7 +78,8 @@ const ICONS = {
   tools: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M15 4v16' }]],
   logo: [['path', { d: BRAND.mark }]],
   /* task states (status.js): one shape per state so colour is never the only cue */
-  'st-working': [['circle', { cx: 12, cy: 12, r: 6, fill: 'currentColor', stroke: 'none' }]],
+  // A spinner: a faint ring and a turning arc (styles.css spins it; still under reduced motion).
+  'st-working': [['circle', { cx: 12, cy: 12, r: 9, opacity: 0.25, 'stroke-width': 3 }], ['path', { d: 'M12 3a9 9 0 0 1 7.79 13.5', 'stroke-width': 3, 'stroke-linecap': 'round' }]],
   'st-input': [['path', { d: 'M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4 3.5V16h0.5A2.5 2.5 0 0 1 5 13.5z' }]],
   'st-attention': [['circle', { cx: 12, cy: 12, r: 8.5 }], ['path', { d: 'M12 7.5v5.5' }], ['circle', { cx: 12, cy: 16.2, r: 1.1, fill: 'currentColor', stroke: 'none' }]],
   'st-stopped': [['rect', { x: 7, y: 7, width: 10, height: 10, rx: 2, fill: 'currentColor', stroke: 'none' }]],

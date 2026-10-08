@@ -353,8 +353,10 @@ button.task-group-head:hover { color: var(--text); }
 .tone-stopping, .tone-stopped, .tone-closed { color: var(--muted); }
 .tone-stopped-abnormal { color: var(--warn); }
 .tone-failed { color: var(--danger); }
-.tone-working .glyph-pulse, .glyph.tone-working { animation: pulse 1.6s ease-in-out infinite; }
-.tone-switching.glyph { animation: spin 1.4s linear infinite; }
+/* Working turns like a spinner (motion is easier to spot than a pulse); switching turns slower.
+   The icon itself rotates, around its own centre. */
+.glyph.tone-working .icon, .glyph.tone-running .icon { animation: spin 0.9s linear infinite; }
+.glyph.tone-switching .icon { animation: spin 1.6s linear infinite; }
 @keyframes pulse { 50% { opacity: 0.6; } }
 /* Reduced motion: no animation or transition anywhere (WCAG 2.3.3). */
 @media (prefers-reduced-motion: reduce) {
