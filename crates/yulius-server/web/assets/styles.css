@@ -293,7 +293,15 @@ p { margin: 0; }
 .brand-text { display: flex; flex-direction: column; min-width: 0; }
 .brand-name { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
 .brand-by { color: var(--muted); font-size: var(--fs-xs); line-height: 1.3; }
-.btn-newtask { width: 100%; height: 34px; justify-content: flex-start; gap: 8px; }
+.btn-newtask {
+  width: 100%; height: 38px; justify-content: flex-start; gap: 10px; padding: 0 8px;
+  border-color: var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text); font-weight: 500;
+}
+.btn-newtask:hover { background: var(--surface-3); border-color: var(--border-strong); text-decoration: none; }
+.newtask-plus {
+  display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; flex: none;
+  border-radius: 50%; background: var(--accent); color: var(--accent-ink);
+}
 .nav { display: flex; flex-direction: column; padding: 4px 6px; gap: 1px; }
 .nav-item { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 8px; border-radius: var(--radius-sm); color: var(--text-2); }
 .nav-item:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
