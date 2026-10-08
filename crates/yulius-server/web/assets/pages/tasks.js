@@ -161,7 +161,7 @@ export function mountTasksPage(ctx, sandbox) {
     const byGroup = new Map(GROUPS.map((g) => [g.id, matches.filter((item) => item.group === g.id)]));
     const visible = filters.state === 'all' ? matches : byGroup.get(filters.state);
 
-    setChildren(tabs, [{ id: 'all', name: 'All', size: matches.length }, ...GROUPS.map((g) => ({ ...g, size: byGroup.get(g.id).length }))].map((tab) => {
+    setChildren(tabs, [{ id: 'all', name: 'All', icon: 'tasks', size: matches.length }, ...GROUPS.map((g) => ({ ...g, size: byGroup.get(g.id).length }))].map((tab) => {
       const on = filters.state === tab.id;
       return h('button', { type: 'button', role: 'radio', 'aria-checked': String(on), tabindex: on ? '0' : '-1', class: ['tl-tab', on && 'active', tab.id === 'needs' && tab.size > 0 && 'urgent'], onClick: () => { filters.state = tab.id; render(); },
         onKeydown: (event) => {
@@ -170,7 +170,7 @@ export function mountTasksPage(ctx, sandbox) {
           const next = all[(all.indexOf(event.currentTarget) + (event.key === 'ArrowRight' ? 1 : all.length - 1)) % all.length];
           next.click();
           tabs.querySelector('[aria-checked="true"]').focus();
-        } }, tab.name, h('span', { class: 'tl-tab-count' }, String(tab.size)));
+        } }, h('span', { class: `tl-tab-icon tab-${tab.id}` }, icon(tab.icon, { size: 14 })), tab.name, h('span', { class: 'tl-tab-count' }, String(tab.size)));
     }));
     authorChip.update(authors);
     originChip.update(origins);

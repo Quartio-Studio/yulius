@@ -646,6 +646,10 @@ a.settings-tile:hover { background: var(--surface-3); border-color: var(--border
 .tl-tab.active { background: var(--surface-3); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-strong); }
 .tl-tab-count { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 400; font-variant-numeric: tabular-nums; }
 .tl-tab.urgent .tl-tab-count { color: var(--warn-fg); font-weight: 600; }
+.tl-tab-icon { display: inline-flex; color: var(--muted); }
+.tl-tab.urgent .tab-needs { color: var(--warn); }
+.tab-working { color: var(--ok); }
+.tl-tab:hover .tl-tab-icon, .tl-tab.active .tl-tab-icon:not(.tab-working):not(.tab-needs) { color: var(--text-2); }
 .tl-chips { display: flex; gap: 8px; }
 .tl-chip { height: var(--control-md); }
 .tl-chip.active { border-color: var(--accent-border); background: var(--accent-soft); color: var(--text); }
