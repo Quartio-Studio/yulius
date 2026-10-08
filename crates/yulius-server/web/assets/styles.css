@@ -495,7 +495,7 @@ body.resizing iframe { pointer-events: none; }
 .notif-btn { position: relative; }
 .notif-badge {
   position: absolute; top: 0; right: -2px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-full);
-  background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); font-weight: 600; line-height: 16px; text-align: center;
+  background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); font-weight: 600; line-height: var(--lh-xs); text-align: center;
   box-shadow: 0 0 0 2px var(--bg);
 }
 .notif-pop { width: min(400px, calc(100vw - 16px)); }

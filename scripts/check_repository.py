@@ -93,6 +93,44 @@ def link_errors(path, root):
     return errors
 
 
+SPACING_SCALE = {0, 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48}
+WEIGHTS = {"400", "500", "600", "inherit", "normal"}
+STYLESHEET = "crates/yulius-server/web/assets/styles.css"
+
+
+def style_errors(css, label=STYLESHEET):
+    """Design-system rules for the web UI stylesheet (web/README.md): outside `:root`, type, radii
+    and spacing come only from the scales; tokens are defined in `:root` alone."""
+    errors = []
+    root = re.search(r":root\s*\{[^}]*\}", css)
+    if not root:
+        return [f"{label}: no :root token block"]
+    body = css[:root.start()] + css[root.end():]
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    for match in re.finditer(r"(?<![-\w])([a-z-]+)\s*:\s*([^;{}]+)", body):
+        prop, value = match.group(1), match.group(2).strip()
+        line = css.count("\n", 0, css.find(match.group(0))) + 1
+        where = f"{label}:{line}: {prop}: {value}"
+        if prop == "font-size" and not re.fullmatch(r"var\(--fs(-[a-z0-9]+)?\)|inherit", value):
+            errors.append(f"{where} (use a --fs-* token)")
+        elif prop == "line-height" and not re.fullmatch(r"var\(--lh(-[a-z0-9]+)?\)|1|normal|inherit", value):
+            errors.append(f"{where} (use a --lh-* token)")
+        elif prop == "font-family" and not re.fullmatch(r"var\(--font(-mono)?\)|inherit", value):
+            errors.append(f"{where} (use --font or --font-mono)")
+        elif prop == "font" and value != "inherit" and not (re.search(r"var\(--fs", value) and re.search(r"var\(--font", value)):
+            errors.append(f"{where} (shorthand needs --fs-* and --font tokens)")
+        elif prop == "font-weight" and value not in WEIGHTS:
+            errors.append(f"{where} (weights are 400, 500, 600)")
+        elif prop == "border-radius" and any(not re.fullmatch(r"var\(--radius(-[a-z]+)?\)|0|50%|inherit", part) for part in value.split()):
+            errors.append(f"{where} (use a --radius-* token, 0 or 50%)")
+        elif re.fullmatch(r"padding(-[a-z]+)?|margin(-[a-z]+)?|gap|row-gap|column-gap", prop):
+            for number in re.findall(r"(-?\d+(?:\.\d+)?)px", value):
+                size = abs(float(number))
+                if size not in SPACING_SCALE and not (size == 1 and prop.startswith("margin")):
+                    errors.append(f"{where} ({number}px is off the 4 px spacing scale)")
+    return errors
+
+
 def output(command):
     return subprocess.check_output(command, cwd=ROOT, text=True).strip()
 
@@ -125,6 +163,7 @@ def check():
         errors.append("No repository skills found")
     for path in skills:
         errors.extend(skill_errors(path))
+    errors.extend(style_errors((ROOT / STYLESHEET).read_text()))
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     cargo = ["rustup", "run", channel, "cargo"]
     metadata = json.loads(output(cargo + ["metadata", "--locked", "--no-deps", "--format-version", "1"]))
@@ -135,7 +174,7 @@ def check():
     errors.extend(dependency_errors(packages))
     if errors:
         raise ValueError("\n".join(errors))
-    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links")
+    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, UI design tokens")
 
 
 if __name__ == "__main__":

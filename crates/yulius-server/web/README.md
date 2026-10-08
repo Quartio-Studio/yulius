@@ -83,6 +83,9 @@ panel and step-strip headers, editor chrome) keep their own heights.
 Padding, margin and gap use the 4 px scale only: 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48 (and 0).
 The single exception is a 1 px margin that nudges an icon optically.
 
+`scripts/check_repository.py` (`scripts/dev check`) enforces the type, radius and spacing rules on
+`assets/styles.css`; control heights and colours are not checked yet.
+
 ## Routes
 
 | Path | View |
