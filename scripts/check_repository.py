@@ -95,23 +95,24 @@ def link_errors(path, root):
 
 SPACING_SCALE = {0, 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48}
 WEIGHTS = {"400", "500", "600", "inherit", "normal"}
+TOKENS = "crates/yulius-server/web/assets/tokens.css"
 STYLESHEET = "crates/yulius-server/web/assets/styles.css"
+COLOUR_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(|"
+                            r"\b(?:white|black|red|green|blue|yellow|orange|purple|pink|gray|grey|silver|navy|teal)\b")
 
 
 def style_errors(css, label=STYLESHEET):
-    """Design-system rules for the web UI stylesheet (web/README.md): outside `:root`, type, radii
-    and spacing come only from the scales; tokens are defined in `:root` alone."""
+    """Design-system rules for the component stylesheet (web/README.md "Theming and branding"):
+    colours, type, radii and spacing come only from tokens.css roles and scales."""
     errors = []
-    root = re.search(r":root\s*\{[^}]*\}", css)
-    if not root:
-        return [f"{label}: no :root token block"]
-    body = css[:root.start()] + css[root.end():]
-    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
-    for match in re.finditer(r"(?<![-\w])([a-z-]+)\s*:\s*([^;{}]+)", body):
+    css = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), css, flags=re.S)
+    for match in re.finditer(r"(?<![-\w])(--[\w-]+|[a-z-]+)\s*:\s*([^;{}]+)", css):
         prop, value = match.group(1), match.group(2).strip()
-        line = css.count("\n", 0, css.find(match.group(0))) + 1
+        line = css.count("\n", 0, match.start()) + 1
         where = f"{label}:{line}: {prop}: {value}"
-        if prop == "font-size" and not re.fullmatch(r"var\(--fs(-[a-z0-9]+)?\)|inherit", value):
+        if COLOUR_LITERAL.search(re.sub(r"var\([^)]*\)", "", value)):
+            errors.append(f"{where} (colours come from tokens.css roles)")
+        elif prop == "font-size" and not re.fullmatch(r"var\(--fs(-[a-z0-9]+)?\)|inherit", value):
             errors.append(f"{where} (use a --fs-* token)")
         elif prop == "line-height" and not re.fullmatch(r"var\(--lh(-[a-z0-9]+)?\)|1|normal|inherit", value):
             errors.append(f"{where} (use a --lh-* token)")

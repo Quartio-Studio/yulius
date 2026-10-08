@@ -1,0 +1,245 @@
+/*
+ * Yulius design tokens — the single source of every colour, font, size, radius, shadow and motion
+ * value in the web UI (SPEC-001 UI-014; how to rebrand: web/README.md "Theming and branding").
+ *
+ *   Layer 1  Brand and palette: raw hues. Rebrand by editing the brand ramp (and, if wanted, the
+ *            palette). Nothing outside this file names a raw colour.
+ *   Layer 2  Roles per theme: what components use (--surface, --text, --accent-fg…). Each theme
+ *            maps roles to Layer 1 (or to its own neutrals). Add a theme by adding a block.
+ *   Layer 3  Derived roles: soft fills, borders and tracks mixed from a role, so changing --accent
+ *            changes every accent tint.
+ *   Scales   Theme-independent: type, control heights, radii, spacing, elevation, motion, layers.
+ *
+ * Components (styles.css) use roles and scales only; scripts/check_repository.py rejects colour,
+ * type, radius and spacing literals there, and checks the text/background contrast of each theme.
+ */
+
+/* ---------------------------------------------------------------- Layer 1: brand and palette */
+:root {
+  /* Brand: the accent hue, light (top) to dark. Dark theme uses 300–500, light theme 600–800. */
+  --brand-200: #b5d7ff;
+  --brand-300: #8cc2ff;
+  --brand-400: #6aaeff;
+  --brand-500: #4c9dff;
+  --brand-600: #2f7fe0;
+  --brand-700: #1f63c4;
+  --brand-800: #174f9e;
+  --brand-ink: #051424;    /* text on a --brand-500 fill */
+
+  /* Palette: state hues. */
+  --green-300: #7fdc8e;
+  --green-500: #45c35a;
+  --green-700: #17692b;
+  --amber-200: #f4d08a;
+  --amber-300: #f2c66b;
+  --amber-500: #e5ab33;
+  --amber-700: #8a5a00;
+  --amber-800: #6b4500;
+  --red-200: #ffb2ac;
+  --red-300: #ff9a93;
+  --red-500: #f2665e;
+  --red-600: #d03b33;
+  --red-700: #a8261f;
+  --violet-300: #c7b5ff;
+  --violet-400: #c58af9;
+  --violet-500: #a98cf6;
+  --violet-700: #6440c9;
+  --violet-ink: #160b20;
+  --peach-300: #f2b58a;
+  --peach-700: #9a4f1a;
+  --white: #ffffff;
+}
+
+/* ---------------------------------------------------------------- Layer 2: dark theme (default) */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  /* surfaces, darkest to lightest */
+  --term-bg: #0a0c10;      /* terminal and editor wells */
+  --bg: #0b0d11;           /* the canvas */
+  --surface: #11141a;      /* sidebar, panels, cards */
+  --surface-2: #171b23;    /* menus, popovers, raised controls */
+  --surface-3: #1f2530;    /* neutral fills: secondary buttons, badges */
+  --surface-hover: #232a36;
+  --canvas: #1b1f27;       /* behind the pixel browser view */
+  --editor-bg: #1e1e1e;    /* the editor frame */
+  --mirror-bg: var(--white); /* web pages in the browser panel are white */
+  /* lines */
+  --border: #252b36;
+  --border-strong: #343c4a;
+  /* ink, strongest to faintest (all ≥ 4.5:1 on --surface, faint ≥ 3:1 for placeholders) */
+  --text: #e3e7ee;
+  --text-2: #b7bfcc;
+  --muted: #8d96a6;
+  --text-faint: #6c7584;
+  --on-solid: var(--white); /* knobs and marks on solid fills */
+  /* accent */
+  --accent: var(--brand-500);
+  --accent-hover: var(--brand-400);
+  --accent-strong: var(--brand-600);
+  --accent-fg: var(--brand-300);       /* accent-coloured text on dark surfaces */
+  --accent-fg-strong: var(--brand-200);
+  --accent-ink: var(--brand-ink);      /* text on --accent */
+  /* states */
+  --ok: var(--green-500);
+  --ok-fg: var(--green-300);
+  --warn: var(--amber-500);
+  --warn-fg: var(--amber-300);
+  --warn-fg-strong: var(--amber-200);
+  --danger: var(--red-500);
+  --danger-fg: var(--red-300);
+  --danger-fg-strong: var(--red-200);
+  --violet: var(--violet-500);
+  --violet-fg: var(--violet-300);
+  --agent: var(--violet-400);          /* the agent's cursor in the browser */
+  --agent-ink: var(--violet-ink);
+  --harness-claude: var(--peach-300);
+  /* data */
+  --series-1: #3987e5;
+  --series-1-hover: #5b9eef;
+  --grid: #262c36;
+  --axis: #3a4250;
+  /* overlays and depth */
+  --backdrop: rgba(3, 5, 8, 0.66);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --overlay-hover: rgba(255, 255, 255, 0.04);
+  --overlay-active: rgba(255, 255, 255, 0.08);
+  --shadow-color: rgba(0, 0, 0, 0.45);
+  --shadow-soft-color: rgba(0, 0, 0, 0.25);
+  --highlight: rgba(255, 255, 255, 0.02);
+  /* terminal (xterm) and editor (Monaco) read these when they start and on theme changes */
+  --term-fg: #d8dee9;
+  --term-cursor: #e6edf3;
+  --term-selection: #2b4a74;
+  --ansi-black: #1c2128;   --ansi-bright-black: #6e7681;
+  --ansi-red: #f47067;     --ansi-bright-red: #ff938a;
+  --ansi-green: #57c26a;   --ansi-bright-green: #7ee28f;
+  --ansi-yellow: #d9b440;  --ansi-bright-yellow: #f0d070;
+  --ansi-blue: #539bf5;    --ansi-bright-blue: #79b8ff;
+  --ansi-magenta: #c58af9; --ansi-bright-magenta: #dcabff;
+  --ansi-cyan: #56c8d8;    --ansi-bright-cyan: #8ce4ef;
+  --ansi-white: #c9d1d9;   --ansi-bright-white: #f0f6fc;
+}
+
+/* ---------------------------------------------------------------- Layer 2: light theme */
+[data-theme="light"] {
+  color-scheme: light;
+  --term-bg: #fbfbfc;
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #ffffff;
+  --surface-3: #eceef2;
+  --surface-hover: #e6e9ee;
+  --canvas: #e9ecf0;
+  --editor-bg: #ffffff;
+  --mirror-bg: var(--white);
+  --border: #e1e4ea;
+  --border-strong: #c7ccd5;
+  --text: #15181e;
+  --text-2: #3b424e;
+  --muted: #5a6270;
+  --text-faint: #8a919d;
+  --on-solid: var(--white);
+  --accent: var(--brand-700);
+  --accent-hover: var(--brand-800);
+  --accent-strong: var(--brand-800);
+  --accent-fg: var(--brand-700);
+  --accent-fg-strong: var(--brand-800);
+  --accent-ink: var(--white);
+  --ok: #1f8a3b;
+  --ok-fg: var(--green-700);
+  --warn: #c58a1c;
+  --warn-fg: var(--amber-700);
+  --warn-fg-strong: var(--amber-800);
+  --danger: var(--red-600);
+  --danger-fg: var(--red-700);
+  --danger-fg-strong: var(--red-700);
+  --violet: #7c5ce0;
+  --violet-fg: var(--violet-700);
+  --agent: #8b5cf6;
+  --agent-ink: var(--white);
+  --harness-claude: var(--peach-700);
+  --series-1: var(--brand-600);
+  --series-1-hover: var(--brand-700);
+  --grid: #e3e6eb;
+  --axis: #c7ccd5;
+  --backdrop: rgba(15, 18, 24, 0.4);
+  --scrim: rgba(15, 18, 24, 0.35);
+  --overlay-hover: rgba(0, 0, 0, 0.04);
+  --overlay-active: rgba(0, 0, 0, 0.07);
+  --shadow-color: rgba(16, 24, 40, 0.16);
+  --shadow-soft-color: rgba(16, 24, 40, 0.08);
+  --highlight: rgba(255, 255, 255, 0.6);
+  --term-fg: #1f2329;
+  --term-cursor: #1f2329;
+  --term-selection: #c8dcff;
+  --ansi-black: #24292f;   --ansi-bright-black: #57606a;
+  --ansi-red: #cf222e;     --ansi-bright-red: #a40e26;
+  --ansi-green: #116329;   --ansi-bright-green: #1a7f37;
+  --ansi-yellow: #7d4e00;  --ansi-bright-yellow: #633c01;
+  --ansi-blue: #0969da;    --ansi-bright-blue: #0550ae;
+  --ansi-magenta: #8250df; --ansi-bright-magenta: #6639ba;
+  --ansi-cyan: #1b7c83;    --ansi-bright-cyan: #136061;
+  --ansi-white: #57606a;   --ansi-bright-white: #24292f;
+}
+
+/* ---------------------------------------------------------------- Layer 3 and scales */
+:root {
+  /* Derived roles: tints of a role colour, so they follow the theme and the brand. */
+  --text-disabled: color-mix(in srgb, var(--muted) 50%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-border: color-mix(in srgb, var(--accent) 40%, transparent);
+  --accent-border-strong: color-mix(in srgb, var(--accent) 60%, transparent);
+  --accent-track: color-mix(in srgb, var(--series-1) 20%, transparent);
+  --ok-soft: color-mix(in srgb, var(--ok) 14%, transparent);
+  --ok-border: color-mix(in srgb, var(--ok) 35%, transparent);
+  --warn-soft: color-mix(in srgb, var(--warn) 14%, transparent);
+  --warn-border: color-mix(in srgb, var(--warn) 40%, transparent);
+  --warn-track: color-mix(in srgb, var(--warn) 18%, transparent);
+  --danger-soft: color-mix(in srgb, var(--danger) 14%, transparent);
+  --danger-soft-hover: color-mix(in srgb, var(--danger) 25%, transparent);
+  --danger-border: color-mix(in srgb, var(--danger) 50%, transparent);
+  --danger-track: color-mix(in srgb, var(--danger) 18%, transparent);
+  --violet-soft: color-mix(in srgb, var(--violet) 15%, transparent);
+
+  /* Elevation: L0 canvas, L1 cards (border only), L2 menus/popovers/toasts, L3 modals/drawer. */
+  --shadow-sm: 0 2px 8px var(--shadow-soft-color);
+  --shadow: 0 8px 28px var(--shadow-color);
+  --shadow-raised: 0 1px 0 var(--highlight), 0 6px 20px var(--shadow-soft-color);
+  --focus: 0 0 0 2px var(--accent);
+
+  /* Type: one scale; every size has an integer line height; weights are 400, 500 and 600 only. */
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  --fs-xs: 11px;  --lh-xs: 16px;   /* captions: badges, counters, kbd, timestamps */
+  --fs-sm: 12px;  --lh-sm: 16px;   /* secondary lines, hints, meta */
+  --fs: 13px;     --lh: 20px;      /* body: the UI default */
+  --fs-md: 14px;  --lh-md: 22px;   /* prose and item titles: the prompt, card and server names */
+  --fs-lg: 16px;  --lh-lg: 24px;   /* section, panel and modal titles */
+  --fs-xl: 20px;  --lh-xl: 28px;   /* page titles, wordmark, tile values */
+  --fs-2xl: 24px; --lh-2xl: 32px;  /* display numbers */
+
+  /* Control heights: every button, input, select, picker and clickable row. */
+  --control-sm: 24px;  /* small buttons, inline row actions, inline selects */
+  --control-md: 28px;  /* default: buttons, inputs, selects, segments, menu items, list rows */
+  --control-lg: 32px;  /* top bar, composer pickers and Start, navigation, rail, status rows */
+  --control-xl: 40px;  /* prominent (New task, user, sign-in) and every control on touch screens */
+
+  /* Radii by role (circles may use 50%). */
+  --radius-sm: 4px;      /* small: kbd, tiny tiles, menu items, nav and list rows */
+  --radius: 6px;         /* controls: buttons, inputs, segments, banners, inline boxes */
+  --radius-lg: 10px;     /* containers: cards, tables, menus, popovers, toasts, modals, tiles */
+  --radius-xl: 16px;     /* the composer and the sign-in card */
+  --radius-full: 999px;  /* pills: badges, chips, counters, switches, progress bars */
+
+  /* Motion: two durations, one easing; all of it stops under prefers-reduced-motion. */
+  --duration-fast: 120ms;
+  --duration: 200ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Layout */
+  --tabrow-h: 34px;
+  --sidebar-w: 220px;
+  --sidebar-mini-w: 40px;
+  --rail-w: 128px;
+}

@@ -64,21 +64,24 @@ if __name__ == "__main__":
 
 
 class StyleContracts(unittest.TestCase):
-    ROOT_BLOCK = ":root { --fs: 13px; --lh: 20px; --radius: 6px; --font: system-ui; }\n"
-
     def test_tokens_and_scales_pass(self):
-        css = self.ROOT_BLOCK + ".a { font-size: var(--fs); line-height: var(--lh); border-radius: var(--radius); padding: 4px 12px; gap: 8px; margin-top: 1px; font-weight: 600; }"
+        css = ".a { color: var(--text); background: var(--surface); box-shadow: var(--shadow); font-size: var(--fs); line-height: var(--lh); border-radius: var(--radius); padding: 4px 12px; gap: 8px; margin-top: 1px; font-weight: 600; white-space: nowrap; }"
         self.assertEqual(style_errors(css), [])
 
     def test_literal_type_values_rejected(self):
         for rule in ("font-size: 14px", "line-height: 1.45", "font-family: Arial", "font-weight: 700", "font: 600 12px/1.4 system-ui"):
             with self.subTest(rule=rule):
-                self.assertTrue(style_errors(self.ROOT_BLOCK + f".a {{ {rule}; }}"))
+                self.assertTrue(style_errors(f".a {{ {rule}; }}"))
 
     def test_off_scale_radius_and_spacing_rejected(self):
         for rule in ("border-radius: 8px", "padding: 10px", "gap: 14px", "margin: 0 18px"):
             with self.subTest(rule=rule):
-                self.assertTrue(style_errors(self.ROOT_BLOCK + f".a {{ {rule}; }}"))
+                self.assertTrue(style_errors(f".a {{ {rule}; }}"))
+
+    def test_colour_literals_rejected(self):
+        for rule in ("color: #fff", "background: rgba(0, 0, 0, 0.5)", "border-color: hsl(10 50% 50%)", "fill: white", "--x: #123456"):
+            with self.subTest(rule=rule):
+                self.assertTrue(style_errors(f".a {{ {rule}; }}"))
 
     def test_shipped_stylesheet_follows_the_scales(self):
         self.assertEqual(style_errors((ROOT / STYLESHEET).read_text()), [])

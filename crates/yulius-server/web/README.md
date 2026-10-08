@@ -21,7 +21,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 
 | File | Responsibility |
 | --- | --- |
-| `index.html` | Page shell; loads `assets/styles.css`, `assets/vendor/xterm/xterm.css` and `assets/app.js` (`type=module`). |
+| `index.html` | Page shell; loads `assets/vendor/xterm/xterm.css`, `assets/tokens.css`, `assets/styles.css` and `assets/app.js` (`type=module`). |
 | `assets/app.js` | Entry point: boot (setup → sign-in → workspace), route dispatch, composition of the layout, link handling. |
 | `assets/api.js` | HTTP client (`X-Yulius-CSRF` on every non-GET, `{"error":{code,message}}` → `ApiError`, 30 s timeout) and the transport abstraction. |
 | `assets/router.js` | Routes and links; history API paths, hash paths in mock mode; recognizes Yulius links. |
@@ -39,13 +39,14 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/dom.js`, `assets/format.js` | DOM builder (text only, never `innerHTML` with data), icons, toasts, modals, menus; formatting helpers. |
 | `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), git, workflows, skills, automations, MCP, dashboard, admin (users, accounts, GitHub), settings. |
 | `assets/mock.js` | In-memory backend and fake WebSockets used with `?mock=1`. |
-| `assets/styles.css` | Design tokens (CSS variables) and all layout, including the phone layout (< 768 px). |
+| `assets/tokens.css` | Design tokens: brand and palette, colour roles per theme (dark, light), derived tints, and the type, control, radius, elevation and motion scales. |
+| `assets/styles.css` | Components and layout (including the phone layout < 768 px), using only roles and scales from `tokens.css`. |
 | `assets/vendor/` | Vendored xterm.js; see [vendor/README.md](assets/vendor/README.md). |
 | `assets/logos/` | Logos of well-known services shown on the MCP page; sources in [logos/README.md](assets/logos/README.md). |
 
 ## Typography (design system, step 1)
 
-One type scale lives on `:root` in `assets/styles.css`; components use only these tokens:
+One type scale lives in `assets/tokens.css`; components use only these tokens:
 
 | Token | Size / line height | Use |
 | --- | --- | --- |
@@ -60,7 +61,7 @@ One type scale lives on `:root` in `assets/styles.css`; components use only thes
 Weights are 400, 500 and 600 only (`strong` is 600). Families are `--font` (system UI) and
 `--font-mono`; xterm and Monaco keep their own 12–13 px mono sizes. A rule that sets a size also
 sets the matching line height. Never write a font-size, line-height or font-family literal
-outside `:root`.
+in `styles.css`.
 
 ## Radii (design system, step 2)
 
@@ -83,8 +84,8 @@ panel and step-strip headers, editor chrome) keep their own heights.
 Padding, margin and gap use the 4 px scale only: 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48 (and 0).
 The single exception is a 1 px margin that nudges an icon optically.
 
-`scripts/check_repository.py` (`scripts/dev check`) enforces the type, radius and spacing rules on
-`assets/styles.css`; control heights and colours are not checked yet.
+`scripts/check_repository.py` (`scripts/dev check`) enforces the colour, type, radius and spacing
+rules on `assets/styles.css`; control heights are not checked yet.
 
 ## Routes
 
