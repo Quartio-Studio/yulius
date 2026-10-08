@@ -9,7 +9,7 @@ import { FitAddon } from './vendor/xterm/addon-fit.mjs';
 import { WebLinksAddon } from './vendor/xterm/addon-web-links.mjs';
 import { TerminalSocket, isEndedStatus, CLOSE_REVOKED } from './termsocket.js';
 import { createMouseFilter } from './mousefilter.js';
-import { h, setChildren } from './dom.js';
+import { h, icon, setChildren } from './dom.js';
 import { terminalColors, onThemeChange } from './theme.js';
 
 const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
@@ -187,6 +187,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
 
   function bannerRow(kind, text, actions = []) {
     return h('div', { class: ['term-banner-row', `term-banner-${kind}`] },
+      kind === 'readonly' ? icon('lock', { size: 14 }) : null,
       h('span', { class: 'term-banner-text' }, text),
       ...actions.map((a) => h('button', { type: 'button', class: 'btn btn-sm', onClick: a.run }, a.label)));
   }
