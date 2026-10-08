@@ -240,6 +240,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | HRN-002 | The task terminal is dedicated to the agent: the user cannot drop to a shell; leaving the agent session (e.g., `/exit`) closes the task. A separate general terminal is not part of the task view. When a task closes because the user left the session, the UI returns to the graphical task list, closes the task view and removes the task from the Active tasks list (it remains under Tasks with Continue). | T 11:06–11:20, F 2026-10-07 | E | AC-TSK-3 |
 | HRN-003 | Native commands work: `/model`, `/effort`, `/fast` and other slash commands of the harness. | T 14:18 | E | AC-TSK-2 |
 | HRN-004 | Harness features that conflict with "one session = one task" (e.g., Claude switching to another session, `/resume` pickers) are handled: Yulius detects a session-id change and either adopts it into the same task lineage or prevents it, without corrupting another task. | T 13:04–13:27 | E | AC-TSK-4 |
+| HRN-005 | Task sessions show Claude Code's own footer as in a local session, with a status line Yulius configures (Claude Code `statusLine` in the task's Claude settings): the sandbox's repository and the task's branch ("→ studio git:(feat/checkout-api)"), above Claude Code's mode line (contained runs: "bypass permissions on", with background shells and agents). Proposed: the harness does not set the status line yet; the web mock shows the intended footer. | F 2026-10-08 UI | C | AC-UI-27 |
 | TSK-004 | Tasks keep running when the browser window closes; the user can come back from any device. | T 28:38–29:00, P(1) "doesn't stop when the website is closed" | E | AC-NFR-1 |
 | TSK-005 | Each task (each fix) has its own git worktree and branch. | T 23:41 | E | AC-TSK-5 |
 | TSK-006 | Several users may watch the same task; one person types at a time (the last to type controls terminal size). | T 28:00–28:33 (shared org sessions) | A | AC-TSK-6 |
@@ -608,6 +609,7 @@ instance — out of scope).
 | AC-UI-24 | Clicking a Git board card opens /s/<sandbox>/git/t/<n> with the Changes tab: a file tree with per-file counts and the diff in unified layout; Split shows removals beside additions; a file in the tree scrolls to its diff; "Go to task" opens the task; the tab is kept in the URL. | ui |
 | AC-UI-25 | Clicking a task on the Tasks page opens /s/<sandbox>/tasks/<n> showing its start date, running time, plan progress, changes and sessions; "Go to task" opens its session and "Review changes" its Git review. | ui |
 | AC-UI-26 | Opening a skill shows its headings, lists and code formatted; typing "/" then choosing Heading 2, and "- " at a block's start, create those blocks; ⌘S saves and a reload shows the same Markdown; an untouched skill reads back byte for byte; an Open Mercato skill is read-only. | ui |
+| AC-UI-27 | A running task's terminal ends with the input line between two rules, then "→ <repository> git:(<task branch>)", then the mode line ("bypass permissions on" in a contained run). | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
@@ -716,7 +718,7 @@ observed. Live provider compatibility and deployment are reported separately fro
   the pull request and next delivery step in the task view (UI-030, AC-UI-23); the Git page's task
   review (UI-031, AC-UI-24; the diff and commits need the proposed task changes API); the Tasks
   table and a task's overview (UI-032, AC-UI-25); the skill editor (UI-033, AC-UI-26; saving needs the
-  proposed skill content API).
+  proposed skill content API); the task terminal's status line (HRN-005, AC-UI-27; proposed for the harness).
 
 - 2026-10-08 (UI review, `F 2026-10-08 UI`): the user menu moves to the sidebar's foot and the
   collapsed sidebar is dropped; the tools rail names its tools; the sidebar shows the Yulius

@@ -1374,17 +1374,29 @@ class TermSession {
     if (this.exited) this.lines.push('', dim(`Session ended (${this.task.status}).`));
   }
 
+  // The bottom of Claude Code as it really looks: the input between two rules, then the status line
+  // (the repository and the task's branch, as Yulius would configure it) and the mode line —
+  // contained runs use --dangerously-skip-permissions, so "bypass permissions on" — with the
+  // background shells and agents when there are any.
   footer() {
     const sep = dim('─'.repeat(Math.max(10, this.cols - 1)));
-    const prompt = `${c(245, '>')} ${this.input}`;
-    const hint = `${dim(' ⏵⏵ accept edits on (shift+tab to cycle)')}${' '.repeat(6)}${c(173, `${this.task.model} · effort ${this.task.effort}`)}`;
-    const visible = hint.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').length;
-    const short = c(173, ` ${this.task.model}`);
-    return { sep, prompt, hint: visible < this.cols ? hint : short };
+    const prompt = `${bold('❯')} ${this.input}`;
+    const sandbox = this.sandbox();
+    const repo = (sandbox.repo && sandbox.repo.name) || sandbox.slug;
+    const branch = this.task.branch || sandbox.default_branch || 'main';
+    const status = ` ${c(114, '→')} ${c(80, repo)} ${c(75, 'git:(')}${c(203, branch)}${c(75, ')')}`;
+    const contained = !(this.db.me.instance && this.db.me.instance.contained === false);
+    const extras = [];
+    if (!this.exited && this.task.number % 2 === 0) extras.push(c(80, '1 shell'));
+    if (!this.exited && this.task.unread_messages) extras.push(dim(`← ${this.task.unread_messages === 1 ? '1 agent' : `${this.task.unread_messages} agents`}`));
+    const mode = contained
+      ? ` ${c(204, '⏵⏵ bypass permissions on')}${extras.length ? '' : dim(' (shift+tab to cycle)')}`
+      : ` ${dim('? for shortcuts')}`;
+    return { sep, prompt, status, mode: `${mode}${extras.map((x) => ` ${dim('·')} ${x}`).join('')}` };
   }
 
   regionBottom() {
-    return Math.max(3, this.rows - 3);
+    return Math.max(3, this.rows - 5);
   }
 
   snapshot() {
@@ -1395,7 +1407,7 @@ class TermSession {
     let out = `${E}?25l${E}2J${E}r${E}H`;
     out += visible.join('\r\n');
     out += `${E}1;${bottom}r`;
-    out += `${E}${bottom + 1};1H${f.sep}${E}${bottom + 2};1H${E}2K${f.prompt}${E}${bottom + 3};1H${E}2K${f.hint}`;
+    out += `${E}${bottom + 1};1H${f.sep}${E}${bottom + 2};1H${E}2K${f.prompt}${E}${bottom + 3};1H${f.sep}${E}${bottom + 4};1H${E}2K${f.status}${E}${bottom + 5};1H${E}2K${f.mode}`;
     out += `${E}${bottom + 2};${3 + this.input.length}H${E}?25h`;
     return out;
   }
