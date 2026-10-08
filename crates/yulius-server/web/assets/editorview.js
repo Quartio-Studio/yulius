@@ -486,5 +486,14 @@ export function createEditorView(ctx, sandbox, getTask) {
       if (editor) editor.layout();
     },
     taskChanged: folderOptions,
+    // Called when the panel host drops this view (another sandbox): free Monaco's editor and
+    // models, so other sandboxes' files neither leak nor feed suggestions.
+    destroy() {
+      for (const tab of tabs) tab.model.dispose();
+      tabs.length = 0;
+      active = null;
+      if (editor) editor.dispose();
+      editor = null;
+    },
   };
 }
