@@ -11,6 +11,7 @@ import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
 import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
 import { randomQuote } from './quotes.js';
+import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
 import { isPhone } from './theme.js';
 
@@ -282,6 +283,8 @@ export function mountComposer(ctx, sandbox) {
   const hint = h('span', { class: 'composer-kbd' }, ' · ', h('span', { class: 'kbd' }, 'Enter'), ' to start, ', h('span', { class: 'kbd' }, 'Shift'), ' + ', h('span', { class: 'kbd' }, 'Enter'), ' for a new line');
 
   const quote = randomQuote();
+  const niche = h('div', { class: 'brand-niche', 'aria-hidden': 'true' }, icon('logo', { size: 64 }));
+  let stopSmoke = null;
   // The top bar: where you are (sandbox › New task, the page's heading) on the left; the GitHub
   // repository (opening it) and the branch new tasks start from on the right.
   const baseBranch = (sandbox.profile && sandbox.profile.integration_branch) || sandbox.default_branch || 'main';
@@ -297,7 +300,7 @@ export function mountComposer(ctx, sandbox) {
   const el = h('div', { class: 'composer' }, repoBar,
     h('div', { class: 'composer-card' },
       // A brand's niche for its mark (hidden unless a brand shows it; styles.css "Brand details").
-      h('div', { class: 'brand-niche', 'aria-hidden': 'true' }, icon('logo', { size: 64 })),
+      niche,
       h('figure', { class: 'composer-quote' }, h('blockquote', null, `“${quote.text}”`), h('figcaption', null, `— ${quote.author}`)),
       banner,
       h('div', { class: 'composer-box' },
@@ -468,7 +471,10 @@ export function mountComposer(ctx, sandbox) {
   return {
     el,
     key: `composer:${sandbox.id}`,
-    start() { if (!prompt.disabled && !isPhone()) prompt.focus(); },
-    destroy() { destroyers.forEach((off) => off()); },
+    start() {
+      if (!prompt.disabled && !isPhone()) prompt.focus();
+      if (!stopSmoke) stopSmoke = brandSmoke(niche); // the brand's smoke, when its niche shows (brandfx.js)
+    },
+    destroy() { destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); },
   };
 }

@@ -1651,9 +1651,13 @@ a.dl-task:hover { text-decoration: underline; }
   display: flex; align-items: center; justify-content: center; align-self: center; width: 104px; height: 136px; margin-bottom: 24px;
   border: 1px solid var(--border-strong); border-radius: var(--radius-full) var(--radius-full) var(--radius-sm) var(--radius-sm);
   background: radial-gradient(90% 70% at 50% 28%, var(--overlay-active), transparent 72%), var(--surface); color: var(--brand-mark);
+  position: relative; overflow: hidden;
   /* A second, inner arch: the niche's moulding. */
   box-shadow: inset 0 0 0 8px var(--surface), inset 0 0 0 9px var(--border), var(--shadow-sm);
 }
+/* The smoke (brandfx.js) fills the inner arch, behind the mark. */
+[data-brand="roma"] .brand-niche-fx { position: absolute; inset: 8px; width: calc(100% - 16px); height: calc(100% - 16px); border-radius: var(--radius-full) var(--radius-full) 0 0; }
+[data-brand="roma"] .brand-niche .icon { position: relative; z-index: var(--z-raised); }
 [data-brand="roma"] .composer-quote { margin-bottom: 40px; text-align: center; }
 [data-brand="roma"] .composer-quote blockquote { color: var(--text); font-family: var(--font-display); font-weight: 400; letter-spacing: 0; }
 [data-brand="roma"] .composer-quote figcaption { margin-top: 12px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); letter-spacing: 0.24em; text-transform: uppercase; }

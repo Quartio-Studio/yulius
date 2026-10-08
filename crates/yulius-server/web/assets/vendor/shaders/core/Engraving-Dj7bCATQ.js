@@ -1,0 +1,148 @@
+import { Ac as defineStd, Ml as p, W as linework } from "./std-ClftfWpF.js";
+import { a as transformColor, c as transformPosition, r as transformAngle } from "./transformations-P50Uo_Ju.js";
+var transformStyle = (value) => value === "spiral" ? 2 : value === "line" ? 0 : 1;
+const componentDefinition = defineStd({
+	name: "Engraving",
+	role: "filter",
+	species: "gather",
+	boundingBoxDeclaration: { aspectRatio: null },
+	category: "Stylize",
+	description: "Copper-plate line engraving — the image is redrawn as flowing line work whose weight swells with darkness, lines displaced by the form like a banknote portrait: a single plate, cross-hatched shadow plates, or one continuous spiral cut",
+	blendWithChildren: false,
+	props: {
+		style: {
+			default: "crosshatch",
+			transform: transformStyle,
+			compileTime: true,
+			description: "The engraving cut: a single line plate, cross-hatched plates building up the shadows, or one continuous spiral",
+			ui: {
+				type: "select",
+				options: [
+					{
+						label: "Line",
+						value: "line"
+					},
+					{
+						label: "Cross-Hatch",
+						value: "crosshatch"
+					},
+					{
+						label: "Spiral",
+						value: "spiral"
+					}
+				],
+				label: "Style",
+				group: "Lines"
+			}
+		},
+		frequency: {
+			default: 90,
+			description: "Line density — how many engraved lines span the height of the canvas",
+			ui: {
+				type: ["range", "map"],
+				min: 20,
+				max: 300,
+				step: 1,
+				label: "Frequency",
+				group: "Lines"
+			}
+		},
+		angle: {
+			default: 8,
+			transform: transformAngle,
+			description: "Direction of the base line work (in degrees)",
+			ui: {
+				type: ["range", "map"],
+				min: 0,
+				max: 360,
+				step: 1,
+				label: "Angle",
+				group: "Lines",
+				condition: { style: "line" }
+			}
+		},
+		center: {
+			default: {
+				x: .5,
+				y: .5
+			},
+			transform: transformPosition,
+			description: "Center the spiral coils outward from",
+			ui: {
+				type: "position",
+				label: "Center",
+				group: "Lines",
+				condition: { style: "spiral" }
+			}
+		},
+		relief: {
+			default: .6,
+			description: "How strongly the image brightness displaces the lines — the engraved 'lines climb over the form' effect",
+			ui: {
+				type: ["range", "map"],
+				min: 0,
+				max: 2,
+				step: .01,
+				label: "Relief",
+				group: "Lines"
+			}
+		},
+		waviness: {
+			default: .35,
+			description: "Organic meander of the line work, like a hand-pulled burin stroke",
+			ui: {
+				type: ["range", "map"],
+				min: 0,
+				max: 1,
+				step: .01,
+				label: "Waviness",
+				group: "Lines"
+			}
+		},
+		contrast: {
+			default: 1.15,
+			description: "Tonal contrast applied before the lines are cut — higher pushes mid-tones toward pure line or pure paper",
+			ui: {
+				type: ["range", "map"],
+				min: .25,
+				max: 3,
+				step: .01,
+				label: "Contrast",
+				group: "Tone"
+			}
+		},
+		inkColor: {
+			default: "#1a1410",
+			transform: transformColor,
+			description: "Color of the engraved ink",
+			ui: {
+				type: "color",
+				label: "Ink",
+				group: "Colors"
+			}
+		},
+		paperColor: {
+			default: "#f4eee2",
+			transform: transformColor,
+			description: "Paper color shown between the lines",
+			ui: {
+				type: "color",
+				label: "Paper",
+				group: "Colors"
+			}
+		}
+	},
+	effect: linework({
+		style: p("style"),
+		frequency: p("frequency"),
+		angle: p("angle"),
+		center: p("center"),
+		relief: p("relief"),
+		waviness: p("waviness"),
+		contrast: p("contrast"),
+		ink: p("inkColor"),
+		paper: p("paperColor")
+	})
+});
+var Engraving_default = componentDefinition;
+export { componentDefinition as n, Engraving_default as t };
