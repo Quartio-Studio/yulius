@@ -201,6 +201,11 @@ p { margin: 0; }
 .menu-item.danger { color: #ff9a93; }
 .menu-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-hint { color: var(--muted); font-size: var(--fs-xs); }
+.menu-item.rich { height: auto; min-height: 28px; padding: 6px 10px; align-items: flex-start; }
+.menu-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.menu-desc { color: var(--muted); font-size: var(--fs-xs); white-space: normal; }
+.menu-check { display: inline-flex; width: 14px; flex: none; color: var(--accent); }
+.menu-item.rich .menu-check { margin-top: 2px; }
 .menu-sep { height: 1px; margin: 4px 2px; background: var(--border); }
 .menu-header { padding: 6px 10px 4px; color: var(--muted); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.04em; }
 
@@ -473,12 +478,32 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .composer-title { font-size: 18px; font-weight: 600; }
 .composer-repo { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
 .composer-repo .icon { flex: none; }
-.composer-prompt { min-height: 140px; font-size: 14px; }
-.composer-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
-.composer-row .field { flex: 1 1 180px; }
-.composer details summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); padding: 2px 0; }
-.composer details[open] summary { margin-bottom: 8px; }
-.composer-foot { display: flex; align-items: center; gap: 10px; }
+/* The prompt box (UI-021): a rounded chat box with the task's choices along its bottom edge. */
+.composer-box {
+  display: flex; flex-direction: column; border: 1px solid var(--border-strong); border-radius: 18px;
+  background: var(--surface); box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02), 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+.composer-box:focus-within { border-color: rgba(76, 157, 255, 0.6); }
+.composer-prompt {
+  min-height: 112px; max-height: 50vh; padding: 16px 18px 8px; border: 0; background: transparent; color: var(--text);
+  font: inherit; font-size: 14px; line-height: 1.5; resize: none; outline: none;
+}
+.composer-prompt::placeholder { color: #6c7584; }
+.composer-prompt:disabled { cursor: not-allowed; }
+.composer-tools { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 6px 8px 8px 10px; }
+.chip-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; max-width: 240px;
+  border: 1px solid var(--border); border-radius: 15px; background: transparent; color: var(--text-2);
+  font: inherit; font-size: var(--fs-sm); cursor: pointer; white-space: nowrap;
+}
+.chip-btn:hover, .chip-btn:focus-visible, .chip-btn[aria-expanded="true"] { background: var(--surface-3); color: var(--text); }
+.chip-btn .chip-label { overflow: hidden; text-overflow: ellipsis; }
+.chip-btn .icon { flex: none; }
+.chip-btn.plain { border-color: transparent; }
+.chip-btn.plain.muted-chip { color: var(--muted); }
+.composer-right { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.composer-send { width: 34px; height: 34px; margin-left: 4px; padding: 0; border-radius: 50%; }
+.composer-hint { padding: 0 6px; }
 
 /* ---------------------------------------------------------------- pages */
 
@@ -667,6 +692,7 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
   .step-progress { width: 60px; }
   .step-task { display: none; }
   .composer { padding-top: 16px; }
+  .composer-kbd { display: none; }
   .page-inner { padding: 12px 12px 28px; }
   .status-pop { top: calc(var(--tabrow-h) + 2px); right: 8px; left: 8px; width: auto; }
   .modal, .modal-wide, .modal-full { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }

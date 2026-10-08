@@ -76,6 +76,9 @@ const ICONS = {
   sidebar: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M9 4v16' }]],
   tools: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M15 4v16' }]],
   logo: [['path', { d: 'M6.75 6L12 12.75 17.25 6M12 12.75v6' }]],
+  target: [['circle', { cx: 12, cy: 12, r: 8 }], ['circle', { cx: 12, cy: 12, r: 3.5 }]],
+  workflow: [['circle', { cx: 6, cy: 6, r: 2.5 }], ['circle', { cx: 18, cy: 18, r: 2.5 }], ['path', { d: 'M8.5 6H14a3 3 0 0 1 3 3v6.5' }]],
+  up: [['path', { d: 'M12 19V5M6 11l6-6 6 6' }]],
   github: [['path', { d: 'M12 .3a12 12 0 0 0-3.8 23.38c.6.12.82-.26.82-.58v-2.04c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22v3.29c0 .32.21.7.82.58A12 12 0 0 0 12 .3', fill: 'currentColor', stroke: 'none' }]],
   bell: [['path', { d: 'M6 9a6 6 0 0 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9' }], ['path', { d: 'M10.3 20.5a2 2 0 0 0 3.4 0' }]],
   maximize: [['path', { d: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5' }]],
@@ -280,7 +283,8 @@ export function closeMenu() {
 
 /**
  * Show a menu at an anchor element or {x, y} point.
- * items: [{label, onSelect, disabled, danger, hint, header, separator, href}]
+ * items: [{label, onSelect, disabled, danger, hint, description, checked, header, separator, href}]
+ * `description` adds a second line; `checked` (true/false) makes the item a choice with a check mark.
  */
 export function openMenu(anchor, items, { align = 'start' } = {}) {
   closeMenu();
@@ -289,8 +293,13 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     if (!item) continue;
     if (item.separator) { menu.append(h('div', { class: 'menu-sep', role: 'separator' })); continue; }
     if (item.header) { menu.append(h('div', { class: 'menu-header' }, item.header)); continue; }
-    const el = h('button', { type: 'button', role: 'menuitem', class: ['menu-item', item.danger && 'danger'], disabled: item.disabled, title: item.title || null, onClick: () => { closeMenu(); item.onSelect && item.onSelect(); } },
-      h('span', { class: 'menu-label' }, item.label), item.hint ? h('span', { class: 'menu-hint' }, item.hint) : null);
+    const choice = typeof item.checked === 'boolean';
+    const label = item.description
+      ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc' }, item.description))
+      : h('span', { class: 'menu-label' }, item.label);
+    const el = h('button', { type: 'button', role: choice ? 'menuitemradio' : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', item.description && 'rich'], disabled: item.disabled, title: item.title || null, onClick: () => { closeMenu(); item.onSelect && item.onSelect(); } },
+      choice ? h('span', { class: 'menu-check' }, item.checked ? icon('check', { size: 14 }) : null) : null,
+      label, item.hint ? h('span', { class: 'menu-hint' }, item.hint) : null);
     menu.append(el);
   }
   document.body.append(menu);

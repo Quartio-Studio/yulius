@@ -215,6 +215,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-018 | Links in terminals, messages and pages open in a new tab of the user's browser; links to the VM itself (localhost, loopback addresses) open in the sandbox browser instead, since only it can reach them. | F 2026-10-07 | C | AC-UI-10 |
 | UI-019 | Terminal and TUI text is HTML text in the user's browser, not an image: a selection is copied at once, and a double-click selects a word even when the program (e.g., Claude Code) switched on mouse reporting; the mouse can be handed to the program on request. | F 2026-10-07 | C | AC-UI-11 |
 | UI-020 | A notification center behind a bell in the tab row collects, per user, what happened while the user looked elsewhere: tasks that wait for input, need attention or fail, browser action requests, agent messages, automation runs, account problems and instance notices. Unread entries are counted on the bell; an entry opens its task, browser tab or page; entries can be marked read or cleared. Toasts still appear. | F 2026-10-08 UI | C | AC-UI-12 |
+| UI-021 | The new-task composer is a rounded prompt box with its choices along the bottom edge, like a chat input: mode, workflow, model and effort as compact pickers, then Start. Models come from a list grouped by provider (no free-text model ids); effort offers the levels the model supports (none for a model without effort); "Default" leaves either to the harness. The last model and effort are remembered per browser. | F 2026-10-08 UI | C | AC-UI-13 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -428,8 +429,10 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
   its icon and name so a newcomer recognizes them. Clicking expands a resizable panel (default 45%
   width); clicking again collapses. Default collapsed (UI-002); the whole rail is hidden until the
   tools toggle shows it (UI-017).
-- Without a selected task the center shows the new-task composer: prompt, Goal / Prompt mode,
-  workflow, optional model/effort, Start (tasks run Claude Code).
+- Without a selected task the center shows the new-task composer (UI-021): a rounded prompt box
+  whose bottom edge holds the task's choices as compact pickers — Goal / Prompt mode, workflow,
+  model and effort — and a round Start button (tasks run Claude Code). The model is chosen from a
+  list grouped by provider (never typed), and its effort levels follow the model.
 
 ### 6.2 Pages
 
@@ -575,6 +578,7 @@ instance — out of scope).
 | AC-UI-10 | Localhost and loopback links are classified for the sandbox browser, other links for a new tab. | live (Chrome) |
 | AC-UI-11 | The real terminal view fed output that enables mouse tracking renders rows as HTML (no canvas), keeps the mouse for selection, and a double-click selects a word. | live (Chrome) |
 | AC-UI-12 | A task entering "waiting for input" and a browser action request each add an unread entry to the bell (not for the task being watched); clicking an entry opens its task or tab and marks it read; the list survives a reload. | ui |
+| AC-UI-13 | Picking a model, effort, workflow and mode in the composer sends exactly those values (`model` as the model id, no `effort` for a model without levels) and none when "Default" is chosen; no free-text model field exists. | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
@@ -679,7 +683,8 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 - 2026-10-08 (UI review, `F 2026-10-08 UI`): the user menu moves to the sidebar's foot and the
   collapsed sidebar is dropped; the tools rail names its tools; the sidebar shows the Yulius
-  wordmark; a notification center behind a bell (UI-020, AC-UI-12).
+  wordmark; a notification center behind a bell (UI-020, AC-UI-12); the composer becomes a rounded
+  prompt box with mode, workflow, model and effort pickers (UI-021, AC-UI-13).
 
 - 2026-10-08 (`F 2026-10-08`): Yulius runs Claude Code only. Codex support, provider switching
   and session translation are pruned and deferred until Codex improves (TSK-001/003, ROT-001/004/

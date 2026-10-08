@@ -30,7 +30,8 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/terminal.js` | xterm view: fit/resize, controller handover, read-only banner, reconnect/exit banners, web links and OSC 8 links. |
 | `assets/layout.js` | Sandbox tab row (+, Status panel, notifications, tools toggle) and the sidebar (wordmark, navigation, active task list, user menu at its foot). |
 | `assets/notifications.js` | Notification center (UI-020): the bell, its panel, and entries derived from the event stream; kept per user in `localStorage`, bounded to 100. |
-| `assets/taskview.js` | Task view (step strip, terminal, phone quick-input bar) and the new-task composer. |
+| `assets/taskview.js` | Task view (step strip, terminal, phone quick-input bar) and the new-task composer (rounded prompt box with mode, workflow, model and effort pickers). |
+| `assets/models.js` | Models (grouped by provider, each naming its harness) and effort levels the composer offers. |
 | `assets/panels.js` | Right rail and resizable panel: Editor (iframe, task worktree via `?worktree=`), Shell (sandbox or task worktree), Messages; hosts the browser panel. |
 | `assets/browser.js` | Sandbox browser panel: tabs, address bar, JPEG canvas, mouse/keyboard forwarding. |
 | `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery (PR, merge, environment runs and confirmations, promotion), sandbox add/remove. |

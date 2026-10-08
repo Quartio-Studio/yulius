@@ -2,13 +2,14 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder, openMenu } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { statusInfo, harnessInfo, isLive, allows, taskActions } from './status.js';
 import { openTaskMenu, continueTask } from './actions.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
+import { PROVIDERS, EFFORTS, findModel, findEffort } from './models.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STRIP_KEY = 'yulius.stepsOpen';
@@ -184,41 +185,106 @@ function pickSummary(detail) {
 
 // ---------------------------------------------------------------- composer
 
-/** New-task composer (J3): prompt, mode, workflow, optional model/effort, Start (Claude Code). */
+const COMPOSER_MODEL_KEY = 'yulius.composer.model';
+const COMPOSER_EFFORT_KEY = 'yulius.composer.effort';
+const MODES = [
+  { id: 'goal', name: 'Goal', icon: 'target', description: 'The agent keeps working until the goal is met (Claude Code’s /goal).' },
+  { id: 'prompt', name: 'Prompt', icon: 'send', description: 'Sent as a normal first message.' },
+];
+
+/**
+ * New-task composer (J3, UI-021): a rounded prompt box whose bottom edge holds the task's
+ * choices — mode, workflow, model (picked from a list grouped by provider) and effort — and
+ * Start. Model and effort are remembered per browser.
+ */
 export function mountComposer(ctx, sandbox) {
   const destroyers = [];
   const write = allows(sandbox.access, 'write');
-  const prompt = h('textarea', { class: 'textarea composer-prompt', placeholder: 'Describe what you want to build or change — e.g. “make me an online store”…', 'aria-label': 'Task prompt', maxlength: 100000 });
+  const prompt = h('textarea', { class: 'composer-prompt', rows: 4, placeholder: 'Describe what you want to build or change — e.g. “make me an online store”…', 'aria-label': 'Task prompt', maxlength: 100000 });
   // Goal mode is the default (TSK-010): the prompt becomes the session's /goal.
-  const modeInputs = [['goal', 'Goal'], ['prompt', 'Prompt']].map(([value]) => h('input', { type: 'radio', name: 'composer-mode', value, checked: value === 'goal' }));
-  const modeHint = h('span', { class: 'muted xs' });
-  const renderModeHint = () => {
-    modeHint.textContent = modeInputs[0].checked
-      ? 'The agent keeps working until the goal is met (Claude Code\u2019s /goal).'
-      : 'Sent as a normal first message.';
+  let mode = 'goal';
+  let workflowId = '';
+  let workflows = [];
+  let modelId = findModel(readJson(COMPOSER_MODEL_KEY, null)) ? readJson(COMPOSER_MODEL_KEY, null) : null;
+  let effortId = findEffort(readJson(COMPOSER_EFFORT_KEY, null)) ? readJson(COMPOSER_EFFORT_KEY, null) : null;
+
+  const chip = (label, onOpen, extra = {}) => {
+    const button = h('button', { type: 'button', class: ['chip-btn', extra.class], 'aria-haspopup': 'menu', 'aria-label': label, title: label });
+    button.addEventListener('click', () => onOpen(button));
+    return button;
   };
-  modeInputs.forEach((input) => input.addEventListener('change', renderModeHint));
-  renderModeHint();
-  const workflow = h('select', { class: 'select', 'aria-label': 'Workflow' }, h('option', { value: '' }, 'No workflow'));
-  const model = h('input', { class: 'input', placeholder: 'default', autocomplete: 'off', 'aria-label': 'Model' });
-  const effort = h('select', { class: 'select', 'aria-label': 'Effort' }, h('option', { value: '' }, 'default'), ['low', 'medium', 'high'].map((v) => h('option', { value: v }, v)));
-  const title = h('input', { class: 'input', placeholder: 'derived from the prompt', maxlength: 200, 'aria-label': 'Title' });
+  const modeChip = chip('Mode', openModeMenu);
+  const workflowChip = chip('Workflow', openWorkflowMenu);
+  const modelChip = chip('Model', openModelMenu, { class: 'plain' });
+  const effortChip = chip('Effort', openEffortMenu, { class: 'plain muted-chip' });
+  const modeHint = h('span');
   const banner = h('div', { class: 'stack-sm' });
-  const startButton = h('button', { type: 'button', class: 'btn btn-primary' }, 'Start task');
-  const hint = h('span', { class: 'muted xs' }, h('span', { class: 'kbd' }, navigator.platform && navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'), ' + ', h('span', { class: 'kbd' }, 'Enter'), ' to start');
+  const startButton = h('button', { type: 'button', class: 'btn btn-primary composer-send', 'aria-label': 'Start task', title: 'Start task' }, icon('up', { size: 18 }));
+  const hint = h('span', { class: 'composer-kbd' }, ' · ', h('span', { class: 'kbd' }, navigator.platform && navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'), ' + ', h('span', { class: 'kbd' }, 'Enter'), ' to start');
 
   const el = h('div', { class: 'composer' },
     h('div', { class: 'composer-card' },
       h('div', { class: 'row' }, h('h1', { class: 'composer-title' }, 'New task'), h('span', { class: 'composer-repo muted small' }, 'in', sandbox.repo ? icon('github', { size: 14 }) : null, h('span', { class: 'ellipsis' }, sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name))),
       banner,
-      prompt,
-      h('div', { class: 'composer-row' },
-        field('Mode', h('div', { class: 'stack-sm' }, h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Mode' }, modeInputs.map((input) => h('label', null, input, input.value === 'goal' ? 'Goal' : 'Prompt'))), modeHint)),
-        field('Workflow', workflow)),
-      h('details', null,
-        h('summary', null, 'Model, effort and title (optional)'),
-        h('div', { class: 'form-grid' }, field('Model', model, 'Passed to Claude Code, e.g. opus, sonnet or a full model id'), field('Effort', effort), field('Title', title))),
-      h('div', { class: 'composer-foot' }, startButton, hint)));
+      h('div', { class: 'composer-box' },
+        prompt,
+        h('div', { class: 'composer-tools' }, modeChip, workflowChip, h('div', { class: 'composer-right' }, modelChip, effortChip, startButton))),
+      h('div', { class: 'composer-hint muted xs' }, modeHint, hint)));
+
+  function renderChips() {
+    const m = MODES.find((x) => x.id === mode);
+    setChildren(modeChip, icon(m.icon, { size: 14 }), h('span', { class: 'chip-label' }, m.name), icon('down', { size: 12 }));
+    modeHint.textContent = m.description;
+    const wf = workflows.find((w) => w.id === workflowId);
+    setChildren(workflowChip, icon('workflow', { size: 14 }), h('span', { class: 'chip-label' }, wf ? wf.name : 'No workflow'), icon('down', { size: 12 }));
+    const found = findModel(modelId);
+    setChildren(modelChip, h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
+    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: Claude Code’s default';
+    // A model without effort levels (Haiku) hides the effort choice and sends none.
+    const effortless = Boolean(found && found.model.effort === false);
+    effortChip.hidden = effortless;
+    const effort = findEffort(effortId);
+    setChildren(effortChip, h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
+  }
+
+  function openModeMenu(anchor) {
+    openMenu(anchor, MODES.map((m) => ({ label: m.name, description: m.description, checked: m.id === mode, onSelect: () => { mode = m.id; renderChips(); prompt.focus(); } })));
+  }
+
+  function openWorkflowMenu(anchor) {
+    const slug = encodeURIComponent(sandbox.slug);
+    openMenu(anchor, [
+      { label: 'No workflow', description: 'The agent plans the work itself', checked: !workflowId, onSelect: () => { workflowId = ''; renderChips(); } },
+      ...workflows.map((wf) => ({ label: `${wf.name}${wf.scope === 'instance' ? ' (instance)' : ''}`, description: wf.description || (Array.isArray(wf.steps) ? wf.steps.join(' → ') : null), checked: wf.id === workflowId, onSelect: () => { workflowId = wf.id; renderChips(); } })),
+      { separator: true },
+      { label: 'Manage workflows…', onSelect: () => ctx.navigate(`/s/${slug}/workflows`) },
+    ]);
+  }
+
+  function openModelMenu(anchor) {
+    const pick = (id) => () => { modelId = id; writeJson(COMPOSER_MODEL_KEY, id); renderChips(); prompt.focus(); };
+    openMenu(anchor, [
+      { label: 'Default', description: 'Claude Code’s default for the account', checked: modelId === null, onSelect: pick(null) },
+      ...PROVIDERS.flatMap((provider) => [
+        { header: provider.name },
+        ...provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === modelId, onSelect: pick(model.id) })),
+      ]),
+    ]);
+  }
+
+  function openEffortMenu(anchor) {
+    const pick = (id) => () => { effortId = id; writeJson(COMPOSER_EFFORT_KEY, id); renderChips(); prompt.focus(); };
+    openMenu(anchor, [
+      { label: 'Default', description: 'Claude Code decides', checked: effortId === null, onSelect: pick(null) },
+      ...EFFORTS.map((effort) => ({ label: effort.name, description: effort.description, checked: effort.id === effortId, onSelect: pick(effort.id) })),
+    ]);
+  }
+
+  // The box grows with the prompt up to half the screen, then scrolls.
+  prompt.addEventListener('input', () => {
+    prompt.style.height = 'auto';
+    prompt.style.height = `${prompt.scrollHeight}px`;
+  });
 
   // The superadmin is reminded while no recovery code exists (ACC-011).
   let recovery = null;
@@ -290,11 +356,14 @@ export function mountComposer(ctx, sandbox) {
   async function start() {
     const text = prompt.value.trim();
     if (!text) { prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
-    const body = { prompt: text, mode: modeInputs.find((i) => i.checked).value };
-    if (workflow.value) body.workflow_id = workflow.value;
-    if (model.value.trim()) body.model = model.value.trim();
-    if (effort.value) body.effort = effort.value;
-    if (title.value.trim()) body.title = title.value.trim();
+    const body = { prompt: text, mode };
+    if (workflowId) body.workflow_id = workflowId;
+    const found = findModel(modelId);
+    if (found) {
+      body.model = found.model.id;
+      if (found.provider.harness !== 'claude') body.harness = found.provider.harness;
+    }
+    if (effortId && !(found && found.model.effort === false)) body.effort = effortId;
     startButton.disabled = true;
     startButton.classList.add('busy');
     try {
@@ -316,8 +385,10 @@ export function mountComposer(ctx, sandbox) {
   });
 
   ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`).then((list) => {
-    for (const wf of Array.isArray(list) ? list : []) workflow.append(h('option', { value: wf.id }, `${wf.name}${wf.scope === 'instance' ? ' (instance)' : ''}`));
+    workflows = Array.isArray(list) ? list : [];
+    renderChips();
   }).catch(() => { /* workflows are optional */ });
+  renderChips();
 
   destroyers.push(ctx.store.on('sandboxes', renderBanner));
   destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) renderBanner(); }));
