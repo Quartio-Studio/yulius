@@ -655,7 +655,6 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .list-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .list-title { font-weight: 500; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .list-sub { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.list-actions { display: flex; align-items: center; gap: 6px; flex: none; }
 /* Settings page (ACC-010): sections of icon rows, admin tiles. */
 .settings-section { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; }
 .settings-head { display: flex; align-items: center; gap: 8px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
@@ -938,12 +937,6 @@ a.dl-task:hover { text-decoration: underline; }
 .table tbody tr.clickable:hover { background: var(--surface-2); }
 .table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .table .title-cell { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mini-progress { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); font-variant-numeric: tabular-nums; }
-.mini-progress .track { width: 54px; height: 4px; border-radius: var(--radius-full); background: var(--accent-track); overflow: hidden; }
-.mini-progress .fill { height: 100%; background: var(--series-1); }
-.diffstat { font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-sm); white-space: nowrap; }
-.diffstat .ins { color: var(--ok); }
-.diffstat .del { color: var(--danger); }
 .code-view { background: var(--term-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; max-height: 60vh; overflow: auto; font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .run-output { min-height: 160px; max-height: 50vh; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -1021,7 +1014,6 @@ a.dl-task:hover { text-decoration: underline; }
 .bp-copied[hidden] { display: none; }
 .bp-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--surface); text-align: center; padding: 16px; }
 
-.editor-frame { flex: 1; width: 100%; border: 0; background: var(--editor-bg); }
 .msg-list { flex: 1; overflow: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
 .msg { padding: 8px 12px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
 .msg.unread { border-left: 3px solid var(--accent); }
