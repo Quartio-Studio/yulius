@@ -218,6 +218,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-021 | The new-task composer is a rounded prompt box with its choices along the bottom edge, like a chat input: mode, workflow, model and effort as compact pickers, then Start (Enter starts and Shift+Enter adds a line; on touch screens Enter adds a line and the button starts). Models come from a list grouped by provider (no free-text model ids); effort offers the levels the model supports (none for a model without effort); "Default" leaves either to the harness. The last model and effort are remembered per browser. | F 2026-10-08 UI | C | AC-UI-13 |
 | UI-022 | Each account reads at a glance: an avatar with initials, its label, sign-in email (administrators) and plan (e.g. Pro, Max 5x, Max 20x, per provider), a state only when it is not ready, and each usage window as a horizontal row named like Claude's own usage page ("Current session", "This week") with its reset time and "N% used". Accounts are visually separate; in the Status panel each is a row that expands, accounts needing attention first and open. | F 2026-10-08 UI | C | AC-UI-14 |
 | UI-023 | New task has a keyboard shortcut that works from anywhere, the terminal included: ⌘⇧O / Ctrl+Shift+O (browsers reserve ⌘N for a new window), plus ⌘N on macOS where the browser passes it (installed app, full screen); Ctrl+N stays with the terminal. The New task button shows the shortcut. | F 2026-10-08 UI | C | AC-UI-16 |
+| UI-024 | The Tasks page groups tasks as Needs you → Working → Stopped → Closed with the sidebar's rules (browser requests count as Needs you); each row says its state in words with the step, number and branch, and shows its pull request with checks, author and age. Filters: state tabs with counts, Author and Origin multi-select, search (`/`); the filters are kept in the page URL. | F 2026-10-08 UI | C | AC-UI-17 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -444,7 +445,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 
 | Page | Content |
 | --- | --- |
-| Tasks | All non-archived tasks of the sandbox with status, harness, author, branch, steps progress, last activity; filters. |
+| Tasks | All non-archived tasks of the sandbox, grouped Needs you / Working / Stopped / Closed: state in words, step, number, branch, pull request with checks, author, last activity; state tabs with counts, Author/Origin filters and search kept in the URL (UI-024). |
 | Git | Per-task branches/worktrees and diff summary; PRs with checks; delivery panel per profile (Open PR, Merge, environment step, Promote). |
 | Workflows | List/edit workflows (name, description, initial steps, instructions, required gates). |
 | Skills | Catalog (repository skills, instance skills, Open Mercato pack) with source, enable toggle, content view. |
@@ -588,6 +589,7 @@ instance — out of scope).
 | AC-UI-14 | With accounts in every state, the Status panel lists those needing attention first and open, the rest collapsed with their current-session bar; expanding one shows "Current session" and "This week" rows with reset time and percent used; email and plan appear when reported. Evidence so far is the mock only: the server does not report email/plan yet. | ui |
 | AC-UI-15 | The user menu has icons and a Settings entry; `/settings` shows Your account, Preferences (default model/effort shared with the composer, tools rail, notification history) and, for administrators, Administration tiles. | ui |
 | AC-UI-16 | With the task terminal focused, ⌘⇧O opens the sandbox's composer with the cursor in the prompt and the terminal does not receive the key. | ui |
+| AC-UI-17 | A task waiting for input is under Needs you on both the sidebar and the Tasks page; opening the Tasks page with `?author=anna-q` shows only anna-q's tasks and the Author chip reads "Author: anna-q". | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |

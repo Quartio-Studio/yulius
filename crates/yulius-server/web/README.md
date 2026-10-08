@@ -114,7 +114,7 @@ description, controls), `meter`, `openMenu` (icons, descriptions, check marks), 
 | `/s/<slug>` | New-task composer. |
 | `/s/<slug>/t/<number>` | Task: step strip + native terminal. |
 | `/s/<slug>/browser?tab=<id>` | Opens the browser panel on that tab (Yulius links, BRW-004). |
-| `/s/<slug>/tasks`, `/git`, `/workflows`, `/skills`, `/automations`, `/mcp`, `/dashboard` | Sandbox pages. `skills?source=instance` and `mcp?scope=instance` are the admin "Instance skills/MCP" entries. |
+| `/s/<slug>/tasks`, `/git`, `/workflows`, `/skills`, `/automations`, `/mcp`, `/dashboard` | Sandbox pages. `tasks?state=needs|working|stopped|closed&author=a,b&origin=automation&q=text` is a filtered task list (shareable). `skills?source=instance` and `mcp?scope=instance` are the admin "Instance skills/MCP" entries. |
 | `/archived` | Archived tasks across sandboxes, with restore. |
 | `/settings` | Settings: your account, this browser's preferences, administration tiles (user menu → Settings). |
 | `/design` | Design system: brand, colour roles with live contrast, type, spacing, radii, controls, elevation, motion, icons, task states and components, in the current theme (Settings → Design system). |

@@ -107,6 +107,7 @@ const ICONS = {
   user: [['circle', { cx: 12, cy: 8, r: 3.8 }], ['path', { d: 'M4.5 20c1.4-3.6 4.3-5.5 7.5-5.5s6.1 1.9 7.5 5.5' }]],
   contrast: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 3a9 9 0 0 0 0 18z', fill: 'currentColor', stroke: 'none' }]],
   target: [['circle', { cx: 12, cy: 12, r: 8 }], ['circle', { cx: 12, cy: 12, r: 3.5 }]],
+  search: [['circle', { cx: 11, cy: 11, r: 6.5 }], ['path', { d: 'M16 16l4.5 4.5' }]],
   workflow: [['circle', { cx: 6, cy: 6, r: 2.5 }], ['circle', { cx: 18, cy: 18, r: 2.5 }], ['path', { d: 'M8.5 6H14a3 3 0 0 1 3 3v6.5' }]],
   up: [['path', { d: 'M12 19V5M6 11l6-6 6 6' }]],
   github: [['path', { d: 'M12 .3a12 12 0 0 0-3.8 23.38c.6.12.82-.26.82-.58v-2.04c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22v3.29c0 .32.21.7.82.58A12 12 0 0 0 12 .3', fill: 'currentColor', stroke: 'none' }]],
@@ -317,7 +318,8 @@ export function closeMenu() {
 /**
  * Show a menu at an anchor element or {x, y} point.
  * items: [{label, onSelect, disabled, danger, hint, description, checked, icon, header, separator, href}]
- * `description` adds a second line; `checked` (true/false) makes the item a choice with a check mark.
+ * `description` adds a second line; `checked` (true/false) makes the item a choice with a check mark;
+ * `keepOpen` keeps the menu open after selecting (multi-select filters), flipping the check in place.
  */
 export function openMenu(anchor, items, { align = 'start' } = {}) {
   closeMenu();
@@ -330,8 +332,18 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     const label = item.description
       ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc' }, item.description))
       : h('span', { class: 'menu-label' }, item.label);
-    const el = h('button', { type: 'button', role: choice ? 'menuitemradio' : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', item.description && 'rich'], disabled: item.disabled, title: item.title || null, onClick: () => { closeMenu(); item.onSelect && item.onSelect(); } },
-      choice ? h('span', { class: 'menu-check' }, item.checked ? icon('check', { size: 14 }) : null) : null,
+    const check = choice ? h('span', { class: 'menu-check' }, item.checked ? icon('check', { size: 14 }) : null) : null;
+    const select = () => {
+      if (!item.keepOpen) { closeMenu(); if (item.onSelect) item.onSelect(); return; }
+      if (choice) {
+        item.checked = !item.checked;
+        el.setAttribute('aria-checked', String(item.checked));
+        setChildren(check, item.checked ? icon('check', { size: 14 }) : null);
+      }
+      if (item.onSelect) item.onSelect();
+    };
+    const el = h('button', { type: 'button', role: choice ? (item.keepOpen ? 'menuitemcheckbox' : 'menuitemradio') : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', item.description && 'rich'], disabled: item.disabled, title: item.title || null, onClick: select },
+      check,
       item.icon ? h('span', { class: 'menu-icon' }, icon(item.icon, { size: 15 })) : null,
       label, item.hint ? h('span', { class: 'menu-hint' }, item.hint) : null);
     menu.append(el);

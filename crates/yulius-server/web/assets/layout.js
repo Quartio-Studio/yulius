@@ -3,7 +3,7 @@
 
 import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
-import { statusInfo, allows } from './status.js';
+import { taskInfo, allows } from './status.js';
 import { href } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
@@ -453,21 +453,7 @@ export function createSidebar(ctx) {
   let endedOpen = readJson(ENDED_OPEN_KEY, true) !== false;
   let shape = '';
 
-  /** Browser action requests for a task in this sandbox (the agent needs the user there). */
-  function browserRequest(task) {
-    const map = ctx.store.state.actionRequests.get(task.sandbox_id);
-    if (!map) return null;
-    for (const request of map.values()) if (request.task_id === task.id) return request;
-    return null;
-  }
-
-  /** statusInfo plus what the sidebar adds: browser requests make a task "Needs you". */
-  function rowInfo(task) {
-    const info = statusInfo(task);
-    const request = browserRequest(task);
-    if (request && info.group !== 'ended') return { ...info, icon: 'globe', tone: 'attention', label: 'Needs you in the browser', group: 'needs', detail: request.reason };
-    return info;
-  }
+  const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests);
 
   function subline(task, info) {
     const parts = [info.label];

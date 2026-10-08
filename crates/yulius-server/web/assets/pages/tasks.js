@@ -1,10 +1,18 @@
-// Tasks overview (SPEC-001 §6.2) and Archived tasks (UI-006, AC-ARC-1).
+// Tasks overview (SPEC-001 §6.2, UI-024) and Archived tasks (UI-006, AC-ARC-1).
+//
+// The overview is a grouped list, not a table: Needs you → Working → Stopped → Closed, with the
+// sidebar's exact rules (status.js taskInfo). Each row reads in words, with its pull request and
+// checks, author and age on the right. Filters (state tabs with counts, Author and Origin
+// multi-select, search) live in the URL so a filtered view can be shared as a link.
 
-import { h, setChildren, iconButton, badge, toast, errorToast, statusMark } from '../dom.js';
-import { relShort, dateTime } from '../format.js';
-import { statusInfo, statusGroup, allows } from '../status.js';
-import { openTaskMenu, restoreTask } from '../actions.js';
-import { href } from '../router.js';
+import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu } from '../dom.js';
+import { relShort, dateTime, plural } from '../format.js';
+import { statusInfo, taskInfo, allows, taskActions } from '../status.js';
+import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
+import { href, currentLocation } from '../router.js';
+import { readJson, writeJson } from '../store.js';
+import { enc } from '../api.js';
+import { initials } from '../layout.js';
 import { pageFrame, dataTable, loader } from './common.js';
 
 function statusCell(task) {
@@ -12,54 +20,282 @@ function statusCell(task) {
   return h('span', { class: 'row nowrap' }, statusMark(info), info.label);
 }
 
-function stepsCell(task) {
-  const steps = task.steps || {};
-  if (!steps.total) return h('span', { class: 'muted' }, '—');
-  const pct = Math.round(((steps.done || 0) / steps.total) * 100);
-  return h('span', { class: 'mini-progress', title: steps.current || '' }, h('span', { class: 'track' }, h('span', { class: 'fill', style: { width: `${pct}%`, display: 'block' } })), `${steps.done}/${steps.total}`);
-}
-
 function taskLink(sandbox, task) {
   const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`;
   return h('a', { href: href(path), dataset: { route: path } }, task.title || `Task #${task.number}`);
 }
 
-/** All non-archived tasks of the sandbox with filters. */
+const GROUPS = [
+  { id: 'needs', name: 'Needs you', icon: 'bell' },
+  { id: 'working', name: 'Working', icon: 'pulse' },
+  { id: 'stopped', name: 'Stopped', icon: 'st-stopped' },
+  { id: 'closed', name: 'Closed', icon: 'st-closed' },
+];
+const ORIGINS = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task' };
+const CHECKS = {
+  success: { icon: 'check', tone: 'ok', label: 'checks passed' },
+  failure: { icon: 'x', tone: 'danger', label: 'checks failed' },
+  pending: { icon: 'clock', tone: 'warn', label: 'checks running' },
+};
+const CLOSED_PREVIEW = 5;
+const COLLAPSED_KEY = 'yulius.tasksCollapsed';
+
+/** Which list group a task is in: the sidebar's groups, with Closed apart from Stopped. */
+function groupOf(task, info) {
+  if (info.group !== 'ended') return info.group;
+  return task.status === 'closed' ? 'closed' : 'stopped';
+}
+
+/** The muted second line: what is happening, in words (the step name drops out on phones). */
+function detailLine(task, info) {
+  const steps = task.steps || {};
+  const label = info.detail ? `${info.label}: ${info.detail}` : info.label;
+  if (info.group !== 'ended' && task.status === 'running' && steps.total) {
+    return [`${label} · step ${Math.min((steps.done || 0) + 1, steps.total)}/${steps.total}`, steps.current ? h('span', { class: 'tl-step-name' }, ` ${steps.current}`) : null];
+  }
+  if (info.group === 'ended' && steps.total) return `${label} · ${steps.done || 0}/${steps.total} steps`;
+  return label;
+}
+
+/** Pull request chip: number and checks, opening GitHub. Empty (not "—") when there is none. */
+function prChip(pr) {
+  if (!pr) return h('span', { class: 'tl-pr' });
+  const merged = pr.state === 'merged';
+  const checks = merged || pr.state === 'closed' ? null : CHECKS[pr.checks];
+  const label = `Pull request #${pr.number} · ${pr.state}${checks ? ` · ${checks.label}` : ''}`;
+  return h('span', { class: 'tl-pr' }, h('a', { class: ['tl-pr-chip', merged && 'merged', pr.state === 'closed' && 'closed'], href: pr.url, target: '_blank', rel: 'noopener noreferrer', title: label, 'aria-label': label },
+    icon('branch', { size: 12 }), `#${pr.number}`, checks ? h('span', { class: `tone-${checks.tone}` }, icon(checks.icon, { size: 12 })) : null));
+}
+
+/** Tasks of one sandbox: grouped list with filters. */
 export function mountTasksPage(ctx, sandbox) {
-  const frame = pageFrame({ title: 'Tasks', sub: sandbox.name });
-  const search = h('input', { class: 'input', type: 'search', placeholder: 'Search title, branch, author…', 'aria-label': 'Search tasks' });
-  const group = h('select', { class: 'select', 'aria-label': 'Status filter' },
-    [['', 'All statuses'], ['active', 'Active'], ['attention', 'Needs attention'], ['closed', 'Closed'], ['stopped', 'Stopped'], ['failed', 'Failed']].map(([v, l]) => h('option', { value: v }, l)));
-  const origin = h('select', { class: 'select', 'aria-label': 'Origin filter' }, h('option', { value: '' }, 'All origins'), ['ui', 'automation', 'import', 'onboarding', 'agent'].map((o) => h('option', { value: o }, o)));
-  const tableHost = h('div');
-  frame.body.append(h('div', { class: 'toolbar' }, search, group, origin), tableHost);
+  const base = `/s/${encodeURIComponent(sandbox.slug)}/tasks`;
+  const query = currentLocation().query;
+  const filters = {
+    state: GROUPS.some((g) => g.id === query.get('state')) ? query.get('state') : 'all',
+    authors: new Set((query.get('author') || '').split(',').filter(Boolean)),
+    origins: new Set((query.get('origin') || '').split(',').filter(Boolean)),
+  };
+  const collapsed = new Set(readJson(COLLAPSED_KEY, []));
+  let closedExpanded = false;
+  let pulls = new Map();
+
+  const frame = pageFrame({ title: 'Tasks', sub: sandbox.name, actions: [
+    h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, '⌘⇧O')),
+  ] });
+  const tabs = h('div', { class: 'tl-tabs', role: 'radiogroup', 'aria-label': 'Task state' });
+  const chips = h('div', { class: 'tl-chips' });
+  const summary = h('span', { class: 'tl-summary', 'aria-live': 'polite' });
+  const search = h('input', { class: 'input tl-search', type: 'search', placeholder: 'Search tasks', value: query.get('q') || '', 'aria-label': 'Search tasks (press / to focus)', 'aria-keyshortcuts': '/' });
+  const searchBox = h('label', { class: 'tl-search-box' }, icon('search', { size: 14 }), search, h('span', { class: 'kbd tl-search-key', 'aria-hidden': 'true' }, '/'));
+  const listHost = h('div', { class: 'tl' });
+  const footer = h('div', { class: 'tl-footer' }, h('a', { href: href('/archived'), dataset: { route: '/archived' } }, 'View archived tasks', icon('right', { size: 12 })));
+  frame.body.append(h('div', { class: 'tl-toolbar' }, tabs, chips, summary, searchBox), listHost, footer);
+
+  function syncUrl() {
+    const params = new URLSearchParams();
+    if (filters.state !== 'all') params.set('state', filters.state);
+    if (filters.authors.size) params.set('author', [...filters.authors].join(','));
+    if (filters.origins.size) params.set('origin', [...filters.origins].join(','));
+    if (search.value.trim()) params.set('q', search.value.trim());
+    const qs = params.toString();
+    window.history.replaceState(window.history.state, '', href(qs ? `${base}?${qs}` : base));
+  }
+
+  const myLogin = () => (ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null);
+  const filtered = () => filters.state !== 'all' || filters.authors.size || filters.origins.size || search.value.trim();
+  function clearFilters() {
+    filters.state = 'all';
+    filters.authors.clear();
+    filters.origins.clear();
+    search.value = '';
+    render();
+  }
+
+  // A filter chip is built once and updated in place, so its open menu stays anchored while choices toggle.
+  function filterChip(name, set, labelOf) {
+    let values = [];
+    const label = h('span', { class: 'chip-label' });
+    const button = h('button', { type: 'button', class: ['chip-btn', 'tl-chip'], 'aria-haspopup': 'menu', onClick: () => {
+      openMenu(button, [
+        ...values.map(([id, count]) => ({ label: labelOf(id), hint: String(count), checked: set.has(id), keepOpen: true, onSelect: () => { if (set.has(id)) set.delete(id); else set.add(id); render(); } })),
+        { separator: true },
+        { label: `Clear ${name.toLowerCase()} filter`, onSelect: () => { set.clear(); render(); } },
+      ]);
+    } }, label, icon('down', { size: 12 }));
+    const clear = iconButton('x', `Clear ${name.toLowerCase()} filter`, () => { set.clear(); render(); button.focus(); }, { class: 'tl-chip-clear' });
+    const el = h('span', { class: 'tl-chip-group' }, button, clear);
+    return {
+      el,
+      update(next) {
+        values = next;
+        el.hidden = values.length < 2 && !set.size;
+        button.classList.toggle('active', set.size > 0);
+        label.textContent = set.size ? `${name}: ${set.size === 1 ? labelOf([...set][0]) : set.size}` : name;
+        clear.hidden = !set.size;
+      },
+    };
+  }
+  const authorChip = filterChip('Author', filters.authors, (login) => (login === myLogin() ? `Me (${login})` : login));
+  const originChip = filterChip('Origin', filters.origins, (id) => ORIGINS[id] || id);
+  chips.append(authorChip.el, originChip.el);
 
   function render() {
+    syncUrl();
     const tasks = ctx.store.tasksOf(sandbox.id);
-    if (tasks === null) { setChildren(tableHost, h('div', { class: 'placeholder placeholder-loading' }, 'Loading…')); return; }
+    if (tasks === null) { setChildren(listHost, h('div', { class: 'placeholder placeholder-loading' }, 'Loading…')); return; }
+    const me = myLogin();
     const q = search.value.trim().toLowerCase();
-    const rows = tasks.filter((t) => (!group.value || statusGroup(t) === group.value)
-      && (!origin.value || t.origin === origin.value)
-      && (!q || `${t.number} ${t.title} ${t.branch || ''} ${(t.created_by && t.created_by.login) || ''}`.toLowerCase().includes(q)));
-    frame.sub.textContent = `${sandbox.name} · ${rows.length} of ${tasks.length}`;
-    setChildren(tableHost, dataTable([
-      { label: 'Status', render: statusCell },
-      { label: '#', class: 'num', render: (t) => String(t.number) },
-      { label: 'Title', class: 'title-cell', render: (t) => taskLink(sandbox, t) },
-      { label: 'Author', render: (t) => (t.created_by && t.created_by.login) || '—', phoneHide: true },
-      { label: 'Branch', render: (t) => h('code', null, t.branch || '—'), phoneHide: true },
-      { label: 'Steps', render: stepsCell, phoneHide: true },
-      { label: 'Activity', class: 'num', render: (t) => h('span', { title: dateTime(t.updated_at) }, relShort(t.updated_at)) },
-      { label: '', render: (t) => iconButton('more', 'Task actions', (event) => openTaskMenu(ctx, event.currentTarget, t)) },
-    ], rows, {
-      empty: tasks.length ? 'No task matches the filters.' : 'No active tasks in this sandbox.',
-      onRowClick: (t) => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${t.number}`),
+    const items = tasks.map((task) => { const info = taskInfo(task, ctx.store.state.actionRequests); return { task, info, group: groupOf(task, info) }; });
+
+    // Author and origin choices come from all tasks, so a choice never disappears while selected.
+    const count = (key) => { const m = new Map(); for (const { task } of items) { const k = key(task); if (k) m.set(k, (m.get(k) || 0) + 1); } return m; };
+    const authorCounts = count((t) => t.created_by && t.created_by.login);
+    const originCounts = count((t) => t.origin);
+    const authors = [...authorCounts].sort((a, b) => (b[0] === me) - (a[0] === me) || b[1] - a[1] || a[0].localeCompare(b[0]));
+    const origins = [...originCounts].sort((a, b) => b[1] - a[1]);
+
+    const matches = items.filter(({ task }) => (!filters.authors.size || filters.authors.has(task.created_by && task.created_by.login))
+      && (!filters.origins.size || filters.origins.has(task.origin))
+      && (!q || `#${task.number} ${task.title} ${task.branch || ''} ${(task.created_by && task.created_by.login) || ''}`.toLowerCase().includes(q)));
+    const byGroup = new Map(GROUPS.map((g) => [g.id, matches.filter((item) => item.group === g.id)]));
+    const visible = filters.state === 'all' ? matches : byGroup.get(filters.state);
+
+    setChildren(tabs, [{ id: 'all', name: 'All', size: matches.length }, ...GROUPS.map((g) => ({ ...g, size: byGroup.get(g.id).length }))].map((tab) => {
+      const on = filters.state === tab.id;
+      return h('button', { type: 'button', role: 'radio', 'aria-checked': String(on), tabindex: on ? '0' : '-1', class: ['tl-tab', on && 'active', tab.id === 'needs' && tab.size > 0 && 'urgent'], onClick: () => { filters.state = tab.id; render(); },
+        onKeydown: (event) => {
+          if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+          const all = [...tabs.children];
+          const next = all[(all.indexOf(event.currentTarget) + (event.key === 'ArrowRight' ? 1 : all.length - 1)) % all.length];
+          next.click();
+          tabs.querySelector('[aria-checked="true"]').focus();
+        } }, tab.name, h('span', { class: 'tl-tab-count' }, String(tab.size)));
     }));
+    authorChip.update(authors);
+    originChip.update(origins);
+    setChildren(summary, filtered()
+      ? [`Showing ${visible.length} of ${tasks.length}`, ' · ', h('button', { type: 'button', class: 'link-btn', onClick: clearFilters }, 'Clear filters')]
+      : plural(tasks.length, 'task'));
+    frame.sub.textContent = sandbox.name;
+
+    const focusedId = listHost.contains(document.activeElement) ? document.activeElement.closest('[data-task-id]')?.dataset.taskId : null;
+    if (!tasks.length) {
+      setChildren(listHost, h('div', { class: 'tl-empty' },
+        h('p', { class: 'tl-empty-title' }, `No tasks in ${sandbox.name} yet`),
+        h('p', { class: 'muted' }, 'Each task is a Claude Code session on its own branch.'),
+        h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task')));
+      return;
+    }
+    if (!visible.length) {
+      setChildren(listHost, h('div', { class: 'tl-empty' },
+        h('p', { class: 'tl-empty-title' }, q ? `No tasks match “${search.value.trim()}”` : 'No tasks match these filters'),
+        h('p', { class: 'muted' }, 'The counts on the tabs show where the matches are.'),
+        h('button', { type: 'button', class: 'btn', onClick: clearFilters }, 'Clear filters')));
+      return;
+    }
+
+    const sections = [];
+    for (const group of GROUPS) {
+      const list = filters.state === 'all' ? byGroup.get(group.id) : (filters.state === group.id ? visible : []);
+      if (!list.length) continue;
+      const open = filters.state === group.id || !collapsed.has(group.id);
+      const shown = group.id === 'closed' && !closedExpanded && filters.state === 'all' && !q ? list.slice(0, CLOSED_PREVIEW) : list;
+      const headId = `tl-head-${group.id}`;
+      sections.push(h('section', { class: ['tl-group', `group-${group.id}`], 'aria-labelledby': headId },
+        h('h2', { class: 'tl-group-title' }, h('button', { type: 'button', id: headId, class: 'tl-group-head', 'aria-expanded': String(open), onClick: () => {
+          if (open) collapsed.add(group.id); else collapsed.delete(group.id);
+          writeJson(COLLAPSED_KEY, [...collapsed]);
+          render();
+        } }, icon(open ? 'down' : 'right', { size: 12 }), icon(group.icon, { size: 14 }), h('span', { class: 'tl-group-name' }, group.name), h('span', { class: 'tl-group-count' }, String(list.length)))),
+        open ? h('ul', { class: 'tl-rows' }, shown.map((item) => rowView(item))) : null,
+        open && shown.length < list.length ? h('button', { type: 'button', class: 'tl-more', onClick: () => { closedExpanded = true; render(); } }, `Show ${list.length - shown.length} more`) : null));
+    }
+    setChildren(listHost, sections);
+    if (focusedId) listHost.querySelector(`[data-task-id="${CSS.escape(focusedId)}"] .tl-link`)?.focus({ preventScroll: true });
   }
-  for (const control of [search, group, origin]) control.addEventListener('input', render);
-  const off = ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) render(); });
+
+  function rowView({ task, info, group }) {
+    const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`;
+    const login = task.created_by && task.created_by.login;
+    const actions = taskActions(task, sandbox.access);
+    const kebab = iconButton('more', 'Task actions', () => openTaskMenu(ctx, kebab, task), { class: 'tl-action' });
+    const row = h('li', { class: ['tl-row', `group-${group}`], dataset: { taskId: task.id } },
+      h('a', { class: 'tl-link', href: href(path), dataset: { route: path }, title: `#${task.number} ${task.title}${task.branch ? ` · ${task.branch}` : ''}` },
+        h('span', { class: 'tl-mark' }, statusMark(info, 16)),
+        h('span', { class: 'tl-text' },
+          h('span', { class: 'tl-line' },
+            h('span', { class: 'tl-title' }, task.title || `Task #${task.number}`),
+            task.unread_messages ? h('span', { class: 'task-unread', title: `${task.unread_messages} unread messages` }, String(task.unread_messages)) : null,
+            task.origin && task.origin !== 'ui' ? h('span', { class: 'tl-origin' }, ORIGINS[task.origin] || task.origin) : null),
+          h('span', { class: 'tl-sub' },
+            h('span', { class: `tone-text-${group === 'needs' ? info.tone : 'muted'}` }, detailLine(task, info)),
+            h('span', { class: 'tl-id' }, ` · #${task.number}`),
+            task.branch ? h('span', { class: 'tl-branch' }, ` · ${task.branch}`) : null,
+            h('span', { class: 'tl-sub-time' }, ` · ${relShort(task.updated_at)}`)))),
+      prChip(pulls.get(task.id)),
+      login ? h('span', { class: 'avatar tl-avatar', title: login, 'aria-label': `Started by ${login}` }, initials(login)) : h('span', { class: 'tl-avatar' }),
+      h('span', { class: 'tl-time', title: `Updated ${dateTime(task.updated_at)} · created ${dateTime(task.created_at)}` }, relShort(task.updated_at)),
+      h('span', { class: 'tl-actions' },
+        actions.archive ? iconButton('archive', 'Archive', () => archiveTask(ctx, task), { class: 'tl-action' }) : null,
+        kebab));
+    row.addEventListener('contextmenu', (event) => {
+      if (event.target.closest('a.tl-pr-chip')) return;
+      event.preventDefault();
+      openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, task);
+    });
+    return row;
+  }
+
+  // Pull requests and checks: one read per sandbox, refreshed every minute and on focus.
+  async function loadPulls() {
+    try {
+      const git = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`);
+      pulls = new Map((git.tasks || []).filter((t) => t.pr).map((t) => [t.task_id, t.pr]));
+      render();
+    } catch { /* PR chips stay empty; the list works without them */ }
+  }
+
+  // Keyboard: "/" focuses search, j/k move between tasks, "." opens the focused task's menu.
+  const typing = (target) => target.closest('input, textarea, select, [contenteditable="true"], .xterm');
+  function onKey(event) {
+    if (event.metaKey || event.ctrlKey || event.altKey || !frame.el.isConnected) return;
+    if (event.key === '/' && !typing(event.target)) { event.preventDefault(); search.focus(); search.select(); return; }
+    if (typing(event.target)) return;
+    const links = [...listHost.querySelectorAll('.tl-link')];
+    const index = links.indexOf(document.activeElement);
+    const move = { j: 1, ArrowDown: 1, k: -1, ArrowUp: -1 }[event.key];
+    if (move && (index >= 0 || event.key === 'j' || event.key === 'k')) {
+      event.preventDefault();
+      const next = links[index < 0 ? 0 : Math.max(0, Math.min(links.length - 1, index + move))];
+      if (next) { next.focus(); next.scrollIntoView({ block: 'nearest' }); }
+    } else if (event.key === '.' && index >= 0) {
+      event.preventDefault();
+      links[index].closest('.tl-row').querySelector('.tl-actions .tl-action:last-child')?.click();
+    }
+  }
+  search.addEventListener('input', render);
+  search.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    if (search.value) { search.value = ''; render(); } else search.blur();
+  });
+  document.addEventListener('keydown', onKey);
+  const onFocus = () => loadPulls();
+  window.addEventListener('focus', onFocus);
+  const timer = setInterval(loadPulls, 60_000);
+  const offs = [
+    ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) render(); }),
+    ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) render(); }),
+  ];
   render();
-  return { el: frame.el, key: `tasks:${sandbox.id}`, destroy: off };
+  loadPulls();
+  return { el: frame.el, key: `tasks:${sandbox.id}`, destroy: () => {
+    offs.forEach((off) => off());
+    document.removeEventListener('keydown', onKey);
+    window.removeEventListener('focus', onFocus);
+    clearInterval(timer);
+  } };
 }
 
 /** Archived tasks across visible sandboxes, with restore. */

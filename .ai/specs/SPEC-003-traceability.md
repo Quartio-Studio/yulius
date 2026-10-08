@@ -193,6 +193,7 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 20 | (2026-10-08, `F 2026-10-08 UI`) The Status panel must be intuitive with icons (understood in 3 seconds); sandboxes and accounts as expandable lists; each account with an initials avatar, email and plan (5x, 20x… per provider), usage as horizontal bars, accounts clearly separated. | UI-022 (email/plan need the server) |
 | 21 | (2026-10-08, `F 2026-10-08 UI`) The user menu has no link to settings; add it there, with icons everywhere. | ACC-010 (changed) |
 | 22 | (2026-10-08, `F 2026-10-08 UI`) New task by keyboard; ⌘N is browser-reserved, so ⌘⇧O (as ChatGPT, Claude, Gemini, Codex) was chosen. | UI-023 |
+| 23 | (2026-10-08, `F 2026-10-08 UI`) The Tasks page is ugly and unreadable; research the state of the art and add filters. | UI-024 |
 
 ## Changelog
 

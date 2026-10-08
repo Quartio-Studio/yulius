@@ -73,14 +73,20 @@ export function statusInfo(task) {
   return { glyph: '?', icon: 'st-stopped', tone: 'stopped', label: `Unknown (${status})`, group: 'ended' };
 }
 
-/** Coarse group used by filters: active | attention | closed | stopped | failed. */
-export function statusGroup(task) {
+/**
+ * statusInfo plus what only the live store knows: a browser action request from the agent makes
+ * a live task "Needs you in the browser". `actionRequests` is store.state.actionRequests. The
+ * sidebar and the Tasks page both use this, so they always agree.
+ */
+export function taskInfo(task, actionRequests) {
   const info = statusInfo(task);
-  if (info.tone === 'attention') return 'attention';
-  if (isLive(task.status)) return 'active';
-  if (task.status === 'closed') return 'closed';
-  if (task.status.startsWith('failed_')) return 'failed';
-  return 'stopped';
+  const map = actionRequests && actionRequests.get(task.sandbox_id);
+  if (map && info.group !== 'ended') {
+    for (const request of map.values()) {
+      if (request.task_id === task.id) return { ...info, icon: 'globe', tone: 'attention', label: 'Needs you in the browser', group: 'needs', detail: request.reason };
+    }
+  }
+  return info;
 }
 
 const RANK = { read: 1, write: 2, admin: 3 };

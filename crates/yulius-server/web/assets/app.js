@@ -194,6 +194,7 @@ function createApp(root, transport) {
     const backdrop = h('div', { class: 'drawer-backdrop', onClick: () => document.body.classList.remove('drawer-open') });
     appEl.append(tabRow.el, sidebar.el, center, panels.panel, panels.rail);
     setChildren(root, appEl, backdrop);
+    ctx.openNewTask = () => openNewTask();
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
     ctx.railVisible = () => panels.railVisible;
     ctx.setRailVisible = (visible) => panels.setRailVisible(visible);
