@@ -6,12 +6,15 @@
 // Page resources served on the VM (localhost, plain http) load through Yulius. Agents' actions
 // show as a labelled cursor (BRW-007). New tabs open the Yulius welcome page (BRW-006).
 // The socket is open only while the panel is visible.
+//
+// rrweb's replayer is vendored under a neutral name and loaded on first use: content blockers
+// (Brave Shields, uBlock Origin with EasyPrivacy) block any `/rrweb.js`, and a blocked or failed
+// load must cost only the DOM view — the panel then shows pixels — never the whole UI.
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast } from './dom.js';
 import { ReconnectingSocket, parseBrowserFrame, CLOSE_REVOKED, CLOSE_SERVER_ERROR } from './termsocket.js';
 import { allows } from './status.js';
-import { Replayer } from './vendor/rrweb/rrweb.js';
 
 const MOUSE_BUTTONS = ['left', 'middle', 'right'];
 const WELCOME_PATH = /\/browser\/welcome\?sandbox=/;
@@ -20,6 +23,8 @@ const AGENT_CURSOR_IDLE_MS = 6000;
 const DOM_WAIT_MS = 6000;
 /** Mirror failures on one page before it is shown as pixels instead of resynchronized. */
 const MAX_MIRROR_FAILURES = 3;
+/** Pixel view reason when the mirror's code cannot load in this browser. */
+const MIRROR_UNAVAILABLE = 'the DOM mirror could not load in this browser';
 /** rrweb event and source numbers used here. */
 const EV_FULL_SNAPSHOT = 2;
 const EV_INCREMENTAL = 3;
@@ -60,7 +65,23 @@ let rrwebStyles = false;
 function ensureReplayerStyles() {
   if (rrwebStyles) return;
   rrwebStyles = true;
-  document.head.append(h('link', { rel: 'stylesheet', href: '/assets/vendor/rrweb/rrweb.css' }));
+  document.head.append(h('link', { rel: 'stylesheet', href: '/assets/vendor/dom-mirror/replayer.css' }));
+}
+
+let Replayer = null; // rrweb's Replayer once loaded
+let replayerLoad = null;
+let replayerFailed = false;
+/** Loads the replayer once; it settles either way (a failure sets `replayerFailed`). */
+function loadReplayer() {
+  if (!replayerLoad) {
+    replayerLoad = import('./vendor/dom-mirror/replayer.js')
+      .then((module) => { Replayer = module.Replayer; })
+      .catch((error) => {
+        replayerFailed = true;
+        console.warn('DOM mirror unavailable; the browser panel shows pixels', error);
+      });
+  }
+  return replayerLoad;
 }
 
 /** Create the browser panel view for a sandbox. */
@@ -92,6 +113,7 @@ export function createBrowserPanel(ctx, sandbox) {
   let domTimer = 0;
   let watchedUrl = null; // the active tab's URL when the view mode was last chosen
   let mirrorFailures = 0; // on the current page
+  let missedDom = false; // DOM arrived before the replayer loaded: resynchronize once it has
   let serverViewport = null; // {width, height} the server last applied to every tab
   const canvasSeq = new Map(); // mirror node id → newest painted frame
   let pageSize = { width: 0, height: 0 };
@@ -169,7 +191,7 @@ export function createBrowserPanel(ctx, sandbox) {
 
   /** After a navigation or tab change, an automatic fallback tries the DOM view again. */
   function retryDom() {
-    if (wantPixels) return;
+    if (wantPixels || replayerFailed) return;
     if (pixelsReason) {
       pixelsReason = null;
       send({ type: 'view', mode: 'dom' });
@@ -447,6 +469,11 @@ export function createBrowserPanel(ctx, sandbox) {
   function onDom(message) {
     const tab = activeTab();
     if (!tab || message.tab_id !== tab.id) return;
+    if (!Replayer) {
+      if (!replayerFailed) missedDom = true;
+      else if (!pixelsReason) autoPixels(MIRROR_UNAVAILABLE);
+      return;
+    }
     const events = Array.isArray(message.events) ? message.events : [];
     if (message.reset) {
       destroyReplayer();
@@ -642,6 +669,7 @@ export function createBrowserPanel(ctx, sandbox) {
         destroyReplayer();
         pixelsReason = null;
         if (wantPixels) send({ type: 'view', mode: 'pixels' });
+        else if (replayerFailed) autoPixels(MIRROR_UNAVAILABLE);
         else expectDom();
         applyMode();
         sendViewport();
@@ -761,6 +789,16 @@ export function createBrowserPanel(ctx, sandbox) {
     else send({ type: 'navigate', tab_id: tab.id, url });
     address.blur();
     focusPage();
+  });
+
+  loadReplayer().then(() => {
+    if (replayerFailed) {
+      if (!wantPixels && !pixelsReason) autoPixels(MIRROR_UNAVAILABLE);
+    } else if (missedDom) {
+      missedDom = false;
+      send({ type: 'dom_resync' });
+      expectDom();
+    }
   });
 
   return {
