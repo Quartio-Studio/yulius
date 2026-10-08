@@ -35,6 +35,7 @@ export function createStore(api) {
     sandboxes: [],
     tasks: new Map(), // sandbox id → Map(task id → TaskSummary)
     taskErrors: new Map(), // sandbox id → the error of its last failed list load
+    sandboxesError: null, // the error of the last failed sandbox list load
     actionRequests: new Map(), // sandbox id → Map(tab id → {reason, task_id})
     eventsStatus: 'closed',
   };
@@ -67,7 +68,14 @@ export function createStore(api) {
   }
 
   async function loadSandboxes() {
-    const list = await api.get('/api/sandboxes');
+    let list;
+    try {
+      list = await api.get('/api/sandboxes');
+    } catch (error) {
+      state.sandboxesError = error; // views say so instead of "no sandboxes" (CODE-12)
+      throw error;
+    }
+    state.sandboxesError = null;
     state.sandboxes = orderedSandboxes(Array.isArray(list) ? list : []);
     emit('sandboxes');
     return state.sandboxes;

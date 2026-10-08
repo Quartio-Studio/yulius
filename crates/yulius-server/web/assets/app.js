@@ -11,7 +11,7 @@ import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppL
 import { createStore, readJson, writeJson } from './store.js';
 import { applyTheme } from './theme.js';
 import { BRAND } from './brand.js';
-import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion } from './dom.js';
+import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError } from './dom.js';
 import { createTabRow, createSidebar } from './layout.js';
 import { createPanelHost } from './panels.js';
 import { mountTaskView, mountComposer } from './taskview.js';
@@ -364,7 +364,7 @@ function createApp(root, transport) {
       shell.tabRow.update(null);
       shell.sidebar.update(route, null);
       shell.panels.setContext(null, null);
-      setCenter('home', () => homeView());
+      if (store.state.sandboxesError) sandboxesFailed('sandboxes-error'); else setCenter('home', () => homeView());
       updateTitle();
       return;
     }
@@ -383,7 +383,8 @@ function createApp(root, transport) {
         shell.tabRow.update(null);
         shell.sidebar.update(route, null);
         shell.panels.setContext(null, null);
-        message(`missing:${route.slug}`, 'This sandbox does not exist or you do not have access to its GitHub repository.');
+        if (store.state.sandboxesError) sandboxesFailed(`sandboxes-error:${route.slug}`);
+        else message(`missing:${route.slug}`, 'This sandbox does not exist or you do not have access to its GitHub repository.');
         return;
       }
       writeJson(LAST_SANDBOX_KEY, sandbox.id);
@@ -454,6 +455,13 @@ function createApp(root, transport) {
       navigate(`/s/${encodeURIComponent(sandbox.slug)}`, { replace: true });
     }
     updateTitle();
+  }
+
+  /** The sandbox list could not be loaded: say so with a retry (not "no sandboxes" or "no access"). */
+  function sandboxesFailed(key) {
+    const error = store.state.sandboxesError;
+    setCenter(key, () => ({ el: h('div', { class: 'page' }, h('div', { class: 'page-inner' },
+      loadError(`Couldn’t load your sandboxes: ${error.message}`, () => store.loadSandboxes().then(() => refreshRoute(), () => {})))) }));
   }
 
   function homeView() {
