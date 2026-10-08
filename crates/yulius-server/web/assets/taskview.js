@@ -2,10 +2,10 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, placeholder, openMenu, statusMark, singleFlight } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, placeholder, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { statusInfo, taskInfo, isLive, allows, taskActions, endedMessage } from './status.js';
-import { openTaskMenu, continueTask } from './actions.js';
+import { openTaskMenu, continueTask, deliveryStrip } from './actions.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -44,11 +44,13 @@ export function mountTaskView(ctx, sandbox, task) {
   const progressFill = h('div', { class: 'step-progress-fill' });
   const progress = h('div', { class: 'step-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100 }, progressFill);
   const statusEl = h('span', { class: 'strip-status' });
+  // The pull request, its checks and the next delivery step, beside the state (UX2-18).
+  const deliveryEl = h('span', { class: 'strip-delivery' });
   const toggleButton = h('button', { type: 'button', class: 'stepstrip-toggle', 'aria-expanded': String(stripOpen) }, icon('right', { size: 14 }), stripLabel);
   const kebab = iconButton('more', 'Task actions', () => openTaskMenu(ctx, kebab, current), { 'aria-haspopup': 'menu' });
   const stepList = h('div', { class: 'steplist', hidden: !stripOpen });
   const strip = h('div', { class: ['stepstrip', stripOpen && 'open'] },
-    h('div', { class: 'stepstrip-main' }, toggleButton, progress, statusEl, kebab),
+    h('div', { class: 'stepstrip-main' }, toggleButton, progress, statusEl, deliveryEl, kebab),
     stepList);
   toggleButton.addEventListener('click', () => {
     stripOpen = !stripOpen;
@@ -182,11 +184,26 @@ export function mountTaskView(ctx, sandbox, task) {
     if (alive) renderStepList();
   }
 
+  let delivery = null;
+  const renderDelivery = () => keepFocus(deliveryEl, () => setChildren(deliveryEl, deliveryStrip(ctx, current, delivery, { canAct: allows(sandbox.access, 'write'), reload: loadDelivery })));
+  // Optional: the strip works without it (no GitHub, no branch yet), so a failed read stays quiet.
+  const loadDelivery = singleFlight(async () => {
+    try {
+      const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}/delivery`);
+      if (!alive) return;
+      delivery = fresh;
+    } catch {
+      delivery = null;
+    }
+    if (alive) renderDelivery();
+  });
+
   destroyers.push(ctx.store.on('steps', (taskId) => { if (taskId === current.id) loadDetail(); }));
-  destroyers.push(ctx.store.on('resync', () => loadDetail()));
+  destroyers.push(ctx.store.on('resync', () => { loadDetail(); loadDelivery(); }));
 
   renderStrip();
   loadDetail();
+  loadDelivery();
 
   return {
     el,
@@ -197,8 +214,11 @@ export function mountTaskView(ctx, sandbox, task) {
     },
     update(next) {
       const wasLive = isLive(current.status);
+      const previousStatus = current.status;
       current = { ...current, ...next };
       renderStrip();
+      if (current.status !== previousStatus) loadDelivery(); // a finished task may now be ready for a pull request
+      else renderDelivery();
       // A continued task gets a new attempt: reconnect if the socket had ended.
       if (!wasLive && isLive(current.status) && terminal.socket.status !== 'open') terminal.reconnect();
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).

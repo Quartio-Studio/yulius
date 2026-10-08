@@ -212,6 +212,31 @@ export function prLine(pr) {
     h('span', { class: 'muted small mono' }, `${pr.base} ← ${pr.head}`));
 }
 
+const CHECK_ICONS = { success: 'check', failure: 'x', pending: 'clock' };
+
+/**
+ * The task view's delivery line (UX2-18): the pull request with its checks, opening Deliver…, and
+ * the next step as a button when it is to open the pull request (once the task is closed) or to
+ * merge. `canAct` hides the buttons from read-only members; `reload` reads the delivery again.
+ */
+export function deliveryStrip(ctx, task, delivery, { canAct = true, reload = () => {} } = {}) {
+  if (!delivery) return [];
+  const pr = delivery.pr;
+  const next = Array.isArray(delivery.next_actions) ? delivery.next_actions : [];
+  const done = task.status === 'closed'; // as the Git page: a pull request once the task is finished
+  const out = [];
+  if (pr) {
+    const checks = pr.state === 'open' ? CHECKS[pr.checks] : null;
+    const glyph = checks ? CHECK_ICONS[pr.checks] : null;
+    const label = `Pull request #${pr.number}, ${pr.state}${checks ? `, ${checks[0]}` : ''} — delivery details`;
+    out.push(h('button', { type: 'button', class: ['tl-pr-chip', 'strip-pr', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], title: label, 'aria-label': label, onClick: () => openDeliveryDialog(ctx, task).result.then(reload) },
+      icon('branch', { size: 12 }), `#${pr.number}`, glyph ? h('span', { class: `tone-${checks[1]}` }, icon(glyph, { size: 12 })) : null));
+  }
+  if (canAct && next.includes('merge')) out.push(h('button', { type: 'button', class: 'btn btn-sm strip-extra', onClick: () => mergeTask(ctx, task, reload) }, 'Merge…'));
+  else if (canAct && done && next.includes('open_pr')) out.push(h('button', { type: 'button', class: 'btn btn-sm strip-extra', onClick: () => openPrDialog(ctx, task, reload) }, 'Open pull request…'));
+  return out;
+}
+
 /** Notes from Git/GitHub reads and policy outcomes (reads degrade instead of failing). */
 export function notesBanner(notes) {
   const list = Array.isArray(notes) ? notes.filter(Boolean) : [];

@@ -577,6 +577,9 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .step-task-num { margin-right: 6px; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
 .step-progress { width: 120px; height: 4px; border-radius: var(--radius-full); background: var(--accent-track); overflow: hidden; flex: none; }
 .step-progress-fill { width: 0; height: 100%; background: var(--series-1); border-radius: var(--radius-full); transition: width var(--duration-slow) var(--ease); }
+.strip-delivery { display: inline-flex; align-items: center; gap: 8px; }
+.strip-delivery:empty { display: none; }
+button.strip-pr { background: transparent; font-family: inherit; cursor: pointer; }
 .strip-status { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); white-space: nowrap; }
 .steplist { max-height: 40vh; overflow: auto; padding: 4px 12px 12px 32px; border-top: 1px solid var(--border); }
 .step-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; padding: 4px 0; align-items: baseline; }

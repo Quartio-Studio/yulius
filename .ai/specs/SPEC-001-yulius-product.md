@@ -224,6 +224,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-027 | New and edited automations pick their schedule from presets — every day, every weekday, once a week (with the day), every hour — at a time, and the page says in words when it runs; the raw cron expression stays available under "Advanced", and typing one selects the matching preset (or Custom). | F 2026-10-08 UI | C | AC-UI-20 |
 | UI-028 | The notification center filters All / Unread and marks a single entry read from its row; with "Desktop notifications" switched on in Settings (asking the browser's permission only then), new entries also reach the operating system while the tab is in the background, and clicking one opens its task. | F 2026-10-08 UI | C | AC-UI-21 |
 | UI-029 | Every keyboard shortcut is listed in one sheet, opened with ⌘/ (Ctrl+/ outside the terminal, where it belongs to the shell) or from Settings; shortcuts are shown in the platform's own key names (⌘⇧O on macOS, Ctrl+Shift+O elsewhere) wherever the UI mentions them. | F 2026-10-08 UI | C | AC-UI-22 |
+| UI-030 | The task view's strip shows the task's pull request with its checks (passed, failed, running), which opens the delivery details, and the next delivery step as a button when it is to merge or, for a closed task, to open the pull request; members with read access see the chip without the button. | F 2026-10-08 UI | C | AC-UI-23 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -600,6 +601,7 @@ instance — out of scope).
 | AC-UI-20 | Choosing "Once a week", Wednesday, 17:30 writes the cron "30 17 * * 3" and shows "Every Wednesday at 17:30"; typing "0 8 * * 1-5" selects "Every weekday" at 08:00. | ui |
 | AC-UI-21 | With desktop notifications on and permission granted, an agent question arriving while the app is unfocused creates one OS notification; with the app focused it creates none; "Unread" lists only unread entries and a row's "Mark read" removes it from that list. | ui |
 | AC-UI-22 | ⌘/ (Ctrl+/) opens the shortcut sheet and pressing it again closes it; on Windows and Linux the Tasks page and sidebar show "Ctrl+Shift+O", not "⌘⇧O". | ui |
+| AC-UI-23 | A task whose pull request is open with passing checks shows "#<n> ✓" and "Merge…" in its strip; with failing checks it shows "#<n> ✗" and no Merge; a task that crashed or failed to start shows no "Open pull request…". | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
@@ -704,7 +706,8 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 - 2026-10-08 (UI audit wave 3, `F 2026-10-08 UI`): automation schedules from presets with cron under
   Advanced (UI-027, AC-UI-20); notification filter, per-row read and opt-in desktop notifications
-  (UI-028, AC-UI-21); a keyboard shortcut sheet (UI-029, AC-UI-22).
+  (UI-028, AC-UI-21); a keyboard shortcut sheet (UI-029, AC-UI-22);
+  the pull request and next delivery step in the task view (UI-030, AC-UI-23).
 
 - 2026-10-08 (UI review, `F 2026-10-08 UI`): the user menu moves to the sidebar's foot and the
   collapsed sidebar is dropped; the tools rail names its tools; the sidebar shows the Yulius
