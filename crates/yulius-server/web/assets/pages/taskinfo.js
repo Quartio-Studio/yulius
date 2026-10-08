@@ -29,7 +29,14 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   let current = task;
   let detail = null;
   let detailError = null;
+  let accounts = null; // account label → account (with its sign-in email for administrators)
   const reads = new AbortController();
+
+  /** An account by its sign-in email when the server gives it (administrators), else by its label. */
+  const accountName = (label) => {
+    const account = accounts && label ? accounts.get(label) : null;
+    return account && account.email ? h('span', { title: label }, account.email) : (label || '—');
+  };
 
   const meta = h('div', { class: 'gt-meta' });
   const body = h('div', { class: 'ti-body' }, placeholder('Loading the task…', 'loading'));
@@ -67,7 +74,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       h('thead', null, h('tr', null, ['#', 'Account', 'Started', 'Ended', 'Length', 'State'].map((label) => h('th', { scope: 'col' }, label)))),
       h('tbody', null, list.map((a) => h('tr', null,
         h('td', null, String(a.seq)),
-        h('td', null, a.account_label || '—', a.launch_kind && a.launch_kind !== 'new' ? h('span', { class: 'muted xs' }, ` · ${a.launch_kind}`) : null),
+        h('td', null, accountName(a.account_label), a.launch_kind && a.launch_kind !== 'new' ? h('span', { class: 'muted xs' }, ` · ${a.launch_kind}`) : null),
         h('td', { title: dateTime(a.started_at) }, a.started_at ? relLong(a.started_at) : '—'),
         h('td', { title: a.ended_at ? dateTime(a.ended_at) : null }, a.ended_at ? relLong(a.ended_at) : 'running'),
         h('td', null, a.started_at ? duration((a.ended_at ? Date.parse(a.ended_at) : Date.now()) - Date.parse(a.started_at)) : '—'),
@@ -100,7 +107,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       ['Author', login ? h('span', { class: 'ti-person' }, h('span', { class: 'avatar ti-avatar', 'aria-hidden': 'true' }, initials(login)), login) : '—'],
       ['Origin', ORIGINS[current.origin] || current.origin || '—'],
       ['Mode', current.mode === 'prompt' ? 'Prompt' : 'Goal (works until it is met)'],
-      ['Account', current.account_label || '—'],
+      ['Account', accountName(current.account_label)],
       ['Models', m.models && m.models.length ? m.models.join(', ') : '—'],
       ['Turns', m.turns === null || m.turns === undefined ? '—' : int(m.turns)],
       ['Account switches', String(m.switches ?? (detail.switches || []).length ?? 0)],
@@ -137,6 +144,16 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     render();
   }
 
+  // Accounts as the Status panel sees them: emails come only to administrators (docs/api.md).
+  async function loadAccounts() {
+    try {
+      const status = await ctx.api.get('/api/status', { signal: reads.signal });
+      if (!alive) return;
+      accounts = new Map((Array.isArray(status.accounts) ? status.accounts : []).map((a) => [a.label, a]));
+      if (detail) render();
+    } catch { /* labels stay */ }
+  }
+
   const unwatchPulls = ctx.store.watchPulls(sandbox.id);
   const offs = [
     ctx.store.on('pulls', (sid) => { if (sid === sandbox.id) render(); }),
@@ -147,6 +164,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   const el = h('div', { class: 'page ti-page' }, h('div', { class: 'page-inner ti-inner' }, head, body));
   renderHead();
   load();
+  loadAccounts();
 
   return {
     el,

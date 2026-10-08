@@ -150,7 +150,7 @@ TaskSummary = {
 }
 TaskDetail = TaskSummary + {
   "spec_path": "docs/specs/2026-10-07-checkout-api.md|null",
-  "worktree": "…", "attempts": [{"seq","harness","account_label","launch_kind","state",
+  "worktree": "…", "attempts": [{"seq","harness","account_label","account_id (proposed)","launch_kind","state",
                                   "started_at","ended_at","exit_code","exit_reason"}],
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
   "delivery": Delivery, "switches": [{"at","reason","from","to"}]
@@ -431,7 +431,9 @@ Account = {"id","provider","label","enabled","priority",
 Unknown usage is `null`, never zero. Credentials are never returned. `email` (the provider sign-in,
 administrators only) and `plan` (the subscription tier) are planned for UI-022: the web UI shows
 them when present, but **the server does not report them yet** (only the mock does), so today they
-are absent and the UI falls back to the label and provider.
+are absent and the UI falls back to the label and provider. A task's overview names each session's
+account by that email when it has it, matching `TaskDetail.attempts[].account_label` to the
+Status accounts; an `account_id` on attempts (proposed) would make the match independent of labels.
 
 **Login terminal.** Each login runs Claude Code's own sign-in (`claude setup-token`) with a
 temporary config directory in a server-owned PTY 500 columns
