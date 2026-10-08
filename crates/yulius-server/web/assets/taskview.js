@@ -129,7 +129,7 @@ export function mountTaskView(ctx, sandbox, task) {
       if (index >= 0) n = index + 1;
     }
     setChildren(stripLabel,
-      h('span', { class: 'step-task', title: current.title }, h('span', { class: 'step-task-num' }, `#${current.number}`), current.title),
+      h('span', { class: 'step-task', title: current.title }, h('span', { class: 'step-task-num' }, `#${current.number}`), h('span', { class: 'sr-only' }, ' '), current.title),
       total
         ? [h('span', { class: 'step-count' }, `Step ${n || done}/${total}`), h('span', { class: 'step-current' }, steps.current ? `· ${steps.current}` : done === total ? '· All steps done' : '')]
         : h('span', { class: 'step-current muted' }, 'No plan steps yet'));

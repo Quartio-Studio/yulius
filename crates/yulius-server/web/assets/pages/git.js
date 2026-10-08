@@ -326,7 +326,7 @@ export function mountGitPage(ctx, sandbox) {
     const attention = item.column !== 'built' && (next.length > 0 || (pr && pr.state === 'open' && pr.checks === 'failure'));
     const files = item.row.files_changed ? `${plural(item.row.files_changed, 'file')} changed · +${item.row.insertions ?? 0} −${item.row.deletions ?? 0}` : null;
     return h('div', { class: ['dl-card-task', attention && 'attention'] },
-      h('div', { class: 'dl-card-title' }, taskLink(item, false), attention ? h('span', { class: 'dl-dot', title: 'Needs an action' }) : null),
+      h('div', { class: 'dl-card-title' }, taskLink(item, false), attention ? h('span', { class: 'dl-dot', title: 'Needs an action' }, h('span', { class: 'sr-only' }, 'Needs an action')) : null),
       h('div', { class: 'dl-card-line' }, line),
       h('div', { class: 'dl-card-meta' }, prChip(pr), files ? h('span', { class: 'xs muted', title: `${item.row.branch || ''}` }, files) : null,
         item.task && (item.column !== 'built' || (item.info && item.info.group === 'ended')) ? h('button', { type: 'button', class: 'link-btn xs dl-deliver', onClick: () => openDeliveryDialog(ctx, item.task) }, 'Deliver…') : null));

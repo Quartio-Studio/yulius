@@ -169,9 +169,12 @@ export function mountTasksPage(ctx, sandbox) {
       const on = filters.state === tab.id;
       return h('button', { type: 'button', role: 'radio', 'aria-checked': String(on), tabindex: on ? '0' : '-1', class: ['tl-tab', on && 'active', tab.id === 'needs' && tab.size > 0 && 'urgent'], onClick: () => { filters.state = tab.id; render(); },
         onKeydown: (event) => {
-          if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+          // A radio group moves with all four arrows (APG radio group).
+          const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+          if (!step) return;
+          event.preventDefault();
           const all = [...tabs.children];
-          const next = all[(all.indexOf(event.currentTarget) + (event.key === 'ArrowRight' ? 1 : all.length - 1)) % all.length];
+          const next = all[(all.indexOf(event.currentTarget) + step + all.length) % all.length];
           next.click();
           tabs.querySelector('[aria-checked="true"]').focus();
         } }, h('span', { class: `tl-tab-icon tab-${tab.id}` }, icon(tab.icon, { size: 14 })), tab.name, h('span', { class: 'tl-tab-count' }, String(tab.size)));
@@ -231,7 +234,7 @@ export function mountTasksPage(ctx, sandbox) {
         h('span', { class: 'tl-text' },
           h('span', { class: 'tl-line' },
             h('span', { class: 'tl-title' }, task.title || `Task #${task.number}`),
-            task.unread_messages ? h('span', { class: 'task-unread', title: `${task.unread_messages} unread messages` }, String(task.unread_messages)) : null,
+            task.unread_messages ? h('span', { class: 'task-unread', title: `${task.unread_messages} unread messages` }, String(task.unread_messages), h('span', { class: 'sr-only' }, ' unread')) : null,
             task.origin && task.origin !== 'ui' ? h('span', { class: 'tl-origin' }, ORIGINS[task.origin] || task.origin) : null),
           // One sentence only: the number and branch stay in the tooltip and in search.
           h('span', { class: 'tl-sub' },
@@ -239,7 +242,7 @@ export function mountTasksPage(ctx, sandbox) {
             h('span', { class: 'tl-sub-time' }, ` · ${relShort(task.updated_at)}`)))),
       prChip(pulls.get(task.id)),
       // Only someone else's task shows its author; your own would repeat your initials on every row.
-      login && login !== myLogin() ? h('span', { class: 'avatar tl-avatar', title: `Started by ${login}`, 'aria-label': `Started by ${login}` }, initials(login)) : h('span', { class: 'tl-avatar' }),
+      login && login !== myLogin() ? h('span', { class: 'avatar tl-avatar', role: 'img', title: `Started by ${login}`, 'aria-label': `Started by ${login}` }, initials(login)) : h('span', { class: 'tl-avatar' }),
       h('span', { class: 'tl-time', title: `Updated ${dateTime(task.updated_at)} · created ${dateTime(task.created_at)}` }, relShort(task.updated_at)),
       h('span', { class: 'tl-actions' },
         actions.archive ? iconButton('archive', 'Archive', () => archiveTask(ctx, task), { class: 'tl-action' }) : null,
