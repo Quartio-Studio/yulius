@@ -1,8 +1,8 @@
 // Skills → New skill (SPEC-001 UI-035): name it, say when Claude Code should use it, pick a
 // template and write the rest in the block editor (mdeditor.js). The name becomes the folder
-// (.agents/skills/{name}/SKILL.md in the repository, or the instance store); the frontmatter is
-// written for you. Creating sends POST /api/sandboxes/{sid}/skills {"name","source","content"}
-// (docs/api.md, proposed).
+// (.agents/skills/{name}/SKILL.md in the sandbox repository, where the skill catalog finds it); the
+// frontmatter is written for you. Creating uses the built-in editor's files API (root `sandbox`):
+// the folder, then the file (refused when it exists, so nothing is overwritten).
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, confirmDialog, toast, invalid } from '../dom.js';
@@ -27,9 +27,7 @@ export function skillSlug(text) {
 export function mountSkillCreator(ctx, sandbox) {
   const base = `/s/${encodeURIComponent(sandbox.slug)}/skills`;
   const write = allows(sandbox.access, 'write');
-  const admin = ctx.isInstanceAdmin();
   let template = TEMPLATES[0];
-  let source = 'repository';
   let usePlaceholder = template.use;
   let pristine = '';
   let created = false;
@@ -39,7 +37,6 @@ export function mountSkillCreator(ctx, sandbox) {
   const pathEl = h('div', { class: 'muted small mono se-path' });
   const create = h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, onClick: () => doCreate() }, 'Create skill');
   const templates = h('div', { class: 'sn-templates', role: 'radiogroup', 'aria-label': 'Template' });
-  const where = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Where it lives' });
   const editor = createMarkdownEditor({ markdown: template.body, readOnly: !write });
   pristine = editor.getMarkdown();
 
@@ -49,13 +46,12 @@ export function mountSkillCreator(ctx, sandbox) {
     pathEl,
     !write ? h('p', { class: 'banner small' }, icon('lock', { size: 14 }), h('span', { class: 'banner-text' }, 'Creating skills needs write access to this sandbox.')) : null);
   const setup = h('div', { class: 'sn-setup' },
-    h('div', { class: 'sn-row' }, h('span', { class: 'wf-label' }, 'Start from'), templates),
-    h('div', { class: 'sn-row' }, h('span', { class: 'wf-label' }, 'Lives in'), where));
+    h('div', { class: 'sn-row' }, h('span', { class: 'wf-label' }, 'Start from'), templates));
   const el = h('div', { class: 'page se-page' }, h('div', { class: 'page-inner se-inner' }, h('h1', { class: 'sr-only' }, 'New skill'), head, setup, h('div', { class: 'se-body' }, editor.el)));
 
   function update() {
     const slug = skillSlug(nameInput.value);
-    const file = source === 'instance' ? `instance/skills/${slug || '…'}/SKILL.md` : `.agents/skills/${slug || '…'}/SKILL.md`;
+    const file = `.agents/skills/${slug || '…'}/SKILL.md`;
     setChildren(pathEl, slug && slug !== nameInput.value.trim() ? [h('span', null, 'Saved as '), h('strong', null, slug), ' · '] : null, file);
     create.disabled = !write;
   }
@@ -78,15 +74,6 @@ export function mountSkillCreator(ctx, sandbox) {
     renderTemplates();
   }
 
-  function renderWhere() {
-    const option = (value, label, iconName, allowed, why) => h('label', { title: allowed ? null : why },
-      h('input', { type: 'radio', name: 'sn-where', value, checked: source === value, disabled: !allowed, onChange: () => { source = value; update(); } }),
-      icon(iconName, { size: 14 }), label);
-    setChildren(where,
-      option('repository', 'This repository', 'branch', write, 'Needs write access'),
-      option('instance', 'Every sandbox', 'globe', write && admin, 'Instance skills are created by instance administrators'));
-  }
-
   function content() {
     const slug = skillSlug(nameInput.value);
     const use = useInput.value.trim().replace(/\s+/g, ' ');
@@ -102,15 +89,21 @@ export function mountSkillCreator(ctx, sandbox) {
     if (slug === 'new') { invalid(nameInput, '“new” is reserved: pick another name.'); return; }
     if (!useInput.value.trim()) { invalid(useInput, 'Say when Claude Code should use it: that is how it picks the skill.'); return; }
     create.classList.add('busy');
+    const files = `/api/sandboxes/${enc(sandbox.id)}/files`;
     try {
-      await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/skills`, { name: slug, source, content: content() });
+      const existing = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/skills`).catch(() => []);
+      if ((Array.isArray(existing) ? existing : []).some((sk) => sk.name === slug)) { invalid(nameInput, `A skill named ${slug} already exists.`); return; }
+      // The folders may exist already (.agents/skills, or the skill's own): that is fine.
+      for (const dir of ['.agents', '.agents/skills', `.agents/skills/${slug}`]) {
+        await ctx.api.post(files, { root: 'sandbox', path: dir, kind: 'dir' }).catch((error) => { if (error.status !== 409) throw error; });
+      }
+      await ctx.api.put(`${files}/content`, { root: 'sandbox', path: `.agents/skills/${slug}/SKILL.md`, content: content() });
       created = true;
       toast(`Created ${slug}`, { kind: 'ok' });
       navigate(`${base}/${encodeURIComponent(slug)}`);
     } catch (error) {
-      const missing = error.status === 404 || error.status === 405;
       if (error.status === 409) invalid(nameInput, `A skill named ${slug} already exists.`);
-      else toast(missing ? 'Couldn’t create: creating skills needs the server’s skill API (docs/api.md).' : `Couldn’t create: ${error.message}`, { kind: 'error' });
+      else toast(`Couldn’t create: ${error.message}`, { kind: 'error' });
     } finally {
       create.classList.remove('busy');
     }
@@ -132,7 +125,6 @@ export function mountSkillCreator(ctx, sandbox) {
   });
 
   renderTemplates();
-  renderWhere();
   update();
 
   return {

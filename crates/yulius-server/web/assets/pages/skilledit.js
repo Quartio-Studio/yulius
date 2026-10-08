@@ -1,8 +1,9 @@
 // Skills → one skill (SPEC-001 UI-033): its SKILL.md in the block editor (mdeditor.js) — formatted as
 // you write, frontmatter as properties, the Markdown source on demand — with Save (⌘S) and a guard
-// against leaving unsaved changes. Repository skills save into the repository; instance skills need
-// an instance administrator; the Open Mercato pack is read-only. Saving sends
-// PUT /api/sandboxes/{sid}/skills/{name} {"content"} (docs/api.md, proposed).
+// against leaving unsaved changes. A repository skill is a file in the sandbox repository
+// (.agents/skills or .claude/skills): it is read and saved with the built-in editor's files API
+// (root `sandbox`; the save carries the read's sha256, so a file changed meanwhile is a conflict, not
+// an overwrite). Instance skills and the Open Mercato pack are kept by the server: read-only here.
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, loadError, iconBadge, confirmDialog, toast } from '../dom.js';
@@ -20,6 +21,7 @@ export function mountSkillEditor(ctx, sandbox, name) {
   let saved = ''; // the Markdown as last saved (in the editor's own form)
   let dirty = false;
   let savedAt = null;
+  let sha = null; // the repository file's sha256 as read or last saved
   let alive = true;
   const reads = new AbortController();
 
@@ -62,8 +64,9 @@ export function mountSkillEditor(ctx, sandbox, name) {
     save.classList.add('busy');
     save.disabled = true;
     try {
-      await ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/skills/${enc(name)}`, { content });
+      const written = await ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/files/content`, { root: 'sandbox', path: skill.path, content, base_sha256: sha });
       if (!alive) return;
+      sha = written.sha256;
       saved = content;
       savedAt = new Date().toISOString();
       setDirty(editor.getMarkdown() !== saved);
@@ -71,9 +74,8 @@ export function mountSkillEditor(ctx, sandbox, name) {
     } catch (error) {
       if (!alive) return;
       save.disabled = false;
-      const missing = error.status === 422 || error.status === 404 || error.status === 405;
-      status.textContent = missing && !/read-only|administrators/.test(error.message)
-        ? `Couldn’t save: ${error.message}. Saving a skill's text needs the server's skill content API (docs/api.md).`
+      status.textContent = error.status === 409
+        ? 'Not saved: this skill changed since you opened it. Copy your text, then reload to see the new version.'
         : `Couldn’t save: ${error.message}`;
       status.classList.add('se-error');
     } finally {
@@ -103,16 +105,23 @@ export function mountSkillEditor(ctx, sandbox, name) {
 
   async function load() {
     try {
-      const [list, data] = await Promise.all([
-        ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/skills`, { signal: reads.signal }),
-        ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/skills/${enc(name)}`, { signal: reads.signal }),
-      ]);
+      const list = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/skills`, { signal: reads.signal });
       if (!alive) return;
-      skill = (Array.isArray(list) ? list : []).find((s) => s.name === name) || { name, source: 'repository' };
+      skill = (Array.isArray(list) ? list : []).find((s) => s.name === name) || { name, source: 'repository', path: `.agents/skills/${name}/SKILL.md` };
+      // A repository skill is read as a file (its sha256 guards the save) by people who may write; the
+      // files API is write-level, so readers and the other sources read it as the catalog gives it.
       const write = allows(sandbox.access, 'write');
+      let data;
+      if (skill.source === 'repository' && skill.path && write) {
+        data = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/files/content?${new URLSearchParams({ root: 'sandbox', path: skill.path })}`, { signal: reads.signal });
+        sha = data.sha256 || null;
+      } else {
+        data = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/skills/${enc(name)}`, { signal: reads.signal });
+      }
+      if (!alive) return;
       const why = skill.source === 'open-mercato' ? 'The Open Mercato pack is read-only: it is shared by every instance.'
-        : !write ? 'Read-only: editing needs write access to this sandbox.'
-          : skill.source === 'instance' && !ctx.isInstanceAdmin() ? 'Read-only: instance skills are edited by instance administrators.' : null;
+        : skill.source !== 'repository' ? 'Read-only: instance skills are kept by the server and are not edited here.'
+          : !write ? 'Read-only: editing needs write access to this sandbox.' : null;
       const [badgeIcon, badgeLabel, badgeTone] = SOURCE_BADGE[skill.source] || ['book', skill.source, ''];
       setChildren(badges, iconBadge(badgeIcon, badgeLabel, badgeTone), skill.enabled === false ? iconBadge('minimize', 'Off', '') : null);
       pathEl.textContent = skill.path || '';

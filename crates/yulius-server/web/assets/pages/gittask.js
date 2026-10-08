@@ -1,7 +1,9 @@
 // Git → a task's changes (SPEC-001 UI-031): what the agent changed, before you open its session.
 // Changes (the diff against the integration branch: file tree, unified or split, wrapped or not),
-// Commits and Branch, with "Go to task" at the top. Reads GET /api/tasks/{tid}/changes and
-// /commits (docs/api.md, "Task changes").
+// Commits and Branch, with "Go to task" at the top. Changes and Commits read GET
+// /api/tasks/{tid}/changes and /commits (docs/api.md, "Task changes", proposed); a server without
+// them answers 404, and the review then shows the Branch tab alone — the position and size from the
+// Git overview (GET /api/sandboxes/{sid}/git) and the comparison on GitHub.
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, statusMark, prChip, keepFocus, loadError } from '../dom.js';
@@ -74,11 +76,13 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
   let changesError = null;
   let commits = null;
   let commitsError = null;
+  let unsupported = false; // the server has no task changes API: Branch only
   const reads = new AbortController(); // leaving the page cancels its reads
   const expandedFiles = new Set(); // files drawn in full past LINE_LIMIT
   const collapsedFiles = new Set();
 
   const pr = () => ctx.store.pullsOf(sandbox.id).get(task.id) || null;
+  const gitRow = () => ctx.store.gitRowOf(sandbox.id, task.id);
   const profile = sandbox.profile || {};
   const integration = () => (changes && changes.base) || profile.integration_branch || 'integration';
 
@@ -268,13 +272,15 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
       ['Task branch', task.branch ? h('code', null, task.branch) : 'not created yet'],
       ['Into', h('code', null, int)],
       ['Then live on', h('code', null, profile.production_branch || sandbox.default_branch || 'main')],
-      changes ? ['Position', `${plural(changes.ahead ?? 0, 'commit')} ahead, ${changes.behind ?? 0} behind ${int}`] : null,
+      changes ? ['Position', `${plural(changes.ahead ?? 0, 'commit')} ahead, ${changes.behind ?? 0} behind ${int}`]
+        : gitRow() ? ['Position', `${plural(gitRow().ahead ?? 0, 'commit')} ahead, ${gitRow().behind ?? 0} behind ${int}`] : null,
+      !changes && gitRow() && gitRow().files_changed ? ['Changes', [plural(gitRow().files_changed, 'file'), ' ', diffStat(gitRow().insertions || 0, gitRow().deletions || 0)]] : null,
       changes && changes.head_sha ? ['Head', h('code', null, changes.head_sha.slice(0, 12))] : null,
       ['Pull request', p ? prChip(p) : 'none yet'],
     ].filter(Boolean);
     return h('div', { class: 'gt-branch-card card card-pad' },
       h('dl', { class: 'kv' }, rows.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
-      repoUrl && task.branch ? h('a', { class: 'btn btn-sm', href: `${repoUrl}/compare/${encodeURIComponent(int)}...${encodeURIComponent(task.branch)}`, target: '_blank', rel: 'noopener noreferrer' }, icon('external', { size: 14 }), 'Compare on GitHub') : null);
+      repoUrl && task.branch ? h('a', { class: ['btn', unsupported ? 'btn-primary' : 'btn-sm'], href: `${repoUrl}/compare/${encodeURIComponent(int)}...${encodeURIComponent(task.branch)}`, target: '_blank', rel: 'noopener noreferrer' }, icon('external', { size: 14 }), unsupported ? 'View the changes on GitHub' : 'Compare on GitHub') : null);
   }
 
   // ---- render and load
@@ -290,6 +296,7 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
       button.setAttribute('aria-selected', String(on));
       button.tabIndex = on ? 0 : -1;
       button.classList.toggle('active', on);
+      button.hidden = unsupported && id !== 'branch';
       const count = id === 'changes' && changes ? changes.files.length : id === 'commits' && commits ? commits.length : null;
       setChildren(button.querySelector('.gt-tab-count'), count === null ? null : String(count));
     }
@@ -305,7 +312,7 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
       changes = { ...data, files: Array.isArray(data.files) ? data.files : [] };
     } catch (error) {
       if (!alive || error.code === 'aborted') return;
-      changesError = error;
+      if (missingApi(error)) noApi(); else changesError = error;
     }
     render();
   }
@@ -316,13 +323,17 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
       commits = Array.isArray(data) ? data : [];
     } catch (error) {
       if (!alive || error.code === 'aborted') return;
-      commitsError = error;
+      if (missingApi(error)) noApi(); else commitsError = error;
     }
     render();
   }
+  // No such route on this server (404/405, not a task without a branch): Branch only.
+  function missingApi(error) { return (error.status === 404 || error.status === 405) && !/branch/i.test(error.message || ''); }
+  function noApi() { unsupported = true; tab = 'branch'; }
 
   const unwatchPulls = ctx.store.watchPulls(sandbox.id);
-  const offs = [ctx.store.on('pulls', (sid) => { if (sid === sandbox.id) renderMeta(); })];
+  // The Git overview (pull requests, position, size) refreshes the header and the Branch tab.
+  const offs = [ctx.store.on('pulls', (sid) => { if (sid === sandbox.id) { renderMeta(); if (tab === 'branch') renderPanel(); } })];
   const el = h('div', { class: 'page gt-page' }, h('div', { class: 'page-inner gt-inner' }, head, tablist, panel));
   render();
   loadChanges();
@@ -332,7 +343,7 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
     el,
     /** A link to another tab of this review (?tab=…) switches in place. */
     update(next) {
-      const wanted = TABS.some(([id]) => id === next.query.get('tab')) ? next.query.get('tab') : 'changes';
+      const wanted = unsupported ? 'branch' : TABS.some(([id]) => id === next.query.get('tab')) ? next.query.get('tab') : 'changes';
       if (wanted !== tab) { tab = wanted; render(); }
     },
     destroy() { alive = false; reads.abort(); unwatchPulls(); offs.forEach((off) => off()); },

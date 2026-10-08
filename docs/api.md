@@ -232,7 +232,8 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   who, when, which tasks) would let it say *when* and *by whom* production last changed.
 - **Task changes (proposed).** The Git page's review of a task (UI-031: Git → a task → Changes,
   Commits, Branch, then "Go to task") reads two endpoints the server does not have yet; until it
-  does, the review says so. `GET /api/tasks/{tid}/changes` (read) → `TaskChanges`, the task
+  does, they answer 404 and the review shows its Branch tab alone (the position and size from
+  `GET /api/sandboxes/{sid}/git`, and the comparison on GitHub). `GET /api/tasks/{tid}/changes` (read) → `TaskChanges`, the task
   worktree (committed and uncommitted) against the merge base with `origin/<integration>`;
   `GET /api/tasks/{tid}/commits` (read) → `[TaskCommit]`, the task branch's commits not on the
   integration branch, newest first. Large diffs may be cut (`truncated: true`); binary files carry
@@ -298,8 +299,12 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 | GET | `/api/sandboxes/{sid}/skills` | read | `[{"name","description","source":"repository|instance|open-mercato","path","enabled"}]` |
 | GET | `/api/sandboxes/{sid}/skills/{name}` | read | `{"name","content"}` (`SKILL.md`, at most 512 KiB) |
 | PUT | `/api/sandboxes/{sid}/skills/{name}` | write (instance skills: instance admin) | `{"enabled":bool}` → 204. Repository skills → 422 (always available inside the repository). |
-| POST | `/api/sandboxes/{sid}/skills` (proposed) | write (`"source":"instance"`: instance admin) | `{"name","source":"repository|instance","content"}` (`name`: lowercase letters, digits and hyphens, at most 64, not `new`; `content`: the whole `SKILL.md` with its frontmatter, at most 512 KiB) → 201 `{"name","content"}`; a repository skill is written to `.agents/skills/{name}/SKILL.md` in the repository, an instance skill into the instance store; an existing name → 409. The web UI's New skill page (UI-035) creates with it. |
-| PUT | `/api/sandboxes/{sid}/skills/{name}` (proposed) | write (instance skills: instance admin) | `{"content"}` (the whole `SKILL.md`, at most 512 KiB) → `{"name","content"}`; repository skills are written into the repository, instance skills into the instance store; the Open Mercato pack → 422 (read-only). The web UI's skill editor (UI-033) saves with it; the catalog's `description` follows the saved frontmatter. |
+
+The web UI edits and creates repository skills as files: a repository skill is
+`.agents/skills/<name>/SKILL.md` (or `.claude/skills/…`) in the sandbox repository, so its skill page
+(UI-033) reads and saves it with the built-in editor's files API (root `sandbox`, the save carrying
+the read's `sha256`) and New skill (UI-035) creates the folder and the file there. Instance skills
+and the Open Mercato pack have no write API and are read-only in the UI.
 | GET/POST | `/api/sandboxes/{sid}/workflows` | read/write | `Workflow`; POST → 201. `"scope":"instance"` creates an instance workflow (instance admins). |
 | PUT/DELETE | `/api/workflows/{id}` | write (instance: admin) | PUT replaces name, description, steps, instructions, gates → `Workflow`; DELETE → 204 |
 | GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201 |
