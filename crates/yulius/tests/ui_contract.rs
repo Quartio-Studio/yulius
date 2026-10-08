@@ -41,10 +41,15 @@ const PUBLIC_PATHS: &[&str] = &[
 /// Mock-only endpoints: stand-ins for flows the mock cannot run (the GitHub OAuth redirect).
 const MOCK_ONLY: &[(&str, &str)] = &[("POST", "/api/auth/mock-github")];
 
-/// Documented in docs/api.md but not routed by the server yet. The UI handles their 404
-/// (the GitHub page falls back to `/api/me`). This list must not go stale: the test fails
-/// once a route appears, so the entry and the UI fallback can be revisited.
-const KNOWN_UNROUTED: &[(&str, &str)] = &[];
+/// Documented in docs/api.md but not routed by the server yet. The UI handles their 404.
+/// This list must not go stale: the test fails once a route appears, so the entry and the UI
+/// fallback can be revisited.
+const KNOWN_UNROUTED: &[(&str, &str)] = &[
+    // The Git page's task review (UI-031) reads these when the server has them (docs/api.md
+    // "Task changes", proposed); on a 404 it shows its Branch tab alone.
+    ("GET", "/api/tasks/{}/changes"),
+    ("GET", "/api/tasks/{}/commits"),
+];
 
 /// A path template with `{}` for each interpolated segment, e.g. `/api/tasks/{}/stop`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
