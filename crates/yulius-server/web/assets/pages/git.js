@@ -1,119 +1,340 @@
-// Git page (GIT-001, DLV-001..005): task branches with diff stats, PRs with checks,
-// recent commits, environment runs, delivery actions per profile and (admin) delivery
-// profile editing. Reads degrade: Git/GitHub problems arrive as `notes`, not errors.
+// Git page (GIT-001, DLV-001..005, UI-025): delivery at a glance. It answers, top to bottom:
+// how this project ships (one sentence from the profile), what is live and what is waiting to go
+// live (with the release button), what needs the user now, where every task is on the way to
+// production (a board with columns from the profile), and recent activity. Branch statistics and
+// the full stage track live in each task's Deliver panel. Reads degrade: Git/GitHub problems
+// arrive as `notes`, not errors. Environment runs, merges and releases happen only when someone
+// clicks and confirms (GIT-002).
 
 import { enc } from '../api.js';
-import { h, setChildren, badge, openModal, field, toast, iconButton, placeholder } from '../dom.js';
-import { relShort, relLong, dateTime } from '../format.js';
-import { allows } from '../status.js';
+import { h, icon, setChildren, toast, iconButton, placeholder, statusMark, field, openModal } from '../dom.js';
+import { relShort, dateTime, plural } from '../format.js';
+import { allows, taskInfo } from '../status.js';
 import { href } from '../router.js';
-import { openDeliveryDialog, prLine, runEnvironment, confirmEnvironment, promote, notesBanner, openRunViewer, runStateBadge } from '../actions.js';
-import { pageFrame, dataTable, loader } from './common.js';
+import { openDeliveryDialog, runEnvironment, confirmEnvironment, promote, notesBanner, openRunViewer, mergeTask, openPrDialog } from '../actions.js';
+import { pageFrame } from './common.js';
+
+const LIVE_LIMIT = 5;
+const ACTIVITY_LIMIT = 8;
+const CHECK_TEXT = { success: 'checks passed', failure: 'checks failing', pending: 'checks running', unknown: 'checks unknown' };
+const CHECK_ICON = { success: ['check', 'ok'], failure: ['x', 'danger'], pending: ['clock', 'warn'] };
+
+/** Environments of a profile, split by where they run. */
+function environments(profile) {
+  const all = Array.isArray(profile.environments) ? profile.environments : [];
+  return { integration: all.filter((e) => e.after === 'integration'), production: all.filter((e) => e.after === 'production') };
+}
+
+const ago = (iso) => { const rel = relShort(iso); return rel === 'now' ? 'just now' : `${rel} ago`; };
+const listNames = (names) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
+
+/** "How this project ships", in one or two plain sentences generated from the profile. */
+export function profileSentence(profile) {
+  const int = profile.integration_branch || 'the integration branch';
+  const prod = profile.production_branch || 'production';
+  const envs = environments(profile);
+  const checks = profile.require_checks === false ? 'Checks don’t block merging.' : 'Merges wait for green checks.';
+  if (profile.auto_promote) return `Merging a pull request into ${int} puts it live on ${prod} right away. ${checks}`;
+  let text = `Merged work collects on ${int}`;
+  if (envs.integration.length) text += `, gets checked on ${listNames(envs.integration.map((e) => e.name))}`;
+  text += `, then someone releases it to ${prod}`;
+  if (envs.production.length) text += ` and confirms the ${listNames(envs.production.map((e) => e.name))}`;
+  return `${text}. ${checks} Nothing merges or goes live until a person clicks.`;
+}
+
+/** Board column of a delivery stage: built | review | waiting | live. */
+function columnOf(delivery, profile) {
+  const stage = delivery ? delivery.stage : 'none';
+  if (stage === 'pr_open') return 'review';
+  if (stage === 'merged_integration') return profile.auto_promote ? 'live' : 'waiting';
+  if (stage === 'env_done') return environments(profile).integration.some((e) => e.name === delivery.environment) ? 'waiting' : 'live';
+  if (stage === 'promoted' || stage === 'production_done') return 'live';
+  return 'built';
+}
+
+/** Pull request chip: number and checks in Claude's colours (merged violet). */
+function prChip(pr) {
+  if (!pr) return null;
+  const check = pr.state === 'open' ? CHECK_ICON[pr.checks] : null;
+  const label = `Pull request #${pr.number} · ${pr.state}${pr.state === 'open' && CHECK_TEXT[pr.checks] ? ` · ${CHECK_TEXT[pr.checks]}` : ''}`;
+  return h('a', { class: ['tl-pr-chip', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], href: pr.url, target: '_blank', rel: 'noopener noreferrer', title: label, 'aria-label': label },
+    icon('branch', { size: 12 }), `#${pr.number}`, check ? h('span', { class: `tone-${check[1]}` }, icon(check[0], { size: 12 })) : null);
+}
 
 /** Mount the Git page for a sandbox. */
 export function mountGitPage(ctx, sandbox) {
   const write = allows(sandbox.access, 'write');
   const admin = allows(sandbox.access, 'admin');
-  const frame = pageFrame({ title: 'Git', sub: sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name, actions: [iconButton('refresh', 'Refresh', () => { reload(); reloadRuns(); })] });
-  const deliveryHost = h('div');
-  const overviewHost = h('div', { class: 'stack' });
-  const runsHost = h('div');
-  frame.body.append(deliveryHost, overviewHost,
-    h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('span', { class: 'card-title' }, 'Environment runs'), h('span', { class: 'muted xs' }, 'newest 20')), runsHost));
+  const sb = () => ctx.store.sandboxById(sandbox.id) || sandbox;
+  const frame = pageFrame({ title: 'Git', sub: sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name, actions: [
+    iconButton('refresh', 'Refresh', () => load()),
+    admin ? h('button', { type: 'button', class: 'btn', onClick: () => openProfileEditor(ctx, sb()) }, icon('gear', { size: 14 }), 'Delivery settings') : null,
+  ] });
+  const intro = h('div', { class: 'dl-intro' });
+  const body = h('div', { class: 'stack dl' }, placeholder('Loading delivery…', 'loading'));
+  frame.body.append(intro, body);
+  let model = null;
+  let showAllActivity = false;
+  const expanded = new Set();
 
-  const afterAction = () => { reload(); reloadRuns(); };
-
-  function envButtons(sb, env) {
-    const why = write ? null : 'Requires write access';
-    const buttons = [];
-    if (env.command) {
-      buttons.push(h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, title: why || `Runs: ${env.command}`, onClick: async () => { await runEnvironment(ctx, sb, env.name); afterAction(); } }, `Run ${env.name}`));
+  async function load() {
+    try {
+      const [git, runs] = await Promise.all([
+        ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`),
+        ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/delivery/runs`).catch(() => []),
+      ]);
+      const rows = Array.isArray(git.tasks) ? git.tasks : [];
+      // The overview has no stages yet, so each task's delivery is read once (docs/api.md);
+      // a server that adds `stage` to the overview rows skips these reads.
+      const deliveries = await Promise.all(rows.map((row) => (row.stage ? Promise.resolve(row) : ctx.api.get(`/api/tasks/${enc(row.task_id)}/delivery`).catch(() => null))));
+      model = { git, runs: Array.isArray(runs) ? runs : [], items: rows.map((row, i) => ({ row, delivery: deliveries[i] })) };
+      render();
+    } catch (error) {
+      setChildren(body, h('div', { class: 'banner banner-danger' }, icon('warn'), h('span', { class: 'banner-text' }, `Could not read Git: ${error.message}`), h('button', { type: 'button', class: 'btn btn-sm', onClick: load }, 'Retry')));
     }
-    if (!env.command || env.verify === 'manual') {
-      buttons.push(h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, title: why || 'Record that you verified this environment', onClick: async () => { await confirmEnvironment(ctx, sb, env.name); afterAction(); } }, `Confirm ${env.name}`));
-    }
-    return buttons;
   }
+  const afterAction = () => load();
 
-  function renderDelivery() {
-    const sb = ctx.store.sandboxById(sandbox.id) || sandbox;
-    const profile = sb.profile || {};
-    const envs = Array.isArray(profile.environments) ? profile.environments : [];
-    const envBadge = (e) => badge(`${e.name}${e.command ? '' : ' (manual)'}`, '', e.command ? `Command: ${e.command} · verify: ${e.verify}` : 'Manual checkpoint');
-    setChildren(deliveryHost, h('div', { class: 'card' },
-      h('div', { class: 'card-head' },
-        h('span', { class: 'card-title' }, 'Delivery profile'),
-        badge(profile.preset || 'custom', 'accent'),
-        profile.require_checks === false ? badge('checks not required', 'warn') : profile.require_checks === true ? badge('checks required') : null,
-        h('span', { class: 'spacer' }),
-        admin ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => openProfileEditor(ctx, sb) }, 'Edit profile') : null),
-      h('div', { class: 'card-body stack' },
-        h('div', { class: 'row-wrap small' },
-          h('span', null, 'feature branch'), '→', h('span', null, 'PR into ', h('code', null, profile.integration_branch || '?'), ` (${profile.merge || '?'})`),
-          envs.filter((e) => e.after === 'integration').map((e) => ['→', envBadge(e)]),
-          '→', h('span', null, 'promote to ', h('code', null, profile.production_branch || '?'), ` (${profile.promote || '?'}${profile.auto_promote ? ', automatic' : ''})`),
-          envs.filter((e) => e.after === 'production').map((e) => ['→', envBadge(e)])),
-        h('div', { class: 'row-wrap' },
-          envs.map((env) => envButtons(sb, env)),
-          h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, title: write ? null : 'Requires write access', onClick: async () => { await promote(ctx, sb); afterAction(); } }, `Promote ${profile.integration_branch || ''} → ${profile.production_branch || ''}`)),
-        h('p', { class: 'muted xs' }, 'Environment runs, merges and promotions happen only when you click and confirm (GIT-002). Environment commands run on the server outside sandbox containment.'))));
-  }
-
-  const reload = loader(overviewHost, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`), (git) => {
-    const tasks = Array.isArray(git.tasks) ? git.tasks : [];
-    const commits = Array.isArray(git.recent_commits) ? git.recent_commits : [];
-    const pulls = Array.isArray(git.pulls) ? git.pulls : [];
-    const commitUrl = (sha) => (sandbox.repo && sandbox.repo.url ? `${sandbox.repo.url}/commit/${sha}` : null);
-    return [
-      notesBanner(git.notes),
-      h('div', { class: 'row-wrap small muted' },
-        'Default ', h('code', null, git.default_branch || '?'), ' · integration ', h('code', null, git.integration_branch || '?'), ' · production ', h('code', null, git.production_branch || '?')),
-      h('h2', { class: 'small muted' }, 'Task branches'),
-      dataTable([
-        { label: 'Task', class: 'title-cell', render: (t) => {
-          const summary = ctx.store.findTask(t.task_id);
-          if (!summary) return t.title;
-          const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${summary.number}`;
-          return h('a', { href: href(path), dataset: { route: path } }, `#${summary.number} ${t.title}`);
-        } },
-        { label: 'Branch', render: (t) => h('code', null, t.branch), phoneHide: true },
-        { label: 'Ahead / behind', class: 'num', render: (t) => `${t.ahead ?? '—'} / ${t.behind ?? '—'}`, phoneHide: true },
-        { label: 'Changes', class: 'num', render: (t) => h('span', { class: 'diffstat' }, `${t.files_changed ?? '—'} files `, h('span', { class: 'ins' }, `+${t.insertions ?? '—'}`), ' ', h('span', { class: 'del' }, `−${t.deletions ?? '—'}`)) },
-        { label: 'Pull request', render: (t) => prLine(t.pr) },
-        { label: '', render: (t) => {
-          const summary = ctx.store.findTask(t.task_id);
-          return h('button', { type: 'button', class: 'btn btn-sm', disabled: !write || !summary, title: !write ? 'Requires write access' : summary ? null : 'Archived task', onClick: () => openDeliveryDialog(ctx, summary) }, 'Deliver');
-        } },
-      ], tasks, { empty: 'No task branches yet.' }),
-      h('div', { class: 'grid-2' },
-        h('div', { class: 'card' },
-          h('div', { class: 'card-head' }, h('span', { class: 'card-title' }, 'Open pull requests')),
-          pulls.length ? h('div', { class: 'list' }, pulls.map((pr) => h('div', { class: 'list-item' }, prLine(pr)))) : h('div', { class: 'placeholder' }, 'No open pull requests.')),
-        h('div', { class: 'card' },
-          h('div', { class: 'card-head' }, h('span', { class: 'card-title' }, 'Recent commits')),
-          commits.length ? h('div', { class: 'list' }, commits.map((c) => h('div', { class: 'list-item' },
-            commitUrl(c.sha) ? h('a', { class: 'mono', href: commitUrl(c.sha), target: '_blank', rel: 'noopener noreferrer' }, String(c.sha).slice(0, 7)) : h('code', null, String(c.sha).slice(0, 7)),
-            h('div', { class: 'list-main' }, h('div', { class: 'ellipsis' }, c.subject), h('div', { class: 'list-sub' }, `${c.author} · `, h('span', { title: dateTime(c.at) }, relShort(c.at))))))) : h('div', { class: 'placeholder' }, 'No commits.'))),
+  function renderIntro() {
+    const profile = sb().profile || {};
+    const envs = environments(profile);
+    const steps = [
+      ['Being built', 'the agent works on its own branch'],
+      ['In review', `pull request into ${profile.integration_branch || 'integration'}`],
+      ...envs.integration.map((e) => [`Checked on ${e.name}`, e.command ? 'deploy, then someone verifies' : 'someone verifies']),
+      [profile.auto_promote ? 'Live' : 'Released', profile.auto_promote ? `${profile.production_branch || 'production'} moves forward automatically` : `someone releases to ${profile.production_branch || 'production'}`],
+      ...envs.production.map((e) => [`Confirmed: ${e.name}`, 'someone confirms it worked']),
     ];
-  });
+    setChildren(intro,
+      h('p', { class: 'dl-sentence' }, profileSentence(profile)),
+      h('details', { class: 'dl-how' }, h('summary', null, 'How this works'),
+        h('ol', { class: 'dl-flow' }, steps.map(([name, what], i) => h('li', null, h('span', { class: 'step-num' }, String(i + 1)), h('span', null, h('strong', null, name), h('span', { class: 'muted' }, ` · ${what}`)))))));
+  }
 
-  const reloadRuns = loader(runsHost, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/delivery/runs`), (list) => {
-    const runs = Array.isArray(list) ? list : [];
-    if (runs.length === 0) return placeholder('No environment runs yet.');
-    return dataTable([
-      { label: 'Environment', render: (r) => h('strong', null, r.environment || '—') },
-      { label: 'State', render: (r) => runStateBadge(r.state) },
-      { label: 'Kind', render: (r) => r.kind || '—', phoneHide: true },
-      { label: 'Commit', render: (r) => (r.commit ? h('code', null, String(r.commit).slice(0, 8)) : '—'), phoneHide: true },
-      { label: 'By', render: (r) => r.requested_by || '—', phoneHide: true },
-      { label: 'Started', class: 'num', render: (r) => h('span', { title: dateTime(r.started_at) }, relLong(r.started_at)) },
-      { label: 'Exit', class: 'num', render: (r) => (r.exit_code === null || r.exit_code === undefined ? '—' : String(r.exit_code)), phoneHide: true },
-    ], runs, { onRowClick: (r) => openRunViewer(ctx, sandbox, r.run_id, r.environment || 'run') });
-  });
+  function render() {
+    renderIntro();
+    if (!model) return;
+    const profile = sb().profile || {};
+    const envs = environments(profile);
+    const items = model.items.map((item) => {
+      const task = ctx.store.findTask(item.row.task_id);
+      return { ...item, task, info: task ? taskInfo(task, ctx.store.state.actionRequests) : null, column: columnOf(item.delivery, profile) };
+    });
+    const by = (column) => items.filter((item) => item.column === column);
+    setChildren(body,
+      notesBanner(model.git.notes),
+      statusStrip(profile, envs, by('waiting'), by('live')),
+      needsYou(items, profile),
+      board(profile, items, by),
+      activity());
+  }
 
-  const off = ctx.store.on('sandboxes', renderDelivery);
-  renderDelivery();
-  return { el: frame.el, key: `git:${sandbox.id}`, destroy: off };
+  // ---- Live / waiting
+  function statusStrip(profile, envs, waiting, live) {
+    const prod = profile.production_branch || 'production';
+    const int = profile.integration_branch || 'integration';
+    const titles = (list) => list.slice(0, 3).map((i) => `#${i.task ? i.task.number : '?'} ${i.row.title}`).join(', ') + (list.length > 3 ? `, +${list.length - 3}` : '');
+    const lastRun = (env) => model.runs.find((r) => r.environment === env.name && r.state === 'succeeded');
+    const liveCard = h('section', { class: 'dl-card', 'aria-label': 'Live in production' },
+      h('h2', { class: 'dl-eyebrow' }, icon('globe', { size: 14 }), `Live in production · ${prod}`),
+      live.length ? h('p', { class: 'dl-big' }, plural(live.length, 'task'), h('span', { class: 'muted' }, ' went live through Yulius')) : h('p', { class: 'dl-big muted' }, 'No task has gone live through Yulius yet'),
+      live.length ? h('p', { class: 'small text-2 ellipsis' }, titles(live)) : null,
+      envs.production.map((env) => {
+        const run = lastRun(env);
+        const pending = live.filter((i) => i.delivery && (i.delivery.next_actions || []).some((a) => a.endsWith(`:${env.name}`)));
+        return h('p', { class: 'small row nowrap' },
+          pending.length ? h('span', { class: 'tone-warn' }, icon('clock', { size: 14 })) : h('span', { class: 'tone-ok' }, icon('check', { size: 14 })),
+          pending.length ? `${env.name}: waiting for someone to confirm ${plural(pending.length, 'task')}` : run ? `${env.name} confirmed by ${run.requested_by} ${ago(run.started_at)}` : `${env.name}: nothing to confirm`);
+      }));
+
+    let waitingCard;
+    if (profile.auto_promote) {
+      waitingCard = h('section', { class: 'dl-card', 'aria-label': 'Waiting to go live' },
+        h('h2', { class: 'dl-eyebrow' }, icon('zap', { size: 14 }), 'Waiting to go live'),
+        h('p', { class: 'dl-big' }, 'Goes live automatically after each merge'),
+        h('p', { class: 'small muted' }, `${prod} moves forward to ${int} on every merge through Yulius; nothing waits for a release.`));
+    } else {
+      const ready = waiting.filter((i) => i.delivery && (i.delivery.next_actions || []).includes('promote'));
+      const blockedRelease = waiting.find((i) => i.delivery && (i.delivery.blocked || []).some((b) => b.action === 'promote'));
+      const atEnv = (env) => waiting.filter((i) => i.delivery && (i.delivery.next_actions || []).some((a) => a === `run_env:${env.name}` || a === `confirm_env:${env.name}`));
+      const pendingEnv = envs.integration.find((env) => atEnv(env).length);
+      const reason = !waiting.length ? 'Nothing is waiting.'
+        : ready.length ? null
+          : pendingEnv ? `Unlocks when ${pendingEnv.name} is verified.`
+            : blockedRelease ? blockedRelease.delivery.blocked.find((b) => b.action === 'promote').reason : 'Not ready to release yet.';
+      waitingCard = h('section', { class: 'dl-card', 'aria-label': 'Waiting to go live' },
+        h('h2', { class: 'dl-eyebrow' }, icon('clock', { size: 14 }), `Waiting to go live · on ${int}`),
+        waiting.length
+          ? h('p', { class: 'dl-big' }, plural(waiting.length, 'task'), h('span', { class: 'muted' }, ` merged, not live yet`))
+          : h('p', { class: 'dl-big muted' }, `${int} and ${prod} match: everything merged is live`),
+        waiting.length ? h('p', { class: 'small text-2 ellipsis' }, titles(waiting)) : null,
+        envs.integration.map((env) => {
+          const at = atEnv(env);
+          const run = lastRun(env);
+          const action = at.length && at[0].delivery.next_actions.find((a) => a.endsWith(`:${env.name}`));
+          return h('div', { class: 'dl-env' },
+            at.length ? h('span', { class: 'tone-warn' }, icon('clock', { size: 14 })) : h('span', { class: 'tone-ok' }, icon('check', { size: 14 })),
+            h('span', { class: 'dl-env-text' }, h('strong', null, env.name), ' · ', at.length ? `${action.startsWith('run_env:') ? 'ready to deploy' : 'needs a check'} for ${plural(at.length, 'task')}` : run ? `verified by ${run.requested_by} ${ago(run.started_at)}` : 'nothing to check'),
+            at.length && write ? h('button', { type: 'button', class: 'btn btn-sm', onClick: async () => {
+              if (action.startsWith('run_env:')) await runEnvironment(ctx, sb(), env.name); else await confirmEnvironment(ctx, sb(), env.name);
+              afterAction();
+            } }, action.startsWith('run_env:') ? `Deploy to ${env.name}…` : `Mark ${env.name} verified…`) : null);
+        }),
+        h('div', { class: 'dl-release' },
+          h('button', { type: 'button', class: 'btn btn-primary', disabled: !write || Boolean(reason), title: !write ? 'Requires write access' : reason, onClick: async () => {
+            const result = await promote(ctx, sb(), { waiting: waiting.map((i) => ({ number: i.task ? i.task.number : '?', title: i.row.title, pr: i.row.pr })) });
+            if (result) afterAction();
+          } }, waiting.length ? `Release ${plural(waiting.length, 'task')} to production…` : 'Release to production…'),
+          reason && waiting.length ? h('span', { class: 'small muted' }, reason) : null));
+    }
+    return h('div', { class: 'dl-strip' }, liveCard, waitingCard);
+  }
+
+  // ---- Needs you: one reason and one button per row, most urgent first
+  function needsYou(items, profile) {
+    const rows = [];
+    const envRows = new Map();
+    for (const item of items) {
+      const d = item.delivery;
+      if (!d || !item.task) continue;
+      const next = d.next_actions || [];
+      const blocked = d.blocked || [];
+      const ended = item.info && item.info.group === 'ended';
+      const finished = item.task.status === 'closed';
+      const pr = d.pr || item.row.pr;
+      if (pr && pr.state === 'open' && pr.checks === 'failure') {
+        rows.push({ rank: 0, item, tone: 'danger', icon: 'x', text: `Checks failing on pull request #${pr.number}`, button: { label: 'Open task', run: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${item.task.number}`) }, link: pr.url ? { label: 'Checks', url: `${pr.url}/checks` } : null });
+      } else if (next.includes('merge')) {
+        rows.push({ rank: 1, item, tone: 'ok', icon: 'check', text: `Ready to merge into ${profile.integration_branch || 'integration'}${pr && pr.checks === 'success' ? ' · checks passed' : ''}`, button: { label: 'Merge…', primary: true, run: () => mergeTask(ctx, item.task, afterAction) } });
+      } else if (next.includes('open_pr') && finished) {
+        rows.push({ rank: 3, item, tone: 'accent', icon: 'branch', text: 'Ready for a pull request', button: { label: 'Open pull request…', run: () => openPrDialog(ctx, item.task, afterAction) } });
+      } else if (ended && blocked.length && d.stage === 'none') {
+        rows.push({ rank: 4, item, tone: 'warn', icon: 'warn', text: `Can’t open a pull request yet: ${blocked[0].reason}`, button: { label: 'Open task', run: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${item.task.number}`) } });
+      } else if (d.stage === 'pr_open' && blocked.length && pr && pr.checks !== 'failure') {
+        rows.push({ rank: 5, item, tone: 'muted', icon: 'clock', text: `Can’t merge yet: ${blocked[0].reason}`, button: { label: 'Details…', run: () => openDeliveryDialog(ctx, item.task) } });
+      }
+      for (const action of next.filter((a) => a.startsWith('run_env:') || a.startsWith('confirm_env:'))) {
+        const env = action.slice(action.indexOf(':') + 1);
+        if (!envRows.has(env)) envRows.set(env, { rank: 2, env, actions: new Set(), items: new Set() });
+        envRows.get(env).actions.add(action.slice(0, action.indexOf(':')));
+        envRows.get(env).items.add(item);
+      }
+    }
+    // One row per environment: deploy (when it has a command), then someone marks it verified.
+    for (const group of envRows.values()) {
+      const list = [...group.items];
+      const deploy = group.actions.has('run_env');
+      const verify = group.actions.has('confirm_env');
+      const after = (fn) => async () => { await fn(ctx, sb(), group.env); afterAction(); };
+      rows.push({ rank: group.rank, item: list[0], more: list.length - 1, tone: 'warn', icon: 'clock',
+        text: deploy && verify ? `Ready for ${group.env}: deploy it, then check it works` : deploy ? `Ready to deploy to ${group.env}` : `On ${group.env}, waiting for someone to check it`,
+        buttons: [
+          deploy ? { label: `Deploy to ${group.env}…`, primary: true, run: after(runEnvironment) } : null,
+          verify ? { label: `Mark ${group.env} verified…`, primary: !deploy, run: after(confirmEnvironment) } : null,
+        ].filter(Boolean) });
+    }
+    rows.sort((a, b) => a.rank - b.rank);
+    const shown = rows.slice(0, 5);
+    return h('section', { class: 'dl-section', 'aria-labelledby': 'dl-needs' },
+      h('h2', { class: 'dl-section-title', id: 'dl-needs' }, icon('bell', { size: 14 }), 'Needs you', h('span', { class: 'tl-group-count' }, String(rows.length))),
+      shown.length ? h('ul', { class: 'dl-needs' }, shown.map((r) => h('li', { class: 'dl-need' },
+        h('span', { class: `tone-${r.tone}` }, icon(r.icon, { size: 16 })),
+        h('span', { class: 'dl-need-text' },
+          taskLink(r.item, true),
+          r.more ? h('span', { class: 'muted' }, ` and ${plural(r.more, 'other task')}`) : null,
+          h('span', { class: 'dl-need-why' }, r.text)),
+        r.link ? h('a', { class: 'btn btn-sm', href: r.link.url, target: '_blank', rel: 'noopener noreferrer' }, r.link.label, icon('external', { size: 12 })) : null,
+        (r.buttons || [r.button]).filter((b) => write || b.label === 'Open task').map((b) => h('button', { type: 'button', class: ['btn', 'btn-sm', b.primary && 'btn-primary'], onClick: b.run }, b.label)))))
+        : h('p', { class: 'dl-empty' }, icon('check', { size: 14 }), 'Nothing needs you.'));
+  }
+
+  function taskLink(item, bold) {
+    if (!item.task) return h('span', { class: bold ? 'dl-task' : '' }, item.row.title);
+    const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${item.task.number}`;
+    return h('a', { class: ['dl-task', bold && 'strong'], href: href(path), dataset: { route: path } }, h('span', { class: 'muted' }, `#${item.task.number} `), item.row.title);
+  }
+
+  // ---- Board: where each task is on the way to production
+  function board(profile, items, by) {
+    const int = profile.integration_branch || 'integration';
+    const prod = profile.production_branch || 'production';
+    const columns = [
+      { id: 'built', name: 'Being built', sub: 'no pull request yet' },
+      { id: 'review', name: 'In review', sub: `pull request into ${int}` },
+      profile.auto_promote ? null : { id: 'waiting', name: `On ${int}, not live`, sub: 'merged, waiting for release' },
+      { id: 'live', name: 'Live', sub: `on ${prod}` },
+    ].filter(Boolean);
+    return h('section', { class: 'dl-section', 'aria-labelledby': 'dl-board' },
+      h('h2', { class: 'dl-section-title', id: 'dl-board' }, icon('workflow', { size: 14 }), 'Where every task is'),
+      h('div', { class: 'dl-board', style: { '--dl-cols': String(columns.length) } }, columns.map((column) => {
+        const list = by(column.id).sort((a, b) => String(b.task ? b.task.updated_at : '').localeCompare(String(a.task ? a.task.updated_at : '')));
+        const open = expanded.has(column.id);
+        const shown = open ? list : list.slice(0, LIVE_LIMIT);
+        return h('div', { class: 'dl-col' },
+          h('div', { class: 'dl-col-head' }, h('span', { class: 'dl-col-name' }, column.name, h('span', { class: 'tl-group-count' }, ` ${list.length}`)), h('span', { class: 'xs muted' }, column.sub)),
+          shown.length ? shown.map((item) => card(item, profile)) : h('p', { class: 'dl-col-empty' }, 'Nothing here'),
+          list.length > shown.length ? h('button', { type: 'button', class: 'link-btn small', onClick: () => { expanded.add(column.id); render(); } }, `+${list.length - shown.length} more`) : null);
+      })));
+  }
+
+  function card(item, profile) {
+    const d = item.delivery || {};
+    const pr = d.pr || item.row.pr;
+    const next = d.next_actions || [];
+    const envs = environments(profile);
+    let line;
+    if (item.column === 'built') {
+      line = item.info ? [statusMark(item.info, 12), ` ${item.info.label}`] : 'Being built';
+    } else if (item.column === 'review') {
+      line = next.includes('merge') ? 'Ready to merge' : pr && CHECK_TEXT[pr.checks] ? CHECK_TEXT[pr.checks][0].toUpperCase() + CHECK_TEXT[pr.checks].slice(1) : 'In review';
+    } else if (item.column === 'waiting') {
+      const env = next.find((a) => a.startsWith('run_env:') || a.startsWith('confirm_env:'));
+      line = env ? `${env.slice(env.indexOf(':') + 1)}: ${env.startsWith('run_env:') ? 'ready to deploy' : 'needs a check'}` : next.includes('promote') ? 'Ready to release' : d.stage === 'env_done' ? `Verified on ${d.environment}` : 'Merged';
+    } else {
+      const env = next.find((a) => a.startsWith('confirm_env:') || a.startsWith('run_env:'));
+      line = env && envs.production.length ? `Released · ${env.slice(env.indexOf(':') + 1)}: needs a check` : 'Live';
+    }
+    const attention = item.column !== 'built' && (next.length > 0 || (pr && pr.state === 'open' && pr.checks === 'failure'));
+    const files = item.row.files_changed ? `${plural(item.row.files_changed, 'file')} changed · +${item.row.insertions ?? 0} −${item.row.deletions ?? 0}` : null;
+    return h('div', { class: ['dl-card-task', attention && 'attention'] },
+      h('div', { class: 'dl-card-title' }, taskLink(item, false), attention ? h('span', { class: 'dl-dot', title: 'Needs an action' }) : null),
+      h('div', { class: 'dl-card-line' }, line),
+      h('div', { class: 'dl-card-meta' }, prChip(pr), files ? h('span', { class: 'xs muted', title: `${item.row.branch || ''}` }, files) : null,
+        item.task && (item.column !== 'built' || (item.info && item.info.group === 'ended')) ? h('button', { type: 'button', class: 'link-btn xs dl-deliver', onClick: () => openDeliveryDialog(ctx, item.task) }, 'Deliver…') : null));
+  }
+
+  // ---- Activity: deploys, verifications and commits, newest first
+  function activity() {
+    const commitUrl = (sha) => (sandbox.repo && sandbox.repo.url ? `${sandbox.repo.url}/commit/${sha}` : null);
+    const events = [
+      ...model.runs.map((r) => ({ at: r.started_at, run: r })),
+      ...(Array.isArray(model.git.recent_commits) ? model.git.recent_commits : []).map((c) => ({ at: c.at, commit: c })),
+    ].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    const shown = showAllActivity ? events : events.slice(0, ACTIVITY_LIMIT);
+    const runText = (r) => (r.kind === 'manual' ? `Verified ${r.environment}` : `Deployed to ${r.environment} · ${r.state === 'running' ? 'running' : r.state === 'succeeded' ? 'succeeded' : 'failed'}`);
+    return h('section', { class: 'dl-section', 'aria-labelledby': 'dl-activity' },
+      h('h2', { class: 'dl-section-title', id: 'dl-activity' }, icon('pulse', { size: 14 }), 'Activity',
+        sandbox.repo && sandbox.repo.url ? h('a', { class: 'small dl-head-link', href: `${sandbox.repo.url}/commits`, target: '_blank', rel: 'noopener noreferrer' }, 'All commits on GitHub', icon('external', { size: 12 })) : null),
+      shown.length ? h('ul', { class: 'dl-activity' }, shown.map((e) => h('li', { class: 'dl-event' },
+        h('span', { class: 'dl-event-time', title: dateTime(e.at) }, relShort(e.at)),
+        e.run
+          ? [h('span', { class: `tone-${e.run.state === 'succeeded' ? 'ok' : e.run.state === 'running' ? 'warn' : 'danger'}` }, icon(e.run.kind === 'manual' ? 'check' : 'zap', { size: 14 })),
+            h('span', { class: 'dl-event-text' }, runText(e.run), h('span', { class: 'muted' }, ` · ${e.run.requested_by || 'someone'}`)),
+            e.run.kind === 'manual' ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: () => openRunViewer(ctx, sb(), e.run.run_id, e.run.environment) }, 'Output')]
+          : [h('span', { class: 'muted' }, icon('branch', { size: 14 })),
+            h('span', { class: 'dl-event-text' }, e.commit.subject, h('span', { class: 'muted' }, ` · ${e.commit.author}`)),
+            commitUrl(e.commit.sha) ? h('a', { class: 'mono xs', href: commitUrl(e.commit.sha), target: '_blank', rel: 'noopener noreferrer' }, String(e.commit.sha).slice(0, 7)) : h('code', { class: 'xs' }, String(e.commit.sha).slice(0, 7))])))
+        : h('p', { class: 'dl-empty' }, 'No deploys or commits yet.'),
+      events.length > shown.length ? h('button', { type: 'button', class: 'link-btn small', onClick: () => { showAllActivity = true; render(); } }, `Show ${events.length - shown.length} more`) : null);
+  }
+
+  const offs = [
+    ctx.store.on('sandboxes', render),
+    ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) render(); }),
+  ];
+  renderIntro();
+  load();
+  return { el: frame.el, key: `git:${sandbox.id}`, destroy: () => offs.forEach((off) => off()) };
 }
 
 let presetCache = null;

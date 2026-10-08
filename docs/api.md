@@ -225,6 +225,11 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   reads use the caller's token, else the GitHub App installation token. Task branch statistics
   compare the local task branch with `origin/<integration>` of the sandbox clone (refreshed by
   merges, promotions and environment runs, not by reads).
+- **Overview stages (proposed).** The Git page (UI-025) reads `GET /api/tasks/{tid}/delivery`
+  once per overview row to learn each task's stage. Adding `stage`, `environment`, `next_actions`
+  and `blocked` to `GitOverview.tasks[]` lets it skip those reads (it uses them when present);
+  a `release` summary (production and integration heads, what is waiting, the last release:
+  who, when, which tasks) would let it say *when* and *by whom* production last changed.
 - **Stage reconciliation.** Reading a task's delivery aligns the stored stage with GitHub: a PR
   opened, merged or closed outside Yulius moves the stage (`none`→`pr_open`, →`merged_integration`,
   `pr_open`→`none`). `env_done` carries the environment in `environment`. `blocked` lists the

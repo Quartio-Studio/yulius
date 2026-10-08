@@ -219,6 +219,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-022 | Each account reads at a glance: an avatar with initials, its label, sign-in email (administrators) and plan (e.g. Pro, Max 5x, Max 20x, per provider), a state only when it is not ready, and each usage window as a horizontal row named like Claude's own usage page ("Current session", "This week") with its reset time and "N% used". Accounts are visually separate; in the Status panel each is a row that expands, accounts needing attention first and open. | F 2026-10-08 UI | C | AC-UI-14 |
 | UI-023 | New task has a keyboard shortcut that works from anywhere, the terminal included: ⌘⇧O / Ctrl+Shift+O (browsers reserve ⌘N for a new window), plus ⌘N on macOS where the browser passes it (installed app, full screen); Ctrl+N stays with the terminal. The New task button shows the shortcut. | F 2026-10-08 UI | C | AC-UI-16 |
 | UI-024 | The Tasks page groups tasks as Needs you → Working → Stopped → Closed with the sidebar's rules (browser requests count as Needs you); each row says its state in words with the step, number and branch, and shows its pull request with checks, author and age. Filters: state tabs with counts, Author and Origin multi-select, search (`/`); the filters are kept in the page URL. | F 2026-10-08 UI | C | AC-UI-17 |
+| UI-025 | The Git page explains delivery in plain language: one sentence on how the sandbox ships (from its profile); what is live in production and what is waiting to go live, with the environment steps and the release button (disabled with its reason); "Needs you" rows with one reason and one action each; a board of where every task is (Being built → In review → On integration, not live → Live, columns from the profile); recent deploys, verifications and commits. The release confirmation lists the tasks that go live. | F 2026-10-08 UI | C | AC-UI-18 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -446,7 +447,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | Page | Content |
 | --- | --- |
 | Tasks | All non-archived tasks of the sandbox, grouped Needs you / Working / Stopped / Closed: state in words, step, number, branch, pull request with checks, author, last activity; state tabs with counts, Author/Origin filters and search kept in the URL (UI-024). |
-| Git | Per-task branches/worktrees and diff summary; PRs with checks; delivery panel per profile (Open PR, Merge, environment step, Promote). |
+| Git | Delivery at a glance (UI-025): how the sandbox ships; live and waiting to go live with environment steps and release; Needs you; a board of where every task is with PRs and checks; activity. Branch statistics and the stage track are in each task's Deliver panel (Open PR, Merge, environment step, Release). |
 | Workflows | List/edit workflows (name, description, initial steps, instructions, required gates). |
 | Skills | Catalog (repository skills, instance skills, Open Mercato pack) with source, enable toggle, content view. |
 | Automations | List/create/edit (cron, timezone, prompt, workflow, harness, enabled), run history, Run now. |
@@ -590,6 +591,7 @@ instance — out of scope).
 | AC-UI-15 | The user menu has icons and a Settings entry; `/settings` shows Your account, Preferences (default model/effort shared with the composer, tools rail, notification history) and, for administrators, Administration tiles. | ui |
 | AC-UI-16 | With the task terminal focused, ⌘⇧O opens the sandbox's composer with the cursor in the prompt and the terminal does not receive the key. | ui |
 | AC-UI-17 | A task waiting for input is under Needs you on both the sidebar and the Tasks page; opening the Tasks page with `?author=anna-q` shows only anna-q's tasks and the Author chip reads "Author: anna-q". | ui |
+| AC-UI-18 | For a sandbox whose integration environment is not yet verified, the Git page shows the waiting tasks and a disabled release button saying "Unlocks when <environment> is verified"; after the environment is marked verified, the button is enabled and its confirmation lists those tasks. | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |

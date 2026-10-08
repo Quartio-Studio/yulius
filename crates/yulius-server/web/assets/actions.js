@@ -170,12 +170,12 @@ export function openFeedbackDialog(ctx, task) {
 // ---------------------------------------------------------------- delivery
 
 const STAGES = [
-  ['none', 'Not delivered'],
-  ['pr_open', 'PR open'],
-  ['merged_integration', 'Merged to integration'],
-  ['env_done', 'Environment done'],
-  ['promoted', 'Promoted'],
-  ['production_done', 'Production done'],
+  ['none', 'Being built'],
+  ['pr_open', 'In review'],
+  ['merged_integration', 'Merged, not live'],
+  ['env_done', 'Verified'],
+  ['promoted', 'Released'],
+  ['production_done', 'Live'],
 ];
 
 const CHECKS = {
@@ -208,12 +208,12 @@ export function notesBanner(notes) {
 }
 
 /** Label for a delivery action wire name (`run_env:<name>`, `confirm_env:<name>`, …). */
-function actionLabel(action) {
+export function actionLabel(action) {
   if (action === 'open_pr') return 'Open pull request';
   if (action === 'merge') return 'Merge';
-  if (action === 'promote') return 'Promote';
-  if (action.startsWith('run_env:')) return `Run ${action.slice('run_env:'.length)}`;
-  if (action.startsWith('confirm_env:')) return `Confirm ${action.slice('confirm_env:'.length)}`;
+  if (action === 'promote') return 'Release to production';
+  if (action.startsWith('run_env:')) return `Deploy to ${action.slice('run_env:'.length)}`;
+  if (action.startsWith('confirm_env:')) return `Mark ${action.slice('confirm_env:'.length)} verified`;
   return action;
 }
 
@@ -276,7 +276,8 @@ export function openDeliveryDialog(ctx, task) {
   return modal;
 }
 
-async function mergeTask(ctx, task, onDone) {
+/** Merge a task's pull request into the integration branch after confirmation. */
+export async function mergeTask(ctx, task, onDone = () => {}) {
   const ok = await confirmDialog({ title: `Merge #${task.number} ${task.title}?`, message: 'Merge the pull request into the integration branch using the profile’s merge method. The PR head must match the task worktree; checks must pass when the profile requires them.', confirmLabel: 'Merge' });
   if (!ok) return;
   try {
@@ -289,7 +290,8 @@ async function mergeTask(ctx, task, onDone) {
   onDone();
 }
 
-function openPrDialog(ctx, task, onDone) {
+/** Open a pull request for a task (title and body optional). */
+export function openPrDialog(ctx, task, onDone = () => {}) {
   const title = h('input', { class: 'input', placeholder: task.title, maxlength: 200 });
   const body = h('textarea', { class: 'textarea', rows: 6, placeholder: 'Optional description (defaults to the spec’s goal, plan and steps, plus a link to the task)' });
   openModal({
@@ -411,28 +413,43 @@ export function openRunViewer(ctx, sandbox, runId, envName) {
   return modal;
 }
 
-/** Promote integration → production after confirmation. */
-export async function promote(ctx, sandbox) {
+/**
+ * Release integration → production after confirmation (promotion). `waiting` lists the tasks
+ * that go live ({number, title, pr}), so the dialog says what changes, not only which branch.
+ */
+export async function promote(ctx, sandbox, { waiting } = {}) {
   const profile = sandbox.profile || {};
+  const production = profile.production_branch || 'production';
+  const integration = profile.integration_branch || 'integration';
+  const list = Array.isArray(waiting) ? waiting : null;
+  const compare = sandbox.repo && sandbox.repo.url ? `${sandbox.repo.url}/compare/${encodeURIComponent(production)}...${encodeURIComponent(integration)}` : null;
   const ok = await confirmDialog({
-    title: `Promote ${profile.integration_branch || 'integration'} → ${profile.production_branch || 'production'}?`,
-    message: profile.promote === 'merge_commit'
-      ? `Promotion uses a merge-commit pull request: the first promotion opens it, a later one merges it once its checks allow. This updates the production branch of ${sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name}.`
-      : `Promotion fast-forwards ${profile.production_branch || 'production'} to the integration head of ${sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name}.`,
-    confirmLabel: 'Promote',
+    title: `Release to production (${production})?`,
+    message: h('div', { class: 'stack-sm' },
+      h('p', null, profile.promote === 'merge_commit'
+        ? `This goes through a release pull request from ${integration} into ${production}: the first click opens it, the next merges it once its checks allow.`
+        : `${production} moves forward to match ${integration} exactly.`),
+      list ? h('div', { class: 'release-list' },
+        h('div', { class: 'release-head' }, list.length ? `What goes live · ${list.length} task${list.length === 1 ? '' : 's'}` : 'What goes live'),
+        list.length
+          ? h('ul', null, list.map((t) => h('li', null, h('span', { class: 'muted' }, `#${t.number}`), ` ${t.title}`, t.pr ? h('span', { class: 'muted' }, ` · PR #${t.pr.number}`) : null)))
+          : h('p', { class: 'muted small' }, 'No task is waiting; commits made outside tasks may still go live.'),
+        compare ? h('a', { href: compare, target: '_blank', rel: 'noopener noreferrer', class: 'small' }, `Compare ${production}…${integration} on GitHub`) : null) : null,
+      h('p', { class: 'muted small' }, 'If something breaks, undo it with a revert on GitHub; Yulius records who released what and when.')),
+    confirmLabel: list && list.length ? `Release ${list.length} task${list.length === 1 ? '' : 's'}` : 'Release',
   });
   if (!ok) return null;
   try {
     const result = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/delivery/promote`);
     if (result && result.result === 'pr_opened') {
       const url = result.sha && /^https?:\/\//.test(result.sha) ? result.sha : null;
-      toast('Promotion pull request opened. Promote again to merge it once its checks allow.', { kind: 'ok', timeout: 10000, action: url ? { label: 'Open PR', run: () => window.open(url, '_blank', 'noopener,noreferrer') } : undefined });
+      toast('Release pull request opened. Release again to merge it once its checks allow.', { kind: 'ok', timeout: 10000, action: url ? { label: 'Open PR', run: () => window.open(url, '_blank', 'noopener,noreferrer') } : undefined });
     } else {
-      toast(`Promoted${result && result.sha ? ` · ${String(result.sha).slice(0, 8)}` : ''}`, { kind: 'ok' });
+      toast(`Released to ${production}${result && result.sha ? ` · ${String(result.sha).slice(0, 8)}` : ''}`, { kind: 'ok' });
     }
     return result;
   } catch (error) {
-    errorToast(error, 'Promotion refused');
+    errorToast(error, 'Release refused');
     return null;
   }
 }

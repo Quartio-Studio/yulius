@@ -163,6 +163,10 @@ function seed(params) {
     t('sb_studio', 1, 'Old landing page', 'claude', 'closed', null, { done: 7, current: false, archived: true, updated: 6 * DAY, delivery: { stage: 'production_done', environment: null, pr: pr(180, 'Old landing page', 'merged', 'quartio', 'success') } }),
     t('sb_product', 1, 'Prepare repository for Yulius', 'claude', 'closed', null, { origin: 'onboarding', done: 7, current: false, updated: 2 * DAY }),
     t('sb_product', 2, 'Pricing page', 'claude', 'closed', null, { done: 7, current: false, updated: 3 * HOUR, delivery: { stage: 'merged_integration', environment: null, pr: pr(512, 'Pricing page', 'merged', 'quartio', 'none') } }),
+    t('sb_product', 3, 'Search filters', 'claude', 'closed', null, { done: 7, current: false, updated: 70 * MIN, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(515, 'Search filters', 'open', 'quartio', 'success') } }),
+    t('sb_product', 4, 'Invoice PDF export', 'claude', 'running', 'working', { done: 3, updated: 4 * MIN }),
+    t('sb_product', 5, 'Onboarding emails', 'claude', 'closed', null, { done: 7, current: false, updated: 2 * DAY, delivery: { stage: 'production_done', environment: null, pr: pr(498, 'Onboarding emails', 'merged', 'quartio', 'none') } }),
+    t('sb_product', 6, 'Team invites', 'claude', 'closed', null, { done: 7, current: false, updated: 26 * HOUR, author: 'anna-q', delivery: { stage: 'merged_integration', environment: null, pr: pr(505, 'Team invites', 'merged', 'quartio', 'none') } }),
     t('sb_three', 2, 'Write README', 'claude', 'closed', null, { done: 7, current: false }),
     t('sb_three', 1, 'Explore data model', 'claude', 'running', 'working', { done: 1, author: 'anna-q' }),
   ];
@@ -208,6 +212,8 @@ function seed(params) {
     { id: 'usr_4', github_login: 'old-contractor', display_name: 'old-contractor', is_instance_admin: false, disabled: true, github_linked: true },
   ];
   db.runs = []; // EnvironmentRun records, newest last
+  const pastRun = (n, env, kind, by, ago) => ({ run_id: `run_seed_${n}`, sandbox_id: 'sb_product', environment: env, kind, state: 'succeeded', command: kind === 'manual' ? null : 'node scripts/deployer.mjs --target dev-vm', commit: 'b7e9f01c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a', requested_by: by, output: kind === 'manual' ? `${by} confirmed ${env}.` : 'deploying… done in 2m 14s', exit_code: kind === 'manual' ? null : 0, started_at: iso(ago), ended_at: iso(ago - 2 * MIN), startedMs: Date.now() - ago - 1e9 });
+  db.runs.push(pastRun(1, 'dev-vm', 'command', 'mkarp', 2 * DAY + HOUR), pastRun(2, 'dev-vm', 'manual', 'mkarp', 2 * DAY + 30 * MIN), pastRun(3, 'rollout', 'manual', 'anna-q', 2 * DAY - HOUR), pastRun(4, 'dev-vm', 'command', 'mkarp', 3 * HOUR));
   db.promotionPr = new Map(); // sandbox id → open promotion PR URL (merge_commit promotion)
   recount(db);
   return db;
