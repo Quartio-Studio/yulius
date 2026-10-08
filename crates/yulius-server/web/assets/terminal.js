@@ -109,7 +109,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
         if (onState) onState(state);
       },
       onNotice: (text) => { showNotice(text); if (onNotice) onNotice(text); },
-      onExit: (message) => { exited = message; render(); if (onExit) onExit(message); },
+      onExit: (message) => { exited = message; applySize(); render(); if (onExit) onExit(message); },
       onError: (message) => {
         if (['unauthenticated', 'not_found'].includes(message.code)) fatal = message;
         else showNotice(message.message || message.code || 'Terminal error');
@@ -151,10 +151,12 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       return;
     }
     const fitted = proposed();
-    if (state.controller || !state.cols || !state.rows) {
+    // An ended session has no PTY to follow: fit it to this screen (a desktop-sized screen would
+    // otherwise overflow a phone).
+    if (state.controller || exited || !state.cols || !state.rows) {
       if (!fitted) return;
       if (term.cols !== fitted.cols || term.rows !== fitted.rows) term.resize(fitted.cols, fitted.rows);
-      if (state.controller && (!lastSent || lastSent.cols !== fitted.cols || lastSent.rows !== fitted.rows)) {
+      if (state.controller && !exited && (!lastSent || lastSent.cols !== fitted.cols || lastSent.rows !== fitted.rows)) {
         if (socket.resize(fitted.cols, fitted.rows)) lastSent = fitted;
       }
     } else if (term.cols !== state.cols || term.rows !== state.rows) {

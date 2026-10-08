@@ -1065,6 +1065,8 @@ a.dl-task:hover { text-decoration: underline; }
 
   .quickbar { display: flex; }
   .step-progress { width: 60px; }
+  /* Phones: the task title keeps the strip; state shows as its icon, the step as the bar (UX2-06). */
+  .strip-state, .strip-extra, .step-count { display: none; }
   .step-current { display: none; }
   .composer { padding-top: 16px; }
   .composer-kbd { display: none; }

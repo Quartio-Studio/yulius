@@ -139,9 +139,9 @@ export function mountTaskView(ctx, sandbox, task) {
     progress.hidden = !total;
     setChildren(statusEl,
       statusMark(info),
-      h('span', null, info.label),
-      current.mode === 'goal' ? h('span', { class: 'chip', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
-      current.account_label ? h('span', { class: 'muted xs' }, current.account_label) : null);
+      h('span', { class: 'strip-state' }, info.label),
+      current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
+      current.account_label ? h('span', { class: 'muted xs strip-extra' }, current.account_label) : null);
   }
 
   function renderStepList() {
