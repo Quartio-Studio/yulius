@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
-from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, module_errors, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
 
 
 def package(name, layer, dependencies=()):
@@ -155,6 +155,19 @@ class BypassTests(unittest.TestCase):
         self.assertEqual(inline_style_errors("el.style.width = `${pct}%`; el.style.opacity = '0.6';"), [])
         css = (ROOT / TOKENS).read_text().replace('[data-theme="light"]', "[data-theme=light]")
         self.assertIn("light", theme_tokens(css))
+
+
+
+class ModuleTests(unittest.TestCase):
+    def test_imports_match_exports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.js").write_text("export function used() {}\nexport const other = 1;\n")
+            (root / "b.js").write_text("import { used, missing, other } from './a.js';\nused();\n")
+            errors = module_errors(root, root)
+            self.assertTrue(any("missing" in e and "does not export" in e for e in errors))
+            self.assertTrue(any("other" in e and "never uses" in e for e in errors))
+        self.assertEqual(module_errors((ROOT / STYLESHEET).parent), [])
 
 
 if __name__ == "__main__":

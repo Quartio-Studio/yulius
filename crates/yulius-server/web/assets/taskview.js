@@ -2,7 +2,7 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder, openMenu, statusMark, singleFlight } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, placeholder, openMenu, statusMark, singleFlight } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { statusInfo, taskInfo, isLive, allows, taskActions, endedMessage } from './status.js';
 import { openTaskMenu, continueTask } from './actions.js';

@@ -134,7 +134,9 @@ timings. It resolves `tokens.css` per theme and checks the contrast of every tex
 pair and of state marks and control edges, and that buttons, inputs, selects and tabs use a
 `--control-*` height (at least 24 px targets, WCAG 2.5.8). Scripts may not set fixed lengths or
 colours in inline styles, nor show requirement IDs in UI text, nor write the product name in a
-string (use `BRAND.name` from `brand.js`).
+string (use `BRAND.name` from `brand.js`). For the scripts it checks that every imported name is
+exported by its module and used, and (when Node is installed) the syntax of every file. There is no
+JS linter or type checker yet: that would add an npm dependency, which is a project decision.
 
 ### Components
 

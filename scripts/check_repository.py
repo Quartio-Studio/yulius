@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -395,6 +396,41 @@ def sync_brand():
     print(f"{INDEX} now matches brand.js and tokens.css")
 
 
+IMPORT_STATEMENT = re.compile(r"import\s*\{([^}]*)\}\s*from\s*'([^']+)'")
+EXPORT_NAME = re.compile(r"^export\s+(?:async\s+)?(?:function\*?|const|let|var|class)\s+([\w$]+)", re.M)
+EXPORT_LIST = re.compile(r"^export\s*\{([^}]*)\}", re.M)
+
+
+def _exports(js):
+    names = set(EXPORT_NAME.findall(js))
+    for group in EXPORT_LIST.findall(js):
+        names.update(part.split(" as ")[-1].strip() for part in group.split(",") if part.strip())
+    return names
+
+
+def module_errors(web_assets, label_root=ROOT):
+    """Web scripts: every imported name is exported by its module, and every import is used."""
+    errors = []
+    files = {p.resolve(): p.read_text() for p in web_assets.glob("**/*.js") if "vendor" not in p.parts}
+    for path, js in files.items():
+        label = str(path.relative_to(label_root.resolve())) if path.is_relative_to(label_root.resolve()) else path.name
+        code = re.sub(r"/\*.*?\*/", "", js, flags=re.S)
+        code = "\n".join(line for line in code.splitlines() if not line.lstrip().startswith("//"))
+        for names, spec in IMPORT_STATEMENT.findall(code):
+            target = (path.parent / spec).resolve()
+            imported = [part.split(" as ")[-1].strip() for part in names.split(",") if part.strip()]
+            originals = [part.split(" as ")[0].strip() for part in names.split(",") if part.strip()]
+            if target in files:
+                missing = [n for n in originals if n not in _exports(files[target])]
+                if missing:
+                    errors.append(f"{label}: imports {', '.join(missing)} that {spec} does not export")
+            body = IMPORT_STATEMENT.sub("", code)
+            unused = [n for n in imported if not re.search(r"(?<![\w$.])" + re.escape(n) + r"(?![\w$])", body)]
+            if unused:
+                errors.append(f"{label}: imports {', '.join(unused)} from {spec} but never uses it")
+    return errors
+
+
 def ui_errors():
     """Every web UI check (design tokens, contrast, brand, copy, inline styles); needs no Rust."""
     errors = []
@@ -412,6 +448,14 @@ def ui_errors():
             errors.extend(brand_name_errors(js, name, label))
     errors.extend(contrast_errors((ROOT / TOKENS).read_text()))
     errors.extend(brand_errors((ROOT / INDEX).read_text(), (ROOT / BRAND).read_text(), (ROOT / TOKENS).read_text()))
+    errors.extend(module_errors((ROOT / STYLESHEET).parent))
+    node = shutil.which("node")
+    if node:  # syntax of every web script, when Node is installed (it is optional here)
+        for path in sorted((ROOT / STYLESHEET).parent.glob("**/*.js")):
+            if "vendor" not in path.parts:
+                result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
+                if result.returncode:
+                    errors.append(f"{path.relative_to(ROOT)}: {result.stderr.strip().splitlines()[-1] if result.stderr.strip() else 'syntax error'}")
     return errors
 
 
