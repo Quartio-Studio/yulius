@@ -7,7 +7,7 @@
 // clicks and confirms (GIT-002).
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, toast, iconButton, placeholder, statusMark, field, openModal, keepFocus } from '../dom.js';
+import { h, icon, setChildren, toast, iconButton, placeholder, statusMark, field, openModal, keepFocus, coalesce } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { allows, taskInfo } from '../status.js';
 import { href } from '../router.js';
@@ -368,13 +368,14 @@ export function mountGitPage(ctx, sandbox) {
       events.length > shown.length ? h('button', { type: 'button', class: 'link-btn small', onClick: () => { showAllActivity = true; render(); } }, `Show ${events.length - shown.length} more`) : null);
   }
 
+  const repaint = coalesce(() => { if (alive) render(); }, { minInterval: 200 });
   const offs = [
-    ctx.store.on('sandboxes', render),
-    ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) render(); }),
+    ctx.store.on('sandboxes', repaint),
+    ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) repaint(); }),
   ];
   renderIntro();
   load();
-  return { el: frame.el, key: `git:${sandbox.id}`, destroy: () => { alive = false; offs.forEach((off) => off()); } };
+  return { el: frame.el, key: `git:${sandbox.id}`, destroy: () => { alive = false; repaint.cancel(); offs.forEach((off) => off()); } };
 }
 
 let presetCache = null;

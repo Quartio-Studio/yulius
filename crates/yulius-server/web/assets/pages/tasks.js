@@ -5,7 +5,7 @@
 // checks, author and age on the right. Filters (state tabs with counts, Author and Origin
 // multi-select, search) live in the URL so a filtered view can be shared as a link.
 
-import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError, singleFlight, keepFocus } from '../dom.js';
+import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
@@ -297,9 +297,11 @@ export function mountTasksPage(ctx, sandbox) {
   const onFocus = () => loadPulls();
   window.addEventListener('focus', onFocus);
   const timer = setInterval(loadPulls, 60_000);
+  // Live events repaint at most every 200 ms; the user's own clicks and keys render at once.
+  const repaint = coalesce(render, { minInterval: 200 });
   const offs = [
-    ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) render(); }),
-    ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) render(); }),
+    ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) repaint(); }),
+    ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) repaint(); }),
   ];
   render();
   loadPulls();
@@ -314,6 +316,7 @@ export function mountTasksPage(ctx, sandbox) {
   }
   return { el: frame.el, key: `tasks:${sandbox.id}`, update, destroy: () => {
     alive = false;
+    repaint.cancel();
     offs.forEach((off) => off());
     document.removeEventListener('keydown', onKey);
     window.removeEventListener('focus', onFocus);

@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus, loadError } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus, loadError, coalesce } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
 import { taskInfo, activityLine, allows } from './status.js';
 import { href } from './router.js';
@@ -596,9 +596,10 @@ export function createSidebar(ctx) {
       g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, grouped.get(g.id).map((r) => r.el)))));
   }
 
+  const repaint = coalesce(() => renderTasks(), { minInterval: 150 });
   const offs = [
-    ctx.store.on('tasks', (sandboxId) => { if (sandbox && sandboxId === sandbox.id) renderTasks(); }),
-    ctx.store.on('browser-action', (event) => { if (sandbox && event.sandbox_id === sandbox.id) renderTasks(); }),
+    ctx.store.on('tasks', (sandboxId) => { if (sandbox && sandboxId === sandbox.id) repaint(); }),
+    ctx.store.on('browser-action', (event) => { if (sandbox && event.sandbox_id === sandbox.id) repaint(); }),
   ];
   // Refresh relative times twice a minute (single bounded timer).
   const ageTimer = setInterval(() => {
@@ -608,7 +609,7 @@ export function createSidebar(ctx) {
   return {
     el,
     /** Sign-out: unsubscribe and stop the timer. */
-    destroy() { offs.forEach((off) => off()); clearInterval(ageTimer); },
+    destroy() { offs.forEach((off) => off()); repaint.cancel(); clearInterval(ageTimer); },
     update(nextRoute, nextSandbox) {
       if (!nextSandbox || !sandbox || nextSandbox.id !== sandbox.id) { rows.clear(); shape = ''; }
       route = nextRoute;

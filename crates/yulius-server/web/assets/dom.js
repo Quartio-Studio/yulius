@@ -594,6 +594,32 @@ export function itemCard({ iconName, iconEl, title, badges = [], description, ex
 }
 
 /**
+ * Coalesces repaints driven by live events (PERF-02): any number of calls before the next frame
+ * run `fn` once, and runs are at least `minInterval` ms apart, so a burst of task events repaints a
+ * long list a few times a second instead of once per event. A hidden tab (no frames) still runs it
+ * after a short timer. `cancel()` drops a pending run (call it when the view goes away).
+ */
+export function coalesce(fn, { minInterval = 0 } = {}) {
+  let pending = false;
+  let last = -Infinity;
+  let timer = null;
+  const run = () => {
+    if (!pending) return;
+    pending = false;
+    last = performance.now();
+    fn();
+  };
+  const schedule = () => {
+    if (pending) return;
+    pending = true;
+    const wait = Math.max(0, last + minInterval - performance.now());
+    timer = setTimeout(() => { requestAnimationFrame(run); timer = setTimeout(run, 100); }, wait);
+  };
+  schedule.cancel = () => { pending = false; clearTimeout(timer); };
+  return schedule;
+}
+
+/**
  * Wraps an async action so a repeated press (Enter twice, a double click) does not run it again
  * while the first is in flight: costly side effects such as starting a task happen once.
  */
