@@ -228,7 +228,8 @@ export function mountGitPage(ctx, sandbox) {
     return h('div', { class: 'dl-strip' }, liveCard, waitingCard);
   }
 
-  // ---- Needs you: one reason and one button per row, most urgent first
+  // ---- Delivery needs you: one reason and one button per row, most urgent first. Named apart from
+  // the task list's "Needs you" (tasks waiting for input), which lists different tasks (UX2-14).
   function needsYou(items, profile) {
     const rows = [];
     const envRows = new Map();
@@ -274,7 +275,7 @@ export function mountGitPage(ctx, sandbox) {
     rows.sort((a, b) => a.rank - b.rank);
     const shown = showAllNeeds ? rows : rows.slice(0, 5);
     return h('section', { class: 'dl-section', 'aria-labelledby': 'dl-needs' },
-      h('h2', { class: 'dl-section-title', id: 'dl-needs' }, icon('bell', { size: 14 }), 'Needs you', h('span', { class: 'tl-group-count' }, String(rows.length))),
+      h('h2', { class: 'dl-section-title', id: 'dl-needs' }, icon('bell', { size: 14 }), 'Delivery needs you', h('span', { class: 'tl-group-count' }, String(rows.length))),
       shown.length ? h('ul', { class: 'dl-needs' }, shown.map((r) => h('li', { class: 'dl-need' },
         h('span', { class: `tone-${r.tone}` }, icon(r.icon, { size: 16 })),
         h('span', { class: 'dl-need-text' },
