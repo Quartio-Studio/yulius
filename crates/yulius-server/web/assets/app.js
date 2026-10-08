@@ -201,6 +201,7 @@ function createApp(root, transport) {
     const backdrop = h('div', { class: 'drawer-backdrop', onClick: () => document.body.classList.remove('drawer-open') });
     appEl.append(tabRow.el, sidebar.el, center, panels.panel, panels.rail);
     setChildren(root, appEl, backdrop);
+    new MutationObserver(syncDrawer).observe(appEl, { attributes: true, attributeFilter: ['class'] });
     syncDrawer();
     ctx.openNewTask = () => openNewTask();
     ctx.openBrowserTab = (sandbox, tabId) => openBrowserTab(sandbox, tabId);
@@ -510,7 +511,10 @@ function createApp(root, transport) {
     if (menuButton) menuButton.setAttribute('aria-expanded', String(open));
     if (!sidebarEl) return;
     const wasInside = sidebarEl.contains(document.activeElement);
-    sidebarEl.inert = phone.matches && !open;
+    // Hidden sidebars are inert: the closed phone drawer, and on wider screens the sidebar that
+    // slides away while a tool panel is open (its links would be invisible Tab stops).
+    const collapsed = !phone.matches && Boolean(sidebarEl.closest('.app.panel-open'));
+    sidebarEl.inert = (phone.matches && !open) || collapsed;
     if (phone.matches && open && !wasInside) sidebarEl.querySelector('a[href], button:not([disabled])')?.focus();
     if (phone.matches && !open && wasInside && menuButton) menuButton.focus();
   }
