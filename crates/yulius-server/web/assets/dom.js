@@ -391,7 +391,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   menu.style.top = `${top}px`;
   const onDoc = (event) => { if (!menu.contains(event.target)) closeMenu(); };
   const onKey = (event) => {
-    if (event.key === 'Escape') { closeMenu(); if (anchor instanceof HTMLElement) anchor.focus(); return; }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeMenu(); if (anchor instanceof HTMLElement) anchor.focus(); return; }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       const buttons = [...menu.querySelectorAll('.menu-item:not(:disabled)')];

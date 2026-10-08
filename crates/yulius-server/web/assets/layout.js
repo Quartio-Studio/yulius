@@ -208,9 +208,9 @@ function createStatusPanel(ctx, button) {
     load();
     timer = setInterval(load, 10000);
     onDoc = (event) => { if (el && !el.contains(event.target) && !button.contains(event.target)) close(); };
-    onKey = (event) => { if (event.key === 'Escape') { close(); button.focus(); } };
+    onKey = (event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); button.focus(); } };
     setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true); // before the drawer's Escape: innermost layer first
   }
 
   function close() {
@@ -219,7 +219,7 @@ function createStatusPanel(ctx, button) {
     if (offFocus) offFocus();
     offFocus = null;
     document.removeEventListener('pointerdown', onDoc, true);
-    document.removeEventListener('keydown', onKey);
+    document.removeEventListener('keydown', onKey, true);
     if (el) el.remove();
     el = null;
     button.setAttribute('aria-expanded', 'false');

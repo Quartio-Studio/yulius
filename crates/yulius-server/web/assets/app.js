@@ -494,7 +494,8 @@ function createApp(root, transport) {
   });
 
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') document.body.classList.remove('drawer-open');
+    // Escape closes the innermost layer only: a menu, popover or dialog handles it first.
+    if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector('dialog[open]')) document.body.classList.remove('drawer-open');
   });
 
   // Phone drawer (WCAG 2.4.3, 4.1.2): while closed the off-screen sidebar is inert (not tabbable);

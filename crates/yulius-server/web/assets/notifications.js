@@ -111,16 +111,16 @@ export function createNotificationCenter(ctx) {
     renderPanel();
     offFocus = popoverFocus(pop, button, close);
     onDoc = (event) => { if (pop && !pop.contains(event.target) && !button.contains(event.target)) close(); };
-    onKey = (event) => { if (event.key === 'Escape') { close(); button.focus(); } };
+    onKey = (event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); button.focus(); } };
     setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true); // before the drawer's Escape: innermost layer first
   }
 
   function close() {
     if (offFocus) offFocus();
     offFocus = null;
     document.removeEventListener('pointerdown', onDoc, true);
-    document.removeEventListener('keydown', onKey);
+    document.removeEventListener('keydown', onKey, true);
     if (pop) pop.remove();
     pop = null;
     button.setAttribute('aria-expanded', 'false');
