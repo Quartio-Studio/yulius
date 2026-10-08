@@ -412,7 +412,7 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
 export function createSidebar(ctx) {
   // The logo slot holds the favicon's Y until Yulius has a real logo.
   const brand = h('a', { class: 'sidebar-brand', href: href('/'), dataset: { route: '/' }, title: BRAND.name },
-    h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 28 })),
+    h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 34 })),
     h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, BRAND.name), h('span', { class: 'brand-by' }, BRAND.tagline)));
   const shortcut = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? '⌘⇧O' : 'Ctrl+Shift+O';
   const newTask = h('a', { class: 'btn btn-newtask', href: '#', dataset: { route: '/' }, title: `New task (${shortcut})`, 'aria-keyshortcuts': shortcut === '⌘⇧O' ? 'Meta+Shift+O' : 'Control+Shift+O' },

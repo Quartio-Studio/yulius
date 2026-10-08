@@ -264,7 +264,7 @@ p { margin: 0; }
 .sidebar-brand:hover { text-decoration: none; }
 .brand-logo {
   display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; flex: none;
-  border-radius: var(--radius-lg); border: 1px solid var(--border-strong); background: var(--bg); color: var(--brand-mark);
+  color: var(--brand-mark); /* the mark stands on its own, as in the lockup: no tile */
 }
 .brand-text { display: flex; flex-direction: column; min-width: 0; }
 /* The wordmark as the brand sets it (tokens: --wordmark-case, --wordmark-tracking). */
