@@ -112,6 +112,7 @@ const DISPLAY_FONTS = {
   'Source Serif 4': ['Source+Serif+4' + WEIGHTS, SERIF],
   Newsreader: ['Newsreader' + WEIGHTS, SERIF],
   'Instrument Serif': ['Instrument+Serif', SERIF],
+  'Tenor Sans': ['Tenor+Sans', SANS],
 };
 const CODE_FONTS = {
   System: [null, MONO],
