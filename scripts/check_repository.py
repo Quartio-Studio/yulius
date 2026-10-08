@@ -379,6 +379,33 @@ def sync_brand():
     print(f"{INDEX} now matches brand.js and tokens.css")
 
 
+def ui_errors():
+    """Every web UI check (design tokens, contrast, brand, copy, inline styles); needs no Rust."""
+    errors = []
+    css = (ROOT / STYLESHEET).read_text()
+    errors.extend(style_errors(css))
+    errors.extend(control_height_errors(css))
+    name = brand_name((ROOT / BRAND).read_text())
+    for path in sorted((ROOT / STYLESHEET).parent.glob("**/*.js")):
+        if "vendor" in path.parts:
+            continue
+        js, label = path.read_text(), str(path.relative_to(ROOT))
+        errors.extend(copy_errors(js, label))
+        errors.extend(inline_style_errors(js, label))
+        if path.name not in ("brand.js", "mock.js"):
+            errors.extend(brand_name_errors(js, name, label))
+    errors.extend(contrast_errors((ROOT / TOKENS).read_text()))
+    errors.extend(brand_errors((ROOT / INDEX).read_text(), (ROOT / BRAND).read_text(), (ROOT / TOKENS).read_text()))
+    return errors
+
+
+def check_ui():
+    errors = ui_errors()
+    if errors:
+        raise ValueError("\n".join(errors))
+    print("UI contracts passed: design tokens, contrast in every theme, brand, copy, inline styles")
+
+
 def check():
     errors = []
     names = output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"]).split("\0")
@@ -391,16 +418,7 @@ def check():
         errors.append("No repository skills found")
     for path in skills:
         errors.extend(skill_errors(path))
-    errors.extend(style_errors((ROOT / STYLESHEET).read_text()))
-    errors.extend(control_height_errors((ROOT / STYLESHEET).read_text()))
-    for path in sorted((ROOT / STYLESHEET).parent.glob("**/*.js")):
-        if "vendor" not in path.parts:
-            errors.extend(copy_errors(path.read_text(), str(path.relative_to(ROOT))))
-            errors.extend(inline_style_errors(path.read_text(), str(path.relative_to(ROOT))))
-            if path.name not in ("brand.js", "mock.js"):
-                errors.extend(brand_name_errors(path.read_text(), brand_name((ROOT / BRAND).read_text()), str(path.relative_to(ROOT))))
-    errors.extend(contrast_errors((ROOT / TOKENS).read_text()))
-    errors.extend(brand_errors((ROOT / INDEX).read_text(), (ROOT / BRAND).read_text(), (ROOT / TOKENS).read_text()))
+    errors.extend(ui_errors())
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     cargo = ["rustup", "run", channel, "cargo"]
     metadata = json.loads(output(cargo + ["metadata", "--locked", "--no-deps", "--format-version", "1"]))
@@ -420,9 +438,11 @@ if __name__ == "__main__":
             doctor()
         elif sys.argv[1:] == ["--sync-brand"]:
             sync_brand()
+        elif sys.argv[1:] == ["--ui"]:
+            check_ui()
         elif not sys.argv[1:]:
             check()
         else:
-            raise ValueError("Usage: check_repository.py [--doctor | --sync-brand]")
+            raise ValueError("Usage: check_repository.py [--doctor | --sync-brand | --ui]")
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         sys.exit(f"Repository check failed: {error}")
