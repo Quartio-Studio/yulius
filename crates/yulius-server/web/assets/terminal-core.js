@@ -71,8 +71,15 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     allowProposedApi: false,
     linkHandler: { activate: (event, text) => onLink && onLink(text, event) },
   });
-  // Colours come from tokens.css and follow theme changes (theme.js).
-  const offTheme = onThemeChange(() => { term.options.theme = terminalColors(); });
+  // Colours and the code typeface come from tokens.css and follow theme and brand changes (theme.js).
+  const offTheme = onThemeChange(() => {
+    term.options.theme = terminalColors();
+    const font = token('--font-mono');
+    if (font && term.options.fontFamily !== font) {
+      term.options.fontFamily = font;
+      if (opened) applySize(); // new glyph widths: fit the grid again
+    }
+  });
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.loadAddon(new WebLinksAddon((event, uri) => onLink && onLink(uri, event)));
