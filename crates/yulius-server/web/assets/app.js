@@ -271,14 +271,29 @@ function createApp(root, transport) {
     );
   }
 
+  // Each view has its own title (WCAG 2.4.2): the task, or the page's heading, then the sandbox.
+  // A changed view is announced to screen readers (route changes are otherwise silent).
+  let announcedTitle = '';
   function updateTitle() {
     let attention = 0;
     for (const sandbox of store.state.sandboxes) attention += (sandbox.counts && sandbox.counts.needs_attention) || 0;
     const parts = [];
+    const heading = document.querySelector('#main h1');
     if (currentTask) parts.push(`#${currentTask.number} ${currentTask.title}`);
+    else if (heading && heading.textContent.trim()) parts.push(heading.textContent.trim());
     if (currentSandbox) parts.push(currentSandbox.name);
     parts.push(BRAND.name);
-    document.title = `${attention ? `(${attention}) ` : ''}${parts.join(' · ')}`;
+    const title = parts.join(' · ');
+    document.title = `${attention ? `(${attention}) ` : ''}${title}`;
+    if (title !== announcedTitle) {
+      announcedTitle = title;
+      let live = document.getElementById('route-announcer');
+      if (!live) {
+        live = h('div', { id: 'route-announcer', class: 'sr-only', 'aria-live': 'polite', 'aria-atomic': 'true' });
+        document.body.append(live);
+      }
+      live.textContent = parts.slice(0, -1).join(', ');
+    }
   }
 
   function setCenter(key, factory, { paper = true } = {}) {
