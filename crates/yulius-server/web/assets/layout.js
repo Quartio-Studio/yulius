@@ -444,9 +444,9 @@ export function createSidebar(ctx) {
   // Active tasks (UI-005), grouped so what needs the user comes first: "Needs you", "Working",
   // "Stopped" (collapsible). Each row says in words what is happening, not just a mark.
   const GROUPS = [
-    { id: 'needs', name: 'Needs you' },
-    { id: 'working', name: 'Working' },
-    { id: 'ended', name: 'Stopped' },
+    { id: 'needs', name: 'Needs you', icon: 'bell' },
+    { id: 'working', name: 'Working', icon: 'pulse' },
+    { id: 'ended', name: 'Stopped', icon: 'st-stopped' },
   ];
   const ENDED_OPEN_KEY = 'yulius.sidebarStoppedOpen';
   let endedOpen = readJson(ENDED_OPEN_KEY, true) !== false;
@@ -525,14 +525,14 @@ export function createSidebar(ctx) {
   }
 
   function groupHead(group, size) {
-    const label = [h('span', { class: 'task-group-name' }, group.name), h('span', { class: 'task-group-count' }, String(size))];
+    const label = [icon(group.icon, { size: 14 }), h('span', { class: 'task-group-name' }, group.name), h('span', { class: 'task-group-count' }, String(size))];
     if (group.id !== 'ended') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label);
     return h('button', { type: 'button', class: ['task-group-head', 'group-ended'], 'aria-expanded': String(endedOpen), onClick: () => {
       endedOpen = !endedOpen;
       writeJson(ENDED_OPEN_KEY, endedOpen);
       shape = '';
       renderTasks();
-    } }, icon(endedOpen ? 'down' : 'right', { size: 12 }), label);
+    } }, label, icon(endedOpen ? 'down' : 'right', { size: 12 }));
   }
 
   function renderTasks() {

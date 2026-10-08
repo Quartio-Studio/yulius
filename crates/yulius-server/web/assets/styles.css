@@ -289,6 +289,9 @@ p { margin: 0; }
 button.task-group-head { cursor: pointer; border-radius: var(--radius-sm); }
 button.task-group-head:hover { color: var(--text-2); }
 .task-group-count { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; }
+.task-group-head.group-working .icon { color: var(--ok); }
+.task-group-head.group-ended .task-group-count { margin-left: auto; }
+.task-group-head.group-ended .task-group-count + .icon { margin-left: 4px; }
 .task-row { position: relative; border-radius: var(--radius-sm); }
 .task-row:hover, .task-row:focus-within { background: var(--surface-3); }
 .task-row.active { background: var(--accent-soft); }
