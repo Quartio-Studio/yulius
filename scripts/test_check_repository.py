@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
-from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, inline_style_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
 
 
 def package(name, layer, dependencies=()):
@@ -117,6 +117,14 @@ class BrandTests(unittest.TestCase):
         self.assertEqual(sorted(e.split(": ")[1].split(" ")[0] for e in brand_errors(index, renamed, tokens)), ["noscript", "title"])
         recoloured = tokens.replace("--brand-500: #4c9dff;", "--brand-500: #ff5500;")
         self.assertTrue(any(": icon " in e for e in brand_errors(index, brand, recoloured)))
+
+
+
+class InlineStyleTests(unittest.TestCase):
+    def test_only_computed_values_inline(self):
+        self.assertEqual(inline_style_errors("h('i', { style: { width: `${pct}%`, '--cols': String(n), color: 'var(--ok)' } })"), [])
+        self.assertTrue(inline_style_errors("h('i', { style: { maxWidth: '640px' } })"))
+        self.assertTrue(inline_style_errors("h('i', { style: { color: '#ff0000' } })"))
 
 
 if __name__ == "__main__":

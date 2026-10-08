@@ -328,7 +328,7 @@ export function mountArchivedPage(ctx) {
 /** CLI device approval (docs/api.md device flow): approve or deny a user code. */
 export function mountDevicePage(ctx, route) {
   const frame = pageFrame({ title: 'CLI device approval', sub: 'authorize `yulius import` and other CLI sessions' });
-  const code = h('input', { class: 'input mono', placeholder: 'ABCD-EFGH', autocomplete: 'off', spellcheck: 'false', value: route.query.get('code') || route.query.get('user_code') || '', style: { maxWidth: '220px', textTransform: 'uppercase' }, 'aria-label': 'User code' });
+  const code = h('input', { placeholder: 'ABCD-EFGH', autocomplete: 'off', spellcheck: 'false', value: route.query.get('code') || route.query.get('user_code') || '', class: 'input mono code-input', 'aria-label': 'User code' });
   const result = h('div', { role: 'status' });
   const decide = (approve) => async () => {
     const userCode = code.value.trim().toUpperCase();
@@ -341,7 +341,7 @@ export function mountDevicePage(ctx, route) {
       errorToast(error, 'Approval failed');
     }
   };
-  frame.body.append(h('div', { class: 'card card-pad stack', style: { maxWidth: '560px' } },
+  frame.body.append(h('div', { class: 'card card-pad stack narrow' },
     h('p', { class: 'text-2' }, 'Enter the code shown by the CLI. Approve only codes you started yourself; the CLI gets a token with your permissions.'),
     h('div', { class: 'row-wrap' }, code, h('button', { type: 'button', class: 'btn btn-primary', onClick: decide(true) }, 'Approve'), h('button', { type: 'button', class: 'btn', onClick: decide(false) }, 'Deny')),
     result));

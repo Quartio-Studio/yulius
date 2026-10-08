@@ -423,7 +423,7 @@ export function createSidebar(ctx) {
   const userName = h('span', { class: 'user-name' });
   const userButton = h('button', { type: 'button', class: 'user-btn', 'aria-label': 'User menu', 'aria-haspopup': 'menu', onClick: () => openUserMenu(ctx, userButton) }, avatar, userName);
   const el = h('aside', { class: 'sidebar', id: 'sidebar' },
-    h('div', { class: 'sidebar-full', style: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 } },
+    h('div', { class: 'sidebar-full' },
       h('div', { class: 'sidebar-top' }, brand, newTask),
       nav,
       list),

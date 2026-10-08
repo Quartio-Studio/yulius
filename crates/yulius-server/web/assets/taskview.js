@@ -38,7 +38,7 @@ export function mountTaskView(ctx, sandbox, task) {
 
   // ---- step strip
   const stripLabel = h('span', { class: 'step-label' });
-  const progressFill = h('div', { class: 'step-progress-fill', style: { width: '0%' } });
+  const progressFill = h('div', { class: 'step-progress-fill' });
   const progress = h('div', { class: 'step-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100 }, progressFill);
   const statusEl = h('span', { class: 'strip-status' });
   const toggleButton = h('button', { type: 'button', class: 'stepstrip-toggle', 'aria-expanded': String(stripOpen) }, icon('right', { size: 14 }), stripLabel);
@@ -149,7 +149,7 @@ export function mountTaskView(ctx, sandbox, task) {
     if (!detail) { setChildren(stepList, placeholder('Loading steps…', 'loading')); return; }
     const steps = Array.isArray(detail.steps_list) ? [...detail.steps_list].sort((a, b) => a.ordinal - b.ordinal) : [];
     if (steps.length === 0) {
-      setChildren(stepList, h('div', { class: 'muted small', style: { padding: '6px 0' } }, 'The agent has not written a plan yet. Steps appear here as soon as the task spec has a Plan checklist.'));
+      setChildren(stepList, h('div', { class: 'muted small steplist-note' }, 'The agent has not written a plan yet. Steps appear here as soon as the task spec has a Plan checklist.'));
       return;
     }
     setChildren(stepList,
@@ -158,7 +158,7 @@ export function mountTaskView(ctx, sandbox, task) {
         h('span', { class: 'step-title' }, step.title),
         h('span', { class: 'step-audit', title: dateTime(step.updated_at) }, [step.updated_by, step.updated_at ? relLong(step.updated_at) : null].filter(Boolean).join(' · ')),
         step.note ? h('span', { class: 'step-note' }, step.note) : null)),
-      detail.spec_path ? h('div', { class: 'muted xs', style: { paddingTop: '6px' } }, 'Spec: ', h('code', null, detail.spec_path)) : null);
+      detail.spec_path ? h('div', { class: 'muted xs steplist-spec' }, 'Spec: ', h('code', null, detail.spec_path)) : null);
   }
 
   async function loadDetail() {

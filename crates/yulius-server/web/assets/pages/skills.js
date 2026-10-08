@@ -68,7 +68,7 @@ export function mountSkillsPage(ctx, sandbox, route) {
     const modal = openModal({ title: `${skill.name} · ${skill.source}`, wide: true, body: h('div', { class: 'stack' }, skill.path ? h('div', { class: 'muted small mono' }, skill.path) : null, placeholder('Loading…', 'loading')), actions: [{ label: 'Close' }] });
     ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/skills/${enc(skill.name)}`).then((data) => {
       content.textContent = data && data.content ? data.content : '';
-      setChildren(modal.body, skill.path ? h('div', { class: 'muted small mono', style: { marginBottom: '8px' } }, skill.path) : null, content);
+      setChildren(modal.body, skill.path ? h('div', { class: 'muted small mono space-bottom' }, skill.path) : null, content);
     }).catch((error) => setChildren(modal.body, placeholder(error.message, 'error')));
   }
 

@@ -124,8 +124,8 @@ function feedbackRatio(feedback) {
       ok ? h('span', { class: 'ratio-ok', style: { width: `${(ok / total) * 100}%` } }) : null,
       bad ? h('span', { class: 'ratio-bad', style: { width: `${(bad / total) * 100}%` } }) : null),
     h('div', { class: 'row-wrap small' },
-      h('span', null, h('span', { style: { color: 'var(--ok)' } }, '✓ '), `${ok} correct`),
-      h('span', null, h('span', { style: { color: 'var(--danger)' } }, '✕ '), `${bad} incorrect`)));
+      h('span', null, h('span', { class: 'tone-ok' }, '✓ '), `${ok} correct`),
+      h('span', null, h('span', { class: 'tone-danger' }, '✕ '), `${bad} incorrect`)));
 }
 
 function niceMax(value) {
@@ -139,8 +139,8 @@ function niceMax(value) {
 function columnChart(rows, { unit = '' } = {}) {
   const wrap = h('div', { class: 'chart' });
   const tip = h('div', { class: 'chart-tip', hidden: true });
-  const table = h('details', { class: 'small' }, h('summary', { class: 'muted', style: { cursor: 'pointer', marginTop: '8px' } }, 'Show data table'),
-    h('table', { class: 'table', style: { marginTop: '6px' } }, h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', { class: 'num' }, unit || 'Value'))),
+  const table = h('details', { class: 'small' }, h('summary', { class: 'muted space-top' }, 'Show data table'),
+    h('table', { class: 'table space-top' }, h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', { class: 'num' }, unit || 'Value'))),
       h('tbody', null, rows.map((r) => h('tr', null, h('td', null, r.label), h('td', { class: 'num' }, int(r.value)))))));
   if (rows.length === 0) return h('div', { class: 'muted small' }, 'No tasks in this range.');
   const height = 180;

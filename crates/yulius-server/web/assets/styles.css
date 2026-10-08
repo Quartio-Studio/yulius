@@ -515,7 +515,7 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .step-task { flex: 0 1 auto; min-width: 0; color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .step-task-num { margin-right: 6px; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
 .step-progress { width: 120px; height: 4px; border-radius: var(--radius-full); background: var(--accent-track); overflow: hidden; flex: none; }
-.step-progress-fill { height: 100%; background: var(--series-1); border-radius: var(--radius-full); transition: width var(--duration-slow) var(--ease); }
+.step-progress-fill { width: 0; height: 100%; background: var(--series-1); border-radius: var(--radius-full); transition: width var(--duration-slow) var(--ease); }
 .strip-status { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); white-space: nowrap; }
 .steplist { max-height: 40vh; overflow: auto; padding: 4px 12px 12px 32px; border-top: 1px solid var(--border); }
 .step-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; padding: 4px 0; align-items: baseline; }
@@ -637,6 +637,29 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 a.settings-tile:hover { background: var(--surface-3); border-color: var(--border-strong); text-decoration: none; }
 .settings-tile.disabled { opacity: 0.5; cursor: not-allowed; }
 .settings-tile-title { font-weight: 600; }
+
+/* Helpers the scripts use instead of inline styles (scripts keep only computed values inline). */
+summary { cursor: pointer; }
+.items-center { align-items: center; }
+.justify-center { justify-content: center; }
+.space-top { margin-top: 8px; }
+.space-bottom { margin-bottom: 8px; }
+.list-plain { margin: 0; padding-left: 16px; }
+.wrap-text { white-space: normal; }
+.narrow { max-width: 640px; }
+.scroll-box { max-height: 320px; overflow: auto; }
+.fill-column { flex: 1; min-height: 0; }
+.choice { cursor: pointer; }
+.choice.disabled { cursor: not-allowed; opacity: 0.55; }
+.select-sm { width: auto; height: var(--control-sm); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.input-priority { width: 80px; height: var(--control-sm); }
+.code-input { max-width: 220px; text-transform: uppercase; }
+.overlay-message { align-items: center; max-width: 420px; text-align: center; }
+.sidebar-full { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.login-terminal { display: flex; flex-direction: column; flex: 1; min-height: 320px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.steplist-note { padding: 6px 0; }
+.steplist-spec { padding-top: 6px; }
+.env-row { display: grid; grid-template-columns: 1fr 1fr 2fr 1fr auto; gap: 6px; align-items: center; }
 
 /* Tasks page (pages/tasks.js): toolbar, then a grouped list of two-line rows */
 .tl-toolbar { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
@@ -813,6 +836,8 @@ a.dl-task:hover { text-decoration: underline; }
 .ds-icon:hover { background: var(--surface-3); color: var(--text); }
 .ds-states { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 16px; }
 .ds-brand { gap: 24px; }
+.ds-input { max-width: 260px; }
+.ds-select { max-width: 200px; }
 
 /* Item cards (dom.js itemCard): workflows, skills… — the whole card opens the item. */
 .item-list { display: flex; flex-direction: column; gap: 8px; }

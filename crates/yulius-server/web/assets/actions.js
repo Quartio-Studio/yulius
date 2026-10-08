@@ -261,13 +261,13 @@ export function openDeliveryDialog(ctx, task) {
       h('div', { class: 'card card-pad stack-sm' },
         h('div', { class: 'row' }, h('strong', null, 'Task spec'), d.spec_valid ? badge('valid', 'ok') : badge('needs work', 'danger')),
         d.spec_path ? h('div', { class: 'muted small' }, h('code', null, d.spec_path)) : h('div', { class: 'muted small' }, 'No spec registered for this task yet.'),
-        d.spec_valid ? null : h('ul', { class: 'small', style: { margin: 0, paddingLeft: '18px' } }, (d.spec_problems || []).map((p) => h('li', null, p))),
+        d.spec_valid ? null : h('ul', { class: 'small list-plain' }, (d.spec_problems || []).map((p) => h('li', null, p))),
         d.steps_open ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), `${d.steps_open} step${d.steps_open === 1 ? '' : 's'} still open in the plan.`) : null),
       h('div', { class: 'row-wrap' },
         next.map((action, i) => actionButton(action, i === 0)),
         blocked.map((b) => h('button', { type: 'button', class: 'btn', disabled: true, title: b.reason }, actionLabel(b.action))),
         next.length || blocked.length ? null : h('span', { class: 'muted' }, 'No delivery action applies at this stage.')),
-      blocked.length ? h('ul', { class: 'small muted', style: { margin: 0, paddingLeft: '18px' } },
+      blocked.length ? h('ul', { class: 'small muted list-plain' },
         blocked.map((b) => h('li', null, h('strong', null, `${actionLabel(b.action)}: `), b.reason))) : null,
       h('p', { class: 'muted xs' }, 'Merges, deploys and promotions only happen on your explicit action (or an explicit profile policy such as automatic promotion).'),
     );
@@ -494,7 +494,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
 
   const renderImport = async () => {
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Filter repositories…', 'aria-label': 'Filter repositories' });
-    const list = h('div', { class: 'card list', style: { maxHeight: '320px', overflow: 'auto' } }, placeholder('Loading repositories…', 'loading'));
+    const list = h('div', { class: 'card list scroll-box' }, placeholder('Loading repositories…', 'loading'));
     setChildren(content, search, list, h('p', { class: 'muted xs' }, 'Importing needs admin or maintain permission on the repository, which must belong to the instance owner. Yulius clones it and checks the documentation format; a sandbox that does not follow it gets a preparation task first.'));
     const draw = () => {
       if (!repos) return;
@@ -507,7 +507,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
         const disabled = r.already_sandbox || r.access === 'read';
         const radio = h('input', { type: 'radio', name: 'sb-repo', value: full, disabled, checked: selectedRepo === full });
         radio.addEventListener('change', () => { selectedRepo = full; updateSubmit(); });
-        return h('label', { class: 'list-item', style: { cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1 } },
+        return h('label', { class: ['list-item', 'choice', disabled && 'disabled'] },
           radio,
           h('div', { class: 'list-main' }, h('div', { class: 'list-title' }, full, r.private ? badge('private') : badge('public', 'accent'))),
           r.already_sandbox ? badge('already a sandbox', 'ok') : badge(r.access, r.access === 'admin' ? '' : 'warn', r.access === 'admin' ? null : r.access === 'write' ? 'Import needs admin or maintain permission on GitHub' : 'Admin or maintain permission required'));
@@ -541,7 +541,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
     setChildren(templateList, templates.map((t) => {
       const radio = h('input', { type: 'radio', name: 'sb-template', value: t.id, checked: t.id === templateValue });
       radio.addEventListener('change', () => { templateValue = t.id; updateSubmit(); });
-      return h('label', { class: 'list-item', style: { cursor: 'pointer' } }, radio, h('div', { class: 'list-main' }, h('div', { class: 'list-title' }, t.name), h('div', { class: 'list-sub', style: { whiteSpace: 'normal' } }, t.description)));
+      return h('label', { class: 'list-item choice' }, radio, h('div', { class: 'list-main' }, h('div', { class: 'list-title' }, t.name), h('div', { class: 'list-sub wrap-text' }, t.description)));
     }));
     updateSubmit();
     nameInput.focus();

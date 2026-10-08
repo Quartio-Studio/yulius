@@ -133,11 +133,11 @@ export function recoveryCard(ctx) {
 export function openLoginTerminal(ctx, loginId, label, onFinish) {
   let terminal = null;
   const status = h('span', { class: 'muted small' }, 'Complete the provider sign-in in the terminal below. Secrets are masked for other viewers.');
-  const host = h('div', { style: { flex: 1, minHeight: '320px', display: 'flex', flexDirection: 'column', border: '1px solid var(--border)', borderRadius: '6px', overflow: 'hidden' } });
+  const host = h('div', { class: 'login-terminal' });
   const modal = openModal({
     title: `Sign in · ${label}`,
     full: true,
-    body: h('div', { class: 'stack', style: { flex: 1, minHeight: 0 } }, status, host),
+    body: h('div', { class: 'stack fill-column' }, status, host),
     actions: [{ label: 'Close' }],
     onClose: () => { if (terminal) terminal.destroy(); onFinish(); },
   });
@@ -187,7 +187,7 @@ export function mountAccountsPage(ctx, route) {
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.provider || '').localeCompare(b.provider || '') || (a.priority ?? 0) - (b.priority ?? 0));
     if (accounts.length === 0) return h('div', { class: 'card placeholder' }, 'No accounts yet. Add a Claude subscription; you complete Claude’s own sign-in.');
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
-      const priority = h('input', { class: 'input', type: 'number', min: 0, max: 10000, value: String(account.priority ?? 0), style: { width: '80px', height: 'var(--control-sm)' }, 'aria-label': `Priority of ${account.label}` });
+      const priority = h('input', { type: 'number', min: 0, max: 10000, value: String(account.priority ?? 0), class: 'input input-priority', 'aria-label': `Priority of ${account.label}` });
       priority.addEventListener('change', async () => {
         const value = Number(priority.value);
         if (!Number.isInteger(value) || value < 0 || value > 10000) { priority.value = String(account.priority ?? 0); toast('Priority is a whole number from 0 to 10000.', { kind: 'warn' }); return; }
@@ -287,7 +287,7 @@ export function mountGithubPage(ctx) {
   loader(host, fetchConfig, (config) => {
     if (config && config.unsupported) return instanceSummary(ctx);
     if (config && config.configured) {
-      return h('div', { class: 'card card-pad stack', style: { maxWidth: '640px' } },
+      return h('div', { class: 'card card-pad stack narrow' },
         h('div', { class: 'row' }, badge('connected', 'ok'), h('strong', null, config.owner_login || '?')),
         h('dl', { class: 'kv' }, h('dt', null, 'GitHub App'), h('dd', null, config.app_slug || '—'), h('dt', null, 'Owner'), h('dd', null, config.owner_login || '—')),
         config.install_url ? h('div', null, h('a', { class: 'btn btn-primary', href: config.install_url, target: '_blank', rel: 'noopener noreferrer' }, 'Install / configure repositories')) : null,
@@ -302,7 +302,7 @@ export function mountGithubPage(ctx) {
 function instanceSummary(ctx) {
   const instance = (ctx.store.state.me && ctx.store.state.me.instance) || {};
   const connected = instance.github_configured === true;
-  return h('div', { class: 'card card-pad stack', style: { maxWidth: '640px' } },
+  return h('div', { class: 'card card-pad stack narrow' },
     h('div', { class: 'row' }, connected ? badge('connected', 'ok') : badge('not connected', 'warn'), instance.owner_login ? h('strong', null, instance.owner_login) : null, instance.owner_kind ? badge(instance.owner_kind) : null),
     connected
       ? h('p', { class: 'text-2' }, 'This instance has a GitHub App. Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and connect provider accounts.')
@@ -334,7 +334,7 @@ function manifestForm(ctx) {
       submit.classList.remove('busy');
     }
   });
-  return h('div', { class: 'card card-pad stack', style: { maxWidth: '640px' } },
+  return h('div', { class: 'card card-pad stack narrow' },
     h('div', { class: 'row' }, badge('not connected', 'warn')),
     h('p', { class: 'text-2' }, 'Yulius creates a GitHub App for this instance using GitHub’s manifest flow. You confirm the app on GitHub, then install it on the repositories Yulius may manage.'),
     field('Owner (organization or user)', owner),

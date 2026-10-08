@@ -27,7 +27,7 @@ export function recoveryCodeCard(code, { title = 'Your recovery code', continueL
     brandLockup(),
     h('h1', { class: 'auth-title' }, title),
     h('div', { class: 'recovery-code', 'aria-label': `Recovery code ${code.split('').join(' ')}` }, code.slice(0, 3), h('span', { class: 'recovery-gap' }), code.slice(3)),
-    h('div', { class: 'row', style: { justifyContent: 'center' } }, copy),
+    h('div', { class: 'row justify-center' }, copy),
     h('div', { class: 'warning-box', role: 'note' }, icon('warn', { size: 18 }),
       h('div', { class: 'stack-sm' },
         h('strong', null, 'Keep this code perfectly safe.'),
@@ -200,7 +200,7 @@ export function mountSignIn(ctx, { next, onDone, error }) {
     });
   }
   const forgot = h('button', { type: 'button', class: 'btn-link small', onClick: () => showRecovery() }, 'Forgot password?');
-  const details = h('details', null, h('summary', { class: 'muted small', style: { cursor: 'pointer' } }, 'Superadmin password'), h('div', { class: 'stack-sm', style: { marginTop: '8px' } }, form, forgot));
+  const details = h('details', null, h('summary', { class: 'muted small' }, 'Superadmin password'), h('div', { class: 'stack-sm space-top' }, form, forgot));
   const card = h('div', { class: 'auth-card' },
     brandLockup(),
     h('h1', { class: 'auth-title' }, 'Sign in'),

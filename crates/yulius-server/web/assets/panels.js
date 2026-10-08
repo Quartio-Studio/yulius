@@ -268,7 +268,7 @@ function createShellView(ctx, sandbox, getTask) {
   let starting = false;
   let where = '';
   const startButton = h('button', { type: 'button', class: 'btn btn-primary' }, 'Open shell');
-  const idle = h('div', { class: 'panel-msg stack', style: { alignItems: 'center' } },
+  const idle = h('div', { class: 'panel-msg stack items-center' },
     h('p', null, 'A login shell in this sandbox with the containment of task runs. It never changes tasks or replaces the agent terminal.'),
     startButton);
   setChildren(el, idle);
@@ -276,7 +276,7 @@ function createShellView(ctx, sandbox, getTask) {
   function folderSelect() {
     const task = getTask();
     if (!task && where === 'task') where = '';
-    const select = h('select', { class: 'select', style: { height: 'var(--control-sm)', width: 'auto', fontSize: 'var(--fs-sm)' }, 'aria-label': 'Shell folder' },
+    const select = h('select', { class: 'select select-sm', 'aria-label': 'Shell folder' },
       h('option', { value: '' }, 'Sandbox repository'),
       task ? h('option', { value: 'task' }, `Task #${task.number} worktree`) : null);
     select.value = where;

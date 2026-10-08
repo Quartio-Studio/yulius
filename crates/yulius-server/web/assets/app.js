@@ -427,7 +427,7 @@ function createApp(root, transport) {
         setCenter(`admin:${route.page}`, () => ADMIN_PAGES[route.page](ctx, route));
         break;
       default:
-        message('notfound', 'Page not found.', h('div', { style: { marginTop: '10px' } }, h('a', { href: href('/'), dataset: { route: '/' } }, 'Go to your workspace')));
+        message('notfound', 'Page not found.', h('div', { class: 'space-top' }, h('a', { href: href('/'), dataset: { route: '/' } }, 'Go to your workspace')));
     }
     currentTask = task;
     shell.panels.setContext(sandbox, task);

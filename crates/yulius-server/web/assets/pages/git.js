@@ -382,7 +382,7 @@ async function openProfileEditor(ctx, sandbox) {
       const command = h('input', { class: 'input mono', value: env.command || '', placeholder: 'command (optional, single line)', 'aria-label': 'Command', maxlength: 2000, onInput: (e) => { env.command = e.target.value || null; } });
       const verify = h('select', { class: 'select', 'aria-label': 'Verification', onChange: (e) => { env.verify = e.target.value; } }, h('option', { value: 'manual' }, 'manual verify'), h('option', { value: 'command' }, 'command verifies'));
       verify.value = env.verify || 'manual';
-      return h('div', { class: 'card card-pad', style: { display: 'grid', gridTemplateColumns: '1fr 1fr 2fr 1fr auto', gap: '6px', alignItems: 'center' } },
+      return h('div', { class: 'card card-pad env-row' },
         name, after, command, verify, iconButton('x', 'Remove environment', () => { envs.splice(i, 1); renderEnvs(); }));
     }) : h('div', { class: 'muted small' }, 'No environments.'),
     h('div', null, h('button', { type: 'button', class: 'btn btn-sm', disabled: envs.length >= 8, title: envs.length >= 8 ? 'At most 8 environments' : null, onClick: () => { envs.push({ name: '', after: 'integration', command: null, verify: 'manual' }); renderEnvs(); } }, 'Add environment')));

@@ -315,7 +315,7 @@ export function createBrowserPanel(ctx, sandbox) {
   }
 
   function emptyState() {
-    return h('div', { class: 'stack', style: { alignItems: 'center' } },
+    return h('div', { class: 'stack items-center' },
       h('p', null, 'No open tabs.'),
       h('button', { type: 'button', class: 'btn btn-sm', onClick: () => send({ type: 'open', url: '' }) }, 'Open a tab'));
   }
@@ -654,7 +654,7 @@ export function createBrowserPanel(ctx, sandbox) {
   }
 
   function showFailure(text) {
-    showOverlay(h('div', { class: 'stack', style: { alignItems: 'center', maxWidth: '420px', textAlign: 'center' } },
+    showOverlay(h('div', { class: 'stack overlay-message' },
       h('p', null, text),
       h('button', { type: 'button', class: 'btn btn-sm', onClick: () => { lastError = null; if (socket) socket.retry(); else connect(); } }, 'Retry')));
   }

@@ -264,6 +264,20 @@ def doctor():
     print(f"Python {sys.version.split()[0]}; pinned tools ready")
 
 
+STYLE_OBJECT = re.compile(r"style:\s*\{([^{}]*)\}")
+FIXED_STYLE_VALUE = re.compile(r"""(['"])[^'"]*?(?:\d(?:px|rem|em|%|vh|vw)\b|#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\()[^'"]*\1""")
+
+
+def inline_style_errors(js, label="web script"):
+    """Inline styles may carry computed values only; fixed lengths and colours belong in styles.css."""
+    errors = []
+    for match in STYLE_OBJECT.finditer(js):
+        if FIXED_STYLE_VALUE.search(match[1]):
+            number = js.count("\n", 0, match.start()) + 1
+            errors.append(f"{label}:{number}: fixed value in an inline style; use a class in styles.css and tokens")
+    return errors
+
+
 REQUIREMENT_IN_STRING = re.compile(r"""(['"`])(?:(?!\1).)*?\b[A-Z]{2,4}-\d{3}\b(?:(?!\1).)*?\1""")
 
 
@@ -341,6 +355,7 @@ def check():
     for path in sorted((ROOT / STYLESHEET).parent.glob("**/*.js")):
         if "vendor" not in path.parts:
             errors.extend(copy_errors(path.read_text(), str(path.relative_to(ROOT))))
+            errors.extend(inline_style_errors(path.read_text(), str(path.relative_to(ROOT))))
     errors.extend(contrast_errors((ROOT / TOKENS).read_text()))
     errors.extend(brand_errors((ROOT / INDEX).read_text(), (ROOT / BRAND).read_text(), (ROOT / TOKENS).read_text()))
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
