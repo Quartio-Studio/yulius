@@ -219,6 +219,18 @@
   /* Icons: the same 24-unit shapes at any size draw a stroke this thick on screen. */
   --icon-stroke: 1.4px;
 
+  /* Layers: inside a component, then the page's floating layers from low to high. Modal dialogs
+     use the browser's top layer, above all of these. */
+  --z-raised: 1;          /* a control above its card's stretched link */
+  --z-sticky: 2;          /* sticky headers, input catchers */
+  --z-float: 4;           /* in-component overlays: notices, tooltips, resize handles, cursors */
+  --z-drawer-scrim: 790;  /* behind the phone drawer */
+  --z-drawer: 800;        /* the phone drawer */
+  --z-panel: 850;         /* a tool panel over the page on phones */
+  --z-popover: 900;       /* bell and Status panels */
+  --z-menu: 1000;         /* menus */
+  --z-toast: 1100;        /* toasts */
+
   /* Type: one scale; every size has an integer line height; weights are 400, 500 and 600 only.
      A brand typeface goes first in --font (and/or --font-mono, which terminals and the editor use
      too); declare its files with @font-face at the end of this file (web/README.md). */
