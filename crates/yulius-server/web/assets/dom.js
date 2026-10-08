@@ -338,6 +338,8 @@ export function closeMenu() {
  */
 export function openMenu(anchor, items, { align = 'start' } = {}) {
   closeMenu();
+  const button = anchor instanceof HTMLElement && anchor.hasAttribute('aria-haspopup') ? anchor : null;
+  if (button) button.setAttribute('aria-expanded', 'true');
   const menu = h('div', { class: 'menu', role: 'menu' });
   for (const item of items) {
     if (!item) continue;
@@ -402,6 +404,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       window.removeEventListener('resize', onResize);
       window.removeEventListener('blur', onResize);
       menu.remove();
+      if (button) button.setAttribute('aria-expanded', 'false');
     },
   };
   const first = menu.querySelector('.menu-item:not(:disabled)');

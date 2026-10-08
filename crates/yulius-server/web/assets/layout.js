@@ -43,12 +43,19 @@ export function createTabRow(ctx) {
   const toolsDot = h('span', { class: 'rail-dot', hidden: true });
   toolsButton.append(toolsDot);
   toolsButton.style.position = 'relative';
-  ctx.onToolsAttention = (attention) => { toolsDot.hidden = !attention; };
+  // The button's name carries the attention dot too ("…, an agent needs your action").
+  let toolsAttention = false;
+  let railVisible = false;
+  const labelTools = () => {
+    toolsButton.title = railVisible ? 'Hide tools' : 'Show tools (browser, editor, shell, messages)';
+    toolsButton.setAttribute('aria-label', `${toolsButton.title}${toolsAttention ? ', an agent needs your action' : ''}`);
+  };
+  ctx.onToolsAttention = (attention) => { toolsAttention = attention; toolsDot.hidden = !attention; labelTools(); };
   ctx.onRailChange = (visible) => {
+    railVisible = visible;
     toolsButton.classList.toggle('active', visible);
     toolsButton.setAttribute('aria-pressed', String(visible));
-    toolsButton.title = visible ? 'Hide tools' : 'Show tools (browser, editor, shell, messages)';
-    toolsButton.setAttribute('aria-label', toolsButton.title);
+    labelTools();
   };
   const notifications = createNotificationCenter(ctx);
   ctx.notifications = notifications;
@@ -80,7 +87,8 @@ export function createTabRow(ctx) {
         'aria-current': sandbox.slug === currentSlug ? 'page' : null,
       },
       h('span', { class: 'tab-name' }, sandbox.name),
-      counts.running ? h('span', { class: 'tab-running', title: `${counts.running} running` }, String(counts.running)) : null,
+      h('span', { class: 'sr-only' }, [counts.running ? `, ${counts.running} running` : '', counts.needs_attention ? `, ${counts.needs_attention} need${counts.needs_attention === 1 ? 's' : ''} attention` : ''].join('')),
+      counts.running ? h('span', { class: 'tab-running', title: `${counts.running} running`, 'aria-hidden': 'true' }, String(counts.running)) : null,
       counts.needs_attention ? h('span', { class: 'tab-dot', title: `${counts.needs_attention} need attention` }) : null);
       a.addEventListener('contextmenu', (event) => {
         event.preventDefault();
@@ -431,6 +439,7 @@ export function createSidebar(ctx) {
     const name = user.display_name || user.login || '?';
     avatar.textContent = initials(name);
     userName.textContent = name;
+    userButton.setAttribute('aria-label', `${name}, account menu`);
     userButton.title = `${name}${user.login ? ` (@${user.login})` : ''}`;
   }
 

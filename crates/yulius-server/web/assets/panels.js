@@ -204,6 +204,8 @@ export function createPanelHost(ctx) {
     badges.get('browser').hidden = !(requests && requests.size);
     if (ctx.onToolsAttention) ctx.onToolsAttention(Boolean(requests && requests.size) || Boolean(unread));
     buttons.get('browser').title = requests && requests.size ? 'Browser — an agent needs your action' : 'Browser';
+    buttons.get('browser').setAttribute('aria-label', requests && requests.size ? 'Browser, an agent needs your action' : 'Browser');
+    buttons.get('messages').setAttribute('aria-label', unread ? `Messages, ${unread} unread` : 'Messages');
     const write = sandbox && allows(sandbox.access, 'write');
     for (const k of ['browser', 'editor', 'shell']) {
       const button = buttons.get(k);

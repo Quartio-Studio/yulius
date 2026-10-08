@@ -213,7 +213,8 @@ export function mountComposer(ctx, sandbox) {
   let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
 
   const chip = (label, onOpen, extra = {}) => {
-    const button = h('button', { type: 'button', class: ['chip-btn', extra.class], 'aria-haspopup': 'menu', 'aria-label': label, title: label });
+    // The visible value is the accessible name, with a hidden "Mode: " prefix (WCAG 2.5.3).
+    const button = h('button', { type: 'button', class: ['chip-btn', extra.class], 'aria-haspopup': 'menu', 'aria-expanded': 'false', title: label });
     button.addEventListener('click', () => onOpen(button));
     return button;
   };
@@ -239,18 +240,18 @@ export function mountComposer(ctx, sandbox) {
 
   function renderChips() {
     const m = MODES.find((x) => x.id === mode);
-    setChildren(modeChip, icon(m.icon, { size: 14 }), h('span', { class: 'chip-label' }, m.name), icon('down', { size: 12 }));
+    setChildren(modeChip, icon(m.icon, { size: 14 }), h('span', { class: 'sr-only' }, 'Mode: '), h('span', { class: 'chip-label' }, m.name), icon('down', { size: 12 }));
     modeHint.textContent = m.description;
     const wf = workflows.find((w) => w.id === workflowId);
-    setChildren(workflowChip, icon('workflow', { size: 14 }), h('span', { class: 'chip-label' }, wf ? wf.name : 'No workflow'), icon('down', { size: 12 }));
+    setChildren(workflowChip, icon('workflow', { size: 14 }), h('span', { class: 'sr-only' }, 'Workflow: '), h('span', { class: 'chip-label' }, wf ? wf.name : 'No workflow'), icon('down', { size: 12 }));
     const found = findModel(modelId);
-    setChildren(modelChip, h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
+    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
     modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: Claude Code’s default';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
     const effortless = Boolean(found && found.model.effort === false);
     effortChip.hidden = effortless;
     const effort = findEffort(effortId);
-    setChildren(effortChip, h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
+    setChildren(effortChip, h('span', { class: 'sr-only' }, 'Effort: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
   }
 
   function openModeMenu(anchor) {
