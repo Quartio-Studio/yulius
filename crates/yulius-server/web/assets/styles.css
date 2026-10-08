@@ -996,6 +996,7 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .composer-quote blockquote { margin: 0; color: var(--text-2); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 500; letter-spacing: -0.01em; text-wrap: balance; }
 .composer-quote figcaption { margin-top: 8px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .composer-card { width: min(760px, 100%); display: flex; flex-direction: column; gap: 12px; }
+.brand-niche { display: none; }
 .composer-title { font-family: var(--font-display); }
 /* The composer's top bar: sandbox › New task on the left, the repository and its branch on the right. */
 .composer { position: relative; }
@@ -1046,6 +1047,9 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 /* ---------------------------------------------------------------- pages */
 
 .page { flex: 1; overflow: auto; background: var(--bg); }
+/* Material: a brand's soft light and texture (tokens --light, --texture; none by default). */
+.composer, .page, .auth { background-image: var(--light), var(--texture); }
+.sidebar, .rail { background-image: var(--texture); }
 .page-inner { padding: 16px 20px 32px; max-width: 1280px; display: flex; flex-direction: column; gap: 12px; }
 .page-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 30px; }
 .page-title { font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 600; margin-right: 6px; }
@@ -1637,3 +1641,26 @@ a.dl-task:hover { text-decoration: underline; }
 .modal .recovery-card .auth-logo { display: none; }
 .token-totals { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px; }
 .kv-line { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+
+/* ---------------------------------------------------------------- Brand details
+   Shapes a brand proposal adds beyond tokens, keyed on data-brand (set by the brand lab). Roma —
+   smoke and chalk: the mark in an arched niche, a symmetric composer, quotes set like inscriptions,
+   group heads as spaced capitals over a hairline instead of bands. */
+[data-brand="roma"] .composer-card { align-items: stretch; }
+[data-brand="roma"] .brand-niche {
+  display: flex; align-items: center; justify-content: center; align-self: center; width: 104px; height: 136px; margin-bottom: 24px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-full) var(--radius-full) var(--radius-sm) var(--radius-sm);
+  background: radial-gradient(90% 70% at 50% 28%, var(--overlay-active), transparent 72%), var(--surface); color: var(--brand-mark);
+  /* A second, inner arch: the niche's moulding. */
+  box-shadow: inset 0 0 0 8px var(--surface), inset 0 0 0 9px var(--border), var(--shadow-sm);
+}
+[data-brand="roma"] .composer-quote { margin-bottom: 40px; text-align: center; }
+[data-brand="roma"] .composer-quote blockquote { color: var(--text); font-family: var(--font-display); font-weight: 400; letter-spacing: 0; }
+[data-brand="roma"] .composer-quote figcaption { margin-top: 12px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); letter-spacing: 0.24em; text-transform: uppercase; }
+[data-brand="roma"] .composer-hint { text-align: center; }
+[data-brand="roma"] .task-group-head {
+  border: 0; border-radius: 0; color: var(--muted); font-weight: 500; letter-spacing: 0.18em;
+  background: linear-gradient(var(--border-strong), var(--border-strong)) left bottom / 100% 1px no-repeat, var(--surface);
+}
+[data-brand="roma"] button.task-group-head:hover { color: var(--text); }
+

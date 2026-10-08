@@ -42,6 +42,8 @@ export const PROPOSALS = [
       "--logo-tile-dark": "#191918"
     },
     "dark": {
+      "--texture": "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.94 0 0 0 0 0.92 0 0 0 0 0.88 0 0 0 0.075 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E\")",
+      "--light": "radial-gradient(120% 60% at 50% -12%, rgba(240, 235, 225, 0.075), rgba(240, 235, 225, 0.02) 45%, transparent 70%)",
       "--term-bg": "#0c0b0a",
       "--bg": "#100f0e",
       "--surface": "#191918",
@@ -110,6 +112,8 @@ export const PROPOSALS = [
       "--ansi-bright-white": "#f5f1ea"
     },
     "light": {
+      "--texture": "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0 0.07 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E\")",
+      "--light": "radial-gradient(120% 60% at 50% -12%, rgba(255, 253, 248, 0.7), transparent 65%)",
       "--term-bg": "#f9f6f1",
       "--bg": "#efebe1",
       "--surface": "#f7f4ed",

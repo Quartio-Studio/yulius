@@ -296,6 +296,8 @@ export function mountComposer(ctx, sandbox) {
       h('span', { class: 'composer-branch', title: `New tasks branch from ${baseBranch}` }, icon('branch', { size: 16 }), h('span', null, baseBranch))) : null);
   const el = h('div', { class: 'composer' }, repoBar,
     h('div', { class: 'composer-card' },
+      // A brand's niche for its mark (hidden unless a brand shows it; styles.css "Brand details").
+      h('div', { class: 'brand-niche', 'aria-hidden': 'true' }, icon('logo', { size: 64 })),
       h('figure', { class: 'composer-quote' }, h('blockquote', null, `“${quote.text}”`), h('figcaption', null, `— ${quote.author}`)),
       banner,
       h('div', { class: 'composer-box' },

@@ -229,6 +229,11 @@
   --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); /* a gap, then the ring: visible on accent fills too */
   --focus-inset: inset 0 0 0 2px var(--accent); /* focus inside a row, menu item or segment */
 
+  /* Material: a brand may lay a fine texture and a soft light over the large surfaces (the canvas,
+     pages, the sidebar and the rail); both are images (a grain, a gradient) and off by default. */
+  --texture: none;
+  --light: none;
+
   /* Icons: the same 24-unit shapes at any size draw a stroke this thick on screen. */
   --icon-stroke: 1.4px;
 
