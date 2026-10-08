@@ -287,6 +287,8 @@ p { margin: 0; }
 .nav-item { display: flex; align-items: center; gap: 12px; height: var(--control-xl); padding: 0 12px; border-radius: var(--radius-lg); color: var(--text-2); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
 .nav-slot { display: inline-flex; align-items: center; justify-content: center; width: 36px; flex: none; }
 .nav-item .icon { color: var(--muted); }
+/* Without a sandbox the sandbox pages have nowhere to go: the nav hides (UX2-17). */
+.app.no-sandbox .nav { display: none; }
 .nav-item:hover .icon, .nav-item.active .icon { color: var(--text-2); }
 .nav-item:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
 .nav-item.active { background: var(--accent-soft); color: var(--text); }

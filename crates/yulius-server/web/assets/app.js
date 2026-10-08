@@ -473,8 +473,10 @@ function createApp(root, transport) {
     const user = me.user || {};
     const instance = me.instance || {};
     const notes = [];
-    if (user.is_superadmin && instance.github_configured === false) {
-      notes.push(h('div', { class: 'banner banner-info' }, icon('globe'), h('span', { class: 'banner-text' }, 'First connect this instance to a GitHub organization or account.'), h('a', { class: 'btn btn-sm', href: href('/admin/github'), dataset: { route: '/admin/github' } }, 'Connect GitHub')));
+    // Without GitHub nothing can be imported or created: that step is the primary action (UX2-17).
+    const needsGithub = instance.github_configured === false;
+    if (needsGithub && !user.is_superadmin) {
+      notes.push(h('div', { class: 'banner banner-info' }, icon('globe'), h('span', { class: 'banner-text' }, 'This instance is not connected to GitHub yet. Ask a superadmin to connect it.')));
     }
     if (user.github_linked === false) {
       notes.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Sandbox content needs a GitHub-linked account. Sign in with GitHub to see the repositories you can access.'), h('a', { class: 'btn btn-sm', href: '/api/auth/github/start?next=/' }, 'Sign in with GitHub')));
@@ -485,8 +487,10 @@ function createApp(root, transport) {
         h('p', { class: 'text-2' }, 'A sandbox is one GitHub repository with its own tasks, browser and editor. Import an existing repository or create a new one from a template.'),
         notes,
         h('div', { class: 'row-wrap' },
-          h('button', { type: 'button', class: 'btn btn-primary', onClick: () => openSandboxDialog(ctx, 'import') }, 'Import repository'),
-          h('button', { type: 'button', class: 'btn', onClick: () => openSandboxDialog(ctx, 'create') }, 'Create from template')))),
+          needsGithub && user.is_superadmin ? h('a', { class: 'btn btn-primary', href: href('/admin/github'), dataset: { route: '/admin/github' } }, 'Connect GitHub') : null,
+          h('button', { type: 'button', class: ['btn', !needsGithub && 'btn-primary'], disabled: needsGithub, title: needsGithub ? 'Connect GitHub first' : null, onClick: () => openSandboxDialog(ctx, 'import') }, 'Import repository'),
+          h('button', { type: 'button', class: 'btn', disabled: needsGithub, title: needsGithub ? 'Connect GitHub first' : null, onClick: () => openSandboxDialog(ctx, 'create') }, 'Create from template')),
+        needsGithub && user.is_superadmin ? h('p', { class: 'muted small' }, 'Connect this instance to a GitHub organization or account first; then import or create repositories.') : null)),
     };
   }
 
