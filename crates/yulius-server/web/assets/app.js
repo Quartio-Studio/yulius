@@ -26,6 +26,7 @@ import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
+import { mountDesignPage } from './pages/design.js';
 
 const params = new URLSearchParams(window.location.search);
 const MOCK = params.get('mock') === '1';
@@ -412,6 +413,9 @@ function createApp(root, transport) {
         break;
       case 'settings':
         setCenter('settings', () => mountSettingsPage(ctx));
+        break;
+      case 'design':
+        setCenter('design', () => mountDesignPage(ctx));
         break;
       case 'device':
         setCenter(`device:${route.query.toString()}`, () => mountDevicePage(ctx, route));

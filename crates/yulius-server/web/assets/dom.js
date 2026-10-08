@@ -120,6 +120,9 @@ const ICONS = {
   download: [['path', { d: 'M12 4v11M7 10l5 5 5-5M5 20h14' }]],
 };
 
+/** Every icon name (the /design page shows them all). */
+export const ICON_NAMES = Object.keys(ICONS);
+
 /** Inline SVG icon by name. Decorative unless a label is given. */
 export function icon(name, { size = 16, label } = {}) {
   const svg = document.createElementNS(SVG_NS, 'svg');

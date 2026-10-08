@@ -80,7 +80,8 @@ export function mountSettingsPage(ctx) {
       row('target', 'Default model for new tasks', 'What the composer starts with', modelButton),
       row('pulse', 'Default effort for new tasks', 'How hard the agent thinks by default', effortButton),
       row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right', railToggle),
-      row('bell', 'Notification history', notifCount, clearButton)),
+      row('bell', 'Notification history', notifCount, clearButton),
+      row('contrast', 'Design system', 'Colours, type, components and themes in one place', open('/design'))),
   );
 
   if (instanceAdmin) {

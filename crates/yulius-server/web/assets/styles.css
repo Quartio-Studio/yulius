@@ -629,6 +629,31 @@ a.settings-tile:hover { background: var(--surface-3); border-color: var(--border
 .settings-tile.disabled { opacity: 0.5; cursor: not-allowed; }
 .settings-tile-title { font-weight: 600; }
 
+/* Design system page (/design) */
+.ds .ds-section { display: flex; flex-direction: column; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+.ds-head h2 { font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; }
+.ds-head p { margin: 4px 0 0; }
+.ds-group h3 { margin: 4px 0 8px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.ds-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.ds-swatch { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.ds-chip { width: 40px; height: 40px; flex: none; border: 1px solid var(--border-strong); border-radius: var(--radius); }
+.ds-swatch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ds-swatch-text code { font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.ds-pass { color: var(--ok-fg); }
+.ds-fail { color: var(--danger-fg); font-weight: 600; }
+.ds-type { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-top: 1px solid var(--border); }
+.ds-spacing { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.ds-space { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.ds-space-bar { display: block; height: 24px; background: var(--accent-soft); border: 1px solid var(--accent-border); }
+.ds-radius { display: flex; align-items: center; justify-content: center; width: 120px; height: 64px; border: 1px solid var(--border-control); background: var(--surface-2); }
+.ds-controls { align-items: flex-end; }
+.ds-elev { display: flex; flex-direction: column; gap: 4px; width: 220px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); }
+.ds-icons { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.ds-icon { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 4px; border-radius: var(--radius); color: var(--text-2); text-align: center; overflow-wrap: anywhere; }
+.ds-icon:hover { background: var(--surface-3); color: var(--text); }
+.ds-states { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 16px; }
+.ds-brand { gap: 24px; }
+
 /* Item cards (dom.js itemCard): workflows, skills… — the whole card opens the item. */
 .item-list { display: flex; flex-direction: column; gap: 8px; }
 .item-card {

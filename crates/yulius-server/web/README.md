@@ -8,7 +8,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 ## Serving contract (for the Rust server)
 
 - Serve `index.html` at `/` **and** for every UI path (history API routing): `/setup`,
-  `/signin`, `/device`, `/archived`, `/settings`, `/admin/*` and `/s/*` — except anything under `/api/`.
+  `/signin`, `/device`, `/archived`, `/settings`, `/design`, `/admin/*` and `/s/*` — except anything under `/api/`.
 - Serve `assets/**` at `/assets/...` with the usual content types (`.js` and `.mjs` as
   `text/javascript`, `.css`, `.png`). Assets are referenced by absolute `/assets/` paths.
 - Nothing is loaded from other origins: no CDNs, fonts or external images. A strict
@@ -104,6 +104,7 @@ rules on `assets/styles.css`, and checks the WCAG contrast of each theme in `ass
 | `/s/<slug>/tasks`, `/git`, `/workflows`, `/skills`, `/automations`, `/mcp`, `/dashboard` | Sandbox pages. `skills?source=instance` and `mcp?scope=instance` are the admin "Instance skills/MCP" entries. |
 | `/archived` | Archived tasks across sandboxes, with restore. |
 | `/settings` | Settings: your account, this browser's preferences, administration tiles (user menu → Settings). |
+| `/design` | Design system: brand, colour roles with live contrast, type, spacing, radii, controls, elevation, motion, icons, task states and components, in the current theme (Settings → Design system). |
 | `/device?code=<user_code>` | CLI device approval. |
 | `/admin/users`, `/admin/accounts`, `/admin/github` | Administration (superadmin / instance admin). |
 

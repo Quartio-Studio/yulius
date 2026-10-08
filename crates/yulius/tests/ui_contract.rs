@@ -446,6 +446,7 @@ async fn ui_routes_serve_the_shell_and_unknown_api_paths_stay_json_404() -> Test
         "/device?code=ABCD-EFGH",
         "/archived",
         "/settings",
+        "/design",
         "/s/studio",
         "/s/studio/t/12",
         "/s/studio/browser?tab=E3C8B2A1",

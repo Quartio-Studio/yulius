@@ -77,7 +77,7 @@ export function matchRoute(path, query = new URLSearchParams()) {
   const base = { query, path };
   if (parts.length === 0) return { ...base, name: 'home' };
   const [first, second, third, fourth] = parts;
-  if (parts.length === 1 && ['setup', 'signin', 'device', 'archived', 'settings'].includes(first)) return { ...base, name: first };
+  if (parts.length === 1 && ['setup', 'signin', 'device', 'archived', 'settings', 'design'].includes(first)) return { ...base, name: first };
   if (first === 'admin' && parts.length === 2 && ADMIN_PAGES.has(second)) return { ...base, name: 'admin', page: second };
   if (first === 's' && second) {
     if (parts.length === 2) return { ...base, name: 'composer', slug: second };
