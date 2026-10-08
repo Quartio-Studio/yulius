@@ -311,10 +311,13 @@ export function mountTasksPage(ctx, sandbox) {
   function onKey(event) {
     if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented || !frame.el.isConnected) return;
     if (readJson('yulius.singleKeyShortcuts', true) === false) return; // turned off in Settings (WCAG 2.1.4)
-    // Single-key shortcuts only while focus is on this page, not in a tool panel (WCAG 2.1.4).
-    if (event.target !== document.body && !frame.el.contains(event.target)) return;
-    if (event.key === '/' && !typing(event.target)) { event.preventDefault(); openSearch(); return; }
+    // "/" also works from the app's chrome (the sidebar link just clicked, the tabs, the rail), so
+    // the search opens right after arriving; never from a tool panel, a dialog or a menu, nor while
+    // typing (WCAG 2.1.4). The other keys move within the list, so they stay on this page.
+    const onPage = event.target === document.body || frame.el.contains(event.target);
     if (typing(event.target)) return;
+    if (event.key === '/' && (onPage || !event.target.closest('.panel, dialog, .menu, [role="menu"]'))) { event.preventDefault(); openSearch(); return; }
+    if (!onPage) return;
     const links = [...listHost.querySelectorAll('.tl-link')];
     const index = links.indexOf(document.activeElement);
     const move = { j: 1, ArrowDown: 1, k: -1, ArrowUp: -1 }[event.key];
