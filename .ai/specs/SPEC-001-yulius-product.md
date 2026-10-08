@@ -228,6 +228,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-031 | On the Git page a task card opens the task's review instead of its session: Changes (the diff against the integration branch, uncommitted files included, with a file tree, unified or split layout and line wrapping), Commits and Branch (position against the integration branch, head, pull request, compare on GitHub), with "Go to task" at the top. Needs the task changes API (docs/api.md, proposed). | F 2026-10-08 UI | C | AC-UI-24 |
 | UI-032 | The Tasks page is a one-line table (task, status in words, branch, changes, pull request, author, started, updated; fewer columns as it narrows), and a row opens the task's overview instead of its session: state and what it needs, start, running and active time, last change, plan progress, changes (linking to the review), tokens, the plan's steps, details (author, origin, mode, account, models, turns, branch, pull request, delivery, spec, worktree) and its sessions, with "Review changes" and "Go to task" at the top. Group heads in the sidebar and on the Tasks page are bands of their own. | F 2026-10-08 UI | C | AC-UI-25 |
 | UI-033 | A skill opens on its own page in a Notion-like Markdown editor: the text shows formatted while you write (headings, lists, to-dos, quotes, code, dividers, bold, italic, code, links), the frontmatter shows as properties, "/" opens the block menu and Markdown shortcuts ("# ", "- ", "1. ", "[] ", "> ", "```") turn a block into that kind; the Markdown source is one click away; Save (⌘S) writes the file and leaving with unsaved changes asks first. The Open Mercato pack and skills the user may not edit open read-only, saying why. Saving needs the proposed skill content API. | F 2026-10-08 UI | C | AC-UI-26 |
+| UI-034 | A workflow opens in a builder on its own page, made for clicking rather than typing: a new one starts from a template (Feature, Bug fix, Quick change, UI change, Research, Blank); steps are added by clicking or dragging them from a library (or typing your own), reordered by dragging (Alt+↑/↓ from the keyboard), renamed in place and removed; the delivery gates are switches; instructions are added with one-click snippets; a summary shows what a task started with it gets. Instance workflows are read-only for non-administrators. | F 2026-10-08 UI | C | AC-UI-28 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -457,7 +458,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | --- | --- |
 | Tasks | All non-archived tasks of the sandbox, grouped Needs you / Working / Stopped / Closed: state in words, step, number, branch, pull request with checks, author, last activity; state tabs with counts, Author/Origin filters and search kept in the URL (UI-024). |
 | Git | Delivery at a glance (UI-025): how the sandbox ships; live and waiting to go live with environment steps and release; Needs you; a board of where every task is with PRs and checks; activity. Branch statistics and the stage track are in each task's Deliver panel (Open PR, Merge, environment step, Release). |
-| Workflows | List/edit workflows (name, description, initial steps, instructions, required gates). |
+| Workflows | List workflows; each opens in a builder (UI-034): templates, steps to click or drag, gates as switches, instruction snippets. |
 | Skills | Catalog (repository skills, instance skills, Open Mercato pack) with source, enable toggle, content view. |
 | Automations | List/create/edit (cron, timezone, prompt, workflow, harness, enabled), run history, Run now. |
 | MCP | Sandbox MCP servers + inherited instance servers; add/edit/test; secrets write-only. |
@@ -610,6 +611,7 @@ instance — out of scope).
 | AC-UI-25 | Clicking a task on the Tasks page opens /s/<sandbox>/tasks/<n> showing its start date, running time, plan progress, changes and sessions; "Go to task" opens its session and "Review changes" its Git review. | ui |
 | AC-UI-26 | Opening a skill shows its headings, lists and code formatted; typing "/" then choosing Heading 2, and "- " at a block's start, create those blocks; ⌘S saves and a reload shows the same Markdown; an untouched skill reads back byte for byte; an Open Mercato skill is read-only. | ui |
 | AC-UI-27 | A running task's terminal ends with the input line between two rules, then "→ <repository> git:(<task branch>)", then the mode line ("bypass permissions on" in a contained run). | ui |
+| AC-UI-28 | New workflow → Bug fix → clicking a library step adds it and drops it from the library; dragging step 1 below the last moves it; Alt+↑ moves the focused step; Save creates the workflow and the list shows its steps in that order, its gates and description. | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
@@ -718,7 +720,7 @@ observed. Live provider compatibility and deployment are reported separately fro
   the pull request and next delivery step in the task view (UI-030, AC-UI-23); the Git page's task
   review (UI-031, AC-UI-24; the diff and commits need the proposed task changes API); the Tasks
   table and a task's overview (UI-032, AC-UI-25); the skill editor (UI-033, AC-UI-26; saving needs the
-  proposed skill content API); the task terminal's status line (HRN-005, AC-UI-27; proposed for the harness).
+  proposed skill content API); the task terminal's status line (HRN-005, AC-UI-27; proposed for the harness); the workflow builder (UI-034, AC-UI-28).
 
 - 2026-10-08 (UI review, `F 2026-10-08 UI`): the user menu moves to the sidebar's foot and the
   collapsed sidebar is dropped; the tools rail names its tools; the sidebar shows the Yulius
