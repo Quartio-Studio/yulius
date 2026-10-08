@@ -269,7 +269,8 @@ p { margin: 0; }
 .tab-running { color: var(--muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
 .tab-add { align-self: center; width: 26px; height: 26px; }
 .tab-select { display: none; }
-.tabrow-right { display: flex; align-items: center; gap: 4px; margin-left: auto; flex: none; }
+.tabrow-right { display: flex; align-items: center; gap: 10px; margin-left: auto; padding-right: 6px; flex: none; }
+.tabrow-right .btn-icon { width: 32px; height: 32px; }
 .chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 11px; font-size: var(--fs-xs); font-weight: 500; }
 .chip-warn { background: var(--warn-soft); color: #f2c66b; border: 1px solid rgba(229, 171, 51, 0.35); }
 .btn-status { height: 26px; padding: 0 8px; gap: 5px; font-size: var(--fs-sm); color: var(--text-2); background: transparent; border-color: transparent; }
@@ -676,6 +677,7 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
   .brand { display: none; }
   .hamburger { display: inline-flex; align-self: center; width: 36px; height: 36px; margin-left: 4px; }
   .tabrow { padding-right: 2px; gap: 2px; border-bottom: 1px solid var(--border); }
+  .tabrow-right { gap: 4px; padding-right: 0; }
   .tabrow-tabs, .tab-add { display: none; }
   .tab-select { display: block; align-self: center; flex: 1; min-width: 0; max-width: 200px; height: 32px; }
   .btn-status .status-text, .chip-warn .chip-text { display: none; }
