@@ -208,7 +208,10 @@ function createApp(root, transport) {
     appEl.append(tabRow.el, sidebar.el, center, panels.panel, panels.rail);
     // First Tab stop: skip the tab row and sidebar (WCAG 2.4.1).
     const skip = h('a', { class: 'skip-link', href: '#main', onClick: (event) => { event.preventDefault(); const target = center.querySelector('h1, input, textarea, button, a[href]'); if (target) { if (target.tagName === 'H1') target.tabIndex = -1; target.focus(); } } }, 'Skip to main content');
-    setChildren(root, skip, appEl, backdrop);
+    // Live-updates outage (PERF-08): said after 5 s without the event stream (at once when it gave
+    // up), with Retry; the network coming back or the tab being shown again retries at once.
+    const connBanner = h('div', { class: 'conn-banner', role: 'status', hidden: true });
+    setChildren(root, skip, appEl, backdrop, connBanner);
     new MutationObserver(syncDrawer).observe(appEl, { attributes: true, attributeFilter: ['class'] });
     syncDrawer();
     ctx.openNewTask = () => openNewTask();
@@ -220,7 +223,33 @@ function createApp(root, transport) {
     shell = { el: appEl, tabRow, sidebar, center, panels };
     tabRow.renderMe();
 
+    let connTimer = null;
+    const showConn = () => {
+      const status = store.state.eventsStatus;
+      const offline = navigator.onLine === false;
+      const text = offline
+        ? `You’re offline. ${BRAND.name} reconnects when the network is back.`
+        : status === 'failed' ? `Can’t reach ${BRAND.name}. Live updates stopped.` : `Can’t reach ${BRAND.name}. Reconnecting…`;
+      setChildren(connBanner, icon('warn', { size: 14 }), h('span', null, text),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => store.retryEvents() }, 'Retry now'));
+      connBanner.hidden = false;
+    };
+    const onConn = (status) => {
+      if (status === 'open' || status === 'closed') { clearTimeout(connTimer); connTimer = null; connBanner.hidden = true; return; }
+      if (status === 'failed' || !connBanner.hidden) { clearTimeout(connTimer); connTimer = null; showConn(); return; }
+      // Each reconnect attempt reports again: the 5 s count starts at the first one only.
+      if (!connTimer) connTimer = setTimeout(() => { connTimer = null; showConn(); }, 5000);
+    };
+    const retryIfDown = () => { if (store.state.eventsStatus !== 'open' && store.state.eventsStatus !== 'closed') store.retryEvents(); };
+    const onVisible = () => { if (!document.hidden) retryIfDown(); };
+    const onOffline = () => { if (!connBanner.hidden) showConn(); };
+    window.addEventListener('online', retryIfDown);
+    window.addEventListener('offline', onOffline);
+    document.addEventListener('visibilitychange', onVisible);
+
     unsubscribers.push(
+      store.on('events-status', onConn),
+      () => { clearTimeout(connTimer); window.removeEventListener('online', retryIfDown); window.removeEventListener('offline', onOffline); document.removeEventListener('visibilitychange', onVisible); },
       store.on('task', (task) => {
         if (centerView && centerView.key === `task:${task.id}` && centerView.update) {
           centerView.update(task);

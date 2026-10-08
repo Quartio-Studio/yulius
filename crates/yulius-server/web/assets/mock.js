@@ -1073,6 +1073,7 @@ const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/a
 
 async function handleFetch(db, url, init = {}) {
   await delay(50 + Math.random() * 150);
+  if (db.offline) throw new TypeError('Failed to fetch'); // simulated outage (__yuliusMock.goOffline())
   const u = new URL(url, ORIGIN);
   const method = (init.method || 'GET').toUpperCase();
   let body = {};
@@ -1757,6 +1758,12 @@ class BrowserSession {
 
 function openSocket(db, path) {
   const ws = new MockSocket(path);
+  if (db.offline) {
+    // Simulated outage: the connection never opens and fails as an unreachable server's would.
+    ws.readyState = 3;
+    setTimeout(() => { if (ws.onerror) ws.onerror({}); if (ws.onclose) ws.onclose({ code: 1006, reason: '', wasClean: false }); }, 30);
+    return ws;
+  }
   const fatal = (code, message) => {
     ws.server = { open: () => { ws.push(JSON.stringify({ type: 'error', code, message })); ws.serverClose(1008, code); } };
   };
@@ -1822,6 +1829,13 @@ function startAmbient(db) {
 export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
+  // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
+  db.goOffline = () => {
+    db.offline = true;
+    for (const ws of [...db.eventSockets]) ws.serverClose(1006, '');
+    for (const session of db.sessions.values()) for (const ws of [...(session.viewers || [])]) ws.serverClose(1006, '');
+  };
+  db.goOnline = () => { db.offline = false; };
   return {
     kind: 'mock',
     fetch: (url, init) => handleFetch(db, url, init),

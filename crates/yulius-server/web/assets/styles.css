@@ -514,6 +514,10 @@ body.resizing iframe { pointer-events: none; }
 .usage-pct.tone-unknown { color: var(--muted); }
 .account-foot { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 
+/* live-updates outage notice (PERF-08): floats under the tab row, above the page */
+.conn-banner { position: fixed; z-index: var(--z-popover); top: calc(var(--tabrow-h) + 8px); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; max-width: calc(100vw - 16px); padding: 6px 6px 6px 12px; border: 1px solid var(--warn-border); border-radius: var(--radius-lg); background: var(--surface-2); color: var(--text); box-shadow: var(--shadow); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.conn-banner .icon { color: var(--warn); flex: none; }
+
 /* keyboard shortcut sheet (UI-029) */
 .shortcuts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px 32px; }
 .shortcuts-title { margin-bottom: 8px; font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; color: var(--text); }
