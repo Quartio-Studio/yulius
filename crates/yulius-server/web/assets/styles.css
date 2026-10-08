@@ -448,7 +448,9 @@ body.resizing iframe { pointer-events: none; }
 .account-list { display: flex; flex-direction: column; gap: 8px; }
 /* One account: avatar, who, plan and state; usage windows as horizontal rows (ROT-009). */
 .account-card, .account-fold { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); }
-.account-card.disabled, .account-fold.disabled { opacity: 0.55; }
+/* Off or paused things dim their graphics, never their text below 4.5:1 (WCAG 1.4.3). */
+.account-card.disabled .account-avatar, .account-card.disabled .meter, .account-fold.disabled .account-avatar { opacity: 0.5; }
+.account-card.disabled, .account-fold.disabled { color: var(--text-2); }
 .account-head { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 12px 12px; }
 .account-fold > summary { list-style: none; cursor: pointer; border-radius: var(--radius-lg); }
 .account-fold > summary::-webkit-details-marker { display: none; }
@@ -480,6 +482,7 @@ body.resizing iframe { pointer-events: none; }
 .usage-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text); }
 .usage-reset { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .usage-pct { color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.usage-pct.tone-ok { color: var(--ok-fg); }
 .usage-pct.tone-warn { color: var(--warn-fg); }
 .usage-pct.tone-danger { color: var(--danger-fg); }
 .usage-pct.tone-unknown { color: var(--muted); }
@@ -557,6 +560,8 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .term-host { flex: 1; min-height: 0; padding: 4px 0 0 6px; overflow: hidden; }
 .term-host .xterm { height: 100%; }
 .term-host .xterm-viewport { background-color: var(--term-bg) !important; }
+/* Dim terminal text (ANSI faint) keeps 4.5:1: xterm's contrast floor does not apply to it. */
+.term-host .xterm-dim { color: var(--muted) !important; }
 .term-banner { flex: none; display: flex; flex-direction: column; }
 .term-banner-row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; font-size: var(--fs-sm); line-height: var(--lh-sm); border-bottom: 1px solid var(--border); }
 .term-banner-row > .icon { flex: none; }
@@ -878,7 +883,9 @@ a.dl-task:hover { text-decoration: underline; }
 }
 .item-card.clickable:hover { background: var(--surface-2); border-color: var(--border-strong); }
 .item-card:has(.item-open:focus-visible) { box-shadow: var(--focus); }
-.item-card.off .item-icon, .item-card.off .item-main { opacity: 0.6; }
+.item-card.off .item-icon { opacity: 0.5; }
+.item-card.off .item-name { color: var(--text-2); }
+.item-card.off .item-desc, .item-card.off .item-meta { color: var(--muted); }
 .item-icon { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; flex: none; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); color: var(--accent-fg); }
 .item-icon:has(.logo-on-dark) { background: var(--logo-tile-dark); border-color: var(--logo-tile-dark); }
 .item-main { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
