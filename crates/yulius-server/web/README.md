@@ -62,6 +62,14 @@ Weights are 400, 500 and 600 only (`strong` is 600). Families are `--font` (syst
 sets the matching line height. Never write a font-size, line-height or font-family literal
 outside `:root`.
 
+## Radii (design system, step 2)
+
+Radii follow the element's role: `--radius-sm` 4 (kbd, tiny tiles, menu items, rows), `--radius` 6
+(controls: buttons, inputs, segments, banners, inline boxes), `--radius-lg` 10 (containers: cards,
+tables, menus, popovers, toasts, modals, tiles), `--radius-xl` 16 (the composer, the sign-in card),
+`--radius-full` (pills: badges, chips, counters, switches, progress bars). Circles use `50%`. No
+other border-radius values.
+
 ## Routes
 
 | Path | View |
