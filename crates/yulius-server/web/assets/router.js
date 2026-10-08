@@ -39,6 +39,16 @@ export function href(path) {
   return `${window.location.pathname}${window.location.search}#${path}`;
 }
 
+/**
+ * Replace the current URL without a route change (a page keeping its own state in the query, such as
+ * Tasks filters). The router records it, so a later link to the plain path is a real change.
+ */
+export function replaceQuietly(path) {
+  const url = hashMode ? `${window.location.pathname}${window.location.search}#${path}` : path;
+  window.history.replaceState(window.history.state, '', url);
+  lastKey = currentLocation().full;
+}
+
 /** Navigate to an app path, e.g. navigate('/s/studio/t/12'). */
 export function navigate(path, { replace = false } = {}) {
   const url = hashMode ? `${window.location.pathname}${window.location.search}#${path}` : path;

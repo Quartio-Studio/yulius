@@ -414,7 +414,14 @@ function createApp(root, transport) {
         break;
       case 'page': {
         const factory = SANDBOX_PAGES[route.page];
-        setCenter(`${route.page}:${sandbox.id}:${route.query.toString()}`, () => factory(ctx, sandbox, route));
+        const base = `${route.page}:${sandbox.id}`;
+        // A page that keeps state in its query (Tasks filters) updates in place; others remount.
+        if (centerView && centerView.update && String(centerView.key).startsWith(`${base}:`)) {
+          centerView.key = `${base}:${route.query.toString()}`;
+          centerView.update(route);
+          break;
+        }
+        setCenter(`${base}:${route.query.toString()}`, () => factory(ctx, sandbox, route));
         break;
       }
       case 'archived':

@@ -9,7 +9,7 @@ import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark,
 import { relShort, dateTime, plural } from '../format.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
-import { href, currentLocation } from '../router.js';
+import { href, currentLocation, replaceQuietly } from '../router.js';
 import { readJson, writeJson } from '../store.js';
 import { enc } from '../api.js';
 import { initials } from '../layout.js';
@@ -68,7 +68,9 @@ export function mountTasksPage(ctx, sandbox) {
     authors: new Set((query.get('author') || '').split(',').filter(Boolean)),
     origins: new Set((query.get('origin') || '').split(',').filter(Boolean)),
   };
-  const collapsed = new Set(readJson(COLLAPSED_KEY, []));
+  let alive = true;
+  const stored = readJson(COLLAPSED_KEY, []);
+  const collapsed = new Set(Array.isArray(stored) ? stored : []);
   let closedExpanded = false;
   let pulls = new Map();
 
@@ -93,7 +95,7 @@ export function mountTasksPage(ctx, sandbox) {
     if (filters.origins.size) params.set('origin', [...filters.origins].join(','));
     if (search.value.trim()) params.set('q', search.value.trim());
     const qs = params.toString();
-    window.history.replaceState(window.history.state, '', href(qs ? `${base}?${qs}` : base));
+    if (alive) replaceQuietly(qs ? `${base}?${qs}` : base);
   }
 
   const myLogin = () => (ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null);
@@ -135,6 +137,7 @@ export function mountTasksPage(ctx, sandbox) {
   chips.append(authorChip.el, originChip.el);
 
   function render() {
+    if (!alive) return;
     syncUrl();
     const tasks = ctx.store.tasksOf(sandbox.id);
     if (tasks === null) {
@@ -251,6 +254,7 @@ export function mountTasksPage(ctx, sandbox) {
   async function loadPulls() {
     try {
       const git = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`);
+      if (!alive) return; // the page was left while the read was in flight
       pulls = new Map((git.tasks || []).filter((t) => t.pr).map((t) => [t.task_id, t.pr]));
       render();
     } catch { /* PR chips stay empty; the list works without them */ }
@@ -290,7 +294,17 @@ export function mountTasksPage(ctx, sandbox) {
   ];
   render();
   loadPulls();
-  return { el: frame.el, key: `tasks:${sandbox.id}`, destroy: () => {
+  // A link to this page with other filters (the nav link, a shared URL) updates it in place.
+  function update(route) {
+    const next = route.query;
+    filters.state = GROUPS.some((g) => g.id === next.get('state')) ? next.get('state') : 'all';
+    filters.authors.clear(); (next.get('author') || '').split(',').filter(Boolean).forEach((a) => filters.authors.add(a));
+    filters.origins.clear(); (next.get('origin') || '').split(',').filter(Boolean).forEach((o) => filters.origins.add(o));
+    search.value = next.get('q') || '';
+    render();
+  }
+  return { el: frame.el, key: `tasks:${sandbox.id}`, update, destroy: () => {
+    alive = false;
     offs.forEach((off) => off());
     document.removeEventListener('keydown', onKey);
     window.removeEventListener('focus', onFocus);
