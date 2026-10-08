@@ -53,7 +53,7 @@ export function mountAutomationsPage(ctx, sandbox) {
         a.enabled && a.next_run_at ? h('span', { title: dateTime(a.next_run_at) }, `Next run ${relLong(a.next_run_at)}`) : h('span', null, a.enabled ? 'Not scheduled' : 'Paused'),
         a.last_run ? [' · last ', h('span', { title: dateTime(a.last_run.scheduled_for) }, relLong(a.last_run.scheduled_for)), ': ', runBadge(a.last_run.state), ' ', taskLink(a.last_run.task_id)] : ' · never ran'),
       controls: [
-        toggle({ checked: a.enabled, disabled: !write, label: `${a.enabled ? 'Pause' : 'Enable'} ${a.name}`, onChange: async (checked, input) => {
+        toggle({ checked: a.enabled, disabled: !write, label: `${a.name} runs on schedule`, onChange: async (checked, input) => {
           try {
             await ctx.api.put(`/api/automations/${enc(a.id)}`, { ...editable(a), enabled: checked });
             a.enabled = checked;

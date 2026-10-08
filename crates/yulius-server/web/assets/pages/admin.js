@@ -43,7 +43,7 @@ export function mountUsersPage(ctx) {
     { label: 'Instance admin', render: (u) => toggle({ checked: Boolean(u.is_instance_admin), label: `Instance admin for ${u.github_login}`, onChange: async (checked, input) => {
       if (!(await patch(u, { is_instance_admin: checked }, checked ? `@${u.github_login} is now an instance admin` : `@${u.github_login} is no longer an instance admin`))) input.checked = !checked;
     } }) },
-    { label: 'Access', render: (u) => toggle({ checked: !u.disabled, label: `${u.disabled ? 'Enable' : 'Disable'} ${u.github_login}`, onChange: async (checked, input) => {
+    { label: 'Access', render: (u) => toggle({ checked: !u.disabled, label: `Access for ${u.github_login}`, onChange: async (checked, input) => {
       if (!checked && !(await confirmDialog({ title: `Disable @${u.github_login}?`, message: 'They are signed out everywhere and their live terminal connections close.', confirmLabel: 'Disable', danger: true }))) { input.checked = true; return; }
       if (!(await patch(u, { disabled: !checked }, checked ? `@${u.github_login} enabled` : `@${u.github_login} disabled`))) input.checked = !checked;
       else u.disabled = !checked;
@@ -214,7 +214,7 @@ export function mountAccountsPage(ctx, route) {
         usageHost,
         h('div', { class: 'row-wrap' },
           h('button', { type: 'button', class: 'btn btn-sm', onClick: () => refreshUsage(false) }, 'Refresh usage'),
-          h('label', { class: 'row small' }, toggle({ checked: account.enabled, label: `${account.enabled ? 'Disable' : 'Enable'} ${account.label}`, onChange: async (checked, input) => {
+          h('label', { class: 'row small' }, toggle({ checked: account.enabled, label: `${account.label} enabled`, onChange: async (checked, input) => {
             if (!(await patch(account, { enabled: checked }))) input.checked = !checked;
             else toast(`${account.label} ${checked ? 'enabled' : 'disabled'}`, { kind: 'ok' });
           } }), 'Enabled'),

@@ -41,7 +41,7 @@ export function mountSkillsPage(ctx, sandbox, route) {
         onOpen: () => view(skill),
         openLabel: `Open skill ${skill.name}`,
         dim: !skill.enabled,
-        controls: [h('span', { title: why || (skill.enabled ? 'On: Claude Code may use it' : 'Off') }, toggle({ checked: skill.enabled, disabled: !canToggle, label: `${skill.enabled ? 'Disable' : 'Enable'} ${skill.name}`, onChange: async (checked, input) => {
+        controls: [h('span', { title: why || (skill.enabled ? 'On: Claude Code may use it' : 'Off') }, toggle({ checked: skill.enabled, disabled: !canToggle, label: `${skill.name} enabled`, onChange: async (checked, input) => {
             try {
               await ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/skills/${enc(skill.name)}`, { enabled: checked });
               skill.enabled = checked;

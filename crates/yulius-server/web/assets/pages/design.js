@@ -105,8 +105,8 @@ export function mountDesignPage(ctx) {
           h('input', { class: 'input ds-input', placeholder: 'Input with placeholder' }),
           h('select', { class: 'select ds-select' }, h('option', null, 'Select')),
           h('div', { class: 'seg' }, ['One', 'Two', 'Three'].map((label, i) => h('label', null, h('input', { type: 'radio', name: 'ds-seg', checked: i === 0 }), label))),
-          toggle({ checked: true, label: 'Switch on', onChange: () => {} }),
-          toggle({ checked: false, label: 'Switch off', onChange: () => {} }),
+          toggle({ checked: true, label: 'Sample switch, on', onChange: () => {} }),
+          toggle({ checked: false, label: 'Sample switch, off', onChange: () => {} }),
           h('button', { type: 'button', class: 'chip-btn' }, icon('target', { size: 14 }), h('span', { class: 'chip-label' }, 'Picker chip'), icon('down', { size: 12 })),
           h('span', { class: 'kbd' }, '⌘⇧O'))),
       section('Badges, banners, meters', null,
@@ -120,7 +120,7 @@ export function mountDesignPage(ctx) {
       section('Item card', 'itemCard(): the whole card opens the item; controls keep their own clicks.',
         h('div', { class: 'item-list' },
           itemCard({ iconName: 'workflow', title: 'Feature', badges: [iconBadge('globe', 'Whole instance', 'violet'), iconBadge('check', 'Tests required', '')], description: 'Spec, implementation, tests and a pull request.', extra: h('ol', { class: 'steps-line' }, ['Write spec', 'Implement', 'Test'].map((s, i) => h('li', null, h('span', { class: 'step-num' }, String(i + 1)), s))), controls: [iconButton('trash', 'Delete', () => toast('Delete'), { class: 'btn-quiet-danger' })], onOpen: () => toast('Opened') }),
-          itemCard({ iconName: 'book', title: 'A disabled item', description: 'Dimmed, still readable.', dim: true, controls: [toggle({ checked: false, label: 'Enable', onChange: () => {} })], onOpen: () => toast('Opened') }))),
+          itemCard({ iconName: 'book', title: 'A disabled item', description: 'Dimmed, still readable.', dim: true, controls: [toggle({ checked: false, label: 'A disabled item enabled', onChange: () => {} })], onOpen: () => toast('Opened') }))),
     );
   }
 

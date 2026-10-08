@@ -76,7 +76,7 @@ export function mountMcpPage(ctx, sandbox, route) {
         description: h('span', { class: 'mono' }, server.transport === 'http' ? server.url || '' : [server.command, ...(server.args || [])].filter(Boolean).join(' ')),
         extra: [secrets.length ? h('div', { class: 'chips' }, secrets.map((k) => iconBadge('lock', `${k} ••••`, '', 'Secret value is stored encrypted and never shown'))) : null, testResult],
         controls: [
-          toggle({ checked: server.enabled, disabled: !manage, label: `${server.enabled ? 'Disable' : 'Enable'} ${server.name}`, onChange: async (checked, input) => {
+          toggle({ checked: server.enabled, disabled: !manage, label: `${server.name} attached`, onChange: async (checked, input) => {
             try {
               await ctx.api.put(`/api/mcp/${enc(server.id)}`, { ...baseBody(server), enabled: checked });
               server.enabled = checked;

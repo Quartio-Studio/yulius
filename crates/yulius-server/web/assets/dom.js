@@ -430,8 +430,12 @@ export function field(label, control, hint) {
 }
 
 /** Toggle switch (checkbox styled as a switch). */
+/**
+ * An on/off switch. `label` names what is switched ("quartio", "Access for anna-q"), never the
+ * action: the state is conveyed by role="switch" and checked, so the name stays true either way.
+ */
 export function toggle({ checked, onChange, label, disabled }) {
-  const input = h('input', { type: 'checkbox', class: 'switch-input', checked, disabled, 'aria-label': label, onChange: (e) => onChange(e.target.checked, input) });
+  const input = h('input', { type: 'checkbox', role: 'switch', class: 'switch-input', checked, disabled, 'aria-label': label, onChange: (e) => onChange(e.target.checked, input) });
   return h('span', { class: 'switch' }, input, h('span', { class: 'switch-track', 'aria-hidden': 'true' }));
 }
 
