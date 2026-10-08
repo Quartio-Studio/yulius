@@ -137,41 +137,19 @@ export function describeCron(expr) {
     if (dow === '*') return `Every day at ${hhmm()}`;
     if (dow === '1-5') return `Weekdays at ${hhmm()}`;
     if (isNum(dow) && Number(dow) <= 7) return `Every ${DOW[Number(dow) % 7]} at ${hhmm()}`;
+    // A list of days ("1,3,5", "0,6", "1-3,5"): their names, Monday first.
+    if (/^\d(-\d)?(,\d(-\d)?)+$/.test(dow)) {
+      const days = new Set();
+      for (const item of dow.split(',')) { const [a, b = a] = item.split('-').map(Number); for (let d = a; d <= b && d <= 7; d += 1) days.add(d % 7); }
+      const key = [...days].sort().join(',');
+      if (key === '0,6') return `Weekends at ${hhmm()}`;
+      if (key === '0,1,2,3,4,5,6') return `Every day at ${hhmm()}`;
+      const names = [1, 2, 3, 4, 5, 6, 0].filter((d) => days.has(d)).map((d) => DOW[d].slice(0, 3));
+      return `${names.slice(0, -1).join(', ')} and ${names.at(-1)} at ${hhmm()}`;
+    }
   }
   if (isNum(min) && isNum(hour) && isNum(dom) && mon === '*' && dow === '*') return `Monthly on day ${dom} at ${hhmm()}`;
   return expr;
-}
-
-/** The weekday names, Sunday first (cron numbering). */
-export const WEEKDAYS = DOW;
-
-/**
- * Reads a cron expression as one of the schedule presets (daily, weekdays, weekly, hourly) or
- * 'custom' when it is any other shape. Times are "HH:MM".
- */
-export function parseSchedule(expr) {
-  const parts = String(expr || '').trim().split(/\s+/);
-  if (parts.length !== 5) return { kind: 'custom' };
-  const [min, hour, dom, mon, dow] = parts;
-  const num = (v, max) => /^\d+$/.test(v) && Number(v) <= max;
-  if (!num(min, 59) || dom !== '*' || mon !== '*') return { kind: 'custom' };
-  if (hour === '*' && dow === '*') return { kind: 'hourly', minute: Number(min) };
-  if (!num(hour, 23)) return { kind: 'custom' };
-  const time = `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`;
-  if (dow === '*') return { kind: 'daily', time };
-  if (dow === '1-5') return { kind: 'weekdays', time };
-  if (num(dow, 7)) return { kind: 'weekly', time, day: Number(dow) % 7 };
-  return { kind: 'custom' };
-}
-
-/** The cron expression for a schedule preset; null for 'custom'. */
-export function scheduleCron({ kind, time = '09:00', day = 1, minute = 0 }) {
-  const [hh, mm] = String(time || '09:00').split(':').map((v) => Number(v) || 0);
-  if (kind === 'hourly') return `${Math.min(59, Math.max(0, Math.round(Number(minute) || 0)))} * * * *`;
-  if (kind === 'daily') return `${mm} ${hh} * * *`;
-  if (kind === 'weekdays') return `${mm} ${hh} * * 1-5`;
-  if (kind === 'weekly') return `${mm} ${hh} * * ${day}`;
-  return null;
 }
 
 /** Plural helper: plural(3, 'task') → "3 tasks". */

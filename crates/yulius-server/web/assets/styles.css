@@ -793,6 +793,21 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
 .mc-ok { color: var(--ok-fg); }
 .mc-fail { color: var(--danger-fg); }
 
+/* Automations → an automation (UI-039): the schedule is clicked — days, a time, every hour. */
+.au-when { color: var(--text-2); }
+.au-when-rows { display: flex; flex-direction: column; gap: 12px; }
+.au-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.au-row > .wf-label { width: 80px; flex: none; }
+.au-days { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.au-chip { border-style: solid; }
+.au-chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); font-weight: 500; }
+.au-day { min-width: 48px; justify-content: center; }
+.au-quick { display: inline-flex; gap: 12px; }
+.au-time { width: 120px; height: var(--control-sm); }
+.au-zone { width: auto; height: var(--control-sm); }
+.au-cron { max-width: 280px; }
+@media (max-width: 767px) { .au-row > .wf-label { width: 100%; } }
+
 /* Skills → a skill (UI-033) and the Markdown block editor (mdeditor.js), Notion-like */
 /* New skill (UI-035) borrows the builder's in-place title (.wf-name, .wf-desc) and chips. */
 .sn-setup { display: flex; flex-direction: column; gap: 12px; padding: 12px 0 4px; border-bottom: 1px solid var(--border); }
