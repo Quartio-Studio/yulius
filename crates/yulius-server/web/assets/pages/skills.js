@@ -2,12 +2,12 @@
 // editor (pages/skilledit.js, UI-033); New skill opens pages/skillnew.js (UI-035).
 
 import { enc } from '../api.js';
-import { h, toggle, toast, errorToast, setChildren, iconBadge, itemCard, emptyState } from '../dom.js';
+import { h, toggle, toast, errorToast, setChildren, iconBadge, itemCard, emptyState, filterTabs } from '../dom.js';
 import { navigate } from '../router.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
-const SOURCES = [['', 'All sources'], ['repository', 'Repository'], ['instance', 'Instance'], ['open-mercato', 'Open Mercato']];
+const SOURCES = [{ value: '', label: 'All' }, { value: 'repository', label: 'Repository', icon: 'branch' }, { value: 'instance', label: 'Instance', icon: 'globe' }, { value: 'open-mercato', label: 'Open Mercato', icon: 'book' }];
 /** How each source reads: icon, label and tone of its badge. */
 export const SOURCE_BADGE = { repository: ['branch', 'Repository', ''], instance: ['globe', 'Whole instance', 'violet'], 'open-mercato': ['book', 'Open Mercato', ''] };
 
@@ -19,11 +19,10 @@ export function mountSkillsPage(ctx, sandbox, route) {
     sub: 'one catalog for Claude Code — activated automatically by relevance',
     actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills/new`) }, 'New skill')],
   });
-  const source = h('select', { class: 'select', 'aria-label': 'Source filter' }, SOURCES.map(([v, l]) => h('option', { value: v }, l)));
-  source.value = route.query.get('source') || '';
+  const source = filterTabs({ label: 'Source', options: SOURCES, value: route.query.get('source') || '', onChange: () => rerender() });
   const search = h('input', { class: 'input', type: 'search', placeholder: 'Search skills…', 'aria-label': 'Search skills' });
   const host = h('div');
-  frame.body.append(h('div', { class: 'toolbar' }, search, source), host);
+  frame.body.append(h('div', { class: 'toolbar' }, source.el, search), host);
   let skills = [];
 
   function render() {
@@ -65,11 +64,13 @@ export function mountSkillsPage(ctx, sandbox, route) {
 
   const reload = loader(host, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/skills`), (list) => {
     skills = Array.isArray(list) ? list : [];
+    const counts = new Map();
+    for (const s of skills) counts.set(s.source, (counts.get(s.source) || 0) + 1);
+    source.setCounts(counts, skills.length);
     return render();
   });
   const rerender = () => setChildren(host, render());
   search.addEventListener('input', rerender);
-  source.addEventListener('change', rerender);
 
   return { el: frame.el, key: `skills:${sandbox.id}:${route.query.get('source') || ''}`, reload };
 }

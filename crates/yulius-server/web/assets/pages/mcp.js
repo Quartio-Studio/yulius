@@ -2,7 +2,7 @@
 // test. Secrets are write-only: the UI shows key names only and never reads values back.
 
 import { enc } from '../api.js';
-import { h, icon, badge, iconBadge, itemCard, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton, emptyState, invalid } from '../dom.js';
+import { h, icon, badge, iconBadge, itemCard, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton, emptyState, invalid, filterTabs } from '../dom.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 import { BRAND } from '../brand.js';
@@ -28,15 +28,15 @@ function serverLogo(server) {
 export function mountMcpPage(ctx, sandbox, route) {
   const write = allows(sandbox.access, 'write');
   const instanceAdmin = ctx.isInstanceAdmin();
-  const scopeFilter = h('select', { class: 'select', 'aria-label': 'Scope filter' }, h('option', { value: '' }, 'All servers'), h('option', { value: 'sandbox' }, 'This sandbox'), h('option', { value: 'instance' }, 'Instance (inherited)'));
-  scopeFilter.value = route.query.get('scope') || '';
+  const scopeFilter = filterTabs({ label: 'Scope', value: route.query.get('scope') || '', onChange: () => setChildren(host, render()),
+    options: [{ value: '', label: 'All' }, { value: 'sandbox', label: 'This sandbox', icon: 'folder' }, { value: 'instance', label: 'Every sandbox', icon: 'globe' }] });
   const frame = pageFrame({
     title: 'MCP',
     sub: 'attached once, available to every Claude Code session',
     actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'Add server')],
   });
   const host = h('div');
-  frame.body.append(h('div', { class: 'toolbar' }, scopeFilter, h('span', { class: 'muted small' }, `The ${BRAND.name} tool server is always attached and not listed here.`)), host);
+  frame.body.append(h('div', { class: 'toolbar' }, scopeFilter.el, h('span', { class: 'muted small' }, `The ${BRAND.name} tool server is always attached and not listed here.`)), host);
   let servers = [];
 
   const canManage = (server) => write && (server.scope !== 'instance' || instanceAdmin);
@@ -48,7 +48,7 @@ export function mountMcpPage(ctx, sandbox, route) {
   function render() {
     const shown = servers.filter((s) => !scopeFilter.value || s.scope === scopeFilter.value);
     if (shown.length === 0) return servers.length
-      ? emptyState({ iconName: 'plug', title: 'No server in this scope', text: 'Choose “All servers” to see every server.' })
+      ? emptyState({ iconName: 'plug', title: 'No server in this scope', text: 'Choose All to see every server.' })
       : emptyState({ iconName: 'plug', title: 'No MCP servers yet', text: 'Attach a tool server once and every Claude Code session gets it — for example the Quartio MCP (HTTP) or the Apify MCP (local command).', action: write ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => edit(null) }, 'Add server') : null });
     return h('div', { class: 'item-list' }, shown.map((server) => {
       const testResult = h('div', { class: 'small' });
@@ -100,9 +100,11 @@ export function mountMcpPage(ctx, sandbox, route) {
 
   const reload = loader(host, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/mcp`), (list) => {
     servers = Array.isArray(list) ? list : [];
+    const counts = new Map();
+    for (const s of servers) counts.set(s.scope, (counts.get(s.scope) || 0) + 1);
+    scopeFilter.setCounts(counts, servers.length);
     return render();
   });
-  scopeFilter.addEventListener('change', () => setChildren(host, render()));
 
   function baseBody(server) {
     return { name: server.name, transport: server.transport, command: server.command || null, args: server.args || [], url: server.url || null, enabled: server.enabled };

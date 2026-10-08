@@ -231,6 +231,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-034 | A workflow opens in a builder on its own page, made for clicking rather than typing: a new one starts from a template (Feature, Bug fix, Quick change, UI change, Research, Blank); steps are added by clicking or dragging them from a library (or typing your own), reordered by dragging (Alt+↑/↓ from the keyboard), renamed in place and removed; the delivery gates are switches; instructions are added with one-click snippets; a summary shows what a task started with it gets. Instance workflows are read-only for non-administrators. | F 2026-10-08 UI | C | AC-UI-28 |
 | UI-035 | Skills has New skill: a page where you name the skill (turned into a valid skill name, its file path shown), say when Claude Code should use it, pick a template (Checklist, Conventions, Review, Voice and tone, Blank) and where it lives (this repository, or every sandbox for instance administrators), and write it in the block editor; the frontmatter is written for you. Creating needs the proposed `POST /api/sandboxes/{sid}/skills` (docs/api.md). | F 2026-10-08 UI | C | AC-UI-29 |
 | UI-036 | Tasks has no search field: the header says "Press / to search" (a search button on touch screens), and "/" opens a Spotlight-style search over the page: results as you type (by title, number, branch or author; most recently updated first when empty), ↑/↓ to choose, Enter opens the task's overview, ⌘/Ctrl+Enter its session, Esc or a click outside closes; the last row filters the list by the text, shown as a removable chip and kept in the URL (`?q=`). | F 2026-10-08 UI | C | AC-UI-30 |
+| UI-037 | Page filters are tabs with counts, not drop-downs (Skills by source, MCP by scope; empty choices hide); every other list to choose from opens a styled list matching the app's menus (surface, border, radius, accent check) where the browser supports a customizable select, the native control elsewhere. | F 2026-10-08 UI | C | AC-UI-31 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -616,6 +617,7 @@ instance — out of scope).
 | AC-UI-28 | New workflow → Bug fix → clicking a library step adds it and drops it from the library; dragging step 1 below the last moves it; Alt+↑ moves the focused step; Save creates the workflow and the list shows its steps in that order, its gates and description. | ui |
 | AC-UI-29 | New skill → typing "Release Notes!" shows `.agents/skills/release-notes/SKILL.md`; Create without saying when to use it shows an inline error; with it, the skill is created with `name` and `description` frontmatter and opens in its editor. | ui |
 | AC-UI-30 | On Tasks, "/" opens the search with the focus in it; typing "check" lists the matching tasks; ↓ then Enter opens the second; "12" then ⌘Enter opens task #12's session; the last row sets `?q=check` and a “check” chip, and the list shows only matching tasks. | ui |
+| AC-UI-31 | Skills shows "All 5 · Repository 2 · Instance 1 · Open Mercato 2" as tabs and Repository filters to two; in the automation dialog the Workflow list opens as a styled panel with the chosen item checked. | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
@@ -724,7 +726,7 @@ observed. Live provider compatibility and deployment are reported separately fro
   the pull request and next delivery step in the task view (UI-030, AC-UI-23); the Git page's task
   review (UI-031, AC-UI-24; the diff and commits need the proposed task changes API); the Tasks
   table and a task's overview (UI-032, AC-UI-25); the skill editor (UI-033, AC-UI-26; saving needs the
-  proposed skill content API); the task terminal's status line (HRN-005, AC-UI-27; proposed for the harness); the workflow builder (UI-034, AC-UI-28); New skill (UI-035, AC-UI-29; needs the proposed skill create API); the Spotlight-style task search (UI-036, AC-UI-30).
+  proposed skill content API); the task terminal's status line (HRN-005, AC-UI-27; proposed for the harness); the workflow builder (UI-034, AC-UI-28); New skill (UI-035, AC-UI-29; needs the proposed skill create API); the Spotlight-style task search (UI-036, AC-UI-30); filter tabs and styled lists (UI-037, AC-UI-31).
 
 - 2026-10-08 (UI review, `F 2026-10-08 UI`): the user menu moves to the sidebar's foot and the
   collapsed sidebar is dropped; the tools rail names its tools; the sidebar shows the Yulius

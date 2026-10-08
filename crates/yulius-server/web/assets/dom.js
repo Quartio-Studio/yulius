@@ -129,6 +129,43 @@ const ICONS = {
 /** Every icon name (the /design page shows them all). */
 export const ICON_NAMES = Object.keys(ICONS);
 
+/**
+ * Filter tabs with counts: pills in a radio group (arrows move, as in Tasks), the stand-in for a
+ * filter <select>. `options` are { value, label, icon? }; '' is "All". Tabs with no items hide
+ * unless chosen. Returns { el, value, setCounts(Map value → count, total) }.
+ */
+export function filterTabs({ label, options, value = '', onChange }) {
+  const el = h('div', { class: 'tl-tabs ftabs', role: 'radiogroup', 'aria-label': label });
+  let current = options.some((o) => o.value === value) ? value : '';
+  let counts = new Map();
+  let total = null;
+  function render() {
+    const focused = el.contains(document.activeElement);
+    setChildren(el, options.filter((o) => o.value === '' || o.value === current || total === null || (counts.get(o.value) || 0) > 0).map((o) => {
+      const on = o.value === current;
+      const n = o.value === '' ? total : counts.get(o.value) || 0;
+      return h('button', { type: 'button', role: 'radio', 'aria-checked': String(on), tabindex: on ? '0' : '-1', class: ['tl-tab', on && 'active'], dataset: { value: o.value },
+        onClick: () => { if (current === o.value) return; current = o.value; render(); onChange(current); },
+        onKeydown: (event) => {
+          const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+          if (!step) return;
+          event.preventDefault();
+          const all = [...el.children];
+          all[(all.indexOf(event.currentTarget) + step + all.length) % all.length].click();
+          el.querySelector('[aria-checked="true"]').focus();
+        } },
+      o.icon ? h('span', { class: 'tl-tab-icon' }, icon(o.icon, { size: 14 })) : null, o.label, n === null ? null : h('span', { class: 'tl-tab-count' }, String(n)));
+    }));
+    if (focused) el.querySelector('[aria-checked="true"]')?.focus();
+  }
+  render();
+  return {
+    el,
+    get value() { return current; },
+    setCounts(next, all) { counts = next; total = all; render(); },
+  };
+}
+
 /** Inline SVG icon by name. Decorative unless a label is given. */
 export function icon(name, { size = 16, label } = {}) {
   const svg = document.createElementNS(SVG_NS, 'svg');

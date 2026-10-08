@@ -87,6 +87,25 @@ p { margin: 0; }
 .input::placeholder, .textarea::placeholder { color: var(--text-faint); }
 .input.mono, .textarea.mono { font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .input[aria-invalid="true"] { border-color: var(--danger); }
+/* Lists to choose from: where the browser can style the whole <select> (customizable select),
+   the button and its list match the app's menus (surface, border, radius, shadow, accent check);
+   elsewhere the native control stays, with the same field look. */
+@supports (appearance: base-select) {
+  .select, .select::picker(select) { appearance: base-select; }
+  .select { display: inline-flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; background: var(--surface); font: inherit; cursor: pointer; transition: background var(--duration-fast) var(--ease), border-color var(--duration-fast) var(--ease); }
+  .select:hover:not(:disabled) { background: var(--surface-2); border-color: var(--border-strong); }
+  .select:disabled { opacity: 0.6; cursor: not-allowed; }
+  .select::picker-icon { content: ""; width: 6px; height: 6px; margin: 0 4px 2px auto; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); rotate: 45deg; transition: rotate var(--duration-fast) var(--ease), margin var(--duration-fast) var(--ease); }
+  .select:open::picker-icon { rotate: 225deg; margin-bottom: -2px; }
+  .select:open { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .select::picker(select) { min-width: anchor-size(width); max-height: min(360px, 60vh); margin: 4px 0; padding: 4px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-2); color: var(--text); box-shadow: var(--shadow); }
+  .select option { display: flex; align-items: center; gap: 8px; min-height: var(--control-md); padding: 0 12px; border-radius: var(--radius-sm); cursor: pointer; }
+  .select option:hover, .select option:focus-visible { background: var(--surface-hover); outline: 2px solid transparent; }
+  .select option:checked { font-weight: 500; }
+  .select option::checkmark { order: 1; margin-left: auto; color: var(--accent); }
+  .select option:disabled { color: var(--muted); cursor: not-allowed; }
+  .select-sm { padding: 0 4px 0 8px; }
+}
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field-label { font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); font-weight: 500; }
 .field-hint { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--muted); }
