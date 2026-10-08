@@ -646,6 +646,8 @@ async function boot() {
   initRouter({ hash: MOCK });
   const root = document.getElementById('app');
   createApp(root, transport).start();
+  // Brand lab (lab.js): a development aid, loaded only when the URL asks for it.
+  if (params.has('lab')) import('./lab.js').then((lab) => lab.startLab(params.get('lab'))).catch((error) => console.error('brand lab', error));
 }
 
 boot().catch((error) => {

@@ -95,6 +95,18 @@ and component in the current theme and computes contrast as you change things.
 The assets are compiled into the server binary (`build.rs` embeds `web/`), so a rebrand ships with
 the next server build and deploy.
 
+### Brand lab: try directions before choosing
+
+Open the app with `?lab=1` (mock mode: `/?mock=1&lab=1`) and a panel lets you try the brand live on
+the real screens, in both themes: eight starting directions, then the accent's hue, strength and
+brightness, the greys' tint and the dark background's depth, the text, title and code typefaces
+(from Google Fonts, in the lab only), the corner radius and the wordmark. It checks every text and
+control-edge contrast in both themes as you go and warns when the accent sits next to a state colour
+(error red, warning amber, success green, the "your turn" blue). Each setting is in the URL
+(`?lab=<direction>` or `?lab=<settings>`), so a variant is a link you can share. **Copy settings**
+gives the tokens to write into `tokens.css` (and the typefaces to self-host); `lab.js` loads only
+when the URL asks for it and is not part of the app's start-up.
+
 ### Brand typeface
 
 Fonts are self-hosted (no CDNs). Put the `.woff2` files in `assets/fonts/`, enable the `@font-face`

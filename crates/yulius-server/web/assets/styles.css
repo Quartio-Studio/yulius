@@ -518,6 +518,33 @@ body.resizing iframe { pointer-events: none; }
 .conn-banner { position: fixed; z-index: var(--z-popover); top: calc(var(--tabrow-h) + 8px); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; max-width: calc(100vw - 16px); padding: 6px 6px 6px 12px; border: 1px solid var(--warn-border); border-radius: var(--radius-lg); background: var(--surface-2); color: var(--text); box-shadow: var(--shadow); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .conn-banner .icon { color: var(--warn); flex: none; }
 
+/* brand lab (lab.js, ?lab in the URL): a development aid floating over the app */
+.lab { position: fixed; z-index: var(--z-toast); right: 16px; bottom: 16px; display: flex; flex-direction: column; width: min(340px, calc(100vw - 16px)); max-height: calc(100dvh - 64px); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-2); color: var(--text); box-shadow: var(--shadow); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.lab.lab-left { right: auto; left: 16px; }
+.lab-head { display: flex; align-items: center; gap: 4px; padding: 4px 4px 4px 8px; border-bottom: 1px solid var(--border); }
+.lab-title { display: inline-flex; align-items: center; gap: 6px; height: var(--control-md); padding: 0 6px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); font-family: var(--font-display); font-size: var(--fs); line-height: var(--lh); font-weight: 600; cursor: pointer; }
+.lab-body { display: flex; flex-direction: column; gap: 8px; padding: 12px; overflow: auto; }
+.lab-section { margin-top: 8px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+.lab-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lab-field { display: flex; flex-direction: column; gap: 2px; }
+.lab-label { display: flex; justify-content: space-between; gap: 8px; color: var(--text-2); }
+.lab-value { color: var(--muted); font-variant-numeric: tabular-nums; }
+.lab-field input[type="range"] { width: 100%; accent-color: var(--accent); }
+.lab-directions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.lab-direction { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: left; font-family: inherit; cursor: pointer; }
+.lab-direction:hover { border-color: var(--border-strong); }
+.lab-direction.on { border-color: var(--accent); box-shadow: var(--focus-inset); }
+.lab-direction-name { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; font-weight: 600; }
+.lab-direction-note { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.lab-swatches { display: inline-flex; gap: 2px; }
+.lab-swatch { width: 8px; height: 8px; border-radius: var(--radius-full); background: var(--lab-swatch); box-shadow: 0 0 0 1px var(--border-strong); }
+.lab-fails { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; color: var(--danger-fg); }
+.lab-fails li, .lab-ok { display: flex; gap: 6px; align-items: flex-start; }
+.lab-fails .icon, .lab-ok .icon { flex: none; margin-top: 2px; }
+.lab-ok { color: var(--ok-fg); }
+.lab-note { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.lab-actions { display: flex; gap: 8px; margin-top: 4px; }
+
 /* keyboard shortcut sheet (UI-029) */
 .shortcuts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px 32px; }
 .shortcuts-title { margin-bottom: 8px; font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; color: var(--text); }
