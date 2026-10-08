@@ -54,6 +54,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     cursorBlink: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     scrollback: 5000,
     theme: terminalColors(),
+    // Agents print 256-colour and true-colour text that bypasses the theme; xterm lifts any cell
+    // below WCAG AA against its background, in both themes.
+    minimumContrastRatio: 4.5,
     macOptionIsMeta: true,
     // While the app has the mouse, Option-drag (macOS) / Shift-drag still selects text.
     macOptionClickForcesSelection: true,
