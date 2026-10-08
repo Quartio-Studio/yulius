@@ -31,6 +31,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/layout.js` | Sandbox tab row (+, Status panel, notifications, tools toggle) and the sidebar (wordmark, navigation, active task list, user menu at its foot). |
 | `assets/notifications.js` | Notification center (UI-020): the bell, its panel, and entries derived from the event stream; kept per user in `localStorage`, bounded to 100. |
 | `assets/taskview.js` | Task view (step strip, terminal, phone quick-input bar) and the new-task composer (rounded prompt box with mode, workflow, model and effort pickers). |
+| `assets/quotes.js` | 40 quotes about building great things (well-documented authors only); one shows at random above the composer. |
 | `assets/models.js` | Models (grouped by provider, each naming its harness) and effort levels the composer offers. |
 | `assets/panels.js` | Right rail and resizable panel: Editor (iframe, task worktree via `?worktree=`), Shell (sandbox or task worktree), Messages; hosts the browser panel. |
 | `assets/browser.js` | Sandbox browser panel: tabs, address bar, JPEG canvas, mouse/keyboard forwarding. |

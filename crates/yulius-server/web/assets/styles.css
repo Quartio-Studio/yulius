@@ -527,7 +527,11 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .quickbar-keys .btn { height: var(--control-xl); min-width: 44px; padding: 0 12px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-sm); flex: 1 0 auto; }
 
 /* composer */
-.composer { flex: 1; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 8vh 16px 24px; background: var(--bg); }
+.composer { flex: 1; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 14vh 16px 24px; background: var(--bg); }
+/* A random line about building great things sits above the composer (quotes.js). */
+.composer-quote { margin: 0 0 40px; }
+.composer-quote blockquote { margin: 0; color: var(--text-2); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 500; letter-spacing: -0.01em; text-wrap: balance; }
+.composer-quote figcaption { margin-top: 8px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .composer-card { width: min(760px, 100%); display: flex; flex-direction: column; gap: 12px; }
 .composer-title { font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 600; }
 .composer-repo { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
