@@ -687,7 +687,6 @@ route('POST', `/api/tasks/${ID}/delivery/merge`, ({ db, p }) => {
   if (sandbox.profile.auto_promote && pos.kind === 'promote') {
     const production = (sandbox.profile.environments || []).filter((e) => e.after === 'production');
     task.delivery.stage = production.length ? 'promoted' : 'production_done';
-    notes.push(`Promoted ${sandbox.profile.integration_branch} → ${sandbox.profile.production_branch} automatically (auto_promote).`);
   }
   touch(db, task);
   return { ...delivery(db, task), notes };

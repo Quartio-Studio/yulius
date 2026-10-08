@@ -278,12 +278,24 @@ export function openDeliveryDialog(ctx, task) {
 
 /** Merge a task's pull request into the integration branch after confirmation. */
 export async function mergeTask(ctx, task, onDone = () => {}) {
-  const ok = await confirmDialog({ title: `Merge #${task.number} ${task.title}?`, message: 'Merge the pull request into the integration branch using the profile’s merge method. The PR head must match the task worktree; checks must pass when the profile requires them.', confirmLabel: 'Merge' });
+  // Say where the change ends up: with automatic release, merging puts it live (UX2-04).
+  const profile = (ctx.store.sandboxById(task.sandbox_id) || {}).profile || {};
+  const int = profile.integration_branch || 'the integration branch';
+  const prod = profile.production_branch || 'production';
+  const live = Boolean(profile.auto_promote);
+  const ok = await confirmDialog({
+    title: live ? `Merge and release #${task.number} ${task.title}?` : `Merge #${task.number} ${task.title}?`,
+    message: live
+      ? `The pull request merges into ${int}, and ${prod} moves forward right away: this change goes live in production. To undo it, revert on GitHub.`
+      : `The pull request merges into ${int}. Nothing goes live until someone releases ${int} to ${prod}.`,
+    confirmLabel: live ? 'Merge and release' : 'Merge',
+  });
   if (!ok) return;
   try {
     const delivery = await ctx.api.post(`/api/tasks/${enc(task.id)}/delivery/merge`);
     const notes = delivery && Array.isArray(delivery.notes) && delivery.notes.length ? delivery.notes.join(' ') : null;
-    toast('Merged.', { kind: 'ok', detail: notes });
+    const released = delivery && (delivery.stage === 'promoted' || delivery.stage === 'production_done');
+    toast(released ? `Merged and released to ${prod}.` : `Merged into ${int}.`, { kind: 'ok', detail: notes });
   } catch (error) {
     errorToast(error, 'Merge refused');
   }
