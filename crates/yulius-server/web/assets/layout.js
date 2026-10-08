@@ -90,11 +90,22 @@ export function createTabRow(ctx) {
       h('span', { class: 'sr-only' }, [counts.running ? `, ${counts.running} running` : '', counts.needs_attention ? `, ${counts.needs_attention} need${counts.needs_attention === 1 ? 's' : ''} attention` : ''].join('')),
       counts.running ? h('span', { class: 'tab-running', title: `${counts.running} running`, 'aria-hidden': 'true' }, String(counts.running)) : null,
       counts.needs_attention ? h('span', { class: 'tab-dot', title: `${counts.needs_attention} need attention` }) : null);
+      const index = sandboxes.indexOf(sandbox);
+      const move = (step) => {
+        const ids = sandboxes.map((sb) => sb.id);
+        const [moved] = ids.splice(index, 1);
+        ids.splice(index + step, 0, moved);
+        ctx.store.setSandboxOrder(ids);
+      };
       a.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         openMenu({ x: event.clientX, y: event.clientY }, [
           { label: 'Open', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`) },
           sandbox.repo && sandbox.repo.url ? { label: 'Open on GitHub', onSelect: () => window.open(sandbox.repo.url, '_blank', 'noopener,noreferrer') } : null,
+          { separator: true },
+          // Reordering without dragging (WCAG 2.5.7): the menu moves a tab one place.
+          { label: 'Move left', icon: 'left', disabled: index === 0, onSelect: () => move(-1) },
+          { label: 'Move right', icon: 'right', disabled: index === sandboxes.length - 1, onSelect: () => move(1) },
           { separator: true },
           { label: `Remove from ${BRAND.name}…`, danger: true, disabled: !allows(sandbox.access, 'admin'), title: allows(sandbox.access, 'admin') ? null : 'Requires repository admin', onSelect: () => confirmRemoveSandbox(ctx, sandbox) },
         ]);

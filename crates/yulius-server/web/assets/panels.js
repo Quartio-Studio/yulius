@@ -43,7 +43,7 @@ export function createPanelHost(ctx) {
   const title = h('span', { class: 'panel-title' });
   const headExtra = h('div', { class: 'row' });
   const body = h('div', { class: 'panel-body' });
-  const handle = h('div', { class: 'panel-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize panel', tabindex: '0' });
+  const handle = h('div', { class: 'panel-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize panel', 'aria-valuemin': '0', 'aria-valuemax': '100', tabindex: '0', title: 'Drag, use the arrow keys, or double-click to reset' });
   const maximizeButton = iconButton('maximize', 'Maximize panel', () => setMaximized(!maximized));
   const panel = h('section', { class: 'panel', hidden: true, 'aria-label': 'Tool panel' },
     handle,
@@ -94,6 +94,10 @@ export function createPanelHost(ctx) {
     const max = Math.max(320, window.innerWidth - 360);
     const width = Math.max(300, Math.min(max, px));
     panel.style.width = `${width}px`;
+    // The splitter says where it is (WCAG 4.1.2): the panel's share of the window.
+    const share = Math.round((width / window.innerWidth) * 100);
+    handle.setAttribute('aria-valuenow', String(share));
+    handle.setAttribute('aria-valuetext', `Panel ${share}% of the window`);
     return width;
   }
   handle.addEventListener('pointerdown', (event) => {
@@ -113,6 +117,11 @@ export function createPanelHost(ctx) {
     };
     handle.addEventListener('pointermove', move);
     handle.addEventListener('pointerup', up);
+  });
+  // A double-click resets the width: a way to resize without dragging (WCAG 2.5.7).
+  handle.addEventListener('dblclick', () => {
+    const width = applyWidth(defaultWidth(kind));
+    writeJson(WIDTH_KEY, width / window.innerWidth);
   });
   handle.addEventListener('keydown', (event) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
