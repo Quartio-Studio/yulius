@@ -120,7 +120,7 @@ export function mountTasksPage(ctx, sandbox) {
       ]);
     } }, label, icon('down', { size: 12 }));
     const clear = iconButton('x', `Clear ${name.toLowerCase()} filter`, () => { set.clear(); render(); button.focus(); }, { class: 'tl-chip-clear' });
-    const el = h('span', { class: 'tl-chip-group' }, button, clear);
+    const el = h('span', { class: 'tl-chip-group', hidden: true }, button, clear); // shown once tasks are known
     return {
       el,
       update(next) {
