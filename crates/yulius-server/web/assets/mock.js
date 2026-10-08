@@ -954,6 +954,16 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   db.accounts = db.accounts.filter((a) => a.id !== p[0]);
   return json(204);
 });
+// Refreshes the provider's usage windows; an account that must sign in again gets the provider's 502.
+route('POST', `/api/admin/accounts/${ID}/usage`, ({ db, p }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  if (account.status === 'relogin' || account.status === 'pending_login') fail(502, 'upstream', account.last_error || 'the provider refused the usage request; sign in again');
+  account.usage = { ...account.usage, observed_at: new Date().toISOString() };
+  account.last_error = null;
+  return account;
+});
 route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
