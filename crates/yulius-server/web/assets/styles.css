@@ -317,7 +317,7 @@ button.task-group-head:hover { color: var(--text); }
 .task-link:hover { text-decoration: none; }
 .task-mark { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; color: var(--muted); }
 .task-row[data-tone="attention"] .task-mark, .task-row[data-tone="stopped-abnormal"] .task-mark { background: var(--warn-soft); }
-.task-row[data-tone="waiting"] .task-mark { background: var(--accent-soft); }
+.task-row[data-tone="waiting"] .task-mark { background: var(--info-soft); }
 .task-row[data-tone="working"] .task-mark, .task-row[data-tone="running"] .task-mark { background: var(--ok-soft); }
 .task-row[data-tone="switching"] .task-mark { background: var(--violet-soft); }
 .task-row[data-tone="failed"] .task-mark { background: var(--danger-soft); }
@@ -356,7 +356,7 @@ button.task-group-head:hover { color: var(--text); }
 .glyph { display: inline-flex; align-items: center; justify-content: center; width: 14px; font-size: var(--fs-sm); font-weight: 600; line-height: 1; }
 .tone-working, .tone-running { color: var(--ok); }
 .tone-running { opacity: 0.75; }
-.tone-waiting { color: var(--accent); }
+.tone-waiting { color: var(--info); } /* "your turn": the info hue, apart from brand, warning and error */
 .tone-attention { color: var(--warn); }
 .tone-switching { color: var(--violet); }
 .tone-queued { color: var(--muted); }
@@ -541,7 +541,7 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 
 .taskview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .attention-bar { flex: none; display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); border-left: 3px solid var(--warn); background: var(--warn-soft); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); }
-.attention-bar.waiting { border-left-color: var(--accent); background: var(--accent-soft); color: var(--accent-fg-strong); }
+.attention-bar.waiting { border-left-color: var(--info); background: var(--info-soft); color: var(--info-fg-strong); }
 .attention-bar .icon { flex: none; }
 .attention-text { flex: 1; min-width: 0; }
 .stepstrip { flex: none; background: var(--surface); border-bottom: 1px solid var(--border); }
@@ -750,7 +750,7 @@ summary { cursor: pointer; }
 /* Same row language as the sidebar: a tinted state tile, a 16 px title, a 14 px line. */
 .tl-mark { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; }
 .tl-row[data-tone="attention"] .tl-mark, .tl-row[data-tone="stopped-abnormal"] .tl-mark { background: var(--warn-soft); }
-.tl-row[data-tone="waiting"] .tl-mark { background: var(--accent-soft); }
+.tl-row[data-tone="waiting"] .tl-mark { background: var(--info-soft); }
 .tl-row[data-tone="working"] .tl-mark, .tl-row[data-tone="running"] .tl-mark { background: var(--ok-soft); }
 .tl-row[data-tone="switching"] .tl-mark { background: var(--violet-soft); }
 .tl-row[data-tone="failed"] .tl-mark { background: var(--danger-soft); }

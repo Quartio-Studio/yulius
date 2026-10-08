@@ -173,7 +173,7 @@ CONTRAST_PAIRS = [
     *((fg, bg, 4.5) for fg in ("--text", "--text-2", "--muted", "--text-faint") for bg in ("--bg", "--surface", "--surface-2")),
     ("--text", "--surface-3", 4.5), ("--muted", "--surface-hover", 4.5),
     ("--accent-ink", "--accent", 4.5), ("--term-fg", "--term-bg", 4.5), ("--ansi-bright-black", "--term-bg", 4.5),
-    *((f"--{hue}-fg", bg, 4.5) for hue in ("accent", "ok", "warn", "danger", "violet") for bg in ("--surface", f"--{hue}-soft/--surface")),
+    *((f"--{hue}-fg", bg, 4.5) for hue in ("accent", "ok", "warn", "danger", "violet", "info") for bg in ("--surface", f"--{hue}-soft/--surface")),
     ("--warn-fg-strong", "--warn-soft/--surface", 4.5), ("--danger-fg-strong", "--danger-soft/--surface", 4.5),
     ("--accent-fg-strong", "--accent-soft/--surface", 4.5), ("--agent-ink", "--agent", 4.5),
     *((mark, bg, 3.0) for mark in ("--accent", "--ok", "--warn", "--danger", "--violet") for bg in ("--bg", "--surface")),

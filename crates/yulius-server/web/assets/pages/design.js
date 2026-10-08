@@ -13,7 +13,7 @@ const COLOR_GROUPS = [
   ['Lines', ['--border', '--border-strong', '--border-control']],
   ['Ink', ['--text', '--text-2', '--muted', '--text-faint', '--text-disabled']],
   ['Accent', ['--accent', '--accent-hover', '--accent-strong', '--accent-fg', '--accent-fg-strong', '--accent-ink', '--accent-soft', '--accent-border', '--accent-track']],
-  ['States', ['--ok', '--ok-fg', '--ok-soft', '--warn', '--warn-fg', '--warn-soft', '--danger', '--danger-fg', '--danger-soft', '--violet', '--violet-fg', '--agent']],
+  ['States', ['--ok', '--ok-fg', '--ok-soft', '--warn', '--warn-fg', '--warn-soft', '--danger', '--danger-fg', '--danger-soft', '--violet', '--violet-fg', '--info', '--info-fg', '--info-soft', '--agent']],
   ['Brand ramp', ['--brand-200', '--brand-300', '--brand-400', '--brand-500', '--brand-600', '--brand-700', '--brand-800']],
   ['Data', ['--series-1', '--series-1-hover', '--grid', '--axis']],
   ['Terminal', ['--term-fg', '--term-selection', '--ansi-red', '--ansi-green', '--ansi-yellow', '--ansi-blue', '--ansi-magenta', '--ansi-cyan', '--ansi-bright-black']],
@@ -62,7 +62,7 @@ export function mountDesignPage(ctx) {
       h('input', { type: 'radio', name: 'ds-theme', value: choice.id, checked: themeChoice() === choice.id, onChange: () => setThemeChoice(choice.id) }), choice.name)));
     const swatch = (name) => {
       const value = token(name);
-      const ink = ['--text', '--text-2', '--muted', '--text-faint', '--accent-fg', '--ok-fg', '--warn-fg', '--danger-fg', '--violet-fg', '--term-fg'].includes(name);
+      const ink = ['--text', '--text-2', '--muted', '--text-faint', '--accent-fg', '--ok-fg', '--warn-fg', '--danger-fg', '--violet-fg', '--info-fg', '--term-fg'].includes(name);
       const ratio = ink ? contrast(value, token(name === '--term-fg' ? '--term-bg' : '--surface')) : null;
       return h('div', { class: 'ds-swatch' },
         h('span', { class: 'ds-chip', style: { background: `var(${name})` } }),

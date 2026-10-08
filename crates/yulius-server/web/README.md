@@ -77,8 +77,9 @@ and component in the current theme and computes contrast as you change things.
    (text on a `--brand-500` fill). The dark theme uses 200–300 for text, 400–600 for fills, charts
    and progress, and 800 for the terminal selection; the light theme uses 600–800 for fills and
    text and 200 for selections — keep the ramp's lightness steps. The state palette (green, amber,
-   red, violet: both themes take their state colours from it) should stay clearly apart from the
-   brand hue, so "your turn" never reads as a warning or an error. Terminal ANSI colours are a fixed
+   red, violet and the info blue for "your turn": both themes take their state colours from it)
+   is independent of the brand on purpose, so a warm brand never makes "your turn" read as a
+   warning or an error; keep the brand hue clearly apart from amber and red. Terminal ANSI colours are a fixed
    palette on purpose (agents' output colours mean something).
 3. **Sync and check** — run `python3 scripts/check_repository.py --sync-brand`: it rewrites the
    brand parts of `index.html` (title, theme colour, favicon, no-script text — what shows before the

@@ -27,7 +27,12 @@
   --brand-800: #174f9e;
   --brand-ink: #051424;    /* text on a --brand-500 fill */
 
-  /* Palette: state hues. */
+  /* Palette: state hues. Info ("your turn") is its own blue, so it never depends on the brand. */
+  --info-200: #b5d7ff;
+  --info-300: #8cc2ff;
+  --info-500: #4c9dff;
+  --info-700: #1f63c4;
+  --info-800: #174f9e;
   --green-300: #7fdc8e;
   --green-500: #45c35a;
   --green-600: #1f8a3b;
@@ -95,6 +100,9 @@
   --danger-fg-strong: var(--red-200);
   --violet: var(--violet-500);
   --violet-fg: var(--violet-300);
+  --info: var(--info-500);
+  --info-fg: var(--info-300);
+  --info-fg-strong: var(--info-200);
   --agent: var(--violet-400);          /* the agent's cursor in the browser */
   --agent-ink: var(--violet-ink);
   /* data */
@@ -159,6 +167,9 @@
   --danger-fg-strong: var(--red-700);
   --violet: var(--violet-600);
   --violet-fg: var(--violet-700);
+  --info: var(--info-700);
+  --info-fg: var(--info-700);
+  --info-fg-strong: var(--info-800);
   --agent: var(--violet-650);
   --agent-ink: var(--white);
   --series-1: var(--brand-600);
@@ -208,6 +219,7 @@
   --danger-border: color-mix(in srgb, var(--danger) 50%, transparent);
   --danger-track: color-mix(in srgb, var(--danger) 18%, transparent);
   --violet-soft: color-mix(in srgb, var(--violet) 15%, transparent);
+  --info-soft: color-mix(in srgb, var(--info) 14%, transparent);
   --violet-border: color-mix(in srgb, var(--violet) 45%, transparent);
 
   /* Elevation: L0 canvas, L1 cards (border only), L2 menus/popovers/toasts, L3 modals/drawer. */
