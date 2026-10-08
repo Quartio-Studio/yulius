@@ -55,6 +55,8 @@ export function mountSettingsPage(ctx) {
     choice.name)));
 
   const railToggle = toggle({ checked: ctx.railVisible ? ctx.railVisible() : false, label: 'Show the tools rail', onChange: (checked) => { if (ctx.setRailVisible) ctx.setRailVisible(checked); } });
+  // WCAG 2.1.4: single-character shortcuts can be turned off (pages/tasks.js reads this key).
+  const keysToggle = toggle({ checked: readJson('yulius.singleKeyShortcuts', true) !== false, label: 'Single-key shortcuts', onChange: (checked) => writeJson('yulius.singleKeyShortcuts', checked) });
   const notifCount = h('span', { class: 'muted xs' });
   const clearButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => {
     if (ctx.notifications) ctx.notifications.clear();
@@ -81,6 +83,7 @@ export function mountSettingsPage(ctx) {
       row('target', 'Default model for new tasks', 'What the composer starts with', modelButton),
       row('pulse', 'Default effort for new tasks', 'How hard the agent thinks by default', effortButton),
       row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right', railToggle),
+      row('target', 'Single-key shortcuts', 'On the Tasks page: / to search, j and k to move, . for a task’s menu', keysToggle),
       row('bell', 'Notification history', notifCount, clearButton),
       row('contrast', 'Design system', 'Colours, type, components and themes in one place', open('/design'))),
   );
