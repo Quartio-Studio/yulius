@@ -272,7 +272,7 @@ function rememberOpen(details, key, openByDefault) {
 function statTile(iconName, name, value, percent, detail) {
   return h('div', { class: ['stat-tile', `stat-${toneOf(percent)}`] },
     h('div', { class: 'stat-head' }, icon(iconName, { size: 15 }), h('span', null, name)),
-    h('div', { class: 'stat-value' }, value),
+    h('div', { class: 'tile-value' }, value),
     usageBar(percent, name),
     h('div', { class: 'stat-detail' }, detail || ' '));
 }

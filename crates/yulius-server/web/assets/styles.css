@@ -411,8 +411,8 @@ body.resizing iframe { pointer-events: none; }
 .stat-head { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--fs-sm); }
 .stat-warn .stat-head .icon { color: var(--warn); }
 .stat-danger .stat-head .icon { color: var(--danger); }
-.stat-value { font-size: 18px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.stat-unknown .stat-value { color: var(--muted); font-size: var(--fs); font-weight: 500; }
+.tile-value { font-size: 18px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stat-unknown .tile-value { color: var(--muted); font-size: var(--fs); font-weight: 500; }
 .stat-detail { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--text-2); font-size: var(--fs-sm); }
 .status-fact { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
