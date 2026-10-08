@@ -317,6 +317,10 @@ button.task-group-head:hover { color: var(--text); }
 .task-group-head.group-ended .task-group-count + .icon { margin-left: 4px; }
 .task-row { position: relative; border-radius: var(--radius-lg); }
 .task-row:hover, .task-row:focus-within { background: var(--surface-3); }
+/* Long lists: rows off screen skip layout and paint (PERF-03). That contains each row's painting,
+   so the focus ring is drawn inside the row, not around it. */
+.task-row, .tl-row { content-visibility: auto; contain-intrinsic-size: auto 72px; }
+.task-link:focus-visible { border-radius: var(--radius-lg); box-shadow: var(--focus-inset); }
 .task-row.active { background: var(--accent-soft); }
 .task-link { display: flex; align-items: flex-start; gap: 12px; padding: 12px; color: var(--text); text-decoration: none; }
 .task-link:hover { text-decoration: none; }
