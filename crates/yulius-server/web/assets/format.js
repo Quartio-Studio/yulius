@@ -106,14 +106,6 @@ export function utcOffset(minutes) {
   return `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
 }
 
-/** Usage window label: 300 → "5 h window", 10080 → "7 d window". */
-export function windowLabel(minutes) {
-  if (!minutes) return '';
-  if (minutes % 1440 === 0) return `${minutes / 1440} d window`;
-  if (minutes % 60 === 0) return `${minutes / 60} h window`;
-  return `${minutes} min window`;
-}
-
 const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 /** Validate a 5-field cron expression syntactically (the server is authoritative). */

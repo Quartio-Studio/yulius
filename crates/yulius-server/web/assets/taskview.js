@@ -4,7 +4,7 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder, openMenu, statusMark } from './dom.js';
 import { createTerminalView } from './terminal.js';
-import { statusInfo, harnessInfo, isLive, allows, taskActions, endedMessage } from './status.js';
+import { statusInfo, isLive, allows, taskActions, endedMessage } from './status.js';
 import { openTaskMenu, continueTask } from './actions.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
@@ -96,7 +96,6 @@ export function mountTaskView(ctx, sandbox, task) {
   function renderStrip() {
     const steps = current.steps || { done: 0, total: 0, current: null };
     const info = statusInfo(current);
-    const hi = harnessInfo(current.harness);
     const total = steps.total || 0;
     const done = steps.done || 0;
     let n = total ? Math.min(total, done + (steps.current ? 1 : 0)) : 0;

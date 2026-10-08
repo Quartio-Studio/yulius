@@ -112,9 +112,3 @@ export function taskActions(task, access) {
     delete: write && ended && task.status !== 'stopping',
   };
 }
-
-/** "C" or "X" harness glyph and display name. */
-export function harnessInfo(harness) {
-  if (harness === 'claude') return { glyph: 'C', name: 'Claude Code' };
-  return { glyph: '?', name: String(harness || 'unknown') };
-}

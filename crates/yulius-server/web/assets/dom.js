@@ -75,7 +75,6 @@ const ICONS = {
   refresh: [['path', { d: 'M20 12a8 8 0 1 1-2.34-5.66' }], ['path', { d: 'M20 4v5h-5' }]],
   external: [['path', { d: 'M14 4h6v6M10 14L20 4M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5' }]],
   pulse: [['path', { d: 'M3 12h4l3-7 4 14 3-7h4' }]],
-  sidebar: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M9 4v16' }]],
   tools: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M15 4v16' }]],
   logo: [['path', { d: BRAND.mark }]],
   /* task states (status.js): one shape per state so colour is never the only cue */
