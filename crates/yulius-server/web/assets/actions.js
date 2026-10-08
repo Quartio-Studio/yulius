@@ -82,7 +82,7 @@ export async function deleteTask(ctx, task) {
     errorToast(error, `Could not delete task #${task.number}`);
     return;
   }
-  ctx.store.removeTask(task.id);
+  ctx.store.removeTask(task.id, { byUser: true });
   toast(`Deleted #${task.number} ${task.title}`, { kind: 'ok' });
   const route = ctx.route();
   if (route && route.name === 'task' && route.number === task.number) {
@@ -95,7 +95,7 @@ export async function deleteTask(ctx, task) {
 export async function archiveTask(ctx, task) {
   const updated = await taskPost(ctx, task, 'archive', () => ctx.api.post(`/api/tasks/${enc(task.id)}/archive`));
   if (updated) {
-    ctx.store.removeTask(task.id);
+    ctx.store.removeTask(task.id, { byUser: true });
     toast(`Archived #${task.number} ${task.title}`, { kind: 'ok', action: { label: 'Undo', run: () => restoreTask(ctx, task) } });
     const route = ctx.route();
     if (route && route.name === 'task' && route.number === task.number) {

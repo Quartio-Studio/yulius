@@ -134,11 +134,12 @@ export function createStore(api) {
     emit('task', task);
   }
 
-  function removeTask(taskId) {
+  /** Drop a task from its list; `byUser` marks a removal this browser asked for (its own toast says so). */
+  function removeTask(taskId, { byUser = false } = {}) {
     for (const [sandboxId, map] of state.tasks) {
       if (map.delete(taskId)) emit('tasks', sandboxId);
     }
-    emit('task-removed', taskId);
+    emit('task-removed', { taskId, byUser });
   }
 
   /** Non-archived tasks of a sandbox, most recently updated first. */

@@ -220,9 +220,10 @@ function createApp(root, transport) {
         }
         updateTitle();
       }),
-      store.on('task-removed', (taskId) => {
+      store.on('task-removed', ({ taskId, byUser }) => {
         if (centerView && centerView.key === `task:${taskId}` && currentSandbox) {
-          toast('This task was archived or removed.', { kind: 'info' });
+          // Someone else (or another tab) removed it; your own Archive or Delete has its own toast.
+          if (!byUser) toast('This task was archived or removed.', { kind: 'info' });
           navigate(`/s/${encodeURIComponent(currentSandbox.slug)}`);
         }
       }),
