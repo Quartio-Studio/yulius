@@ -76,6 +76,7 @@ export function mountGitPage(ctx, sandbox) {
   frame.body.append(intro, body);
   let model = null;
   let showAllActivity = false;
+  let showAllNeeds = false;
   const expanded = new Set();
 
   // Only the newest load renders, and none after the page is left; delivery reads run at most
@@ -201,6 +202,13 @@ export function mountGitPage(ctx, sandbox) {
           const at = atEnv(env);
           const run = lastRun(env);
           const action = at.length && at[0].delivery.next_actions.find((a) => a.endsWith(`:${env.name}`));
+          // A deploy in progress says so (with its output) instead of offering another one.
+          const running = model.runs.find((r) => r.environment === env.name && r.state === 'running');
+          if (running) {
+            return h('div', { class: 'dl-env' }, h('span', { class: 'tone-warn' }, icon('st-working', { size: 14 })),
+              h('span', { class: 'dl-env-text' }, h('strong', null, env.name), ` · deploying, started ${ago(running.started_at)} by ${running.requested_by || 'someone'}`),
+              h('button', { type: 'button', class: 'btn btn-sm', onClick: () => openRunViewer(ctx, sb(), running.run_id, env.name) }, 'View output'));
+          }
           return h('div', { class: 'dl-env' },
             at.length ? h('span', { class: 'tone-warn' }, icon('clock', { size: 14 })) : h('span', { class: 'tone-ok' }, icon('check', { size: 14 })),
             h('span', { class: 'dl-env-text' }, h('strong', null, env.name), ' · ', at.length ? `${action.startsWith('run_env:') ? 'ready to deploy' : 'needs a check'} for ${plural(at.length, 'task')}` : run ? `verified by ${run.requested_by} ${ago(run.started_at)}` : 'nothing to check'),
@@ -209,12 +217,13 @@ export function mountGitPage(ctx, sandbox) {
               afterAction();
             } }, action.startsWith('run_env:') ? `Deploy to ${env.name}…` : `Mark ${env.name} verified…`) : null);
         }),
-        h('div', { class: 'dl-release' },
-          h('button', { type: 'button', class: 'btn btn-primary', disabled: !write || Boolean(reason), title: !write ? 'Requires write access' : reason, onClick: async () => {
+        // Release appears when there is something to release and you may do it.
+        waiting.length && write ? h('div', { class: 'dl-release' },
+          h('button', { type: 'button', class: 'btn btn-primary', disabled: Boolean(reason), title: reason, onClick: async () => {
             const result = await promote(ctx, sb(), { waiting: waiting.map((i) => ({ number: i.task ? i.task.number : '?', title: i.row.title, pr: i.row.pr })) });
             if (result) afterAction();
-          } }, waiting.length ? `Release ${plural(waiting.length, 'task')} to production…` : 'Release to production…'),
-          reason && waiting.length ? h('span', { class: 'small muted' }, reason) : null));
+          } }, `Release ${plural(waiting.length, 'task')} to production…`),
+          reason ? h('span', { class: 'small muted' }, reason) : null) : null);
     }
     return h('div', { class: 'dl-strip' }, liveCard, waitingCard);
   }
@@ -263,7 +272,7 @@ export function mountGitPage(ctx, sandbox) {
         ].filter(Boolean) });
     }
     rows.sort((a, b) => a.rank - b.rank);
-    const shown = rows.slice(0, 5);
+    const shown = showAllNeeds ? rows : rows.slice(0, 5);
     return h('section', { class: 'dl-section', 'aria-labelledby': 'dl-needs' },
       h('h2', { class: 'dl-section-title', id: 'dl-needs' }, icon('bell', { size: 14 }), 'Needs you', h('span', { class: 'tl-group-count' }, String(rows.length))),
       shown.length ? h('ul', { class: 'dl-needs' }, shown.map((r) => h('li', { class: 'dl-need' },
@@ -274,7 +283,8 @@ export function mountGitPage(ctx, sandbox) {
           h('span', { class: 'dl-need-why' }, r.text)),
         r.link ? h('a', { class: 'btn btn-sm', href: r.link.url, target: '_blank', rel: 'noopener noreferrer' }, r.link.label, icon('external', { size: 12 })) : null,
         (r.buttons || [r.button]).filter((b) => write || b.label === 'Open task').map((b) => h('button', { type: 'button', class: ['btn', 'btn-sm', b.primary && 'btn-primary'], onClick: b.run }, b.label)))))
-        : h('p', { class: 'dl-empty' }, icon('check', { size: 14 }), 'Nothing needs you.'));
+        : h('p', { class: 'dl-empty' }, icon('check', { size: 14 }), 'Nothing needs you.'),
+      rows.length > shown.length ? h('button', { type: 'button', class: 'link-btn small', onClick: () => { showAllNeeds = true; render(); } }, `Show all ${rows.length}`) : null);
   }
 
   function taskLink(item, bold) {
