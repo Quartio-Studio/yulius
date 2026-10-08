@@ -109,7 +109,8 @@ type scale, radii outside the tokens, padding/margin/gap off the spacing scale, 
 timings. It resolves `tokens.css` per theme and checks the contrast of every text/background role
 pair and of state marks and control edges, and that buttons, inputs, selects and tabs use a
 `--control-*` height (at least 24 px targets, WCAG 2.5.8). Scripts may not set fixed lengths or
-colours in inline styles, nor show requirement IDs in UI text.
+colours in inline styles, nor show requirement IDs in UI text, nor write the product name in a
+string (use `BRAND.name` from `brand.js`).
 
 ### Components
 

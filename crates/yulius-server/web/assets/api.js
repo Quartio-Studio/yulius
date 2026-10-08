@@ -3,6 +3,8 @@
 // The real transport uses window.fetch / WebSocket; ?mock=1 swaps in assets/mock.js, so
 // request building, error parsing and the WebSocket protocol code run unchanged in both.
 
+import { BRAND } from './brand.js';
+
 /** Error carrying the server's `{"error": {"code", "message"}}` and HTTP status. */
 export class ApiError extends Error {
   constructor(status, code, message) {
@@ -60,7 +62,7 @@ export function createApi(transport, { onUnauthenticated } = {}) {
       text = response.status === 204 ? '' : await response.text();
     } catch (error) {
       if (error && error.name === 'AbortError') throw new ApiError(0, 'timeout', 'The server did not answer in time.');
-      throw new ApiError(0, 'network', 'Cannot reach the Yulius server.');
+      throw new ApiError(0, 'network', `Cannot reach the ${BRAND.name} server.`);
     } finally {
       clearTimeout(timer);
     }

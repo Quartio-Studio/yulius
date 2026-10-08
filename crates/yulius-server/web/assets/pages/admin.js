@@ -7,6 +7,7 @@ import { createTerminalView } from '../terminal.js';
 import { accountUsage } from '../layout.js';
 import { pageFrame, loader, dataTable } from './common.js';
 import { recoveryCodeCard } from './auth.js';
+import { BRAND } from '../brand.js';
 
 function forbidden(ctx, what) {
   const frame = pageFrame({ title: what });
@@ -89,7 +90,7 @@ function tokenTotals(account) {
       total != null ? h('span', { class: 'muted xs' }, `in ${fmt(t.input)} · out ${fmt(t.output)} · cache ${fmt((t.cache_read || 0) + (t.cache_write || 0))}`) : null);
   };
   const rows = [row('Last 24 h', account.tokens_24h), row('Last 7 days', account.tokens_7d)].filter(Boolean);
-  return rows.length ? h('div', { class: 'stack-sm token-totals' }, h('div', { class: 'muted xs' }, 'Observed by Yulius'), rows) : null;
+  return rows.length ? h('div', { class: 'stack-sm token-totals' }, h('div', { class: 'muted xs' }, `Observed by ${BRAND.name}`), rows) : null;
 }
 
 /** Superadmin recovery code (ACC-011): status and a password-confirmed regeneration. */
@@ -168,7 +169,7 @@ export function openLoginTerminal(ctx, loginId, label, onFinish) {
 /** Instance admin: provider accounts with usage, enable/priority, re-login, add. */
 export function mountAccountsPage(ctx, route) {
   if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'AI accounts');
-  const frame = pageFrame({ title: 'AI accounts', sub: 'Claude subscriptions the agents run on; Yulius rotates between them', actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => add() }, 'Connect account')] });
+  const frame = pageFrame({ title: 'AI accounts', sub: `Claude subscriptions the agents run on; ${BRAND.name} rotates between them`, actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => add() }, 'Connect account')] });
   const host = h('div');
   frame.body.append(host, h('p', { class: 'muted xs' }, 'Rotation uses enabled Claude accounts in priority order (lower first) and switches to the next one before an account is exhausted, resuming the same session.'));
 
@@ -336,7 +337,7 @@ function manifestForm(ctx) {
   });
   return h('div', { class: 'card card-pad stack narrow' },
     h('div', { class: 'row' }, badge('not connected', 'warn')),
-    h('p', { class: 'text-2' }, 'Yulius creates a GitHub App for this instance using GitHub’s manifest flow. You confirm the app on GitHub, then install it on the repositories Yulius may manage.'),
+    h('p', { class: 'text-2' }, `${BRAND.name} creates a GitHub App for this instance using GitHub’s manifest flow. You confirm the app on GitHub, then install it on the repositories ${BRAND.name} may manage.`),
     field('Owner (organization or user)', owner),
     h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Owner kind' }, kindInputs.map((k) => h('label', null, k.input, k.label))),
     h('div', null, submit));

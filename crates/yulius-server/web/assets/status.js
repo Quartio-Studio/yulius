@@ -1,5 +1,7 @@
 // Task status presentation and permitted actions (SPEC-001 §6.1, §6.3, §7.1; SPEC-002 §6.1).
 
+import { BRAND } from './brand.js';
+
 /** Statuses with a live process or pending start. */
 export const LIVE_STATUSES = new Set(['queued', 'starting', 'running', 'switching', 'waiting_capacity', 'stopping']);
 
@@ -26,7 +28,7 @@ const ENDED_MESSAGES = {
   stopped_lost: { tone: 'warn', text: `The agent's process was lost. ${SAFE}` },
   stopped_switch_failed: { tone: 'warn', text: `Moving to another AI account failed, so the agent stopped. ${SAFE}`, accounts: true },
   stopped_switch_timeout: { tone: 'warn', text: `Moving to another AI account took too long, so the agent stopped. ${SAFE}`, accounts: true },
-  stopped_server_lost: { tone: 'warn', text: `Yulius restarted while the agent was working. ${SAFE}` },
+  stopped_server_lost: { tone: 'warn', text: `${BRAND.name} restarted while the agent was working. ${SAFE}` },
   failed_spawn_error: { tone: 'error', text: 'Claude Code could not start — usually an AI account must sign in again, or no slot is free.', accounts: true, retry: true },
   failed_start_timeout: { tone: 'error', text: 'Claude Code took too long to start — usually an AI account must sign in again, or the machine is busy.', accounts: true, retry: true },
   failed_precondition: { tone: 'error', text: 'The task could not start because the sandbox is not ready yet.', retry: true },

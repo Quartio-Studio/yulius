@@ -9,6 +9,7 @@ import { initials } from '../layout.js';
 import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from '../models.js';
 import { pageFrame } from './common.js';
 import { THEME_CHOICES, themeChoice, setThemeChoice } from '../theme.js';
+import { BRAND } from '../brand.js';
 
 function section(iconName, title, description, ...content) {
   return h('section', { class: 'settings-section' },
@@ -90,7 +91,7 @@ export function mountSettingsPage(ctx) {
     const tile = (iconName, title, description, path) => path
       ? h('a', { class: 'settings-tile', href: href(path), dataset: { route: path } }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, description)))
       : h('div', { class: 'settings-tile disabled', title: 'Open a sandbox first' }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, description)));
-    frame.body.append(section('shield', 'Administration', 'this Yulius instance',
+    frame.body.append(section('shield', 'Administration', `this ${BRAND.name} instance`,
       row('user', 'Connect an AI account', 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here', h('a', { class: 'btn btn-primary btn-sm', href: href('/admin/accounts?add=1'), dataset: { route: '/admin/accounts?add=1' } }, icon('plus', { size: 14 }), 'Connect account')),
       h('div', { class: 'settings-tiles' },
         superadmin ? tile('users', 'Users', 'Who may sign in', '/admin/users') : null,

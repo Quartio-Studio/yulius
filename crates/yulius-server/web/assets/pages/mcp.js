@@ -5,6 +5,7 @@ import { enc } from '../api.js';
 import { h, icon, badge, iconBadge, itemCard, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton } from '../dom.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
+import { BRAND } from '../brand.js';
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 /** Server names: 1–64 letters, digits, `-` or `_`; `yulius` is reserved. */
@@ -35,7 +36,7 @@ export function mountMcpPage(ctx, sandbox, route) {
     actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'Add server')],
   });
   const host = h('div');
-  frame.body.append(h('div', { class: 'toolbar' }, scopeFilter, h('span', { class: 'muted small' }, 'The Yulius tool server is always attached and not listed here.')), host);
+  frame.body.append(h('div', { class: 'toolbar' }, scopeFilter, h('span', { class: 'muted small' }, `The ${BRAND.name} tool server is always attached and not listed here.`)), host);
   let servers = [];
 
   const canManage = (server) => write && (server.scope !== 'instance' || instanceAdmin);
@@ -187,7 +188,7 @@ export function mountMcpPage(ctx, sandbox, route) {
         { label: server ? 'Save' : 'Add', kind: 'primary', run: async () => {
           const trimmed = name.value.trim();
           if (!NAME_RE.test(trimmed)) { toast('Use 1–64 letters, digits, “-” or “_” for the name.', { kind: 'warn' }); return false; }
-          if (trimmed.toLowerCase() === 'yulius') { toast('“yulius” is reserved for the built-in Yulius tool server.', { kind: 'warn' }); return false; }
+          if (trimmed.toLowerCase() === 'yulius') { toast(`“yulius” is reserved for the built-in ${BRAND.name} tool server.`, { kind: 'warn' }); return false; }
           const body = {
             name: name.value.trim(),
             transport: transport.value,

@@ -5,6 +5,7 @@ import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, placeholder, linkify } from './dom.js';
 import { taskActions, statusInfo, allows } from './status.js';
 import { relLong, dateTime } from './format.js';
+import { BRAND } from './brand.js';
 
 // ---------------------------------------------------------------- task menu
 
@@ -447,7 +448,7 @@ export async function promote(ctx, sandbox, { waiting } = {}) {
           ? h('ul', null, list.map((t) => h('li', null, h('span', { class: 'muted' }, `#${t.number}`), ` ${t.title}`, t.pr ? h('span', { class: 'muted' }, ` · PR #${t.pr.number}`) : null)))
           : h('p', { class: 'muted small' }, 'No task is waiting; commits made outside tasks may still go live.'),
         compare ? h('a', { href: compare, target: '_blank', rel: 'noopener noreferrer', class: 'small' }, `Compare ${production}…${integration} on GitHub`) : null) : null,
-      h('p', { class: 'muted small' }, 'If something breaks, undo it with a revert on GitHub; Yulius records who released what and when.')),
+      h('p', { class: 'muted small' }, `If something breaks, undo it with a revert on GitHub; ${BRAND.name} records who released what and when.`)),
     confirmLabel: list && list.length ? `Release ${list.length} task${list.length === 1 ? '' : 's'}` : 'Release',
   });
   if (!ok) return null;
@@ -507,7 +508,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
   const renderImport = async () => {
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Filter repositories…', 'aria-label': 'Filter repositories' });
     const list = h('div', { class: 'card list scroll-box' }, placeholder('Loading repositories…', 'loading'));
-    setChildren(content, search, list, h('p', { class: 'muted xs' }, 'Importing needs admin or maintain permission on the repository, which must belong to the instance owner. Yulius clones it and checks the documentation format; a sandbox that does not follow it gets a preparation task first.'));
+    setChildren(content, search, list, h('p', { class: 'muted xs' }, `Importing needs admin or maintain permission on the repository, which must belong to the instance owner. ${BRAND.name} clones it and checks the documentation format; a sandbox that does not follow it gets a preparation task first.`));
     const draw = () => {
       if (!repos) return;
       const q = search.value.trim().toLowerCase();
@@ -545,7 +546,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
       field('Repository name', nameInput, 'Created under the instance’s GitHub owner.'), nameError,
       field('Description', descInput),
       h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Template'), templateList),
-      h('p', { class: 'muted xs' }, 'Instance administrators only. Yulius creates a private GitHub repository, pushes the template to main and dev, adds rulesets requiring pull requests and opens the new tab.'));
+      h('p', { class: 'muted xs' }, `Instance administrators only. ${BRAND.name} creates a private GitHub repository, pushes the template to main and dev, adds rulesets requiring pull requests and opens the new tab.`));
     if (!templates) {
       try { templates = await ctx.api.get('/api/templates'); } catch (error) { setChildren(templateList, placeholder(error.message, 'error')); return; }
     }
@@ -588,8 +589,8 @@ export function openSandboxDialog(ctx, mode = 'import') {
 /** Remove a sandbox from Yulius; the GitHub repository is untouched (PRJ-009). */
 export async function confirmRemoveSandbox(ctx, sandbox) {
   const ok = await confirmDialog({
-    title: `Remove ${sandbox.name} from Yulius?`,
-    message: 'Live and queued tasks are stopped. The GitHub repository, the server’s clone and the task records are kept; the sandbox disappears from Yulius for everyone.',
+    title: `Remove ${sandbox.name} from ${BRAND.name}?`,
+    message: `Live and queued tasks are stopped. The GitHub repository, the server’s clone and the task records are kept; the sandbox disappears from ${BRAND.name} for everyone.`,
     typeToConfirm: sandbox.name,
     confirmLabel: 'Remove sandbox',
     danger: true,

@@ -349,6 +349,24 @@ def brand_errors(index_html, brand_js, tokens_css, label=INDEX):
     return errors
 
 
+def brand_name(brand_js):
+    m = re.search(r"""name\s*:\s*(['"])(.*?)\1""", brand_js)
+    if not m:
+        raise ValueError(f"{BRAND}: BRAND.name not found")
+    return m[2]
+
+
+def brand_name_errors(js, name, label="web script"):
+    """User-visible strings take the product name from BRAND.name, so a rebrand reaches them all."""
+    errors = []
+    pattern = re.compile(r"""(['"`])(?:(?!\1).)*?(?<![\w-])""" + re.escape(name) + r"""(?![\w-])(?:(?!\1).)*?\1""")
+    js = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), js, flags=re.S)
+    for number, line in enumerate(js.splitlines(), 1):
+        if not line.lstrip().startswith("//") and pattern.search(line):
+            errors.append(f"{label}:{number}: the product name in a string; use BRAND.name (brand.js)")
+    return errors
+
+
 def sync_brand():
     """Rewrite index.html's brand parts from brand.js and tokens.css."""
     path = ROOT / INDEX
@@ -379,6 +397,8 @@ def check():
         if "vendor" not in path.parts:
             errors.extend(copy_errors(path.read_text(), str(path.relative_to(ROOT))))
             errors.extend(inline_style_errors(path.read_text(), str(path.relative_to(ROOT))))
+            if path.name not in ("brand.js", "mock.js"):
+                errors.extend(brand_name_errors(path.read_text(), brand_name((ROOT / BRAND).read_text()), str(path.relative_to(ROOT))))
     errors.extend(contrast_errors((ROOT / TOKENS).read_text()))
     errors.extend(brand_errors((ROOT / INDEX).read_text(), (ROOT / BRAND).read_text(), (ROOT / TOKENS).read_text()))
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]

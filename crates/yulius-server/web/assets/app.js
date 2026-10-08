@@ -80,7 +80,7 @@ function createApp(root, transport) {
   // ------------------------------------------------------------ boot
 
   async function start() {
-    setChildren(root, h('div', { class: 'auth' }, placeholder('Loading Yulius…', 'loading')));
+    setChildren(root, h('div', { class: 'auth' }, placeholder(`Loading ${BRAND.name}…`, 'loading')));
     let setup;
     try {
       setup = await api.get('/api/setup/status', { allow401: true });

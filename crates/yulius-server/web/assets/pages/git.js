@@ -13,6 +13,7 @@ import { allows, taskInfo } from '../status.js';
 import { href } from '../router.js';
 import { openDeliveryDialog, runEnvironment, confirmEnvironment, promote, notesBanner, openRunViewer, mergeTask, openPrDialog } from '../actions.js';
 import { pageFrame } from './common.js';
+import { BRAND } from '../brand.js';
 
 const LIVE_LIMIT = 5;
 const ACTIVITY_LIMIT = 8;
@@ -137,7 +138,7 @@ export function mountGitPage(ctx, sandbox) {
     const lastRun = (env) => model.runs.find((r) => r.environment === env.name && r.state === 'succeeded');
     const liveCard = h('section', { class: 'dl-card', 'aria-label': 'Live in production' },
       h('h2', { class: 'dl-eyebrow' }, icon('globe', { size: 14 }), `Live in production · ${prod}`),
-      live.length ? h('p', { class: 'dl-big' }, plural(live.length, 'task'), h('span', { class: 'muted' }, ' went live through Yulius')) : h('p', { class: 'dl-big muted' }, 'No task has gone live through Yulius yet'),
+      live.length ? h('p', { class: 'dl-big' }, plural(live.length, 'task'), h('span', { class: 'muted' }, ` went live through ${BRAND.name}`)) : h('p', { class: 'dl-big muted' }, `No task has gone live through ${BRAND.name} yet`),
       live.length ? h('p', { class: 'small text-2 ellipsis' }, titles(live)) : null,
       envs.production.map((env) => {
         const run = lastRun(env);
@@ -152,7 +153,7 @@ export function mountGitPage(ctx, sandbox) {
       waitingCard = h('section', { class: 'dl-card', 'aria-label': 'Waiting to go live' },
         h('h2', { class: 'dl-eyebrow' }, icon('zap', { size: 14 }), 'Waiting to go live'),
         h('p', { class: 'dl-big' }, 'Goes live automatically after each merge'),
-        h('p', { class: 'small muted' }, `${prod} moves forward to ${int} on every merge through Yulius; nothing waits for a release.`));
+        h('p', { class: 'small muted' }, `${prod} moves forward to ${int} on every merge through ${BRAND.name}; nothing waits for a release.`));
     } else {
       const ready = waiting.filter((i) => i.delivery && (i.delivery.next_actions || []).includes('promote'));
       const blockedRelease = waiting.find((i) => i.delivery && (i.delivery.blocked || []).some((b) => b.action === 'promote'));
@@ -406,7 +407,7 @@ async function openProfileEditor(ctx, sandbox) {
     wide: true,
     body: h('div', { class: 'stack' },
       h('div', { class: 'form-grid' }, field('Preset', preset), field('Integration branch', integration), field('Production branch', production), field('Merge method', merge), field('Promotion', promoteSel)),
-      h('label', { class: 'check' }, autoPromote, h('span', null, 'Promote automatically after a merge through Yulius (continuous, e.g. Studio)')),
+      h('label', { class: 'check' }, autoPromote, h('span', null, `Promote automatically after a merge through ${BRAND.name} (continuous, e.g. Studio)`)),
       h('label', { class: 'check' }, requireChecks, h('span', null, 'Merges wait for green checks')),
       h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Environments'), envHost),
       h('p', { class: 'muted xs' }, 'Environment commands are shell text run on the server (/bin/sh -c in the sandbox clone) when someone confirms a run. Every reader of this sandbox can see them: keep secrets out. Changing any setting of a named preset makes the profile “custom”.')),

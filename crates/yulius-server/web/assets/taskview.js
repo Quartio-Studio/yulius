@@ -11,6 +11,7 @@ import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
 import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
 import { randomQuote } from './quotes.js';
+import { BRAND } from './brand.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STRIP_KEY = 'yulius.stepsOpen';
@@ -331,8 +332,8 @@ export function mountComposer(ctx, sandbox) {
         h('span', { class: 'banner-text' },
           h('strong', null, pending ? 'This sandbox needs preparation. ' : 'Preparing this sandbox. '),
           pending
-            ? 'The repository does not follow the Yulius documentation format yet. Start the preparation task to adapt it; new tasks can start once it lands.'
-            : 'A preparation task adapts the imported repository to the Yulius format; new tasks can start once it lands.',
+            ? `The repository does not follow the ${BRAND.name} documentation format yet. Start the preparation task to adapt it; new tasks can start once it lands.`
+            : `A preparation task adapts the imported repository to the ${BRAND.name} format; new tasks can start once it lands.`,
           prep ? [' ', h('a', { href: href(`/s/${encodeURIComponent(sb.slug)}/t/${prep.number}`), dataset: { route: `/s/${encodeURIComponent(sb.slug)}/t/${prep.number}` } }, `Open #${prep.number}`)] : null),
         pending && allows(sb.access, 'write') ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: approveOnboarding }, 'Start preparation') : null,
         allows(sb.access, 'admin') ? h('button', { type: 'button', class: 'btn btn-sm', onClick: skipOnboarding }, 'Skip for now') : null));
@@ -359,7 +360,7 @@ export function mountComposer(ctx, sandbox) {
   async function skipOnboarding() {
     const ok = await confirmDialog({
       title: 'Skip sandbox preparation?',
-      message: 'Tasks may start before the repository follows the Yulius documentation format. The preparation task keeps its history.',
+      message: `Tasks may start before the repository follows the ${BRAND.name} documentation format. The preparation task keeps its history.`,
       confirmLabel: 'Skip for now',
     });
     if (!ok) return;
