@@ -39,6 +39,8 @@ p { margin: 0; }
 .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .row-wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .spacer { flex: 1; }
+.skip-link { position: fixed; top: 8px; left: 8px; z-index: var(--z-toast); padding: 8px 12px; border-radius: var(--radius); background: var(--surface-2); color: var(--text); transform: translateY(-200%); }
+.skip-link:focus { transform: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* ---------------------------------------------------------------- controls */

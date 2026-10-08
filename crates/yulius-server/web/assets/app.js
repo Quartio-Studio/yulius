@@ -206,7 +206,9 @@ function createApp(root, transport) {
     const panels = createPanelHost(ctx);
     const backdrop = h('div', { class: 'drawer-backdrop', onClick: () => document.body.classList.remove('drawer-open') });
     appEl.append(tabRow.el, sidebar.el, center, panels.panel, panels.rail);
-    setChildren(root, appEl, backdrop);
+    // First Tab stop: skip the tab row and sidebar (WCAG 2.4.1).
+    const skip = h('a', { class: 'skip-link', href: '#main', onClick: (event) => { event.preventDefault(); const target = center.querySelector('h1, input, textarea, button, a[href]'); if (target) { if (target.tagName === 'H1') target.tabIndex = -1; target.focus(); } } }, 'Skip to main content');
+    setChildren(root, skip, appEl, backdrop);
     new MutationObserver(syncDrawer).observe(appEl, { attributes: true, attributeFilter: ['class'] });
     syncDrawer();
     ctx.openNewTask = () => openNewTask();
@@ -541,6 +543,8 @@ function createApp(root, transport) {
     // slides away while a tool panel is open (its links would be invisible Tab stops).
     const collapsed = !phone.matches && Boolean(sidebarEl.closest('.app.panel-open'));
     sidebarEl.inert = (phone.matches && !open) || collapsed;
+    // While the phone drawer is open, the page under its scrim cannot take focus (Esc or the scrim closes it).
+    for (const region of document.querySelectorAll('#main, .panel, .rail')) region.inert = phone.matches && open;
     if (phone.matches && open && !wasInside) sidebarEl.querySelector('a[href], button:not([disabled])')?.focus();
     if (phone.matches && !open && wasInside && menuButton) menuButton.focus();
   }
