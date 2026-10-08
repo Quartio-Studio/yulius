@@ -9,7 +9,7 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field } from './dom.js';
 import { allows } from './status.js';
-import { token, activeTheme, onThemeChange, px } from './theme.js';
+import { token, activeTheme, onThemeChange, px, hexToken } from './theme.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
 const LANGUAGE_SERVICES = new Set(['javascript', 'typescript', 'json', 'css', 'scss', 'less', 'html']);
@@ -59,13 +59,39 @@ function loadMonaco() {
   return monacoPromise;
 }
 
+// Monaco's chrome follows the tokens (brand, theme), not VS Code's blue (VS Code theme colour ids).
 function defineEditorTheme(monaco) {
-  const well = token('--term-bg');
+  const c = (name) => hexToken(name);
+  const well = c('--term-bg');
   monaco.editor.defineTheme('yulius', {
     base: activeTheme() === 'light' ? 'vs' : 'vs-dark',
     inherit: true,
     rules: [],
-    colors: { 'editor.background': well, 'editorGutter.background': well, 'minimap.background': well },
+    colors: {
+      'editor.background': well, 'editorGutter.background': well, 'minimap.background': well,
+      'editor.foreground': c('--term-fg'),
+      'editorCursor.foreground': c('--accent'),
+      'editor.selectionBackground': c('--selection'),
+      'editor.inactiveSelectionBackground': c('--accent-soft'),
+      'editor.lineHighlightBackground': c('--surface-2'),
+      'editorLineNumber.foreground': c('--text-faint'),
+      'editorLineNumber.activeForeground': c('--text-2'),
+      focusBorder: c('--accent'),
+      'editorWidget.background': c('--surface-2'),
+      'editorWidget.border': c('--border-strong'),
+      'editorSuggestWidget.background': c('--surface-2'),
+      'editorSuggestWidget.border': c('--border-strong'),
+      'editorSuggestWidget.selectedBackground': c('--accent-soft'),
+      'list.activeSelectionBackground': c('--accent-soft'),
+      'list.hoverBackground': c('--surface-hover'),
+      'input.background': c('--surface'),
+      'input.border': c('--border-control'),
+      'inputOption.activeBorder': c('--accent'),
+      'button.background': c('--accent'),
+      'button.foreground': c('--accent-ink'),
+      'textLink.foreground': c('--accent-fg'),
+      'scrollbarSlider.background': c('--border-strong'),
+    },
   });
 }
 

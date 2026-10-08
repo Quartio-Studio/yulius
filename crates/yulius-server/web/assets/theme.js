@@ -68,6 +68,25 @@ export function onThemeChange(fn) {
   return () => window.removeEventListener('yulius:theme', listener);
 }
 
+/**
+ * A colour token as #rrggbb or #rrggbbaa (editors want hex; tokens may be var() or color-mix()):
+ * the browser resolves it on a probe element.
+ */
+export function hexToken(name) {
+  const probe = document.createElement('span');
+  probe.style.color = `var(${name})`;
+  probe.hidden = true;
+  document.body.append(probe);
+  const rgb = getComputedStyle(probe).color;
+  probe.remove();
+  // rgb()/rgba() give 0–255 channels; color(srgb …) (from color-mix) gives 0–1.
+  const parts = (rgb.match(/[\d.]+/g) || ['0', '0', '0']).map(Number);
+  const scale = rgb.startsWith('color(') ? 255 : 1;
+  const hex = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
+  const alpha = parts.length > 3 ? hex(parts[3] * 255) : 'ff';
+  return `#${hex(parts[0] * scale)}${hex(parts[1] * scale)}${hex(parts[2] * scale)}${alpha === 'ff' ? '' : alpha}`;
+}
+
 /** xterm.js colours from the tokens. */
 export function terminalColors() {
   return {
