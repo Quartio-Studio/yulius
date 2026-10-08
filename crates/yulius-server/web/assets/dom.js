@@ -179,12 +179,17 @@ function withoutClass(attrs) {
 
 const MAX_TOASTS = 5;
 
+/**
+ * The toast region. While a modal dialog is open everything outside it is inert and below its
+ * backdrop, so the region moves into the topmost open modal (and back to <body> when it closes):
+ * an error raised by a dialog's action is seen, clickable and announced.
+ */
 function toastHost() {
   let host = document.getElementById('toasts');
-  if (!host) {
-    host = h('div', { id: 'toasts', class: 'toasts', role: 'status', 'aria-live': 'polite' });
-    document.body.append(host);
-  }
+  if (!host) host = h('div', { id: 'toasts', class: 'toasts', role: 'status', 'aria-live': 'polite' });
+  const modal = [...document.querySelectorAll('dialog[open]')].filter((d) => d.matches(':modal')).pop();
+  const parent = modal || document.body;
+  if (host.parentElement !== parent) parent.append(host);
   return host;
 }
 
@@ -245,6 +250,8 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
     if (closed) return;
     closed = true;
     if (dialog.open) dialog.close();
+    const toasts = document.getElementById('toasts');
+    if (toasts && dialog.contains(toasts)) toastHost();
     dialog.remove();
     if (returnTo instanceof HTMLElement && returnTo.isConnected && returnTo !== document.body) returnTo.focus({ preventScroll: true });
     else focusMainHeading();
