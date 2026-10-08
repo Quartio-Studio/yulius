@@ -82,8 +82,8 @@ export function taskInfo(task, actionRequests) {
   const info = statusInfo(task);
   const map = actionRequests && actionRequests.get(task.sandbox_id);
   if (map && info.group !== 'ended') {
-    for (const request of map.values()) {
-      if (request.task_id === task.id) return { ...info, icon: 'globe', tone: 'attention', label: 'Needs you in the browser', group: 'needs', detail: request.reason };
+    for (const [tabId, request] of map) {
+      if (request.task_id === task.id) return { ...info, icon: 'globe', tone: 'attention', label: 'Needs you in the browser', group: 'needs', detail: request.reason, request: { ...request, tab_id: tabId } };
     }
   }
   return info;

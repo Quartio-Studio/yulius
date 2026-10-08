@@ -4,7 +4,7 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder, openMenu, statusMark } from './dom.js';
 import { createTerminalView } from './terminal.js';
-import { statusInfo, isLive, allows, taskActions, endedMessage } from './status.js';
+import { statusInfo, taskInfo, isLive, allows, taskActions, endedMessage } from './status.js';
 import { openTaskMenu, continueTask } from './actions.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
@@ -91,9 +91,32 @@ export function mountTaskView(ctx, sandbox, task) {
     h('div', { class: 'quickbar-input' }, quickInput, h('button', { type: 'button', class: 'btn btn-primary', onClick: sendQuick }, 'Send')),
     h('div', { class: 'quickbar-keys', role: 'group', 'aria-label': 'Keys' }, QUICK_KEYS.map(([label, seq]) => h('button', { type: 'button', class: 'btn', onClick: () => terminal.sendKeys(seq), 'aria-label': `Send ${label}` }, label))));
 
-  const el = h('div', { class: 'taskview' }, strip, terminal.el, quickbar);
+  // ---- attention bar (UX-03): what the agent needs from the user, with the way to do it
+  const attention = h('div', { class: 'attention-bar', role: 'status', hidden: true });
+  function renderAttention() {
+    const info = taskInfo(current, ctx.store.state.actionRequests);
+    const reply = () => (window.matchMedia('(max-width: 767px)').matches ? quickInput.focus() : terminal.focus());
+    let content = null;
+    if (info.request) {
+      content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab && ctx.openBrowserTab(sandbox, info.request.tab_id) }, 'Open browser tab')];
+    } else if (current.status === 'running' && current.activity === 'needs_attention') {
+      content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent needs your attention. '), 'Its question is in the terminal below.'),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+    } else if (current.status === 'running' && current.activity === 'waiting') {
+      content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.'),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+    }
+    attention.hidden = !content;
+    attention.classList.toggle('waiting', !info.request && current.activity === 'waiting');
+    setChildren(attention, content);
+  }
+  destroyers.push(ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderAttention(); }));
+
+  const el = h('div', { class: 'taskview' }, strip, attention, terminal.el, quickbar);
 
   function renderStrip() {
+    renderAttention();
     const steps = current.steps || { done: 0, total: 0, current: null };
     const info = statusInfo(current);
     const total = steps.total || 0;

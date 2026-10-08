@@ -196,6 +196,7 @@ function createApp(root, transport) {
     setChildren(root, appEl, backdrop);
     syncDrawer();
     ctx.openNewTask = () => openNewTask();
+    ctx.openBrowserTab = (sandbox, tabId) => openBrowserTab(sandbox, tabId);
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
     ctx.railVisible = () => panels.railVisible;
     ctx.setRailVisible = (visible) => panels.setRailVisible(visible);

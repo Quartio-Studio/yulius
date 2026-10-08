@@ -498,6 +498,10 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 /* ---------------------------------------------------------------- task view */
 
 .taskview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.attention-bar { flex: none; display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); border-left: 3px solid var(--warn); background: var(--warn-soft); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.attention-bar.waiting { border-left-color: var(--accent); background: var(--accent-soft); color: var(--accent-fg-strong); }
+.attention-bar .icon { flex: none; }
+.attention-text { flex: 1; min-width: 0; }
 .stepstrip { flex: none; background: var(--surface); border-bottom: 1px solid var(--border); }
 .stepstrip-main { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 4px 0 8px; }
 .stepstrip-toggle { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: var(--control-md); padding: 0 6px; border: 0; border-radius: var(--radius-sm); background: transparent; cursor: pointer; text-align: left; color: var(--text-2); }
