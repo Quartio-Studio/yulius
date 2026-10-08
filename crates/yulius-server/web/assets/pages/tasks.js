@@ -278,10 +278,11 @@ export function mountTasksPage(ctx, sandbox) {
 
   // Pull requests and checks: one read per sandbox, refreshed every minute and on focus.
   let pullsAt = 0;
+  const reads = new AbortController(); // leaving the page cancels its reads in flight (PERF-13)
   async function loadPulls() {
     pullsAt = Date.now();
     try {
-      const git = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`);
+      const git = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`, { signal: reads.signal });
       if (!alive) return; // the page was left while the read was in flight
       pulls = new Map((git.tasks || []).filter((t) => t.pr).map((t) => [t.task_id, t.pr]));
       render();
@@ -344,6 +345,7 @@ export function mountTasksPage(ctx, sandbox) {
   }
   return { el: frame.el, key: `tasks:${sandbox.id}`, update, destroy: () => {
     alive = false;
+    reads.abort();
     repaint.cancel();
     clearTimeout(searchTimer);
     offs.forEach((off) => off());

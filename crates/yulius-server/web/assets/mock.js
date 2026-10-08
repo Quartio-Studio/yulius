@@ -1838,7 +1838,18 @@ export function createMockTransport(params) {
   db.goOnline = () => { db.offline = false; };
   return {
     kind: 'mock',
-    fetch: (url, init) => handleFetch(db, url, init),
+    // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
+    fetch: (url, init = {}) => {
+      const work = handleFetch(db, url, init);
+      const { signal } = init;
+      if (!signal) return work;
+      return new Promise((resolve, reject) => {
+        const abort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
+        if (signal.aborted) { abort(); return; }
+        signal.addEventListener('abort', abort, { once: true });
+        work.then(resolve, reject);
+      });
+    },
     openSocket: (path) => openSocket(db, path),
   };
 }

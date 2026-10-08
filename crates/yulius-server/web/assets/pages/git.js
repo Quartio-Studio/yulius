@@ -88,6 +88,7 @@ export function mountGitPage(ctx, sandbox) {
   // four at a time and stop when the page goes away.
   let generation = 0;
   let alive = true;
+  const reads = new AbortController(); // leaving the page cancels its reads in flight (PERF-13)
   async function mapLimited(list, limit, fn) {
     const out = new Array(list.length);
     let next = 0;
@@ -107,8 +108,8 @@ export function mountGitPage(ctx, sandbox) {
     const current = () => alive && mine === generation;
     try {
       const [git, runs] = await Promise.all([
-        ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`),
-        ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/delivery/runs`).catch(() => []),
+        ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`, { signal: reads.signal }),
+        ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/delivery/runs`, { signal: reads.signal }).catch(() => []),
       ]);
       if (!current()) return;
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
@@ -121,7 +122,7 @@ export function mountGitPage(ctx, sandbox) {
         const sig = `${JSON.stringify(row)}|${runsHead}`;
         const hit = deliveryCache.get(row.task_id);
         if (hit && hit.sig === sig && now - hit.at < DELIVERY_TTL_MS) return hit.delivery;
-        const delivery = await ctx.api.get(`/api/tasks/${enc(row.task_id)}/delivery`).catch(() => null);
+        const delivery = await ctx.api.get(`/api/tasks/${enc(row.task_id)}/delivery`, { signal: reads.signal }).catch(() => null);
         if (delivery) deliveryCache.set(row.task_id, { sig, at: now, delivery });
         return delivery;
       });
@@ -391,7 +392,7 @@ export function mountGitPage(ctx, sandbox) {
   ];
   renderIntro();
   load();
-  return { el: frame.el, key: `git:${sandbox.id}`, destroy: () => { alive = false; repaint.cancel(); offs.forEach((off) => off()); } };
+  return { el: frame.el, key: `git:${sandbox.id}`, destroy: () => { alive = false; reads.abort(); repaint.cancel(); offs.forEach((off) => off()); } };
 }
 
 let presetCache = null;

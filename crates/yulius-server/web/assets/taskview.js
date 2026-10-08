@@ -169,9 +169,10 @@ export function mountTaskView(ctx, sandbox, task) {
   }
 
   let alive = true;
+  const reads = new AbortController(); // leaving the task cancels its reads in flight (PERF-13)
   async function loadDetail() {
     try {
-      const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`);
+      const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`, { signal: reads.signal });
       if (!alive) return; // the view was left while the read was in flight
       detail = fresh;
       if (detail && detail.id === current.id) {
@@ -189,7 +190,7 @@ export function mountTaskView(ctx, sandbox, task) {
   // Optional: the strip works without it (no GitHub, no branch yet), so a failed read stays quiet.
   const loadDelivery = singleFlight(async () => {
     try {
-      const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}/delivery`);
+      const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}/delivery`, { signal: reads.signal });
       if (!alive) return;
       delivery = fresh;
     } catch {
@@ -228,6 +229,7 @@ export function mountTaskView(ctx, sandbox, task) {
     get detail() { return detail; },
     destroy() {
       alive = false;
+      reads.abort();
       destroyers.forEach((off) => off());
       terminal.destroy();
     },
