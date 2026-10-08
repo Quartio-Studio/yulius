@@ -196,7 +196,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   function bannerRow(kind, text, actions = [], details = '') {
     return h('div', { class: ['term-banner-row', `term-banner-${kind}`] },
       BANNER_ICONS[kind] ? icon(BANNER_ICONS[kind], { size: 14 }) : null,
-      h('span', { class: 'term-banner-text' }, text, details ? h('span', { class: 'term-banner-details', title: 'Technical details' }, details) : null),
+      // The status code stays out of the sentence; it is in the tooltip for support.
+      h('span', { class: 'term-banner-text', title: details || null }, text),
       ...actions.map((a) => h('button', { type: 'button', class: 'btn btn-sm', onClick: a.run }, a.label)));
   }
 

@@ -36,7 +36,7 @@ export function mountAutomationsPage(ctx, sandbox) {
 
   const taskLink = (taskId) => {
     const task = taskId ? ctx.store.findTask(taskId) : null;
-    if (!task) return taskId ? h('span', { class: 'muted mono xs' }, String(taskId).slice(0, 8)) : null;
+    if (!task) return taskId ? h('span', { class: 'muted' }, 'a task') : null;
     const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`;
     return h('a', { href: href(path), dataset: { route: path } }, `#${task.number}`);
   };

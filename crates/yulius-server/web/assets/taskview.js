@@ -221,7 +221,7 @@ function pickSummary(detail) {
 // ---------------------------------------------------------------- composer
 
 const MODES = [
-  { id: 'goal', name: 'Goal', icon: 'target', description: 'The agent keeps working until the goal is met (Claude Code’s /goal).' },
+  { id: 'goal', name: 'Goal', icon: 'target', description: 'The agent keeps working until the goal is met.' },
   { id: 'prompt', name: 'Prompt', icon: 'send', description: 'Sent as a normal first message.' },
 ];
 

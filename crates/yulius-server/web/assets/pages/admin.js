@@ -309,7 +309,7 @@ function instanceSummary(ctx) {
     connected
       ? h('p', { class: 'text-2' }, 'This instance has a GitHub App. Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and connect AI accounts.')
       : h('p', { class: 'text-2' }, 'This instance has no GitHub App yet, so sandboxes cannot be imported or created.'),
-    h('p', { class: 'muted small' }, 'GitHub App setup (the manifest flow) is not available in this server version: GET /api/admin/github answered 404.'));
+    h('p', { class: 'muted small' }, 'Setting up the GitHub App from here is not available in this server version yet.'));
 }
 
 function manifestForm(ctx) {

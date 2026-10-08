@@ -411,7 +411,7 @@ export function openRunViewer(ctx, sandbox, runId, envName) {
   let polls = 0;
   let timer = null;
   const modal = openModal({
-    title: `${envName} · run ${runId}`,
+    title: `Deploy to ${envName}`,
     wide: true,
     body: h('div', { class: 'stack' }, h('div', { class: 'row-wrap' }, stateEl, exitEl, meta), output),
     actions: [{ label: 'Close' }],
@@ -423,7 +423,7 @@ export function openRunViewer(ctx, sandbox, runId, envName) {
       const run = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/delivery/runs/${enc(runId)}`);
       setChildren(stateEl, run.state || 'unknown');
       stateEl.className = `badge badge-${RUN_TONE[run.state] || 'warn'}`;
-      setChildren(meta, [run.kind, run.commit ? `at ${String(run.commit).slice(0, 8)}` : null, run.requested_by ? `by ${run.requested_by}` : null, run.started_at ? `started ${relLong(run.started_at)}` : null].filter(Boolean).join(' · '));
+      setChildren(meta, [run.kind === 'manual' ? 'Marked verified' : 'Deploy', run.commit ? `of ${String(run.commit).slice(0, 7)}` : null, run.requested_by ? `by ${run.requested_by}` : null, run.started_at ? `started ${relLong(run.started_at)}` : null].filter(Boolean).join(' · '));
       const atBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 8;
       output.textContent = run.output || (run.kind === 'manual' ? 'Manual confirmation (no command output).' : '');
       if (atBottom) output.scrollTop = output.scrollHeight;

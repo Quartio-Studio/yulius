@@ -349,7 +349,7 @@ export function mountArchivedPage(ctx) {
 
 /** CLI device approval (docs/api.md device flow): approve or deny a user code. */
 export function mountDevicePage(ctx, route) {
-  const frame = pageFrame({ title: 'CLI device approval', sub: 'authorize `yulius import` and other CLI sessions' });
+  const frame = pageFrame({ title: 'CLI device approval', sub: 'approve a command-line sign-in, such as “yulius import”' });
   const code = h('input', { placeholder: 'ABCD-EFGH', autocomplete: 'off', spellcheck: 'false', value: route.query.get('code') || route.query.get('user_code') || '', class: 'input mono code-input', 'aria-label': 'User code' });
   const result = h('div', { role: 'status' });
   const decide = (approve) => singleFlight(async () => {

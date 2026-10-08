@@ -30,6 +30,14 @@ export const EFFORTS = [
   { id: 'max', name: 'Max', description: 'Deepest reasoning, slowest' },
 ];
 
+/** A model id as people say it: "Opus 5.5" for a listed model, "Opus 4" for claude-opus-4. */
+export function modelLabel(id) {
+  const known = findModel(id);
+  if (known) return known.model.name;
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-|$)/.exec(String(id || ''));
+  return m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ''}` : String(id || 'Unknown model');
+}
+
 /** {provider, model} for a model id, or null. */
 export function findModel(id) {
   for (const provider of PROVIDERS) {
