@@ -420,9 +420,12 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 - Sandbox tab row: accessible sandboxes in user-defined order; overflow scrolls; "+" opens
   Create/Import. Right side: `Status` (opens the Status panel), the notification bell with its
   unread count (UI-020) and the tools toggle (UI-017).
-- Left sidebar (≈ 220 px): New task, navigation, then the active task list with status
-  icons (● working, ○ waiting for input, ! needs attention, ↻ switching, ■ stopped/closed, ✕ failed,
-  ⧗ queued), harness glyph (C/X), relative time, unread-message badge. Its foot shows the signed-in
+- Left sidebar (≈ 220 px): New task, navigation, then the active task list grouped by what the
+  user must do — "Needs you" (waiting for input, needs attention, a browser request), "Working"
+  (working, starting, queued, waiting for a free slot, switching account) and "Stopped" (stopped,
+  crashed, failed; collapsible). Each row shows a distinct SVG state icon, the title, unread
+  messages, and a second line in words with the step and relative time (e.g. "Working · step 4/7 ·
+  now"); the harness glyph is not shown while Claude Code is the only harness. Its foot shows the signed-in
   user (avatar and name), which opens the user menu (Archived tasks, CLI access, Sign out; admin
   entries: Users, Accounts, GitHub, Instance MCP, Instance skills).
 - Center: the selected task's terminal fills all remaining space. A one-line step strip sits above

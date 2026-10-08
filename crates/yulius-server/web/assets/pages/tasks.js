@@ -1,6 +1,6 @@
 // Tasks overview (SPEC-001 §6.2) and Archived tasks (UI-006, AC-ARC-1).
 
-import { h, setChildren, iconButton, badge, toast, errorToast } from '../dom.js';
+import { h, setChildren, iconButton, badge, toast, errorToast, statusMark } from '../dom.js';
 import { relShort, dateTime } from '../format.js';
 import { statusInfo, statusGroup, allows } from '../status.js';
 import { openTaskMenu, restoreTask } from '../actions.js';
@@ -9,7 +9,7 @@ import { pageFrame, dataTable, loader } from './common.js';
 
 function statusCell(task) {
   const info = statusInfo(task);
-  return h('span', { class: 'row nowrap' }, h('span', { class: `glyph tone-${info.tone}`, 'aria-hidden': 'true' }, info.glyph), info.label);
+  return h('span', { class: 'row nowrap' }, statusMark(info), info.label);
 }
 
 function stepsCell(task) {

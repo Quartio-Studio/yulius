@@ -24,28 +24,30 @@ export function isLive(status) {
 }
 
 /**
- * Icon, tone and label for a task's status/activity.
- * Glyphs follow SPEC-001 §6.1: ● working, ○ waiting, ! needs attention, ↻ switching,
- * ■ stopped/closed, ✕ failed, ⧗ queued.
+ * How a task's status reads: an SVG `icon` (one distinct shape per state, dom.js), a colour
+ * `tone`, a plain `label`, and the sidebar `group` — `needs` (waiting for the user), `working`
+ * (running or on its way) or `ended` (stopped or failed). `glyph` is the text fallback.
  */
 export function statusInfo(task) {
   const status = task.status;
   const activity = task.activity;
   if (status === 'running') {
-    if (activity === 'needs_attention') return { glyph: '!', tone: 'attention', label: 'Needs attention' };
-    if (activity === 'waiting') return { glyph: '○', tone: 'waiting', label: 'Waiting for input' };
-    if (activity === 'working') return { glyph: '●', tone: 'working', label: 'Working' };
-    return { glyph: '●', tone: 'running', label: 'Running' };
+    if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs attention', group: 'needs' };
+    if (activity === 'waiting') return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Waiting for your input', group: 'needs' };
+    if (activity === 'working') return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working' };
+    return { glyph: '●', icon: 'st-working', tone: 'running', label: 'Running', group: 'working' };
   }
-  if (status === 'queued') return { glyph: '⧗', tone: 'queued', label: 'Queued' };
-  if (status === 'starting') return { glyph: '⧗', tone: 'queued', label: 'Starting' };
-  if (status === 'switching') return { glyph: '↻', tone: 'switching', label: 'Switching' };
-  if (status === 'waiting_capacity') return { glyph: '!', tone: 'attention', label: 'Waiting for capacity' };
-  if (status === 'stopping') return { glyph: '■', tone: 'stopping', label: 'Stopping' };
-  if (status === 'closed') return { glyph: '■', tone: 'closed', label: 'Closed' };
-  if (status in STOP_LABELS) return { glyph: '■', tone: status === 'stopped_cancelled' ? 'stopped' : 'stopped-abnormal', label: STOP_LABELS[status] };
-  if (status in FAIL_LABELS) return { glyph: '✕', tone: 'failed', label: FAIL_LABELS[status] };
-  return { glyph: '?', tone: 'stopped', label: `Unknown (${status})` };
+  if (status === 'queued') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Queued', group: 'working' };
+  if (status === 'starting') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Starting', group: 'working' };
+  if (status === 'switching') return { glyph: '↻', icon: 'refresh', tone: 'switching', label: 'Switching account', group: 'working' };
+  // Nothing for the user to do: Yulius starts it when a session slot frees up.
+  if (status === 'waiting_capacity') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Waiting for a free slot', group: 'working' };
+  if (status === 'stopping') return { glyph: '■', icon: 'st-stopped', tone: 'stopping', label: 'Stopping', group: 'working' };
+  if (status === 'closed') return { glyph: '✓', icon: 'st-closed', tone: 'closed', label: 'Closed', group: 'ended' };
+  if (status === 'stopped_cancelled') return { glyph: '■', icon: 'st-stopped', tone: 'stopped', label: STOP_LABELS[status], group: 'ended' };
+  if (status in STOP_LABELS) return { glyph: '▲', icon: 'st-crashed', tone: 'stopped-abnormal', label: STOP_LABELS[status], group: 'ended' };
+  if (status in FAIL_LABELS) return { glyph: '✕', icon: 'st-failed', tone: 'failed', label: FAIL_LABELS[status], group: 'ended' };
+  return { glyph: '?', icon: 'st-stopped', tone: 'stopped', label: `Unknown (${status})`, group: 'ended' };
 }
 
 /** Coarse group used by filters: active | attention | closed | stopped | failed. */

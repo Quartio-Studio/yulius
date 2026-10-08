@@ -1,9 +1,9 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, errorToast } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
-import { statusInfo, harnessInfo, allows } from './status.js';
+import { statusInfo, allows } from './status.js';
 import { href } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
@@ -404,8 +404,7 @@ export function createSidebar(ctx) {
   const newTask = h('a', { class: 'btn btn-newtask', href: '#', dataset: { route: '/' }, title: `New task (${shortcut})`, 'aria-keyshortcuts': shortcut === '⌘⇧O' ? 'Meta+Shift+O' : 'Control+Shift+O' },
     h('span', { class: 'newtask-plus', 'aria-hidden': 'true' }, icon('plus', { size: 14 })), h('span', null, 'New task'), h('span', { class: 'newtask-key', 'aria-hidden': 'true' }, shortcut));
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sandbox' });
-  const count = h('span', null, '');
-  const list = h('div', { class: 'task-list', role: 'list', 'aria-label': 'Active tasks' });
+  const list = h('div', { class: 'task-list', 'aria-label': 'Active tasks' });
   const avatar = h('span', { class: 'avatar', 'aria-hidden': 'true' }, '?');
   const userName = h('span', { class: 'user-name' });
   const userButton = h('button', { type: 'button', class: 'user-btn', 'aria-label': 'User menu', 'aria-haspopup': 'menu', onClick: () => openUserMenu(ctx, userButton) }, avatar, userName);
@@ -413,7 +412,6 @@ export function createSidebar(ctx) {
     h('div', { class: 'sidebar-full', style: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 } },
       h('div', { class: 'sidebar-top' }, brand, newTask),
       nav,
-      h('div', { class: 'sidebar-sep' }, h('span', null, 'Active tasks'), count),
       list),
     h('div', { class: 'sidebar-foot' }, userButton),
   );
@@ -442,96 +440,149 @@ export function createSidebar(ctx) {
     }));
   }
 
+  // Active tasks (UI-005), grouped so what needs the user comes first: "Needs you", "Working",
+  // "Stopped" (collapsible). Each row says in words what is happening, not just a mark.
+  const GROUPS = [
+    { id: 'needs', name: 'Needs you' },
+    { id: 'working', name: 'Working' },
+    { id: 'ended', name: 'Stopped' },
+  ];
+  const ENDED_OPEN_KEY = 'yulius.sidebarStoppedOpen';
+  let endedOpen = readJson(ENDED_OPEN_KEY, true) !== false;
+  let shape = '';
+
+  /** Browser action requests for a task in this sandbox (the agent needs the user there). */
+  function browserRequest(task) {
+    const map = ctx.store.state.actionRequests.get(task.sandbox_id);
+    if (!map) return null;
+    for (const request of map.values()) if (request.task_id === task.id) return request;
+    return null;
+  }
+
+  /** statusInfo plus what the sidebar adds: browser requests make a task "Needs you". */
+  function rowInfo(task) {
+    const info = statusInfo(task);
+    const request = browserRequest(task);
+    if (request && info.group !== 'ended') return { ...info, icon: 'globe', tone: 'attention', label: 'Needs you in the browser', group: 'needs', detail: request.reason };
+    return info;
+  }
+
+  function subline(task, info) {
+    const parts = [info.label];
+    const steps = task.steps || {};
+    if (info.group === 'working' && task.status === 'running' && steps.total) parts.push(`step ${Math.min((steps.done || 0) + 1, steps.total)}/${steps.total}`);
+    parts.push(relShort(task.updated_at));
+    return parts.join(' · ');
+  }
+
   function rowFor(task) {
     let row = rows.get(task.id);
     if (!row) {
-      const glyph = h('span', { class: 'glyph' });
+      const mark = h('span', { class: 'task-mark' });
       const title = h('span', { class: 'task-title' });
-      const harness = h('span', { class: 'task-harness' });
-      const time = h('span', { class: 'task-time' });
       const unread = h('span', { class: 'task-unread' });
-      const meta = h('span', { class: 'task-meta' }, unread, harness, time);
-      const anchor = h('a', { class: 'task-row', role: 'listitem' }, glyph, title, meta);
+      const sub = h('span', { class: 'task-sub' });
+      const link = h('a', { class: 'task-link' }, mark, h('span', { class: 'task-text' }, h('span', { class: 'task-line' }, title, unread), sub));
       const kebab = iconButton('more', 'Task actions', (event) => {
         event.preventDefault();
         event.stopPropagation();
         openTaskMenu(ctx, kebab, row.task);
       }, { class: 'task-kebab' });
-      anchor.append(kebab);
-      anchor.addEventListener('contextmenu', (event) => {
+      const el = h('div', { class: 'task-row', role: 'listitem' }, link, kebab);
+      el.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, row.task);
       });
-      anchor.addEventListener('click', () => document.body.classList.remove('drawer-open'));
-      row = { anchor, glyph, title, harness, time, unread, task };
+      link.addEventListener('click', () => document.body.classList.remove('drawer-open'));
+      row = { el, link, mark, title, unread, sub, task };
       rows.set(task.id, row);
     }
     row.task = task;
-    const info = statusInfo(task);
-    const hi = harnessInfo(task.harness);
+    paintRow(row);
+    return row;
+  }
+
+  function paintRow(row) {
+    const task = row.task;
+    const info = rowInfo(task);
+    row.info = info;
     const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`;
     const active = route && route.name === 'task' && route.number === task.number;
-    row.anchor.href = href(path);
-    row.anchor.dataset.route = path;
-    row.anchor.classList.toggle('active', Boolean(active));
-    row.anchor.setAttribute('aria-current', active ? 'page' : 'false');
-    row.anchor.title = `#${task.number} ${task.title} — ${info.label} · ${hi.name}${task.branch ? ` · ${task.branch}` : ''}`;
-    row.glyph.className = `glyph tone-${info.tone}`;
-    row.glyph.textContent = info.glyph;
-    row.glyph.setAttribute('aria-label', info.label);
-    row.glyph.setAttribute('role', 'img');
+    row.link.href = href(path);
+    row.link.dataset.route = path;
+    row.link.setAttribute('aria-current', active ? 'page' : 'false');
+    row.el.classList.toggle('active', Boolean(active));
+    row.el.dataset.group = info.group;
+    row.link.title = `#${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${dateTime(task.updated_at)}`;
+    setChildren(row.mark, statusMark(info));
     row.title.textContent = task.title || `Task #${task.number}`;
-    row.harness.textContent = hi.glyph;
-    row.harness.className = `task-harness ${task.harness}`;
-    row.harness.title = hi.name;
-    row.time.textContent = relShort(task.updated_at);
-    row.time.title = dateTime(task.updated_at);
+    row.sub.textContent = subline(task, info);
+    row.sub.className = `task-sub tone-text-${info.group === 'needs' ? info.tone : 'muted'}`;
     row.unread.hidden = !task.unread_messages;
     row.unread.textContent = task.unread_messages ? String(task.unread_messages) : '';
     row.unread.title = task.unread_messages ? `${task.unread_messages} unread messages` : '';
-    return row;
+  }
+
+  function groupHead(group, size) {
+    const label = [h('span', { class: 'task-group-name' }, group.name), h('span', { class: 'task-group-count' }, String(size))];
+    if (group.id !== 'ended') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label);
+    return h('button', { type: 'button', class: ['task-group-head', 'group-ended'], 'aria-expanded': String(endedOpen), onClick: () => {
+      endedOpen = !endedOpen;
+      writeJson(ENDED_OPEN_KEY, endedOpen);
+      shape = '';
+      renderTasks();
+    } }, icon(endedOpen ? 'down' : 'right', { size: 12 }), label);
   }
 
   function renderTasks() {
     if (!sandbox) {
+      shape = '';
       setChildren(list, h('div', { class: 'placeholder' }, 'No sandbox selected.'));
-      count.textContent = '';
       return;
     }
     const all = ctx.store.tasksOf(sandbox.id);
     if (all === null) {
+      shape = '';
       setChildren(list, h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
       return;
     }
     // A task the user left normally is done for now: it stays under Tasks (with Continue) but
     // leaves the Active list (HRN-002).
     const tasks = all.filter((task) => task.status !== 'closed');
-    count.textContent = tasks.length ? String(tasks.length) : '';
     if (tasks.length === 0) {
       rows.clear();
+      shape = '';
       setChildren(list, h('div', { class: 'placeholder small' }, 'No active tasks. Start one with “New task”.'));
       return;
     }
     const seen = new Set();
-    const ordered = tasks.map((task) => { seen.add(task.id); return rowFor(task); });
-    for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
-    // Reorder only when needed so focus is not lost on every update.
-    const current = [...list.children];
-    if (current.length !== ordered.length || ordered.some((row, i) => current[i] !== row.anchor)) {
-      setChildren(list, ordered.map((row) => row.anchor));
+    const grouped = new Map(GROUPS.map((g) => [g.id, []]));
+    for (const task of tasks) {
+      seen.add(task.id);
+      const row = rowFor(task);
+      grouped.get(row.info.group).push(row);
     }
+    for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
+    // Rebuild only when the grouping or order changed, so focus is not lost on every update.
+    const next = GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${grouped.get(g.id).map((r) => r.task.id).join(',')}`).join('|');
+    if (next === shape) return;
+    shape = next;
+    setChildren(list, GROUPS.filter((g) => grouped.get(g.id).length).map((g) => h('section', { class: ['task-group', `group-${g.id}`], 'aria-label': g.name },
+      groupHead(g, grouped.get(g.id).length),
+      g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, grouped.get(g.id).map((r) => r.el)))));
   }
 
   ctx.store.on('tasks', (sandboxId) => { if (sandbox && sandboxId === sandbox.id) renderTasks(); });
+  ctx.store.on('browser-action', (event) => { if (sandbox && event.sandbox_id === sandbox.id) renderTasks(); });
   // Refresh relative times twice a minute (single bounded timer).
   setInterval(() => {
-    for (const row of rows.values()) row.time.textContent = relShort(row.task.updated_at);
+    for (const row of rows.values()) row.sub.textContent = subline(row.task, row.info);
   }, 30000);
 
   return {
     el,
     update(nextRoute, nextSandbox) {
-      if (!nextSandbox || !sandbox || nextSandbox.id !== sandbox.id) rows.clear();
+      if (!nextSandbox || !sandbox || nextSandbox.id !== sandbox.id) { rows.clear(); shape = ''; }
       route = nextRoute;
       sandbox = nextSandbox;
       renderUser();

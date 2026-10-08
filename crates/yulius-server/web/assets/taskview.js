@@ -2,7 +2,7 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder, openMenu } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, field, confirmDialog, placeholder, openMenu, statusMark } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { statusInfo, harnessInfo, isLive, allows, taskActions } from './status.js';
 import { openTaskMenu, continueTask } from './actions.js';
@@ -108,9 +108,8 @@ export function mountTaskView(ctx, sandbox, task) {
     progress.setAttribute('aria-label', `${done} of ${total} steps done`);
     progress.hidden = !total;
     setChildren(statusEl,
-      h('span', { class: `glyph tone-${info.tone}`, 'aria-hidden': 'true' }, info.glyph),
+      statusMark(info),
       h('span', null, info.label),
-      h('span', { class: `task-harness ${current.harness}`, title: hi.name }, hi.glyph),
       current.mode === 'goal' ? h('span', { class: 'chip', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       current.account_label ? h('span', { class: 'muted xs' }, current.account_label) : null);
   }

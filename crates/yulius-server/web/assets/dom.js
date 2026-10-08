@@ -76,6 +76,14 @@ const ICONS = {
   sidebar: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M9 4v16' }]],
   tools: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M15 4v16' }]],
   logo: [['path', { d: 'M6.75 6L12 12.75 17.25 6M12 12.75v6' }]],
+  /* task states (status.js): one shape per state so colour is never the only cue */
+  'st-working': [['circle', { cx: 12, cy: 12, r: 6, fill: 'currentColor', stroke: 'none' }]],
+  'st-input': [['path', { d: 'M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4 3.5V16h0.5A2.5 2.5 0 0 1 5 13.5z' }]],
+  'st-attention': [['circle', { cx: 12, cy: 12, r: 8.5 }], ['path', { d: 'M12 7.5v5.5' }], ['circle', { cx: 12, cy: 16.2, r: 1.1, fill: 'currentColor', stroke: 'none' }]],
+  'st-stopped': [['rect', { x: 7, y: 7, width: 10, height: 10, rx: 2, fill: 'currentColor', stroke: 'none' }]],
+  'st-crashed': [['path', { d: 'M12 4l9 15.5H3z' }], ['path', { d: 'M12 10v4.2' }], ['circle', { cx: 12, cy: 17, r: 1, fill: 'currentColor', stroke: 'none' }]],
+  'st-failed': [['circle', { cx: 12, cy: 12, r: 8.5 }], ['path', { d: 'M9 9l6 6M15 9l-6 6' }]],
+  'st-closed': [['circle', { cx: 12, cy: 12, r: 8.5 }], ['path', { d: 'M8.5 12.2l2.4 2.4 4.6-5' }]],
   tasks: [['path', { d: 'M9 6h11M9 12h11M9 18h11' }], ['path', { d: 'M3.5 6l1.2 1.2L7 5M3.5 12l1.2 1.2L7 11M3.5 18l1.2 1.2L7 17' }]],
   branch: [['circle', { cx: 6, cy: 5.5, r: 2.2 }], ['circle', { cx: 6, cy: 18.5, r: 2.2 }], ['circle', { cx: 18, cy: 8, r: 2.2 }], ['path', { d: 'M6 7.7v8.6M18 10.2c0 4-4.5 3.8-9.8 6.6' }]],
   zap: [['path', { d: 'M13 2.5L4.5 13.5H12l-1 8 8.5-11H12z' }]],
@@ -374,6 +382,11 @@ export function field(label, control, hint) {
 export function toggle({ checked, onChange, label, disabled }) {
   const input = h('input', { type: 'checkbox', class: 'switch-input', checked, disabled, 'aria-label': label, onChange: (e) => onChange(e.target.checked, input) });
   return h('span', { class: 'switch' }, input, h('span', { class: 'switch-track', 'aria-hidden': 'true' }));
+}
+
+/** A task state mark: the state's SVG icon in its tone (statusInfo from status.js). */
+export function statusMark(info, size = 14) {
+  return h('span', { class: ['glyph', `tone-${info.tone}`], role: 'img', 'aria-label': info.label, title: info.label }, icon(info.icon, { size }));
 }
 
 /** Small colored badge. */
