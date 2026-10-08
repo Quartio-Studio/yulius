@@ -12,10 +12,19 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 - Serve `assets/**` at `/assets/...` with the usual content types (`.js` and `.mjs` as
   `text/javascript`, `.css`, `.png`). Assets are referenced by absolute `/assets/` paths.
 - Nothing is loaded from other origins: no CDNs, remote fonts or external images (a brand font is
-  self-hosted under `assets/fonts/`). A strict
-  `Content-Security-Policy` such as `default-src 'self'; img-src 'self' data: blob:;
-  style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-src 'self'` works (inline
-  `style` attributes are used for dynamic widths; there are no inline scripts).
+  self-hosted under `assets/fonts/`). A strict `Content-Security-Policy` works:
+
+  ```
+  default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+  img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:;
+  connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'
+  ```
+
+  There are no inline scripts (`boot.js` is a file). Inline `style` attributes carry computed values
+  only (bar widths, indentation). The editor (Monaco) needs `font-src data:` for its icon font and
+  `worker-src blob:` for its language workers. Images inside mirrored browser pages load only when
+  the browser's resource endpoint serves them (same origin); allowing `img-src https:` instead
+  would let mirrored pages load remote images. The server does not send this header yet.
 - `README.md` files are documentation and need not be embedded.
 
 ## Layout of the code
