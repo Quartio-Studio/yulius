@@ -551,6 +551,8 @@ body.resizing iframe { pointer-events: none; }
 .lab-fails .icon, .lab-ok .icon { flex: none; margin-top: 2px; }
 .lab-ok { color: var(--ok-fg); }
 .lab-note { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.lab-perceptual > summary { color: var(--warn-fg); }
+.lab-misses { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 0; padding-left: 16px; color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .lab-actions { display: flex; gap: 8px; margin-top: 4px; }
 
 /* keyboard shortcut sheet (UI-029) */

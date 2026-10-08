@@ -7,7 +7,7 @@
 // shipped fonts are self-hosted (web/README.md, "Brand typeface").
 
 import { h, icon, setChildren, toast, keepFocus, openModal, invalid } from './dom.js';
-import { applyTheme, activeTheme, setThemeChoice } from './theme.js';
+import { applyTheme, activeTheme, setThemeChoice, onThemeChange } from './theme.js';
 import { readJson, writeJson } from './store.js';
 import { PROPOSALS } from './lab-proposals.js';
 
@@ -56,6 +56,27 @@ function luminance(hex) {
 function contrast(a, b) {
   const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p);
   return (x + 0.05) / (y + 0.05);
+}
+
+/**
+ * APCA lightness contrast (0.0.98G-4g, the WCAG 3 draft's perceptual measure) of text on a
+ * background, as an absolute Lc. Unlike the WCAG 2 ratio it tracks how dark themes are seen.
+ */
+function apca(text, background) {
+  const y = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+    const v = 0.2126729 * r ** 2.4 + 0.7151522 * g ** 2.4 + 0.072175 * b ** 2.4;
+    return v < 0.022 ? v + (0.022 - v) ** 1.414 : v;
+  };
+  const yt = y(text);
+  const yb = y(background);
+  if (Math.abs(yb - yt) < 0.0005) return 0;
+  if (yb > yt) {
+    const s = (yb ** 0.56 - yt ** 0.57) * 1.14;
+    return s < 0.1 ? 0 : (s - 0.027) * 100;
+  }
+  const s = (yb ** 0.65 - yt ** 0.62) * 1.14;
+  return s > -0.1 ? 0 : -(s + 0.027) * 100;
 }
 
 const clamp = (v, low, high) => Math.min(high, Math.max(low, v));
@@ -205,16 +226,17 @@ function hueNotes(s) {
 }
 
 // The main pairs of scripts/check_repository.py CONTRAST_PAIRS: [text or edge, background (layers
-// over the last, left to right), minimum ratio].
+// over the last, left to right), WCAG 2 minimum (a must), APCA Lc target (perceptual, advisory):
+// body text 90, secondary 75, meta 60, faint and control edges 45, links 70, semibold labels 60].
 const PAIRS = [
-  ['--text', '--surface', 4.5], ['--text', '--bg', 4.5], ['--text-2', '--surface', 4.5],
-  ['--muted', '--surface', 4.5], ['--muted', '--bg', 4.5], ['--muted', '--surface-hover', 4.5], ['--muted', '--surface-3', 4.5],
-  ['--text-faint', '--surface', 4.5], ['--accent-fg', '--surface', 4.5], ['--accent-fg', '--bg', 4.5],
-  ['--accent-fg', '--accent-soft/--surface', 4.5], ['--accent-ink', '--accent', 4.5], ['--accent-ink', '--accent-hover', 4.5],
-  ['--ok-fg', '--surface', 4.5], ['--warn-fg', '--surface', 4.5], ['--danger-fg', '--surface', 4.5], ['--info-fg', '--surface', 4.5],
-  ['--warn-fg', '--warn-soft/--surface', 4.5], ['--danger-fg', '--danger-soft/--surface', 4.5], ['--info-fg', '--info-soft/--surface', 4.5],
-  ['--term-fg', '--term-bg', 4.5], ['--ansi-bright-black', '--term-bg', 4.5],
-  ['--border-control', '--surface', 3], ['--accent', '--bg', 3],
+  ['--text', '--surface', 4.5, 90], ['--text', '--bg', 4.5, 90], ['--text-2', '--surface', 4.5, 75],
+  ['--muted', '--surface', 4.5, 60], ['--muted', '--bg', 4.5, 60], ['--muted', '--surface-hover', 4.5, 60], ['--muted', '--surface-3', 4.5, 60],
+  ['--text-faint', '--surface', 4.5, 45], ['--accent-fg', '--surface', 4.5, 70], ['--accent-fg', '--bg', 4.5, 70],
+  ['--accent-fg', '--accent-soft/--surface', 4.5, 60], ['--accent-ink', '--accent', 4.5, 60], ['--accent-ink', '--accent-hover', 4.5, 60],
+  ['--ok-fg', '--surface', 4.5, 60], ['--warn-fg', '--surface', 4.5, 60], ['--danger-fg', '--surface', 4.5, 60], ['--info-fg', '--surface', 4.5, 60],
+  ['--warn-fg', '--warn-soft/--surface', 4.5, null], ['--danger-fg', '--danger-soft/--surface', 4.5, null], ['--info-fg', '--info-soft/--surface', 4.5, null],
+  ['--term-fg', '--term-bg', 4.5, 90], ['--ansi-bright-black', '--term-bg', 4.5, 45],
+  ['--border-control', '--surface', 3, 45], ['--accent', '--bg', 3, null],
 ];
 
 /** A computed colour (rgb(), rgba() or color(srgb …)) as [r, g, b] 0–255 and alpha 0–1. */
@@ -229,6 +251,7 @@ const toHex = (c) => `#${c.slice(0, 3).map((v) => Math.round(clamp(v, 0, 255)).t
 /** Every pair, measured as the browser resolves the tokens now, in a dark and a light island. */
 function measure() {
   const failures = [];
+  const perceptual = [];
   for (const theme of ['dark', 'light']) {
     const island = h('div', { 'data-theme': theme, hidden: true });
     document.body.append(island);
@@ -240,16 +263,20 @@ function measure() {
       probe.remove();
       return colour;
     };
-    for (const [fg, bg, min] of PAIRS) {
+    for (const [fg, bg, min, target] of PAIRS) {
       const layers = bg.split('/');
       let back = read(layers[layers.length - 1]);
       for (const layer of layers.slice(0, -1).reverse()) back = over(read(layer), back);
-      const ratio = contrast(toHex(over(read(fg), back)), toHex(back));
-      if (ratio < min - 0.005) failures.push(`${theme === 'dark' ? 'Dark' : 'Light'}: ${fg} on ${bg.replace('/', ' over ')} is ${ratio.toFixed(2)}:1 (needs ${min}:1)`);
+      const text = toHex(over(read(fg), back));
+      const ratio = contrast(text, toHex(back));
+      const where = `${theme === 'dark' ? 'Dark' : 'Light'}: ${fg} on ${bg.replace('/', ' over ')}`;
+      if (ratio < min - 0.005) failures.push(`${where} is ${ratio.toFixed(2)}:1 (needs ${min}:1)`);
+      const lc = apca(text, toHex(back));
+      if (target && lc < target - 0.5) perceptual.push(`${where}: Lc ${lc.toFixed(0)} (target ${target})`);
     }
     island.remove();
   }
-  return failures;
+  return { failures, perceptual };
 }
 
 /** A token's value in a theme, as declared (var() resolved), read from an island. */
@@ -280,6 +307,7 @@ function cleanProposal(raw) {
   const slug = String(raw.id || raw.name || 'proposal').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'proposal';
   const out = { id: PROPOSALS.some((p) => p.id === slug) ? `pasted-${slug}` : slug, name: String(raw.name || slug), note: String(raw.note || ''), fonts: {}, shared: {}, light: {}, dark: {}, pasted: true };
   for (const key of ['text', 'display', 'mono']) if (raw.fonts && typeof raw.fonts[key] === 'string') out.fonts[key] = raw.fonts[key].slice(0, 60);
+  for (const [part, theme] of Object.entries(raw.islands || {})) if (ISLANDS[part] && (theme === 'dark' || theme === 'light')) (out.islands ||= {})[part] = theme; // sidebar, well
   for (const part of ['shared', 'light', 'dark']) {
     for (const [name, value] of Object.entries(raw[part] || {})) {
       if (!TOKEN_NAME.test(name)) throw new Error(`${part}: “${name}” is not a token name (--like-this).`);
@@ -290,6 +318,10 @@ function cleanProposal(raw) {
   if (!Object.keys(out.shared).length && !Object.keys(out.light).length && !Object.keys(out.dark).length) throw new Error('No tokens: put them under shared, light and dark.');
   return out;
 }
+
+// Parts of the app a proposal may turn into a theme island: an ink sidebar on a light page, or a
+// dark work area (terminals and the editor) — they read their colours where they sit.
+const ISLANDS = { sidebar: '.sidebar', well: '.term, .ed-main' };
 
 const proposalCss = (p) => [block(':root, [data-theme]', p.shared || {}), block(':root, [data-theme="dark"]', p.dark || {}), block('[data-theme="light"]', p.light || {})].join('\n');
 
@@ -338,8 +370,43 @@ export function startLab(value) {
   const sameAs = (id) => mode.kind === 'direction' && JSON.stringify(DIRECTIONS.find((d) => d.id === id).s) === JSON.stringify(mode.settings);
   const urlValue = () => (mode.kind === 'proposal' ? mode.id : mode.kind === 'direction' ? (mode.id && sameAs(mode.id) ? mode.id : encode(mode.settings)) : '1');
 
+  /** Marks the parts the proposal turns into islands (for the theme in view); true if any was new. */
+  function ensureIslands() {
+    const p = proposal();
+    if (!p || !p.islands) return false;
+    const theme = activeTheme();
+    let added = false;
+    for (const [part, islandTheme] of Object.entries(p.islands)) {
+      if (!ISLANDS[part] || islandTheme === theme) continue;
+      for (const el of document.querySelectorAll(ISLANDS[part])) {
+        if (el.hasAttribute('data-lab-island')) continue;
+        el.setAttribute('data-theme', islandTheme);
+        el.setAttribute('data-lab-island', '');
+        added = true;
+      }
+    }
+    return added;
+  }
+  /** Clears every island and sets the proposal's again (after a change of proposal or theme). */
+  function applyIslands() {
+    for (const el of document.querySelectorAll('[data-lab-island]')) { el.removeAttribute('data-theme'); el.removeAttribute('data-lab-island'); }
+    ensureIslands();
+  }
+  onThemeChange(() => applyIslands());
+  // Views come and go (a task's terminal, the editor, the shell after sign-in): new parts become
+  // islands within a frame, and terminals and the editor then read their colours again.
+  let islandFrame = 0;
+  const appRoot = document.getElementById('app');
+  if (appRoot) {
+    new MutationObserver(() => {
+      if (!proposal()?.islands || islandFrame) return;
+      islandFrame = requestAnimationFrame(() => { islandFrame = 0; if (ensureIslands()) applyTheme(); });
+    }).observe(appRoot, { childList: true, subtree: true });
+  }
+
   async function apply() {
     const p = proposal();
+    applyIslands();
     if (p) style.textContent = proposalCss(p);
     else if (mode.kind === 'direction') {
       const t = tokensOf(mode.settings);
@@ -358,12 +425,15 @@ export function startLab(value) {
   function scheduleChecks() {
     cancelAnimationFrame(checkFrame);
     checkFrame = requestAnimationFrame(() => {
-      const failures = measure();
+      const { failures, perceptual } = measure();
       const notes = mode.kind === 'direction' ? hueNotes(mode.settings) : [];
       setChildren(checksHost,
         failures.length
           ? h('ul', { class: 'lab-fails' }, failures.map((f) => h('li', null, icon('warn', { size: 12 }), f)))
           : h('p', { class: 'lab-ok' }, icon('check', { size: 12 }), 'All text and control edges meet WCAG AA in both themes.'),
+        perceptual.length
+          ? h('details', { class: 'lab-perceptual' }, h('summary', null, `Perceptual contrast (APCA): ${perceptual.length} below target`), h('ul', { class: 'lab-misses' }, perceptual.map((f) => h('li', null, f))))
+          : h('p', { class: 'lab-ok' }, icon('check', { size: 12 }), 'Perceptual contrast (APCA) meets every target.'),
         notes.map((note) => h('p', { class: 'lab-note' }, note)));
     });
   }
