@@ -55,8 +55,10 @@ export function statusInfo(task) {
   const status = task.status;
   const activity = task.activity;
   if (status === 'running') {
-    if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs attention', group: 'needs' };
-    if (activity === 'waiting') return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Waiting for your input', group: 'needs' };
+    // needs_attention: blocked mid-turn (a permission prompt, a browser request, failing gates);
+    // waiting: the agent finished its turn and the next move is the user's.
+    if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs your action', group: 'needs' };
+    if (activity === 'waiting') return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
     if (activity === 'working') return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working' };
     return { glyph: '●', icon: 'st-working', tone: 'running', label: 'Running', group: 'working' };
   }
@@ -71,6 +73,23 @@ export function statusInfo(task) {
   if (status in STOP_LABELS) return { glyph: '▲', icon: 'st-crashed', tone: 'stopped-abnormal', label: STOP_LABELS[status], group: 'ended' };
   if (status in FAIL_LABELS) return { glyph: '✕', icon: 'st-failed', tone: 'failed', label: FAIL_LABELS[status], group: 'ended' };
   return { glyph: '?', icon: 'st-stopped', tone: 'stopped', label: `Unknown (${status})`, group: 'ended' };
+}
+
+/**
+ * The second line of a task row (sidebar, Tasks page): what the agent is doing, or what the user
+ * should do, in words — the reason of a browser request, the current step, or the state.
+ */
+export function activityLine(task, info = statusInfo(task)) {
+  if (info.request) return info.request.reason || 'Do something in the sandbox browser';
+  const steps = task.steps || {};
+  if (task.status === 'running') {
+    if (task.activity === 'needs_attention') return 'Approve or answer in the terminal';
+    if (task.activity === 'waiting') return steps.total && steps.done >= steps.total ? 'All steps done — review it' : 'Agent replied — your turn';
+    if (steps.total) return `Step ${Math.min((steps.done || 0) + 1, steps.total)}/${steps.total}${steps.current ? ` · ${steps.current}` : ''}`;
+    return 'Working';
+  }
+  if (info.group === 'ended' && steps.total) return `${info.label} · ${steps.done || 0}/${steps.total} steps`;
+  return info.label;
 }
 
 /**

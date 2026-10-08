@@ -3,7 +3,7 @@
 
 import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
-import { taskInfo, allows } from './status.js';
+import { taskInfo, activityLine, allows } from './status.js';
 import { href } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
@@ -474,22 +474,15 @@ export function createSidebar(ctx) {
 
   const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests);
 
-  function subline(task, info) {
-    const parts = [info.label];
-    const steps = task.steps || {};
-    if (info.group === 'working' && task.status === 'running' && steps.total) parts.push(`step ${Math.min((steps.done || 0) + 1, steps.total)}/${steps.total}`);
-    parts.push(relShort(task.updated_at));
-    return parts.join(' · ');
-  }
-
   function rowFor(task) {
     let row = rows.get(task.id);
     if (!row) {
       const mark = h('span', { class: 'task-mark' });
       const title = h('span', { class: 'task-title' });
       const unread = h('span', { class: 'task-unread' });
+      const age = h('span', { class: 'task-age' });
       const sub = h('span', { class: 'task-sub' });
-      const link = h('a', { class: 'task-link' }, mark, h('span', { class: 'task-text' }, h('span', { class: 'task-line' }, title, unread), sub));
+      const link = h('a', { class: 'task-link' }, mark, h('span', { class: 'task-text' }, h('span', { class: 'task-line' }, title, unread, age), sub));
       const kebab = iconButton('more', 'Task actions', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -501,7 +494,7 @@ export function createSidebar(ctx) {
         openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, row.task);
       });
       link.addEventListener('click', () => document.body.classList.remove('drawer-open'));
-      row = { el, link, mark, title, unread, sub, task };
+      row = { el, link, mark, title, unread, age, sub, task };
       rows.set(task.id, row);
     }
     row.task = task;
@@ -523,11 +516,13 @@ export function createSidebar(ctx) {
     row.link.title = `#${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${dateTime(task.updated_at)}`;
     setChildren(row.mark, statusMark(info));
     row.title.textContent = task.title || `Task #${task.number}`;
-    row.sub.textContent = subline(task, info);
-    row.sub.className = `task-sub tone-text-${info.group === 'needs' ? info.tone : 'muted'}`;
+    // Colour stays on the state icon; the words say what is happening or what to do.
+    row.sub.textContent = activityLine(task, info);
+    row.age.textContent = relShort(task.updated_at);
+    row.age.title = `Last change ${dateTime(task.updated_at)}`;
     row.unread.hidden = !task.unread_messages;
-    row.unread.textContent = task.unread_messages ? String(task.unread_messages) : '';
-    row.unread.title = task.unread_messages ? `${task.unread_messages} unread messages` : '';
+    setChildren(row.unread, task.unread_messages ? [icon('mail', { size: 11 }), String(task.unread_messages)] : null);
+    row.unread.title = task.unread_messages ? `${task.unread_messages} unread message${task.unread_messages === 1 ? '' : 's'} from other agents` : '';
   }
 
   function groupHead(group, size) {

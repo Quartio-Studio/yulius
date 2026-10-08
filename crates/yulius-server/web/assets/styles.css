@@ -287,11 +287,10 @@ p { margin: 0; }
   display: flex; align-items: center; gap: 6px; height: var(--control-sm); padding: 0 8px; border: 0; background: transparent;
   color: var(--muted); font: inherit; font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; text-align: left;
 }
-.task-group-head.group-needs { color: var(--warn-fg); }
+.task-group-head.group-needs > .icon, .task-group-head.group-needs .task-group-count { color: var(--warn-fg); }
 button.task-group-head { cursor: pointer; border-radius: var(--radius-sm); }
 button.task-group-head:hover { color: var(--text-2); }
 .task-group-count { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; }
-.task-group-head.group-working .icon { color: var(--ok); }
 .task-group-head.group-ended .task-group-count { margin-left: auto; }
 .task-group-head.group-ended .task-group-count + .icon { margin-left: 4px; }
 .task-row { position: relative; border-radius: var(--radius-sm); }
@@ -302,13 +301,14 @@ button.task-group-head:hover { color: var(--text-2); }
 .task-mark { display: inline-flex; flex: none; margin-top: 2px; }
 .task-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .task-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.task-age { flex: none; margin-left: auto; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-variant-numeric: tabular-nums; }
+.task-row:hover .task-age, .task-row:focus-within .task-age { visibility: hidden; }
+/* What the user must do is the point of a "Needs you" row: up to two lines, in brighter text. */
+.task-row[data-group="needs"] .task-sub { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; color: var(--text-2); }
 .task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .task-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
 .task-group.group-ended .task-title { color: var(--text-2); font-weight: 400; }
-.tone-text-attention { color: var(--warn-fg); }
-.tone-text-waiting { color: var(--accent-fg); }
-.tone-text-muted { color: var(--muted); }
-.task-unread { flex: none; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-full); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+.task-unread { flex: none; display: inline-flex; align-items: center; gap: 2px; height: 16px; padding: 0 6px; border-radius: var(--radius-full); background: var(--surface-3); color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 500; font-variant-numeric: tabular-nums; }
 .task-kebab { position: absolute; right: 4px; top: 4px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
 .task-row:hover .task-kebab, .task-row:focus-within .task-kebab { visibility: visible; }
 .task-row:hover .task-unread, .task-row:focus-within .task-unread { visibility: hidden; }
@@ -693,9 +693,8 @@ summary { cursor: pointer; }
 .tl-group-head:hover { color: var(--text); }
 .tl-group-head[aria-expanded="false"] { border-bottom: 0; }
 .tl-group-count { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
-.group-needs .tl-group-head { color: var(--warn-fg); }
-.group-needs .tl-group-head .tl-group-count { color: var(--warn-fg); }
-.group-working .tl-group-head > .icon:nth-child(2) { color: var(--ok); }
+.group-needs .tl-group-head > .icon:nth-child(2), .group-needs .tl-group-head .tl-group-count { color: var(--warn-fg); }
+.group-needs .tl-what { color: var(--text-2); }
 .tl-rows { margin: 0; padding: 0; list-style: none; }
 .tl-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 72px 20px 40px 56px; align-items: center; gap: 12px; padding: 0 8px 0 0; border-top: 1px solid var(--border); }
 .tl-row:first-child { border-top: 0; }
@@ -748,7 +747,7 @@ summary { cursor: pointer; }
   .tl-link { padding: 12px 0 12px 12px; }
   .tl-pr, .tl-avatar, .tl-time, .tl-id, .tl-branch, .tl-actions .tl-action:not(:last-child) { display: none; }
   .tl-sub-time { display: inline; }
-  .tl-step-name, .page-actions .kbd-on-accent { display: none; }
+  .page-actions .kbd-on-accent { display: none; }
   .tl-action { width: var(--control-xl); height: var(--control-xl); }
   .tl-search-key { display: none; }
 }

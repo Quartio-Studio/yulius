@@ -7,7 +7,7 @@
 
 import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
-import { statusInfo, taskInfo, allows, taskActions } from '../status.js';
+import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
 import { href, currentLocation } from '../router.js';
 import { readJson, writeJson } from '../store.js';
@@ -46,16 +46,8 @@ function groupOf(task, info) {
   return task.status === 'closed' ? 'closed' : 'stopped';
 }
 
-/** The muted second line: what is happening, in words (the step name drops out on phones). */
-function detailLine(task, info) {
-  const steps = task.steps || {};
-  const label = info.detail ? `${info.label}: ${info.detail}` : info.label;
-  if (info.group !== 'ended' && task.status === 'running' && steps.total) {
-    return [`${label} · step ${Math.min((steps.done || 0) + 1, steps.total)}/${steps.total}`, steps.current ? h('span', { class: 'tl-step-name' }, ` ${steps.current}`) : null];
-  }
-  if (info.group === 'ended' && steps.total) return `${label} · ${steps.done || 0}/${steps.total} steps`;
-  return label;
-}
+/** The second line: what is happening or what to do, in words (status.js activityLine). */
+const detailLine = (task, info) => activityLine(task, info);
 
 /** Pull request chip: number and checks, opening GitHub. Empty (not "—") when there is none. */
 function prChip(pr) {
@@ -229,7 +221,7 @@ export function mountTasksPage(ctx, sandbox) {
             task.unread_messages ? h('span', { class: 'task-unread', title: `${task.unread_messages} unread messages` }, String(task.unread_messages)) : null,
             task.origin && task.origin !== 'ui' ? h('span', { class: 'tl-origin' }, ORIGINS[task.origin] || task.origin) : null),
           h('span', { class: 'tl-sub' },
-            h('span', { class: `tone-text-${group === 'needs' ? info.tone : 'muted'}` }, detailLine(task, info)),
+            h('span', { class: 'tl-what' }, detailLine(task, info)),
             h('span', { class: 'tl-id' }, ` · #${task.number}`),
             task.branch ? h('span', { class: 'tl-branch' }, ` · ${task.branch}`) : null,
             h('span', { class: 'tl-sub-time' }, ` · ${relShort(task.updated_at)}`)))),
