@@ -1,7 +1,7 @@
 // Automations page (AUT-001..005): cron schedules with UTC offset, run history, Run now.
 
 import { enc } from '../api.js';
-import { h, badge, iconBadge, itemCard, iconButton, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, placeholder, emptyState } from '../dom.js';
+import { h, badge, iconBadge, itemCard, iconButton, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, placeholder, emptyState, invalid } from '../dom.js';
 import { relLong, dateTime, describeCron, cronValid, utcOffset } from '../format.js';
 import { allows } from '../status.js';
 import { href } from '../router.js';
@@ -151,8 +151,9 @@ export function mountAutomationsPage(ctx, sandbox) {
       actions: [
         { label: 'Cancel', value: false },
         { label: a ? 'Save' : 'Create', kind: 'primary', run: async () => {
-          if (!name.value.trim() || !prompt.value.trim()) { toast('Name and prompt are required.', { kind: 'warn' }); return false; }
-          if (!cronValid(cron.value)) { cron.focus(); toast('The cron expression needs five fields.', { kind: 'warn' }); return false; }
+          if (!name.value.trim()) return invalid(name, 'Give the automation a name.');
+          if (!cronValid(cron.value)) return invalid(cron, 'A schedule has five fields: minute, hour, day, month, weekday — for example “0 9 * * 1-5”.');
+          if (!prompt.value.trim()) return invalid(prompt, 'Say what the task should do.');
           const body = { name: name.value.trim(), cron: cron.value.trim().split(/\s+/).join(' '), utc_offset_minutes: Number(offset.value), prompt: prompt.value.trim(), workflow_id: workflow.value || null, enabled: enabled.checked };
           if (a) await ctx.api.put(`/api/automations/${enc(a.id)}`, body);
           else await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/automations`, body);

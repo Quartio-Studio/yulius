@@ -90,7 +90,9 @@ p { margin: 0; }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field-label { font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); font-weight: 500; }
 .field-hint { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--muted); }
-.field-error { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--danger); }
+.field-error { font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--danger-fg); }
+.modal-error { margin: 0 16px 12px; padding: 8px 12px; border-radius: var(--radius); background: var(--danger-soft); color: var(--danger-fg); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.field-note { font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--ok-fg); }
 .check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; line-height: var(--lh); }
 .check input { margin: 2px 0 0; accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }

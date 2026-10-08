@@ -2,7 +2,7 @@
 // sign-in (GitHub OAuth + superadmin password, ACC-005), with the superadmin recovery code
 // (ACC-002/011): shown once at setup and after a recovery; "Forgot password?" uses it.
 
-import { h, icon, field, setChildren, errorToast, toast } from '../dom.js';
+import { h, icon, field, setChildren, toast } from '../dom.js';
 import { BRAND } from '../brand.js';
 
 /** The product's mark and name (brand.js) at the top of the sign-in and setup cards. */
@@ -37,6 +37,29 @@ export function recoveryCodeCard(code, { title = 'Your recovery code', continueL
     next);
 }
 
+/**
+ * Says a too-short password and a mismatched repeat under their own fields (aria-invalid +
+ * aria-describedby, WCAG 3.3.1) instead of in one line elsewhere on the card.
+ */
+function passwordChecks(password, confirm, prefix) {
+  const passwordNote = h('span', { class: 'field-error', id: `${prefix}-password-error` });
+  const confirmNote = h('span', { class: 'field-error', id: `${prefix}-confirm-error` });
+  const check = () => {
+    const short = Boolean(password.value) && password.value.length < MIN_PASSWORD;
+    const mismatch = Boolean(confirm.value) && confirm.value !== password.value;
+    passwordNote.textContent = short ? `Use at least ${MIN_PASSWORD} characters.` : '';
+    // The error replaces the hint that says the same thing.
+    const hint = password.closest('.field')?.querySelector('.field-hint');
+    if (hint) hint.hidden = short;
+    confirmNote.textContent = mismatch ? 'The passwords do not match.' : '';
+    for (const [input, bad, note] of [[password, short, passwordNote], [confirm, mismatch, confirmNote]]) {
+      if (bad) { input.setAttribute('aria-invalid', 'true'); input.setAttribute('aria-describedby', note.id); } else { input.removeAttribute('aria-invalid'); input.removeAttribute('aria-describedby'); }
+    }
+    return !short && !mismatch && password.value.length >= MIN_PASSWORD && confirm.value === password.value;
+  };
+  return { passwordNote, confirmNote, check };
+}
+
 /** Setup wizard: token, password + confirmation, non-recoverable warning (ACC-002). */
 export function mountSetup(ctx, { onDone }) {
   const token = h('input', { class: 'input mono', type: 'text', autocomplete: 'one-time-code', spellcheck: 'false', placeholder: 'printed on the VM by `yulius serve`', autofocus: true });
@@ -45,15 +68,15 @@ export function mountSetup(ctx, { onDone }) {
   const show = h('input', { type: 'checkbox' });
   const ackRecover = h('input', { type: 'checkbox', id: 'ack-recover' });
   const ackStored = h('input', { type: 'checkbox', id: 'ack-stored' });
+  const checks = passwordChecks(password, confirm, 'setup');
   const problems = h('div', { class: 'field-error', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'btn btn-primary', disabled: true }, 'Create superadmin');
 
   const validate = () => {
-    const issues = [];
-    if (password.value && password.value.length < MIN_PASSWORD) issues.push(`Use at least ${MIN_PASSWORD} characters.`);
-    if (confirm.value && confirm.value !== password.value) issues.push('The passwords do not match.');
-    problems.textContent = issues.join(' ');
-    const ok = token.value.trim() && password.value.length >= MIN_PASSWORD && confirm.value === password.value && ackRecover.checked && ackStored.checked;
+    const passwordsOk = checks.check();
+    problems.textContent = '';
+    token.removeAttribute('aria-invalid');
+    const ok = token.value.trim() && passwordsOk && ackRecover.checked && ackStored.checked;
     submit.disabled = !ok;
     return ok;
   };
@@ -67,8 +90,8 @@ export function mountSetup(ctx, { onDone }) {
     h('h1', { class: 'auth-title' }, 'Set up this instance'),
     h('p', { class: 'text-2' }, 'Create the single superadmin. You need the one-time setup token printed on the server console.'),
     field('Setup token', token),
-    field('Superadmin password', password, `At least ${MIN_PASSWORD} characters.`),
-    field('Repeat password', confirm),
+    field('Superadmin password', password, `At least ${MIN_PASSWORD} characters.`, checks.passwordNote),
+    field('Repeat password', confirm, null, checks.confirmNote),
     h('label', { class: 'check small' }, show, h('span', null, 'Show passwords')),
     h('div', { class: 'warning-box', role: 'note' }, icon('warn', { size: 18 }),
       h('div', { class: 'stack-sm' },
@@ -97,7 +120,9 @@ export function mountSetup(ctx, { onDone }) {
         onDone(me);
       }
     } catch (error) {
-      errorToast(error, 'Setup failed');
+      // Said on the card, above the button (a wrong token is marked on its field).
+      problems.textContent = `Setup failed: ${error.message}`;
+      if (error.status === 401 || error.status === 403) token.setAttribute('aria-invalid', 'true');
       submit.disabled = false;
     } finally {
       submit.classList.remove('busy');
@@ -114,11 +139,14 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
   const password = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minlength: MIN_PASSWORD });
   const confirm = h('input', { class: 'input', type: 'password', autocomplete: 'new-password' });
   const status = h('p', { class: 'text-2' }, 'Checking recovery…');
+  const checks = passwordChecks(password, confirm, 'recovery');
   const problems = h('div', { class: 'field-error', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'btn btn-primary', disabled: true }, 'Reset password');
   const validate = () => {
-    const ok = /^\d{6}$/.test(code.value.trim()) && password.value.length >= MIN_PASSWORD && confirm.value === password.value;
-    problems.textContent = password.value && password.value.length < MIN_PASSWORD ? `Use at least ${MIN_PASSWORD} characters.` : confirm.value && confirm.value !== password.value ? 'The passwords do not match.' : '';
+    const passwordsOk = checks.check();
+    const ok = /^\d{6}$/.test(code.value.trim()) && passwordsOk;
+    problems.textContent = '';
+    code.removeAttribute('aria-invalid');
     submit.disabled = !ok;
     return ok;
   };
@@ -129,8 +157,8 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
     h('h1', { class: 'auth-title' }, 'Reset the superadmin password'),
     status,
     field('Recovery code', code, 'The 6 digits shown when the instance was set up.'),
-    field('New password', password, `At least ${MIN_PASSWORD} characters.`),
-    field('Repeat new password', confirm),
+    field('New password', password, `At least ${MIN_PASSWORD} characters.`, checks.passwordNote),
+    field('Repeat new password', confirm, null, checks.confirmNote),
     problems,
     h('div', { class: 'row' }, submit, h('button', { type: 'button', class: 'btn btn-ghost', onClick: onBack }, 'Back to sign-in')));
   ctx.api.get('/api/auth/recovery', { allow401: true }).then((state) => {
@@ -155,6 +183,7 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
       onRecovered(result.recovery_code);
     } catch (err) {
       problems.textContent = err.message || 'Recovery failed.';
+      code.setAttribute('aria-invalid', 'true');
       code.select();
       submit.disabled = false;
     } finally {
@@ -168,23 +197,28 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
 export function mountSignIn(ctx, { next, onDone, error }) {
   const nextPath = next && next.startsWith('/') && !next.startsWith('//') ? next : '/';
   const githubHref = `/api/auth/github/start?next=${encodeURIComponent(nextPath)}`;
-  const password = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', 'aria-label': 'Superadmin password' });
+  const password = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', 'aria-label': 'Superadmin password', 'aria-describedby': 'password-error' });
+  // A wrong password is said under the password, not under the GitHub button (WCAG 3.3.1).
+  const passwordError = h('div', { class: 'field-error', id: 'password-error', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'btn' }, 'Sign in');
   const errorBox = h('div', { class: 'field-error', role: 'alert' }, error || '');
   const username = h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'superadmin', hidden: true, readOnly: true, tabindex: '-1', 'aria-hidden': 'true' });
-  const form = h('form', { class: 'stack-sm' }, username, h('div', { class: 'row' }, password, submit));
+  const form = h('form', { class: 'stack-sm' }, username, h('div', { class: 'row' }, password, submit), passwordError);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!password.value) return;
     submit.disabled = true;
     submit.classList.add('busy');
     errorBox.textContent = '';
+    passwordError.textContent = '';
+    password.removeAttribute('aria-invalid');
     try {
       const me = await ctx.api.post('/api/auth/password', { password: password.value }, { allow401: true });
       password.value = '';
       onDone(me, nextPath);
     } catch (err) {
-      errorBox.textContent = err.status === 401 ? 'Wrong password.' : err.message;
+      passwordError.textContent = err.status === 401 ? 'Wrong password.' : err.message;
+      password.setAttribute('aria-invalid', 'true');
       password.select();
     } finally {
       submit.disabled = false;
@@ -221,6 +255,8 @@ export function mountSignIn(ctx, { next, onDone, error }) {
         onContinue: () => {
           setChildren(root, card);
           details.open = true;
+          // Success is not an error: say it in the neutral notice.
+          errorBox.className = 'field-note';
           errorBox.textContent = 'Password changed. Sign in with the new password.';
           password.focus();
         },

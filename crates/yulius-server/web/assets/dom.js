@@ -257,9 +257,12 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
   const result = new Promise((r) => { resolve = r; });
   const bodyEl = h('div', { class: 'modal-body' }, body);
   const footer = h('div', { class: 'modal-actions' });
+  // A failed action says why inside the dialog, next to the button that failed (not in a toast).
+  const errorEl = h('div', { class: 'modal-error', role: 'alert', hidden: true });
   const dialog = h('dialog', { class: ['modal', wide && 'modal-wide', full && 'modal-full', className], 'aria-label': title },
     h('div', { class: 'modal-head' }, h('h2', { class: 'modal-title' }, title), dismissible ? iconButton('x', 'Close', () => close(undefined)) : null),
     bodyEl,
+    errorEl,
     footer,
   );
   let closed = false;
@@ -287,11 +290,15 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
         if (!action.run) return close(action.value);
         button.disabled = true;
         button.classList.add('busy');
+        errorEl.hidden = true;
         try {
           const keep = await action.run(modal);
           if (keep !== false) close(action.value === undefined ? true : action.value);
         } catch (error) {
-          errorToast(error);
+          if (error && error.code) console.warn(`${action.label}: ${error.code}`, error);
+          const message = error && error.message ? error.message : String(error);
+          errorEl.textContent = message.charAt(0).toUpperCase() + message.slice(1); // server sentences start lower-case
+          errorEl.hidden = false;
         } finally {
           button.disabled = false;
           button.classList.remove('busy');
@@ -456,8 +463,31 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
 // ---------------------------------------------------------------- forms
 
 /** Labelled form field wrapper. */
-export function field(label, control, hint) {
-  return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), control, hint ? h('span', { class: 'field-hint' }, hint) : null);
+export function field(label, control, hint, error) {
+  return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), control, hint ? h('span', { class: 'field-hint' }, hint) : null, error || null);
+}
+
+let errorIds = 0;
+/**
+ * Shows a validation message under its field (not in a toast): marks the control aria-invalid, ties
+ * the message to it with aria-describedby, focuses it, and clears both on the next edit (WCAG 3.3.1).
+ */
+export function invalid(control, message) {
+  const wrapper = control.closest('.field') || control.parentElement;
+  let note = wrapper.querySelector(':scope > .field-error');
+  if (!note) {
+    errorIds += 1;
+    note = h('span', { class: 'field-error', id: `field-error-${errorIds}`, role: 'alert' });
+    wrapper.append(note);
+  }
+  note.textContent = message;
+  control.setAttribute('aria-invalid', 'true');
+  control.setAttribute('aria-describedby', note.id);
+  control.focus();
+  const clear = () => { note.remove(); control.removeAttribute('aria-invalid'); control.removeAttribute('aria-describedby'); };
+  control.addEventListener('input', clear, { once: true });
+  control.addEventListener('change', clear, { once: true });
+  return false;
 }
 
 /** Toggle switch (checkbox styled as a switch). */

@@ -2,7 +2,7 @@
 // test. Secrets are write-only: the UI shows key names only and never reads values back.
 
 import { enc } from '../api.js';
-import { h, icon, badge, iconBadge, itemCard, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton, emptyState } from '../dom.js';
+import { h, icon, badge, iconBadge, itemCard, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, iconButton, emptyState, invalid } from '../dom.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 import { BRAND } from '../brand.js';
@@ -190,8 +190,8 @@ export function mountMcpPage(ctx, sandbox, route) {
         { label: 'Cancel', value: false },
         { label: server ? 'Save' : 'Add', kind: 'primary', run: async () => {
           const trimmed = name.value.trim();
-          if (!NAME_RE.test(trimmed)) { toast('Use 1–64 letters, digits, “-” or “_” for the name.', { kind: 'warn' }); return false; }
-          if (trimmed.toLowerCase() === 'yulius') { toast(`“yulius” is reserved for the built-in ${BRAND.name} tool server.`, { kind: 'warn' }); return false; }
+          if (!NAME_RE.test(trimmed)) return invalid(name, 'Use 1–64 letters, digits, “-” or “_”.');
+          if (trimmed.toLowerCase() === 'yulius') return invalid(name, `“yulius” is reserved for the built-in ${BRAND.name} tool server.`);
           const body = {
             name: name.value.trim(),
             transport: transport.value,

@@ -1,7 +1,7 @@
 // Workflows page (AUT-004): reusable task recipes — initial steps, instructions, gates.
 
 import { enc } from '../api.js';
-import { h, openModal, field, toast, confirmDialog, errorToast, iconButton, iconBadge, itemCard, emptyState } from '../dom.js';
+import { h, openModal, field, toast, confirmDialog, errorToast, iconButton, iconBadge, itemCard, emptyState, invalid } from '../dom.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
@@ -78,7 +78,7 @@ export function mountWorkflowsPage(ctx, sandbox) {
       actions: [
         { label: 'Cancel', value: false },
         { label: wf ? 'Save' : 'Create', kind: 'primary', run: async () => {
-          if (!name.value.trim()) { name.focus(); toast('Name is required.', { kind: 'warn' }); return false; }
+          if (!name.value.trim()) return invalid(name, 'Give the workflow a name.');
           const body = {
             name: name.value.trim(),
             description: description.value.trim(),
