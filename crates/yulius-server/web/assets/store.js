@@ -45,6 +45,7 @@ export function createStore(api) {
     sandboxesError: null, // the error of the last failed sandbox list load
     actionRequests: new Map(), // sandbox id → Map(tab id → {reason, task_id})
     pulls: new Map(), // sandbox id → Map(task id → pull request), from the sandbox's Git overview
+    gitRows: new Map(), // sandbox id → Map(task id → overview row: files_changed, insertions, deletions, ahead, behind)
     eventsStatus: 'closed',
   };
   let events = null;
@@ -233,7 +234,9 @@ export function createStore(api) {
     if (entry) entry.at = Date.now();
     try {
       const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
-      state.pulls.set(sandboxId, new Map((git.tasks || []).filter((t) => t.pr).map((t) => [t.task_id, t.pr])));
+      const rows = Array.isArray(git.tasks) ? git.tasks : [];
+      state.pulls.set(sandboxId, new Map(rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr])));
+      state.gitRows.set(sandboxId, new Map(rows.map((t) => [t.task_id, t])));
       emit('pulls', sandboxId);
     } catch { /* the chips stay as they were; the lists work without them */ }
   }
@@ -291,6 +294,8 @@ export function createStore(api) {
     /** Keeps the sandbox's pull requests fresh while a view shows them; returns a stop function. */
     watchPulls,
     pullsOf: (sandboxId) => state.pulls.get(sandboxId) || new Map(),
+    /** A task's row of its sandbox's Git overview (changed files and lines), or null. */
+    gitRowOf: (sandboxId, taskId) => (state.gitRows.get(sandboxId) || new Map()).get(taskId) || null,
   };
 }
 

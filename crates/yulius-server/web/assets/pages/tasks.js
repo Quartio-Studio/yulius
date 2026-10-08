@@ -212,8 +212,10 @@ export function mountTasksPage(ctx, sandbox) {
         open && shown.length < list.length ? h('button', { type: 'button', class: 'tl-more', onClick: () => { shownCount.set(group.id, shown.length + more); render(); } }, more < list.length - shown.length ? `Show ${more} more (${list.length - shown.length} hidden)` : `Show ${more} more`) : null));
     }
     rowCache = nextRows;
-    if (focusedId) setChildren(listHost, sections);
-    else keepFocus(listHost, () => setChildren(listHost, sections));
+    // Column names over the groups (the rows say the same to screen readers in their own words).
+    const columns = h('div', { class: 'tl-columns', 'aria-hidden': 'true' }, ['Task', 'Status', 'Branch', 'Changes', 'Pull request', 'By', 'Started', 'Updated', ''].map((label) => h('span', null, label)));
+    if (focusedId) setChildren(listHost, columns, sections);
+    else keepFocus(listHost, () => setChildren(listHost, columns, sections));
     if (focusedId) listHost.querySelector(`[data-task-id="${CSS.escape(focusedId)}"] .tl-link`)?.focus({ preventScroll: true });
   }
 
@@ -223,7 +225,7 @@ export function mountTasksPage(ctx, sandbox) {
   let nextRows = new Map();
   function cachedRow(item) {
     const pr = ctx.store.pullsOf(sandbox.id).get(item.task.id) || null;
-    const key = JSON.stringify([item.task, item.info, item.group, pr, sandbox.access, myLogin(), relShort(item.task.updated_at)]);
+    const key = JSON.stringify([item.task, item.info, item.group, pr, ctx.store.gitRowOf(sandbox.id, item.task.id), sandbox.access, myLogin(), relShort(item.task.updated_at), relShort(item.task.created_at)]);
     const hit = rowCache.get(item.task.id);
     const el = hit && hit.key === key ? hit.el : rowView(item);
     nextRows.set(item.task.id, { key, el });
@@ -231,25 +233,27 @@ export function mountTasksPage(ctx, sandbox) {
   }
 
   function rowView({ task, info, group }) {
-    const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`;
+    // A row opens the task's overview (times, sessions, plan, changes, Go to task), not its session.
+    const path = `/s/${encodeURIComponent(sandbox.slug)}/tasks/${task.number}`;
     const login = task.created_by && task.created_by.login;
     const actions = taskActions(task, sandbox.access);
+    const git = ctx.store.gitRowOf(sandbox.id, task.id);
+    const what = detailLine(task, info);
     const kebab = iconButton('more', `Actions for ${task.title || `task #${task.number}`}`, () => openTaskMenu(ctx, kebab, task), { class: 'tl-action', 'aria-haspopup': 'menu' });
     const row = h('li', { class: ['tl-row', `group-${group}`], dataset: { taskId: task.id, tone: info.tone } },
       h('a', { class: 'tl-link', href: href(path), dataset: { route: path }, title: `#${task.number} ${task.title}${task.branch ? ` · ${task.branch}` : ''}` },
-        h('span', { class: 'tl-mark' }, statusMark(info, 18)),
-        h('span', { class: 'tl-text' },
-          h('span', { class: 'tl-line' },
-            h('span', { class: 'tl-title' }, task.title || `Task #${task.number}`),
-            task.unread_messages ? h('span', { class: 'task-unread', title: `${task.unread_messages} unread messages` }, String(task.unread_messages), h('span', { class: 'sr-only' }, ' unread')) : null,
-            task.origin && task.origin !== 'ui' ? h('span', { class: 'tl-origin' }, ORIGINS[task.origin] || task.origin) : null),
-          // One sentence only: the number and branch stay in the tooltip and in search.
-          h('span', { class: 'tl-sub' },
-            h('span', { class: 'tl-what' }, detailLine(task, info)),
-            h('span', { class: 'tl-sub-time' }, ` · ${relShort(task.updated_at)}`)))),
+        h('span', { class: 'tl-mark' }, statusMark(info, 16)),
+        h('span', { class: 'tl-title' }, task.title || `Task #${task.number}`),
+        task.unread_messages ? h('span', { class: 'task-unread', title: `${task.unread_messages} unread messages` }, String(task.unread_messages), h('span', { class: 'sr-only' }, ' unread')) : null,
+        task.origin && task.origin !== 'ui' ? h('span', { class: 'tl-origin' }, ORIGINS[task.origin] || task.origin) : null,
+        h('span', { class: 'sr-only' }, `, ${what}`)),
+      h('span', { class: 'tl-cell tl-status', title: what, 'aria-hidden': 'true' }, what),
+      h('span', { class: 'tl-cell tl-branch', title: task.branch || null }, task.branch || '—'),
+      h('span', { class: 'tl-cell tl-diff' }, git && git.files_changed ? [h('span', { class: 'gt-add' }, `+${git.insertions ?? 0}`), ' ', h('span', { class: 'gt-del' }, `−${git.deletions ?? 0}`)] : '—'),
       prCell(ctx.store.pullsOf(sandbox.id).get(task.id)),
       // Only someone else's task shows its author; your own would repeat your initials on every row.
       login && login !== myLogin() ? h('span', { class: 'avatar tl-avatar', role: 'img', title: `Started by ${login}`, 'aria-label': `Started by ${login}` }, initials(login)) : h('span', { class: 'tl-avatar' }),
+      h('span', { class: 'tl-cell tl-started', title: `Started ${dateTime(task.created_at)}` }, relShort(task.created_at)),
       h('span', { class: 'tl-time', title: `Updated ${dateTime(task.updated_at)} · created ${dateTime(task.created_at)}` }, relShort(task.updated_at)),
       h('span', { class: 'tl-actions' },
         actions.archive ? iconButton('archive', 'Archive', () => archiveTask(ctx, task), { class: 'tl-action' }) : null,
