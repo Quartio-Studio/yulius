@@ -278,8 +278,8 @@ p { margin: 0; }
   grid-area: side; display: flex; flex-direction: column; min-height: 0; min-width: 0;
   background: var(--surface); border-right: 1px solid var(--border);
 }
-.sidebar-top { padding: 8px 8px 4px; }
-.btn-newtask { width: 100%; justify-content: flex-start; gap: 8px; }
+.sidebar-top { padding: 14px 10px 8px; }
+.btn-newtask { width: 100%; height: 34px; justify-content: flex-start; gap: 8px; }
 .nav { display: flex; flex-direction: column; padding: 4px 6px; gap: 1px; }
 .nav-item { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 8px; border-radius: var(--radius-sm); color: var(--text-2); }
 .nav-item:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
