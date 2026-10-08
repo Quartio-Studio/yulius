@@ -1,0 +1,96 @@
+// Settings (SPEC-001 ACC-010 as changed by F 2026-10-08 UI): one page for the signed-in user's
+// account, this browser's preferences and the way into instance administration. It gathers what
+// exists; the administration pages themselves are unchanged.
+
+import { h, icon, toggle, openMenu, toast } from '../dom.js';
+import { href } from '../router.js';
+import { readJson, writeJson } from '../store.js';
+import { initials } from '../layout.js';
+import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from '../models.js';
+import { pageFrame } from './common.js';
+
+function section(iconName, title, description, ...content) {
+  return h('section', { class: 'settings-section' },
+    h('div', { class: 'settings-head' }, icon(iconName, { size: 16 }), h('h2', null, title), description ? h('span', { class: 'muted small' }, description) : null),
+    h('div', { class: 'settings-body' }, content));
+}
+
+function row(iconName, title, description, control) {
+  return h('div', { class: 'settings-row' },
+    h('span', { class: 'settings-row-icon' }, icon(iconName, { size: 16 })),
+    h('div', { class: 'settings-row-text' }, h('div', null, title), description ? h('div', { class: 'muted xs' }, description) : null),
+    h('div', { class: 'settings-row-control' }, control));
+}
+
+/** Settings page: Your account · Preferences (this browser) · Administration (admins). */
+export function mountSettingsPage(ctx) {
+  const frame = pageFrame({ title: 'Settings', sub: 'your account, this browser and the instance' });
+  const me = ctx.store.state.me || {};
+  const user = me.user || {};
+  const superadmin = Boolean(user.is_superadmin);
+  const instanceAdmin = superadmin || Boolean(user.is_instance_admin);
+  const role = superadmin ? 'Superadmin' : instanceAdmin ? 'Instance administrator' : 'Member';
+  const name = user.display_name || user.login || 'Signed in';
+  const open = (path) => h('a', { class: 'btn btn-sm', href: href(path), dataset: { route: path } }, 'Open');
+
+  // Preferences: the composer's defaults, the tools rail and the notification history.
+  let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
+  let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
+  const modelButton = h('button', { type: 'button', class: 'chip-btn', 'aria-haspopup': 'menu' });
+  const effortButton = h('button', { type: 'button', class: 'chip-btn', 'aria-haspopup': 'menu' });
+  const renderPicks = () => {
+    const found = findModel(modelId);
+    modelButton.replaceChildren(h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
+    const effort = findEffort(effortId);
+    effortButton.replaceChildren(h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
+  };
+  modelButton.addEventListener('click', () => openMenu(modelButton, modelMenuItems(modelId, (id) => { modelId = id; writeJson(MODEL_PREF_KEY, id); renderPicks(); })));
+  effortButton.addEventListener('click', () => openMenu(effortButton, effortMenuItems(effortId, (id) => { effortId = id; writeJson(EFFORT_PREF_KEY, id); renderPicks(); })));
+  renderPicks();
+
+  const railToggle = toggle({ checked: ctx.railVisible ? ctx.railVisible() : false, label: 'Show the tools rail', onChange: (checked) => { if (ctx.setRailVisible) ctx.setRailVisible(checked); } });
+  const notifCount = h('span', { class: 'muted xs' });
+  const clearButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => {
+    if (ctx.notifications) ctx.notifications.clear();
+    renderNotif();
+    toast('Notification history cleared.', { kind: 'ok' });
+  } }, 'Clear');
+  const renderNotif = () => {
+    const n = ctx.notifications ? ctx.notifications.count() : 0;
+    notifCount.textContent = n ? `${n} in history` : 'Empty';
+    clearButton.disabled = n === 0;
+  };
+  renderNotif();
+
+  frame.body.append(
+    section('user', 'Your account', null,
+      h('div', { class: 'settings-identity' },
+        h('span', { class: 'avatar settings-avatar', 'aria-hidden': 'true' }, initials(name)),
+        h('div', null, h('div', { class: 'settings-name' }, name), h('div', { class: 'muted small' }, [user.login ? `@${user.login}` : null, role].filter(Boolean).join(' · ')))),
+      row('archive', 'Archived tasks', 'Tasks you archived, with restore', open('/archived')),
+      row('key', 'CLI device approval', 'Approve “yulius login” from a terminal', open('/device')),
+      row('logout', 'Sign out', 'End this session in this browser', h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.signOut() }, 'Sign out'))),
+    section('gear', 'Preferences', 'kept in this browser',
+      row('target', 'Default model for new tasks', 'What the composer starts with', modelButton),
+      row('pulse', 'Default effort for new tasks', 'How hard the agent thinks by default', effortButton),
+      row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right', railToggle),
+      row('bell', 'Notification history', notifCount, clearButton)),
+  );
+
+  if (instanceAdmin) {
+    const sandbox = ctx.currentSandbox() || ctx.store.state.sandboxes[0] || null;
+    const slug = sandbox ? encodeURIComponent(sandbox.slug) : null;
+    const tile = (iconName, title, description, path) => path
+      ? h('a', { class: 'settings-tile', href: href(path), dataset: { route: path } }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, description)))
+      : h('div', { class: 'settings-tile disabled', title: 'Open a sandbox first' }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, description)));
+    frame.body.append(section('shield', 'Administration', 'this Yulius instance',
+      h('div', { class: 'settings-tiles' },
+        superadmin ? tile('users', 'Users', 'Who may sign in', '/admin/users') : null,
+        tile('user', 'Accounts', 'Claude subscriptions, usage and rotation', '/admin/accounts'),
+        superadmin ? tile('github', 'GitHub connection', 'The GitHub App and its installations', '/admin/github') : null,
+        tile('plug', 'Instance MCP', 'Tool servers for every sandbox', slug ? `/s/${slug}/mcp?scope=instance` : null),
+        tile('book', 'Instance skills', 'Skills for every sandbox', slug ? `/s/${slug}/skills?source=instance` : null))));
+  }
+
+  return { el: frame.el };
+}

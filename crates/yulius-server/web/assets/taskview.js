@@ -9,7 +9,7 @@ import { openTaskMenu, continueTask } from './actions.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
-import { PROVIDERS, EFFORTS, findModel, findEffort } from './models.js';
+import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STRIP_KEY = 'yulius.stepsOpen';
@@ -185,8 +185,6 @@ function pickSummary(detail) {
 
 // ---------------------------------------------------------------- composer
 
-const COMPOSER_MODEL_KEY = 'yulius.composer.model';
-const COMPOSER_EFFORT_KEY = 'yulius.composer.effort';
 const MODES = [
   { id: 'goal', name: 'Goal', icon: 'target', description: 'The agent keeps working until the goal is met (Claude Code’s /goal).' },
   { id: 'prompt', name: 'Prompt', icon: 'send', description: 'Sent as a normal first message.' },
@@ -205,8 +203,8 @@ export function mountComposer(ctx, sandbox) {
   let mode = 'goal';
   let workflowId = '';
   let workflows = [];
-  let modelId = findModel(readJson(COMPOSER_MODEL_KEY, null)) ? readJson(COMPOSER_MODEL_KEY, null) : null;
-  let effortId = findEffort(readJson(COMPOSER_EFFORT_KEY, null)) ? readJson(COMPOSER_EFFORT_KEY, null) : null;
+  let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
+  let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
 
   const chip = (label, onOpen, extra = {}) => {
     const button = h('button', { type: 'button', class: ['chip-btn', extra.class], 'aria-haspopup': 'menu', 'aria-label': label, title: label });
@@ -262,22 +260,11 @@ export function mountComposer(ctx, sandbox) {
   }
 
   function openModelMenu(anchor) {
-    const pick = (id) => () => { modelId = id; writeJson(COMPOSER_MODEL_KEY, id); renderChips(); prompt.focus(); };
-    openMenu(anchor, [
-      { label: 'Default', description: 'Claude Code’s default for the account', checked: modelId === null, onSelect: pick(null) },
-      ...PROVIDERS.flatMap((provider) => [
-        { header: provider.name },
-        ...provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === modelId, onSelect: pick(model.id) })),
-      ]),
-    ]);
+    openMenu(anchor, modelMenuItems(modelId, (id) => { modelId = id; writeJson(MODEL_PREF_KEY, id); renderChips(); prompt.focus(); }));
   }
 
   function openEffortMenu(anchor) {
-    const pick = (id) => () => { effortId = id; writeJson(COMPOSER_EFFORT_KEY, id); renderChips(); prompt.focus(); };
-    openMenu(anchor, [
-      { label: 'Default', description: 'Claude Code decides', checked: effortId === null, onSelect: pick(null) },
-      ...EFFORTS.map((effort) => ({ label: effort.name, description: effort.description, checked: effort.id === effortId, onSelect: pick(effort.id) })),
-    ]);
+    openMenu(anchor, effortMenuItems(effortId, (id) => { effortId = id; writeJson(EFFORT_PREF_KEY, id); renderChips(); prompt.focus(); }));
   }
 
   // The box grows with the prompt up to half the screen, then scrolls.

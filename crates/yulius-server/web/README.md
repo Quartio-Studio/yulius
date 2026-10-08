@@ -8,7 +8,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 ## Serving contract (for the Rust server)
 
 - Serve `index.html` at `/` **and** for every UI path (history API routing): `/setup`,
-  `/signin`, `/device`, `/archived`, `/admin/*` and `/s/*` — except anything under `/api/`.
+  `/signin`, `/device`, `/archived`, `/settings`, `/admin/*` and `/s/*` — except anything under `/api/`.
 - Serve `assets/**` at `/assets/...` with the usual content types (`.js` and `.mjs` as
   `text/javascript`, `.css`, `.png`). Assets are referenced by absolute `/assets/` paths.
 - Nothing is loaded from other origins: no CDNs, fonts or external images. A strict
@@ -37,7 +37,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery (PR, merge, environment runs and confirmations, promotion), sandbox add/remove. |
 | `assets/status.js` | Status → glyph/tone/label mapping and permitted actions per access level. |
 | `assets/dom.js`, `assets/format.js` | DOM builder (text only, never `innerHTML` with data), icons, toasts, modals, menus; formatting helpers. |
-| `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), git, workflows, skills, automations, MCP, dashboard, admin (users, accounts, GitHub). |
+| `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), git, workflows, skills, automations, MCP, dashboard, admin (users, accounts, GitHub), settings. |
 | `assets/mock.js` | In-memory backend and fake WebSockets used with `?mock=1`. |
 | `assets/styles.css` | Design tokens (CSS variables) and all layout, including the phone layout (< 768 px). |
 | `assets/vendor/` | Vendored xterm.js; see [vendor/README.md](assets/vendor/README.md). |
@@ -55,6 +55,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `/s/<slug>/browser?tab=<id>` | Opens the browser panel on that tab (Yulius links, BRW-004). |
 | `/s/<slug>/tasks`, `/git`, `/workflows`, `/skills`, `/automations`, `/mcp`, `/dashboard` | Sandbox pages. `skills?source=instance` and `mcp?scope=instance` are the admin "Instance skills/MCP" entries. |
 | `/archived` | Archived tasks across sandboxes, with restore. |
+| `/settings` | Settings: your account, this browser's preferences, administration tiles (user menu → Settings). |
 | `/device?code=<user_code>` | CLI device approval. |
 | `/admin/users`, `/admin/accounts`, `/admin/github` | Administration (superadmin / instance admin). |
 

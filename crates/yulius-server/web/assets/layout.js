@@ -140,7 +140,7 @@ export function createTabRow(ctx) {
   };
 }
 
-function initials(name) {
+export function initials(name) {
   const parts = String(name).trim().split(/[\s._-]+/).filter(Boolean);
   if (parts.length === 0) return '?';
   return (parts[0][0] + (parts[1] ? parts[1][0] : parts[0][1] || '')).slice(0, 2);
@@ -167,7 +167,7 @@ function openUserMenu(ctx, anchor) {
       { label: 'Instance skills', icon: 'book', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills?source=instance`) },
     );
   }
-  items.push({ separator: true }, { label: 'Sign out', icon: 'logout', onSelect: () => ctx.signOut() });
+  items.push({ separator: true }, { label: 'Settings', icon: 'gear', onSelect: () => ctx.navigate('/settings') }, { label: 'Sign out', icon: 'logout', onSelect: () => ctx.signOut() });
   openMenu(anchor, items);
 }
 

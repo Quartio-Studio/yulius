@@ -616,6 +616,27 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .list-title { font-weight: 500; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .list-sub { color: var(--muted); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+/* Settings page (ACC-010): sections of icon rows, admin tiles. */
+.settings-section { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.settings-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.settings-head .icon { color: var(--muted); }
+.settings-head h2 { font-size: 14px; font-weight: 600; }
+.settings-body { display: flex; flex-direction: column; }
+.settings-identity { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+.settings-avatar { width: 40px; height: 40px; font-size: 13px; }
+.settings-name { font-size: 15px; font-weight: 600; }
+.settings-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 12px 18px; border-top: 1px solid var(--border); }
+.settings-identity + .settings-row, .settings-body > .settings-row:first-child { border-top: 0; }
+.settings-row-icon { display: inline-flex; color: var(--muted); }
+.settings-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.settings-row-control { display: flex; align-items: center; gap: 8px; }
+.settings-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; padding: 16px 18px; }
+.settings-tile { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text); }
+.settings-tile .icon { color: var(--accent); flex: none; margin-top: 1px; }
+a.settings-tile:hover { background: var(--surface-3); border-color: var(--border-strong); text-decoration: none; }
+.settings-tile.disabled { opacity: 0.5; cursor: not-allowed; }
+.settings-tile-title { font-weight: 600; }
+
 /* MCP servers: one card each, with room between logo, details and actions. */
 .server-list { display: flex; flex-direction: column; gap: 10px; }
 .server-card { display: flex; align-items: center; gap: 16px; min-width: 0; padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }

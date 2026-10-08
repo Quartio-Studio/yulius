@@ -171,7 +171,7 @@ defaults that implementation may refine without changing user-visible intent.
 | ACC-008 | Permission changes on GitHub take effect in Yulius within 5 minutes without user action, and immediately after the user signs in again; revocation closes the user's live terminal connections to that sandbox. | T 31:38 ("consistent") | A | AC-ACC-5 |
 | ACC-009 | The superadmin may mark users as instance administrators, who may manage accounts, instance MCP servers and the instance skill catalog. Instance administration never grants repository access that GitHub does not grant. | — | A | AC-ACC-6 |
 | ACC-011 | Recovery code: a uniformly random 6-digit code generated at setup, shown exactly once and stored only as an Argon2id hash. "Forgot password" with the right code sets a new password, ends every superadmin session and shows a fresh code once. After 3 wrong codes recovery is permanently disabled (the counter survives restarts); only a signed-in superadmin who re-enters the password can generate a new code, which replaces the old one and re-enables recovery. The UI states that the code must be kept perfectly safe. | F 2026-10-07 | C | AC-ACC-7 |
-| ACC-010 | Settings as a general section are removed for the MVP; instance administration lives in a compact admin menu. | T 5:31–5:33 (supersedes P(2) "settings") | C | AC-UI-1 |
+| ACC-010 | A Settings page, reached from the user menu (never the sidebar), gathers the signed-in user's account (archived tasks, CLI device approval, sign out), this browser's preferences (default model and effort for new tasks, the tools rail, notification history) and tiles into instance administration; the compact admin menu stays. | T 5:31–5:33 (supersedes P(2) "settings"), F 2026-10-08 UI (supersedes "no Settings section") | C | AC-UI-1, AC-UI-15 |
 
 ### 5.2 Sandboxes and projects (PRJ)
 
@@ -539,7 +539,7 @@ Nothing is pushed to GitHub by import.
 | Desktop (Electron) app | T 29:40 | D (server/UI separation now) |
 | Email-based password recovery (the recovery code exists, ACC-011) | T 30:22 | D |
 | Multiple repositories in one sandbox | T 9:51–10:22 | dropped |
-| General Settings section | T 5:31 | dropped for MVP |
+| General Settings section | T 5:31, F 2026-10-08 UI | a Settings page behind the user menu (ACC-010) |
 | Deploying this instance (yulius.quartio.ai) | goal | out of scope of this request |
 
 ## 9. Ambiguities and decisions taken
@@ -581,6 +581,7 @@ instance — out of scope).
 | AC-UI-12 | A task entering "waiting for input" and a browser action request each add an unread entry to the bell (not for the task being watched); clicking an entry opens its task or tab and marks it read; the list survives a reload. | ui |
 | AC-UI-13 | Picking a model, effort, workflow and mode in the composer sends exactly those values (`model` as the model id, no `effort` for a model without levels) and none when "Default" is chosen; no free-text model field exists. | ui |
 | AC-UI-14 | With accounts in every state, the Status panel lists those needing attention first and open, the rest collapsed with their current-session bar; expanding one shows "Current session" and "This week" rows with reset time and percent used; email and plan appear when reported. Evidence so far is the mock only: the server does not report email/plan yet. | ui |
+| AC-UI-15 | The user menu has icons and a Settings entry; `/settings` shows Your account, Preferences (default model/effort shared with the composer, tools rail, notification history) and, for administrators, Administration tiles. | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null. | int |
@@ -595,7 +596,7 @@ instance — out of scope).
 | AC-PRJ-3 | Creating from each template creates the GitHub repo (fake), pushes the scaffold with the docs format that passes the validator, configures protection, and opens the tab. | int, ui |
 | AC-PRJ-4 | Removing a sandbox stops sessions and keeps the GitHub repository untouched. | int |
 | AC-PRJ-5 | Two sandboxes receive non-overlapping port ranges; the briefing and environment expose them. | int |
-| AC-UI-1 | Default view: sidebar + full-width terminal; browser/editor collapsed to icons; no top usage bar; no Settings section. | ui |
+| AC-UI-1 | Default view: sidebar + full-width terminal; browser/editor collapsed to icons; no top usage bar; Settings only behind the user menu. | ui |
 | AC-UI-2 | Sandbox tab row ≤ 36 px lists accessible sandboxes and switches between them. | ui |
 | AC-UI-3 | Sidebar icons reflect task status transitions within 2 s. | int, ui |
 | AC-UI-4 | Task view has no Session/Changes/Commits/Files header; step strip and action menu work. | ui |
@@ -688,7 +689,8 @@ observed. Live provider compatibility and deployment are reported separately fro
   wordmark; a notification center behind a bell (UI-020, AC-UI-12); the composer becomes a rounded
   prompt box with mode, workflow, model and effort pickers (UI-021, AC-UI-13); the Status panel opens
   with a health line and machine tiles, and accounts read at a glance (UI-022, AC-UI-14; email and
-  plan still need the server).
+  plan still need the server); a Settings page behind the user menu and icons in it (ACC-010 changed,
+  AC-UI-15).
 
 - 2026-10-08 (`F 2026-10-08`): Yulius runs Claude Code only. Codex support, provider switching
   and session translation are pruned and deferred until Codex improves (TSK-001/003, ROT-001/004/

@@ -207,6 +207,10 @@ export function createNotificationCenter(ctx) {
   return {
     button,
     add,
+    /** Entries kept in this browser. */
+    count: () => items.length,
+    /** Forgets every entry. */
+    clear() { items = []; save(); render(); },
     /** Stops watching the store (sign-out): a later shell builds a new center. */
     destroy() { close(); offs.splice(0).forEach((off) => off()); },
   };

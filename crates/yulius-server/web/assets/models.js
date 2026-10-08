@@ -3,6 +3,10 @@
 // Yulius runs Claude Code only today (TSK-003). A model id goes to Claude Code's `--model` and a
 // level to `--effort`; choosing "Default" sends neither and leaves it to Claude Code.
 
+/** This browser's defaults for new tasks (the composer and Settings share them). */
+export const MODEL_PREF_KEY = 'yulius.composer.model';
+export const EFFORT_PREF_KEY = 'yulius.composer.effort';
+
 export const PROVIDERS = [
   {
     id: 'anthropic',
@@ -38,4 +42,23 @@ export function findModel(id) {
 /** The effort level with this id, or null. */
 export function findEffort(id) {
   return EFFORTS.find((e) => e.id === id) || null;
+}
+
+/** Menu items to pick a model (grouped by provider); `onPick(id|null)`. */
+export function modelMenuItems(selected, onPick) {
+  return [
+    { label: 'Default', description: 'Claude Code’s default for the account', checked: selected === null, onSelect: () => onPick(null) },
+    ...PROVIDERS.flatMap((provider) => [
+      { header: provider.name },
+      ...provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === selected, onSelect: () => onPick(model.id) })),
+    ]),
+  ];
+}
+
+/** Menu items to pick an effort level; `onPick(id|null)`. */
+export function effortMenuItems(selected, onPick) {
+  return [
+    { label: 'Default', description: 'Claude Code decides', checked: selected === null, onSelect: () => onPick(null) },
+    ...EFFORTS.map((effort) => ({ label: effort.name, description: effort.description, checked: effort.id === selected, onSelect: () => onPick(effort.id) })),
+  ];
 }

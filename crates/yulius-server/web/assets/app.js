@@ -23,6 +23,7 @@ import { mountAutomationsPage } from './pages/automations.js';
 import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
+import { mountSettingsPage } from './pages/settings.js';
 
 const params = new URLSearchParams(window.location.search);
 const MOCK = params.get('mock') === '1';
@@ -190,6 +191,8 @@ function createApp(root, transport) {
     appEl.append(tabRow.el, sidebar.el, center, panels.panel, panels.rail);
     setChildren(root, appEl, backdrop);
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
+    ctx.railVisible = () => panels.railVisible;
+    ctx.setRailVisible = (visible) => panels.setRailVisible(visible);
     panels.mounted();
     shell = { el: appEl, tabRow, sidebar, center, panels };
     tabRow.renderMe();
@@ -403,6 +406,9 @@ function createApp(root, transport) {
       }
       case 'archived':
         setCenter('archived', () => mountArchivedPage(ctx));
+        break;
+      case 'settings':
+        setCenter('settings', () => mountSettingsPage(ctx));
         break;
       case 'device':
         setCenter(`device:${route.query.toString()}`, () => mountDevicePage(ctx, route));
