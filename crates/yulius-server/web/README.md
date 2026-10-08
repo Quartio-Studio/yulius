@@ -41,6 +41,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), git, workflows, skills, automations, MCP, dashboard, admin (users, accounts, GitHub), settings. |
 | `assets/mock.js` | In-memory backend and fake WebSockets used with `?mock=1`. |
 | `assets/brand.js` | Brand identity in one place: product name, tagline and mark (the SVG path used by the sidebar, sign-in, favicon and tab title). |
+| `assets/boot.js` | The only classic script: runs in `<head>` before the first paint and applies the stored theme, so a light or system theme never flashes dark. |
 | `assets/theme.js` | Theme choice (dark, light, system) per browser: sets `data-theme`, the colour-scheme and theme-color metas, and re-colours terminals and editors from the tokens. |
 | `assets/tokens.css` | Design tokens: brand and palette, colour roles per theme (dark, light), derived tints, and the type, control, radius, elevation and motion scales. |
 | `assets/styles.css` | Components and layout (including the phone layout < 768 px), using only roles and scales from `tokens.css`. |
@@ -60,9 +61,12 @@ and component in the current theme and computes contrast as you change things.
 2. **`assets/tokens.css`, Layer 1** — the brand ramp `--brand-200 … --brand-800` and `--brand-ink`
    (text on the brand colour). Dark theme uses 300–500, light theme 600–800. Optionally adjust the
    state palette (green, amber, red, violet) the same way.
-3. **Check** — open `/design` in both themes, then run `scripts/dev check`: it fails if any text or
-   control edge in any theme drops below WCAG contrast (text 4.5:1; state marks, focus, control edges
-   3:1) and lists the failing pairs.
+3. **Sync and check** — run `python3 scripts/check_repository.py --sync-brand`: it rewrites the
+   brand parts of `index.html` (title, theme colour, favicon, no-script text — what shows before the
+   app's scripts run) from `brand.js` and the dark tokens. Then open `/design` in both themes and run
+   `scripts/dev check`: it fails if `index.html` and the brand disagree, or if any text or control
+   edge in any theme drops below WCAG contrast (text 4.5:1; state marks, focus, control edges 3:1),
+   listing what to fix.
 
 ### How the tokens are layered (`assets/tokens.css`)
 

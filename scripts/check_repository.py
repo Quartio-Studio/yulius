@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 LAYERS = {
@@ -97,6 +97,15 @@ SPACING_SCALE = {0, 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48}
 WEIGHTS = {"400", "500", "600", "inherit", "normal"}
 TOKENS = "crates/yulius-server/web/assets/tokens.css"
 STYLESHEET = "crates/yulius-server/web/assets/styles.css"
+INDEX = "crates/yulius-server/web/index.html"
+BRAND = "crates/yulius-server/web/assets/brand.js"
+# The brand parts of index.html: what shows before the app's scripts run (brand.js, tokens.css).
+BRAND_PATTERNS = {
+    "title": r"<title>[^<]*</title>",
+    "theme-color": r'<meta name="theme-color" content="[^"]*">',
+    "icon": r'<link rel="icon" href="[^"]*">',
+    "noscript": r"<noscript>[^<]*</noscript>",
+}
 COLOUR_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(|"
                             r"\b(?:white|black|red|green|blue|yellow|orange|purple|pink|gray|grey|silver|navy|teal)\b")
 
@@ -270,6 +279,52 @@ def copy_errors(js, label="web script"):
     return errors
 
 
+def _hex(rgba):
+    return "#%02x%02x%02x" % tuple(round(c) for c in rgba[:3])
+
+
+def brand_head(brand_js, tokens_css):
+    """index.html's brand parts as brand.js and the default (dark) theme tokens make them."""
+    fields = {}
+    for field in ("name", "mark"):
+        m = re.search(field + r"""\s*:\s*(['"])(.*?)\1""", brand_js)
+        if not m:
+            raise ValueError(f"{BRAND}: BRAND.{field} not found")
+        fields[field] = m[2]
+    env = theme_tokens(tokens_css)["dark"]
+    bg, surface, accent = (_hex(_resolve(name, env)) for name in ("--bg", "--surface", "--accent"))
+    svg = (f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='5.5' fill='{surface}'/>"
+           f"<path d='{fields['mark']}' stroke='{accent}' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>")
+    return {
+        "title": f"<title>{fields['name']}</title>",
+        "theme-color": f'<meta name="theme-color" content="{bg}">',
+        "icon": f'<link rel="icon" href="data:image/svg+xml,{quote(svg, safe=chr(39) + " /:=.-")}">',
+        "noscript": f"<noscript>{fields['name']} needs JavaScript.</noscript>",
+    }
+
+
+def brand_errors(index_html, brand_js, tokens_css, label=INDEX):
+    """index.html must show the same name, colours and mark as brand.js and tokens.css."""
+    errors = []
+    for key, expected in brand_head(brand_js, tokens_css).items():
+        found = re.search(BRAND_PATTERNS[key], index_html)
+        if not found or found[0] != expected:
+            errors.append(f"{label}: {key} does not match brand.js and tokens.css; run scripts/check_repository.py --sync-brand")
+    return errors
+
+
+def sync_brand():
+    """Rewrite index.html's brand parts from brand.js and tokens.css."""
+    path = ROOT / INDEX
+    index_html = path.read_text()
+    for key, expected in brand_head((ROOT / BRAND).read_text(), (ROOT / TOKENS).read_text()).items():
+        index_html, count = re.subn(BRAND_PATTERNS[key], lambda _: expected, index_html, count=1)
+        if not count:
+            raise ValueError(f"{INDEX}: no {key} element to update")
+    path.write_text(index_html)
+    print(f"{INDEX} now matches brand.js and tokens.css")
+
+
 def check():
     errors = []
     names = output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"]).split("\0")
@@ -287,6 +342,7 @@ def check():
         if "vendor" not in path.parts:
             errors.extend(copy_errors(path.read_text(), str(path.relative_to(ROOT))))
     errors.extend(contrast_errors((ROOT / TOKENS).read_text()))
+    errors.extend(brand_errors((ROOT / INDEX).read_text(), (ROOT / BRAND).read_text(), (ROOT / TOKENS).read_text()))
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     cargo = ["rustup", "run", channel, "cargo"]
     metadata = json.loads(output(cargo + ["metadata", "--locked", "--no-deps", "--format-version", "1"]))
@@ -304,9 +360,11 @@ if __name__ == "__main__":
     try:
         if sys.argv[1:] == ["--doctor"]:
             doctor()
+        elif sys.argv[1:] == ["--sync-brand"]:
+            sync_brand()
         elif not sys.argv[1:]:
             check()
         else:
-            raise ValueError("Usage: check_repository.py [--doctor]")
+            raise ValueError("Usage: check_repository.py [--doctor | --sync-brand]")
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         sys.exit(f"Repository check failed: {error}")

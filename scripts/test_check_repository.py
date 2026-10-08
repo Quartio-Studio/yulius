@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
-from check_repository import STYLESHEET, TOKENS, ROOT, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
 
 
 def package(name, layer, dependencies=()):
@@ -106,6 +106,17 @@ class CopyTests(unittest.TestCase):
     def test_requirement_ids_in_strings(self):
         self.assertEqual(copy_errors("toast('Merged (GIT-002).');"), ["web script:1: requirement ID in a user-visible string; say it in words"])
         self.assertEqual(copy_errors("// GIT-002: merges are human actions\n/* SPEC-001 §6.2 */\nconst a = 'Merged';"), [])
+
+
+
+class BrandTests(unittest.TestCase):
+    def test_index_follows_brand_and_tokens(self):
+        index, brand, tokens = ((ROOT / path).read_text() for path in (INDEX, BRAND, TOKENS))
+        self.assertEqual(brand_errors(index, brand, tokens), [])
+        renamed = brand.replace("name: 'Yulius'", "name: 'Acme'")
+        self.assertEqual(sorted(e.split(": ")[1].split(" ")[0] for e in brand_errors(index, renamed, tokens)), ["noscript", "title"])
+        recoloured = tokens.replace("--brand-500: #4c9dff;", "--brand-500: #ff5500;")
+        self.assertTrue(any(": icon " in e for e in brand_errors(index, brand, recoloured)))
 
 
 if __name__ == "__main__":
