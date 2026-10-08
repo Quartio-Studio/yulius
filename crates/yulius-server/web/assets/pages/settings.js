@@ -107,13 +107,16 @@ export function mountSettingsPage(ctx) {
       row('contrast', 'Appearance', 'Dark, light, or follow your system', appearance),
       row('target', 'Default model for new tasks', 'What the composer starts with', modelButton),
       row('pulse', 'Default effort for new tasks', 'How hard the agent thinks by default', effortButton),
-      row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right', railToggle),
-      row('terminal', 'Terminal screen reader support', 'Lets screen readers read terminal output; applies to terminals opened next', screenReaderToggle),
-      row('target', 'Keyboard shortcuts', `Every shortcut in one list (${SHEET_KEYS})`, h('button', { type: 'button', class: 'btn btn-sm', onClick: showShortcuts }, 'Show')),
+      row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right', railToggle)),
+    section('key', 'Keyboard and accessibility', 'kept in this browser',
+      row('key', 'Keyboard shortcuts', `Every shortcut in one list (${SHEET_KEYS})`, h('button', { type: 'button', class: 'btn btn-sm', onClick: showShortcuts }, 'Show')),
       row('target', 'Single-key shortcuts', 'On the Tasks page: / to search, j and k to move, . for a task’s menu', keysToggle),
+      row('terminal', 'Terminal screen reader support', 'Lets screen readers read terminal output; applies to terminals opened next', screenReaderToggle)),
+    section('bell', 'Notifications', 'kept in this browser',
       row('bell', 'Desktop notifications', desktopNote, desktopToggle),
-      row('clock', 'Notification history', notifCount, clearButton),
-      row('contrast', 'Design system', 'Colours, type, components and themes in one place', open('/design', 'the design system'))),
+      row('clock', 'Notification history', notifCount, clearButton)),
+    section('book', 'Help', null,
+      row('code', 'Design system', 'For developers: colours, type, components and themes in one place', open('/design', 'the design system'))),
   );
 
   if (instanceAdmin) {
