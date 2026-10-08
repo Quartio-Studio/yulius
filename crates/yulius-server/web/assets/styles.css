@@ -1085,8 +1085,10 @@ a.dl-task:hover { text-decoration: underline; }
   body.drawer-open .sidebar { transform: none; }
   .drawer-backdrop { position: fixed; inset: 0; z-index: var(--z-drawer-scrim); background: var(--scrim); }
   body.drawer-open .drawer-backdrop { display: block; }
-  .task-link { padding: 8px 40px 8px 8px; }
-  .task-kebab { visibility: visible; top: 8px; }
+  /* Touch: the row's actions and the notification buttons are full-size targets. */
+  .task-link { padding: 8px 48px 8px 8px; }
+  .task-kebab { visibility: visible; top: 6px; right: 2px; width: var(--control-xl); height: var(--control-xl); background: transparent; }
+  .notif-head .btn-sm { height: var(--control-xl); padding: 0 12px; }
   .task-row:hover .task-unread { visibility: visible; }
   .nav-item { height: var(--control-xl); }
 
