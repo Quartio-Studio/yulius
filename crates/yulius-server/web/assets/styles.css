@@ -2,6 +2,9 @@
    radius and timing comes from tokens.css; this file names roles and scales only. */
 
 * { box-sizing: border-box; }
+/* Icons (dom.js): one optical stroke at every size; filled parts are unaffected. */
+.icon { stroke-width: var(--icon-stroke); flex: none; }
+.icon * { vector-effect: non-scaling-stroke; }
 html, body { height: 100%; }
 body {
   margin: 0;
