@@ -1,6 +1,6 @@
 // Shared page scaffolding: frame, tables, async loading.
 
-import { h, setChildren, placeholder } from '../dom.js';
+import { h, setChildren, placeholder, loadError } from '../dom.js';
 
 /** Page frame: title row with actions, then the content area. Returns {el, body, actions}. */
 export function pageFrame({ title, sub, actions = [] }) {
@@ -54,7 +54,8 @@ export function loader(container, fetcher, render) {
       hasContent = true;
     } catch (error) {
       if (mine !== generation) return;
-      setChildren(container, placeholder(error.message || String(error), 'error'));
+      // Say it inline with a way out, like the Git page (UX2-07).
+      setChildren(container, loadError(`Couldn’t load this: ${error.message || String(error)}`, () => reload()));
       hasContent = false;
     } finally {
       if (mine === generation) container.style.opacity = '';
