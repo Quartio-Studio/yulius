@@ -16,7 +16,8 @@
 
 /* ---------------------------------------------------------------- Layer 1: brand and palette */
 :root {
-  /* Brand: the accent hue, light (top) to dark. Dark theme uses 300–500, light theme 600–800. */
+  /* Brand: the accent hue, light (top) to dark. Dark theme: text 200–300, fills 400–600, terminal
+     selection 800. Light theme: fills and text 600–800, selections 200. */
   --brand-200: #b5d7ff;
   --brand-300: #8cc2ff;
   --brand-400: #6aaeff;
@@ -29,10 +30,12 @@
   /* Palette: state hues. */
   --green-300: #7fdc8e;
   --green-500: #45c35a;
+  --green-600: #1f8a3b;
   --green-700: #17692b;
   --amber-200: #f4d08a;
   --amber-300: #f2c66b;
   --amber-500: #e5ab33;
+  --amber-600: #bc8113;
   --amber-700: #8a5a00;
   --amber-800: #6b4500;
   --red-200: #ffb2ac;
@@ -43,6 +46,8 @@
   --violet-300: #c7b5ff;
   --violet-400: #c58af9;
   --violet-500: #a98cf6;
+  --violet-600: #7c5ce0;
+  --violet-650: #8556f0;
   --violet-700: #6440c9;
   --violet-ink: #160b20;
   --peach-300: #f2b58a;
@@ -148,17 +153,17 @@
   --accent-fg: var(--brand-700);
   --accent-fg-strong: var(--brand-800);
   --accent-ink: var(--white);
-  --ok: #1f8a3b;
+  --ok: var(--green-600);
   --ok-fg: var(--green-700);
-  --warn: #bc8113;
+  --warn: var(--amber-600);
   --warn-fg: var(--amber-700);
   --warn-fg-strong: var(--amber-800);
   --danger: var(--red-600);
   --danger-fg: var(--red-700);
   --danger-fg-strong: var(--red-700);
-  --violet: #7c5ce0;
+  --violet: var(--violet-600);
   --violet-fg: var(--violet-700);
-  --agent: #8556f0;
+  --agent: var(--violet-650);
   --agent-ink: var(--white);
   --harness-claude: var(--peach-700);
   --series-1: var(--brand-600);

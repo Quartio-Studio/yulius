@@ -58,16 +58,24 @@ and component in the current theme and computes contrast as you change things.
 ### Rebrand in three steps
 
 1. **`assets/brand.js`** — product `name`, `tagline` and `mark` (SVG path data on a 24-unit grid).
-   The sidebar wordmark, sign-in/setup screens, browser tab title and favicon all follow.
+   The sidebar wordmark, sign-in/setup screens, browser tab title, favicon and every sentence that
+   names the product follow (`BRAND.name`; the check rejects the name written anywhere else).
 2. **`assets/tokens.css`, Layer 1** — the brand ramp `--brand-200 … --brand-800` and `--brand-ink`
-   (text on the brand colour). Dark theme uses 300–500, light theme 600–800. Optionally adjust the
-   state palette (green, amber, red, violet) the same way.
+   (text on a `--brand-500` fill). The dark theme uses 200–300 for text, 400–600 for fills, charts
+   and progress, and 800 for the terminal selection; the light theme uses 600–800 for fills and
+   text and 200 for selections — keep the ramp's lightness steps. The state palette (green, amber,
+   red, violet: both themes take their state colours from it) should stay clearly apart from the
+   brand hue, so "your turn" never reads as a warning or an error. Terminal ANSI colours are a fixed
+   palette on purpose (agents' output colours mean something).
 3. **Sync and check** — run `python3 scripts/check_repository.py --sync-brand`: it rewrites the
    brand parts of `index.html` (title, theme colour, favicon, no-script text — what shows before the
    app's scripts run) from `brand.js` and the dark tokens. Then open `/design` in both themes and run
    `python3 scripts/check_repository.py --ui` (no Rust needed; `scripts/dev check` runs it too): it fails if `index.html` and the brand disagree, or if any text or control
    edge in any theme drops below WCAG contrast (text 4.5:1; state marks, focus, control edges 3:1),
    listing what to fix.
+
+The assets are compiled into the server binary (`build.rs` embeds `web/`), so a rebrand ships with
+the next server build and deploy.
 
 ### Brand typeface
 
