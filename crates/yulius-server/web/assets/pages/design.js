@@ -72,7 +72,7 @@ export function mountDesignPage(ctx) {
     setChildren(body,
       section('Brand', 'brand.js: name, tagline and mark; colours are the --brand-* ramp in tokens.css.',
         h('div', { class: 'row-wrap ds-brand' },
-          h('span', { class: 'sidebar-brand', style: { padding: 0 } }, h('span', { class: 'brand-logo' }, icon('logo', { size: 20 })), h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, BRAND.name), h('span', { class: 'brand-by' }, BRAND.tagline))),
+          h('span', { class: 'sidebar-brand', style: { padding: 0 } }, h('span', { class: 'brand-logo' }, icon('logo', { size: 28 })), h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, BRAND.name), h('span', { class: 'brand-by' }, BRAND.tagline))),
           h('span', { class: 'muted small' }, 'Theme'), themeSeg)),
       section('Colour roles', 'Components use roles only. Ink shows its contrast on the surface (4.5:1 needed).',
         COLOR_GROUPS.map(([name, list]) => h('div', { class: 'ds-group' }, h('h3', null, name), h('div', { class: 'ds-swatches' }, list.map(swatch))))),

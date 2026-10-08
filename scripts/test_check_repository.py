@@ -115,7 +115,9 @@ class BrandTests(unittest.TestCase):
         self.assertEqual(brand_errors(index, brand, tokens), [])
         renamed = brand.replace("name: 'Yulius'", "name: 'Acme'")
         self.assertEqual(sorted(e.split(": ")[1].split(" ")[0] for e in brand_errors(index, renamed, tokens)), ["noscript", "title"])
-        recoloured = tokens.replace("--brand-500: #4c9dff;", "--brand-500: #ff5500;")
+        restyled = brand.replace("markStyle: 'fill'", "markStyle: 'stroke'")
+        self.assertTrue(any(": icon " in e for e in brand_errors(index, restyled, tokens)))
+        recoloured = tokens.replace("--brand-mark: var(--text);", "--brand-mark: var(--accent);")
         self.assertTrue(any(": icon " in e for e in brand_errors(index, brand, recoloured)))
 
 

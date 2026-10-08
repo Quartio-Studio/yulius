@@ -42,7 +42,7 @@ export function applyTheme() {
   const color = document.querySelector('meta[name="theme-color"]');
   if (color) color.content = token('--bg');
   const favicon = document.querySelector('link[rel="icon"]');
-  if (favicon) favicon.href = faviconUrl(token('--surface'), token('--accent'));
+  if (favicon) favicon.href = faviconUrl(token('--surface'), token('--brand-mark'));
   window.dispatchEvent(new CustomEvent('yulius:theme', { detail: { theme } }));
 }
 

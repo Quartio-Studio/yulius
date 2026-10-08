@@ -262,10 +262,11 @@ p { margin: 0; }
 .sidebar-brand:hover { text-decoration: none; }
 .brand-logo {
   display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; flex: none;
-  border-radius: var(--radius-lg); border: 1px solid var(--border-strong); background: var(--bg); color: var(--accent);
+  border-radius: var(--radius-lg); border: 1px solid var(--border-strong); background: var(--bg); color: var(--brand-mark);
 }
 .brand-text { display: flex; flex-direction: column; min-width: 0; }
-.brand-name { font-size: var(--fs-xl); font-weight: 600; letter-spacing: -0.02em; line-height: var(--lh-lg); }
+/* The wordmark as the brand sets it (tokens: --wordmark-case, --wordmark-tracking). */
+.brand-name { font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 500; text-transform: var(--wordmark-case); letter-spacing: var(--wordmark-tracking); }
 .brand-by { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .btn-newtask {
   width: 100%; height: var(--control-xl); justify-content: flex-start; gap: 12px; padding: 0 12px;
@@ -1014,7 +1015,7 @@ a.dl-task:hover { text-decoration: underline; }
 
 .auth { height: 100vh; height: 100dvh; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 10vh 16px 32px; background: var(--bg); }
 .auth-card { width: min(460px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); }
-.auth-logo { display: flex; align-items: center; gap: 12px; font-size: var(--fs-2xl); line-height: var(--lh-2xl); font-weight: 600; color: var(--text); letter-spacing: -0.02em; }
+.auth-logo { display: flex; align-items: center; gap: 12px; font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 500; color: var(--text); text-transform: var(--wordmark-case); letter-spacing: var(--wordmark-tracking); }
 .auth-title { font-size: var(--fs-xl); line-height: var(--lh-xl); }
 .warning-box { display: flex; gap: 8px; padding: 12px; border-radius: var(--radius); border: 1px solid var(--danger-border); background: var(--danger-soft); color: var(--danger-fg-strong); }
 .warning-box strong { color: var(--text); }

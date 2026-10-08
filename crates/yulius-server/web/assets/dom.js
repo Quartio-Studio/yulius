@@ -76,7 +76,7 @@ const ICONS = {
   external: [['path', { d: 'M14 4h6v6M10 14L20 4M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5' }]],
   pulse: [['path', { d: 'M3 12h4l3-7 4 14 3-7h4' }]],
   tools: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M15 4v16' }]],
-  logo: [['path', { d: BRAND.mark }]],
+  logo: [['path', BRAND.markStyle === 'fill' ? { d: BRAND.mark, fill: 'currentColor', stroke: 'none' } : { d: BRAND.mark }]],
   /* task states (status.js): one shape per state so colour is never the only cue */
   // A spinner: a faint ring and a turning arc (styles.css spins it; still under reduced motion).
   'st-working': [['circle', { cx: 12, cy: 12, r: 9, opacity: 0.25, 'stroke-width': 3 }], ['path', { d: 'M12 3a9 9 0 0 1 7.79 13.5', 'stroke-width': 3, 'stroke-linecap': 'round' }]],
@@ -127,7 +127,7 @@ export const ICON_NAMES = Object.keys(ICONS);
 /** Inline SVG icon by name. Decorative unless a label is given. */
 export function icon(name, { size = 16, label } = {}) {
   const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('viewBox', name === 'logo' && BRAND.markViewBox ? BRAND.markViewBox : '0 0 24 24');
   svg.setAttribute('width', String(size));
   svg.setAttribute('height', String(size));
   svg.setAttribute('fill', 'none');

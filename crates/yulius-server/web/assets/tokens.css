@@ -197,6 +197,9 @@
   --text-disabled: color-mix(in srgb, var(--muted) 50%, transparent);
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
   --selection: color-mix(in srgb, var(--accent) 35%, transparent); /* selected text, in the brand */
+  --brand-mark: var(--text);   /* the logo mark: monochrome, like the brand's own lockup */
+  --wordmark-case: uppercase;  /* the wordmark as set in the lockup: capitals, wide tracking */
+  --wordmark-tracking: 0.22em;
   --accent-border: color-mix(in srgb, var(--accent) 40%, transparent);
   --accent-border-strong: color-mix(in srgb, var(--accent) 60%, transparent);
   --accent-track: color-mix(in srgb, var(--series-1) 20%, transparent);

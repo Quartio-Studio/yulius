@@ -7,7 +7,7 @@ import { BRAND } from '../brand.js';
 
 /** The product's mark and name (brand.js) at the top of the sign-in and setup cards. */
 function brandLockup() {
-  return h('div', { class: 'auth-logo' }, h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 20 })), BRAND.name);
+  return h('div', { class: 'auth-logo' }, h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 28 })), BRAND.name);
 }
 
 const MIN_PASSWORD = 12;

@@ -321,16 +321,19 @@ def _hex(rgba):
 
 def brand_head(brand_js, tokens_css):
     """index.html's brand parts as brand.js and the default (dark) theme tokens make them."""
-    fields = {}
-    for field in ("name", "mark"):
-        m = re.search(field + r"""\s*:\s*(['"])(.*?)\1""", brand_js)
-        if not m:
+    fields = {"markViewBox": "0 0 24 24", "markStyle": "stroke"}
+    for field in ("name", "mark", "markViewBox", "markStyle"):
+        m = re.search(r"\b" + field + r"""\s*:\s*(['"])(.*?)\1""", brand_js)
+        if m:
+            fields[field] = m[2]
+        elif field in ("name", "mark"):
             raise ValueError(f"{BRAND}: BRAND.{field} not found")
-        fields[field] = m[2]
     env = theme_tokens(tokens_css)["dark"]
-    bg, surface, accent = (_hex(_resolve(name, env)) for name in ("--bg", "--surface", "--accent"))
+    bg, surface, mark_colour = (_hex(_resolve(name, env)) for name in ("--bg", "--surface", "--brand-mark"))
+    paint = (f"fill='{mark_colour}'" if fields["markStyle"] == "fill"
+             else f"stroke='{mark_colour}' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'")
     svg = (f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='5.5' fill='{surface}'/>"
-           f"<path d='{fields['mark']}' stroke='{accent}' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>")
+           f"<svg x='3' y='3' width='18' height='18' viewBox='{fields['markViewBox']}'><path d='{fields['mark']}' {paint}/></svg></svg>")
     return {
         "title": f"<title>{fields['name']}</title>",
         "theme-color": f'<meta name="theme-color" content="{bg}">',

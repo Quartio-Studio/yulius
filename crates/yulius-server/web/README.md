@@ -57,7 +57,11 @@ and component in the current theme and computes contrast as you change things.
 
 ### Rebrand in three steps
 
-1. **`assets/brand.js`** — product `name`, `tagline` and `mark` (SVG path data on a 24-unit grid).
+1. **`assets/brand.js`** — product `name`, `tagline` and `mark`: SVG path data with its `markViewBox`
+   and `markStyle` (`'fill'` for a solid logo such as the current one from
+   `assets/brand/logo-lockup.svg`, `'stroke'` for a line drawing). The mark's colour is the
+   `--brand-mark` token (monochrome by default) and the wordmark's case and tracking are
+   `--wordmark-case` / `--wordmark-tracking`.
    The sidebar wordmark, sign-in/setup screens, browser tab title, favicon and every sentence that
    names the product follow (`BRAND.name`; the check rejects the name written anywhere else).
 2. **`assets/tokens.css`, Layer 1** — the brand ramp `--brand-200 … --brand-800` and `--brand-ink`
