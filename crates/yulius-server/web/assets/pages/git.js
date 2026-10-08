@@ -78,19 +78,42 @@ export function mountGitPage(ctx, sandbox) {
   let showAllActivity = false;
   const expanded = new Set();
 
+  // Only the newest load renders, and none after the page is left; delivery reads run at most
+  // four at a time and stop when the page goes away.
+  let generation = 0;
+  let alive = true;
+  async function mapLimited(list, limit, fn) {
+    const out = new Array(list.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < list.length && alive) {
+        const i = next;
+        next += 1;
+        out[i] = await fn(list[i]);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, list.length) }, worker));
+    return out;
+  }
   async function load() {
+    generation += 1;
+    const mine = generation;
+    const current = () => alive && mine === generation;
     try {
       const [git, runs] = await Promise.all([
         ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`),
         ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/delivery/runs`).catch(() => []),
       ]);
+      if (!current()) return;
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
       // The overview has no stages yet, so each task's delivery is read once (docs/api.md);
       // a server that adds `stage` to the overview rows skips these reads.
-      const deliveries = await Promise.all(rows.map((row) => (row.stage ? Promise.resolve(row) : ctx.api.get(`/api/tasks/${enc(row.task_id)}/delivery`).catch(() => null))));
+      const deliveries = await mapLimited(rows, 4, (row) => (row.stage ? row : ctx.api.get(`/api/tasks/${enc(row.task_id)}/delivery`).catch(() => null)));
+      if (!current()) return;
       model = { git, runs: Array.isArray(runs) ? runs : [], items: rows.map((row, i) => ({ row, delivery: deliveries[i] })) };
       render();
     } catch (error) {
+      if (!current()) return;
       setChildren(body, h('div', { class: 'banner banner-danger' }, icon('warn'), h('span', { class: 'banner-text' }, `Could not read Git: ${error.message}`), h('button', { type: 'button', class: 'btn btn-sm', onClick: load }, 'Retry')));
     }
   }
@@ -336,7 +359,7 @@ export function mountGitPage(ctx, sandbox) {
   ];
   renderIntro();
   load();
-  return { el: frame.el, key: `git:${sandbox.id}`, destroy: () => offs.forEach((off) => off()) };
+  return { el: frame.el, key: `git:${sandbox.id}`, destroy: () => { alive = false; offs.forEach((off) => off()); } };
 }
 
 let presetCache = null;
