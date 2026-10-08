@@ -412,6 +412,12 @@ async fn server_shutdown_ends_shells_and_restart_removes_orphans() -> TestResult
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn contained_shells_run_as_the_user_with_root_in_their_own_home() -> TestResult {
+    // Like supervision's containment test: skip where bubblewrap is missing or cannot create
+    // namespaces (CI runners), instead of failing on the environment.
+    if let Err(why) = bwrap_runnable() {
+        eprintln!("SKIPPED contained_shells_run_as_the_user_with_root_in_their_own_home: {why}");
+        return Ok(());
+    }
     let f = fixture_with(true).await?;
     let result = async {
         let served = serve(f.h.router.clone()).await?;
@@ -439,4 +445,30 @@ async fn contained_shells_run_as_the_user_with_root_in_their_own_home() -> TestR
     .await;
     f.h.app.stop_workspace_services().await;
     result
+}
+
+/// Whether bubblewrap runs here and can create the namespaces containment needs.
+#[cfg(target_os = "linux")]
+fn bwrap_runnable() -> Result<(), String> {
+    let probe = std::process::Command::new("bwrap")
+        .args([
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--",
+            "/bin/true",
+        ])
+        .output();
+    match probe {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(format!(
+            "bwrap cannot create namespaces: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(err) => Err(format!("bwrap not runnable: {err}")),
+    }
 }
