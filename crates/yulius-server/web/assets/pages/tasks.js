@@ -5,7 +5,7 @@
 // checks, author and age on the right. Filters (state tabs with counts, Author and Origin
 // multi-select, search) live in the URL so a filtered view can be shared as a link.
 
-import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError, singleFlight } from '../dom.js';
+import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError, singleFlight, keepFocus } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
@@ -164,7 +164,8 @@ export function mountTasksPage(ctx, sandbox) {
     const byGroup = new Map(GROUPS.map((g) => [g.id, matches.filter((item) => item.group === g.id)]));
     const visible = filters.state === 'all' ? matches : byGroup.get(filters.state);
 
-    setChildren(tabs, [{ id: 'all', name: 'All', icon: 'tasks', size: matches.length }, ...GROUPS.map((g) => ({ ...g, size: byGroup.get(g.id).length }))].map((tab) => {
+    // Live updates rebuild the tabs and groups; keyboard focus stays where it was (keepFocus).
+    keepFocus(tabs, () => setChildren(tabs, [{ id: 'all', name: 'All', icon: 'tasks', size: matches.length }, ...GROUPS.map((g) => ({ ...g, size: byGroup.get(g.id).length }))].map((tab) => {
       const on = filters.state === tab.id;
       return h('button', { type: 'button', role: 'radio', 'aria-checked': String(on), tabindex: on ? '0' : '-1', class: ['tl-tab', on && 'active', tab.id === 'needs' && tab.size > 0 && 'urgent'], onClick: () => { filters.state = tab.id; render(); },
         onKeydown: (event) => {
@@ -174,7 +175,7 @@ export function mountTasksPage(ctx, sandbox) {
           next.click();
           tabs.querySelector('[aria-checked="true"]').focus();
         } }, h('span', { class: `tl-tab-icon tab-${tab.id}` }, icon(tab.icon, { size: 14 })), tab.name, h('span', { class: 'tl-tab-count' }, String(tab.size)));
-    }));
+    })));
     authorChip.update(authors);
     originChip.update(origins);
     setChildren(summary, filtered()
@@ -214,7 +215,8 @@ export function mountTasksPage(ctx, sandbox) {
         open ? h('ul', { class: 'tl-rows' }, shown.map((item) => rowView(item))) : null,
         open && shown.length < list.length ? h('button', { type: 'button', class: 'tl-more', onClick: () => { closedExpanded = true; render(); } }, `Show ${list.length - shown.length} more`) : null));
     }
-    setChildren(listHost, sections);
+    if (focusedId) setChildren(listHost, sections);
+    else keepFocus(listHost, () => setChildren(listHost, sections));
     if (focusedId) listHost.querySelector(`[data-task-id="${CSS.escape(focusedId)}"] .tl-link`)?.focus({ preventScroll: true });
   }
 

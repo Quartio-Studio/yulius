@@ -7,7 +7,7 @@
 // clicks and confirms (GIT-002).
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, toast, iconButton, placeholder, statusMark, field, openModal } from '../dom.js';
+import { h, icon, setChildren, toast, iconButton, placeholder, statusMark, field, openModal, keepFocus } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { allows, taskInfo } from '../status.js';
 import { href } from '../router.js';
@@ -122,12 +122,13 @@ export function mountGitPage(ctx, sandbox) {
       return { ...item, task, info: task ? taskInfo(task, ctx.store.state.actionRequests) : null, column: columnOf(item.delivery, profile) };
     });
     const by = (column) => items.filter((item) => item.column === column);
-    setChildren(body,
+    // Live updates rebuild the page; keyboard focus stays on the same control (keepFocus).
+    keepFocus(body, () => setChildren(body,
       notesBanner(model.git.notes),
       statusStrip(profile, envs, by('waiting'), by('live')),
       needsYou(items, profile),
       board(profile, items, by),
-      activity());
+      activity()));
   }
 
   // ---- Live / waiting
