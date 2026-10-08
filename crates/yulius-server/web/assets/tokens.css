@@ -186,7 +186,8 @@
 }
 
 /* ---------------------------------------------------------------- Layer 3 and scales */
-:root {
+/* Also on every [data-theme] element, so a nested theme island derives its tints from its own roles. */
+:root, [data-theme] {
   /* Derived roles: tints of a role colour, so they follow the theme and the brand. */
   --text-disabled: color-mix(in srgb, var(--muted) 50%, transparent);
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
