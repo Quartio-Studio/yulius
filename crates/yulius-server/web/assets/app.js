@@ -166,6 +166,11 @@ function createApp(root, transport) {
       if (error.status !== 401) { errorToast(error, 'Sign out failed'); return; }
     }
     teardown();
+    // Signed-out data does not stay in this browser: the notification history names tasks and
+    // agent requests (OWASP ASVS V8.2.3). Preferences such as the theme stay.
+    try {
+      for (const key of Object.keys(window.localStorage)) if (key.startsWith('yulius.notifications.')) window.localStorage.removeItem(key);
+    } catch { /* storage unavailable: nothing kept */ }
     navigate('/signin', { replace: true });
     renderSignIn();
   }
