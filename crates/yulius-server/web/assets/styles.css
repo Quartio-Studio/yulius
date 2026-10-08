@@ -190,6 +190,8 @@ p { margin: 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
 
 .toasts { position: fixed; right: 12px; bottom: 12px; z-index: var(--z-toast); display: flex; flex-direction: column; gap: 8px; width: min(380px, calc(100vw - 24px)); pointer-events: none; }
+/* When toasts would cover the focused control they move to the other edge (WCAG 2.4.11). */
+.toasts.flipped { top: calc(var(--tabrow-h) + 8px); bottom: auto; }
 .toast {
   display: flex; align-items: flex-start; gap: 8px; padding: 8px 6px 8px 12px; pointer-events: auto;
   background: var(--surface-2); border: 1px solid var(--border-strong); border-left: 3px solid var(--accent);
@@ -1098,6 +1100,7 @@ a.dl-task:hover { text-decoration: underline; }
   .modal, .modal-wide, .modal-full { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
   .modal-full { height: calc(100dvh - 16px); }
   .toasts { top: calc(var(--tabrow-h) + 6px); bottom: auto; right: 8px; }
+  .toasts.flipped { top: auto; bottom: 8px; }
   .hbar { grid-template-columns: minmax(70px, 110px) minmax(0, 1fr) auto; }
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
   .table .hide-phone { display: none; }

@@ -186,11 +186,26 @@ const MAX_TOASTS = 5;
  */
 function toastHost() {
   let host = document.getElementById('toasts');
-  if (!host) host = h('div', { id: 'toasts', class: 'toasts', role: 'status', 'aria-live': 'polite' });
+  if (!host) {
+    host = h('div', { id: 'toasts', class: 'toasts', role: 'status', 'aria-live': 'polite' });
+    document.addEventListener('focusin', () => avoidFocus(host));
+  }
   const modal = [...document.querySelectorAll('dialog[open]')].filter((d) => d.matches(':modal')).pop();
   const parent = modal || document.body;
   if (host.parentElement !== parent) parent.append(host);
   return host;
+}
+
+/** Moves the toasts to the other edge while they would cover the focused control (WCAG 2.4.11). */
+function avoidFocus(host) {
+  const target = document.activeElement;
+  if (!host.children.length || !target || target === document.body || host.contains(target)) return;
+  const covers = () => {
+    const a = host.getBoundingClientRect();
+    const b = target.getBoundingClientRect();
+    return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  };
+  if (covers()) host.classList.toggle('flipped');
 }
 
 /**
@@ -207,6 +222,7 @@ export function toast(message, { kind = 'info', action, timeout = 5000, detail }
     iconButton('x', 'Dismiss', close, { class: 'toast-x' }),
   );
   host.append(el);
+  avoidFocus(host);
   const wait = action && timeout > 0 ? Math.max(timeout, 10000) : timeout;
   if (wait > 0) {
     let timer = setTimeout(close, wait);
