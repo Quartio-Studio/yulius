@@ -35,7 +35,7 @@ export function createTabRow(ctx) {
   } });
   const hamburger = iconButton('menu', 'Open navigation', () => document.body.classList.toggle('drawer-open'), { class: 'hamburger' });
   const addButton = iconButton('plus', 'Add sandbox: create or import a repository', () => openSandboxDialog(ctx), { class: 'tab-add' });
-  const contained = h('span', { class: 'chip chip-warn', hidden: true, title: 'Host mode: agent sessions are not isolated by an OS sandbox on this server (SPEC-002 SEC-001).' }, icon('warn', { size: 12 }), h('span', { class: 'chip-text' }, 'Not contained'));
+  const contained = h('span', { class: 'chip chip-warn', hidden: true, title: 'Host mode: agent sessions on this server are not isolated in an OS sandbox, so an agent can reach files outside its sandbox.' }, icon('warn', { size: 12 }), h('span', { class: 'chip-text' }, 'Not contained'));
   const eventDot = h('span', { class: 'ev-dot', title: 'Live updates connected' });
   const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and account usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), icon('down', { size: 12 }));
   // Shows/hides the right tool rail (browser, editor, shell, messages); hidden by default.
@@ -312,7 +312,7 @@ export function renderStatus(data) {
   const facts = [
     h('span', { class: 'status-fact', title: 'Time since the machine started' }, icon('clock', { size: 13 }), Number.isFinite(vm.uptime_s) ? `Up ${duration(vm.uptime_s * 1000)}` : 'Uptime unknown'),
     load ? h('span', { class: 'status-fact', title: 'Load average over 1, 5 and 15 minutes' }, icon('pulse', { size: 13 }), `Load ${load.join(' · ')}`) : null,
-    h('span', { class: ['status-fact', data.contained === false && 'fact-warn'], title: 'Containment: agent sessions run in an OS sandbox (SPEC-002 SEC-001)' }, icon('shield', { size: 13 }), data.contained === true ? 'Isolated' : data.contained === false ? 'Not isolated' : 'Isolation unknown'),
+    h('span', { class: ['status-fact', data.contained === false && 'fact-warn'], title: 'Isolation: whether agent sessions run inside an OS sandbox on this server' }, icon('shield', { size: 13 }), data.contained === true ? 'Isolated' : data.contained === false ? 'Not isolated' : 'Isolation unknown'),
   ];
 
   const liveTotal = sandboxes.reduce((n, s) => n + (Number.isFinite(s.live_sessions) ? s.live_sessions : 0), 0);

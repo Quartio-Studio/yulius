@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
-from check_repository import STYLESHEET, TOKENS, ROOT, contrast_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
 
 
 def package(name, layer, dependencies=()):
@@ -59,9 +59,6 @@ class RepositoryContracts(unittest.TestCase):
             self.assertTrue(skill_errors(skill))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class StyleContracts(unittest.TestCase):
     def test_tokens_and_scales_pass(self):
@@ -103,3 +100,13 @@ class ContrastContracts(unittest.TestCase):
 
     def test_shipped_tokens_meet_contrast(self):
         self.assertEqual(contrast_errors((ROOT / TOKENS).read_text()), [])
+
+
+class CopyTests(unittest.TestCase):
+    def test_requirement_ids_in_strings(self):
+        self.assertEqual(copy_errors("toast('Merged (GIT-002).');"), ["web script:1: requirement ID in a user-visible string; say it in words"])
+        self.assertEqual(copy_errors("// GIT-002: merges are human actions\n/* SPEC-001 §6.2 */\nconst a = 'Merged';"), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

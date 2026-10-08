@@ -255,6 +255,21 @@ def doctor():
     print(f"Python {sys.version.split()[0]}; pinned tools ready")
 
 
+REQUIREMENT_IN_STRING = re.compile(r"""(['"`])(?:(?!\1).)*?\b[A-Z]{2,4}-\d{3}\b(?:(?!\1).)*?\1""")
+
+
+def copy_errors(js, label="web script"):
+    """Requirement IDs such as GIT-002 belong in comments and specs, not in user-visible strings."""
+    errors = []
+    js = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), js, flags=re.S)
+    for number, line in enumerate(js.splitlines(), 1):
+        if line.lstrip().startswith("//"):
+            continue
+        if REQUIREMENT_IN_STRING.search(line):
+            errors.append(f"{label}:{number}: requirement ID in a user-visible string; say it in words")
+    return errors
+
+
 def check():
     errors = []
     names = output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"]).split("\0")
@@ -268,6 +283,9 @@ def check():
     for path in skills:
         errors.extend(skill_errors(path))
     errors.extend(style_errors((ROOT / STYLESHEET).read_text()))
+    for path in sorted((ROOT / STYLESHEET).parent.glob("**/*.js")):
+        if "vendor" not in path.parts:
+            errors.extend(copy_errors(path.read_text(), str(path.relative_to(ROOT))))
     errors.extend(contrast_errors((ROOT / TOKENS).read_text()))
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     cargo = ["rustup", "run", channel, "cargo"]
