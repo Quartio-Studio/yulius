@@ -37,7 +37,8 @@ export function createTabRow(ctx) {
   const addButton = iconButton('plus', 'Add sandbox: create or import a repository', () => openSandboxDialog(ctx), { class: 'tab-add' });
   const contained = h('span', { class: 'chip chip-warn', hidden: true, title: 'Host mode: agent sessions on this server are not isolated in an OS sandbox, so an agent can reach files outside its sandbox.' }, icon('warn', { size: 12 }), h('span', { class: 'chip-text' }, 'Not contained'));
   const eventDot = h('span', { class: 'ev-dot', title: 'Live updates connected' });
-  const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and account usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), icon('down', { size: 12 }));
+  const eventText = h('span', { class: 'sr-only' }, ', live updates connected');
+  const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and account usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), eventText, icon('down', { size: 12 }));
   // Shows/hides the right tool rail (browser, editor, shell, messages); hidden by default.
   const toolsButton = iconButton('tools', 'Show tools (browser, editor, shell, messages)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
   const toolsDot = h('span', { class: 'rail-dot', hidden: true });
@@ -148,6 +149,7 @@ export function createTabRow(ctx) {
       const ok = status === 'open';
       eventDot.classList.toggle('off', !ok);
       eventDot.title = ok ? 'Live updates connected' : 'Live updates reconnecting…';
+      eventText.textContent = ok ? ', live updates connected' : ', live updates reconnecting'; // not colour alone (WCAG 1.4.1)
     }),
   ];
 
