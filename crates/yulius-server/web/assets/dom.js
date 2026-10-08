@@ -46,6 +46,8 @@ export function append(el, ...children) {
 export function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
   applyAttrs(el, attrs);
+  // A button that opens a menu or panel says it is closed until it opens (ARIA 1.2 menu button).
+  if (attrs && attrs['aria-haspopup'] && !el.hasAttribute('aria-expanded')) el.setAttribute('aria-expanded', 'false');
   append(el, children);
   if (attrs && attrs.value !== undefined && attrs.value !== null) el.value = attrs.value;
   return el;
