@@ -127,8 +127,8 @@ def style_errors(css, label=STYLESHEET):
             errors.append(f"{where} (use a --fs-* token)")
         elif prop == "line-height" and not re.fullmatch(r"var\(--lh(-[a-z0-9]+)?\)|1|normal|inherit", value):
             errors.append(f"{where} (use a --lh-* token)")
-        elif prop == "font-family" and not re.fullmatch(r"var\(--font(-mono)?\)|inherit", value):
-            errors.append(f"{where} (use --font or --font-mono)")
+        elif prop == "font-family" and not re.fullmatch(r"var\(--font(-mono|-display)?\)|inherit", value):
+            errors.append(f"{where} (use --font, --font-display or --font-mono)")
         elif prop == "font" and value != "inherit" and not (re.search(r"var\(--fs", value) and re.search(r"var\(--font", value)):
             errors.append(f"{where} (shorthand needs --fs-* and --font tokens)")
         elif prop == "font-weight" and value not in WEIGHTS:

@@ -98,8 +98,9 @@ the next server build and deploy.
 ### Brand typeface
 
 Fonts are self-hosted (no CDNs). Put the `.woff2` files in `assets/fonts/`, enable the `@font-face`
-template at the end of `tokens.css`, and put the family first in `--font` (UI text) and/or
-`--font-mono` (code, terminals and the editor read it too). Keep the weights the scale uses (400,
+template at the end of `tokens.css`, and put the family first in `--font` (UI text),
+`--font-display` (page, dialog and sign-in titles and the wordmark; it follows `--font` until set)
+and/or `--font-mono` (code, terminals and the editor read it too). Keep the weights the scale uses (400,
 500, 600): a static font needs one `@font-face` per weight; a weight range is only for a variable
 font (on a static file it makes every weight identical). Then check `/design`.
 
