@@ -453,7 +453,8 @@ def ui_errors():
     if node:  # syntax of every web script, when Node is installed (it is optional here)
         for path in sorted((ROOT / STYLESHEET).parent.glob("**/*.js")):
             if "vendor" not in path.parts:
-                result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
+                # As an ES module: plain `node --check file.js` can pass module code the browser rejects.
+                result = subprocess.run([node, "--input-type=module", "--check"], input=path.read_text(), capture_output=True, text=True)
                 if result.returncode:
                     errors.append(f"{path.relative_to(ROOT)}: {result.stderr.strip().splitlines()[-1] if result.stderr.strip() else 'syntax error'}")
     return errors
