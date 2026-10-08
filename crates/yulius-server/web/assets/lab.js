@@ -409,7 +409,7 @@ export function startLab(value) {
     const p = proposal();
     applyIslands();
     // A proposal may also shape things (styles.css "Brand details"): they key on data-brand.
-    if (p) document.documentElement.setAttribute('data-brand', p.id); else document.documentElement.removeAttribute('data-brand');
+    if (p) document.documentElement.setAttribute('data-brand', p.brand || p.id); else document.documentElement.removeAttribute('data-brand');
     if (p) style.textContent = proposalCss(p);
     else if (mode.kind === 'direction') {
       const t = tokensOf(mode.settings);
