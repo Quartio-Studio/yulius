@@ -400,7 +400,9 @@ export function createSidebar(ctx) {
   const brand = h('a', { class: 'sidebar-brand', href: href('/'), dataset: { route: '/' }, title: 'Yulius' },
     h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 20 })),
     h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, 'Yulius'), h('span', { class: 'brand-by' }, 'by Quartio team')));
-  const newTask = h('a', { class: 'btn btn-newtask', href: '#', dataset: { route: '/' } }, h('span', { class: 'newtask-plus', 'aria-hidden': 'true' }, icon('plus', { size: 14 })), 'New task');
+  const shortcut = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? '⌘⇧O' : 'Ctrl+Shift+O';
+  const newTask = h('a', { class: 'btn btn-newtask', href: '#', dataset: { route: '/' }, title: `New task (${shortcut})`, 'aria-keyshortcuts': shortcut === '⌘⇧O' ? 'Meta+Shift+O' : 'Control+Shift+O' },
+    h('span', { class: 'newtask-plus', 'aria-hidden': 'true' }, icon('plus', { size: 14 })), h('span', null, 'New task'), h('span', { class: 'newtask-key', 'aria-hidden': 'true' }, shortcut));
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sandbox' });
   const count = h('span', null, '');
   const list = h('div', { class: 'task-list', role: 'list', 'aria-label': 'Active tasks' });

@@ -27,6 +27,7 @@ import { mountSettingsPage } from './pages/settings.js';
 
 const params = new URLSearchParams(window.location.search);
 const MOCK = params.get('mock') === '1';
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
 const LAST_SANDBOX_KEY = 'yulius.lastSandbox';
 
 const SANDBOX_PAGES = {
@@ -460,6 +461,31 @@ function createApp(root, transport) {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') document.body.classList.remove('drawer-open');
   });
+
+  // New task (UI-023): ⌘⇧O / Ctrl+Shift+O anywhere — browsers keep ⌘N for a new window — and ⌘N
+  // on macOS where the browser passes it (installed app, full screen). Ctrl+N stays with the
+  // terminal. Captured before the terminal so xterm never sees it.
+  window.addEventListener('keydown', (event) => {
+    if (!shell || event.altKey || event.repeat) return;
+    const key = (event.key || '').toLowerCase();
+    const mod = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+    if (!mod || !((event.shiftKey && key === 'o') || (IS_MAC && !event.shiftKey && key === 'n'))) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openNewTask();
+  }, true);
+
+  /** Opens the current sandbox's composer and puts the cursor in the prompt. */
+  function openNewTask() {
+    document.body.classList.remove('drawer-open');
+    const sandbox = currentSandbox || store.state.sandboxes[0] || null;
+    const path = sandbox ? `/s/${encodeURIComponent(sandbox.slug)}` : '/';
+    if (currentLocation().path !== path) navigate(path);
+    setTimeout(() => {
+      const prompt = document.querySelector('.composer-prompt');
+      if (prompt && !prompt.disabled) prompt.focus();
+    }, 0);
+  }
 
   return { start };
 }

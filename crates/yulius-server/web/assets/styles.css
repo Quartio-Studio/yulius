@@ -300,6 +300,8 @@ p { margin: 0; }
   border-color: var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text); font-weight: 500;
 }
 .btn-newtask:hover { background: var(--surface-3); border-color: var(--border-strong); text-decoration: none; }
+.newtask-key { margin-left: auto; color: var(--muted); font-size: var(--fs-xs); font-weight: 400; letter-spacing: 0.04em; }
+@media (pointer: coarse) { .newtask-key { display: none; } }
 .newtask-plus {
   display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; flex: none;
   border-radius: 50%; background: var(--accent); color: var(--accent-ink);
