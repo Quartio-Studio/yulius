@@ -81,7 +81,9 @@ journalctl -u yulius -f
 Only the public listener (`YULIUS_BIND`) is proxied. The internal listener (`YULIUS_INTERNAL_BIND`)
 serves agents' MCP, hooks and Git credentials; it must stay on loopback and is never proxied.
 WebSockets are used for terminals, the event stream and the browser panel; import
-chunks are up to 8 MiB.
+chunks are up to 8 MiB. Let the proxy compress responses: Yulius serves its web UI uncompressed,
+and compression cuts the first load from about 1 MB to about 300 KB (the editor's first open from
+4.6 MB to about 1.2 MB), which matters most on phones.
 
 Caddy:
 
@@ -90,6 +92,7 @@ yulius.example.com {
     request_body {
         max_size 16MB
     }
+    encode zstd gzip
     reverse_proxy 127.0.0.1:8080
 }
 ```
@@ -102,6 +105,9 @@ server {
     server_name yulius.example.com;
     # ssl_certificate / ssl_certificate_key ...
     client_max_body_size 16m;
+    gzip on;
+    gzip_min_length 1024;
+    gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
