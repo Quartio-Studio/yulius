@@ -51,7 +51,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     fontFamily: MONO,
     fontSize: size,
     lineHeight: 1.15,
-    cursorBlink: true,
+    cursorBlink: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     scrollback: 5000,
     theme: terminalColors(),
     macOptionIsMeta: true,

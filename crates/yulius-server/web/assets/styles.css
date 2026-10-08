@@ -88,8 +88,8 @@ p { margin: 0; }
 .switch { position: relative; display: inline-flex; width: 30px; height: 17px; flex: none; }
 .switch-input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; z-index: 1; }
 .switch-input:disabled { cursor: not-allowed; }
-.switch-track { position: absolute; inset: 0; border-radius: var(--radius-full); background: var(--surface-3); border: 1px solid var(--border-control); transition: background 0.15s; }
-.switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--text-2); transition: transform 0.15s; }
+.switch-track { position: absolute; inset: 0; border-radius: var(--radius-full); background: var(--surface-3); border: 1px solid var(--border-control); transition: background var(--duration-fast) var(--ease); }
+.switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--text-2); transition: transform var(--duration-fast) var(--ease); }
 .switch-input:checked + .switch-track { background: var(--accent-strong); border-color: var(--accent-strong); }
 .switch-input:checked + .switch-track::after { transform: translateX(13px); background: var(--on-solid); }
 .switch-input:focus-visible + .switch-track { box-shadow: var(--focus); }
@@ -212,7 +212,6 @@ p { margin: 0; }
   .app .sidebar > * { width: var(--sidebar-w); flex-shrink: 0; }
   .app.panel-open .sidebar { border-right-width: 0; }
 }
-@media (prefers-reduced-motion: reduce) { .app { transition: none; } }
 
 /* sandbox tab row: thin (≤ 36 px), overflow scrolls (UI-008) */
 .tabrow {
@@ -332,8 +331,11 @@ button.task-group-head:hover { color: var(--text-2); }
 .tone-failed { color: var(--danger); }
 .tone-working .glyph-pulse, .glyph.tone-working { animation: pulse 1.6s ease-in-out infinite; }
 .tone-switching.glyph { animation: spin 1.4s linear infinite; }
-@keyframes pulse { 50% { opacity: 0.45; } }
-@media (prefers-reduced-motion: reduce) { .glyph { animation: none !important; } }
+@keyframes pulse { 50% { opacity: 0.6; } }
+/* Reduced motion: no animation or transition anywhere (WCAG 2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: var(--duration-instant) !important; animation-iteration-count: 1 !important; transition-duration: var(--duration-instant) !important; scroll-behavior: auto !important; }
+}
 
 /* center */
 .center { grid-area: main; position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--term-bg); }
@@ -399,7 +401,7 @@ body.resizing iframe { pointer-events: none; }
 .status-fold { gap: 0; }
 .status-fold > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; color: var(--text-2); }
 .status-fold > summary::-webkit-details-marker { display: none; }
-.status-fold > summary > .icon:first-child { color: var(--muted); transition: transform 0.15s ease; }
+.status-fold > summary > .icon:first-child { color: var(--muted); transition: transform var(--duration-fast) var(--ease); }
 .status-fold[open] > summary > .icon:first-child { transform: rotate(90deg); }
 .status-fold > summary h3 { flex: none; }
 .status-summary-text { margin-left: auto; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: nowrap; }
@@ -421,7 +423,7 @@ body.resizing iframe { pointer-events: none; }
 .account-fold > summary::-webkit-details-marker { display: none; }
 .account-fold > summary:hover { background: var(--surface-3); }
 .account-fold[open] > summary { border-bottom: 1px solid var(--border); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
-.account-fold > summary > .icon:last-child { color: var(--muted); flex: none; transition: transform 0.15s ease; }
+.account-fold > summary > .icon:last-child { color: var(--muted); flex: none; transition: transform var(--duration-fast) var(--ease); }
 .account-fold[open] > summary > .icon:last-child { transform: rotate(180deg); }
 .account-fold[open] .account-glance { display: none; }
 .account-avatar { width: 32px; height: 32px; font-size: var(--fs-xs); line-height: var(--lh-xs); }
@@ -492,14 +494,14 @@ button.notif-row:hover, button.notif-row:focus-visible { background: var(--surfa
 .stepstrip-main { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 4px 0 8px; }
 .stepstrip-toggle { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: var(--control-md); padding: 0 6px; border: 0; border-radius: var(--radius-sm); background: transparent; cursor: pointer; text-align: left; color: var(--text-2); }
 .stepstrip-toggle:hover { background: var(--surface-3); color: var(--text); }
-.stepstrip-toggle .icon { transition: transform 0.15s; }
+.stepstrip-toggle .icon { transition: transform var(--duration-fast) var(--ease); }
 .stepstrip.open .stepstrip-toggle .icon { transform: rotate(90deg); }
 .step-label { display: flex; gap: 6px; min-width: 0; align-items: baseline; }
 .step-count { color: var(--text); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .step-current { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .step-task { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30%; }
 .step-progress { width: 120px; height: 4px; border-radius: var(--radius-full); background: var(--accent-track); overflow: hidden; flex: none; }
-.step-progress-fill { height: 100%; background: var(--series-1); border-radius: var(--radius-full); transition: width 0.3s; }
+.step-progress-fill { height: 100%; background: var(--series-1); border-radius: var(--radius-full); transition: width var(--duration-slow) var(--ease); }
 .strip-status { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); white-space: nowrap; }
 .steplist { max-height: 40vh; overflow: auto; padding: 4px 12px 12px 32px; border-top: 1px solid var(--border); }
 .step-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; padding: 4px 0; align-items: baseline; }
@@ -743,7 +745,7 @@ a.settings-tile:hover { background: var(--surface-3); border-color: var(--border
 .bp-input:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .bp-viewchip { flex: none; cursor: help; }
 /* The agent's cursor (BRW-007). */
-.bp-agent { position: absolute; z-index: 3; pointer-events: none; transition: left .35s ease, top .35s ease; }
+.bp-agent { position: absolute; z-index: 3; pointer-events: none; transition: left var(--duration-slow) var(--ease), top var(--duration-slow) var(--ease); }
 .bp-agent[hidden] { display: none; }
 .bp-agent-arrow { position: absolute; left: -2px; top: -2px; width: 0; height: 0; border-left: 9px solid var(--agent); border-top: 6px solid transparent; border-bottom: 6px solid transparent; transform: rotate(45deg); transform-origin: 0 50%; filter: drop-shadow(0 1px 2px var(--shadow-color)); }
 .bp-agent-label { position: absolute; left: 12px; top: 10px; white-space: nowrap; padding: 2px 8px; border-radius: var(--radius-full); background: var(--agent); color: var(--agent-ink); font: 600 var(--fs-xs)/var(--lh-xs) var(--font); box-shadow: var(--shadow-sm); }
@@ -807,7 +809,7 @@ a.settings-tile:hover { background: var(--surface-3); border-color: var(--border
 
   .sidebar {
     position: fixed; z-index: 800; top: 0; bottom: 0; left: 0; width: min(300px, 86vw);
-    transform: translateX(-102%); transition: transform 0.2s ease; box-shadow: var(--shadow);
+    transform: translateX(-102%); transition: transform var(--duration) var(--ease); box-shadow: var(--shadow);
   }
   body.drawer-open .sidebar { transform: none; }
   .drawer-backdrop { position: fixed; inset: 0; z-index: 790; background: var(--scrim); }
@@ -837,7 +839,7 @@ a.settings-tile:hover { background: var(--surface-3); border-color: var(--border
 }
 
 /* Terminal mouse hand-over (shown only when the program asked for the mouse). */
-.term-mouse-toggle { position: absolute; top: 6px; right: 16px; z-index: 4; font-size: var(--fs-xs); line-height: var(--lh-xs); opacity: 0; transition: opacity .15s; }
+.term-mouse-toggle { position: absolute; top: 6px; right: 16px; z-index: 4; font-size: var(--fs-xs); line-height: var(--lh-xs); opacity: 0; transition: opacity var(--duration-fast) var(--ease); }
 .term:hover .term-mouse-toggle, .term-mouse-toggle:focus-visible { opacity: .9; }
 
 /* Harness change waiting for approval (ROT-012). */

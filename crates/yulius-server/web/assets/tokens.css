@@ -234,9 +234,11 @@
   --radius-xl: 16px;     /* the composer and the sign-in card */
   --radius-full: 999px;  /* pills: badges, chips, counters, switches, progress bars */
 
-  /* Motion: two durations, one easing; all of it stops under prefers-reduced-motion. */
+  /* Motion: three durations, one easing; all of it stops under prefers-reduced-motion. */
   --duration-fast: 120ms;
   --duration: 200ms;
+  --duration-slow: 300ms;  /* progress fills and the agent's cursor */
+  --duration-instant: 0.01ms; /* what reduced motion collapses every animation to */
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* Layout */

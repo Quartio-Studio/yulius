@@ -74,7 +74,7 @@ class StyleContracts(unittest.TestCase):
                 self.assertTrue(style_errors(f".a {{ {rule}; }}"))
 
     def test_off_scale_radius_and_spacing_rejected(self):
-        for rule in ("border-radius: 8px", "padding: 10px", "gap: 14px", "margin: 0 18px"):
+        for rule in ("border-radius: 8px", "padding: 10px", "gap: 14px", "margin: 0 18px", "transition: opacity .15s", "transition: width 0.3s ease"):
             with self.subTest(rule=rule):
                 self.assertTrue(style_errors(f".a {{ {rule}; }}"))
 

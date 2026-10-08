@@ -122,6 +122,8 @@ def style_errors(css, label=STYLESHEET):
             errors.append(f"{where} (shorthand needs --fs-* and --font tokens)")
         elif prop == "font-weight" and value not in WEIGHTS:
             errors.append(f"{where} (weights are 400, 500, 600)")
+        elif prop in ("transition", "transition-duration") and re.search(r"(?<![\w-])\d*\.?\d+m?s\b", value):
+            errors.append(f"{where} (use the --duration* motion tokens)")
         elif prop == "border-radius" and any(not re.fullmatch(r"var\(--radius(-[a-z]+)?\)|0|50%|inherit", part) for part in value.split()):
             errors.append(f"{where} (use a --radius-* token, 0 or 50%)")
         elif re.fullmatch(r"padding(-[a-z]+)?|margin(-[a-z]+)?|gap|row-gap|column-gap", prop):
