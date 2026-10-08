@@ -291,7 +291,7 @@ export function createSidebar(ctx) {
   // The logo slot holds the favicon's Y until Yulius has a real logo.
   const brand = h('a', { class: 'sidebar-brand', href: href('/'), dataset: { route: '/' }, title: 'Yulius' },
     h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 20 })),
-    h('span', { class: 'brand-name' }, 'Yulius'));
+    h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, 'Yulius'), h('span', { class: 'brand-by' }, 'by Quartio team')));
   const newTask = h('a', { class: 'btn btn-primary btn-newtask', href: '#', dataset: { route: '/' } }, icon('plus', { size: 14 }), 'New task');
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sandbox' });
   const count = h('span', null, '');
