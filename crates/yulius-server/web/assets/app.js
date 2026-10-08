@@ -133,13 +133,13 @@ function createApp(root, transport) {
     buildShell();
     store.startEvents();
     const user = (me && me.user) || {};
-    if (user.is_superadmin && !readJson('yulius.passwordAck', false)) {
-      ctx.notifications.add({ kind: 'warn', title: 'Your superadmin password cannot be recovered', detail: 'Store it in several safe places.', key: 'notice:password', once: true });
-      toast('Your superadmin password cannot be recovered. Store it in several safe places.', {
-        kind: 'warn',
-        timeout: 0,
-        action: { label: 'I have stored it', run: () => writeJson('yulius.passwordAck', true) },
-      });
+    // A forgotten superadmin password can be reset with a recovery code (ACC-011), so the
+    // warning appears only while no code exists (UX-12); the composer shows it too.
+    if (user.is_superadmin) {
+      api.get('/api/auth/recovery').then((state) => {
+        if (!state || state.available) return;
+        ctx.notifications.add({ kind: 'warn', title: 'No recovery code yet', detail: 'A forgotten superadmin password can’t be reset without one.', route: '/admin/users', key: 'notice:recovery', once: true });
+      }).catch(() => {});
     }
     if (user.is_superadmin && me.instance && me.instance.github_configured === false) {
       ctx.notifications.add({ kind: 'info', title: 'Connect this instance to GitHub', detail: 'Needed to create and import sandboxes.', route: '/admin/github', key: 'notice:github', once: true });
