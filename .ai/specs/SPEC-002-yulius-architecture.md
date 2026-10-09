@@ -425,7 +425,8 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   receives the user's own GitHub token.
 - Editor file API (ADR-10): write users only; relative paths of normal components, every
   existing path resolved and kept inside the folder (symbolic links cannot escape), `.git`
-  refused, 2 MiB text limit, atomic writes with an optimistic SHA-256 check.
+  refused, also when a link inside the folder resolves into it (#59), 2 MiB text limit, atomic
+  writes with an optimistic SHA-256 check.
 - Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
   Argon2; the failure counter and permanent lock are persisted before the response is sent.
 - Browser mirror (ADR-09): the recorder runs in an isolated world, so page scripts cannot tamper
