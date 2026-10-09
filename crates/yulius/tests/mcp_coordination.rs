@@ -11,7 +11,10 @@ use support::{Creds, TestResult, call, harness};
 use yulius_app::model::{
     AttemptRecord, LaunchKind, SandboxRecord, Sealed, TaskOrigin, TaskRecord, UserRecord,
 };
-use yulius_app::ports::store::{AttemptUpdate, SandboxStore, TaskStore, UserStore};
+use yulius_app::ports::store::{
+    AttemptUpdate, CoordinationStore, SandboxStore, TaskStore, UserStore,
+};
+use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{AttemptState, TaskStatus};
@@ -216,6 +219,43 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     )
     .await?;
     assert!(err, "cannot message yourself: {selfmsg}");
+
+    // #46: an answer to the people (a reply to a person's message) is shown in the task's thread
+    // and published to the UI; no task receives it.
+    let mut events = h.app.events.subscribe();
+    let (answer, err) = tool(
+        &internal,
+        "tok-claude",
+        "message_send",
+        json!({"to": "people", "body": "The app is up on port 20000"}),
+    )
+    .await?;
+    assert!(!err, "{answer}");
+    assert_eq!(answer["to"], "people");
+    let thread = h
+        .store
+        .task_messages(&TaskId::parse("claude1")?, 50)
+        .await?;
+    assert!(
+        thread
+            .iter()
+            .any(|e| e.message.body == "The app is up on port 20000" && e.message.to_task.is_none()),
+        "shown in the task's Messages"
+    );
+    let published = events.try_recv()?;
+    match published.event {
+        UiEvent::Message { task_id, message } => {
+            assert_eq!(task_id, "claude1");
+            assert_eq!(message.body, "The app is up on port 20000");
+        }
+        other => return Err(format!("unexpected event {other:?}").into()),
+    }
+    let (others, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
+    assert_eq!(
+        others["messages"].as_array().map(Vec::len),
+        Some(0),
+        "no task receives an answer to people"
+    );
 
     // Steps: set, update, and status preserved on re-plan (STP-001/002).
     let (_, err) = tool(

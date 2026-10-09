@@ -25,7 +25,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
     });
     let mut message_props = task_ref.clone();
     if let Some(obj) = message_props.as_object_mut() {
-        obj.insert("to".into(), json!({"type": "string", "enum": ["all"], "description": "Use \"all\" to broadcast to every active task"}));
+        obj.insert("to".into(), json!({"type": "string", "enum": ["all", "people"], "description": "\"all\" broadcasts to the other tasks of the sandbox; \"people\" answers the people using Yulius (for example a reply to a message from a person): it shows in this task's Messages and in their notifications"}));
         obj.insert(
             "kind".into(),
             json!({"type": "string", "enum": ["info", "question", "request", "scope"]}),
@@ -46,12 +46,12 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "message_send".into(),
-            description: "Send a message to another task (by task_id or number) or broadcast with to=\"all\". Use kind=scope to agree who works on which files.".into(),
+            description: "Send a message to another task (by task_id or number), broadcast to the other tasks with to=\"all\", or answer the people using Yulius with to=\"people\" (use this to reply to a message from a person). Use kind=scope to agree who works on which files.".into(),
             input_schema: schema(message_props, &["body"]),
         },
         ToolDescriptor {
             name: "messages_inbox".into(),
-            description: "Read messages sent to this task by other tasks or by people; marks them read.".into(),
+            description: "Read messages sent to this task by other tasks or by people; marks them read. Answer a person with message_send to=\"people\".".into(),
             input_schema: schema(json!({"unread_only": {"type": "boolean"}}), &[]),
         },
         ToolDescriptor {

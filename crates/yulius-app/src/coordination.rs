@@ -144,7 +144,9 @@ impl App {
             .ok_or(AppError::NotFound)
     }
 
-    /// `message_send`: harness-independent message to a task (by id/number) or broadcast (COM-002).
+    /// `message_send`: harness-independent message to a task (by id/number), a broadcast to the
+    /// other tasks (`to="all"`, COM-002), or an answer to the people using Yulius (`to="people"`,
+    /// COM-005, #46): shown in this task's Messages and in their notifications.
     ///
     /// # Errors
     /// `Invalid` input, `NotFound` recipient.
@@ -166,8 +168,12 @@ impl App {
             .chars()
             .take(200)
             .collect();
-        let broadcast = args.get("to").and_then(Value::as_str) == Some("all");
-        let (to_task, recipients) = if broadcast {
+        let to = args.get("to").and_then(Value::as_str);
+        let broadcast = to == Some("all");
+        let people = to == Some("people");
+        let (to_task, recipients) = if people {
+            (None, Vec::new())
+        } else if broadcast {
             let mut recipients: Vec<TaskId> = self
                 .deps
                 .store
@@ -216,6 +222,27 @@ impl App {
             }
             self.publish_task(r).await;
             self.notify_message(r).await;
+        }
+        if people {
+            // No task receives it: the people see it in this task's thread and notifications.
+            let entry = crate::model::InboxEntry {
+                message: record.clone(),
+                delivered: false,
+                read: false,
+            };
+            if let Ok(view) = self.message_view(&entry).await {
+                self.events.publish(
+                    Some(ctx.task.sandbox_id.clone()),
+                    false,
+                    yulius_contracts::events::UiEvent::Message {
+                        task_id: ctx.task.id.to_string(),
+                        message: view,
+                    },
+                );
+            }
+            return Ok(
+                json!({"sent": true, "message_id": record.id.as_str(), "to": "people", "shown": "in this task's Messages and in people's notifications"}),
+            );
         }
         Ok(json!({"sent": true, "message_id": record.id.as_str(), "recipients": recipients.len()}))
     }
