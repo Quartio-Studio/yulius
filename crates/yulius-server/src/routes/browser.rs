@@ -275,6 +275,9 @@ async fn pump(
         return;
     }
     let mut watching = active_tab(&tabs);
+    // `Some(choice)` once the viewer chose what to watch (`watch`); until then it follows the
+    // shared active tab.
+    let mut chosen: Option<Option<TabId>> = None;
     let mut view = View::default();
     if !view.watch(session, watching.as_ref(), out).await {
         return;
@@ -289,12 +292,17 @@ async fn pump(
                     return;
                 }
                 let tabs = tabs_rx.borrow_and_update().clone();
-                let active = active_tab(&tabs);
+                let active = match &chosen {
+                    // A chosen tab that closed is watched no more.
+                    Some(choice) => choice.clone().filter(|tab| tabs.iter().any(|t| &t.id == tab)),
+                    None => active_tab(&tabs),
+                };
                 if !out.json(&ViewerServerMsg::Tabs { tabs }).await {
                     out.close(CLOSE_LAGGING, "lagging; reconnect").await;
                     return;
                 }
-                if active != watching || (view.frames.is_none() && view.dom.is_none()) {
+                let idle = view.frames.is_none() && view.dom.is_none();
+                if active != watching || (idle && active.is_some()) {
                     if !view.watch(session, active.as_ref(), out).await {
                         return;
                     }
@@ -377,6 +385,14 @@ async fn pump(
                     // Per-connection choices.
                     Ok(ViewerClientMsg::View { mode }) => {
                         view.mode = mode;
+                        if !view.watch(session, watching.as_ref(), out).await {
+                            return;
+                        }
+                        Ok(())
+                    }
+                    Ok(ViewerClientMsg::Watch { tab_id }) => {
+                        chosen = Some(tab_id.clone());
+                        watching = tab_id;
                         if !view.watch(session, watching.as_ref(), out).await {
                             return;
                         }

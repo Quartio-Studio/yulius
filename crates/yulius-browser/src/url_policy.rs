@@ -26,6 +26,10 @@ pub enum UrlRefused {
     /// `scheme://` without a host.
     #[error("address has no host")]
     MissingHost,
+    /// The address is Yulius itself (its public origin, a preview origin or one of its
+    /// listeners): opening it inside its own browser would recurse (BRW-008).
+    #[error("Yulius itself cannot be opened in the sandbox browser")]
+    Yulius,
 }
 
 /// Schemes named explicitly for clearer refusals; any other non-http(s) scheme is refused too.
@@ -85,6 +89,162 @@ pub fn normalize_url(input: &str) -> Result<String, UrlRefused> {
     };
     check_host(text)?;
     Ok(format!("{prefix}{text}"))
+}
+
+/// Addresses the sandbox browser never loads: Yulius's own origins and listeners (BRW-008).
+///
+/// Patterns use the Chrome DevTools `Fetch` wildcard syntax (`*` any run of characters, `?` one
+/// character) and are matched against the whole URL; the same patterns are handed to Chromium
+/// so that page-initiated loads (links, redirects, scripts, frames) are intercepted too.
+/// `allow` holds URL prefixes that stay reachable although a pattern matches them (the welcome
+/// page on the internal listener).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UrlDenyList {
+    patterns: Vec<String>,
+    allow: Vec<String>,
+}
+
+impl UrlDenyList {
+    /// A list from explicit patterns and allowed prefixes.
+    #[must_use]
+    pub fn new(patterns: Vec<String>, allow: Vec<String>) -> Self {
+        Self { patterns, allow }
+    }
+
+    /// The denials for a Yulius instance: every loopback form of its listener addresses
+    /// (`listeners`), its public origin and, when the public host is a domain name, every
+    /// subdomain of it (the preview origins). `allow` keeps prefixes such as the welcome page.
+    #[must_use]
+    pub fn yulius(
+        public_url: &str,
+        listeners: &[std::net::SocketAddr],
+        allow: Vec<String>,
+    ) -> Self {
+        let mut patterns = Vec::new();
+        for listener in listeners {
+            let port = listener.port();
+            if listener.ip().is_unspecified() {
+                patterns.push(format!("*://*:{port}/*"));
+                continue;
+            }
+            let ip = listener.ip();
+            let host = if ip.is_ipv6() {
+                format!("[{ip}]")
+            } else {
+                ip.to_string()
+            };
+            patterns.push(format!("*://{host}:{port}/*"));
+            if ip.is_loopback() {
+                for alias in ["127.0.0.1", "localhost", "*.localhost", "[::1]", "0.0.0.0"] {
+                    patterns.push(format!("*://{alias}:{port}/*"));
+                }
+            }
+        }
+        if let Some((scheme, rest)) = public_url.split_once("://") {
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            let authority = authority.to_ascii_lowercase();
+            let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+                let (inner, after) = rest.split_once(']').unwrap_or((rest, ""));
+                (
+                    format!("[{inner}]"),
+                    after.strip_prefix(':').map(str::to_owned),
+                )
+            } else {
+                match authority.rsplit_once(':') {
+                    Some((host, port)) => (host.to_owned(), Some(port.to_owned())),
+                    None => (authority.clone(), None),
+                }
+            };
+            let bare = host.trim_start_matches('[').trim_end_matches(']');
+            let is_ip = bare.parse::<std::net::IpAddr>().is_ok();
+            let loopback = is_loopback(&host);
+            if !host.is_empty() && !loopback {
+                if is_ip {
+                    // Only the exact origin: other ports of that address are not Yulius.
+                    let default = if scheme.eq_ignore_ascii_case("https") {
+                        "443"
+                    } else {
+                        "80"
+                    };
+                    match port.as_deref() {
+                        Some(port) if port != default => {
+                            patterns.push(format!("*://{host}:{port}/*"))
+                        }
+                        _ => patterns.push(format!("*://{host}/*")),
+                    }
+                } else {
+                    for name in [host.clone(), format!("*.{host}")] {
+                        patterns.push(format!("*://{name}/*"));
+                        patterns.push(format!("*://{name}:*/*"));
+                    }
+                }
+            }
+        }
+        patterns.sort();
+        patterns.dedup();
+        Self { patterns, allow }
+    }
+
+    /// The patterns (for `Fetch.enable`).
+    #[must_use]
+    pub fn patterns(&self) -> &[String] {
+        &self.patterns
+    }
+
+    /// Whether the list denies nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.patterns.is_empty()
+    }
+
+    /// Whether `url` must not be loaded.
+    #[must_use]
+    pub fn denies(&self, url: &str) -> bool {
+        let lowered = url.to_ascii_lowercase();
+        self.patterns
+            .iter()
+            .any(|pattern| wildcard_match(pattern.as_bytes(), lowered.as_bytes()))
+            && !self
+                .allow
+                .iter()
+                .any(|prefix| url.starts_with(prefix.as_str()))
+    }
+}
+
+/// Chrome's `Fetch` URL pattern matching: `*` matches any run (also empty), `?` one byte,
+/// `\` escapes the next byte.
+fn wildcard_match(pattern: &[u8], text: &[u8]) -> bool {
+    let (mut p, mut t) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        match pattern.get(p) {
+            Some(b'*') => {
+                star = Some((p, t));
+                p += 1;
+            }
+            Some(b'?') => {
+                p += 1;
+                t += 1;
+            }
+            Some(b'\\') if pattern.get(p + 1) == text.get(t) && p + 1 < pattern.len() => {
+                p += 2;
+                t += 1;
+            }
+            Some(byte) if *byte != b'\\' && *byte == text[t] => {
+                p += 1;
+                t += 1;
+            }
+            _ => match star {
+                Some((star_p, star_t)) => {
+                    p = star_p + 1;
+                    t = star_t + 1;
+                    star = Some((star_p, star_t + 1));
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern[p..].iter().all(|b| *b == b'*')
 }
 
 /// Splits `scheme:rest` when the prefix matches RFC 3986 scheme syntax.
@@ -194,6 +354,85 @@ mod tests {
                 "{input}"
             );
         }
+    }
+
+    #[test]
+    fn wildcards_match_like_chrome() {
+        assert!(wildcard_match(
+            b"*://localhost:8080/*",
+            b"http://localhost:8080/"
+        ));
+        assert!(wildcard_match(
+            b"*://localhost:8080/*",
+            b"ws://localhost:8080/api?x"
+        ));
+        assert!(!wildcard_match(
+            b"*://localhost:8080/*",
+            b"http://localhost:80801/"
+        ));
+        assert!(!wildcard_match(
+            b"*://localhost:8080/*",
+            b"http://localhost:8081/"
+        ));
+        assert!(wildcard_match(b"a?c", b"abc"));
+        assert!(!wildcard_match(b"a?c", b"ac"));
+        assert!(wildcard_match(b"*", b""));
+        assert!(wildcard_match(b"a\\*", b"a*"));
+        assert!(!wildcard_match(b"a\\*", b"ab"));
+    }
+
+    #[test]
+    fn the_deny_list_covers_yulius_origins_and_listeners_only() {
+        let listeners: Vec<std::net::SocketAddr> = ["127.0.0.1:8080", "127.0.0.1:8081"]
+            .iter()
+            .filter_map(|a| a.parse().ok())
+            .collect();
+        let deny = UrlDenyList::yulius(
+            "https://109-199-123-240.sslip.io",
+            &listeners,
+            vec![
+                "http://127.0.0.1:8081/browser/welcome?".into(),
+                "http://127.0.0.1:8081/browser/welcome/ports?".into(),
+            ],
+        );
+        for url in [
+            "http://127.0.0.1:8080/",
+            "http://localhost:8080/s/x",
+            "http://LOCALHOST:8081/mcp",
+            "http://app.localhost:8080/",
+            "http://[::1]:8080/",
+            "http://0.0.0.0:8081/hooks",
+            "https://109-199-123-240.sslip.io/",
+            "https://109-199-123-240.sslip.io:8443/api/me",
+            "https://20001-0123456789ab.109-199-123-240.sslip.io/",
+            "http://127.0.0.1:8081/browser/welcomeX",
+        ] {
+            assert!(deny.denies(url), "{url}");
+        }
+        for url in [
+            "http://localhost:20000/",
+            "http://127.0.0.1:3000/",
+            "https://example.com/",
+            "https://sslip.io/",
+            "https://other-109-199-123-240.sslip.io.example.com/",
+            "http://127.0.0.1:8081/browser/welcome?sandbox=s1",
+            "http://127.0.0.1:8081/browser/welcome/ports?sandbox=s1",
+        ] {
+            assert!(!deny.denies(url), "{url}");
+        }
+        // A development instance on loopback: only its ports, never all of 127.0.0.1.
+        let dev = UrlDenyList::yulius("http://127.0.0.1:8080", &listeners, Vec::new());
+        assert!(dev.denies("http://127.0.0.1:8080/"));
+        assert!(!dev.denies("http://127.0.0.1:20000/"));
+        // A server bound to every address: the port on any host.
+        let any: Vec<std::net::SocketAddr> = ["0.0.0.0:8080"]
+            .iter()
+            .filter_map(|a| a.parse().ok())
+            .collect();
+        let wide = UrlDenyList::yulius("http://10.0.0.5:8080", &any, Vec::new());
+        assert!(wide.denies("http://10.0.0.5:8080/"));
+        assert!(wide.denies("http://192.168.1.2:8080/"));
+        assert!(!wide.denies("http://10.0.0.5:20000/"));
     }
 
     #[test]

@@ -15,6 +15,7 @@ use crate::discovery::resolve_executable;
 use crate::error::BrowserError;
 use crate::instance::{BrowserInstance, InstanceConfig, ScreencastConfig};
 use crate::process::{StopTimeouts, Supervised, passed_env};
+use crate::url_policy::UrlDenyList;
 
 /// File Chromium writes into the profile when started with `--remote-debugging-port=0`.
 pub const DEVTOOLS_PORT_FILE: &str = "DevToolsActivePort";
@@ -55,6 +56,9 @@ pub struct BrowserConfig {
     /// Address of new and blank tabs, `{sandbox}` replaced by the sandbox id (the Yulius
     /// welcome page, BRW-006); `None` keeps `about:blank`.
     pub new_tab_url: Option<String>,
+    /// Addresses the browser never loads: Yulius itself (BRW-008). Applied before the first
+    /// page loads; a browser whose interception cannot be enabled is not used.
+    pub deny: UrlDenyList,
 }
 
 impl BrowserConfig {
@@ -78,6 +82,7 @@ impl BrowserConfig {
             max_tabs: instance.max_tabs,
             load_timeout: instance.load_timeout,
             new_tab_url: None,
+            deny: UrlDenyList::default(),
         }
     }
 
@@ -263,6 +268,12 @@ impl BrowserManager {
             }
         }
         let instance = self.launch(sandbox, profile_dir).await?;
+        // Recursion guard first (BRW-008): fail closed rather than run without it.
+        if let Err(error) = instance.deny_urls(self.config.deny.clone()).await {
+            warn!(sandbox = %sandbox, %error, "could not enable the browser's address guard");
+            let _ = instance.terminate(self.config.stop).await;
+            return Err(error);
+        }
         instance.set_new_tab_url(
             self.config
                 .new_tab_url
@@ -272,6 +283,19 @@ impl BrowserManager {
         instance.show_welcome_in_blank_tabs().await;
         *guard = Some(Arc::clone(&instance));
         Ok(instance)
+    }
+
+    /// DevTools ports of the running browsers (busy slots are skipped).
+    #[must_use]
+    pub fn devtools_ports(&self) -> Vec<u16> {
+        let slots: Vec<Slot> = lock(&self.slots).values().cloned().collect();
+        slots
+            .iter()
+            .filter_map(|slot| {
+                let guard = slot.try_lock().ok()?;
+                guard.as_ref().and_then(|instance| instance.devtools_port())
+            })
+            .collect()
     }
 
     /// The sandbox's browser if it is running; never starts one.

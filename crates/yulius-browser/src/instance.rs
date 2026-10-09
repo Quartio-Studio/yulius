@@ -28,7 +28,7 @@ use crate::keys;
 use crate::mirror::{self, BINDING, DomBatch, MirrorBuffer};
 use crate::process::{StopTimeouts, Supervised};
 use crate::snapshot;
-use crate::url_policy::normalize_url;
+use crate::url_policy::{UrlDenyList, UrlRefused, normalize_url};
 
 /// Smallest accepted viewport edge in CSS pixels.
 pub const VIEWPORT_MIN: u32 = 64;
@@ -534,6 +534,8 @@ pub struct BrowserInstance {
     mirror_lock: tokio::sync::Mutex<()>,
     /// Address of new and blank tabs (the Yulius welcome page, BRW-006).
     new_tab_url: Mutex<Option<String>>,
+    /// Addresses this browser never loads: Yulius itself (BRW-008).
+    deny: Mutex<UrlDenyList>,
 }
 
 impl std::fmt::Debug for BrowserInstance {
@@ -685,6 +687,7 @@ impl BrowserInstance {
             event_task: Mutex::new(None),
             mirror_lock: tokio::sync::Mutex::new(()),
             new_tab_url: Mutex::new(None),
+            deny: Mutex::new(UrlDenyList::default()),
         });
         instance.resync().await?;
         let task = tokio::spawn(event_loop(
@@ -723,6 +726,20 @@ impl BrowserInstance {
     #[must_use]
     pub fn cdp_http_url(&self) -> Option<&str> {
         self.http_url.as_deref()
+    }
+
+    /// The loopback port of the DevTools endpoint.
+    #[must_use]
+    pub fn devtools_port(&self) -> Option<u16> {
+        self.cdp
+            .url()
+            .strip_prefix("ws://")?
+            .split('/')
+            .next()?
+            .rsplit_once(':')?
+            .1
+            .parse()
+            .ok()
     }
 
     /// The underlying CDP client, for callers needing methods this adapter does not wrap.
@@ -870,6 +887,7 @@ impl BrowserInstance {
                 }
             }
             "Runtime.bindingCalled" => self.on_mirror_batch(event),
+            "Fetch.requestPaused" if event.session_id.is_none() => self.on_request_paused(event),
             "Target.detachedFromTarget" => {
                 if let Some(session) = event.params.get("sessionId").and_then(Value::as_str) {
                     {
@@ -1049,6 +1067,7 @@ impl BrowserInstance {
             Some(welcome) if url.trim().is_empty() => welcome,
             _ => normalize_url(url)?,
         };
+        self.check_allowed(&url)?;
         self.create_tab(&url).await
     }
 
@@ -1086,6 +1105,7 @@ impl BrowserInstance {
     pub async fn navigate(&self, tab: &TabId, url: &str) -> Result<(), BrowserError> {
         self.touch();
         let url = normalize_url(url)?;
+        self.check_allowed(&url)?;
         let session = self.session(tab).await?;
         self.navigate_session(tab, &session, &url).await
     }
@@ -1191,10 +1211,78 @@ impl BrowserInstance {
         })
     }
 
-    /// Stops every screencast without subscribers.
     /// Sets the address of new and blank tabs (the welcome page).
     pub fn set_new_tab_url(&self, url: Option<String>) {
         *lock(&self.new_tab_url) = url;
+    }
+
+    /// Refuses `list`'s addresses from now on (BRW-008): tool and viewer navigation fail with
+    /// [`UrlRefused::Yulius`], and Chromium intercepts every matching request a page makes
+    /// (links, redirects, frames, scripts) through a browser-wide `Fetch` interception, which
+    /// this instance fails as blocked by the client unless an allowed prefix matches.
+    ///
+    /// # Errors
+    /// CDP failures while enabling the interception.
+    pub async fn deny_urls(&self, list: UrlDenyList) -> Result<(), BrowserError> {
+        let patterns: Vec<Value> = list
+            .patterns()
+            .iter()
+            .map(|pattern| json!({"urlPattern": pattern, "requestStage": "Request"}))
+            .collect();
+        *lock(&self.deny) = list;
+        if !patterns.is_empty() {
+            self.cdp
+                .call("Fetch.enable", json!({"patterns": patterns}))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Refuses an address of the deny list.
+    fn check_allowed(&self, url: &str) -> Result<(), BrowserError> {
+        if lock(&self.deny).denies(url) {
+            Err(BrowserError::UrlRefused(UrlRefused::Yulius))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// A request a page made matched the deny list's patterns: continue it only when an allowed
+    /// prefix matches (the welcome page), otherwise fail it as blocked.
+    fn on_request_paused(&self, event: &CdpEvent) {
+        let Some(request_id) = event
+            .params
+            .get("requestId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        let url = event
+            .params
+            .pointer("/request/url")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let denied = lock(&self.deny).denies(url);
+        if denied {
+            debug!(url, "the sandbox browser refused to load Yulius");
+        }
+        let cdp = self.cdp.clone();
+        tokio::spawn(async move {
+            let outcome = if denied {
+                cdp.call(
+                    "Fetch.failRequest",
+                    json!({"requestId": request_id, "errorReason": "BlockedByClient"}),
+                )
+                .await
+            } else {
+                cdp.call("Fetch.continueRequest", json!({"requestId": request_id}))
+                    .await
+            };
+            if let Err(error) = outcome {
+                debug!(%error, "answering an intercepted request failed");
+            }
+        });
     }
 
     /// Shows the welcome page in tabs that are still `about:blank` (a fresh browser).
@@ -1438,6 +1526,7 @@ impl BrowserInstance {
         if url == "about:blank" {
             return Err(BrowserError::InvalidInput("not a resource address".into()));
         }
+        self.check_allowed(&url)?;
         let session = self.session(tab).await?;
         let tree = self
             .cdp
@@ -1785,7 +1874,9 @@ impl BrowserInstance {
                 self.set_viewport(width, height).await.map(|()| None)
             }
             // Per-connection choices, handled by the viewer connection.
-            ViewerClientMsg::View { .. } | ViewerClientMsg::DomResync => Ok(None),
+            ViewerClientMsg::View { .. }
+            | ViewerClientMsg::DomResync
+            | ViewerClientMsg::Watch { .. } => Ok(None),
         }
     }
 
@@ -1818,6 +1909,7 @@ impl BrowserInstance {
     pub async fn tool_open(&self, params: &OpenParams) -> Result<NavigationResult, BrowserError> {
         self.touch();
         let url = normalize_url(&params.url)?;
+        self.check_allowed(&url)?;
         let tab = self.create_tab("about:blank").await?;
         self.navigate_and_wait(&tab, &url).await
     }
@@ -1832,6 +1924,7 @@ impl BrowserInstance {
     ) -> Result<NavigationResult, BrowserError> {
         self.touch();
         let url = normalize_url(&params.url)?;
+        self.check_allowed(&url)?;
         self.navigate_and_wait(&params.tab_id, &url).await
     }
 

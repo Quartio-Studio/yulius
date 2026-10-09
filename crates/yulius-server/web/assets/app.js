@@ -679,7 +679,19 @@ function createApp(root, transport) {
   return { start };
 }
 
+/** Yulius inside a frame (its own browser panel, or a page that frames it): show a notice and
+ *  run nothing — no session, no sockets (BRW-008). The server forbids framing too. */
+function refuseFramed(root) {
+  setChildren(root, h('main', { class: 'framed-notice' },
+    h('h1', null, `${BRAND.name} cannot run inside a frame`),
+    h('p', null, `${BRAND.name} does not open inside its own browser or any other page. Open it in a tab of your own browser.`)));
+}
+
 async function boot() {
+  if (window.__yuliusFramed) {
+    refuseFramed(document.getElementById('app'));
+    return;
+  }
   applyTheme();
   let transport = realTransport();
   if (MOCK) {

@@ -1,87 +1,90 @@
-// Sandbox browser panel (BRW-001..007): tab strip, address bar and the active tab of the
-// server-side Chromium shown as live DOM (rrweb mirror, BRW-005) — or, when a page cannot be
-// mirrored or the user asks for it, as JPEG frames. The mirror is a real page in the user's
-// browser: text selects and copies natively, hover and cursors work, and clicks, drags, keys and
-// wheel are forwarded to the real browser, whose changes stream back into the mirror.
-// Page resources served on the VM (localhost, plain http) load through Yulius. Agents' actions
-// show as a labelled cursor (BRW-007). New tabs open the Yulius welcome page (BRW-006).
-// The socket is open only while the panel is visible.
+// Sandbox browser panel (BRW-001..008; SPEC-002 ADR-14). Two kinds of tabs share one strip:
 //
-// rrweb's replayer is vendored under a neutral name and loaded on first use: content blockers
-// (Brave Shields, uBlock Origin with EasyPrivacy) block any `/rrweb.js`, and a blocked or failed
-// load must cost only the DOM view — the panel then shows pixels — never the whole UI.
+// - Live tabs (yours): the sandbox's dev servers rendered by your own browser in an iframe. Each
+//   sandbox port has its own preview origin (`https://<port>-<key>.<yulius host>`), served by
+//   Yulius's preview proxy from the VM; the page runs here, so scrolling, selection, typing,
+//   WebSockets and hot reload are native. A small bridge script in the page reports its address
+//   and title and takes back, forward and reload (postMessage between the preview origin and
+//   Yulius only). Live tabs belong to this browser (kept in localStorage per sandbox).
+// - Sandbox Chrome tabs (shared): the headless Chrome on the server that agents drive. They are
+//   watched remotely (browserremote.js) with the agent's labelled cursor (BRW-007); one click
+//   opens the same address live. Other sites (not this sandbox's ports) open there too.
+//
+// A new tab shows the start page: the sandbox's listening ports and how to use the panel
+// (BRW-006). Sockets and polling run only while the panel is visible.
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, focusNextRegion, closableTabKeys } from './dom.js';
-import { ReconnectingSocket, parseBrowserFrame, CLOSE_REVOKED, CLOSE_SERVER_ERROR } from './termsocket.js';
+import { readJson, writeJson } from './store.js';
 import { allows } from './status.js';
+import { createRemoteView } from './browserremote.js';
 
-const MOUSE_BUTTONS = ['left', 'middle', 'right'];
+export { needsProxy } from './browserremote.js';
+
 const WELCOME_PATH = /\/browser\/welcome\?sandbox=/;
-const AGENT_CURSOR_IDLE_MS = 6000;
-/** A tab that sends no DOM within this time is shown as pixels (BRW-005 fallback). */
-const DOM_WAIT_MS = 6000;
-/** Mirror failures on one page before it is shown as pixels instead of resynchronized. */
-const MAX_MIRROR_FAILURES = 3;
-/** Pixel view reason when the mirror's code cannot load in this browser. */
-const MIRROR_UNAVAILABLE = 'the DOM mirror could not load in this browser';
-/** rrweb event and source numbers used here. */
-const EV_FULL_SNAPSHOT = 2;
-const EV_INCREMENTAL = 3;
-const EV_META = 4;
-const SRC_MUTATION = 0;
-const SRC_VIEWPORT = 4;
-const SRC_STYLESHEET_RULE = 8;
-const SRC_CANVAS = 9;
-const SRC_SELECTION = 14;
+/** Live tabs per sandbox and browser. */
+const MAX_LIVE_TABS = 8;
+/** Port list refresh while the start page shows. */
+const INFO_REFRESH_MS = 5000;
+/** A preview origin that does not answer its ping in this time is reported unreachable (its
+ *  first visit may wait for the TLS proxy to obtain a certificate). */
+const PING_TIMEOUT_MS = 30000;
+/** How long an agent's notice stays over a live tab. */
+const AGENT_NOTICE_MS = 8000;
+/** A sandbox Chrome tab is marked as the agent's this long after its last action. */
+const AGENT_MARK_MS = 60000;
+/** Everything a page may do in a live tab except navigating Yulius itself away. */
+const LIVE_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-pointer-lock allow-presentation allow-storage-access-by-user-activation';
 
-/** CDP-style modifier bitmask: Alt=1, Ctrl=2, Meta=4, Shift=8. */
-function modifiers(event) {
-  return (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
-}
-
-/** Normalize an address bar entry to a URL; null when it is not URL-like. */
+/** Normalize an address bar entry to a URL; null when it is not URL-like. A bare port
+ *  (`20001`, `:20001/x`) means this sandbox's localhost. */
 export function normalizeUrl(input) {
   const value = String(input || '').trim();
   if (!value || /\s/.test(value)) return null;
+  const port = value.match(/^:?(\d{2,5})([/?#].*)?$/);
+  if (port) return `http://localhost:${port[1]}${port[2] || '/'}`;
   if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !/^[^:/]+:\d+/.test(value)) return value;
   if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?([/?#]|$)/i.test(value)) return `http://${value}`;
   if (/^[^/]+\.[^/]+/.test(value) || /^[^/:]+:\d+/.test(value)) return `https://${value}`;
   return null;
 }
 
-/** Whether the user's browser cannot load `url` itself (VM loopback, private network, http). */
-export function needsProxy(url) {
+/** The port of a URL on the VM's loopback (`http://localhost:20001/…`), or null. */
+export function loopbackPort(url) {
   let parsed;
-  try { parsed = new URL(url); } catch { return false; }
-  if (parsed.protocol === 'http:') return true;
-  if (parsed.protocol !== 'https:') return false;
+  try { parsed = new URL(url); } catch { return null; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
   const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  return host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host === '0.0.0.0'
-    || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+  const loopback = host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host === '0.0.0.0' || /^127\.\d+\.\d+\.\d+$/.test(host);
+  const port = Number(parsed.port);
+  return loopback && port > 0 ? port : null;
 }
 
-let rrwebStyles = false;
-function ensureReplayerStyles() {
-  if (rrwebStyles) return;
-  rrwebStyles = true;
-  document.head.append(h('link', { rel: 'stylesheet', href: '/assets/vendor/dom-mirror/replayer.css' }));
+/** The preview URL showing loopback `url` (template: an origin with `{port}`). */
+export function previewUrl(template, url) {
+  const port = loopbackPort(url);
+  if (!template || !port) return null;
+  const parsed = new URL(url);
+  return `${template.replace('{port}', String(port))}${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
-let Replayer = null; // rrweb's Replayer once loaded
-let replayerLoad = null;
-let replayerFailed = false;
-/** Loads the replayer once; it settles either way (a failure sets `replayerFailed`). */
-function loadReplayer() {
-  if (!replayerLoad) {
-    replayerLoad = import('./vendor/dom-mirror/replayer.js')
-      .then((module) => { Replayer = module.Replayer; })
-      .catch((error) => {
-        replayerFailed = true;
-        console.warn('DOM mirror unavailable; the browser panel shows pixels', error);
-      });
-  }
-  return replayerLoad;
+/** The loopback address (`http://localhost:<port>/…`) of a preview URL, or null. */
+export function loopbackUrlOf(template, href) {
+  if (!template || typeof href !== 'string') return null;
+  const [before, after] = template.split('{port}');
+  if (after === undefined || !href.startsWith(before)) return null;
+  const match = href.slice(before.length).match(/^(\d{1,5})/);
+  if (!match) return null;
+  const rest = href.slice(before.length + match[1].length);
+  if (!rest.startsWith(after)) return null;
+  const path = rest.slice(after.length);
+  if (path && !/^[/?#]/.test(path)) return null;
+  return `http://localhost:${match[1]}${path || '/'}`;
+}
+
+/** `localhost:20001/path` for display. */
+function shortUrl(url) {
+  return String(url || '').replace(/^https?:\/\//, '');
 }
 
 /** Create the browser panel view for a sandbox. */
@@ -91,771 +94,485 @@ export function createBrowserPanel(ctx, sandbox) {
     setChildren(el, h('div', { class: 'panel-msg' }, icon('lock', { size: 20 }), h('p', null, 'The sandbox browser requires write access on GitHub.')));
     return { el };
   }
-  ensureReplayerStyles();
 
-  let tabs = [];
-  let socket = null;
-  let pendingActivate = null;
-  let pendingOpen = null; // URL to open in a new tab once connected (localhost links)
-  let lastViewport = null;
-  let decoding = false;
-  let queuedFrame = null;
-  let moveFrame = 0;
-  let pendingMove = null;
-  let viewportTimer = null;
+  const storeKey = `yulius.browser.live.${sandbox.id}`;
+  let info = null; // PreviewInfo
+  let infoLoad = null;
+  let infoTimer = 0;
   let visible = false;
-  let lastError = null; // last {code, message} error frame; explains a following close
-  let wantPixels = false; // the user's choice
-  let pixelsReason = null; // the server could not mirror the active tab
-  let replayer = null;
-  let replayerTab = null;
-  let replayerClock = 0; // events are applied in arrival order, all before this baseline
-  let domTimer = 0;
-  let watchedUrl = null; // the active tab's URL when the view mode was last chosen
-  let mirrorFailures = 0; // on the current page
-  let missedDom = false; // DOM arrived before the replayer loaded: resynchronize once it has
-  let serverViewport = null; // {width, height} the server last applied to every tab
-  const canvasSeq = new Map(); // mirror node id → newest painted frame
-  let pageSize = { width: 0, height: 0 };
-  const tags = new Map(); // mirror node id → tag name (for attribute rewriting)
-  const frames = new Map(); // tab id → last ImageBitmap
-  let lastAgent = null; // {x, y}
-  let agentTimer = 0;
+  let seq = 0;
+  let selected = null; // {kind: 'live' | 'remote', id}
+  let remoteTabs = [];
+  let pendingRemote = []; // addresses to open in the sandbox Chrome once connected
+  let pendingSelect = null; // a sandbox Chrome tab to select once known (links)
+  let noticeTimer = 0;
+  const agentMarks = new Map(); // sandbox Chrome tab id → time of the agent's last action
+  const pings = new Map(); // preview origin → true once it answered
 
-  const tabList = h('div', { class: 'bp-tablist', role: 'tablist', 'aria-label': 'Browser tabs' });
-  // A new tab opens the welcome page; type an address there. It follows the tablist, which holds only tabs.
-  const tabStrip = h('div', { class: 'bp-tabs' }, tabList, iconButton('plus', 'New tab', () => send({ type: 'open', url: '' })));
-  const address = h('input', { class: 'input', type: 'text', placeholder: 'Type an address, e.g. localhost:20000 or aws.amazon.com', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Address' });
-  const reloadButton = iconButton('refresh', 'Reload', () => {
-    const tab = activeTab();
-    if (tab) send({ type: 'navigate', tab_id: tab.id, url: tab.url });
-  });
-  const viewBadge = h('span', { class: 'chip bp-viewchip', hidden: true });
-  const attention = h('div', { class: 'banner banner-warn bp-attn small', hidden: true });
-  const mirrorHost = h('div', { class: 'bp-mirror', role: 'region', 'aria-label': 'Remote browser page', tabindex: '-1' });
-  const canvas = h('canvas', { class: 'bp-canvas', hidden: true });
-  // Pixel view only: the canvas cannot take input itself.
-  const inputLayer = h('div', { class: 'bp-input', role: 'application', tabindex: '0', hidden: true, 'aria-label': 'Remote browser page (click to interact)', 'aria-description': 'Keys go to the page. Press F6 to move to the next area, Shift+F6 to go back.', title: 'F6 moves to the next area' });
-  const agentCursor = h('div', { class: 'bp-agent', hidden: true }, h('span', { class: 'bp-agent-arrow' }), h('span', { class: 'bp-agent-label' }));
-  const agentPill = h('div', { class: 'bp-agent-pill', hidden: true });
-  const copied = h('div', { class: 'bp-copied', hidden: true }, 'Copied');
-  let copiedTimer = 0;
-  const overlay = h('div', { class: 'bp-overlay' }, 'Connecting to the sandbox browser…');
-  const stage = h('div', { class: 'bp-view' }, mirrorHost, canvas, inputLayer, agentCursor, agentPill, copied, overlay);
-  setChildren(el, tabStrip, h('div', { class: 'bp-bar' }, reloadButton, address, viewBadge), attention, stage);
-  const g = canvas.getContext('2d');
+  const liveTabs = (readJson(storeKey, []) || [])
+    .filter((saved) => saved && (saved.url === null || typeof saved.url === 'string'))
+    .slice(0, MAX_LIVE_TABS)
+    .map((saved) => newLiveTabState(saved.url, saved.title));
 
-  const pixelsButton = h('button', { type: 'button', class: 'btn btn-sm', 'aria-pressed': 'false', title: 'Show the page as pixels instead of live DOM', onClick: () => setPixels(!wantPixels) }, 'Pixels');
-
-  function activeTab() {
-    return tabs.find((t) => t.active) || null;
+  function newLiveTabState(url, title) {
+    seq += 1;
+    return { id: `live-${seq}`, url: url || null, title: title || '', frameBox: null, iframe: null, origin: null, back: null, forward: null, bridged: false };
   }
 
-  function send(message) {
-    return socket ? socket.send(message) : false;
+  const remote = createRemoteView(ctx, sandbox, {
+    onTabs: onRemoteTabs,
+    onAgent,
+    onActionRequested: (message) => ctx.store.handleEvent({ ...message, type: 'browser.action_requested', sandbox_id: sandbox.id }),
+    onCreated: (tabId) => selectRemote(tabId),
+    onConnected: () => {
+      const urls = pendingRemote;
+      pendingRemote = [];
+      for (const url of urls) remote.open(url);
+    },
+  });
+
+  // ---------------------------------------------------------------- elements
+  const tabList = h('div', { class: 'bp-tablist', role: 'tablist', 'aria-label': 'Browser tabs' });
+  // The new tab shows the start page; it follows the tablist, which holds only tabs.
+  const tabStrip = h('div', { class: 'bp-tabs' }, tabList, iconButton('plus', 'New tab', () => selectLive(addLiveTab(null))));
+  const backButton = iconButton('back', 'Back', () => history('back'));
+  const forwardButton = iconButton('forward', 'Forward', () => history('forward'));
+  const reloadButton = iconButton('refresh', 'Reload', reload);
+  const address = h('input', { class: 'input', type: 'text', placeholder: 'Type an address, e.g. localhost:20000 or aws.amazon.com', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Address' });
+  const openLiveButton = h('button', { type: 'button', class: 'btn btn-sm', hidden: true, title: 'Open this address live in your browser', onClick: openSelectedLive }, 'Open live');
+  const popOutButton = iconButton('external', 'Open in a new window', popOut);
+  const bar = h('div', { class: 'bp-bar' }, backButton, forwardButton, reloadButton, address, openLiveButton, remote.viewBadge, remote.pixelsButton, popOutButton);
+  const attention = h('div', { class: 'banner banner-warn bp-attn small', hidden: true });
+  const startPage = h('div', { class: 'bp-start', role: 'region', 'aria-label': 'New tab' });
+  const notice = h('div', { class: 'bp-notice', role: 'status', hidden: true });
+  const liveStage = h('div', { class: 'bp-view bp-livestage' }, startPage, notice);
+  remote.el.hidden = true;
+  const stages = h('div', { class: 'bp-stages' }, liveStage, remote.el);
+  setChildren(el, tabStrip, bar, attention, stages);
+
+  // ---------------------------------------------------------------- state helpers
+  function persist() {
+    writeJson(storeKey, liveTabs.map((tab) => ({ url: tab.url, title: tab.title })));
+  }
+
+  function liveTab(id) {
+    return liveTabs.find((tab) => tab.id === id) || null;
+  }
+
+  function current() {
+    if (!selected) return null;
+    if (selected.kind === 'live') return liveTab(selected.id);
+    return remoteTabs.find((tab) => tab.id === selected.id) || null;
   }
 
   function isWelcome(tab) {
     return Boolean(tab && WELCOME_PATH.test(tab.url || ''));
   }
 
-  function showingPixels() {
-    return wantPixels || Boolean(pixelsReason);
+  /** Sandbox Chrome tabs worth showing: not its blank or welcome tabs, unless chosen or asking. */
+  function shownRemoteTabs() {
+    return remoteTabs.filter((tab) => (selected && selected.kind === 'remote' && selected.id === tab.id)
+      || tab.action_requested || !(isWelcome(tab) || !tab.url || tab.url === 'about:blank'));
   }
 
-  function setPixels(on) {
-    wantPixels = on;
-    pixelsButton.setAttribute('aria-pressed', String(on));
-    pixelsButton.classList.toggle('active', on);
-    pixelsReason = null;
-    send({ type: 'view', mode: on ? 'pixels' : 'dom' });
-    if (on) clearTimeout(domTimer); else expectDom();
-    applyMode();
+  /** Whether `url` opens live (a listening-or-not port of this sandbox) or in the sandbox Chrome. */
+  function opensLive(url) {
+    const port = loopbackPort(url);
+    return Boolean(info && info.enabled && info.origin_template && port
+      && port >= info.first_port && port <= info.last_port && !(info.excluded || []).includes(port));
   }
 
-  /** Falls back to pixels when the active tab sends no DOM in time. */
-  function expectDom() {
-    clearTimeout(domTimer);
-    if (showingPixels()) return;
-    domTimer = setTimeout(() => {
-      if (showingPixels() || replayer) return;
-      autoPixels('this page did not send its DOM');
-    }, DOM_WAIT_MS);
-  }
-
-  function autoPixels(reason) {
-    clearTimeout(domTimer);
-    pixelsReason = reason;
-    destroyReplayer();
-    send({ type: 'view', mode: 'pixels' });
-    applyMode();
-  }
-
-  /** After a navigation or tab change, an automatic fallback tries the DOM view again. */
-  function retryDom() {
-    if (wantPixels || replayerFailed) return;
-    if (pixelsReason) {
-      pixelsReason = null;
-      send({ type: 'view', mode: 'dom' });
-      applyMode();
+  function loadInfo() {
+    if (!infoLoad) {
+      infoLoad = ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/previews`)
+        .then((value) => { info = value; })
+        .catch((error) => { console.warn('previews', error); })
+        .finally(() => {
+          infoLoad = null;
+          if (selected && selected.kind === 'live' && !current()?.url) renderStart();
+          render();
+        });
     }
-    expectDom();
+    return infoLoad;
   }
 
-  function applyMode() {
-    const pixels = showingPixels();
-    applyInputMode();
-    canvas.hidden = !pixels;
-    mirrorHost.hidden = pixels;
-    viewBadge.hidden = !pixels;
-    viewBadge.textContent = pixelsReason ? 'Pixel view' : 'Pixels';
-    viewBadge.title = pixelsReason ? `This page cannot be mirrored as DOM: ${pixelsReason}` : 'Pixel view (you chose it)';
-    if (pixels) {
-      const tab = activeTab();
-      if (tab && frames.has(tab.id)) draw(frames.get(tab.id));
+  // ---------------------------------------------------------------- live tabs
+  function addLiveTab(url) {
+    if (liveTabs.length >= MAX_LIVE_TABS) {
+      const oldest = liveTabs.find((tab) => !selected || tab.id !== selected.id);
+      if (oldest) removeLiveTab(oldest);
     }
-    layout();
+    const tab = newLiveTabState(url, '');
+    liveTabs.push(tab);
+    persist();
+    return tab;
   }
 
-  /** The pixel view takes input through an overlay; the DOM mirror takes it directly. */
-  function applyInputMode() {
-    inputLayer.hidden = !showingPixels();
+  function removeLiveTab(tab) {
+    const index = liveTabs.indexOf(tab);
+    if (index < 0) return;
+    liveTabs.splice(index, 1);
+    if (tab.frameBox) tab.frameBox.remove();
+    persist();
+    if (selected && selected.kind === 'live' && selected.id === tab.id) {
+      const next = liveTabs[Math.min(index, liveTabs.length - 1)];
+      if (next) selectLive(next);
+      else if (shownRemoteTabs().length) selectRemote(shownRemoteTabs()[0].id);
+      else selectLive(addLiveTab(null));
+    } else {
+      render();
+    }
   }
 
-  /** Focus for keyboard input: the mirror page or the pixel overlay. */
-  function focusPage() {
-    if (showingPixels()) inputLayer.focus();
-    else if (replayer && replayer.iframe && replayer.iframe.contentWindow) replayer.iframe.contentWindow.focus();
-    // Still loading: leave the tab strip anyway, so a key meant for the page (Backspace) never
-    // closes the tab that was just clicked (#80).
-    else mirrorHost.focus();
+  function frameBox(tab) {
+    if (!tab.frameBox) {
+      tab.frameBox = h('div', { class: 'bp-frame', hidden: true });
+      liveStage.insertBefore(tab.frameBox, notice);
+    }
+    return tab.frameBox;
   }
 
-  /**
-   * The mirror document behaves like the page: native selection, copy, hover and cursors stay
-   * local; presses, moves, wheel and keys go to the real browser at the same CSS coordinates
-   * (the mirror is laid out at the page's viewport). Its own navigation is suppressed.
-   */
-  function wireMirrorDocument() {
-    const doc = replayer && replayer.iframe ? replayer.iframe.contentDocument : null;
-    if (!doc) return;
-    const at = (event) => ({ x: Math.round(event.clientX), y: Math.round(event.clientY) });
-    let pressed = false;
-    let pendingMoveEvent = null;
-    let mirrorMoveFrame = 0;
-    doc.addEventListener('mousedown', (event) => {
-      if (event.button === 2) return; // the local context menu (Copy) stays
-      pressed = true;
-      const p = at(event);
-      sendMouse('down', p.x, p.y, MOUSE_BUTTONS[event.button] || 'left');
-    }, true);
-    doc.addEventListener('mousemove', (event) => {
-      pendingMoveEvent = event;
-      if (mirrorMoveFrame) return;
-      mirrorMoveFrame = requestAnimationFrame(() => {
-        mirrorMoveFrame = 0;
-        const move = pendingMoveEvent;
-        pendingMoveEvent = null;
-        if (!move) return;
-        const p = at(move);
-        sendMouse('move', p.x, p.y, pressed && (move.buttons & 1) ? 'left' : 'none');
-      });
-    }, true);
-    doc.addEventListener('mouseup', (event) => {
-      if (event.button === 2) return;
-      pressed = false;
-      const p = at(event);
-      sendMouse('up', p.x, p.y, MOUSE_BUTTONS[event.button] || 'left');
-      // Instant copy of a selection (also after a double-click).
-      const text = String(doc.getSelection ? doc.getSelection() : '');
-      if (!text.trim() || !navigator.clipboard) return;
-      navigator.clipboard.writeText(text).then(() => {
-        copied.hidden = false;
-        clearTimeout(copiedTimer);
-        copiedTimer = setTimeout(() => { copied.hidden = true; }, 1200);
-      }, () => {});
-    }, true);
-    doc.addEventListener('wheel', (event) => {
-      event.preventDefault();
-      const p = at(event);
-      sendMouse('wheel', p.x, p.y, 'none', { dx: Math.round(event.deltaX), dy: Math.round(event.deltaY) });
-    }, { capture: true, passive: false });
-    // The real page handles clicks; the mirror never navigates, submits or drags links away.
-    doc.addEventListener('click', (event) => event.preventDefault(), true);
-    doc.addEventListener('dragstart', (event) => event.preventDefault(), true);
-    // The mirror is a same-origin iframe: its key events never reach the window's F6 handler, so
-    // F6 / Shift+F6 leave it here (WCAG 2.1.2 No Keyboard Trap); every other key goes to the page.
-    doc.addEventListener('keydown', (event) => {
-      if (event.key === 'F6' && !event.altKey && !event.metaKey && !event.ctrlKey) {
-        event.preventDefault();
-        event.stopPropagation();
-        focusNextRegion(event.shiftKey);
+  /** Checks that the preview origin answers (wildcard DNS and TLS), once per origin. */
+  async function reachable(origin) {
+    if (origin === 'null' || pings.get(origin)) return true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PING_TIMEOUT_MS);
+    try {
+      await window.fetch(`${origin}/__yulius/ping`, { mode: 'no-cors', cache: 'no-store', credentials: 'omit', signal: controller.signal });
+      pings.set(origin, true);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function showUnreachable(tab, url) {
+    const box = frameBox(tab);
+    tab.iframe = null;
+    setChildren(box, h('div', { class: 'bp-start' },
+      h('h2', { class: 'bp-start-title' }, `${shortUrl(url)} cannot open live`),
+      h('p', { class: 'muted' }, 'Your browser could not reach this sandbox port\'s preview address. The server needs wildcard DNS and TLS for its preview subdomains (see the operations guide).'),
+      h('div', { class: 'row' },
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => { pings.delete(tab.origin); load(tab, url); } }, 'Try again'),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => openRemote(url) }, 'Open in the sandbox Chrome'))));
+  }
+
+  /** Shows loopback `url` live in `tab`. A restored tab whose address no longer opens live
+   *  (previews turned off, the port left the range) becomes a new tab instead of opening a
+   *  sandbox Chrome tab by itself. */
+  async function load(tab, url, { restored = false } = {}) {
+    if (!info) await loadInfo();
+    if (!opensLive(url)) {
+      if (restored) {
+        tab.url = null;
+        persist();
+        if (selected && selected.id === tab.id) selectLive(tab);
         return;
       }
-      forwardKey('down', event);
-    }, true);
-    doc.addEventListener('keyup', (event) => forwardKey('up', event), true);
-    doc.addEventListener('paste', (event) => forwardPaste(event), true);
+      openRemote(url);
+      return;
+    }
+    tab.url = url;
+    tab.title = '';
+    tab.back = null;
+    tab.forward = null;
+    tab.bridged = false;
+    persist();
+    const target = previewUrl(info.origin_template, url);
+    let origin = 'null';
+    try { origin = new URL(target).origin; } catch { /* opaque */ }
+    tab.origin = origin;
+    const box = frameBox(tab);
+    if (selected && selected.id === tab.id) { box.hidden = false; startPage.hidden = true; }
+    if (!tab.iframe) setChildren(box, h('div', { class: 'bp-overlay' }, `Opening ${shortUrl(url)}…`));
+    render();
+    if (!(await reachable(origin))) {
+      if (liveTab(tab.id) && tab.url === url) showUnreachable(tab, url);
+      return;
+    }
+    if (!liveTab(tab.id) || tab.url !== url) return;
+    if (!tab.iframe) {
+      tab.iframe = h('iframe', { class: 'bp-live', title: `Live page ${shortUrl(url)}`, sandbox: LIVE_SANDBOX, allow: 'clipboard-read; clipboard-write; fullscreen', referrerpolicy: 'no-referrer' });
+      setChildren(box, tab.iframe);
+    }
+    tab.iframe.setAttribute('title', `Live page ${shortUrl(url)}`);
+    tab.iframe.src = target;
   }
 
-  function renderTabs() {
+  function selectLive(tab) {
+    selected = { kind: 'live', id: tab.id };
+    remote.watch(null);
+    remote.el.hidden = true;
+    liveStage.hidden = false;
+    notice.hidden = true;
+    for (const other of liveTabs) if (other.frameBox) other.frameBox.hidden = other !== tab || !tab.url;
+    startPage.hidden = Boolean(tab.url);
+    if (!tab.url) renderStart();
+    else if (!tab.frameBox || (!tab.iframe && !tab.frameBox.firstChild)) load(tab, tab.url, { restored: true });
+    render();
+  }
+
+  function selectRemote(tabId) {
+    selected = { kind: 'remote', id: tabId };
+    liveStage.hidden = true;
+    remote.el.hidden = false;
+    remote.watch(tabId);
+    if (agentMarks.has(tabId)) agentMarks.delete(tabId);
+    render();
+    setTimeout(() => remote.layout(), 0);
+  }
+
+  function openRemote(url) {
+    if (remote.isOpen) remote.open(url);
+    else pendingRemote.push(url);
+  }
+
+  /** Opens `url` where it belongs: this sandbox's ports live (in the current live tab or a new
+   *  one), everything else in a new sandbox Chrome tab. */
+  async function openUrl(url, { newTab = false } = {}) {
+    if (!info) await loadInfo();
+    const port = loopbackPort(url);
+    if (!opensLive(url)) {
+      if (port && info && info.enabled && (port < info.first_port || port > info.last_port)) {
+        toast(`Port ${port} is outside this sandbox's ports ${info.first_port}–${info.last_port}: it opens in the sandbox Chrome.`, { kind: 'info' });
+      }
+      openRemote(url);
+      return;
+    }
+    const tab = current();
+    const reuse = selected && selected.kind === 'live' && tab && (!newTab || !tab.url);
+    const target = reuse ? tab : addLiveTab(null);
+    selectLive(target);
+    load(target, url);
+  }
+
+  // ---------------------------------------------------------------- start page (BRW-006)
+  function renderStart() {
+    const listening = info ? info.listening : [];
+    const ports = info
+      ? (listening.length
+        ? h('div', { class: 'bp-ports' }, listening.map((port) => h('button', { type: 'button', class: 'bp-port', onClick: () => openUrl(`http://localhost:${port}/`) },
+          h('b', null, `localhost:${port}`), h('span', { class: 'muted small' }, info.enabled ? 'Open live' : 'Open'))))
+        : h('p', { class: 'muted' }, `No dev server is listening on ports ${info.first_port}–${info.last_port} yet. Start one in a shell or ask an agent, for example `, h('code', null, `PORT=${info.first_port} npm run dev`), '.'))
+      : h('p', { class: 'muted' }, 'Looking for dev servers…');
+    setChildren(startPage,
+      h('h2', { class: 'bp-start-title' }, `Browser of ${sandbox.name || sandbox.slug || 'this sandbox'}`),
+      info && !info.enabled ? h('div', { class: 'banner banner-info small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, `Live pages are off on this server (${info.reason || 'not configured'}); pages open in the sandbox Chrome.`)) : null,
+      h('section', { class: 'bp-start-section' }, h('h3', null, 'Running in this sandbox'), ports),
+      h('section', { class: 'bp-start-section' }, h('h3', null, 'Tips'), h('ul', { class: 'small' },
+        h('li', null, 'Type an address above. This sandbox\'s ports open live: the page runs in your browser, with real scrolling, selection and devtools.'),
+        h('li', null, 'Other sites open in the sandbox Chrome on the server, which agents use too. Its tabs are marked; you watch them with the agent\'s cursor.'),
+        h('li', null, 'Open a live page in its own window with the arrow button.'))));
+  }
+
+  // ---------------------------------------------------------------- toolbar
+  function history(direction) {
+    const tab = current();
+    if (!tab || !selected || selected.kind !== 'live' || !tab.iframe || !tab.iframe.contentWindow || !tab.origin || tab.origin === 'null') return;
+    tab.iframe.contentWindow.postMessage({ source: 'yulius', type: direction }, tab.origin);
+  }
+
+  function reload() {
+    const tab = current();
+    if (!tab || !selected) return;
+    if (selected.kind === 'remote') {
+      remote.navigate(tab.id, tab.url);
+    } else if (tab.url) {
+      if (tab.iframe && tab.iframe.contentWindow && tab.bridged && tab.origin && tab.origin !== 'null') tab.iframe.contentWindow.postMessage({ source: 'yulius', type: 'reload' }, tab.origin);
+      else { tab.iframe = null; if (tab.frameBox) tab.frameBox.replaceChildren(); load(tab, tab.url); }
+    }
+  }
+
+  function popOut() {
+    const tab = current();
+    if (!tab || !selected || selected.kind !== 'live' || !tab.url || !info) return;
+    const target = previewUrl(info.origin_template, tab.url);
+    if (target) window.open(target, '_blank', 'noopener');
+  }
+
+  function openSelectedLive() {
+    const tab = current();
+    if (tab && selected && selected.kind === 'remote' && opensLive(tab.url)) openUrl(tab.url, { newTab: true });
+  }
+
+  address.addEventListener('keydown', (event) => {
+    const tab = current();
+    if (event.key === 'Escape') { address.value = tab && tab.url && !isWelcome(tab) ? shortUrl(tab.url) : ''; return; }
+    if (event.key !== 'Enter') return;
+    const url = normalizeUrl(address.value);
+    if (!url) { toast('Enter a web address, e.g. example.com or localhost:20000.', { kind: 'warn' }); return; }
+    address.blur();
+    // In a sandbox Chrome tab the address drives that tab, as in any browser.
+    if (selected && selected.kind === 'remote' && tab) remote.navigate(tab.id, url);
+    else openUrl(url);
+  });
+
+  // ---------------------------------------------------------------- rendering
+  function render() {
     const focused = tabList.contains(document.activeElement) ? document.activeElement.dataset.tabId : null;
-    const items = tabs.map((tab) => {
-      const attn = Boolean(tab.action_requested);
-      const title = isWelcome(tab) ? 'Welcome' : (tab.title || tab.url || 'New tab');
-      const close = (event) => { if (event) event.stopPropagation(); send({ type: 'close', tab_id: tab.id }); };
-      const button = h('div', { class: ['bp-tab', tab.active && 'active', attn && 'attention'], role: 'tab', tabindex: tab.active ? '0' : '-1', dataset: { tabId: tab.id }, 'aria-selected': String(Boolean(tab.active)), 'aria-keyshortcuts': 'Delete Backspace', title: attn ? `Action requested: ${tab.action_requested.reason}` : (isWelcome(tab) ? 'Welcome' : tab.url) },
-        attn ? icon('warn', { size: 12 }) : null,
+    const item = (id, kind, title, tip, extras) => {
+      const active = Boolean(selected && selected.id === id);
+      const close = (event) => {
+        if (event) event.stopPropagation();
+        if (kind === 'live') { const tab = liveTab(id); if (tab) removeLiveTab(tab); } else remote.close(id);
+      };
+      const select = () => {
+        if (kind === 'live') { const tab = liveTab(id); if (tab && !active) selectLive(tab); } else if (!active) selectRemote(id);
+        if (kind === 'remote') remote.focus();
+      };
+      const node = h('div', { class: ['bp-tab', active && 'active', kind === 'remote' && 'remote', extras.attention && 'attention', extras.agent && 'agent'], role: 'tab', tabindex: active ? '0' : '-1', dataset: { tabId: id }, 'aria-selected': String(active), 'aria-keyshortcuts': 'Delete Backspace', title: tip },
+        extras.attention ? icon('warn', { size: 12 }) : kind === 'remote' ? icon('cpu', { size: 12, label: 'Sandbox Chrome' }) : null,
         h('span', { class: 'bp-tab-title' }, title),
         h('span', { class: 'bp-tab-close', 'aria-hidden': 'true', title: `Close ${title}`, onClick: close }, icon('x')));
-      const activate = () => { if (!tab.active) send({ type: 'activate', tab_id: tab.id }); focusPage(); };
-      button.addEventListener('click', activate);
-      button.addEventListener('keydown', (event) => closableTabKeys(event, { select: activate, close: () => close() }));
-      return button;
-    });
-    if (items.length && !tabs.some((tab) => tab.active)) items[0].tabIndex = 0;
+      node.addEventListener('click', select);
+      node.addEventListener('keydown', (event) => closableTabKeys(event, { select, close: () => close() }));
+      return node;
+    };
+    const now = Date.now();
+    const items = [
+      ...liveTabs.map((tab) => item(tab.id, 'live', tab.title || (tab.url ? shortUrl(tab.url) : 'New tab'), tab.url ? `${shortUrl(tab.url)} · live in your browser` : 'New tab', {})),
+      ...shownRemoteTabs().map((tab) => {
+        const attn = Boolean(tab.action_requested);
+        const agent = (agentMarks.get(tab.id) || 0) > now - AGENT_MARK_MS;
+        const title = isWelcome(tab) ? 'Welcome' : (tab.title || shortUrl(tab.url) || 'New tab');
+        const tip = attn ? `Action requested: ${tab.action_requested.reason}` : `${shortUrl(tab.url)} · sandbox Chrome, shared with agents`;
+        return item(tab.id, 'remote', title, tip, { attention: attn, agent });
+      }),
+    ];
+    if (items.length && !items.some((node) => node.tabIndex === 0)) items[0].tabIndex = 0;
     setChildren(tabList, items);
     // Focus stays in the strip; after closing the focused tab it moves to the selected one.
-    if (focused) (items.find((item) => item.dataset.tabId === focused) || items.find((item) => item.tabIndex === 0))?.focus();
-    const tab = activeTab();
-    if (document.activeElement !== address) address.value = tab && !isWelcome(tab) ? tab.url : '';
-    address.placeholder = isWelcome(tab) ? 'Welcome — type an address, e.g. localhost:20000' : 'Type an address, e.g. localhost:20000 or aws.amazon.com';
-    if (tab && tab.action_requested) {
+    if (focused) (items.find((node) => node.dataset.tabId === focused) || items.find((node) => node.tabIndex === 0))?.focus();
+
+    const tab = current();
+    const live = Boolean(selected && selected.kind === 'live');
+    if (document.activeElement !== address) address.value = tab && tab.url && !isWelcome(tab) ? shortUrl(tab.url) : '';
+    address.placeholder = live ? 'Type an address, e.g. localhost:20000 or aws.amazon.com' : 'Address in the sandbox Chrome';
+    backButton.disabled = !(live && tab && tab.url && tab.back === true);
+    forwardButton.disabled = !(live && tab && tab.url && tab.forward === true);
+    backButton.title = live ? 'Back' : 'Back is available in live tabs';
+    forwardButton.title = live ? 'Forward' : 'Forward is available in live tabs';
+    reloadButton.disabled = !(tab && tab.url);
+    popOutButton.hidden = !live;
+    popOutButton.disabled = !(live && tab && tab.url);
+    openLiveButton.hidden = !(selected && selected.kind === 'remote' && tab && opensLive(tab.url));
+    remote.pixelsButton.hidden = live;
+    if (live) remote.viewBadge.hidden = true;
+    if (!live && tab && tab.action_requested) {
       attention.hidden = false;
       setChildren(attention, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, `An agent asks for your action here: ${tab.action_requested.reason}`));
     } else {
       attention.hidden = true;
     }
-    if (tabs.length === 0) showOverlay(emptyState());
-    else if (showingPixels() && tab && frames.has(tab.id)) { overlay.hidden = true; draw(frames.get(tab.id)); }
-    else if (!showingPixels() && replayer && replayerTab === (tab && tab.id)) overlay.hidden = true;
-    else if (tab) showOverlay('Loading page…');
   }
 
-  function emptyState() {
-    return h('div', { class: 'stack items-center' },
-      h('p', null, 'No open tabs.'),
-      h('button', { type: 'button', class: 'btn btn-sm', onClick: () => send({ type: 'open', url: '' }) }, 'Open a tab'));
-  }
-
-  function showOverlay(content) {
-    overlay.hidden = false;
-    setChildren(overlay, content);
+  // ---------------------------------------------------------------- sandbox Chrome and agents
+  function onRemoteTabs(tabs) {
+    remoteTabs = tabs;
+    if (pendingSelect && tabs.some((tab) => tab.id === pendingSelect)) {
+      const id = pendingSelect;
+      pendingSelect = null;
+      selectRemote(id);
+    } else if (pendingSelect && remote.isOpen) {
+      toast('That browser tab is no longer open.', { kind: 'warn' });
+      pendingSelect = null;
+    }
+    if (selected && selected.kind === 'remote' && !tabs.some((tab) => tab.id === selected.id)) {
+      const fallback = liveTabs[liveTabs.length - 1] || addLiveTab(null);
+      selectLive(fallback);
+    }
+    syncActionRequests();
+    render();
   }
 
   function syncActionRequests() {
-    const current = ctx.store.state.actionRequests.get(sandbox.id);
-    const requested = new Set(tabs.filter((t) => t.action_requested).map((t) => t.id));
-    if (current) for (const tabId of [...current.keys()]) if (!requested.has(tabId)) ctx.store.clearActionRequest(sandbox.id, tabId);
-    for (const tab of tabs) if (tab.action_requested && !(current && current.has(tab.id))) {
+    const known = ctx.store.state.actionRequests.get(sandbox.id);
+    const requested = new Set(remoteTabs.filter((t) => t.action_requested).map((t) => t.id));
+    if (known) for (const tabId of [...known.keys()]) if (!requested.has(tabId)) ctx.store.clearActionRequest(sandbox.id, tabId);
+    for (const tab of remoteTabs) if (tab.action_requested && !(known && known.has(tab.id))) {
       ctx.store.handleEvent({ type: 'browser.action_requested', sandbox_id: sandbox.id, tab_id: tab.id, reason: tab.action_requested.reason, task_id: tab.action_requested.task_id });
     }
   }
 
-  // ---------------------------------------------------------------- pixels (fallback)
-  function draw(bitmap) {
-    if (!bitmap) return;
-    if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-      canvas.width = bitmap.width;
-      canvas.height = bitmap.height;
-      layout();
-    }
-    g.drawImage(bitmap, 0, 0);
-  }
-
-  async function decode(frame) {
-    if (decoding) { queuedFrame = frame; return; } // keep only the newest pending frame
-    decoding = true;
-    try {
-      const bitmap = await createImageBitmap(new Blob([frame.bytes], { type: 'image/jpeg' }));
-      const old = frames.get(frame.tabId);
-      if (old && old.close) old.close();
-      frames.set(frame.tabId, bitmap);
-      const tab = activeTab();
-      if (showingPixels() && tab && tab.id === frame.tabId) { overlay.hidden = true; draw(bitmap); }
-    } catch { /* corrupt frame: skip */ }
-    decoding = false;
-    if (queuedFrame) { const next = queuedFrame; queuedFrame = null; decode(next); }
-  }
-
-  // ---------------------------------------------------------------- DOM mirror
-  const proxied = (url) => `/api/sandboxes/${enc(sandbox.id)}/browser/resource?tab=${encodeURIComponent(replayerTab || '')}&url=${encodeURIComponent(url)}`;
-  const rewriteUrl = (url) => (typeof url === 'string' && needsProxy(url) ? proxied(url) : url);
-  const rewriteCss = (css) => (typeof css === 'string' ? css.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (match, quote, url) => (needsProxy(url) ? `url(${quote}${proxied(url)}${quote})` : match)) : css);
-  const rewriteSrcset = (value) => (typeof value === 'string' ? value.split(',').map((part) => {
-    const [url, ...descriptor] = part.trim().split(/\s+/);
-    return [rewriteUrl(url), ...descriptor].join(' ');
-  }).join(', ') : value);
-
-  function rewriteAttributes(tag, attributes) {
-    if (!attributes) return;
-    for (const name of Object.keys(attributes)) {
-      const value = attributes[name];
-      if (value == null) continue;
-      if (name === 'src' || name === 'poster' || name === 'data' || name === 'background' || name === 'xlink:href') attributes[name] = rewriteUrl(value);
-      else if (name === 'srcset') attributes[name] = rewriteSrcset(value);
-      else if (name === 'href' && (tag === 'link' || tag === 'image' || tag === 'use')) attributes[name] = rewriteUrl(value);
-      else if (name === 'style' || name === '_cssText') attributes[name] = rewriteCss(value);
-    }
-  }
-
-  function rewriteNode(node) {
-    if (!node) return;
-    if (node.type === 2) {
-      tags.set(node.id, String(node.tagName || '').toLowerCase());
-      rewriteAttributes(String(node.tagName || '').toLowerCase(), node.attributes);
-    } else if (node.type === 3 && node.isStyle) {
-      node.textContent = rewriteCss(node.textContent);
-    }
-    for (const child of node.childNodes || []) rewriteNode(child);
-  }
-
-  /** Points VM-only resources of an rrweb event at the Yulius resource endpoint. */
-  function rewriteEvent(event) {
-    if (event.type === EV_META && event.data) pageSize = { width: event.data.width || 0, height: event.data.height || 0 };
-    if (event.type === EV_FULL_SNAPSHOT && event.data) rewriteNode(event.data.node);
-    if (event.type !== EV_INCREMENTAL || !event.data) return event;
-    const data = event.data;
-    if (data.source === SRC_MUTATION) {
-      for (const add of data.adds || []) rewriteNode(add.node);
-      for (const change of data.attributes || []) rewriteAttributes(tags.get(change.id) || '', change.attributes);
-    } else if (data.source === SRC_STYLESHEET_RULE) {
-      for (const add of data.adds || []) add.rule = rewriteCss(add.rule);
-    } else if (data.source === SRC_VIEWPORT) {
-      pageSize = { width: data.width || pageSize.width, height: data.height || pageSize.height };
-    }
-    return event;
-  }
-
-  /**
-   * Paints a sampled canvas frame (rrweb's fps sampling: clearRect + drawImage of one encoded
-   * image) from this page. rrweb's own canvas replay needs scripts in the mirror iframe, which
-   * would let a hostile page run code as Yulius; the iframe stays script-free instead.
-   */
-  function paintCanvas(data) {
-    if (!replayer || data.type !== 0 || !Array.isArray(data.commands)) return;
-    const draw = data.commands.find((command) => command && command.property === 'drawImage');
-    const bitmap = draw && Array.isArray(draw.args) ? draw.args[0] : null;
-    const blob = bitmap && bitmap.rr_type === 'ImageBitmap' && Array.isArray(bitmap.args) ? bitmap.args[0] : null;
-    const buffer = blob && blob.rr_type === 'Blob' && Array.isArray(blob.data) ? blob.data[0] : null;
-    if (!buffer || buffer.rr_type !== 'ArrayBuffer' || typeof buffer.base64 !== 'string') return;
-    const node = replayer.getMirror().getNode(data.id);
-    if (!node || node.nodeName !== 'CANVAS') return;
-    const type = /^image\/(png|jpeg|webp)$/.test(blob.type) ? blob.type : 'image/png';
-    let bytes;
-    try { bytes = Uint8Array.from(atob(buffer.base64), (c) => c.charCodeAt(0)); } catch { return; }
-    const seq = (canvasSeq.get(data.id) || 0) + 1;
-    canvasSeq.set(data.id, seq);
-    createImageBitmap(new Blob([bytes], { type })).then((image) => {
-      const context = canvasSeq.get(data.id) === seq && node.isConnected ? node.getContext('2d') : null;
-      if (context) {
-        context.clearRect(0, 0, node.width, node.height);
-        context.drawImage(image, 0, 0);
-      }
-      image.close();
-    }, () => {});
-  }
-
-  /**
-   * Hands one event to the replayer, stamped before the live baseline so it is applied without
-   * delay. rrweb applies added events in microtasks (in order); canvas frames are queued
-   * behind them so the canvas they paint exists.
-   */
-  function apply(event) {
-    // The viewer's own text selection belongs to the viewer: the page's is not replayed.
-    if (event.type === EV_INCREMENTAL && event.data && event.data.source === SRC_SELECTION) return;
-    if (event.type === EV_INCREMENTAL && event.data && event.data.source === SRC_CANVAS) {
-      const data = event.data;
-      Promise.resolve().then(() => paintCanvas(data));
-      return;
-    }
-    event.timestamp = replayerClock - 1;
-    replayer.addEvent(event);
-  }
-
-  function destroyReplayer() {
-    if (replayer) {
-      try { replayer.destroy(); } catch { /* already gone */ }
-    }
-    replayer = null;
-    replayerTab = null;
-    tags.clear();
-    canvasSeq.clear();
-    mirrorHost.replaceChildren();
-  }
-
-  function onDom(message) {
-    const tab = activeTab();
-    if (!tab || message.tab_id !== tab.id) return;
-    if (!Replayer) {
-      if (!replayerFailed) missedDom = true;
-      else if (!pixelsReason) autoPixels(MIRROR_UNAVAILABLE);
-      return;
-    }
-    const events = Array.isArray(message.events) ? message.events : [];
-    if (message.reset) {
-      destroyReplayer();
-      replayerTab = message.tab_id;
-      for (const event of events) rewriteEvent(event);
-      if (!events.length) return;
-      try {
-        // Security: never UNSAFE_replayCanvas — it allows scripts in the same-origin mirror
-        // iframe. Events are applied synchronously in arrival order (stamped before the
-        // baseline), so a snapshot with minutes of buffered changes shows the current state
-        // at once and clock differences with the server do not matter.
-        replayer = new Replayer([], { root: mirrorHost, liveMode: true, useVirtualDom: false, mouseTail: false, triggerFocus: false, skipInactive: false, showWarning: false, showDebug: false, pauseAnimation: false });
-        replayerClock = Date.now();
-        replayer.startLive(replayerClock);
-        for (const event of events) apply(event);
-      } catch (error) {
-        console.warn('mirror start failed', error);
-        destroyReplayer();
-        mirrorFailed();
-        return;
-      }
-      clearTimeout(domTimer);
-      pixelsReason = null;
-      // Once rrweb's queued microtasks built the snapshot (its document.open() drops earlier
-      // listeners, its Meta sets the snapshot's size): wire the document, and lay it out at the
-      // newest viewport, which the snapshot may predate (its resize event follows later).
-      const built = replayer;
-      Promise.resolve().then(() => {
-        if (replayer !== built) return;
-        wireMirrorDocument();
-        applyInputMode();
-        if (serverViewport) resizeMirror(serverViewport.width, serverViewport.height);
-      });
-      applyMode();
-      overlay.hidden = true;
-      layout();
-      return;
-    }
-    if (!replayer || replayerTab !== message.tab_id) return;
-    try {
-      for (const event of events) apply(rewriteEvent(event));
-    } catch (error) {
-      console.warn('mirror replay failed; resynchronizing', error);
-      mirrorFailed();
-    }
-    layout();
-  }
-
-  /** Resynchronizes from a fresh snapshot; a page that keeps failing is shown as pixels. */
-  function mirrorFailed() {
-    mirrorFailures += 1;
-    if (mirrorFailures >= MAX_MIRROR_FAILURES) {
-      autoPixels('the mirror could not show this page');
-      return;
-    }
-    send({ type: 'dom_resync' });
-    expectDom();
-  }
-
-  /**
-   * Lays the mirror out at the page's new viewport now. The mirror is real DOM, so it reflows
-   * like the server page; waiting for the page's resize event (late under load) would map
-   * clicks onto the old layout meanwhile.
-   */
-  function resizeMirror(width, height) {
-    if (!replayer || !width || !height) return;
-    pageSize = { width, height };
-    try { replayer.handleResize({ width, height }); } catch { /* replayer API changed: wait for the event */ }
-    layout();
-  }
-
-  /** Scales the page (mirror or pixels) to fit the panel; the input layer follows it. */
-  function layout() {
-    const rect = stage.getBoundingClientRect();
-    const width = showingPixels() ? canvas.width : (pageSize.width || rect.width);
-    const height = showingPixels() ? canvas.height : (pageSize.height || rect.height);
-    if (!width || !height || !rect.width || !rect.height) return;
-    const scale = Math.min(1, rect.width / width, rect.height / height);
-    const wrapper = mirrorHost.querySelector('.replayer-wrapper');
-    if (wrapper) {
-      wrapper.style.transform = `scale(${scale})`;
-      wrapper.style.transformOrigin = '0 0';
-    }
-    canvas.style.width = `${Math.round(width * scale)}px`;
-    canvas.style.height = `${Math.round(height * scale)}px`;
-    Object.assign(inputLayer.style, { width: `${Math.round(width * scale)}px`, height: `${Math.round(height * scale)}px` });
-    inputLayer.dataset.scale = String(scale);
-    inputLayer.dataset.width = String(width);
-    inputLayer.dataset.height = String(height);
-  }
-
-  // ---------------------------------------------------------------- agent cursor (BRW-007)
+  /** An agent acted in a sandbox Chrome tab: mark it, and tell the user when they are looking at
+   *  the same app live (the cursor itself shows in that tab). */
   function onAgent(message) {
-    const tab = activeTab();
-    if (!tab || message.tab_id !== tab.id) return;
-    const scale = Number(inputLayer.dataset.scale || 1);
-    const label = `${message.label || 'Agent'}${message.action === 'type' ? ' · typing' : ''}`;
-    if (message.x != null && message.y != null) lastAgent = { x: message.x, y: message.y };
-    if (lastAgent && (message.action === 'click' || message.action === 'type')) {
-      agentCursor.hidden = false;
-      agentCursor.style.left = `${Math.round(lastAgent.x * scale)}px`;
-      agentCursor.style.top = `${Math.round(lastAgent.y * scale)}px`;
-      agentCursor.querySelector('.bp-agent-label').textContent = label;
-      if (message.action === 'click') {
-        const ripple = h('span', { class: 'bp-agent-ripple' });
-        agentCursor.append(ripple);
-        setTimeout(() => ripple.remove(), 700);
-      }
-    } else {
-      agentPill.hidden = false;
-      agentPill.textContent = `${message.label || 'Agent'} ${message.action === 'open' ? 'opened a tab' : 'navigated'}`;
-    }
-    clearTimeout(agentTimer);
-    agentTimer = setTimeout(() => { agentCursor.hidden = true; agentPill.hidden = true; }, AGENT_CURSOR_IDLE_MS);
+    agentMarks.set(message.tab_id, Date.now());
+    render();
+    const tab = current();
+    if (!tab || !selected || selected.kind !== 'live' || !tab.url) return;
+    const agentTab = remoteTabs.find((t) => t.id === message.tab_id);
+    if (!agentTab || loopbackPort(agentTab.url) !== loopbackPort(tab.url)) return;
+    const verbs = { click: 'clicked', type: 'is typing', navigate: 'navigated', open: 'opened this app' };
+    setChildren(notice,
+      h('span', { class: 'bp-agent-dot', 'aria-hidden': 'true' }),
+      h('span', null, `${message.label || 'An agent'} ${verbs[message.action] || 'acted'} in its own tab of this app`),
+      h('button', { type: 'button', class: 'btn btn-sm', onClick: () => selectRemote(message.tab_id) }, 'Watch'));
+    notice.hidden = false;
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => { notice.hidden = true; }, AGENT_NOTICE_MS);
   }
 
-  // ---------------------------------------------------------------- socket
-  function onMessage(data) {
-    if (typeof data !== 'string') {
-      const frame = parseBrowserFrame(data);
-      if (frame) decode(frame);
-      return;
-    }
-    let message;
-    try { message = JSON.parse(data); } catch { return; }
-    if (message.type === 'dom') {
-      onDom(message);
-    } else if (message.type === 'tabs' && Array.isArray(message.tabs)) {
-      const before = activeTab();
-      tabs = message.tabs;
-      for (const id of [...frames.keys()]) if (!tabs.some((t) => t.id === id)) frames.delete(id);
-      const now = activeTab();
-      if (!now || (before && before.id !== now.id) || (replayerTab && replayerTab !== now.id)) {
-        destroyReplayer();
-        watchedUrl = now ? now.url : null;
-        mirrorFailures = 0;
-        if (now) retryDom();
-        applyMode();
-      } else if (now.url !== watchedUrl) {
-        // A navigation: a page that could not be mirrored may be followed by one that can.
-        watchedUrl = now.url;
-        mirrorFailures = 0;
-        if (pixelsReason) retryDom();
-      }
-      if (pendingOpen) {
-        send({ type: 'open', url: pendingOpen });
-        pendingOpen = null;
-      }
-      if (pendingActivate) {
-        const target = tabs.find((t) => t.id === pendingActivate);
-        if (target && !target.active) send({ type: 'activate', tab_id: target.id });
-        else if (!target) toast('That browser tab is no longer open.', { kind: 'warn' });
-        pendingActivate = null;
-      }
-      renderTabs();
-      syncActionRequests();
-    } else if (message.type === 'dom_unavailable') {
-      const tab = activeTab();
-      if (tab && tab.id === message.tab_id) {
-        clearTimeout(domTimer);
-        pixelsReason = message.reason || 'unavailable';
-        destroyReplayer();
-        applyMode();
-      }
-    } else if (message.type === 'viewport') {
-      serverViewport = { width: message.width, height: message.height };
-      resizeMirror(message.width, message.height);
-    } else if (message.type === 'agent_activity') {
-      onAgent(message);
-    } else if (message.type === 'action_requested') {
-      ctx.store.handleEvent({ ...message, type: 'browser.action_requested', sandbox_id: sandbox.id });
-    } else if (message.type === 'error') {
-      lastError = { code: message.code, message: message.message || '' };
-      // `upstream` precedes a 1011 close when Chromium is missing or the browser stopped (the
-      // overlay explains it); a tab that vanished is replaced by the next tab list.
-      if (message.code !== 'upstream' && message.code !== 'not_found') toast(message.message || 'Browser error', { kind: 'error', detail: message.code ? `code: ${message.code}` : null });
-    }
+  /** The bridge script in live pages reports their address and title (and F6). */
+  function onBridge(event) {
+    const data = event.data;
+    if (!data || typeof data !== 'object' || data.source !== 'yulius-preview') return;
+    const tab = liveTabs.find((t) => t.iframe && t.iframe.contentWindow === event.source);
+    if (!tab || !info || !info.origin_template) return;
+    if (data.type === 'f6') { focusNextRegion(Boolean(data.shift)); return; }
+    if (data.type !== 'location' || typeof data.href !== 'string') return;
+    let origin;
+    try { origin = new URL(data.href).origin; } catch { return; }
+    const url = loopbackUrlOf(info.origin_template, data.href);
+    if (!url || origin !== event.origin) return;
+    tab.url = url;
+    tab.origin = origin;
+    tab.title = String(data.title || '').slice(0, 300);
+    tab.back = typeof data.back === 'boolean' ? data.back : null;
+    tab.forward = typeof data.forward === 'boolean' ? data.forward : null;
+    tab.bridged = true;
+    if (tab.iframe) tab.iframe.setAttribute('title', `Live page ${shortUrl(url)}`);
+    persist();
+    render();
   }
+  window.addEventListener('message', onBridge);
 
-  function showFailure(text) {
-    showOverlay(h('div', { class: 'stack overlay-message' },
-      h('p', null, text),
-      h('button', { type: 'button', class: 'btn btn-sm', onClick: () => { lastError = null; if (socket) socket.retry(); else connect(); } }, 'Retry')));
-  }
-
-  function connect() {
-    if (socket) return;
-    socket = new ReconnectingSocket({
-      transport: ctx.transport,
-      path: `/api/sandboxes/${enc(sandbox.id)}/browser`,
-      onOpen: () => {
-        lastViewport = null;
-        destroyReplayer();
-        pixelsReason = null;
-        if (wantPixels) send({ type: 'view', mode: 'pixels' });
-        else if (replayerFailed) autoPixels(MIRROR_UNAVAILABLE);
-        else expectDom();
-        applyMode();
-        sendViewport();
-      },
-      onMessage,
-      onStatus: (status, detail = {}) => {
-        if (status === 'reconnecting' && detail.code === CLOSE_SERVER_ERROR) {
-          // The browser failed to start or stopped (e.g. Chromium missing): do not hammer it.
-          const reason = lastError && lastError.message ? lastError.message : 'The sandbox browser stopped.';
-          if (socket) socket.stop();
-          showFailure(`The sandbox browser is not available: ${reason}`);
-        } else if (status === 'reconnecting' || status === 'connecting') {
-          showOverlay(status === 'connecting' ? 'Connecting to the sandbox browser…' : 'Reconnecting to the sandbox browser…');
-        } else if (status === 'failed') {
-          showFailure(detail.code === CLOSE_REVOKED ? 'Your access to this sandbox browser was revoked.' : 'The sandbox browser is unreachable.');
-        } else if (status === 'open' && tabs.length === 0) {
-          showOverlay('Waiting for tabs…');
-        }
-      },
-    });
-    socket.start();
-  }
-
-  function sendViewport() {
-    const rect = stage.getBoundingClientRect();
-    const width = Math.round(rect.width);
-    const height = Math.round(rect.height);
-    if (width < 50 || height < 50) return;
-    if (lastViewport && lastViewport.width === width && lastViewport.height === height) return;
-    if (send({ type: 'viewport', width, height })) {
-      lastViewport = { width, height };
-      serverViewport = { width, height };
-      resizeMirror(width, height);
-    }
-  }
-
-  const observer = new ResizeObserver(() => {
-    layout();
-    clearTimeout(viewportTimer);
-    viewportTimer = setTimeout(sendViewport, 150);
-  });
-  observer.observe(stage);
-
-  // ---------------------------------------------------------------- input forwarding
-  function sendMouse(kind, x, y, button, extra = {}) {
-    const tab = activeTab();
-    if (!tab) return;
-    send({ type: 'mouse', tab_id: tab.id, event: kind, x, y, button, dx: 0, dy: 0, ...extra });
-  }
-
-  /** Keys go to the real page; copy and paste stay with the user's browser (paste is sent as
-   *  text), and the user's own browser shortcuts are left alone. */
-  function forwardKey(kind, event) {
-    const tab = activeTab();
-    if (!tab || event.key === 'F6') return; // F6 moves between regions (app.js), never to the page
-    const key = event.key.toLowerCase();
-    const command = event.metaKey || event.ctrlKey;
-    if (command && ['r', 'w', 't', 'q', 'l', 'n'].includes(key)) return;
-    if (command && ['c', 'x', 'v'].includes(key)) return;
-    if (!(command && key === 'a')) event.preventDefault(); // select-all: local and remote
-    const text = kind === 'down' ? (event.key.length === 1 ? event.key : event.key === 'Enter' ? '\r' : '') : '';
-    send({ type: 'key', tab_id: tab.id, event: kind, key: event.key, code: event.code, text, modifiers: modifiers(event) });
-  }
-
-  function forwardPaste(event) {
-    const tab = activeTab();
-    const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
-    if (!tab || !text) return;
-    event.preventDefault();
-    send({ type: 'key', tab_id: tab.id, event: 'char', key: '', code: '', text: text.slice(0, 10000), modifiers: 0 });
-  }
-
-  // Pixel view: map overlay coordinates back to the page.
-  function point(event) {
-    const rect = inputLayer.getBoundingClientRect();
-    const scale = Number(inputLayer.dataset.scale || 1) || 1;
-    const width = Number(inputLayer.dataset.width || 0);
-    const height = Number(inputLayer.dataset.height || 0);
-    const x = (event.clientX - rect.left) / scale;
-    const y = (event.clientY - rect.top) / scale;
-    if (x < 0 || y < 0 || (width && x > width) || (height && y > height)) return null;
-    return { x: Math.round(x), y: Math.round(y) };
-  }
-
-  function overlayMouse(kind, event, button, extra = {}) {
-    const p = point(event);
-    if (p) sendMouse(kind, p.x, p.y, button, extra);
-  }
-
-  inputLayer.addEventListener('pointerdown', (event) => { inputLayer.focus(); overlayMouse('down', event, MOUSE_BUTTONS[event.button] || 'left'); });
-  inputLayer.addEventListener('pointerup', (event) => overlayMouse('up', event, MOUSE_BUTTONS[event.button] || 'left'));
-  inputLayer.addEventListener('pointermove', (event) => {
-    pendingMove = event;
-    if (moveFrame) return;
-    moveFrame = requestAnimationFrame(() => {
-      moveFrame = 0;
-      if (pendingMove) overlayMouse('move', pendingMove, pendingMove.buttons & 1 ? 'left' : 'none');
-      pendingMove = null;
-    });
-  });
-  inputLayer.addEventListener('wheel', (event) => {
-    event.preventDefault();
-    overlayMouse('wheel', event, 'none', { dx: Math.round(event.deltaX), dy: Math.round(event.deltaY) });
-  }, { passive: false });
-  inputLayer.addEventListener('contextmenu', (event) => event.preventDefault());
-  inputLayer.addEventListener('keydown', (event) => forwardKey('down', event));
-  inputLayer.addEventListener('keyup', (event) => forwardKey('up', event));
-  inputLayer.addEventListener('paste', forwardPaste);
-
-  address.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') { const tab = activeTab(); address.value = tab && !isWelcome(tab) ? tab.url : ''; return; }
-    if (event.key !== 'Enter') return;
-    const url = normalizeUrl(address.value);
-    if (!url) { toast('Enter a web address, e.g. example.com or localhost:3000.', { kind: 'warn' }); return; }
-    const tab = activeTab();
-    if (!tab) send({ type: 'open', url });
-    else send({ type: 'navigate', tab_id: tab.id, url });
-    address.blur();
-    focusPage();
-  });
-
-  loadReplayer().then(() => {
-    if (replayerFailed) {
-      if (!wantPixels && !pixelsReason) autoPixels(MIRROR_UNAVAILABLE);
-    } else if (missedDom) {
-      missedDom = false;
-      send({ type: 'dom_resync' });
-      expectDom();
-    }
-  });
+  // Initial selection: the last live tab, or a new tab.
+  selectLive(liveTabs[liveTabs.length - 1] || addLiveTab(null));
 
   return {
     el,
-    headExtra: () => [pixelsButton, h('span', { class: 'muted xs' }, 'shared by this sandbox')],
-    /** opts.tabId: activate that tab once tabs are known (Yulius links, UI-011);
-     *  opts.url: open it in a new tab (localhost links from terminals and messages). */
+    headExtra: () => [h('span', { class: 'muted xs' }, 'live pages run in your browser')],
+    /** opts.tabId: select that sandbox Chrome tab once known (Yulius links, UI-011);
+     *  opts.url: open it (localhost links from terminals and messages). */
     show(opts = {}) {
       visible = true;
-      if (opts.url) {
-        if (socket && socket.isOpen && tabs.length) send({ type: 'open', url: opts.url });
-        else pendingOpen = opts.url;
-      }
+      remote.start();
+      loadInfo();
+      clearInterval(infoTimer);
+      infoTimer = setInterval(() => {
+        if (visible && selected && selected.kind === 'live' && !current()?.url) loadInfo();
+      }, INFO_REFRESH_MS);
+      if (opts.url) openUrl(opts.url, { newTab: true });
       if (opts.tabId) {
-        const target = tabs.find((t) => t.id === opts.tabId);
-        if (target && socket && socket.isOpen) { if (!target.active) send({ type: 'activate', tab_id: target.id }); } else pendingActivate = opts.tabId;
+        if (remoteTabs.some((tab) => tab.id === opts.tabId)) selectRemote(opts.tabId);
+        else pendingSelect = opts.tabId;
       }
-      connect();
-      setTimeout(() => { sendViewport(); layout(); }, 0);
+      setTimeout(() => remote.layout(), 0);
     },
     hide() {
       visible = false;
-      clearTimeout(domTimer);
-      if (socket) socket.stop();
-      socket = null;
-      destroyReplayer();
+      clearInterval(infoTimer);
+      remote.stop();
     },
     destroy() {
-      observer.disconnect();
-      clearTimeout(viewportTimer);
-      clearTimeout(agentTimer);
-      clearTimeout(domTimer);
-      clearTimeout(copiedTimer);
-      cancelAnimationFrame(moveFrame);
-      if (socket) socket.stop();
-      socket = null;
-      destroyReplayer();
-      for (const bitmap of frames.values()) if (bitmap && bitmap.close) bitmap.close();
-      frames.clear();
+      clearInterval(infoTimer);
+      clearTimeout(noticeTimer);
+      window.removeEventListener('message', onBridge);
+      remote.destroy();
+      for (const tab of liveTabs) if (tab.frameBox) tab.frameBox.remove();
     },
     get visible() { return visible; },
   };

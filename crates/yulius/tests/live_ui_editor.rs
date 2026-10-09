@@ -15,7 +15,10 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use support::{TestResult, harness, perms, seed_github_user, seed_sandbox, setup_superadmin_creds};
+use support::{
+    HarnessOptions, TestResult, harness_with, perms, seed_github_user, seed_sandbox,
+    setup_superadmin_creds,
+};
 use yulius_app::model::WebSessionRecord;
 use yulius_app::ports::store::{SessionStore, UserStore};
 use yulius_browser::{CdpClient, CdpConfig};
@@ -121,7 +124,16 @@ async fn the_editor_panel_opens_colors_suggests_saves_and_wraps() -> TestResult 
         eprintln!("skipped: set YULIUS_LIVE_CHROME");
         return Ok(());
     };
-    let h = harness()?;
+    // The UI's origin must be the server's: cookie sessions refuse other origins (ADR-14).
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let addr = listener.local_addr()?;
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(move |config| {
+            config.public_url = format!("http://{addr}");
+            config.secure_cookies = false;
+        })),
+        ..HarnessOptions::default()
+    })?;
     setup_superadmin_creds(&h).await?;
     seed_github_user(&h, "u-alice", "alice").await?;
     seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
@@ -152,8 +164,6 @@ async fn the_editor_panel_opens_colors_suggests_saves_and_wraps() -> TestResult 
             revoked_at: None,
         })
         .await?;
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let addr = listener.local_addr()?;
     let router = h.router.clone();
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;

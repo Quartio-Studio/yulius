@@ -152,12 +152,12 @@ code {{ background: #161b22; padding: 1px 6px; border-radius: 5px; font-size: 13
 <body><main>
 <div class="logo">Yulius</div>
 <h1>Browser of {sandbox}</h1>
-<p class="muted">A real Chromium on the server, shared by this sandbox's people and agents.</p>
+<p class="muted">The sandbox Chrome on the server: agents browse with it, and people watch it from the browser panel.</p>
 <section><h2>Running in this sandbox</h2><div id="ports">{ports}</div></section>
 <section><h2>Tips</h2><ul>
 <li>Type any address in the bar above; <code>localhost</code> means this sandbox's machine.</li>
-<li>Agents use this same browser. When one clicks or types, you see its cursor.</li>
-<li>Logins (for example AWS) stay in this sandbox's browser profile.</li>
+<li>Agents use this browser. When one clicks or types, viewers see its cursor.</li>
+<li>Logins (for example AWS) stay in this sandbox's browser profile. Your own live tabs in the panel have their own.</li>
 </ul></section>
 </main>
 <script>

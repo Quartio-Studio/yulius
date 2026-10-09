@@ -10,7 +10,7 @@ use tokio::sync::watch;
 use yulius_browser::fake::FakeCdpServer;
 use yulius_browser::{
     BrowserError, BrowserEvent, BrowserInstance, CdpConfig, CdpError, InstanceConfig, KeyInput,
-    MouseInput, ScreencastConfig,
+    MouseInput, ScreencastConfig, UrlDenyList,
 };
 use yulius_contracts::browser::{
     ActionRequest, ClickParams, KeyEventKind, MouseButton, MouseEventKind, NavigateParams,
@@ -250,6 +250,94 @@ async fn url_policy_refuses_before_any_devtools_call() -> TestResult {
     }
     assert!(fake.calls_for("Target.createTarget").is_empty());
     assert!(fake.calls_for("Page.navigate").is_empty());
+    Ok(())
+}
+
+/// BRW-008: the sandbox browser never loads Yulius itself — neither when asked (tools, viewers)
+/// nor when a page links, redirects or frames it (browser-wide request interception).
+#[tokio::test]
+async fn yulius_itself_is_refused_and_intercepted() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    let listeners: Vec<std::net::SocketAddr> =
+        vec!["127.0.0.1:8080".parse()?, "127.0.0.1:8081".parse()?];
+    let deny = UrlDenyList::yulius(
+        "https://yulius.example.com",
+        &listeners,
+        vec!["http://127.0.0.1:8081/browser/welcome?".into()],
+    );
+    instance.deny_urls(deny).await?;
+    let enabled = fake.calls_for("Fetch.enable");
+    assert_eq!(enabled.len(), 1);
+    assert_eq!(
+        enabled[0].session_id, None,
+        "interception covers every tab of the browser"
+    );
+    let patterns: Vec<&str> = enabled[0].params["patterns"]
+        .as_array()
+        .ok_or("patterns")?
+        .iter()
+        .filter_map(|p| p["urlPattern"].as_str())
+        .collect();
+    for expected in [
+        "*://localhost:8080/*",
+        "*://127.0.0.1:8081/*",
+        "*://yulius.example.com/*",
+        "*://*.yulius.example.com/*",
+    ] {
+        assert!(patterns.contains(&expected), "{expected} in {patterns:?}");
+    }
+    for url in [
+        "http://localhost:8080/",
+        "127.0.0.1:8081/mcp",
+        "https://yulius.example.com/s/x",
+        "https://20001-0123456789ab.yulius.example.com/",
+    ] {
+        let results = [
+            instance.open(url).await.map(|_| ()),
+            instance.navigate(&tab, url).await,
+            instance
+                .tool_open(&OpenParams { url: url.into() })
+                .await
+                .map(|_| ()),
+            instance
+                .tool_navigate(&NavigateParams {
+                    tab_id: tab.clone(),
+                    url: url.into(),
+                })
+                .await
+                .map(|_| ()),
+            instance.fetch_resource(&tab, url).await.map(|_| ()),
+        ];
+        for result in results {
+            match result {
+                Err(BrowserError::UrlRefused(yulius_browser::UrlRefused::Yulius)) => {}
+                other => {
+                    return Err(format!("{url}: expected the Yulius refusal, got {other:?}").into());
+                }
+            }
+        }
+    }
+    assert!(fake.calls_for("Target.createTarget").is_empty());
+    assert!(fake.calls_for("Page.navigate").is_empty());
+    // A page's own request to Yulius is failed; the welcome page passes.
+    fake.pause_request("r1", "http://localhost:8080/api/me")
+        .await;
+    fake.pause_request("r2", "http://127.0.0.1:8081/browser/welcome?sandbox=s1")
+        .await;
+    assert!(fake.wait_for_calls("Fetch.failRequest", 1, WAIT).await);
+    assert!(fake.wait_for_calls("Fetch.continueRequest", 1, WAIT).await);
+    let failed = fake.calls_for("Fetch.failRequest");
+    assert_eq!(
+        failed[0].params,
+        json!({"requestId": "r1", "errorReason": "BlockedByClient"})
+    );
+    assert_eq!(
+        fake.calls_for("Fetch.continueRequest")[0].params,
+        json!({"requestId": "r2"})
+    );
+    // Other addresses are untouched.
+    instance.navigate(&tab, "http://localhost:20001/").await?;
+    assert_eq!(fake.calls_for("Page.navigate").len(), 1);
     Ok(())
 }
 

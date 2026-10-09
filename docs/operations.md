@@ -124,13 +124,95 @@ server {
 }
 ```
 
-`YULIUS_PUBLIC_URL` must be the exact external origin: cookies are `Secure` for `https` URLs and
-WebSocket origins are checked against it.
+`YULIUS_PUBLIC_URL` must be the exact external origin: cookies are `Secure` (and the session
+cookie `__Host-` prefixed) for `https` URLs, and the `Origin` of WebSockets and of every
+cookie-authenticated API request is checked against it.
 
-Yulius itself sends `X-Frame-Options: SAMEORIGIN`, `Content-Security-Policy: frame-ancestors
-'self'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin` on every response
-(stricter route policies are kept). HSTS is the TLS proxy's job, as in the examples above; add it
-once the domain is meant to stay on HTTPS.
+Yulius itself sends `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`
+(nothing may frame Yulius, not even its own browser panel), `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: same-origin` and `X-Yulius: <process tag>` on every response (stricter route
+policies are kept). HSTS is the TLS proxy's job, as in the examples above; add it once the
+domain is meant to stay on HTTPS.
+
+### Live previews: wildcard DNS and TLS
+
+The browser panel shows the sandbox's dev servers live in the user's own browser (SPEC-002
+ADR-14). Every sandbox port gets its own **preview origin**: a subdomain of the Yulius host,
+`<port>-<key>.<yulius host>` (for example `20001-0123456789ab.yulius.example.com`). The public
+listener serves them too. The proxy in front only has to:
+
+1. **Resolve** every subdomain of the host to the VM: a wildcard DNS record
+   `*.yulius.example.com A <VM IP>`. With `sslip.io` nothing is needed:
+   `20001-0123456789ab.109-199-123-240.sslip.io` already resolves to 109.199.123.240.
+2. **Terminate TLS** for them and forward them, `Host` unchanged, to the same `YULIUS_BIND`, with
+   WebSockets and streaming as for the main host.
+
+Preview origins must be subdomains of the Yulius host (the default): they are then the same site
+as Yulius, so their cookies work inside the panel's frames (no third-party cookie blocking), and
+Yulius never relies on `SameSite` for its own protection. `YULIUS_PREVIEW_DOMAIN` (or
+`--preview-domain`) sets another parent domain or `off`. A public URL that is an IP address has no
+previews. For local development use a name such as `http://yulius.localhost:8080`: browsers
+resolve `*.yulius.localhost` by themselves, and a bare `localhost` would not work
+(`*.localhost` hosts are sites of their own).
+
+Caddy (on-demand TLS, one certificate per preview host on its first visit; Yulius approves only
+preview hosts of existing sandbox ports through the `ask` endpoint on the internal listener —
+use your `YULIUS_INTERNAL_BIND` and `YULIUS_BIND` addresses):
+
+```caddyfile
+{
+    on_demand_tls {
+        ask http://127.0.0.1:8081/internal/preview-tls
+    }
+}
+
+yulius.example.com {
+    # as above
+}
+
+# Every other host name: only those Yulius approves get a certificate.
+https:// {
+    tls {
+        on_demand
+    }
+    reverse_proxy 127.0.0.1:8080 {
+        flush_interval -1
+    }
+}
+```
+
+The first visit to a new preview host waits a few seconds for its certificate; the panel waits
+up to 30 s and then offers the sandbox Chrome instead. Certificates come from Let's Encrypt
+(ZeroSSL as Caddy's fallback). `sslip.io` hosts share sslip.io's Let's Encrypt rate limits with
+all its users, and every `*.sslip.io` site is the same site as yours (sslip.io is not on the
+Public Suffix List): Yulius does not depend on either for security, but a domain of your own is
+the better production setup. Certificate Transparency logs publish each preview host name; the
+key in it is opaque.
+
+nginx (a wildcard certificate for `*.yulius.example.com`, which needs the ACME DNS challenge,
+e.g. certbot with your DNS provider's plugin):
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name *.yulius.example.com;
+    # ssl_certificate / ssl_certificate_key: the wildcard certificate
+    client_max_body_size 256m;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+}
+```
+
+Without DNS or TLS for the previews everything else keeps working: the panel reports that a live
+page cannot be reached and opens the address in the sandbox Chrome instead.
 
 ## 5. First run
 
@@ -175,6 +257,10 @@ wanted, `sandboxes/` (clones and worktrees can be re-created from GitHub, uncomm
 Restore: stop the service, put the database copy at `yulius.db`, restore `master.key`, start.
 
 ## 8. Upgrades
+
+- Upgrading to the live browser panel (ADR-14, 2026-10-09): over HTTPS the session cookie is
+  now `__Host-yulius_session`, so everyone signs in once more after the upgrade. Add the preview
+  DNS and TLS configuration (§4) for live pages.
 
 Replace the binary and `systemctl restart yulius`. Live sessions keep running in their detached
 hosts; the new server reconciles them on start (reattaches live runs, marks dead ones stopped,
