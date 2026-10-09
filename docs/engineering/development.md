@@ -72,10 +72,22 @@ can use the same rust-analyzer component and toolchain. No global editor setting
 or agent permission overrides are installed.
 
 GitHub Actions uses full-commit action pins, read-only permissions and the same
-bootstrap/CI commands. It runs on pull requests and dev/main pushes, plus a weekly
-advisory refresh. The workflow is committed configuration; hosted execution is
-only proven when GitHub actually runs it. No deployment job is present. [Git delivery](git.md) defines promotion checks and
-post-merge evidence. Pinned tool binaries are cached per OS/architecture/tool pin.
+bootstrap/CI commands. `quality (ubuntu-latest)` runs on pull requests and dev/main
+pushes, plus a weekly advisory refresh. `quality (macos-latest)` runs on dev/main
+pushes, promotion pull requests into main, the weekly refresh and manual runs
+(`workflow_dispatch`, also the way to test a branch on macOS); on pull requests into
+dev it is skipped. `Branch policy` is its own workflow (`policy.yml`), so editing a
+pull request's title or description re-runs only the policy. The workflow is
+committed configuration; hosted execution is only proven when GitHub actually runs
+it. No deployment job is present. [Git delivery](git.md) defines promotion checks and
+post-merge evidence. Pinned tool binaries are cached per OS/architecture/tool pin;
+Rust dependencies are cached per OS (written by dev/main pushes, read by pull
+requests). Jobs run on [Blacksmith](https://docs.blacksmith.sh/) runners
+(`blacksmith-4vcpu-ubuntu-2404` for Linux checks, `blacksmith-6vcpu-macos-latest` for
+macOS, `blacksmith-2vcpu-ubuntu-2404` for the policy); the check names stay the ones
+the rulesets require, and Blacksmith serves `actions/cache` and `Swatinem/rust-cache`
+from its own cache without workflow changes. Without the Blacksmith app, switch
+`runs-on` back to `ubuntu-latest` / `macos-latest`.
 
 ## Troubleshooting
 
