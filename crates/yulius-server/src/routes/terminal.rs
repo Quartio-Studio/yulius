@@ -129,6 +129,10 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut s
                 }
             }
             _ = recheck.tick() => {
+                if !app.still_signed_in(&ctx).await {
+                    let _ = socket.send(Message::Close(Some(CloseFrame { code: 4003, reason: "signed out".into() }))).await;
+                    break;
+                }
                 if !app.can_view_task(&ctx, &attach.task_id).await {
                     let _ = socket.send(Message::Close(Some(CloseFrame { code: 4003, reason: "access revoked".into() }))).await;
                     break;

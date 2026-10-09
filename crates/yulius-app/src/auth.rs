@@ -286,6 +286,25 @@ impl App {
         }))
     }
 
+    /// Whether an authenticated context still holds: the user exists and is not disabled, and a
+    /// cookie session is neither revoked nor expired. Open WebSockets re-check it, so logout,
+    /// disabling and session expiry end them as they end new requests (#66).
+    pub async fn still_signed_in(&self, ctx: &AuthContext) -> bool {
+        let Ok(Some(user)) = self.deps.store.user(&ctx.user.id).await else {
+            return false;
+        };
+        if user.disabled_at.is_some() {
+            return false;
+        }
+        match &ctx.session_hash {
+            Some(hash) => matches!(
+                self.deps.store.web_session(hash).await,
+                Ok(Some(session)) if session.revoked_at.is_none() && session.expires_at > self.now()
+            ),
+            None => true,
+        }
+    }
+
     /// Resolves a bearer API token (`yul_…`).
     ///
     /// # Errors

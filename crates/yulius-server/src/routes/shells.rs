@@ -175,6 +175,10 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: ShellAttach, mut sock
                 }
             }
             _ = recheck.tick() => {
+                if !app.still_signed_in(&ctx).await {
+                    close(&mut socket, CLOSE_REVOKED, "signed out").await;
+                    break;
+                }
                 if !app.shell_still_allowed(&ctx, &attach).await {
                     close(&mut socket, CLOSE_REVOKED, "access revoked").await;
                     break;

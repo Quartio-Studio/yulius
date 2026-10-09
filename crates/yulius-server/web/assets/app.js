@@ -252,6 +252,8 @@ function createApp(root, transport) {
     };
     const onConn = (status) => {
       if (status === 'open' || status === 'closed') { clearTimeout(connTimer); connTimer = null; connBanner.hidden = true; return; }
+      // The server ends the stream for good when the session ended (#66): a 401 here signs out.
+      if (status === 'failed') api.get('/api/me').catch(() => {});
       if (status === 'failed' || !connBanner.hidden) { clearTimeout(connTimer); connTimer = null; showConn(); return; }
       // Each reconnect attempt reports again: the 5 s count starts at the first one only.
       if (!connTimer) connTimer = setTimeout(() => { connTimer = null; showConn(); }, 5000);
