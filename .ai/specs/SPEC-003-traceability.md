@@ -202,9 +202,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 29 | (2026-10-09, `F 2026-10-09`) Account statuses do not work, neither in Status nor in Settings ("usage: the provider answered HTTP 429", "Not known yet"). | ROT-009 (changed), AC-ROT-7 |
 | 30 | (2026-10-09, `F 2026-10-09`) Dashboard tokens do not update in real time. (Run metrics were written only when a run ended; active agent time was never measured.) | ANL-001 (changed), AC-ANL-1 |
 | 31 | (2026-10-09, `F 2026-10-09`) The chats cannot be scrolled up in any case. (Claude Code 2.1.292 draws full screen and scrolls with the mouse wheel itself; Yulius kept the mouse for text selection, so the wheel reached nothing.) | UI-019 (changed), AC-UI-11 |
+| 32 | (2026-10-09, `F 2026-10-09`) The system does not show who did what: the Tasks list's By column is empty. (Your own rows hid the author, against UI-024/UI-032.) | UI-024, UI-032 (fix) |
 
 ## Changelog
 
+- 2026-10-09: the By column on every Tasks row (§6 item 32).
 - 2026-10-09: terminal scrolling from feedback on the deployed instance (§6 item 31).
 - 2026-10-09: live run metrics from feedback on the deployed instance (§6 item 30).
 - 2026-10-09: routing past limited accounts and account usage from feedback on the deployed instance (§6 items 28–29).

@@ -720,6 +720,7 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 ## 12. Changelog
 
+- 2026-10-09 (`F 2026-10-09`): every Tasks row shows its author again, yours included (UI-024, UI-032).
 - 2026-10-09 (`F 2026-10-09`): the task terminal scrolls with the wheel again: a full-screen program
   that asked for the mouse gets the wheel turns while clicks keep selecting text (UI-019, AC-UI-11).
 - 2026-10-09 (`F 2026-10-09`): run metrics are stored live (after each turn, at least every 30 s)

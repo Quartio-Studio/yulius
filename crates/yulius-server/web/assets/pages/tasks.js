@@ -269,6 +269,12 @@ export function mountTasksPage(ctx, sandbox) {
     return el;
   }
 
+  /** The creator's initials; your own rows say so on hover and to screen readers. */
+  function authorAvatar(login) {
+    const who = login === myLogin() ? `you (${login})` : login;
+    return h('span', { class: 'avatar tl-avatar', role: 'img', title: `Started by ${who}`, 'aria-label': `Started by ${who}` }, initials(login));
+  }
+
   function rowView({ task, info, group }) {
     // A row opens the task's overview (times, sessions, plan, changes, Go to task), not its session.
     const path = `/s/${encodeURIComponent(sandbox.slug)}/tasks/${task.number}`;
@@ -288,8 +294,8 @@ export function mountTasksPage(ctx, sandbox) {
       h('span', { class: 'tl-cell tl-branch', title: task.branch || null }, task.branch || '—'),
       h('span', { class: 'tl-cell tl-diff' }, git && git.files_changed ? [h('span', { class: 'gt-add' }, `+${git.insertions ?? 0}`), ' ', h('span', { class: 'gt-del' }, `−${git.deletions ?? 0}`)] : '—'),
       prCell(ctx.store.pullsOf(sandbox.id).get(task.id)),
-      // Only someone else's task shows its author; your own would repeat your initials on every row.
-      login && login !== myLogin() ? h('span', { class: 'avatar tl-avatar', role: 'img', title: `Started by ${login}`, 'aria-label': `Started by ${login}` }, initials(login)) : h('span', { class: 'tl-avatar' }),
+      // Every row says who started it, yours too, so the list answers "who did what" (#36).
+      login ? authorAvatar(login) : h('span', { class: 'tl-avatar' }),
       h('span', { class: 'tl-cell tl-started', title: `Started ${dateTime(task.created_at)}` }, relShort(task.created_at)),
       h('span', { class: 'tl-time', title: `Updated ${dateTime(task.updated_at)} · created ${dateTime(task.created_at)}` }, relShort(task.updated_at)),
       h('span', { class: 'tl-actions' },
