@@ -294,7 +294,7 @@
   /* Layout */
   --tabrow-h: 34px;
   --sidebar-w: 300px;
-  --rail-w: 140px;
+  --rail-w: 160px;  /* the named tools rail: "Messages" and a two-digit count fit inside the pill */
 }
 
 /* ---------------------------------------------------------------- Brand typefaces
