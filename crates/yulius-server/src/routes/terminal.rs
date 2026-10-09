@@ -115,10 +115,10 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut s
                         if attach.can_write { app.terminal_resize(&ctx, &attach, cols, rows).await } else { Ok(()) }
                     }
                     TerminalClientMsg::TakeControl => app.terminal_take_control(&ctx, &attach).await,
-                    TerminalClientMsg::Input { data, seq } => {
+                    TerminalClientMsg::Input { data, seq, scroll } => {
                         if seq.is_some() && seq <= last_input_seq { Ok(()) } else {
                             if seq.is_some() { last_input_seq = seq; }
-                            app.terminal_input(&ctx, &attach, data.as_bytes()).await
+                            app.terminal_input(&ctx, &attach, data.as_bytes(), scroll).await
                         }
                     }
                 };

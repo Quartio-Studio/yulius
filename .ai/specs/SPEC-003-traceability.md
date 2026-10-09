@@ -223,9 +223,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 50 | (2026-10-09, hardening; self-review of #32, reproduced) A failed usage refresh wrote back the account as read at the start of the round, undoing a limit a running task observed meanwhile, so routing used the exhausted account again. | ROT-003, ROT-009, AC-ROT-2 |
 | 51 | (2026-10-09, hardening; self-review of #53, reproduced) A repeated scope claim messaged and woke the overlapping task every time; a malformed scope_release freed every claim; claims per task were unbounded. | COM-003, AC-COM-3 |
 | 52 | (2026-10-09, hardening; goal item c) Parsers fed by untrusted input had hand-written cases only; randomized tests (no defect found) now cover the diff parser, the spec format, scope patterns, the transcript observer and usage JSON. | AC-UI-24, DSC-003, COM-003, ROT-009 |
+| 53 | (2026-10-09, hardening; self-review of #37/#42, reproduced) Viewers who opened a task after a full-screen app started could not wheel-scroll it (snapshot without alternate screen and mouse modes); a wheel turn took control and resized the terminal; fitted text could lose its bottom rows. | UI-019, AC-UI-11, TSK-006 |
 
 ## Changelog
 
+- 2026-10-09: terminal follow-ups: full snapshot for late viewers, scrolling without taking control, fit by rows too (§6 item 53, hardening).
 - 2026-10-09: randomized parser tests (§6 item 52, hardening).
 - 2026-10-09: scope claims: no repeated messages, strict release, at most 50 per task (§6 item 51, hardening).
 - 2026-10-09: a failed usage refresh records only its error (§6 item 50, hardening).

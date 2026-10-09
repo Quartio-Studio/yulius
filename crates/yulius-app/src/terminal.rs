@@ -127,6 +127,7 @@ impl App {
         ctx: &AuthContext,
         attach: &TerminalAttach,
         data: &[u8],
+        scroll: bool,
     ) -> AppResult<()> {
         if !attach.can_write || !self.can_work(ctx, &attach.task_id).await {
             return Err(AppError::Forbidden("read-only access".into()));
@@ -134,8 +135,11 @@ impl App {
         if data.len() > 64 * 1024 {
             return Err(AppError::Invalid("input frame too large".into()));
         }
-        // The last viewer to type controls the terminal (TSK-006).
-        attach.runtime.hub.take_control(attach.viewer_id);
+        // The last viewer to type controls the terminal (TSK-006). A forwarded wheel turn is not
+        // typing: it must not move control, and with it the size, to that viewer (#78).
+        if !scroll {
+            attach.runtime.hub.take_control(attach.viewer_id);
+        }
         self.send_input(&attach.task_id, data).await
     }
 
