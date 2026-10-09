@@ -335,6 +335,12 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
 
+Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
+`scope_claim` takes one glob or up to 20; claims of tasks that are no longer live are ignored, a
+repeated claim is kept once, and each other task whose claim overlaps gets one `scope` message
+(which wakes it when idle). `spec_check` returns the Stop gate's verdict and fix-it message for
+the task spec plus the project-docs problems; `project_context` returns the briefing rebuilt now.
+
 ### 7.5 Hooks (`yulius hook <harness> <event>`)
 
 The hook binary reads the CLI's JSON from stdin (≤ 1 MiB), forwards it to `/hooks/<event>` with the
