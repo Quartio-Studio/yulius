@@ -19,15 +19,18 @@ use yulius_app::delivery::profile_to_contract;
 use yulius_app::delivery::runner::{CommandEnd, CommandSpec, OutputRing, run_bounded};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
-    AttemptRecord, GitHubTokenRecord, LaunchKind, SandboxRecord, Sealed, Secret, TaskOrigin,
-    TaskRecord, UserRecord,
+    AttemptRecord, GitHubTokenRecord, LaunchKind, SandboxRecord, Sealed, Secret, StepRecord,
+    TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort};
 use yulius_app::ports::github::ChecksState;
-use yulius_app::ports::store::{InstanceStore, SandboxStore, TaskStore, UserStore};
-use yulius_domain::delivery::DeliveryProfile;
+use yulius_app::ports::store::{
+    CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
+};
+use yulius_app::ports::store_ext::DeliveryStore;
+use yulius_domain::delivery::{DeliveryProfile, DeliveryStage};
 use yulius_domain::harness::Harness;
-use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
+use yulius_domain::ids::{AttemptId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::task::{AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
@@ -702,6 +705,31 @@ fn product_with_deploy() -> Value {
             {"name": "rollout", "after": "production", "verify": "manual", "command": null}
         ]
     }})
+}
+
+/// Replaces a task's steps with one step per status.
+async fn set_steps(f: &Fixture, task: &str, statuses: &[&str]) -> BoxResult<()> {
+    let id = TaskId::parse(task)?;
+    let steps = statuses
+        .iter()
+        .enumerate()
+        .map(|(i, status)| {
+            Ok(StepRecord {
+                id: StepId::parse(&format!("{task}-step-{i}"))?,
+                task_id: id.clone(),
+                ordinal: u32::try_from(i)?,
+                title: format!("Step {i}"),
+                status: (*status).to_owned(),
+                note: None,
+                updated_by: None,
+                updated_at: None,
+            })
+        })
+        .collect::<BoxResult<Vec<_>>>()?;
+    f.h.store
+        .replace_steps(&id, &steps, "test", Timestamp(2))
+        .await?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------- tests
@@ -1731,5 +1759,63 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
         "{}",
         page.body
     );
+    Ok(())
+}
+
+/// #35: a task ready for delivery opens its pull request by itself — with its creator's GitHub
+/// account, after the branch is pushed — while open steps or uncommitted work keep it waiting;
+/// a merge on GitHub then moves the stage in the background without anyone reading the task.
+#[tokio::test]
+async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let t1 = TaskId::parse("t1")?;
+    let pulls_opened = || {
+        f.h.github
+            .writes()
+            .iter()
+            .filter(|w| w.starts_with("create_pull"))
+            .count()
+    };
+
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 0, "a step is still open");
+
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    std::fs::write(wt.join("scratch.txt"), "work in progress")?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 0, "uncommitted work");
+    std::fs::remove_file(wt.join("scratch.txt"))?;
+
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 1, "{:?}", f.h.github.writes());
+    let d = f.delivery("t1").await?;
+    assert_eq!(d["stage"], "pr_open");
+    assert_eq!(d["pr"]["base"], "dev");
+    assert_eq!(d["pr"]["head"], "feat/1-checkout-api");
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, head, "pushed first");
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 1, "one pull request per task");
+
+    // Merged on GitHub: the background round follows it; nobody read the task meanwhile.
+    yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        1,
+        "squash",
+        &head,
+    )
+    .await?;
+    f.h.app.reconcile_deliveries().await;
+    let record = f.h.store.delivery(&t1).await?.ok_or("delivery row")?;
+    assert_eq!(record.stage, DeliveryStage::MergedIntegration);
     Ok(())
 }

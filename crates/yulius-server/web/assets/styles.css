@@ -323,6 +323,7 @@ p { margin: 0; }
   background: var(--surface-2); color: var(--text-2); font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; text-align: left;
 }
 .task-group-head.group-needs .nav-slot, .task-group-head.group-needs .task-group-count { color: var(--warn-fg); }
+.task-group-head.group-done .nav-slot { color: var(--ok-fg); }
 button.task-group-head { cursor: pointer; border-radius: var(--radius); }
 button.task-group-head:hover { color: var(--text); }
 .task-group-count { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; }
@@ -374,6 +375,7 @@ button.task-group-head:hover { color: var(--text); }
 .glyph { display: inline-flex; align-items: center; justify-content: center; width: 14px; font-size: var(--fs-sm); font-weight: 600; line-height: 1; }
 .tone-working, .tone-running { color: var(--ok); }
 .tone-running { opacity: 0.75; }
+.tone-done { color: var(--ok); } /* finished with a tested pull request (#35) */
 .tone-waiting { color: var(--info); } /* "your turn": the info hue, apart from brand, warning and error */
 .tone-attention { color: var(--warn); }
 .tone-switching { color: var(--violet); }

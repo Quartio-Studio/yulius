@@ -82,6 +82,9 @@ pub struct TaskRuntime {
     turn_started_ms: AtomicI64,
     /// Active agent time of the current attempt: its finished turns (ms).
     active_ms: AtomicI64,
+    /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
+    /// not repeated every turn.
+    pub(crate) auto_pr_head: Mutex<Option<String>>,
 }
 
 impl TaskRuntime {
@@ -97,6 +100,7 @@ impl TaskRuntime {
             limit_resets_at: AtomicI64::new(0),
             turn_started_ms: AtomicI64::new(0),
             active_ms: AtomicI64::new(0),
+            auto_pr_head: Mutex::new(None),
         }
     }
 

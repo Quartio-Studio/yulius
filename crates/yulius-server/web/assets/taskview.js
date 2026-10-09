@@ -100,7 +100,7 @@ export function mountTaskView(ctx, sandbox, task) {
   // ---- attention bar (UX-03): what the agent needs from the user, with the way to do it
   const attention = h('div', { class: 'attention-bar', role: 'status', hidden: true });
   function renderAttention() {
-    const info = taskInfo(current, ctx.store.state.actionRequests);
+    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
     const reply = () => (isPhone() ? quickInput.focus() : terminal.focus());
     let content = null;
     if (info.request) {

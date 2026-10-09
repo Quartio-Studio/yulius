@@ -1383,9 +1383,11 @@ impl App {
         let branch = task.branch.clone().ok_or_else(|| {
             AppError::Conflict("the task has no branch yet; start it first".into())
         })?;
-        let worktree = task.worktree_path.clone().ok_or_else(|| {
-            AppError::Conflict("the task has no worktree yet; start it first".into())
-        })?;
+        if task.worktree_path.is_none() {
+            return Err(AppError::Conflict(
+                "the task has no worktree yet; start it first".into(),
+            ));
+        }
         if branch == profile.integration_branch || branch == profile.production_branch {
             return Err(AppError::Invalid(format!(
                 "the task branch '{branch}' is a protected delivery branch"
@@ -1412,14 +1414,54 @@ impl App {
         if observed.dirty {
             return Err(AppError::Conflict(DIRTY_WORKTREE.into()));
         }
-        let installation = self.dlv_installation_token(&sandbox).await?;
+        self.dlv_open_pull(
+            &sandbox,
+            &task,
+            &profile,
+            &observed,
+            &token,
+            req.title.as_deref(),
+            req.body.as_deref(),
+            &Self::dlv_actor_login(&ctx.user),
+        )
+        .await?;
+        let task = self
+            .deps
+            .store
+            .task(&task.id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        self.delivery_view(&task, Some(&ctx.user)).await
+    }
+
+    /// Pushes the task branch with an installation token and opens its pull request into the
+    /// integration branch with `token` (its account authors the pull request); records
+    /// `pr_open`, audits it as `actor` and publishes the task. The caller has checked the domain
+    /// rules and the worktree (`open_task_pr` for a person, `try_auto_open_pr` for Yulius).
+    #[allow(clippy::too_many_arguments)]
+    async fn dlv_open_pull(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskRecord,
+        profile: &DeliveryProfile,
+        observed: &Observed,
+        token: &Secret,
+        title: Option<&str>,
+        body: Option<&str>,
+        actor: &str,
+    ) -> AppResult<u64> {
+        let (Some(branch), Some(worktree)) = (task.branch.clone(), task.worktree_path.clone())
+        else {
+            return Err(AppError::Conflict(
+                "the task has no branch or worktree yet; start it first".into(),
+            ));
+        };
+        let installation = self.dlv_installation_token(sandbox).await?;
         self.deps
             .git
             .push(Path::new(&worktree), &branch, &branch, &installation)
             .await?;
-        let title = req
-            .title
-            .as_deref()
+        let title = title
             .map(str::trim)
             .filter(|t| !t.is_empty())
             .unwrap_or(&task.title)
@@ -1428,7 +1470,7 @@ impl App {
             .deps
             .github
             .create_pull(
-                &token,
+                token,
                 &sandbox.repo_owner,
                 &sandbox.repo_name,
                 &NewPull {
@@ -1442,7 +1484,7 @@ impl App {
                         ),
                         &observed.spec,
                         &observed.steps,
-                        req.body.as_deref(),
+                        body,
                     ),
                 },
             )
@@ -1464,7 +1506,7 @@ impl App {
             ));
         }
         self.dlv_audit(
-            &Self::dlv_actor_login(&ctx.user),
+            actor,
             "delivery.pr.open",
             &format!("{}#{}", sandbox.slug, task.number),
             &format!(
@@ -1474,13 +1516,163 @@ impl App {
         )
         .await;
         self.publish_task(&task.id).await;
-        let task = self
+        Ok(pull.number)
+    }
+
+    // ---------------------------------------------------------------- automatic delivery
+
+    /// Opens the task's pull request by itself when the task is ready for delivery (#35), so
+    /// nobody has to: called when the agent ends a turn cleanly. Merging and promotion stay
+    /// human (GIT-002). The outcome is said in the task's terminal; failures are logged and not
+    /// retried for the same head.
+    pub async fn auto_open_pr(&self, task_id: &TaskId) {
+        match self.try_auto_open_pr(task_id).await {
+            Ok(Some((number, base))) => self.runtime(task_id).hub.notice(format!(
+                "Yulius opened pull request #{number} into {base}: the task is ready for review."
+            )),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "automatic pull request failed");
+                self.runtime(task_id).hub.notice(format!(
+                    "Yulius could not open the pull request by itself: {err} Use Deliver… on the task."
+                ));
+            }
+        }
+    }
+
+    /// The pull request number and base when Yulius opened one; `None` while the task is not
+    /// ready: no branch or worktree, a pull request already, an invalid spec, an open step,
+    /// uncommitted work, or no commits ahead of the integration branch.
+    async fn try_auto_open_pr(&self, task_id: &TaskId) -> AppResult<Option<(u64, String)>> {
+        let store = &self.deps.store;
+        let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        let (Some(branch), Some(worktree)) = (task.branch.clone(), task.worktree_path.clone())
+        else {
+            return Ok(None);
+        };
+        // Cheap checks first: most turns end with steps still open, and they need no GitHub call.
+        let steps = store.steps(&task.id).await?;
+        if steps.is_empty()
+            || steps
+                .iter()
+                .any(|s| !StepStatus::parse(&s.status).is_some_and(StepStatus::is_resolved))
+            || store
+                .delivery(&task.id)
+                .await?
+                .is_some_and(|r| r.stage != DeliveryStage::None)
+        {
+            return Ok(None);
+        }
+        let sandbox = self.dlv_sandbox_of(&task).await?;
+        let profile = delivery_profile(&sandbox);
+        if branch == profile.integration_branch || branch == profile.production_branch {
+            return Ok(None);
+        }
+        // The task's creator authors the pull request (their GitHub account, as if they had
+        // pressed Deliver…); without a linked account the App does.
+        let creator_token = match store.user(&task.created_by).await? {
+            Some(user) => self.user_github_token(&user).await.ok(),
+            None => None,
+        };
+        let token = match creator_token {
+            Some(token) => token,
+            None => self.dlv_installation_token(&sandbox).await?,
+        };
+        let observed = self
+            .dlv_observe(&sandbox, &task, &profile, Some(&token))
+            .await?;
+        if observed.record.stage != DeliveryStage::None
+            || observed.pr.is_some()
+            || !observed.spec.valid
+            || observed.steps.is_empty()
+            || observed.steps_open > 0
+            || observed.dirty
+        {
+            return Ok(None);
+        }
+        let Some(head) = observed.worktree_head.clone() else {
+            return Ok(None);
+        };
+        let (ahead, _) = self
             .deps
-            .store
-            .task(&task.id)
-            .await?
-            .ok_or(AppError::NotFound)?;
-        self.delivery_view(&task, Some(&ctx.user)).await
+            .git
+            .ahead_behind(
+                Path::new(&worktree),
+                &format!("origin/{}", profile.integration_branch),
+                "HEAD",
+            )
+            .await?;
+        if ahead == 0 {
+            return Ok(None);
+        }
+        {
+            let runtime = self.runtime(task_id);
+            let mut tried = runtime.auto_pr_head.lock().map_err(AppError::internal)?;
+            if tried.as_deref() == Some(head.as_str()) {
+                return Ok(None);
+            }
+            *tried = Some(head);
+        }
+        dlv::apply(
+            &observed.record.stage,
+            &DeliveryAction::OpenPr,
+            Initiator::Policy,
+            &profile,
+            &observed.facts(),
+        )
+        .map_err(|err| refusal(&err))?;
+        let number = self
+            .dlv_open_pull(
+                &sandbox, &task, &profile, &observed, &token, None, None, "yulius",
+            )
+            .await?;
+        Ok(Some((number, profile.integration_branch)))
+    }
+
+    /// Reconciles deliveries in progress with GitHub in the background (#35): a pull request
+    /// merged or closed outside Yulius moves its task on the Git board without anyone opening
+    /// the task. Uses each sandbox's installation token; failures leave the stage as recorded.
+    pub async fn reconcile_deliveries(&self) {
+        let store = &self.deps.store;
+        let Ok(sandboxes) = store.sandboxes().await else {
+            return;
+        };
+        for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
+            let Ok(records) = store.deliveries(&sandbox.id).await else {
+                continue;
+            };
+            let mut open = Vec::new();
+            for record in records.into_iter().filter(|r| {
+                matches!(
+                    r.stage,
+                    DeliveryStage::PrOpen | DeliveryStage::MergedIntegration
+                )
+            }) {
+                if let Ok(Some(task)) = store.task(&record.task_id).await
+                    && task.archived_at.is_none()
+                {
+                    open.push((task, record.stage));
+                }
+            }
+            if open.is_empty() {
+                continue;
+            }
+            let Ok(token) = self.dlv_installation_token(sandbox).await else {
+                continue;
+            };
+            let profile = delivery_profile(sandbox);
+            for (task, before) in open {
+                if self
+                    .dlv_observe(sandbox, &task, &profile, Some(&token))
+                    .await
+                    .is_ok()
+                    && let Ok(Some(after)) = store.delivery(&task.id).await
+                    && after.stage != before
+                {
+                    self.publish_task(&task.id).await;
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------- merge

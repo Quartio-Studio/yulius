@@ -203,9 +203,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 30 | (2026-10-09, `F 2026-10-09`) Dashboard tokens do not update in real time. (Run metrics were written only when a run ended; active agent time was never measured.) | ANL-001 (changed), AC-ANL-1 |
 | 31 | (2026-10-09, `F 2026-10-09`) The chats cannot be scrolled up in any case. (Claude Code 2.1.292 draws full screen and scrolls with the mouse wheel itself; Yulius kept the mouse for text selection, so the wheel reached nothing.) | UI-019 (changed), AC-UI-11 |
 | 32 | (2026-10-09, `F 2026-10-09`) The system does not show who did what: the Tasks list's By column is empty. (Your own rows hid the author, against UI-024/UI-032.) | UI-024, UI-032 (fix) |
+| 33 | (2026-10-09, `F 2026-10-09`) When everything is ready for a pull request it should happen by itself; the task's icon should become the PR icon with its status, as in the preview; the Git board should move tasks on by itself; a task is done when its PR is created, tested and everything works, and the sidebar must say Done. (The agent had no way to open the PR and its briefing told it to ask; stages were reconciled only when a task was read.) | GIT-001 (changed), AC-GIT-1 |
 
 ## Changelog
 
+- 2026-10-09: automatic pull requests and a self-moving Git board (§6 item 33).
 - 2026-10-09: the By column on every Tasks row (§6 item 32).
 - 2026-10-09: terminal scrolling from feedback on the deployed instance (§6 item 31).
 - 2026-10-09: live run metrics from feedback on the deployed instance (§6 item 30).

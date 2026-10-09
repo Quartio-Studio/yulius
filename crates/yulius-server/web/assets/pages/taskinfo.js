@@ -49,7 +49,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     meta);
 
   function renderHead() {
-    const info = taskInfo(current, ctx.store.state.actionRequests);
+    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
     setChildren(titleEl, h('span', { class: 'muted' }, `#${current.number} `), current.title || `Task #${current.number}`);
     const pr = ctx.store.pullsOf(sandbox.id).get(current.id);
     setChildren(meta,

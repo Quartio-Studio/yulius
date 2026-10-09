@@ -152,7 +152,8 @@ function seed(params) {
   const pr = (number, title, state, base, checks) => ({ number, url: `https://github.com/Quartio-Studio/${number > 400 ? 'product' : 'studio'}/pull/${number}`, title, state, base, head: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, checks });
   db.tasks = [
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, unread: 2, updated: 20e3 }),
-    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 2, author: 'anna-q' }),
+    // Finished its turn with a tested pull request (checks green): "Done" (#35).
+    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 2, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
     t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3 }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),

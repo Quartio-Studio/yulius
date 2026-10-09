@@ -85,6 +85,7 @@ export function statusInfo(task) {
  */
 export function activityLine(task, info = statusInfo(task)) {
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
+  if (info.pr) return info.label;
   const steps = task.steps || {};
   if (task.status === 'running') {
     if (task.activity === 'needs_attention') return 'Approve or answer in the terminal';
@@ -103,16 +104,27 @@ export function activityLine(task, info = statusInfo(task)) {
 
 /**
  * statusInfo plus what only the live store knows: a browser action request from the agent makes
- * a live task "Needs you in the browser". `actionRequests` is store.state.actionRequests. The
- * sidebar and the Tasks page both use this, so they always agree.
+ * a live task "Needs you in the browser", and the pull request of a finished turn makes it
+ * "Done" (tested: checks green or not required, or merged), "In review" (checks running) or
+ * "Needs you" (checks failing) (#35). `actionRequests` is store.state.actionRequests and `pr` the
+ * task's pull request from store.pullsOf(). The sidebar and the Tasks page both use this, so they
+ * always agree.
  */
-export function taskInfo(task, actionRequests) {
+export function taskInfo(task, actionRequests, pr) {
   const info = statusInfo(task);
   const map = actionRequests && actionRequests.get(task.sandbox_id);
   if (map && info.group !== 'ended') {
     for (const [tabId, request] of map) {
       if (request.task_id === task.id) return { ...info, icon: 'globe', tone: 'attention', label: 'Needs you in the browser', group: 'needs', detail: request.reason, request: { ...request, tab_id: tabId } };
     }
+  }
+  // The agent finished and its pull request exists (#35): done once it is tested — checks green
+  // or not required — or merged; in review while checks run; needs you when they fail.
+  if (pr && task.status === 'running' && task.activity !== 'working' && (pr.state === 'open' || pr.state === 'merged')) {
+    if (pr.state === 'open' && pr.checks === 'failure') return { ...info, icon: 'branch', tone: 'attention', label: `PR #${pr.number} · checks failing`, group: 'needs', pr };
+    // Tested means known green (or no required checks); running or unreadable checks are not.
+    if (pr.state === 'open' && !['success', 'none'].includes(pr.checks)) return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · ${pr.checks === 'pending' ? 'checks running' : 'checks not known yet'}`, group: 'working', pr };
+    return { ...info, glyph: '✓', icon: 'check', tone: 'done', label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, group: 'done', pr };
   }
   return info;
 }
