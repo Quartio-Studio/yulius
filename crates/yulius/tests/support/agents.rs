@@ -42,6 +42,14 @@ impl FakeAgentHarness {
 impl HarnessPort for FakeAgentHarness {
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {
         let mut plan = self.inner.plan(launch)?;
+        // Tests read what each launch asked for from its run directory.
+        let _ = std::fs::write(
+            launch.run_dir.join("fake-launch.txt"),
+            format!(
+                "mode={:?}\nmodel={:?}\neffort={:?}\n",
+                launch.mode, launch.model, launch.effort
+            ),
+        );
         let session = plan
             .session_id
             .clone()

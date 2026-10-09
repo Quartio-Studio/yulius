@@ -1,15 +1,19 @@
-//! End-to-end HTTP tests: setup, sign-in, CSRF, admission and GitHub-mirrored visibility
-//! (AC-ACC-1..5).
+//! End-to-end HTTP tests: setup, sign-in, CSRF, admission, GitHub-mirrored visibility and
+//! access on every sandbox and task route (AC-ACC-1..5).
 
 mod support;
 
 use axum::http::{Method, StatusCode};
-use serde_json::json;
-use support::{Creds, TestResult, call, harness, session_from};
+use serde_json::{Value, json};
+use support::{
+    Creds, TestResult, call, harness, perms, seed_github_user, seed_sandbox, seed_task,
+    session_from,
+};
 use yulius_app::model::SandboxRecord;
 use yulius_app::ports::store::{InstanceStore, SandboxStore};
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::GitHubPermissions;
+use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
 async fn setup_superadmin(h: &support::Harness) -> Result<Creds, Box<dyn std::error::Error>> {
@@ -154,6 +158,151 @@ async fn password_login_rate_limit_and_csrf() -> TestResult {
     assert_eq!(logout.status, StatusCode::NO_CONTENT);
     let after = call(&h.router, Method::GET, "/api/me", None, &creds).await?;
     assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+/// Every sandbox- and task-scoped route with a body its extractor accepts. `{sid}`/`{tid}` are
+/// replaced; websocket routes are called without an upgrade.
+fn scoped_routes() -> Vec<(Method, &'static str, Option<Value>)> {
+    let empty = || Some(json!({}));
+    vec![
+        (Method::GET, "/api/sandboxes/{sid}", None),
+        (Method::PATCH, "/api/sandboxes/{sid}", empty()),
+        (Method::DELETE, "/api/sandboxes/{sid}", None),
+        (Method::GET, "/api/sandboxes/{sid}/tasks", None),
+        (
+            Method::POST,
+            "/api/sandboxes/{sid}/tasks",
+            Some(json!({"prompt": "x"})),
+        ),
+        (Method::GET, "/api/sandboxes/{sid}/workflows", None),
+        (Method::GET, "/api/sandboxes/{sid}/automations", None),
+        (Method::GET, "/api/sandboxes/{sid}/skills", None),
+        (Method::GET, "/api/sandboxes/{sid}/skills/x", None),
+        (Method::GET, "/api/sandboxes/{sid}/mcp", None),
+        (Method::GET, "/api/sandboxes/{sid}/git", None),
+        (Method::GET, "/api/sandboxes/{sid}/delivery/runs", None),
+        (Method::GET, "/api/sandboxes/{sid}/delivery/runs/r1", None),
+        (
+            Method::POST,
+            "/api/sandboxes/{sid}/delivery/promote",
+            empty(),
+        ),
+        (
+            Method::POST,
+            "/api/sandboxes/{sid}/delivery/environments/production/runs",
+            empty(),
+        ),
+        (
+            Method::POST,
+            "/api/sandboxes/{sid}/onboarding/skip",
+            empty(),
+        ),
+        (Method::GET, "/api/sandboxes/{sid}/files?path=", None),
+        (
+            Method::GET,
+            "/api/sandboxes/{sid}/files/content?path=README.md",
+            None,
+        ),
+        (Method::POST, "/api/sandboxes/{sid}/shells", empty()),
+        (Method::GET, "/api/sandboxes/{sid}/browser", None),
+        (Method::GET, "/api/tasks/{tid}", None),
+        (Method::DELETE, "/api/tasks/{tid}", None),
+        (Method::GET, "/api/tasks/{tid}/messages", None),
+        (
+            Method::POST,
+            "/api/tasks/{tid}/messages",
+            Some(json!({"body": "hi"})),
+        ),
+        (Method::POST, "/api/tasks/{tid}/stop", empty()),
+        (Method::POST, "/api/tasks/{tid}/continue", empty()),
+        (Method::POST, "/api/tasks/{tid}/switch", empty()),
+        (Method::POST, "/api/tasks/{tid}/archive", empty()),
+        (Method::POST, "/api/tasks/{tid}/restore", empty()),
+        (
+            Method::POST,
+            "/api/tasks/{tid}/feedback",
+            Some(json!({"verdict": "correct"})),
+        ),
+        (Method::GET, "/api/tasks/{tid}/delivery", None),
+        (Method::GET, "/api/tasks/{tid}/changes", None),
+        (Method::GET, "/api/tasks/{tid}/commits", None),
+        (Method::POST, "/api/tasks/{tid}/delivery/pr", empty()),
+        (Method::POST, "/api/tasks/{tid}/delivery/merge", empty()),
+        (Method::GET, "/api/tasks/{tid}/terminal", None),
+    ]
+}
+
+fn fill(path: &str, sandbox: &str, task: &str) -> String {
+    path.replace("{sid}", sandbox).replace("{tid}", task)
+}
+
+/// AC-ACC-4 (#52): a sandbox the user cannot see answers exactly like one that does not exist
+/// on every sandbox and task route, and a read user is refused every change to a task.
+#[tokio::test]
+async fn invisible_sandboxes_answer_like_missing_ones_and_read_users_cannot_change_tasks()
+-> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "studio", "u-alice").await?;
+    seed_sandbox(&h, "s2", "product", "u-alice").await?;
+    h.github.set_perm("alice", "acme/studio", perms("read"));
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    seed_task(&h, "t2", "s2", "u-alice", TaskStatus::Closed, None).await?;
+
+    // Alice is signed in and reads her sandbox and its task.
+    for path in [
+        "/api/sandboxes/s1",
+        "/api/tasks/t1",
+        "/api/tasks/t1/messages",
+    ] {
+        let seen = call(&h.router, Method::GET, path, None, &alice).await?;
+        assert_eq!(seen.status, StatusCode::OK, "{path}");
+    }
+
+    // The sandbox she cannot see (and its task) answers exactly like a missing one.
+    for (method, path, body) in scoped_routes() {
+        let hidden = fill(path, "s2", "t2");
+        let missing = fill(path, "s9", "t9");
+        let a = call(&h.router, method.clone(), &hidden, body.clone(), &alice).await?;
+        let b = call(&h.router, method.clone(), &missing, body, &alice).await?;
+        assert_eq!(
+            (a.status, &a.body),
+            (b.status, &b.body),
+            "{method} {hidden} reveals the invisible sandbox"
+        );
+        assert!(
+            a.status.is_client_error(),
+            "{method} {hidden}: {}",
+            a.status
+        );
+        if !path.ends_with("/terminal") && !path.ends_with("/browser") {
+            assert_eq!(a.status, StatusCode::NOT_FOUND, "{method} {hidden}");
+        }
+    }
+
+    // A read user cannot change a task of a sandbox she can read.
+    for (method, path, body) in [
+        (Method::POST, "/api/tasks/t1/continue", Some(json!({}))),
+        (Method::POST, "/api/tasks/t1/switch", Some(json!({}))),
+        (Method::POST, "/api/tasks/t1/stop", Some(json!({}))),
+        (Method::POST, "/api/tasks/t1/archive", Some(json!({}))),
+        (
+            Method::POST,
+            "/api/tasks/t1/messages",
+            Some(json!({"body": "steer"})),
+        ),
+        (Method::DELETE, "/api/tasks/t1", None),
+        (Method::POST, "/api/tasks/t1/delivery/pr", Some(json!({}))),
+        (
+            Method::POST,
+            "/api/sandboxes/s1/tasks",
+            Some(json!({"prompt": "x"})),
+        ),
+    ] {
+        let refused = call(&h.router, method.clone(), path, body, &alice).await?;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{method} {path}");
+    }
     Ok(())
 }
 

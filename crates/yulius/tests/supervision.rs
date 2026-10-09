@@ -24,6 +24,7 @@ use yulius_app::model::{
     UserRecord,
 };
 use yulius_app::ports::usage::UsageProbe;
+use yulius_app::supervisor::RunStart;
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
@@ -613,6 +614,128 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
             })
             .await?;
         }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// AC-TSK-7: a closed task continues by resuming the same provider session. AC-ROT-5: a manual
+/// switch to a chosen account resumes it there with the task's model and effort. These are the
+/// runs `POST /continue` and `POST /switch` start after their access checks (see `access.rs`).
+#[test]
+fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effort() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: None,
+        };
+        let app = build_full(&data, Some(&fake), agent, 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        add_account(&app, "a-claude-2", 1).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Continue me: answer with an echo".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Continue me".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: Some("claude-opus-4-1".into()),
+                effort: Some("high".into()),
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: yulius_app::model::TaskMode::Prompt,
+            })
+            .await?
+            .id;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        app.send_input(&id, b"/exit\r").await?;
+        wait_for("the closed task", Duration::from_secs(20), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Closed)
+        })
+        .await?;
+        let running = |count: usize| {
+            let app = app.clone();
+            let id = id.clone();
+            move || {
+                let app = app.clone();
+                let id = id.clone();
+                async move {
+                    let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+                    attempts.len() == count
+                        && attempts.last().is_some_and(|a| !a.state.is_terminal())
+                        && task(&app, &id)
+                            .await
+                            .is_ok_and(|t| t.status == TaskStatus::Running)
+                }
+            }
+        };
+
+        // Continue: the same provider session resumes (TSK-007).
+        app.start_run(&id, RunStart::Resume { prompt: None }, None)
+            .await?;
+        wait_for("the continued run", Duration::from_secs(30), running(2)).await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts[1].launch_kind, LaunchKind::Resume);
+        assert!(attempts[0].provider_session_id.is_some());
+        assert_eq!(
+            attempts[0].provider_session_id, attempts[1].provider_session_id,
+            "the same session"
+        );
+
+        // Manual switch to the other account: resumed there (ROT-007).
+        let other = if attempts[1].account_id.as_ref().map(AccountId::as_str) == Some("a-claude") {
+            "a-claude-2"
+        } else {
+            "a-claude"
+        };
+        app.switch_task_now(
+            &id,
+            Some(AccountId::parse(other)?),
+            "manual",
+            Some("Continue the task exactly where you left off.".into()),
+        )
+        .await?;
+        wait_for("the switched run", Duration::from_secs(90), running(3)).await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            attempts[2].account_id.as_ref().map(AccountId::as_str),
+            Some(other)
+        );
+        assert_eq!(attempts[2].launch_kind, LaunchKind::Resume);
+        assert_eq!(
+            attempts[2].provider_session_id,
+            attempts[0].provider_session_id
+        );
+        // Every launch asked for the task's model and effort (AC-ROT-5).
+        for attempt in &attempts {
+            let launch =
+                std::fs::read_to_string(Path::new(&attempt.run_dir).join("fake-launch.txt"))?;
+            assert!(
+                launch.contains("model=Some(\"claude-opus-4-1\")")
+                    && launch.contains("effort=Some(\"high\")"),
+                "attempt {}: {launch}",
+                attempt.seq
+            );
+        }
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
