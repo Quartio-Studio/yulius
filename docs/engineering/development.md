@@ -37,11 +37,6 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
 Use the full gate after implementation stabilizes.
-
-The web UI has end-to-end tests in [`e2e/`](../../e2e/README.md): flows, accessibility (axe-core)
-and page errors, run in a browser against the UI's mock mode. They need Node 24.8+ (test-only;
-the UI has no Node at runtime) and are not part of `scripts/dev ci`. Run them after UI changes:
-`cd e2e && npm ci --ignore-scripts && npx e2e run`.
 No provider login, database, Docker daemon or paid model call is part of ordinary CI.
 Product crates are added per the SPEC-002 delivery checkpoints.
 Its binary-only workspace has no doctest targets; the gate reports this as not
@@ -92,9 +87,7 @@ requests). Jobs run on [Blacksmith](https://docs.blacksmith.sh/) runners
 macOS, `blacksmith-2vcpu-ubuntu-2404` for the policy); the check names stay the ones
 the rulesets require, and Blacksmith serves `actions/cache` and `Swatinem/rust-cache`
 from its own cache without workflow changes. Without the Blacksmith app, switch
-`runs-on` back to `ubuntu-latest` / `macos-latest`. `Web UI e2e` (`e2e.yml`) runs the
-end-to-end suite when the UI, the suite or the workflow changes; it is advisory, not a
-required check, and gets no model key (agent steps are skipped).
+`runs-on` back to `ubuntu-latest` / `macos-latest`.
 
 ## Troubleshooting
 

@@ -56,9 +56,6 @@ scripts/dev deps
 scripts/dev ci
 ```
 
-Web UI changes: also run the end-to-end suite, `cd e2e && npm ci --ignore-scripts && npx e2e run`
-(Node 24.8+, test-only; see [e2e/README.md](e2e/README.md)).
-
 `scripts/dev` selects the pinned Rust even if Homebrew Cargo is first in PATH.
 `cargo xtask <command>` also works with the pinned rustup toolchain and `.tools/bin` on PATH.
 Never claim a missing command was passed; do not skip gates or widen allowlists to get green.
