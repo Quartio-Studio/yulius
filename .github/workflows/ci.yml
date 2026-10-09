@@ -1,8 +1,10 @@
 name: Engineering checks
 
+# Branch policy is its own workflow (policy.yml): editing a pull request's title or description
+# re-runs only the policy, never the build (#82).
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [dev, main]
   schedule:
@@ -17,30 +19,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  branch-policy:
-    name: Branch policy
+  quality-linux:
+    name: quality (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 3
-    permissions:
-      contents: read
-      actions: read
+    timeout-minutes: 30
     steps:
+      - name: Free disk space
+        # The workspace's test binaries nearly fill the runner; drop toolchains we never use.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
-      - name: Validate PR route and promotion evidence
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/check_git_policy.py
-  quality:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+      - name: Cache pinned tool binaries
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .tools
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.config/tools.toml', 'scripts/bootstrap.py') }}
+      - name: Bootstrap pinned toolchain and tools
+        run: python3 scripts/bootstrap.py
+      - name: Cache Rust build
+        # dev/main pushes write the cache; pull requests only read it (no per-PR eviction).
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Run local-equivalent gates
+        run: scripts/dev ci
+      - name: Collect test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-results-ubuntu-latest
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+
+  quality-macos:
+    name: quality (macos-latest)
+    # macOS minutes cost several Linux minutes. Pull requests into dev skip this job (a skipped
+    # required check counts as passed); dev/main pushes, promotions into main, the weekly run
+    # and manual runs keep it. Promotion needs a green dev push run, so main never receives a
+    # change macOS has not passed (#82).
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
+    runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -56,12 +80,16 @@ jobs:
           key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.config/tools.toml', 'scripts/bootstrap.py') }}
       - name: Bootstrap pinned toolchain and tools
         run: python3 scripts/bootstrap.py
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
       - name: Run local-equivalent gates
         run: scripts/dev ci
       - name: Collect test results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: test-results-${{ matrix.os }}
+          name: test-results-macos-latest
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore

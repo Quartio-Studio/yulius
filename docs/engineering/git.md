@@ -202,6 +202,9 @@ branches or use forced ref updates to refresh a checked-out branch.
 [dev rules](../../.github/rulesets/dev.json) require squash PRs, linear history,
 no force pushes/deletion and successful `Branch policy`, `quality (ubuntu-latest)`
 and `quality (macos-latest)` checks. Feature branches must be up to date with `dev`.
+On pull requests into dev the macOS job is skipped, which GitHub counts as passed;
+dev pushes run it, and promotion requires a successful dev push run, so main never
+receives a change that macOS has not passed.
 [main rules](../../.github/rulesets/main.json) require merge-commit PRs and the same
 checks; `Branch policy` admits only this repository's `dev` and checks its exact
 push result. Both have zero approval requirements and no bypass actors.
