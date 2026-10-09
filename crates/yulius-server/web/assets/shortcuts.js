@@ -39,6 +39,12 @@ function groups() {
       [['a–z'], 'Next item starting with the letter'],
       [['Tab'], 'Close the menu'],
     ]],
+    ['Browser and editor tabs', [
+      [['←', '→'], 'Move between tabs'],
+      [['Home', 'End'], 'First / last tab'],
+      [['Enter', 'Space'], 'Show the focused tab'],
+      [['Delete', 'Backspace'], 'Close the focused tab'],
+    ]],
     ['Messages', [
       [[`${MOD}Enter`], 'Send'],
     ]],

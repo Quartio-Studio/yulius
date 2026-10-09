@@ -209,9 +209,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 36 | (2026-10-09, `F 2026-10-09`) Typing in a task is noticeably slower than in the OpenAI or Claude web apps; optimise it so it feels great. (Each echo is a round trip through the agent's TUI; the server sent small frames behind Nagle's algorithm. First step: `TCP_NODELAY`; a local composer is proposed on #29.) | SPEC-002 §7.7 |
 | 37 | (2026-10-09, hardening) Every agent session showed "Auto-update failed": Claude Code's self-updater ran inside contained sessions. | SPEC-002 §7 launch contract |
 | 38 | (2026-10-09, hardening; seen on the instance) An agent answered a person's message, but its reply went out as a broadcast with 0 recipients: `message_send` could not address people. | COM-005 (changed), AC-COM-2 |
+| 39 | (2026-10-09, hardening; axe sweep of the mock UI) The browser and editor tab strips nested a Close button in each tab and held a non-tab in the tablist (critical); editor tabs could not be reached from the keyboard; the task preview's sessions table could not be scrolled from the keyboard. | BRW-004, EDT-001, UI-029, UI-031; web/README.md (WCAG) |
 
 ## Changelog
 
+- 2026-10-09: accessible browser and editor tabs, focusable sessions table (§6 item 39, hardening).
 - 2026-10-09: agents answer people (§6 item 38, hardening).
 - 2026-10-09: Claude Code's self-updater off in agent sessions (§6 item 37, hardening).
 - 2026-10-09: typing latency, first step (§6 item 36).

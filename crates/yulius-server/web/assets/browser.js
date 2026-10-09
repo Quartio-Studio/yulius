@@ -12,7 +12,7 @@
 // load must cost only the DOM view — the panel then shows pixels — never the whole UI.
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, focusNextRegion } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, focusNextRegion, closableTabKeys } from './dom.js';
 import { ReconnectingSocket, parseBrowserFrame, CLOSE_REVOKED, CLOSE_SERVER_ERROR } from './termsocket.js';
 import { allows } from './status.js';
 
@@ -122,7 +122,9 @@ export function createBrowserPanel(ctx, sandbox) {
   let lastAgent = null; // {x, y}
   let agentTimer = 0;
 
-  const tabStrip = h('div', { class: 'bp-tabs', role: 'tablist', 'aria-label': 'Browser tabs' });
+  const tabList = h('div', { class: 'bp-tablist', role: 'tablist', 'aria-label': 'Browser tabs' });
+  // A new tab opens the welcome page; type an address there. It follows the tablist, which holds only tabs.
+  const tabStrip = h('div', { class: 'bp-tabs' }, tabList, iconButton('plus', 'New tab', () => send({ type: 'open', url: '' })));
   const address = h('input', { class: 'input', type: 'text', placeholder: 'Type an address, e.g. localhost:20000 or aws.amazon.com', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Address' });
   const reloadButton = iconButton('refresh', 'Reload', () => {
     const tab = activeTab();
@@ -130,10 +132,10 @@ export function createBrowserPanel(ctx, sandbox) {
   });
   const viewBadge = h('span', { class: 'chip bp-viewchip', hidden: true });
   const attention = h('div', { class: 'banner banner-warn bp-attn small', hidden: true });
-  const mirrorHost = h('div', { class: 'bp-mirror', 'aria-label': 'Remote browser page' });
+  const mirrorHost = h('div', { class: 'bp-mirror', role: 'region', 'aria-label': 'Remote browser page' });
   const canvas = h('canvas', { class: 'bp-canvas', hidden: true });
   // Pixel view only: the canvas cannot take input itself.
-  const inputLayer = h('div', { class: 'bp-input', tabindex: '0', hidden: true, 'aria-label': 'Remote browser page (click to interact)', 'aria-description': 'Keys go to the page. Press F6 to move to the next area, Shift+F6 to go back.', title: 'F6 moves to the next area' });
+  const inputLayer = h('div', { class: 'bp-input', role: 'application', tabindex: '0', hidden: true, 'aria-label': 'Remote browser page (click to interact)', 'aria-description': 'Keys go to the page. Press F6 to move to the next area, Shift+F6 to go back.', title: 'F6 moves to the next area' });
   const agentCursor = h('div', { class: 'bp-agent', hidden: true }, h('span', { class: 'bp-agent-arrow' }), h('span', { class: 'bp-agent-label' }));
   const agentPill = h('div', { class: 'bp-agent-pill', hidden: true });
   const copied = h('div', { class: 'bp-copied', hidden: true }, 'Copied');
@@ -294,21 +296,24 @@ export function createBrowserPanel(ctx, sandbox) {
   }
 
   function renderTabs() {
+    const focused = tabList.contains(document.activeElement) ? document.activeElement.dataset.tabId : null;
     const items = tabs.map((tab) => {
       const attn = Boolean(tab.action_requested);
       const title = isWelcome(tab) ? 'Welcome' : (tab.title || tab.url || 'New tab');
-      const button = h('div', { class: ['bp-tab', tab.active && 'active', attn && 'attention'], role: 'tab', tabindex: '0', 'aria-selected': String(Boolean(tab.active)), title: attn ? `Action requested: ${tab.action_requested.reason}` : (isWelcome(tab) ? 'Welcome' : tab.url) },
+      const close = (event) => { if (event) event.stopPropagation(); send({ type: 'close', tab_id: tab.id }); };
+      const button = h('div', { class: ['bp-tab', tab.active && 'active', attn && 'attention'], role: 'tab', tabindex: tab.active ? '0' : '-1', dataset: { tabId: tab.id }, 'aria-selected': String(Boolean(tab.active)), 'aria-keyshortcuts': 'Delete Backspace', title: attn ? `Action requested: ${tab.action_requested.reason}` : (isWelcome(tab) ? 'Welcome' : tab.url) },
         attn ? icon('warn', { size: 12 }) : null,
         h('span', { class: 'bp-tab-title' }, title),
-        iconButton('x', `Close ${title}`, (event) => { event.stopPropagation(); send({ type: 'close', tab_id: tab.id }); }));
+        h('span', { class: 'bp-tab-close', 'aria-hidden': 'true', title: `Close ${title}`, onClick: close }, icon('x')));
       const activate = () => { if (!tab.active) send({ type: 'activate', tab_id: tab.id }); focusPage(); };
       button.addEventListener('click', activate);
-      button.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } });
+      button.addEventListener('keydown', (event) => closableTabKeys(event, { select: activate, close: () => close() }));
       return button;
     });
-    // A new tab opens the welcome page; type an address there.
-    items.push(iconButton('plus', 'New tab', () => send({ type: 'open', url: '' })));
-    setChildren(tabStrip, items);
+    if (items.length && !tabs.some((tab) => tab.active)) items[0].tabIndex = 0;
+    setChildren(tabList, items);
+    // Focus stays in the strip; after closing the focused tab it moves to the selected one.
+    if (focused) (items.find((item) => item.dataset.tabId === focused) || items.find((item) => item.tabIndex === 0))?.focus();
     const tab = activeTab();
     if (document.activeElement !== address) address.value = tab && !isWelcome(tab) ? tab.url : '';
     address.placeholder = isWelcome(tab) ? 'Welcome — type an address, e.g. localhost:20000' : 'Type an address, e.g. localhost:20000 or aws.amazon.com';
