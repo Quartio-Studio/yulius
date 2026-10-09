@@ -415,6 +415,10 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   uses the credential helper over the internal listener; task worktrees get a `pre-push` hook that
   rejects pushes to the profile's integration/production branches; scaffolded repositories get
   GitHub rulesets (DSC-007).
+- Repository documents the server reads for agents (briefing, `project_context`, the Stop gate,
+  step sync) are read only when their resolved path stays inside the worktree; a directory
+  linked out of it reads as missing, and on Linux the opened file's real path is checked again
+  (#70).
 - Repository content, skills and MCP output are untrusted input; they cannot grant permissions,
   merges or deployments (SEC-003). Deployment commands run only on explicit user action with an
   audit entry.
