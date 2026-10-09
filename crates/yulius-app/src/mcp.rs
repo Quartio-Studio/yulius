@@ -70,8 +70,11 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "scope_release".into(),
-            description: "Release one of this task's scope claims (pattern) or all of them (no pattern), e.g. when the work on those paths is done.".into(),
-            input_schema: schema(json!({"pattern": {"type": "string"}}), &[]),
+            description: "Release this task's scope claims named by pattern (one glob) or patterns (a list), or all of them when neither is given, e.g. when the work on those paths is done.".into(),
+            input_schema: schema(json!({
+                "pattern": {"type": "string"},
+                "patterns": {"type": "array", "items": {"type": "string"}, "maxItems": crate::scopes::MAX_PATTERNS_PER_CLAIM}
+            }), &[]),
         },
         ToolDescriptor {
             name: "scopes_list".into(),

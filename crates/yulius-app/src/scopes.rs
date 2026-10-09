@@ -13,6 +13,8 @@ use crate::model::{ScopeClaimRecord, TaskRecord};
 
 /// Most patterns one `scope_claim` call accepts.
 pub const MAX_PATTERNS_PER_CLAIM: usize = 20;
+/// Most active claims one task holds (#73): claims are compared pairwise.
+pub const MAX_CLAIMS_PER_TASK: usize = 50;
 /// Most overlaps listed in one message to another task.
 const MAX_OVERLAPS_PER_MESSAGE: usize = 10;
 
@@ -133,17 +135,32 @@ impl App {
             .collect::<Result<_, _>>()
             .map_err(|err| AppError::Invalid(err.to_string()))?;
         let live = self.live_claims(ctx).await?;
-        let mut overlaps: Vec<(&ScopeClaim, &ScopeClaim)> = Vec::new();
-        for claim in &claims {
-            overlaps.extend(
-                conflicts(claim, &live.claims)
-                    .into_iter()
-                    .map(|theirs| (claim, theirs)),
-            );
-            let held = live
-                .claims
+        let held_by_me = |claim: &ScopeClaim| {
+            live.claims
                 .iter()
-                .any(|c| c.task == claim.task && c.pattern == claim.pattern);
+                .any(|c| c.task == claim.task && c.pattern == claim.pattern)
+        };
+        let holding = live.claims.iter().filter(|c| c.task == ctx.task.id).count();
+        let adding = claims.iter().filter(|c| !held_by_me(c)).count();
+        if holding + adding > MAX_CLAIMS_PER_TASK {
+            return Err(AppError::Invalid(format!(
+                "a task holds at most {MAX_CLAIMS_PER_TASK} scope claims ({holding} now); release some with scope_release or claim a wider glob"
+            )));
+        }
+        // Every overlap is reported to this agent; only new claims message the other tasks, so
+        // claiming a held path again does not wake them again (#73).
+        let mut overlaps: Vec<(&ScopeClaim, &ScopeClaim)> = Vec::new();
+        let mut fresh: Vec<(&ScopeClaim, &ScopeClaim)> = Vec::new();
+        for claim in &claims {
+            let found: Vec<(&ScopeClaim, &ScopeClaim)> = conflicts(claim, &live.claims)
+                .into_iter()
+                .map(|theirs| (claim, theirs))
+                .collect();
+            let held = held_by_me(claim);
+            if !held {
+                fresh.extend(found.iter().copied());
+            }
+            overlaps.extend(found);
             if !held {
                 let record = ScopeClaimRecord {
                     id: self.deps.crypto.new_id(),
@@ -159,7 +176,7 @@ impl App {
 
         // One message per other task, listing its overlaps.
         let mut told: Vec<&TaskRecord> = Vec::new();
-        for (_, theirs) in &overlaps {
+        for (_, theirs) in &fresh {
             if let Some(other) = live.task(theirs)
                 && !told.iter().any(|t| t.id == other.id)
             {
@@ -167,7 +184,7 @@ impl App {
             }
         }
         for other in &told {
-            let mine: Vec<(&ScopeClaim, &ScopeClaim)> = overlaps
+            let mine: Vec<(&ScopeClaim, &ScopeClaim)> = fresh
                 .iter()
                 .filter(|(_, theirs)| theirs.task == other.id)
                 .copied()
@@ -224,24 +241,41 @@ impl App {
         }))
     }
 
-    /// `scope_release`: releases one of this task's claims (`pattern`) or all of them.
+    /// `scope_release`: releases this task's claims named by `pattern` (one glob) or `patterns`
+    /// (a list), or all of them when neither is given. Any other shape is refused rather than
+    /// read as "all" (#73).
     ///
     /// # Errors
-    /// `Invalid` pattern; store failures.
+    /// `Invalid` arguments or patterns; store failures.
     pub async fn tool_scope_release(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
-        let pattern = match args.get("pattern").and_then(Value::as_str) {
-            Some(text) => Some(Pattern::parse(text).map_err(|err| invalid_pattern(text, err))?),
-            None => None,
+        let requested = match (args.get("pattern"), args.get("patterns")) {
+            (None, None) => None,
+            (Some(_), None) | (None, Some(Value::Array(_))) => Some(requested_patterns(args)?),
+            _ => {
+                return Err(AppError::Invalid(
+                    "give `pattern` (one path glob), `patterns` (a list), or nothing to release every claim".into(),
+                ));
+            }
         };
-        let released = self
-            .deps
-            .store
-            .release_claims(
-                &ctx.task.id,
-                pattern.as_ref().map(Pattern::as_str),
-                self.now(),
-            )
-            .await?;
+        let released = match requested {
+            None => {
+                self.deps
+                    .store
+                    .release_claims(&ctx.task.id, None, self.now())
+                    .await?
+            }
+            Some(patterns) => {
+                let mut released = 0;
+                for pattern in &patterns {
+                    released += self
+                        .deps
+                        .store
+                        .release_claims(&ctx.task.id, Some(pattern.as_str()), self.now())
+                        .await?;
+                }
+                released
+            }
+        };
         Ok(json!({"released": released}))
     }
 
