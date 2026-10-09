@@ -215,6 +215,11 @@ export function svgEl(tag, attrs, ...children) {
  */
 export function closableTabKeys(event, { select, close }) {
   const tab = event.currentTarget;
+  // A held key repeats: it must not close one tab after another or type into what follows (#80).
+  if (event.repeat && ['Enter', ' ', 'Delete', 'Backspace'].includes(event.key)) {
+    event.preventDefault();
+    return;
+  }
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();
     select();

@@ -132,7 +132,7 @@ export function createBrowserPanel(ctx, sandbox) {
   });
   const viewBadge = h('span', { class: 'chip bp-viewchip', hidden: true });
   const attention = h('div', { class: 'banner banner-warn bp-attn small', hidden: true });
-  const mirrorHost = h('div', { class: 'bp-mirror', role: 'region', 'aria-label': 'Remote browser page' });
+  const mirrorHost = h('div', { class: 'bp-mirror', role: 'region', 'aria-label': 'Remote browser page', tabindex: '-1' });
   const canvas = h('canvas', { class: 'bp-canvas', hidden: true });
   // Pixel view only: the canvas cannot take input itself.
   const inputLayer = h('div', { class: 'bp-input', role: 'application', tabindex: '0', hidden: true, 'aria-label': 'Remote browser page (click to interact)', 'aria-description': 'Keys go to the page. Press F6 to move to the next area, Shift+F6 to go back.', title: 'F6 moves to the next area' });
@@ -226,6 +226,9 @@ export function createBrowserPanel(ctx, sandbox) {
   function focusPage() {
     if (showingPixels()) inputLayer.focus();
     else if (replayer && replayer.iframe && replayer.iframe.contentWindow) replayer.iframe.contentWindow.focus();
+    // Still loading: leave the tab strip anyway, so a key meant for the page (Backspace) never
+    // closes the tab that was just clicked (#80).
+    else mirrorHost.focus();
   }
 
   /**
