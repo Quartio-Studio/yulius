@@ -221,9 +221,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 48 | (2026-10-09, hardening; self-review of #40/#41) A task waiting for approval showed Done; a merged PR fell back to "Your turn"; required checks not yet reported counted as tested; commits after the PR opened were never pushed and a failed push never retried; diff counts were wrong past the review budget; untracked files were unbounded; merged deliveries were re-read forever. | GIT-001, UI-024, UI-031, AC-UI-24 |
 | 49 | (2026-10-09, hardening; code review, reproduced) Briefing, `project_context` and Stop-gate document paths followed directory links out of the worktree, so a contained agent could read host files through the server. | SPEC-002 §8 containment, COM-004, DSC-003 |
 | 50 | (2026-10-09, hardening; self-review of #32, reproduced) A failed usage refresh wrote back the account as read at the start of the round, undoing a limit a running task observed meanwhile, so routing used the exhausted account again. | ROT-003, ROT-009, AC-ROT-2 |
+| 51 | (2026-10-09, hardening; self-review of #53, reproduced) A repeated scope claim messaged and woke the overlapping task every time; a malformed scope_release freed every claim; claims per task were unbounded. | COM-003, AC-COM-3 |
 
 ## Changelog
 
+- 2026-10-09: scope claims: no repeated messages, strict release, at most 50 per task (§6 item 51, hardening).
 - 2026-10-09: a failed usage refresh records only its error (§6 item 50, hardening).
 - 2026-10-09: repository documents are read only inside the worktree (§6 item 49, hardening).
 - 2026-10-09: follow-ups to the automatic pull request and the task review (§6 item 48, hardening).

@@ -336,9 +336,10 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
 
 Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
-`scope_claim` takes one glob or up to 20; claims of tasks that are no longer live are ignored, a
-repeated claim is kept once, and each other task whose claim overlaps gets one `scope` message
-(which wakes it when idle). `spec_check` returns the Stop gate's verdict and fix-it message for
+`scope_claim` takes one glob or up to 20, a task holds at most 50; claims of tasks that are no
+longer live are ignored, a repeated claim is kept once and messages nobody again, and each other
+task whose claim overlaps a new claim gets one `scope` message (which wakes it when idle).
+`scope_release` takes `pattern`, `patterns` or nothing (all) and refuses anything else. `spec_check` returns the Stop gate's verdict and fix-it message for
 the task spec plus the project-docs problems; `project_context` returns the briefing rebuilt now.
 
 ### 7.5 Hooks (`yulius hook <harness> <event>`)

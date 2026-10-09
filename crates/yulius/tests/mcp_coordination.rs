@@ -330,6 +330,75 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     let (after, _) = tool(&internal, "tok-other", "scopes_list", json!({})).await?;
     assert_eq!(after["conflicts"].as_array().map(Vec::len), Some(0));
 
+    // #73: claiming a pattern the task already holds tells nobody again; a malformed release
+    // is refused instead of releasing every claim; claims per task are bounded.
+    let (_, err) = tool(
+        &internal,
+        "tok-claude",
+        "scope_claim",
+        json!({"pattern": "src/**/*.rs"}),
+    )
+    .await?;
+    assert!(!err);
+    let (_, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
+    let (again, err) = tool(
+        &internal,
+        "tok-claude",
+        "scope_claim",
+        json!({"pattern": "src/**/*.rs"}),
+    )
+    .await?;
+    assert!(!err, "{again}");
+    let (quiet, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
+    assert_eq!(
+        quiet["messages"].as_array().map(Vec::len),
+        Some(0),
+        "a repeated claim does not message the other task again: {quiet}"
+    );
+    // `patterns` releases exactly those claims; a malformed release is refused, not "all".
+    let (partial, err) = tool(
+        &internal,
+        "tok-claude",
+        "scope_release",
+        json!({"patterns": ["docs/x.md"]}),
+    )
+    .await?;
+    assert!(!err, "{partial}");
+    assert_eq!(partial["released"], 1, "only the named claim: {partial}");
+    let (refused, err) = tool(
+        &internal,
+        "tok-claude",
+        "scope_release",
+        json!({"pattern": ["src/**/*.rs"]}),
+    )
+    .await?;
+    assert!(err, "a malformed release is refused: {refused}");
+    let (still, _) = tool(&internal, "tok-claude", "scopes_list", json!({})).await?;
+    assert!(
+        still["claims"]
+            .as_array()
+            .ok_or("claims")?
+            .iter()
+            .any(|c| c["pattern"] == "src/**/*.rs" && c["mine"] == true),
+        "the other claim was kept: {still}"
+    );
+    let mut capped = false;
+    for batch in 0..4 {
+        let patterns: Vec<String> = (0..20).map(|i| format!("cap/{batch}/{i}.txt")).collect();
+        let (_, err) = tool(
+            &internal,
+            "tok-claude",
+            "scope_claim",
+            json!({"patterns": patterns}),
+        )
+        .await?;
+        if err {
+            capped = true;
+            break;
+        }
+    }
+    assert!(capped, "claims per task are bounded");
+
     // spec_check runs the Stop gate's validator (DSC-003); project_context rebuilds the briefing.
     let (no_tree, err) = tool(&internal, "tok-claude", "spec_check", json!({})).await?;
     assert!(!err, "{no_tree}");
