@@ -246,9 +246,15 @@ impl TranscriptWatch for Watch {
                     } => out.push(Observation::Session { session_id, cwd }),
                     Observed::UserTurn => out.push(Observation::UserTurn),
                     Observed::TurnComplete { .. } => out.push(Observation::TurnComplete),
-                    Observed::LimitReached { resets_at, message } => {
-                        out.push(Observation::LimitReached { resets_at, message })
-                    }
+                    Observed::LimitReached {
+                        resets_at,
+                        message,
+                        window_minutes,
+                    } => out.push(Observation::LimitReached {
+                        resets_at,
+                        message,
+                        window_minutes,
+                    }),
                     Observed::AssistantMessage { .. } | Observed::Malformed => {}
                 }
             }

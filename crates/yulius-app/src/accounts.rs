@@ -27,6 +27,7 @@ use yulius_contracts::events::UiEvent;
 use yulius_contracts::terminal::TerminalServerMsg;
 use yulius_domain::harness::Provider;
 use yulius_domain::ids::AccountId;
+use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
 
 use crate::auth::{AuthContext, rfc3339};
@@ -38,6 +39,7 @@ use crate::ports::harness::OutputMasker;
 use crate::ports::session::{
     Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal, RunWriter,
 };
+use crate::ports::usage::UsageFailure;
 use crate::usage_json;
 
 /// Maximum duration of one login before its process is stopped.
@@ -298,6 +300,10 @@ fn totals_view(tokens: Option<&crate::model::AccountTokens>) -> TokenTotalsView 
 
 /// One day in milliseconds.
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+/// Back-off after a failed usage request that gave no `Retry-After` (ROT-009).
+pub const USAGE_BACKOFF_MS: i64 = 30 * 60 * 1000;
+/// Longest back-off taken from a provider's `Retry-After`.
+pub const USAGE_BACKOFF_MAX_MS: i64 = 2 * 60 * 60 * 1000;
 
 fn validate_label(label: &str) -> AppResult<String> {
     let label = label.trim();
@@ -490,31 +496,13 @@ impl App {
         let id = AccountId::parse(id).map_err(|_| AppError::NotFound)?;
         let store = &self.deps.store;
         let account = store.account(&id).await?.ok_or(AppError::NotFound)?;
-        let sealed = account
-            .credential
-            .as_ref()
-            .ok_or_else(|| AppError::Conflict("the account is not signed in yet".into()))?;
-        let credential =
-            Secret(String::from_utf8(self.deps.crypto.open(sealed)?).map_err(AppError::internal)?);
-        match self.deps.usage.fetch(account.provider, &credential).await {
-            Ok(mut usage) => {
-                usage.observed_at = Some(self.now());
-                // Keep a reached limit that the provider still reports through the windows.
-                self.record_account_usage(&id, &usage).await;
-            }
-            Err(problem) => {
-                let message = format!("usage: {problem}");
-                let _ = store
-                    .set_account_state(
-                        &id,
-                        account.status,
-                        account.usage_json.as_deref(),
-                        Some(&message),
-                        self.now(),
-                    )
-                    .await;
-                return Err(AppError::Upstream(message));
-            }
+        if account.credential.is_none() {
+            return Err(AppError::Conflict(
+                "the account is not signed in yet".into(),
+            ));
+        }
+        if let Err(failure) = self.fetch_and_record_usage(&account).await {
+            return Err(AppError::Upstream(format!("usage: {}", failure.message)));
         }
         let updated = store.account(&id).await?.ok_or(AppError::NotFound)?;
         let mut view = account_view(&updated, &store.live_attempts().await?);
@@ -534,6 +522,81 @@ impl App {
                 .find(|t| t.account_id == id.as_str()),
         ));
         Ok(view)
+    }
+
+    /// Asks the provider for one account's usage and stores it; a failure becomes the account's
+    /// last error and keeps the last known usage (ROT-009).
+    async fn fetch_and_record_usage(&self, account: &AccountRecord) -> Result<(), UsageFailure> {
+        let sealed = account
+            .credential
+            .as_ref()
+            .ok_or_else(|| UsageFailure::new("the account is not signed in yet"))?;
+        let credential = self
+            .deps
+            .crypto
+            .open(sealed)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(Secret)
+            .ok_or_else(|| UsageFailure::new("the stored credential cannot be read"))?;
+        match self.deps.usage.fetch(account.provider, &credential).await {
+            Ok(mut usage) => {
+                usage.observed_at = Some(self.now());
+                self.record_account_usage(&account.id, &usage).await;
+                Ok(())
+            }
+            Err(failure) => {
+                let message = format!("usage: {}", failure.message);
+                let _ = self
+                    .deps
+                    .store
+                    .set_account_state(
+                        &account.id,
+                        account.status,
+                        account.usage_json.as_deref(),
+                        Some(&message),
+                        self.now(),
+                    )
+                    .await;
+                Err(failure)
+            }
+        }
+    }
+
+    /// One background usage round (ROT-009): asks the provider about every enabled, signed-in
+    /// account whose back-off has passed, so routing and the account cards stay current without
+    /// pressing Refresh. A failure backs that account off for the provider's `Retry-After`, or
+    /// [`USAGE_BACKOFF_MS`] without one (at most [`USAGE_BACKOFF_MAX_MS`]).
+    pub async fn refresh_usage_round(&self, not_before: &mut HashMap<AccountId, Timestamp>) {
+        let Ok(accounts) = self.deps.store.accounts().await else {
+            return;
+        };
+        for account in accounts.iter().filter(|a| {
+            a.enabled
+                && a.credential.is_some()
+                && !matches!(
+                    a.status,
+                    AccountStatus::PendingLogin | AccountStatus::Relogin
+                )
+        }) {
+            let now = self.now();
+            if not_before.get(&account.id).is_some_and(|at| *at > now) {
+                continue;
+            }
+            match self.fetch_and_record_usage(account).await {
+                Ok(()) => {
+                    not_before.remove(&account.id);
+                }
+                Err(failure) => {
+                    let wait = failure.retry_after.map_or(USAGE_BACKOFF_MS, |d| {
+                        i64::try_from(d.as_millis())
+                            .unwrap_or(USAGE_BACKOFF_MAX_MS)
+                            .clamp(60_000, USAGE_BACKOFF_MAX_MS)
+                    });
+                    not_before.insert(account.id.clone(), now.plus_millis(wait));
+                }
+            }
+        }
     }
 
     /// Creates an account in `pending_login` and starts its login terminal (ROT-001/002).

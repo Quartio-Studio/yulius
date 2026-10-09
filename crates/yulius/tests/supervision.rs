@@ -509,7 +509,9 @@ fn goal_mode_types_the_goal_once_the_session_is_ready() -> TestResult {
 }
 
 /// AC-ROT-2 (reactive path): the provider reports a usage limit at the end of a turn; Yulius moves
-/// the same session to the next account of the provider with a native resume.
+/// the same session to the next account of the provider with a native resume. The limited account
+/// then shows its window full until the reset, and new tasks start on the other account (#26,
+/// #27).
 #[test]
 fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -573,11 +575,44 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
                 .is_ok_and(|t| t.status == TaskStatus::Running)
         })
         .await?;
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        let limited = app
+            .deps
+            .store
+            .account(first.account_id.as_ref().ok_or("first account")?)
+            .await?
+            .ok_or("the first account")?;
+        assert_eq!(limited.status, AccountStatus::Limited);
+        let usage =
+            yulius_app::usage_json::from_json(limited.usage_json.as_deref().unwrap_or("{}"));
+        let window = usage
+            .primary
+            .ok_or("the session window from the observed limit")?;
+        assert_eq!(window.used_percent, Some(100.0));
+        assert_eq!(window.window_minutes, Some(300));
+        assert!(window.resets_at.is_some(), "the reset time of the limit");
+        // Routing skips the account until its reset: a new task starts on the other one.
+        let next = new_task(&app, &sandbox, &user, "After the limit").await?;
+        wait_for("the next task's run", Duration::from_secs(30), || async {
+            !app.deps
+                .store
+                .attempts(&next)
+                .await
+                .unwrap_or_default()
+                .is_empty()
         })
         .await?;
+        let started = app.deps.store.attempts(&next).await?;
+        assert_eq!(
+            started[0].account_id, second.account_id,
+            "a new task does not start on the limited account"
+        );
+        for live in [&id, &next] {
+            app.stop_task_now(live).await?;
+            wait_for("the stop", Duration::from_secs(30), || async {
+                task(&app, live).await.is_ok_and(|t| !t.status.is_live())
+            })
+            .await?;
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -752,7 +787,7 @@ impl UsageProbe for FirstAccountNearLimit {
         &self,
         _provider: Provider,
         credential: &Secret,
-    ) -> Result<AccountUsage, String> {
+    ) -> Result<AccountUsage, yulius_app::ports::usage::UsageFailure> {
         if credential.expose() != "sk-ant-oat01-test-credential" {
             return Ok(AccountUsage::default());
         }

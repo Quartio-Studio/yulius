@@ -513,6 +513,8 @@ body.resizing iframe { pointer-events: none; }
 .card .account-card .account-head, .card .account-card .account-body { padding-left: 0; padding-right: 0; }
 .account-error { display: flex; align-items: flex-start; gap: 6px; color: var(--danger-fg); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .account-error .icon { flex: none; margin-top: 2px; }
+.account-note { display: flex; align-items: flex-start; gap: 6px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.account-note .icon { flex: none; margin-top: 2px; }
 .usage-row { display: grid; grid-template-columns: minmax(132px, 1fr) minmax(64px, 1.3fr) 72px; align-items: center; gap: 12px; }
 .usage-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text); }
 .usage-reset { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }

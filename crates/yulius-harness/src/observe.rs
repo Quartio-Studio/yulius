@@ -44,6 +44,9 @@ pub enum Observed {
         resets_at: Option<Timestamp>,
         /// Provider text describing the limit (shortened).
         message: String,
+        /// Length of the limited window in minutes — 300 for the five-hour session, 10080 for
+        /// the weekly one — when the provider said which.
+        window_minutes: Option<u32>,
     },
     /// The agent finished a turn. Claude emits this for each line of an `end_turn` message, so
     /// consumers treat it idempotently; the Stop hook remains the authoritative turn boundary.
@@ -112,7 +115,9 @@ impl UsageAccumulator {
                 }
                 self.observe_message(message_id, *usage);
             }
-            Observed::LimitReached { resets_at, message } => {
+            Observed::LimitReached {
+                resets_at, message, ..
+            } => {
                 self.limit = Some(LimitSignal {
                     resets_at: *resets_at,
                     message: message.clone(),
@@ -254,10 +259,12 @@ mod tests {
             Observed::LimitReached {
                 resets_at: None,
                 message: "first".into(),
+                window_minutes: None,
             },
             Observed::LimitReached {
                 resets_at: Some(Timestamp(5)),
                 message: "limit".into(),
+                window_minutes: Some(300),
             },
         ]);
         assert_eq!(acc.malformed_lines(), 1);

@@ -109,6 +109,8 @@ pub enum Observation {
         resets_at: Option<Timestamp>,
         /// Provider text.
         message: String,
+        /// The limited window in minutes (300 session, 10080 weekly), if known.
+        window_minutes: Option<u32>,
     },
 }
 

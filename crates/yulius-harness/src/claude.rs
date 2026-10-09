@@ -28,6 +28,32 @@ const LIMIT_PHRASES: [&str; 5] = [
     "weekly limit",
 ];
 
+/// The five-hour session window and the weekly window, in minutes.
+const SESSION_WINDOW_MINUTES: u32 = 5 * 60;
+const WEEKLY_WINDOW_MINUTES: u32 = 7 * 24 * 60;
+
+/// The window of Claude's `rateLimitType` (`five_hour`, `seven_day`, `seven_day_opus`, …).
+fn window_of_type(kind: &str) -> Option<u32> {
+    if kind == "five_hour" {
+        Some(SESSION_WINDOW_MINUTES)
+    } else if kind.starts_with("seven_day") {
+        Some(WEEKLY_WINDOW_MINUTES)
+    } else {
+        None
+    }
+}
+
+/// The window a lower-case limit text names ("session limit", "5-hour limit", "weekly limit").
+fn window_of_text(lower: &str) -> Option<u32> {
+    if lower.contains("session limit") || lower.contains("5-hour") || lower.contains("five-hour") {
+        Some(SESSION_WINDOW_MINUTES)
+    } else if lower.contains("weekly") || lower.contains("7-day") {
+        Some(WEEKLY_WINDOW_MINUTES)
+    } else {
+        None
+    }
+}
+
 /// `apiError` of the error record Claude Code writes when the account's usage limit rejects a
 /// request (alongside `error: "rate_limit"` and HTTP 429).
 const USAGE_LIMIT_API_ERROR: &str = "usage_limit_reached";
@@ -146,6 +172,10 @@ fn structured_limit(record: &Map<String, Value>, text: &str) -> Option<Observed>
         .and_then(|i| i.get("resetsAt"))
         .and_then(Value::as_i64)
         .and_then(from_epoch_seconds);
+    let window_minutes = info
+        .and_then(|i| str_of(i, "rateLimitType"))
+        .and_then(window_of_type)
+        .or_else(|| window_of_text(&text.to_lowercase()));
     let message = if text.trim().is_empty() {
         "usage limit reached"
     } else {
@@ -154,6 +184,7 @@ fn structured_limit(record: &Map<String, Value>, text: &str) -> Option<Observed>
     Some(Observed::LimitReached {
         resets_at,
         message: shorten(message, LIMIT_MESSAGE_BYTES),
+        window_minutes,
     })
 }
 
@@ -179,6 +210,7 @@ fn limit_signal(text: &str) -> Option<Observed> {
     Some(Observed::LimitReached {
         resets_at,
         message: shorten(human.trim(), LIMIT_MESSAGE_BYTES),
+        window_minutes: window_of_text(&lower),
     })
 }
 
@@ -196,14 +228,16 @@ mod tests {
             limit_signal("Claude AI usage limit reached|1760000000"),
             Some(Observed::LimitReached {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
-                message: "Claude AI usage limit reached".into()
+                message: "Claude AI usage limit reached".into(),
+                window_minutes: None,
             })
         );
         assert_eq!(
             limit_signal("5-hour limit reached ∙ resets 3pm"),
             Some(Observed::LimitReached {
                 resets_at: None,
-                message: "5-hour limit reached ∙ resets 3pm".into()
+                message: "5-hour limit reached ∙ resets 3pm".into(),
+                window_minutes: Some(300),
             })
         );
         assert_eq!(limit_signal("API Error: 500 internal server error"), None);
@@ -211,7 +245,16 @@ mod tests {
             limit_signal("You've hit your session limit · resets 10:20am (Europe/Berlin)"),
             Some(Observed::LimitReached {
                 resets_at: None,
-                message: "You've hit your session limit · resets 10:20am (Europe/Berlin)".into()
+                message: "You've hit your session limit · resets 10:20am (Europe/Berlin)".into(),
+                window_minutes: Some(300),
+            })
+        );
+        assert_eq!(
+            limit_signal("You've hit your weekly limit · resets Oct 12"),
+            Some(Observed::LimitReached {
+                resets_at: None,
+                message: "You've hit your weekly limit · resets Oct 12".into(),
+                window_minutes: Some(10080),
             })
         );
     }
@@ -224,7 +267,8 @@ mod tests {
             observe_line(line),
             vec![Observed::LimitReached {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
-                message: "Limit hit, see you soon".into()
+                message: "Limit hit, see you soon".into(),
+                window_minutes: Some(300),
             }]
         );
         // Only `quotaLimits` (older 2.1 builds) still carries the reset time.
@@ -233,7 +277,8 @@ mod tests {
             observe_line(quota),
             vec![Observed::LimitReached {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
-                message: "usage limit reached".into()
+                message: "usage limit reached".into(),
+                window_minutes: None,
             }]
         );
         // A transient rate limit that was retried is not a usage limit.
