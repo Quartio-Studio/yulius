@@ -52,6 +52,8 @@ pub struct FakeGitHub {
     pub remote: Mutex<Option<Arc<dyn FakeRemote>>>,
     /// Recorded state-changing calls (`create_pull …`, `merge_pull …`, `fast_forward …`).
     pub writes: Mutex<Vec<String>>,
+    /// Who opened each pull request: the user login, or `inst` for the App installation.
+    pub pull_authors: Mutex<HashMap<u64, String>>,
 }
 
 impl FakeGitHub {
@@ -193,7 +195,7 @@ impl GitHubPort for FakeGitHub {
     }
     async fn create_pull(
         &self,
-        _: &Secret,
+        token: &Secret,
         owner: &str,
         repo: &str,
         pull: &NewPull,
@@ -221,6 +223,9 @@ impl GitHubPort for FakeGitHub {
             head_sha,
         };
         pulls.push(created.clone());
+        if let Ok(mut authors) = self.pull_authors.lock() {
+            authors.insert(number, login_of(token));
+        }
         self.record(format!(
             "create_pull #{number} {}<-{}",
             pull.base, pull.head
@@ -501,6 +506,18 @@ pub async fn setup_superadmin_creds(h: &Harness) -> Result<Creds, Box<dyn std::e
     })
 }
 
+/// Bearer credentials for the superadmin (created by [`setup_superadmin_creds`]); WebSocket
+/// tests connect with bearer tokens.
+pub async fn superadmin_bearer(h: &Harness) -> Result<Creds, Box<dyn std::error::Error>> {
+    use yulius_app::ports::store::UserStore;
+    let user = h.store.superadmin().await?.ok_or("no superadmin")?;
+    let token = h.app.issue_api_token(&user, "tests").await?;
+    Ok(Creds {
+        bearer: Some(token.expose().to_owned()),
+        ..Creds::default()
+    })
+}
+
 /// Stores a GitHub App so GitHub sign-in works against the fake.
 pub async fn configure_github_app(h: &Harness) -> Result<(), Box<dyn std::error::Error>> {
     use yulius_app::ports::store::InstanceStore;
@@ -650,6 +667,13 @@ impl FakeGitHub {
     }
     pub fn writes(&self) -> Vec<String> {
         self.writes.lock().map(|w| w.clone()).unwrap_or_default()
+    }
+    /// The login whose token opened pull request `number` (`inst`: the App installation).
+    pub fn pull_author(&self, number: u64) -> Option<String> {
+        self.pull_authors
+            .lock()
+            .ok()
+            .and_then(|a| a.get(&number).cloned())
     }
     pub fn pull(&self, number: u64) -> Option<GhPull> {
         self.pulls

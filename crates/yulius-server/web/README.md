@@ -48,11 +48,12 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/pages/taskinfo.js` | Tasks → a task's overview (UI-032): state, times, plan, changes, usage, details and sessions, with Review changes and Go to task. |
 | `assets/mdeditor.js` | A Notion-like block editor for Markdown (UI-033): formatted blocks, frontmatter as properties, "/" menu, Markdown shortcuts, selection toolbar, source view; untrusted text, no HTML parsing. |
 | `assets/pages/skilledit.js` | A skill's page: its SKILL.md in the block editor with Save (⌘S), read-only where it may not be edited, and an unsaved-changes guard. |
-| `assets/shortcuts.js` | Keyboard shortcuts (UI-029): platform key names (`NEW_TASK_KEYS`, `IS_MAC`) and the ⌘/ sheet listing every shortcut — update it when a handler changes. |
+| `assets/shortcuts.js` | Keyboard shortcuts (UI-029): platform key names (`NEW_TASK_KEYS`, `SAVE_KEYS`, `WRAP_KEYS`, `IS_MAC`) and the ⌘/ sheet listing every shortcut — update it when a handler changes. |
 | `assets/taskview.js` | Task view (step strip, terminal, phone quick-input bar) and the new-task composer (rounded prompt box with mode, workflow, model and effort pickers). |
 | `assets/quotes.js` | 40 quotes about building great things (well-documented authors only); one shows at random above the composer. |
 | `assets/models.js` | Models (grouped by provider, each naming its harness) and effort levels the composer offers. |
-| `assets/panels.js` | Right rail and resizable panel: Editor (iframe, task worktree via `?worktree=`), Shell (sandbox or task worktree), Messages; hosts the browser panel. |
+| `assets/panels.js` | Right rail and resizable panel: Editor, Shell (sandbox or task worktree), Messages; hosts the browser panel. One tool is open at a time (`aria-pressed`); the panel's width is remembered per browser and re-fitted when the window narrows, so it never pushes the rail out of the window. |
+| `assets/editorview.js` | The built-in editor (EDT-001..005): explorer, tabs and Monaco over the files API; ⌘S / Ctrl+S saves; word wrap is one toolbar toggle (or ⌥Z / Alt+Z, as in VS Code) for every open file, off by default and kept per user in this browser (`localStorage` `yulius.editorWordWrap.<user id>`). |
 | `assets/browser.js` | Browser panel (ADR-14): one tab strip for live tabs (the sandbox's ports in iframes on their preview origins, address/back/forward/reload through the preview's bridge script, kept per browser) and the sandbox Chrome's tabs; the start page with the listening ports; agent notices over live tabs. |
 | `assets/browserremote.js` | The sandbox Chrome watched remotely: its socket and tab list, the watched tab as DOM mirror or JPEG frames, mouse/keyboard forwarding and the agent's cursor. |
 | `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery (PR, merge, environment runs and confirmations, promotion), sandbox add/remove. |
@@ -221,7 +222,9 @@ routing to `#/…` paths so a plain static server can reload deep links. The pro
 (request building, error parsing, binary frames, reconnect) is the same code used against
 the real server. Options (combine with `&`): `setup=1` (setup required; token
 `YUL-SETUP-1234`), `signedout=1` (password `correct horse battery`), `role=member|admin`,
-`contained=0` (shows "Not contained"), `github=0` (GitHub App not configured).
+`contained=0` (shows "Not contained"), `github=0` (GitHub App not configured), `github_linked=0`
+(the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
+the home page asks them to sign in with GitHub).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and
 documentation; the [end-to-end tests](../../../e2e/README.md) run against it). It has sandboxes with admin, write and read access (`studio` with the Studio

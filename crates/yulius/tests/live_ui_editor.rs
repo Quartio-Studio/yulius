@@ -1,6 +1,7 @@
-//! Opt-in browser check of the built-in editor (SPEC-001 EDT-001..004): the real UI in headless
+//! Opt-in browser check of the built-in editor (SPEC-001 EDT-001..005): the real UI in headless
 //! Chrome opens the editor panel, lists the repository, opens a file in Monaco with syntax
-//! colors and suggestions, and saves an edit to disk.
+//! colors and suggestions, saves an edit to disk, and turns word wrap on with Alt+Z (⌥Z) for
+//! every open file, which a reload keeps.
 //!
 //! ```sh
 //! YULIUS_LIVE_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
@@ -118,7 +119,7 @@ async fn eval(
 
 #[tokio::test]
 #[ignore = "needs Chrome (YULIUS_LIVE_CHROME)"]
-async fn the_editor_panel_opens_colors_suggests_and_saves() -> TestResult {
+async fn the_editor_panel_opens_colors_suggests_saves_and_wraps() -> TestResult {
     let Ok(chrome_exe) = std::env::var("YULIUS_LIVE_CHROME") else {
         eprintln!("skipped: set YULIUS_LIVE_CHROME");
         return Ok(());
@@ -235,6 +236,40 @@ async fn the_editor_panel_opens_colors_suggests_and_saves() -> TestResult {
         until(&cdp, session, "the Python file", "monaco.editor.getEditors()[0].getModel() && monaco.editor.getEditors()[0].getModel().getLanguageId() === 'python'", wait).await?;
         eval(&cdp, session, "(() => { const ed = monaco.editor.getEditors()[0]; const m = ed.getModel(); m.setValue(m.getValue() + 'han'); const last = m.getLineCount(); ed.setPosition({ lineNumber: last, column: m.getLineMaxColumn(last) }); ed.focus(); ed.trigger('test', 'editor.action.triggerSuggest', {}); return true; })()").await?;
         until(&cdp, session, "Python word suggestions", "[...document.querySelectorAll('.suggest-widget .monaco-list-row')].some(r => (r.getAttribute('aria-label') || '').startsWith('handle_request'))", wait).await?;
+
+        // Word wrap (EDT-005, F 2026-10-09): off by default; Alt+Z (⌥Z on macOS, which types "Ω"
+        // unless caught) turns it on for every open file without typing, the toolbar shows it, and
+        // a reload keeps it.
+        let wrap_state = "(() => { const b = document.querySelector('button[aria-label=\"Word wrap\"]'); const ed = monaco.editor.getEditors()[0]; return `${b && b.getAttribute('aria-pressed')} ${ed.getRawOptions().wordWrap}`; })()";
+        let text_before = eval(&cdp, session, "(() => { const ed = monaco.editor.getEditors()[0]; ed.trigger('test', 'hideSuggestWidget', {}); ed.focus(); return ed.getModel().getValue(); })()").await?;
+        if eval(&cdp, session, wrap_state).await? != json!("false off") {
+            return Err("word wrap was not off by default".into());
+        }
+        let key = if cfg!(target_os = "macos") { "Ω" } else { "z" };
+        for kind in ["keyDown", "keyUp"] {
+            cdp.call_session(
+                session,
+                "Input.dispatchKeyEvent",
+                json!({ "type": kind, "modifiers": 1, "key": key, "code": "KeyZ", "windowsVirtualKeyCode": 90, "text": if kind == "keyDown" { key } else { "" } }),
+            )
+            .await?;
+        }
+        until(&cdp, session, "word wrap on", &format!("{wrap_state} === 'true on'"), wait).await?;
+        if eval(&cdp, session, "monaco.editor.getEditors()[0].getModel().getValue()").await? != text_before {
+            return Err("Alt+Z typed into the file".into());
+        }
+        // One switch for every open file: the JavaScript tab is wrapped too.
+        eval(&cdp, session, "[...document.querySelectorAll('.ed-tab')].find(t => t.textContent.includes('app.js')).click(); true").await?;
+        until(&cdp, session, "app.js wrapped", &format!("monaco.editor.getEditors()[0].getModel().getLanguageId() === 'javascript' && {wrap_state} === 'true on'"), wait).await?;
+        // Kept per user in this browser: after a reload the editor opens wrapped.
+        cdp.call_session(session, "Page.reload", json!({})).await?;
+        until(&cdp, session, "the rail after the reload", "document.querySelector('.rail-btn[aria-label=\"Editor\"]') && document.querySelector('.rail-btn[aria-label=\"Editor\"]').offsetParent", wait).await?;
+        eval(&cdp, session, "document.querySelector('.rail-btn[aria-label=\"Editor\"]').click(); true").await?;
+        until(&cdp, session, "the explorer after the reload", "[...document.querySelectorAll('.ed-row')].some(r => r.textContent.includes('src'))", wait).await?;
+        eval(&cdp, session, "[...document.querySelectorAll('.ed-row')].find(r => r.textContent.includes('src')).click(); true").await?;
+        until(&cdp, session, "app.js after the reload", "[...document.querySelectorAll('.ed-row')].some(r => r.textContent.includes('app.js'))", wait).await?;
+        eval(&cdp, session, "[...document.querySelectorAll('.ed-row')].find(r => r.textContent.includes('app.js')).click(); true").await?;
+        until(&cdp, session, "Monaco wrapped after the reload", &format!("window.monaco && monaco.editor.getEditors()[0] && monaco.editor.getEditors()[0].getModel() && {wrap_state} === 'true on'"), wait).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;

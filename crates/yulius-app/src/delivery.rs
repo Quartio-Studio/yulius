@@ -730,6 +730,20 @@ impl App {
         self.deps.github.installation_token(&app, id).await
     }
 
+    /// Token that authors a pull request a person opens: their own GitHub token; the
+    /// superadmin without a GitHub identity opens it through the App, as Yulius does for a ready
+    /// task (ACC-012).
+    async fn dlv_author_token(
+        &self,
+        user: &UserRecord,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Secret> {
+        if user.is_superadmin && user.github_login.is_none() {
+            return self.dlv_installation_token(sandbox).await;
+        }
+        self.user_github_token(user).await
+    }
+
     /// Token for GitHub reads: the caller's user token, else the installation token.
     async fn dlv_read_token(
         &self,
@@ -1394,7 +1408,8 @@ impl App {
     // ---------------------------------------------------------------- pull request
 
     /// `POST /api/tasks/{tid}/delivery/pr`: pushes the task branch with an installation token
-    /// and opens the pull request into the integration branch with the caller's token.
+    /// and opens the pull request into the integration branch with the caller's token (the
+    /// superadmin, who has no GitHub identity, opens it through the App, ACC-012).
     /// Refused without a valid spec (DSC-002) or with uncommitted changes.
     ///
     /// # Errors
@@ -1421,7 +1436,7 @@ impl App {
                 "the task branch '{branch}' is a protected delivery branch"
             )));
         }
-        let token = self.user_github_token(&ctx.user).await?;
+        let token = self.dlv_author_token(&ctx.user, &sandbox).await?;
         let observed = self
             .dlv_observe(&sandbox, &task, &profile, Some(&token))
             .await?;
@@ -1823,15 +1838,20 @@ impl App {
 
     /// `POST /api/tasks/{tid}/delivery/merge`: merges the task pull request with the profile's
     /// method at the head that was checked, after the domain gates (spec, open steps, checks
-    /// per profile, current head). With `auto_promote`, promotes right after (policy).
+    /// per profile, current head). With `auto_promote`, promotes right after (policy). It acts
+    /// as the caller on GitHub, so the superadmin without a GitHub identity is told to merge on
+    /// GitHub (ACC-012).
     ///
     /// # Errors
-    /// `Conflict` refusals (including stale heads), `Upstream` GitHub failures.
+    /// `Conflict` refusals (including stale heads), `Forbidden` without a GitHub identity,
+    /// `Upstream` GitHub failures.
     pub async fn merge_task_pr(&self, ctx: &AuthContext, task_id: &str) -> AppResult<Delivery> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
         let sandbox = self.dlv_sandbox_of(&task).await?;
         let profile = delivery_profile(&sandbox);
-        let token = self.user_github_token(&ctx.user).await?;
+        let token = self
+            .person_github_token(&ctx.user, "Merging a pull request")
+            .await?;
         let observed = self
             .dlv_observe(&sandbox, &task, &profile, Some(&token))
             .await?;
@@ -2281,10 +2301,13 @@ impl App {
         }
     }
 
-    /// `POST /api/sandboxes/{sid}/delivery/promote` (write): an explicit promotion.
+    /// `POST /api/sandboxes/{sid}/delivery/promote` (write): an explicit promotion. It acts as
+    /// the caller on GitHub, so the superadmin without a GitHub identity is told to release on
+    /// GitHub (ACC-012).
     ///
     /// # Errors
-    /// `Conflict` when environments are pending, production diverged or nothing changed.
+    /// `Conflict` when environments are pending, production diverged or nothing changed;
+    /// `Forbidden` without a GitHub identity.
     pub async fn promote_sandbox(
         &self,
         ctx: &AuthContext,
@@ -2294,7 +2317,12 @@ impl App {
             .dlv_require_sandbox(ctx, sandbox_id, Action::Work)
             .await?;
         let profile = delivery_profile(&sandbox);
-        let token = self.user_github_token(&ctx.user).await?;
+        let token = self
+            .person_github_token(
+                &ctx.user,
+                &format!("Releasing to {}", profile.production_branch),
+            )
+            .await?;
         self.dlv_promote(
             &sandbox,
             &profile,

@@ -906,3 +906,292 @@ async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> T
     assert_eq!(closed, Some(Err(Some(4003))), "{closed:?}");
     Ok(())
 }
+
+/// The next text frame within `wait`: `Ok(text)`, `Err(close code)` when the socket closed, or
+/// `None` when nothing arrived.
+async fn next_ws_text(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    wait: std::time::Duration,
+) -> Option<Result<String, Option<u16>>> {
+    use futures::StreamExt as _;
+    use tokio_tungstenite::tungstenite::Message;
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        match tokio::time::timeout_at(deadline, socket.next()).await {
+            Err(_) => return None,
+            Ok(Some(Ok(Message::Text(text)))) => return Some(Ok(text.to_string())),
+            Ok(Some(Ok(Message::Close(frame)))) => {
+                return Some(Err(frame.map(|f| u16::from(f.code))));
+            }
+            Ok(None | Some(Err(_))) => return Some(Err(None)),
+            Ok(Some(Ok(_))) => {}
+        }
+    }
+}
+
+/// ACC-012 (F 2026-10-09, regression): the password superadmin has no GitHub link, and every
+/// access decision used to require one, so it saw no sandbox at all. It now lists and opens every
+/// sandbox with admin access — tasks, messages, files, tools, analytics — without asking GitHub
+/// (here GitHub is down) and without caching a mirrored permission.
+#[tokio::test]
+async fn the_superadmin_sees_and_opens_every_sandbox_without_github() -> TestResult {
+    use yulius_app::ports::store::{PermissionStore, UserStore};
+    let h = harness()?;
+    let admin = setup_superadmin(&h).await?;
+    seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "studio", "u-alice").await?;
+    seed_sandbox(&h, "s2", "product", "u-alice").await?;
+    h.github.set_perm("alice", "acme/studio", perms("read"));
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    seed_task(&h, "t2", "s2", "u-alice", TaskStatus::Closed, None).await?;
+    let repo = h.app.config.data_dir.join("sandboxes/s2/repo");
+    std::fs::create_dir_all(&repo)?;
+    std::fs::write(repo.join("README.md"), "# product\n")?;
+    h.github
+        .fail_permissions
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let me = call(&h.router, Method::GET, "/api/me", None, &admin).await?;
+    assert_eq!(me.body["user"]["is_superadmin"], true);
+    assert_eq!(me.body["user"]["github_linked"], false);
+    let list = call(&h.router, Method::GET, "/api/sandboxes", None, &admin).await?;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.body);
+    let mut seen: Vec<(String, String)> = list
+        .body
+        .as_array()
+        .ok_or("array")?
+        .iter()
+        .map(|s| {
+            (
+                s["slug"].as_str().unwrap_or_default().to_owned(),
+                s["access"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            ("product".to_owned(), "admin".to_owned()),
+            ("studio".to_owned(), "admin".to_owned())
+        ],
+        "every sandbox, with admin access"
+    );
+
+    for path in [
+        "/api/sandboxes/s2",
+        "/api/sandboxes/s2/tasks",
+        "/api/tasks/t2",
+        "/api/tasks/t2/messages",
+        "/api/sandboxes/s2/files?path=",
+        "/api/sandboxes/s2/files/content?path=README.md",
+        "/api/sandboxes/s2/workflows",
+        "/api/sandboxes/s2/automations",
+        "/api/sandboxes/s2/mcp",
+        "/api/analytics/summary?sandbox=s2",
+        "/api/tasks/t1",
+    ] {
+        let r = call(&h.router, Method::GET, path, None, &admin).await?;
+        assert_eq!(r.status, StatusCode::OK, "{path}: {}", r.body);
+    }
+    let detail = call(&h.router, Method::GET, "/api/sandboxes/s2", None, &admin).await?;
+    assert_eq!(detail.body["access"], "admin");
+    let content = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s2/files/content?path=README.md",
+        None,
+        &admin,
+    )
+    .await?;
+    assert!(
+        content.body.to_string().contains("# product"),
+        "{}",
+        content.body
+    );
+    // Writes are admitted too: a message to the task.
+    let steer = call(
+        &h.router,
+        Method::POST,
+        "/api/tasks/t2/messages",
+        Some(json!({"body": "from the owner"})),
+        &admin,
+    )
+    .await?;
+    assert!(
+        steer.status.is_success(),
+        "{}: {}",
+        steer.status,
+        steer.body
+    );
+
+    // Nothing was mirrored from GitHub for the superadmin.
+    let superadmin = h.store.superadmin().await?.ok_or("superadmin")?;
+    for sid in ["s1", "s2"] {
+        assert!(
+            h.store
+                .cached_access(&superadmin.id, &SandboxId::parse(sid)?)
+                .await?
+                .is_none(),
+            "no permission cached for {sid}"
+        );
+    }
+    Ok(())
+}
+
+/// ACC-012 is the superadmin's alone: an instance administrator or any other account without a
+/// GitHub identity still sees nothing (404 like a missing sandbox), and GitHub users see only
+/// what GitHub grants them.
+#[tokio::test]
+async fn only_the_superadmin_sees_sandboxes_without_github() -> TestResult {
+    use yulius_app::model::UserRecord;
+    use yulius_app::ports::store::UserStore;
+    let h = harness()?;
+    setup_superadmin(&h).await?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "studio", "u-alice").await?;
+    seed_sandbox(&h, "s2", "product", "u-alice").await?;
+    h.github.set_perm("alice", "acme/studio", perms("read"));
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    seed_task(&h, "t2", "s2", "u-alice", TaskStatus::Closed, None).await?;
+    // A password account that is not the superadmin (even an instance administrator).
+    let other = UserRecord {
+        id: UserId::parse("u-pw")?,
+        github_login: None,
+        github_id: None,
+        display_name: "Password user".into(),
+        avatar_url: None,
+        is_superadmin: false,
+        is_instance_admin: true,
+        password_hash: Some("$argon2id$v=19$m=19456,t=2,p=1$synthetic$synthetic".into()),
+        created_at: Timestamp(1),
+        disabled_at: None,
+    };
+    h.store.insert_user(&other).await?;
+    let token = h.app.issue_api_token(&other, "tests").await?;
+    let other = Creds {
+        bearer: Some(token.expose().to_owned()),
+        ..Creds::default()
+    };
+
+    let none = call(&h.router, Method::GET, "/api/sandboxes", None, &other).await?;
+    assert_eq!(none.status, StatusCode::OK);
+    assert_eq!(none.body, json!([]));
+    for (method, path, body) in scoped_routes() {
+        let hidden = fill(path, "s1", "t1");
+        let missing = fill(path, "s9", "t9");
+        let a = call(&h.router, method.clone(), &hidden, body.clone(), &other).await?;
+        let b = call(&h.router, method.clone(), &missing, body, &other).await?;
+        assert_eq!(
+            (a.status, &a.body),
+            (b.status, &b.body),
+            "{method} {hidden} reveals a sandbox to an account without GitHub"
+        );
+    }
+
+    // GitHub users keep mirrored permissions exactly.
+    let list = call(&h.router, Method::GET, "/api/sandboxes", None, &alice).await?;
+    let items = list.body.as_array().ok_or("array")?;
+    assert_eq!(items.len(), 1, "{}", list.body);
+    assert_eq!(
+        (&items[0]["slug"], &items[0]["access"]),
+        (&json!("studio"), &json!("read"))
+    );
+    let hidden = call(&h.router, Method::GET, "/api/tasks/t2", None, &alice).await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+/// ACC-012 with #66: the superadmin's open sockets — the event stream and a task terminal — are
+/// not closed or filtered by the periodic visibility re-check, also after the permission cache's
+/// lifetime and while GitHub is down; a password account that is not the superadmin cannot open
+/// the terminal at all.
+#[tokio::test]
+async fn the_superadmins_sockets_survive_the_visibility_recheck() -> TestResult {
+    use futures::SinkExt as _;
+    use support::{HarnessOptions, harness_with, serve, superadmin_bearer, ws_connect};
+    use tokio_tungstenite::tungstenite::Message;
+    use yulius_contracts::events::UiEvent;
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(|c| c.viewer_recheck_ms = 150)),
+        ..HarnessOptions::default()
+    })?;
+    setup_superadmin(&h).await?;
+    let admin = superadmin_bearer(&h).await?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "studio", "u-alice").await?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let served = serve(h.router.clone()).await?;
+    let origin = h.app.config.public_url.clone();
+
+    // Alice has no access to s1: her terminal is refused like a missing task.
+    let refused = ws_connect(served.addr, "/api/tasks/t1/terminal", &alice, &origin).await;
+    assert_eq!(
+        refused.as_ref().err().and_then(support::ws_refusal_status),
+        Some(404)
+    );
+
+    let mut terminal = ws_connect(served.addr, "/api/tasks/t1/terminal", &admin, &origin).await?;
+    let state = next_ws_text(&mut terminal, std::time::Duration::from_secs(5))
+        .await
+        .ok_or("no state frame")?
+        .map_err(|code| format!("closed: {code:?}"))?;
+    let state: Value = serde_json::from_str(&state)?;
+    assert_eq!(state["type"], "state");
+    assert_eq!(state["can_write"], true, "the superadmin may type");
+    let mut events = ws_connect(served.addr, "/api/events", &admin, &origin).await?;
+    let sandbox = SandboxId::parse("s1")?;
+    let publish = |task: &str| {
+        h.app.events.publish(
+            Some(sandbox.clone()),
+            false,
+            UiEvent::TaskRemoved {
+                task_id: task.into(),
+            },
+        );
+    };
+    // The server subscribes once the upgrade completes: publish until the stream has it.
+    let mut seen = None;
+    for _ in 0..20 {
+        publish("t-first");
+        seen = next_ws_text(&mut events, std::time::Duration::from_millis(250)).await;
+        if seen.is_some() {
+            break;
+        }
+    }
+    assert!(
+        matches!(&seen, Some(Ok(text)) if text.contains("t-first")),
+        "{seen:?}"
+    );
+    while let Some(Ok(_)) = next_ws_text(&mut events, std::time::Duration::from_millis(300)).await {
+    }
+
+    // Past the permission cache and with GitHub down, several re-checks run.
+    h.github
+        .fail_permissions
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    h.clock
+        .0
+        .fetch_add(40 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
+    let quiet = next_ws_text(&mut terminal, std::time::Duration::from_millis(300)).await;
+    assert!(quiet.is_none(), "the terminal changed: {quiet:?}");
+    terminal
+        .send(Message::Text("not a frame".to_owned().into()))
+        .await?;
+    let answer = next_ws_text(&mut terminal, std::time::Duration::from_secs(5)).await;
+    assert!(
+        matches!(&answer, Some(Ok(text)) if text.contains("unknown frame")),
+        "the terminal is still open: {answer:?}"
+    );
+    publish("t-later");
+    let later = next_ws_text(&mut events, std::time::Duration::from_secs(5)).await;
+    assert!(
+        matches!(&later, Some(Ok(text)) if text.contains("t-later")),
+        "the event stream still carries the sandbox: {later:?}"
+    );
+    Ok(())
+}

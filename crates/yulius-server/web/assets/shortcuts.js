@@ -1,7 +1,7 @@
 // Keyboard shortcuts (SPEC-001 UI-029): the platform's key names and one sheet that lists every
 // shortcut, opened with ⌘/ (Ctrl+/) or from Settings. Keep the sheet in step with the handlers in
 // app.js (new task, F6, this sheet), taskview.js (composer), pages/tasks.js (single keys), dom.js
-// (menus) and panels.js (messages).
+// (menus), editorview.js (save, word wrap) and panels.js (messages).
 
 import { h, openModal } from './dom.js';
 import { readJson } from './store.js';
@@ -14,6 +14,11 @@ export const NEW_TASK_KEYS = IS_MAC ? '⌘⇧O' : 'Ctrl+Shift+O';
 export const NEW_TASK_ARIA = IS_MAC ? 'Meta+Shift+O' : 'Control+Shift+O';
 /** This sheet's own shortcut. */
 export const SHEET_KEYS = `${MOD}/`;
+/** Saving in the editor. */
+export const SAVE_KEYS = `${MOD}S`;
+/** Word wrap on/off in the editor, as in VS Code: ⌥Z / Alt+Z (ARIA names the Option key Alt). */
+export const WRAP_KEYS = IS_MAC ? '⌥Z' : 'Alt+Z';
+export const WRAP_ARIA = 'Alt+Z';
 
 function groups() {
   const singleKeys = readJson('yulius.singleKeyShortcuts', true) !== false;
@@ -38,6 +43,10 @@ function groups() {
       [['Home', 'End'], 'First / last item'],
       [['a–z'], 'Next item starting with the letter'],
       [['Tab'], 'Close the menu'],
+    ]],
+    ['Editor', [
+      [[SAVE_KEYS], 'Save the file'],
+      [[WRAP_KEYS], 'Word wrap on / off — every open file'],
     ]],
     ['Browser and editor tabs', [
       [['←', '→'], 'Move between tabs'],

@@ -574,7 +574,8 @@ export function openSandboxDialog(ctx, mode = 'import') {
       try {
         repos = await ctx.api.get('/api/github/repositories');
       } catch (error) {
-        // 403: no GitHub-linked account; 409: no GitHub App. The server's message says which.
+        // 403: no GitHub-linked account (never for the superadmin, ACC-012); 409: no GitHub App.
+        // The server's message says which.
         setChildren(list, placeholder(error.message, 'error'));
         return;
       }

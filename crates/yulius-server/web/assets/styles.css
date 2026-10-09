@@ -95,7 +95,7 @@ p { margin: 0; }
   .select { display: inline-flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; background: var(--surface); font: inherit; cursor: pointer; transition: background var(--duration-fast) var(--ease), border-color var(--duration-fast) var(--ease); }
   .select:hover:not(:disabled) { background: var(--surface-2); border-color: var(--border-strong); }
   .select:disabled { opacity: 0.6; cursor: not-allowed; }
-  .select::picker-icon { content: ""; width: 6px; height: 6px; margin: 0 4px 2px auto; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); rotate: 45deg; transition: rotate var(--duration-fast) var(--ease), margin var(--duration-fast) var(--ease); }
+  .select::picker-icon { content: ""; flex: none; width: 6px; height: 6px; margin: 0 4px 2px auto; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); rotate: 45deg; transition: rotate var(--duration-fast) var(--ease), margin var(--duration-fast) var(--ease); }
   .select:open::picker-icon { rotate: 225deg; margin-bottom: -2px; }
   .select:open { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .select::picker(select) { min-width: anchor-size(width); max-height: min(360px, 60vh); margin: 4px 0; padding: 4px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-2); color: var(--text); box-shadow: var(--shadow); }
@@ -233,7 +233,9 @@ p { margin: 0; }
 
 .app {
   display: grid; height: 100vh; height: 100dvh;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) auto var(--rail-w);
+  /* The panel's column may shrink (minmax(0, auto)): a panel wider than the room left never pushes
+     the rail off the window (F 2026-10-09); panels.js also re-fits it when the window changes. */
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) minmax(0, auto) var(--rail-w);
   grid-template-rows: var(--tabrow-h) minmax(0, 1fr);
   grid-template-areas: "tabs tabs tabs tabs" "side main panel rail";
 }
@@ -397,7 +399,7 @@ button.task-group-head:hover { color: var(--text); }
   .switch-input:checked + .switch-track::after { background: HighlightText; }
   .switch-input:focus-visible + .switch-track, .seg label:has(input:focus-visible) { outline: 2px solid Highlight; outline-offset: 2px; }
   .seg label:has(input:checked) { outline: 2px solid CanvasText; outline-offset: -2px; }
-  .tab-dot, .rail-dot, .ev-dot, .dl-dot, .task-unread { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+  .tab-dot, .rail-dot, .ev-dot, .dl-dot, .task-unread, .rail-btn.active::before { forced-color-adjust: none; background: Highlight; color: HighlightText; }
 }
 /* Reduced motion: no animation or transition anywhere (WCAG 2.3.3). */
 @media (prefers-reduced-motion: reduce) {
@@ -417,16 +419,22 @@ button.task-group-head:hover { color: var(--text); }
 .app.panel-max .panel { width: auto !important; }
 .app.panel-max .panel-resize { display: none; }
 .tools-toggle.active { background: var(--accent-soft); color: var(--text); }
-.rail { grid-area: rail; display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 6px; background: var(--surface); border-left: 1px solid var(--border); }
-.rail-btn { position: relative; width: auto; height: var(--control-xl); justify-content: flex-start; gap: 8px; padding: 0 8px; border-radius: var(--radius-lg); }
-.rail-btn:hover { background: var(--surface-3); color: var(--text); }
-.rail-btn.active { background: var(--accent-soft); color: var(--text); }
-.rail-label { font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; white-space: nowrap; }
-.rail-badge { min-width: 16px; height: 16px; margin-left: auto; padding: 0 4px; border-radius: var(--radius-full); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; display: flex; align-items: center; justify-content: center; }
+/* The rail's items stay inside it (F 2026-10-09): each pill is the rail's width less 6 px on either
+   side of the edge line, its label gives way (ellipsis) before the count leaves the pill, and the
+   4 px between pills leaves room for the focus ring. Hover is a quiet fill; the open tool (one at a
+   time, aria-pressed) adds the accent fill, an accent bar on its edge and a heavier label. */
+.rail { grid-area: rail; display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-width: 0; padding: 6px; background: var(--surface); border-left: 1px solid var(--border); }
+.rail-btn { position: relative; width: auto; min-width: 0; height: var(--control-xl); justify-content: flex-start; gap: 8px; padding: 0 8px; border-radius: var(--radius-lg); }
+.rail-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+.rail-btn.active, .rail-btn.active:hover:not(:disabled) { background: var(--accent-soft); color: var(--text); }
+.rail-btn.active::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: var(--radius-full); background: var(--accent); }
+.rail-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; white-space: nowrap; }
+.rail-btn.active .rail-label { font-weight: 600; }
+.rail-badge { flex: none; min-width: 16px; height: 16px; margin-left: auto; padding: 0 4px; border-radius: var(--radius-full); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; display: flex; align-items: center; justify-content: center; }
 /* The attention dot sits on its icon (tools toggle); in the named rail it ends the row. */
 .rail-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 2px var(--bg); }
 .rail .rail-dot { position: static; margin-left: auto; flex: none; box-shadow: none; }
-.panel { grid-area: panel; position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--surface); border-left: 1px solid var(--border); }
+.panel { grid-area: panel; position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; max-width: 100%; background: var(--surface); border-left: 1px solid var(--border); }
 .panel[hidden] { display: none; }
 .panel-resize { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: var(--z-float); touch-action: none; }
 .panel-resize:hover, .panel-resize.dragging { background: linear-gradient(90deg, transparent 3px, var(--accent) 3px 5px, transparent 5px); }
@@ -592,7 +600,7 @@ body.resizing iframe { pointer-events: none; }
 .gt-toolbar { display: flex; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .gt-summary { color: var(--text-2); }
 .gt-uncommitted { color: var(--warn-fg); }
-.gt-wrap[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); }
+.gt-wrap[aria-pressed="true"], .ed-wrap[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); }
 .gt-changes { display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); gap: 16px; align-items: start; padding-top: 12px; }
 .gt-tree { position: sticky; top: 8px; max-height: calc(100dvh - 160px); overflow: auto; }
 .gt-tree-list { margin: 0; padding: 0; list-style: none; }
@@ -1577,10 +1585,12 @@ a.dl-task:hover { text-decoration: underline; }
   .tabrow { padding-right: 2px; gap: 2px; border-bottom: 1px solid var(--border); }
   .tabrow-right { gap: 4px; padding-right: 0; }
   .tabrow-tabs, .tab-add { display: none; }
-  .tab-select { display: block; align-self: center; flex: 1; min-width: 96px; max-width: 200px; height: var(--control-xl); }
+  /* The sandbox list gives way to the tools rail when it shows in this row (it never overlaps it). */
+  .tab-select { display: flex; align-self: center; flex: 1; min-width: 0; max-width: 200px; height: var(--control-xl); gap: 4px; padding: 0 4px 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .btn-status .status-text, .chip-warn .chip-text { display: none; }
-  .rail { flex-direction: row; padding: 0 4px; border-left: 0; border-bottom: 1px solid var(--border); background: var(--bg); }
+  .rail { flex-direction: row; align-items: center; gap: 0; padding: 0 2px; border-left: 0; border-bottom: 1px solid var(--border); background: var(--bg); }
   .rail-btn { width: var(--control-lg); height: var(--control-lg); justify-content: center; padding: 0; }
+  .rail-btn.active::before { top: auto; bottom: 2px; left: 8px; right: 8px; width: auto; height: 3px; }
   .rail-label { display: none; }
   .rail-badge { position: absolute; top: 1px; right: 0; min-width: 16px; height: 16px; margin: 0; padding: 0 4px; font-size: var(--fs-xs); line-height: var(--lh-xs); }
   .rail .rail-dot { position: absolute; top: 4px; right: 4px; margin: 0; box-shadow: 0 0 0 2px var(--bg); }
@@ -1634,7 +1644,7 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-tree-head { display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 12px; font-size: var(--fs-xs); line-height: var(--lh-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border-bottom: 1px solid var(--border); }
 .ed-tree-head > span { flex: 1; }
 .ed-tree { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; font-size: var(--fs); line-height: var(--lh); }
-.ed-row { display: flex; align-items: center; gap: 4px; height: 22px; padding-right: 8px; white-space: nowrap; cursor: pointer; user-select: none; }
+.ed-row { display: flex; align-items: center; gap: 4px; height: var(--control-sm); padding-right: 8px; white-space: nowrap; cursor: pointer; user-select: none; }
 .ed-row:hover { background: var(--overlay-hover); }
 .ed-row.active { background: var(--accent-soft); color: var(--text); }
 .ed-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
