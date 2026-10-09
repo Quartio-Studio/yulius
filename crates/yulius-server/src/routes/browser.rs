@@ -400,6 +400,10 @@ async fn pump(
                 }
             }
             _ = recheck.tick() => {
+                if !app.still_signed_in(ctx).await {
+                    out.close(CLOSE_REVOKED, "signed out").await;
+                    return;
+                }
                 if !app.browser_still_allowed(ctx, grant).await {
                     out.close(CLOSE_REVOKED, "access revoked").await;
                     return;

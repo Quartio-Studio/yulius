@@ -813,3 +813,94 @@ async fn github_sign_in_returns_only_to_local_paths() -> TestResult {
     }
     Ok(())
 }
+
+/// #66: an open event stream follows revoked access and closes for a disabled user within the
+/// re-check interval, as new requests would.
+#[tokio::test]
+async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> TestResult {
+    use futures::StreamExt as _;
+    use support::{HarnessOptions, harness_with, serve, ws_connect};
+    use tokio_tungstenite::tungstenite::Message;
+    use yulius_app::ports::store::UserStore;
+    use yulius_contracts::events::UiEvent;
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(|c| c.viewer_recheck_ms = 200)),
+        ..HarnessOptions::default()
+    })?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "studio", "u-alice").await?;
+    h.github.set_perm("alice", "acme/studio", perms("read"));
+    let served = serve(h.router.clone()).await?;
+    let origin = h.app.config.public_url.clone();
+    let mut socket = ws_connect(served.addr, "/api/events", &alice, &origin).await?;
+    let sandbox = SandboxId::parse("s1")?;
+    let publish = |task: &str| {
+        h.app.events.publish(
+            Some(sandbox.clone()),
+            false,
+            UiEvent::TaskRemoved {
+                task_id: task.into(),
+            },
+        );
+    };
+    // The next text frame within `wait`, if any.
+    async fn next_text(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        wait: std::time::Duration,
+    ) -> Option<Result<String, Option<u16>>> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(deadline, socket.next()).await {
+                Err(_) => return None,
+                Ok(Some(Ok(Message::Text(text)))) => return Some(Ok(text.to_string())),
+                Ok(Some(Ok(Message::Close(frame)))) => {
+                    return Some(Err(frame.map(|f| u16::from(f.code))));
+                }
+                Ok(None | Some(Err(_))) => return Some(Err(None)),
+                Ok(Some(Ok(_))) => {}
+            }
+        }
+    }
+
+    // The server subscribes once the upgrade completes: publish until the stream has it.
+    let mut seen = None;
+    for _ in 0..20 {
+        publish("t-visible");
+        seen = next_text(&mut socket, std::time::Duration::from_millis(250)).await;
+        if seen.is_some() {
+            break;
+        }
+    }
+    assert!(
+        matches!(&seen, Some(Ok(text)) if text.contains("t-visible")),
+        "{seen:?}"
+    );
+    // Drain duplicates of the first event.
+    while let Some(Ok(_)) = next_text(&mut socket, std::time::Duration::from_millis(300)).await {}
+
+    // Access removed on GitHub: after the permission cache expires and a re-check, this
+    // sandbox's events no longer reach the open stream.
+    if let Ok(mut map) = h.github.perms.lock() {
+        map.remove(&("alice".to_owned(), "acme/studio".to_owned()));
+    }
+    h.clock
+        .0
+        .fetch_add(6 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    publish("t-hidden");
+    let hidden = next_text(&mut socket, std::time::Duration::from_secs(1)).await;
+    assert!(
+        hidden.is_none(),
+        "an event of a revoked sandbox arrived: {hidden:?}"
+    );
+
+    // A disabled user's stream closes with 4003.
+    h.store
+        .update_user_flags(&UserId::parse("u-alice")?, Some(Some(Timestamp(5))), None)
+        .await?;
+    let closed = next_text(&mut socket, std::time::Duration::from_secs(5)).await;
+    assert_eq!(closed, Some(Err(Some(4003))), "{closed:?}");
+    Ok(())
+}
