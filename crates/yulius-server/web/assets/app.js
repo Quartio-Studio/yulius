@@ -16,7 +16,7 @@ import { createTabRow, createSidebar } from './layout.js';
 import { createPanelHost } from './panels.js';
 import { mountTaskView, mountComposer } from './taskview.js';
 import { openSandboxDialog } from './actions.js';
-import { mountSetup, mountSignIn } from './pages/auth.js';
+import { mountSetup, mountSignIn, signInProblem } from './pages/auth.js';
 import { mountTasksPage, mountArchivedPage, mountDevicePage } from './pages/tasks.js';
 import { mountGitPage } from './pages/git.js';
 import { mountGitTaskView } from './pages/gittask.js';
@@ -128,11 +128,12 @@ function createApp(root, transport) {
   function renderSignIn() {
     const loc = currentLocation();
     const next = loc.path === '/signin' ? loc.query.get('next') || '/' : loc.full;
-    // The server never sends ?error= here, so a crafted link must not put its own words on the
-    // sign-in page (content spoofing): any value shows one fixed sentence.
-    const error = loc.query.get('error') ? 'Sign-in did not complete. Try again.' : null;
+    // A refused GitHub sign-in lands here with ?error=<reason> (ACC-004). The page says the reason
+    // in fixed sentences (signInProblem), and the address loses it, so a reload starts clean.
+    const reason = loc.path === '/signin' ? loc.query.get('error') : null;
+    const problem = reason ? signInProblem(reason, loc.query.get('login')) : null;
     navigate(`/signin?next=${encodeURIComponent(next)}`, { replace: true });
-    setChildren(root, mountSignIn(ctx, { next, error, onDone: (me, target) => signedIn(me, target) }).el);
+    setChildren(root, mountSignIn(ctx, { next, problem, onDone: (me, target) => signedIn(me, target) }).el);
   }
 
   async function signedIn(me, next) {

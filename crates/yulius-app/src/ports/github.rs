@@ -169,8 +169,15 @@ pub struct NewPull {
 /// GitHub operations used by the application.
 #[async_trait]
 pub trait GitHubPort: Send + Sync {
-    /// OAuth authorization URL for user sign-in.
-    fn authorize_url(&self, app: &GitHubAppConfig, state: &str, redirect_uri: &str) -> String;
+    /// OAuth authorization URL for user sign-in; `select_account` makes GitHub show its account
+    /// picker (to continue with another GitHub account than the one signed in to github.com).
+    fn authorize_url(
+        &self,
+        app: &GitHubAppConfig,
+        state: &str,
+        redirect_uri: &str,
+        select_account: bool,
+    ) -> String;
     /// Exchanges an OAuth code.
     async fn exchange_code(
         &self,

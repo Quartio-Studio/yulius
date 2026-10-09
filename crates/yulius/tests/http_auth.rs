@@ -166,29 +166,46 @@ async fn configure_github(h: &support::Harness) -> TestResult {
     Ok(())
 }
 
-async fn github_login(
+/// Starts GitHub sign-in (`start_query` after `/api/auth/github/start?`) and returns the state
+/// GitHub would echo back, checking the redirect to GitHub.
+async fn github_state(
     h: &support::Harness,
-    code: &str,
-) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    start_query: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
     let start = call(
         &h.router,
         Method::GET,
-        "/api/auth/github/start?next=/s/studio",
+        &format!("/api/auth/github/start?{start_query}"),
         None,
         &Creds::default(),
     )
     .await?;
     assert_eq!(start.status, StatusCode::SEE_OTHER);
     let location = start.location.ok_or("location")?;
-    let state = location.split("state=").nth(1).ok_or("state")?.to_owned();
+    let state = location.split("state=").nth(1).ok_or("state")?;
+    Ok(state.split('&').next().unwrap_or_default().to_owned())
+}
+
+async fn github_callback(
+    h: &support::Harness,
+    query: &str,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
     call(
         &h.router,
         Method::GET,
-        &format!("/api/auth/github/callback?code={code}&state={state}"),
+        &format!("/api/auth/github/callback?{query}"),
         None,
         &Creds::default(),
     )
     .await
+}
+
+async fn github_login(
+    h: &support::Harness,
+    code: &str,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    let state = github_state(h, "next=/s/studio").await?;
+    github_callback(h, &format!("code={code}&state={state}")).await
 }
 
 #[tokio::test]
@@ -209,8 +226,14 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
     .await?;
     assert_eq!(admit.status, StatusCode::CREATED);
 
+    // A refusal returns to the sign-in page naming the refused account (ACC-004), not an error.
     let denied = github_login(&h, "code-mallory").await?;
-    assert_eq!(denied.status, StatusCode::FORBIDDEN, "not admitted");
+    assert_eq!(denied.status, StatusCode::SEE_OTHER, "not admitted");
+    assert_eq!(
+        denied.location.as_deref(),
+        Some("/signin?error=not_admitted&next=/s/studio&login=mallory")
+    );
+    assert!(denied.set_cookie.is_none(), "no session for a refused user");
 
     let ok = github_login(&h, "code-alice").await?;
     assert_eq!(ok.status, StatusCode::SEE_OTHER);
@@ -315,6 +338,117 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
     assert_eq!(disable.status, StatusCode::OK);
     let after = call(&h.router, Method::GET, "/api/me", None, &alice).await?;
     assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+    let again = github_login(&h, "code-alice").await?;
+    assert_eq!(
+        again.location.as_deref(),
+        Some("/signin?error=disabled&next=/s/studio"),
+        "a disabled user is told so on the sign-in page"
+    );
+    assert!(again.set_cookie.is_none());
+    Ok(())
+}
+
+/// The same-window case (F 2026-10-09): the browser's GitHub account is refused, GitHub's
+/// account picker is offered, and a reload or a denial lands on the sign-in page, never on a raw
+/// error (ACC-004, AC-ACC-3).
+#[tokio::test]
+async fn refused_github_sign_ins_return_to_the_sign_in_page_with_their_reason() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin(&h).await?;
+    configure_github(&h).await?;
+    h.github.add_user("code-other", 21, "other-account");
+    h.github.add_user("code-admitted", 22, "Admitted-Account");
+    let admit = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/users",
+        Some(json!({"github_login": "admitted-account"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(admit.status, StatusCode::CREATED);
+
+    // GitHub signs in the browser's current account, which was not admitted.
+    let state = github_state(&h, "next=/s/a%20b").await?;
+    let refused = github_callback(&h, &format!("code=code-other&state={state}")).await?;
+    assert_eq!(refused.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        refused.location.as_deref(),
+        Some("/signin?error=not_admitted&next=/s/a%20b&login=other-account")
+    );
+    // Reloading the used callback URL: the sign-in page again, not "sign-in expired" as JSON.
+    let reload = github_callback(&h, &format!("code=code-other&state={state}")).await?;
+    assert_eq!(reload.status, StatusCode::SEE_OTHER);
+    assert_eq!(reload.location.as_deref(), Some("/signin?error=expired"));
+
+    // "Use another GitHub account" asks GitHub for its account picker; the default does not.
+    let plain = call(
+        &h.router,
+        Method::GET,
+        "/api/auth/github/start?next=/",
+        None,
+        &Creds::default(),
+    )
+    .await?;
+    assert!(
+        !plain
+            .location
+            .as_deref()
+            .unwrap_or_default()
+            .contains("prompt=")
+    );
+    let state = github_state(&h, "next=/&prompt=select_account").await?;
+    let picker = call(
+        &h.router,
+        Method::GET,
+        "/api/auth/github/start?next=/&prompt=select_account",
+        None,
+        &Creds::default(),
+    )
+    .await?;
+    assert!(
+        picker
+            .location
+            .as_deref()
+            .unwrap_or_default()
+            .ends_with("&prompt=select_account")
+    );
+    // In the picker the person chooses the admitted account (logins match case-insensitively).
+    let ok = github_callback(&h, &format!("code=code-admitted&state={state}")).await?;
+    assert_eq!(ok.status, StatusCode::SEE_OTHER);
+    assert_eq!(ok.location.as_deref(), Some("/"));
+    let creds = Creds {
+        cookie: session_from(&ok.set_cookie),
+        csrf: None,
+        bearer: None,
+    };
+    let me = call(&h.router, Method::GET, "/api/me", None, &creds).await?;
+    assert_eq!(me.body["user"]["login"], "Admitted-Account");
+
+    // Denying access on GitHub forgets the state and keeps the destination.
+    let state = github_state(&h, "next=/tasks").await?;
+    let denied = github_callback(
+        &h,
+        &format!("error=access_denied&error_description=The+user+has+denied&state={state}"),
+    )
+    .await?;
+    assert_eq!(
+        denied.location.as_deref(),
+        Some("/signin?error=denied&next=/tasks")
+    );
+    let replay = github_callback(&h, &format!("code=code-admitted&state={state}")).await?;
+    assert_eq!(replay.location.as_deref(), Some("/signin?error=expired"));
+    assert!(
+        replay.set_cookie.is_none(),
+        "a denied state cannot be replayed"
+    );
+
+    // A malformed callback (no code, no error) and a GitHub failure (bad code) say "failed".
+    let bare = github_callback(&h, "state=whatever").await?;
+    assert_eq!(bare.location.as_deref(), Some("/signin?error=failed"));
+    let state = github_state(&h, "next=/").await?;
+    let failed = github_callback(&h, &format!("code=code-unknown&state={state}")).await?;
+    assert_eq!(failed.location.as_deref(), Some("/signin?error=failed"));
     Ok(())
 }
 
