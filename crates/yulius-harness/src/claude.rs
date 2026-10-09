@@ -220,6 +220,88 @@ fn limit_signal(text: &str) -> Option<Observed> {
 mod tests {
     use yulius_domain::time::Timestamp;
 
+    /// Deterministic xorshift generator for randomized tests (no extra dependency).
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        fn below(&mut self, bound: usize) -> usize {
+            usize::try_from(self.next() % u64::try_from(bound.max(1)).unwrap_or(1)).unwrap_or(0)
+        }
+
+        /// Text made of `pieces`, random bytes (lossy UTF-8) and multi-byte characters.
+        fn text(&mut self, pieces: &[&str], max_parts: usize) -> String {
+            let mut out = String::new();
+            for _ in 0..self.below(max_parts + 1) {
+                match self.below(10) {
+                    0 => {
+                        let bytes: Vec<u8> = (0..self.below(8))
+                            .map(|_| (self.next() & 0xff) as u8)
+                            .collect();
+                        out.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                    1 => out
+                        .push_str(["é", "😀", "\u{0}", "\r", "\t", "ﬀ", "\u{200b}"][self.below(7)]),
+                    _ => out.push_str(pieces[self.below(pieces.len())]),
+                }
+            }
+            out
+        }
+    }
+
+    /// Randomized transcript lines (#76): the observer never panics on malformed records.
+    #[test]
+    fn random_transcript_lines_never_panic() {
+        let pieces = [
+            "{",
+            "}",
+            "[",
+            "]",
+            ",",
+            ":",
+            "\"type\"",
+            "\"assistant\"",
+            "\"user\"",
+            "\"message\"",
+            "\"usage\"",
+            "\"input_tokens\"",
+            "\"output_tokens\"",
+            "\"stop_reason\"",
+            "\"end_turn\"",
+            "\"isApiErrorMessage\"",
+            "true",
+            "false",
+            "null",
+            "\"apiError\"",
+            "\"usage_limit_reached\"",
+            "\"rate_limit_info\"",
+            "\"resetsAt\"",
+            "1760000000",
+            "-1",
+            "1e400",
+            "\"rateLimitType\"",
+            "\"five_hour\"",
+            "\"content\"",
+            "\"text\"",
+            "\"session limit · resets 3pm\"",
+            "\"timestamp\"",
+            "\"2026-10-09T10:00:00Z\"",
+        ];
+        let mut rng = Rng(0x0dd5_eed5_cafe_f00d);
+        for _ in 0..6_000 {
+            let line = rng.text(&pieces, 30);
+            let _ = observe_line(&line);
+        }
+    }
+
     use super::*;
 
     #[test]

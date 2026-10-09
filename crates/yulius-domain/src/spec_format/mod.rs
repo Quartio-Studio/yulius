@@ -611,6 +611,82 @@ pub fn spec_path(layout: &DocsLayout, date: CivilDate, slug: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Deterministic xorshift generator for randomized tests (no extra dependency).
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        fn below(&mut self, bound: usize) -> usize {
+            usize::try_from(self.next() % u64::try_from(bound.max(1)).unwrap_or(1)).unwrap_or(0)
+        }
+
+        /// Text made of `pieces`, random bytes (lossy UTF-8) and multi-byte characters.
+        fn text(&mut self, pieces: &[&str], max_parts: usize) -> String {
+            let mut out = String::new();
+            for _ in 0..self.below(max_parts + 1) {
+                match self.below(10) {
+                    0 => {
+                        let bytes: Vec<u8> = (0..self.below(8))
+                            .map(|_| (self.next() & 0xff) as u8)
+                            .collect();
+                        out.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                    1 => out
+                        .push_str(["é", "😀", "\u{0}", "\r", "\t", "ﬀ", "\u{200b}"][self.below(7)]),
+                    _ => out.push_str(pieces[self.below(pieces.len())]),
+                }
+            }
+            out
+        }
+    }
+
+    /// Randomized specs (#76): validation and the fix-it message never panic.
+    #[test]
+    fn random_specs_never_panic() -> TestResult {
+        let pieces = [
+            "---\n",
+            "yulius-task: task-1\n",
+            "status: draft\n",
+            "status: done\n",
+            "status: x\n",
+            "# Title\n",
+            "## Goal\n",
+            "## Context\n",
+            "## Requirements\n",
+            "## Plan\n",
+            "## Acceptance criteria\n",
+            "## Test plan\n",
+            "## Decisions\n",
+            "- [ ] step\n",
+            "- [x] done\n",
+            "  - [ ] nested\n",
+            "- [",
+            "```\n",
+            "text\n",
+            "\r\n",
+            "\n",
+            " ",
+            "#",
+        ];
+        let task = TaskId::parse("task-1")?;
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        for _ in 0..4_000 {
+            let text = rng.text(&pieces, 40);
+            let report = validate_spec(&text);
+            let _ = report.agent_message("docs/specs/x.md");
+            let _ = validate_spec_for(&text, &task);
+        }
+        Ok(())
+    }
+
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     const VALID: &str = "---\nyulius-task: task-1\nstatus: in-progress\n---\n\
