@@ -93,6 +93,7 @@ yulius.example.com {
         max_size 16MB
     }
     encode zstd gzip
+    header Strict-Transport-Security "max-age=31536000"
     reverse_proxy 127.0.0.1:8080
 }
 ```
@@ -108,6 +109,7 @@ server {
     gzip on;
     gzip_min_length 1024;
     gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
+    add_header Strict-Transport-Security "max-age=31536000" always;
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
@@ -123,6 +125,11 @@ server {
 
 `YULIUS_PUBLIC_URL` must be the exact external origin: cookies are `Secure` for `https` URLs and
 WebSocket origins are checked against it.
+
+Yulius itself sends `X-Frame-Options: SAMEORIGIN`, `Content-Security-Policy: frame-ancestors
+'self'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin` on every response
+(stricter route policies are kept). HSTS is the TLS proxy's job, as in the examples above; add it
+once the domain is meant to stay on HTTPS.
 
 ## 5. First run
 
