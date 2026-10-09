@@ -1181,11 +1181,18 @@ impl App {
                 checks_by_pr.push((pull.number, state));
             }
         }
+        // With required checks, a pull request whose checks have not reported yet is pending,
+        // not "none": it is not tested until they pass (#68).
         let checks_of = |number: u64| {
-            checks_by_pr
+            let state = checks_by_pr
                 .iter()
                 .find(|(n, _)| *n == number)
-                .map_or("unknown", |(_, state)| *state)
+                .map_or("unknown", |(_, state)| *state);
+            if profile.require_checks && state == "none" {
+                "pending"
+            } else {
+                state
+            }
         };
         let pulls: Vec<PullView> = open_pulls
             .iter()
@@ -1253,8 +1260,12 @@ impl App {
                 && let Some(number) = record.pr_number
                 && let Ok(pull) = self.deps.github.get_pull(token, owner, name, number).await
             {
-                // Merged or closed outside Yulius: show it and reconcile the stage.
-                view.pr = Some(pull_view(&pull, "none"));
+                // Merged or closed outside Yulius: show it and reconcile the stage. An open one
+                // missing from the listed page has unread checks (#68).
+                view.pr = Some(pull_view(
+                    &pull,
+                    if is_open(&pull) { "unknown" } else { "none" },
+                ));
                 let observed_state = if pull.merged {
                     PrState::Merged
                 } else if is_open(&pull) {
@@ -1280,6 +1291,23 @@ impl App {
                         .transition_delivery(&record.stage, &reconciled)
                         .await;
                 }
+            }
+            if view.pr.is_none()
+                && let Ok(Some(record)) = self.deps.store.delivery(&task.id).await
+                && past_merge(&record.stage)
+                && let Some(number) = record.pr_number
+            {
+                // Merged earlier: no longer listed as open, but still this task's pull request,
+                // so the task stays "Done · merged" (#68). No GitHub call.
+                view.pr = Some(PullView {
+                    number,
+                    url: format!("https://github.com/{owner}/{name}/pull/{number}"),
+                    title: task.title.clone(),
+                    state: "merged".into(),
+                    base: profile.integration_branch.clone(),
+                    head: branch.clone(),
+                    checks: "none".into(),
+                });
             }
             tasks.push(view);
         }
@@ -1597,9 +1625,7 @@ impl App {
     /// retried for the same head.
     pub async fn auto_open_pr(&self, task_id: &TaskId) {
         match self.try_auto_open_pr(task_id).await {
-            Ok(Some((number, base))) => self.runtime(task_id).hub.notice(format!(
-                "Yulius opened pull request #{number} into {base}: the task is ready for review."
-            )),
+            Ok(Some(done)) => self.runtime(task_id).hub.notice(done),
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(task = %task_id, error = %err, "automatic pull request failed");
@@ -1610,10 +1636,11 @@ impl App {
         }
     }
 
-    /// The pull request number and base when Yulius opened one; `None` while the task is not
-    /// ready: no branch or worktree, a pull request already, an invalid spec, an open step,
-    /// uncommitted work, or no commits ahead of the integration branch.
-    async fn try_auto_open_pr(&self, task_id: &TaskId) -> AppResult<Option<(u64, String)>> {
+    /// What Yulius did for a ready task: opened its pull request, or pushed commits made since
+    /// to the open one (#68). `None` while the task is not ready (no branch or worktree, an
+    /// invalid spec, an open step, uncommitted work, no commits ahead of the integration branch)
+    /// or nothing is new.
+    async fn try_auto_open_pr(&self, task_id: &TaskId) -> AppResult<Option<String>> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let (Some(branch), Some(worktree)) = (task.branch.clone(), task.worktree_path.clone())
@@ -1629,7 +1656,7 @@ impl App {
             || store
                 .delivery(&task.id)
                 .await?
-                .is_some_and(|r| r.stage != DeliveryStage::None)
+                .is_some_and(|r| !matches!(r.stage, DeliveryStage::None | DeliveryStage::PrOpen))
         {
             return Ok(None);
         }
@@ -1651,9 +1678,7 @@ impl App {
         let observed = self
             .dlv_observe(&sandbox, &task, &profile, Some(&token))
             .await?;
-        if observed.record.stage != DeliveryStage::None
-            || observed.pr.is_some()
-            || !observed.spec.valid
+        if !observed.spec.valid
             || observed.steps.is_empty()
             || observed.steps_open > 0
             || observed.dirty
@@ -1663,6 +1688,33 @@ impl App {
         let Some(head) = observed.worktree_head.clone() else {
             return Ok(None);
         };
+        // The pull request exists: push what was committed since, as the briefing promises,
+        // so it does not stay on an old head while the task shows Done (#68).
+        if observed.record.stage == DeliveryStage::PrOpen || observed.pr.is_some() {
+            let Some(pull) = observed.pr.as_ref().filter(|p| is_open(p)) else {
+                return Ok(None);
+            };
+            if pull.head_sha == head || !self.claim_auto_head(task_id, &head)? {
+                return Ok(None);
+            }
+            let pushed = match self.dlv_installation_token(&sandbox).await {
+                Ok(installation) => {
+                    self.deps
+                        .git
+                        .push(Path::new(&worktree), &branch, &branch, &installation)
+                        .await
+                }
+                Err(err) => Err(err),
+            };
+            if let Err(err) = pushed {
+                self.release_auto_head(task_id);
+                return Err(err);
+            }
+            return Ok(Some(format!(
+                "Yulius pushed your new commits to pull request #{}.",
+                pull.number
+            )));
+        }
         let (ahead, _) = self
             .deps
             .git
@@ -1672,31 +1724,53 @@ impl App {
                 "HEAD",
             )
             .await?;
-        if ahead == 0 {
+        if ahead == 0 || !self.claim_auto_head(task_id, &head)? {
             return Ok(None);
         }
-        {
-            let runtime = self.runtime(task_id);
-            let mut tried = runtime.auto_pr_head.lock().map_err(AppError::internal)?;
-            if tried.as_deref() == Some(head.as_str()) {
-                return Ok(None);
-            }
-            *tried = Some(head);
-        }
-        dlv::apply(
+        let opened = match dlv::apply(
             &observed.record.stage,
             &DeliveryAction::OpenPr,
             Initiator::Policy,
             &profile,
             &observed.facts(),
-        )
-        .map_err(|err| refusal(&err))?;
-        let number = self
-            .dlv_open_pull(
-                &sandbox, &task, &profile, &observed, &token, None, None, "yulius",
-            )
-            .await?;
-        Ok(Some((number, profile.integration_branch)))
+        ) {
+            Ok(_) => {
+                self.dlv_open_pull(
+                    &sandbox, &task, &profile, &observed, &token, None, None, "yulius",
+                )
+                .await
+            }
+            Err(err) => Err(refusal(&err)),
+        };
+        match opened {
+            Ok(number) => Ok(Some(format!(
+                "Yulius opened pull request #{number} into {}: the task is ready for review.",
+                profile.integration_branch
+            ))),
+            Err(err) => {
+                self.release_auto_head(task_id);
+                Err(err)
+            }
+        }
+    }
+
+    /// Claims `head` for one automatic attempt, so two Stop hooks never push or open twice;
+    /// `false` when this head was already handled.
+    fn claim_auto_head(&self, task_id: &TaskId, head: &str) -> AppResult<bool> {
+        let runtime = self.runtime(task_id);
+        let mut tried = runtime.auto_pr_head.lock().map_err(AppError::internal)?;
+        if tried.as_deref() == Some(head) {
+            return Ok(false);
+        }
+        *tried = Some(head.to_owned());
+        Ok(true)
+    }
+
+    /// Forgets a failed attempt, so the next clean Stop tries again (#68).
+    fn release_auto_head(&self, task_id: &TaskId) {
+        if let Ok(mut tried) = self.runtime(task_id).auto_pr_head.lock() {
+            *tried = None;
+        }
     }
 
     /// Reconciles deliveries in progress with GitHub in the background (#35): a pull request
@@ -1712,12 +1786,12 @@ impl App {
                 continue;
             };
             let mut open = Vec::new();
-            for record in records.into_iter().filter(|r| {
-                matches!(
-                    r.stage,
-                    DeliveryStage::PrOpen | DeliveryStage::MergedIntegration
-                )
-            }) {
+            // Only open pull requests can change on GitHub (merged, closed); later stages move
+            // through Yulius, so re-reading them would only cost requests (#68).
+            for record in records
+                .into_iter()
+                .filter(|r| r.stage == DeliveryStage::PrOpen)
+            {
                 if let Ok(Some(task)) = store.task(&record.task_id).await
                     && task.archived_at.is_none()
                 {

@@ -869,7 +869,8 @@ async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
     assert_eq!(task["behind"], 0);
     assert_eq!(task["files_changed"], 2);
     assert_eq!(task["pr"]["number"], 1);
-    assert_eq!(task["pr"]["checks"], "none");
+    // The standard profile requires checks: none reported yet reads as pending (#68).
+    assert_eq!(task["pr"]["checks"], "pending");
     assert_eq!(page.body["pulls"].as_array().map(Vec::len), Some(1));
     assert_eq!(page.body["recent_commits"][0]["subject"], "Initial commit");
     assert_eq!(page.body["notes"], json!([]));
@@ -1826,6 +1827,17 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
     f.h.app.auto_open_pr(&t1).await;
     assert_eq!(pulls_opened(), 1, "one pull request per task");
 
+    // #68: commits made after the pull request opened are pushed to it at the next clean Stop.
+    commit_file(&wt, "follow-up.txt", "more", "Follow-up")?;
+    let follow_up = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/1-checkout-api")?,
+        follow_up,
+        "the open pull request gets the new commits"
+    );
+    assert_eq!(pulls_opened(), 1, "no second pull request");
+
     // Merged on GitHub: the background round follows it; nobody read the task meanwhile.
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
@@ -1834,12 +1846,19 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
         "shop",
         1,
         "squash",
-        &head,
+        &follow_up,
     )
     .await?;
     f.h.app.reconcile_deliveries().await;
     let record = f.h.store.delivery(&t1).await?.ok_or("delivery row")?;
     assert_eq!(record.stage, DeliveryStage::MergedIntegration);
+    // #68: the merged pull request stays on its task, so the task stays "Done · merged".
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    let row = &page.body["tasks"][0];
+    assert_eq!(row["pr"]["number"], 1, "{}", page.body);
+    assert_eq!(row["pr"]["state"], "merged");
     Ok(())
 }
 

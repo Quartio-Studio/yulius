@@ -120,7 +120,8 @@ export function taskInfo(task, actionRequests, pr) {
   }
   // The agent finished and its pull request exists (#35): done once it is tested — checks green
   // or not required — or merged; in review while checks run; needs you when they fail.
-  if (pr && task.status === 'running' && task.activity !== 'working' && (pr.state === 'open' || pr.state === 'merged')) {
+  // Only after a finished turn: a task waiting for approval (needs_attention) or working is not done (#68).
+  if (pr && task.status === 'running' && task.activity === 'waiting' && (pr.state === 'open' || pr.state === 'merged')) {
     if (pr.state === 'open' && pr.checks === 'failure') return { ...info, icon: 'branch', tone: 'attention', label: `PR #${pr.number} · checks failing`, group: 'needs', pr };
     // Tested means known green (or no required checks); running or unreadable checks are not.
     if (pr.state === 'open' && !['success', 'none'].includes(pr.checks)) return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · ${pr.checks === 'pending' ? 'checks running' : 'checks not known yet'}`, group: 'working', pr };
