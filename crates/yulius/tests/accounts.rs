@@ -400,6 +400,12 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
         .ok_or("CLAUDE_CONFIG_DIR")?;
     assert!(config.starts_with(run_dir));
     assert!(
+        plan.env
+            .iter()
+            .any(|(k, v)| k == "DISABLE_AUTOUPDATER" && v == "1"),
+        "the sign-in CLI never tries to update itself (#45)"
+    );
+    assert!(
         run_dir.exists(),
         "temporary directory exists while the login runs"
     );

@@ -207,9 +207,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 34 | (2026-10-09, `F 2026-10-09`) The Git tab shows no commits and branch changes per task; it should be as in the preview. (The server had no task changes/commits API; the UI fell back to the Branch tab.) | UI-031 (changed), AC-UI-24 |
 | 35 | (2026-10-09, `F 2026-10-09`) Sometimes the task view breaks and is cut on the right. (Another viewer controlled the terminal's size; this view showed it at their narrower size with an empty band.) | UI-019 (changed), AC-UI-11 |
 | 36 | (2026-10-09, `F 2026-10-09`) Typing in a task is noticeably slower than in the OpenAI or Claude web apps; optimise it so it feels great. (Each echo is a round trip through the agent's TUI; the server sent small frames behind Nagle's algorithm. First step: `TCP_NODELAY`; a local composer is proposed on #29.) | SPEC-002 §7.7 |
+| 37 | (2026-10-09, hardening) Every agent session showed "Auto-update failed": Claude Code's self-updater ran inside contained sessions. | SPEC-002 §7 launch contract |
 
 ## Changelog
 
+- 2026-10-09: Claude Code's self-updater off in agent sessions (§6 item 37, hardening).
 - 2026-10-09: typing latency, first step (§6 item 36).
 - 2026-10-09: a terminal sized by another viewer fitted to the width (§6 item 35).
 - 2026-10-09: the task review's changes and commits served (§6 item 34).
