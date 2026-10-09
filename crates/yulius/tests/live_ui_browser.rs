@@ -706,7 +706,7 @@ async fn sandbox_apps_open_live_in_the_users_browser() -> TestResult {
         until_frame(&cdp, session, &preview, "the WebSocket echo", "document.getElementById('ws').textContent === 'ws: echo: hello'").await?;
         // The page on the preview origin cannot use the Yulius session: the API refuses it and
         // its WebSockets do not open.
-        until_frame(&cdp, session, &preview, "the hostile report", "/fetch=\\w+ ws=\\w+/.test(document.getElementById('hostile').textContent)").await?;
+        until_frame(&cdp, session, &preview, "the hostile report", "/fetch=(?!undefined)\\w+ ws=(?!undefined)\\w+/.test(document.getElementById('hostile').textContent)").await?;
         let hostile = frame_eval(&cdp, session, &preview, "document.getElementById('hostile').textContent").await?;
         assert_eq!(hostile, json!("hostile: fetch=refused ws=refused"), "a preview page used the Yulius session");
         // The bridge reports the address; the panel shows it as localhost.
