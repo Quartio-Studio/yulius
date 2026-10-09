@@ -39,6 +39,14 @@ impl Fixture {
         self.root.join(relative)
     }
 
+    /// Pushes the way an agent does: its own Git, which runs the repository's hooks (the
+    /// server's `Git` never does, #54). Returns Git's stderr on failure.
+    fn agent_push(&self, cwd: &Path, refspec: &str) -> Result<(), String> {
+        self.raw(cwd, &["push", "--quiet", "origin", refspec])
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
     /// Runs git directly for fixture setup (author identity provided by environment).
     fn raw(&self, cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
         self.raw_with(cwd, args, true)
@@ -557,19 +565,18 @@ fn pre_push_guard_blocks_protected_branches_only() -> TestResult {
 
     for protected in ["main", "dev"] {
         let refspec = format!("refs/heads/task/x:refs/heads/{protected}");
-        match fx.git.push(&task, "origin", &refspec) {
-            Err(GitError::Failed { stderr, .. }) => {
+        match fx.agent_push(&task, &refspec) {
+            Err(stderr) => {
                 assert!(
                     stderr.contains(&format!("protected branch {protected}")),
                     "{stderr}"
                 );
             }
-            other => return Err(format!("push to {protected} not refused: {other:?}").into()),
+            Ok(()) => return Err(format!("push to {protected} not refused").into()),
         }
     }
     assert_eq!(fx.git.rev_parse(&remote, "main")?, main_before);
-    fx.git
-        .push(&task, "origin", "refs/heads/task/x:refs/heads/feat/x")?;
+    fx.agent_push(&task, "refs/heads/task/x:refs/heads/feat/x")?;
     assert_eq!(fx.git.rev_parse(&remote, "feat/x")?, feature_sha);
 
     // The guard leaves the working tree clean and does not affect the primary checkout.
@@ -581,8 +588,7 @@ fn pre_push_guard_blocks_protected_branches_only() -> TestResult {
     fx.git
         .install_pre_push_guard(&task, &["release".to_owned()])?;
     assert!(
-        fx.git
-            .push(&task, "origin", "refs/heads/task/x:refs/heads/release")
+        fx.agent_push(&task, "refs/heads/task/x:refs/heads/release")
             .is_err()
     );
     Ok(())
@@ -618,8 +624,7 @@ fn pre_push_guard_chains_existing_hooks_and_honors_hooks_path() -> TestResult {
     assert!(default_hook.exists(), "existing hook must be preserved");
     fs::write(task.join("a2.txt"), "a\n")?;
     fx.git.commit_all(&task, "feat: a", &author())?;
-    fx.git
-        .push(&task, "origin", "refs/heads/task/a:refs/heads/feat/a")?;
+    fx.agent_push(&task, "refs/heads/task/a:refs/heads/feat/a")?;
     let seen = fs::read_to_string(&record)?;
     assert!(
         seen.contains("refs/heads/feat/a"),
@@ -638,32 +643,67 @@ fn pre_push_guard_chains_existing_hooks_and_honors_hooks_path() -> TestResult {
     fx.git.worktree_add(&repo, &task_b, "task/b", "main")?;
     fx.git
         .install_pre_push_guard(&task_b, &["main".to_owned()])?;
-    match fx
-        .git
-        .push(&task_b, "origin", "refs/heads/task/b:refs/heads/feat/b")
-    {
-        Err(GitError::Failed { stderr, .. }) => {
+    match fx.agent_push(&task_b, "refs/heads/task/b:refs/heads/feat/b") {
+        Err(stderr) => {
             assert!(stderr.contains("repository hook says no"), "{stderr}");
         }
-        other => return Err(format!("chained .githooks hook did not run: {other:?}").into()),
+        Ok(()) => return Err("chained .githooks hook did not run".into()),
     }
-    match fx
-        .git
-        .push(&task_b, "origin", "refs/heads/task/b:refs/heads/main")
-    {
-        Err(GitError::Failed { stderr, .. }) => {
+    match fx.agent_push(&task_b, "refs/heads/task/b:refs/heads/main") {
+        Err(stderr) => {
             assert!(stderr.contains("protected branch main"), "{stderr}");
             assert!(
                 !stderr.contains("repository hook says no"),
                 "guard must run first"
             );
         }
-        other => return Err(format!("protected push not refused: {other:?}").into()),
+        Ok(()) => return Err("protected push not refused".into()),
     }
     // Nothing was written into the tracked hooks directory.
     assert!(!fx.git.has_changes(&task_b)?);
     let tracked_hooks: Vec<_> = fs::read_dir(task_b.join(".githooks"))?.collect();
     assert_eq!(tracked_hooks.len(), 1);
+    Ok(())
+}
+
+/// #54: the server's own Git runs outside containment in repositories whose Git directory the
+/// agents can write, so it never runs repository hooks; the agents' own Git still does.
+#[cfg(unix)]
+#[test]
+fn server_side_commands_never_run_repository_hooks() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let ran = fx.path("hooks-ran.txt");
+    for name in [
+        "post-checkout",
+        "pre-commit",
+        "post-commit",
+        "pre-push",
+        "reference-transaction",
+    ] {
+        write_hook(
+            &repo.join(".git/hooks").join(name),
+            &format!("#!/bin/sh\necho {name} >> '{}'\n", ran.display()),
+        )?;
+    }
+    let task = fx.path("worktrees/h");
+    fx.git.worktree_add(&repo, &task, "task/h", "main")?;
+    fs::write(task.join("h.txt"), "h\n")?;
+    fx.git.commit_all(&task, "feat: h", &author())?;
+    fx.git
+        .push(&task, "origin", "refs/heads/task/h:refs/heads/feat/h")?;
+    fx.git.fetch(&repo, "origin")?;
+    assert!(
+        !ran.exists(),
+        "server-side Git ran hooks: {:?}",
+        fs::read_to_string(&ran).ok()
+    );
+    // Control: the agents' own Git runs them.
+    fx.raw(
+        &task,
+        &["commit", "--allow-empty", "--quiet", "-m", "agent"],
+    )?;
+    assert!(fs::read_to_string(&ran)?.contains("pre-commit"));
     Ok(())
 }
 
