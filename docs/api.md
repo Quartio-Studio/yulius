@@ -180,9 +180,14 @@ Client → server text frames:
 ```json
 {"type":"hello","last_seq":null,"cols":120,"rows":40}
 {"type":"input","data":"text or escape sequences","seq":17}
+{"type":"input","data":"\u001b[<65;10;5M","seq":18,"scroll":true}
 {"type":"resize","cols":120,"rows":40}
 {"type":"take_control"}
 ```
+
+Input makes its viewer the controller (the last viewer to type sets the size), except
+`"scroll":true`: a wheel turn forwarded to a full-screen app, which neither takes control nor
+resizes the terminal.
 
 Server → client:
 

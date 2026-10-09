@@ -160,6 +160,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   let wheelRest = 0;
   term.attachCustomWheelEventHandler((event) => {
     if (!mouse.requested() || mouse.appMouse() || term.buffer.active.type !== 'alternate' || !state.can_write) return true;
+    // Pinch-zoom (ctrl+wheel) and horizontal swipes stay with the browser (#78).
+    if (event.ctrlKey || !event.deltaY) return true;
     event.preventDefault();
     const pixels = event.deltaMode === 1 ? event.deltaY * WHEEL_NOTCH_PX : event.deltaMode === 2 ? event.deltaY * term.rows * WHEEL_NOTCH_PX : event.deltaY;
     wheelRest += pixels;
@@ -170,7 +172,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     const box = screen.getBoundingClientRect();
     const col = Math.min(term.cols, Math.max(1, 1 + Math.floor(((event.clientX - box.left) / Math.max(1, box.width)) * term.cols)));
     const row = Math.min(term.rows, Math.max(1, 1 + Math.floor(((event.clientY - box.top) / Math.max(1, box.height)) * term.rows)));
-    send(mouse.wheelReport(notches < 0, col, row).repeat(Math.min(Math.abs(notches), WHEEL_MAX_NOTCHES)));
+    // Scrolling is not typing: it takes neither control nor the terminal size (#78).
+    socket.sendInput(mouse.wheelReport(notches < 0, col, row).repeat(Math.min(Math.abs(notches), WHEEL_MAX_NOTCHES)), { scroll: true });
     return false;
   });
   term.onBinary((data) => send(data));
@@ -219,7 +222,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     const room = proposed();
     if (!room || !room.cols || !state.cols) return;
     const current = term.options.fontSize;
-    const next = Math.min(termSize() * FIT_MAX_SCALE, Math.max(FIT_MIN_FONT, Math.floor(current * (room.cols / state.cols) * 4) / 4));
+    // Rows too: growing the font to the width alone could push the bottom rows (the agent's
+    // input box) out of view when the controller's window is taller (#78).
+    const scale = Math.min(room.cols / state.cols, room.rows && state.rows ? room.rows / state.rows : Infinity);
+    const next = Math.min(termSize() * FIT_MAX_SCALE, Math.max(FIT_MIN_FONT, Math.floor(current * scale * 4) / 4));
     if (Math.abs(next - current) >= 0.25) term.options.fontSize = next;
   }
 
