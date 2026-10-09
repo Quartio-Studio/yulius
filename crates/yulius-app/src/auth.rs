@@ -43,6 +43,46 @@ pub struct NewSession {
     pub recovery_code: Option<Secret>,
 }
 
+/// Why a GitHub sign-in did not complete. The sign-in page explains each reason in the same
+/// window (ACC-004), so none of them is shown as a raw API error.
+#[derive(Debug, thiserror::Error)]
+pub enum GitHubSignInError {
+    /// The sign-in state is unknown, already used or expired (a reload of the callback page).
+    #[error("sign-in expired; try again")]
+    Expired,
+    /// GitHub authenticated `login`, who has not been admitted. `next` is where the refused
+    /// sign-in was going, so a retry with another account keeps it.
+    #[error("GitHub user {login} has not been admitted to this instance")]
+    NotAdmitted {
+        /// The GitHub login GitHub signed in.
+        login: String,
+        /// The sign-in's destination path.
+        next: String,
+    },
+    /// The admitted user is disabled.
+    #[error("this user is disabled")]
+    Disabled {
+        /// The sign-in's destination path.
+        next: String,
+    },
+    /// GitHub or the server failed.
+    #[error(transparent)]
+    Failed(#[from] AppError),
+}
+
+impl GitHubSignInError {
+    /// Stable reason code for the sign-in page (`/signin?error=…`).
+    #[must_use]
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Expired => "expired",
+            Self::NotAdmitted { .. } => "not_admitted",
+            Self::Disabled { .. } => "disabled",
+            Self::Failed(_) => "failed",
+        }
+    }
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
@@ -336,11 +376,12 @@ impl App {
         format!("{}/api/auth/github/callback", self.config.public_url)
     }
 
-    /// Starts GitHub sign-in; returns the authorization URL.
+    /// Starts GitHub sign-in; returns the authorization URL. `select_account` makes GitHub show
+    /// its account picker (another GitHub account than the browser's current one).
     ///
     /// # Errors
     /// `Conflict` when the App is not configured.
-    pub async fn github_sign_in_url(&self, next: &str) -> AppResult<String> {
+    pub async fn github_sign_in_url(&self, next: &str, select_account: bool) -> AppResult<String> {
         let app = self.github_app().await?;
         let state = hex_token(&self.deps.crypto.random_bytes());
         let now = self.now();
@@ -358,27 +399,42 @@ impl App {
                 now.plus_millis(OAUTH_STATE_TTL_MS),
             )
             .await?;
-        Ok(self
-            .deps
-            .github
-            .authorize_url(&app, &state, &self.github_redirect_uri()))
+        Ok(self.deps.github.authorize_url(
+            &app,
+            &state,
+            &self.github_redirect_uri(),
+            select_account,
+        ))
+    }
+
+    /// Forgets a sign-in state that GitHub returned without a code (the user denied access), so
+    /// it cannot be replayed; returns where that sign-in was going (`None` for unknown states).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn github_sign_in_abandoned(&self, state: &str) -> AppResult<Option<String>> {
+        self.deps
+            .store
+            .take_oauth_state(&self.deps.crypto.sha256_hex(state.as_bytes()), self.now())
+            .await
     }
 
     /// Completes GitHub sign-in. Only users admitted by the superadmin may sign in.
     ///
     /// # Errors
-    /// `Forbidden` for unknown state, users not admitted or disabled; `Upstream` for GitHub errors.
+    /// [`GitHubSignInError`]: `Expired` for an unknown, used or expired state; `NotAdmitted` and
+    /// `Disabled` refusals; `Failed` for GitHub and store errors.
     pub async fn github_callback(
         &self,
         code: &str,
         state: &str,
-    ) -> AppResult<(NewSession, String)> {
+    ) -> Result<(NewSession, String), GitHubSignInError> {
         let now = self.now();
         let store = &self.deps.store;
         let next = store
             .take_oauth_state(&self.deps.crypto.sha256_hex(state.as_bytes()), now)
             .await?
-            .ok_or_else(|| AppError::Forbidden("sign-in expired; try again".into()))?;
+            .ok_or(GitHubSignInError::Expired)?;
         let app = self.github_app().await?;
         let token = self
             .deps
@@ -389,14 +445,14 @@ impl App {
         let user = match store.user_by_github_id(gh.id).await? {
             Some(user) => user,
             None => store.user_by_login(&gh.login).await?.ok_or_else(|| {
-                AppError::Forbidden(format!(
-                    "GitHub user {} has not been admitted to this instance",
-                    gh.login
-                ))
+                GitHubSignInError::NotAdmitted {
+                    login: gh.login.clone(),
+                    next: next.clone(),
+                }
             })?,
         };
         if user.disabled_at.is_some() {
-            return Err(AppError::Forbidden("this user is disabled".into()));
+            return Err(GitHubSignInError::Disabled { next });
         }
         let name = gh.name.clone().unwrap_or_else(|| gh.login.clone());
         store

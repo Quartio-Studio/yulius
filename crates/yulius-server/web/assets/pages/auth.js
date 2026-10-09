@@ -193,15 +193,47 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
   return form;
 }
 
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+
+/**
+ * Why GitHub sign-in came back to the sign-in page (`/signin?error=<reason>&login=…`, ACC-004).
+ * Only fixed sentences: a crafted link must not put its own words here (content spoofing), and
+ * the refused login is named only when it is a well-formed GitHub login. `otherAccount` means
+ * signing in again needs GitHub's account picker: the browser's GitHub account was refused.
+ */
+export function signInProblem(reason, login) {
+  const account = typeof login === 'string' && GITHUB_LOGIN.test(login) ? login : null;
+  switch (reason) {
+    case 'not_admitted':
+      return {
+        otherAccount: true,
+        text: account
+          ? `GitHub signed you in as ${account}, and that account hasn’t been admitted to this instance. Continue with the admitted GitHub account, or ask the superadmin to admit ${account}.`
+          : 'That GitHub account hasn’t been admitted to this instance. Continue with the admitted GitHub account, or ask the superadmin to admit it.',
+      };
+    case 'disabled':
+      return { otherAccount: true, text: 'This account is disabled. Ask the superadmin to enable it, or continue with another GitHub account.' };
+    case 'expired':
+      return { otherAccount: false, text: 'That sign-in was already used or has expired. Sign in again.' };
+    case 'denied':
+      return { otherAccount: false, text: 'GitHub sign-in was cancelled.' };
+    default:
+      return { otherAccount: false, text: 'Sign-in did not complete. Try again.' };
+  }
+}
+
 /** Sign-in: GitHub (all users) and a compact superadmin password form. */
-export function mountSignIn(ctx, { next, onDone, error }) {
+export function mountSignIn(ctx, { next, onDone, problem }) {
   const nextPath = next && next.startsWith('/') && !next.startsWith('//') ? next : '/';
   const githubHref = `/api/auth/github/start?next=${encodeURIComponent(nextPath)}`;
+  // GitHub otherwise signs in whichever account this browser is signed in to on github.com;
+  // its account picker lets the same window continue with another account.
+  const pickerHref = `${githubHref}&prompt=select_account`;
   const password = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', 'aria-label': 'Superadmin password', 'aria-describedby': 'password-error' });
   // A wrong password is said under the password, not under the GitHub button (WCAG 3.3.1).
   const passwordError = h('div', { class: 'field-error', id: 'password-error', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'btn' }, 'Sign in');
-  const errorBox = h('div', { class: 'field-error', role: 'alert' }, error || '');
+  const errorBox = h('div', { class: 'field-error', role: 'alert' }, problem ? problem.text : '');
   const username = h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'superadmin', hidden: true, readOnly: true, tabindex: '-1', 'aria-hidden': 'true' });
   const form = h('form', { class: 'stack-sm' }, username, h('div', { class: 'row' }, password, submit), passwordError);
   form.addEventListener('submit', async (event) => {
@@ -225,13 +257,17 @@ export function mountSignIn(ctx, { next, onDone, error }) {
       submit.classList.remove('busy');
     }
   });
-  const githubButton = h('a', { class: 'btn btn-primary btn-github', href: githubHref }, 'Sign in with GitHub');
+  const pickFirst = Boolean(problem && problem.otherAccount);
+  const githubButton = h('a', { class: 'btn btn-primary btn-github', href: pickFirst ? pickerHref : githubHref }, pickFirst ? 'Sign in with another GitHub account' : 'Sign in with GitHub');
+  const otherAccount = pickFirst ? null : h('a', { class: 'btn-link small auth-alt', href: pickerHref }, 'Use a different GitHub account');
   if (ctx.mock) {
-    githubButton.addEventListener('click', async (event) => {
-      event.preventDefault();
-      const me = await ctx.api.post('/api/auth/mock-github', {});
-      onDone(me, nextPath);
-    });
+    for (const link of [githubButton, otherAccount].filter(Boolean)) {
+      link.addEventListener('click', async (event) => {
+        event.preventDefault();
+        const me = await ctx.api.post('/api/auth/mock-github', {});
+        onDone(me, nextPath);
+      });
+    }
   }
   const forgot = h('button', { type: 'button', class: 'btn-link small', onClick: () => showRecovery() }, 'Forgot password?');
   const details = h('details', null, h('summary', { class: 'muted small' }, 'Superadmin password'), h('div', { class: 'stack-sm space-top' }, form, forgot));
@@ -241,10 +277,9 @@ export function mountSignIn(ctx, { next, onDone, error }) {
     h('p', { class: 'text-2' }, 'Members sign in with GitHub. Sandbox access mirrors your GitHub repository permissions.'),
     githubButton,
     errorBox,
+    otherAccount,
     h('div', { class: 'divider' }, 'or'),
     details);
-  if (error) details.open = false;
-  setChildren(card.querySelector('.field-error'), error || '');
   const root = h('main', { class: 'auth' }, card);
   function showRecovery() {
     setChildren(root, recoveryForm(ctx, {

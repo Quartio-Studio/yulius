@@ -20,7 +20,7 @@ fn unavailable<T>() -> AppResult<T> {
 
 #[async_trait]
 impl GitHubPort for UnavailableGitHub {
-    fn authorize_url(&self, _: &GitHubAppConfig, _: &str, _: &str) -> String {
+    fn authorize_url(&self, _: &GitHubAppConfig, _: &str, _: &str, _: bool) -> String {
         String::from("about:blank")
     }
     async fn exchange_code(&self, _: &GitHubAppConfig, _: &str, _: &str) -> AppResult<GhUserToken> {

@@ -22,11 +22,18 @@ impl GitHubClient {
     }
 
     /// The GitHub authorization page for signing in (`{web}/login/oauth/authorize`).
+    /// `select_account` adds `prompt=select_account`, so GitHub shows its account picker instead
+    /// of silently using the account signed in to github.com in this browser.
     ///
     /// # Errors
     /// [`GitHubError::NotConfigured`] without App credentials; [`GitHubError::InvalidInput`]
     /// for a malformed state or redirect URI.
-    pub fn authorize_url(&self, state: &str, redirect_uri: &str) -> Result<String, GitHubError> {
+    pub fn authorize_url(
+        &self,
+        state: &str,
+        redirect_uri: &str,
+        select_account: bool,
+    ) -> Result<String, GitHubError> {
         let app = self.oauth_app()?;
         validate::opaque("state", state)?;
         Url::parse(redirect_uri).map_err(|e| GitHubError::InvalidInput {
@@ -39,6 +46,10 @@ impl GitHubClient {
             .append_pair("redirect_uri", redirect_uri)
             .append_pair("state", state)
             .append_pair("allow_signup", "false");
+        if select_account {
+            url.query_pairs_mut()
+                .append_pair("prompt", "select_account");
+        }
         Ok(url.into())
     }
 

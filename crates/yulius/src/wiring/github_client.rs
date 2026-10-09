@@ -119,9 +119,18 @@ fn merge_method(text: &str) -> AppResult<MergeMethod> {
 
 #[async_trait]
 impl GitHubPort for GitHubAdapter {
-    fn authorize_url(&self, app: &GitHubAppConfig, state: &str, redirect_uri: &str) -> String {
+    fn authorize_url(
+        &self,
+        app: &GitHubAppConfig,
+        state: &str,
+        redirect_uri: &str,
+        select_account: bool,
+    ) -> String {
         self.client(app)
-            .and_then(|c| c.authorize_url(state, redirect_uri).map_err(map_err))
+            .and_then(|c| {
+                c.authorize_url(state, redirect_uri, select_account)
+                    .map_err(map_err)
+            })
             .unwrap_or_else(|_| "about:blank".into())
     }
 
