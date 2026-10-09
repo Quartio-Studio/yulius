@@ -255,32 +255,13 @@ fn median_p90(values: &mut [u64]) -> (Option<u64>, Option<u64>) {
     (Some(median), Some(values[rank - 1]))
 }
 
-fn target_harness(inputs: &str) -> Option<Harness> {
-    serde_json::from_str::<serde_json::Value>(inputs)
-        .ok()?
-        .get("harness")?
-        .as_str()
-        .and_then(|h| Harness::parse(h).ok())
-}
-
-/// Classifies switches as account (same harness) or provider (other harness) switches. The
-/// source harness is the task's latest attempt started at or before the decision.
+/// Switch decisions of the cohort, in total and per task.
 fn switch_counts(data: &AnalyticsData) -> (SwitchCounts, HashMap<TaskId, u32>) {
     let mut counts = SwitchCounts::default();
     let mut per_task: HashMap<TaskId, u32> = HashMap::new();
     for s in &data.switches {
         counts.total = counts.total.saturating_add(1);
         *per_task.entry(s.task_id.clone()).or_default() += 1;
-        let from = data
-            .runs
-            .iter()
-            .filter(|r| r.task_id == s.task_id && r.started_at <= s.at)
-            .max_by_key(|r| (r.started_at, r.seq))
-            .map(|r| r.harness);
-        match (from, target_harness(&s.inputs)) {
-            (Some(a), Some(b)) if a != b => counts.provider = counts.provider.saturating_add(1),
-            _ => counts.account = counts.account.saturating_add(1),
-        }
     }
     (counts, per_task)
 }

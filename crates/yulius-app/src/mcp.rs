@@ -36,7 +36,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
     let mut tools = vec![
         ToolDescriptor {
             name: "tasks_list".into(),
-            description: "List previous and parallel tasks of this project (other Claude Code or Codex sessions): status, branch, spec and step progress. Use it before starting work to avoid duplicating or conflicting with others.".into(),
+            description: "List previous and parallel tasks of this project (other Claude Code sessions): status, branch, spec and step progress. Use it before starting work to avoid duplicating or conflicting with others.".into(),
             input_schema: schema(json!({"scope": {"type": "string", "enum": ["all", "active", "recent", "archived"]}, "limit": {"type": "integer"}}), &[]),
         },
         ToolDescriptor {
@@ -46,7 +46,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "message_send".into(),
-            description: "Send a message to another task (by task_id or number) or broadcast with to=\"all\". Works across Claude Code and Codex. Use kind=scope to agree who works on which files.".into(),
+            description: "Send a message to another task (by task_id or number) or broadcast with to=\"all\". Use kind=scope to agree who works on which files.".into(),
             input_schema: schema(message_props, &["body"]),
         },
         ToolDescriptor {
@@ -82,7 +82,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "cron": {"type": "string", "description": "Five-field cron expression, e.g. \"0 9 * * *\" (daily at 09:00) or \"0 9 * * MON-FRI\""},
                 "utc_offset_minutes": {"type": "integer", "description": "UTC offset of the user's time zone in minutes (e.g. 120 for UTC+2); default 0"},
                 "prompt": {"type": "string", "description": "What each created task should do"},
-                "harness": {"type": "string", "enum": ["claude", "codex"], "description": "Agent for created tasks; default: this task's agent"},
+                "harness": {"type": "string", "enum": ["claude"], "description": "Agent for created tasks (Claude Code; the default)"},
                 "workflow": {"type": "string", "description": "Workflow id or name from workflows_list (optional)"},
                 "enabled": {"type": "boolean", "description": "Default true"}
             }), &["name", "cron", "prompt"]),

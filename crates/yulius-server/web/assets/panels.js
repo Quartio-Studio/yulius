@@ -1,16 +1,23 @@
-// Right rail (Browser, Editor, Shell, Messages) and its resizable panel, collapsed by
-// default (UI-002, UI-015). Sandbox-scoped panels stay alive while hidden so the
-// browser stream, VS Code and shell sessions are not torn down on every toggle.
+// Right rail (Browser, Editor, Shell, Messages) and its resizable panel. The whole rail is
+// hidden by default (F 2026-10-07) and shown with the top-bar Tools toggle, remembered per
+// browser; opening a panel from a link shows it. Sandbox-scoped panels stay alive while hidden
+// so the browser stream, VS Code and shell sessions are not torn down on every toggle. A panel
+// can be maximized over the center.
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, errorToast, placeholder } from './dom.js';
+import { h, icon, iconButton, setChildren, errorToast, placeholder, singleFlight, keepFocus } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { createBrowserPanel } from './browser.js';
+import { createEditorView } from './editorview.js';
 import { messageView } from './actions.js';
 import { allows } from './status.js';
 import { readJson, writeJson } from './store.js';
 
 const WIDTH_KEY = 'yulius.panelWidth';
+const RAIL_KEY = 'yulius.railVisible';
+const MAX_KEY = 'yulius.panelMaximized';
+/** Default panel width per kind (fraction of the window); VS Code needs room. */
+const DEFAULT_FRACTION = { editor: 0.62 };
 const KINDS = [
   ['browser', 'globe', 'Browser'],
   ['editor', 'code', 'Editor'],
@@ -24,7 +31,8 @@ export function createPanelHost(ctx) {
   const badges = new Map();
   const rail = h('nav', { class: 'rail', 'aria-label': 'Tools' });
   for (const [kind, iconName, label] of KINDS) {
-    const button = h('button', { type: 'button', class: 'btn-icon rail-btn', 'aria-label': label, title: label, 'aria-pressed': 'false', onClick: () => toggle(kind) }, icon(iconName, { size: 18 }));
+    // Named, not icon-only, so a newcomer sees what each tool is (phones show icons only).
+    const button = h('button', { type: 'button', class: 'btn-icon rail-btn', 'aria-label': label, title: label, 'aria-pressed': 'false', onClick: () => toggle(kind) }, icon(iconName, { size: 20 }), h('span', { class: 'rail-label' }, label));
     const dot = h('span', { class: kind === 'messages' ? 'rail-badge' : 'rail-dot', hidden: true });
     button.append(dot);
     buttons.set(kind, button);
@@ -35,27 +43,69 @@ export function createPanelHost(ctx) {
   const title = h('span', { class: 'panel-title' });
   const headExtra = h('div', { class: 'row' });
   const body = h('div', { class: 'panel-body' });
-  const handle = h('div', { class: 'panel-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize panel', tabindex: '0' });
+  const handle = h('div', { class: 'panel-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize panel', 'aria-valuemin': '0', 'aria-valuemax': '100', tabindex: '0', title: 'Drag, use the arrow keys, or double-click to reset' });
+  const maximizeButton = iconButton('maximize', 'Maximize panel', () => setMaximized(!maximized));
   const panel = h('section', { class: 'panel', hidden: true, 'aria-label': 'Tool panel' },
     handle,
-    h('div', { class: 'panel-head' }, title, headExtra, iconButton('x', 'Close panel', () => close())),
+    h('div', { class: 'panel-head' }, title, headExtra, maximizeButton, iconButton('x', 'Close panel', () => close())),
     body);
+  let maximized = false;
+  let railVisible = Boolean(readJson(RAIL_KEY, false));
+
+  /** Shows or hides the whole rail (and closes the panel when hiding). */
+  function setRailVisible(visible, { persist = true } = {}) {
+    railVisible = visible;
+    rail.hidden = !visible;
+    const app = rail.closest('.app');
+    if (app) app.classList.toggle('rail-hidden', !visible);
+    if (!visible && !panel.hidden) close();
+    if (persist) writeJson(RAIL_KEY, visible);
+    if (ctx.onRailChange) ctx.onRailChange(visible);
+  }
+
+  function setMaximized(value) {
+    maximized = value;
+    const app = rail.closest('.app');
+    if (app) app.classList.toggle('panel-max', value && !panel.hidden);
+    maximizeButton.replaceChildren(icon(value ? 'minimize' : 'maximize'));
+    maximizeButton.title = value ? 'Restore panel size' : 'Maximize panel';
+    maximizeButton.setAttribute('aria-label', maximizeButton.title);
+    if (kind) {
+      const saved = readJson(MAX_KEY, {}) || {};
+      saved[kind] = value;
+      writeJson(MAX_KEY, saved);
+    }
+    window.dispatchEvent(new Event('resize'));
+  }
 
   let kind = null;
   let sandbox = null;
   let task = null;
   const views = new Map(); // key → view
 
-  // ---- width (default 45 % of the window, resizable, remembered per browser)
-  function defaultWidth() {
+  // ---- width (default 45 % of the work area, resizable, remembered per browser). The work area is
+  // the room the centre and the panel share: the window less the rail and the sidebar, which stays
+  // on wider screens (on phones it is a drawer over the page).
+  function room() {
+    const sidebar = rail.closest('.app')?.querySelector('.sidebar');
+    const side = sidebar && !window.matchMedia('(max-width: 767px)').matches ? sidebar.getBoundingClientRect().width : 0;
+    return Math.max(1, window.innerWidth - rail.getBoundingClientRect().width - side);
+  }
+  function defaultWidth(k) {
     const saved = Number(readJson(WIDTH_KEY, 0));
-    const fraction = saved > 0.15 && saved < 0.85 ? saved : 0.45;
-    return Math.round(window.innerWidth * fraction);
+    const fallback = DEFAULT_FRACTION[k] || 0.45;
+    const fraction = saved > 0.15 && saved < 0.85 ? Math.max(saved, fallback) : fallback;
+    return Math.round(room() * fraction);
   }
   function applyWidth(px) {
-    const max = Math.max(320, window.innerWidth - 360);
+    // The centre keeps at least 360 px next to the panel.
+    const max = Math.max(320, room() - 360);
     const width = Math.max(300, Math.min(max, px));
     panel.style.width = `${width}px`;
+    // The splitter says where it is (WCAG 4.1.2): the panel's share of the work area.
+    const share = Math.round((width / room()) * 100);
+    handle.setAttribute('aria-valuenow', String(share));
+    handle.setAttribute('aria-valuetext', `Panel ${share}% of the work area`);
     return width;
   }
   handle.addEventListener('pointerdown', (event) => {
@@ -71,16 +121,21 @@ export function createPanelHost(ctx) {
       document.body.classList.remove('resizing');
       handle.removeEventListener('pointermove', move);
       handle.removeEventListener('pointerup', up);
-      writeJson(WIDTH_KEY, panel.getBoundingClientRect().width / window.innerWidth);
+      writeJson(WIDTH_KEY, panel.getBoundingClientRect().width / room());
     };
     handle.addEventListener('pointermove', move);
     handle.addEventListener('pointerup', up);
+  });
+  // A double-click resets the width: a way to resize without dragging (WCAG 2.5.7).
+  handle.addEventListener('dblclick', () => {
+    const width = applyWidth(defaultWidth(kind));
+    writeJson(WIDTH_KEY, width / room());
   });
   handle.addEventListener('keydown', (event) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
     const width = applyWidth(panel.getBoundingClientRect().width + (event.key === 'ArrowLeft' ? 40 : -40));
-    writeJson(WIDTH_KEY, width / window.innerWidth);
+    writeJson(WIDTH_KEY, width / room());
   });
 
   function viewKey(k) {
@@ -111,10 +166,13 @@ export function createPanelHost(ctx) {
     const label = KINDS.find(([name]) => name === k)[2];
     title.textContent = k === 'messages' && task ? `Messages · #${task.number}` : label;
     setChildren(headExtra, view.headExtra ? view.headExtra() : null);
+    if (!railVisible) setRailVisible(true);
     if (panel.hidden) {
       panel.hidden = false;
-      if (!panel.style.width) applyWidth(defaultWidth());
+      applyWidth(Math.max(defaultWidth(k), panel.getBoundingClientRect().width || 0));
     }
+    const savedMax = readJson(MAX_KEY, {}) || {};
+    setMaximized(Boolean(savedMax[k]));
     for (const [name, button] of buttons) {
       button.classList.toggle('active', name === k);
       button.setAttribute('aria-pressed', String(name === k));
@@ -125,6 +183,8 @@ export function createPanelHost(ctx) {
 
   function close() {
     panel.hidden = true;
+    const app = rail.closest('.app');
+    if (app) app.classList.remove('panel-max');
     kind = null;
     for (const button of buttons.values()) {
       button.classList.remove('active');
@@ -156,7 +216,10 @@ export function createPanelHost(ctx) {
     msgBadge.textContent = unread ? String(unread) : '';
     const requests = sandbox ? ctx.store.state.actionRequests.get(sandbox.id) : null;
     badges.get('browser').hidden = !(requests && requests.size);
+    if (ctx.onToolsAttention) ctx.onToolsAttention(Boolean(requests && requests.size) || Boolean(unread));
     buttons.get('browser').title = requests && requests.size ? 'Browser — an agent needs your action' : 'Browser';
+    buttons.get('browser').setAttribute('aria-label', requests && requests.size ? 'Browser, an agent needs your action' : 'Browser');
+    buttons.get('messages').setAttribute('aria-label', unread ? `Messages, ${unread} unread` : 'Messages');
     const write = sandbox && allows(sandbox.access, 'write');
     for (const k of ['browser', 'editor', 'shell']) {
       const button = buttons.get(k);
@@ -166,12 +229,20 @@ export function createPanelHost(ctx) {
     buttons.get('messages').disabled = !sandbox;
   }
 
-  ctx.store.on('browser-action', updateBadges);
-  ctx.store.on('task', (t) => { if (task && t.id === task.id) { task = t; updateBadges(); } });
+  const offs = [
+    ctx.store.on('browser-action', updateBadges),
+    ctx.store.on('task', (t) => { if (task && t.id === task.id) { task = t; updateBadges(); } }),
+  ];
 
   return {
     rail,
     panel,
+    /** Sign-out: drop every tool view (terminals, browser, editor) and unsubscribe. */
+    destroy() { offs.forEach((off) => off()); destroyWhere(() => true); },
+    get railVisible() { return railVisible; },
+    setRailVisible,
+    /** Applies the remembered rail visibility once the rail is in the document. */
+    mounted() { setRailVisible(railVisible, { persist: false }); },
     get kind() { return panel.hidden ? null : kind; },
     setContext(nextSandbox, nextTask) {
       const sandboxChanged = (nextSandbox && nextSandbox.id) !== (sandbox && sandbox.id);
@@ -179,7 +250,10 @@ export function createPanelHost(ctx) {
       sandbox = nextSandbox;
       task = nextTask;
       if (sandboxChanged) destroyWhere(() => true);
-      else if (taskChanged) destroyWhere((key) => key.startsWith('messages:') || key.startsWith('editor:'));
+      else if (taskChanged) {
+        destroyWhere((key) => key.startsWith('messages:'));
+        for (const [key, view] of views) if (key.startsWith('editor:') && view.taskChanged) view.taskChanged();
+      }
       if (!sandbox && !panel.hidden) close();
       else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind);
       updateBadges();
@@ -193,80 +267,6 @@ export function createPanelHost(ctx) {
 
 function simpleView(el) {
   return { el };
-}
-
-// ---------------------------------------------------------------- editor
-
-/**
- * VS Code iframe (/s/{sid}/editor/), lazily loaded, task worktree selectable (EDT-002).
- * `?worktree=<task id>` makes the server redirect to that task's worktree folder. A HEAD
- * preflight turns the server's 503 `unavailable` (openvscode-server missing or disabled in
- * contained mode) and 409 (repository not cloned yet) into a readable message instead of a
- * JSON error page inside the iframe.
- */
-function createEditorView(ctx, sandbox, getTask) {
-  const el = h('div', { class: 'panel-view' });
-  if (!allows(sandbox.access, 'write')) {
-    setChildren(el, h('div', { class: 'panel-msg' }, icon('lock', { size: 20 }), h('p', null, 'The editor requires write access on GitHub.')));
-    return { el };
-  }
-  let frame = null;
-  let checking = false;
-  const task = getTask();
-  const base = `/s/${enc(sandbox.id)}/editor/`;
-  const target = h('select', { class: 'select', style: { height: '24px', width: 'auto', fontSize: '12px' }, 'aria-label': 'Folder' },
-    h('option', { value: '' }, 'Sandbox'),
-    task ? h('option', { value: 'task' }, `Task #${task.number} worktree`) : null);
-  const src = () => (target.value === 'task' && task ? `${base}?worktree=${encodeURIComponent(task.id)}` : base);
-  target.addEventListener('change', () => { if (frame) frame.src = src(); });
-  const reload = iconButton('refresh', 'Reload editor', () => { if (frame) frame.src = src(); else load(); });
-  const external = iconButton('external', 'Open editor in a new tab', () => window.open(src(), '_blank', 'noopener'));
-
-  async function preflight() {
-    try {
-      const response = await window.fetch(base, { method: 'HEAD', credentials: 'same-origin', cache: 'no-store', redirect: 'manual' });
-      if (response.status === 503) return 'The editor is not available on this server (openvscode-server is missing, or disabled in contained mode unless the server runs with --editor-uncontained).';
-      if (response.status === 409) return 'The editor opens once the sandbox repository has been cloned.';
-      if (response.status === 401 || response.status === 403) return 'You do not have access to the editor of this sandbox.';
-      return null;
-    } catch {
-      return null; // network hiccup: let the iframe try
-    }
-  }
-
-  async function load() {
-    if (frame || checking) return;
-    checking = true;
-    setChildren(el, placeholder('Opening the editor…', 'loading'));
-    const problem = ctx.mock ? null : await preflight();
-    checking = false;
-    if (problem) {
-      setChildren(el, h('div', { class: 'panel-msg stack', style: { alignItems: 'center' } }, icon('warn', { size: 20 }), h('p', null, problem),
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: load }, 'Try again')));
-      return;
-    }
-    frame = h('iframe', { class: 'editor-frame', title: `VS Code — ${sandbox.name}`, allow: 'clipboard-read; clipboard-write', referrerpolicy: 'same-origin' });
-    if (ctx.mock) frame.srcdoc = mockEditorDoc(sandbox);
-    else frame.src = src();
-    setChildren(el, frame);
-  }
-
-  return {
-    el,
-    headExtra: () => [target, reload, external],
-    show() { load(); },
-  };
-}
-
-function mockEditorDoc(sandbox) {
-  const name = String(sandbox.name).replace(/[^\w .-]/g, '');
-  return `<!doctype html><meta charset="utf-8"><body style="margin:0;font:13px system-ui;background:#1e1e1e;color:#ccc;display:grid;grid-template-columns:48px 220px 1fr;height:100vh">
-<div style="background:#333"></div><div style="background:#252526;padding:10px"><div style="opacity:.7;font-size:11px;text-transform:uppercase">Explorer — ${name}</div>
-<div style="margin-top:8px;line-height:1.9">▸ docs<br>▸ src<br>&nbsp;&nbsp;main.rs<br>Cargo.toml<br>AGENTS.md</div></div>
-<div style="padding:16px;font-family:ui-monospace,Menlo,monospace;white-space:pre;color:#9cdcfe">// Mock mode: openvscode-server is served at /s/{sandbox}/editor/ by the real server.
-<span style="color:#c586c0">fn</span> <span style="color:#dcdcaa">main</span>() {
-    println!(<span style="color:#ce9178">"hello from ${name}"</span>);
-}</div></body>`;
 }
 
 // ---------------------------------------------------------------- shell
@@ -286,7 +286,7 @@ function createShellView(ctx, sandbox, getTask) {
   let starting = false;
   let where = '';
   const startButton = h('button', { type: 'button', class: 'btn btn-primary' }, 'Open shell');
-  const idle = h('div', { class: 'panel-msg stack', style: { alignItems: 'center' } },
+  const idle = h('div', { class: 'panel-msg stack items-center' },
     h('p', null, 'A login shell in this sandbox with the containment of task runs. It never changes tasks or replaces the agent terminal.'),
     startButton);
   setChildren(el, idle);
@@ -294,7 +294,7 @@ function createShellView(ctx, sandbox, getTask) {
   function folderSelect() {
     const task = getTask();
     if (!task && where === 'task') where = '';
-    const select = h('select', { class: 'select', style: { height: '24px', width: 'auto', fontSize: '12px' }, 'aria-label': 'Shell folder' },
+    const select = h('select', { class: 'select select-sm', 'aria-label': 'Shell folder' },
       h('option', { value: '' }, 'Sandbox repository'),
       task ? h('option', { value: 'task' }, `Task #${task.number} worktree`) : null);
     select.value = where;
@@ -342,7 +342,7 @@ function createShellView(ctx, sandbox, getTask) {
 
 /** Task messages (COM-005: users see messages) with a send box. */
 function createMessagesView(ctx, sandbox, task) {
-  const list = h('div', { class: 'msg-list', 'aria-live': 'polite' }, placeholder('Loading messages…', 'loading'));
+  const list = h('div', { class: 'msg-list', role: 'log', 'aria-live': 'polite', 'aria-label': 'Messages' }, placeholder('Loading messages…', 'loading'));
   const input = h('textarea', { class: 'textarea', rows: 3, placeholder: `Message #${task.number} — delivered to the agent like a task message`, 'aria-label': 'Message', maxlength: 20000 });
   const send = h('button', { type: 'button', class: 'btn btn-primary btn-sm' }, icon('send', { size: 13 }), 'Send');
   const write = allows(sandbox.access, 'write');
@@ -353,11 +353,21 @@ function createMessagesView(ctx, sandbox, task) {
   const messages = new Map();
   const myLogin = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null;
 
+  // New messages are appended, not the whole list rebuilt: focus and reading position stay, and the
+  // log announces only what is new.
+  const rendered = new Map(); // message id → element
   function render() {
     const sorted = [...messages.values()].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-    if (sorted.length === 0) { setChildren(list, placeholder('No messages yet. Tasks message each other here; you can message the agent too.')); return; }
+    if (sorted.length === 0) { rendered.clear(); setChildren(list, placeholder('No messages yet. Tasks message each other here; you can message the agent too.')); return; }
     const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 24;
-    setChildren(list, sorted.map((m) => messageView(ctx, m, myLogin)));
+    const fresh = sorted.filter((m) => !rendered.has(m.id));
+    const last = sorted.filter((m) => rendered.has(m.id)).pop();
+    if (rendered.size && fresh.every((m) => !last || String(m.created_at) >= String(last.created_at))) {
+      for (const m of fresh) { const el = messageView(ctx, m, myLogin); rendered.set(m.id, el); list.append(el); }
+    } else {
+      rendered.clear();
+      keepFocus(list, () => setChildren(list, sorted.map((m) => { const el = messageView(ctx, m, myLogin); rendered.set(m.id, el); return el; })));
+    }
     if (atBottom) list.scrollTop = list.scrollHeight;
   }
 
@@ -369,11 +379,12 @@ function createMessagesView(ctx, sandbox, task) {
       render();
       list.scrollTop = list.scrollHeight;
     } catch (error) {
+      rendered.clear();
       setChildren(list, placeholder(error.message, 'error'));
     }
   }
 
-  async function submit() {
+  const submit = singleFlight(async () => {
     const text = input.value.trim();
     if (!text) return;
     send.disabled = true;
@@ -388,7 +399,7 @@ function createMessagesView(ctx, sandbox, task) {
     } finally {
       send.disabled = false;
     }
-  }
+  });
 
   send.addEventListener('click', submit);
   input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(); } });

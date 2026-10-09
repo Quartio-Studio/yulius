@@ -29,16 +29,16 @@ flowchart LR
       DB[("SQLite WAL")]
     end
     subgraph SB1["Sandbox A (bubblewrap namespace)"]
-      PH1["yulius ptyhost"] --> AG1["claude / codex TUI"]
+      PH1["yulius ptyhost"] --> AG1["claude TUI"]
     end
     subgraph SB2["Sandbox B"]
-      PH2["yulius ptyhost"] --> AG2["claude / codex TUI"]
+      PH2["yulius ptyhost"] --> AG2["claude TUI"]
     end
     CR["Chromium per sandbox (CDP)"]
-    VS["openvscode-server per sandbox"]
+    VS["Built-in editor (Monaco) over the file API"]
   end
   GH["GitHub (App + OAuth + REST)"]
-  PR["Anthropic / OpenAI (via the CLIs)"]
+  PR["Anthropic (via the CLI)"]
   UI <--> RP <--> API
   API --- APP --- DB
   APP --- SUP
@@ -54,8 +54,8 @@ flowchart LR
 
 Principles:
 
-1. **Agents are real CLIs in PTYs.** Yulius never re-implements an agent; it launches, observes,
-   resumes and translates native sessions (SPEC-001 HRN-001, P(5)).
+1. **Agents are real CLIs in PTYs.** Yulius never re-implements an agent; it launches, observes
+   and resumes native Claude Code sessions (SPEC-001 HRN-001, P(5); Codex deferred, F 2026-10-08).
 2. **Sessions outlive the web server.** Each run is owned by a detached `ptyhost` process; the
    server reattaches after restart (NFR-001).
 3. **GitHub is the authority** for repositories and permissions (ACC-007).
@@ -72,12 +72,14 @@ Principles:
 | ADR-02 | Detached `ptyhost` per run, Unix-socket protocol, vt100 screen state, exit record files. | tmux/dtach; in-server PTYs | Survives server restart (NFR-001); explicit ownership and identity; more code to test (fake agent suite). Requires the systemd unit to use `KillMode=process`. |
 | ADR-03 | Linux containment per sandbox with bubblewrap (`--unshare-pid --die-with-parent`, private /tmp, only the sandbox directory writable, per-sandbox HOME). Host mode for development/tests, visibly flagged "not contained". | Docker per sandbox; gVisor; separate VMs | Cheap, fast, kills whole tree on SIGKILL of bwrap; no daemon. Network is shared (agents need it). Not a defense against kernel exploits — documented trust model §8. |
 | ADR-04 | SQLite (rusqlite, bundled) in WAL mode, one write connection behind an async actor, versioned SQL migrations via `user_version`. | Postgres; sled; files | Single-VM product, simple backup (`VACUUM INTO`); write throughput ample for 2–5 users. |
-| ADR-05 | Accounts are org secrets in Yulius; provider homes are per sandbox. Claude uses long-lived OAuth tokens from `claude setup-token` passed by environment; Codex uses per-(sandbox, account) `CODEX_HOME` with shared session storage and auth write-back. | One global home per account; copying credentials per task | Prevents cross-sandbox transcript leakage via shared homes; account switch needs no file copy for Claude. Codex refresh-token sharing is a live-verification risk (R-02). |
-| ADR-06 | Cross-provider switch by synthesizing the target CLI's native transcript from a provider-neutral IR, then native resume; fallback to a handoff bootstrap when native resume is rejected. | Always summarize into a fresh session; API-level context replay | Keeps "same session" feel (ROT-005); depends on undocumented formats — pinned, fixture-tested, live-smoked; fallback guarantees continuity. |
-| ADR-07 | Yulius MCP (Streamable HTTP, JSON-RPC) on a loopback listener with per-run bearer tokens; hooks call the same listener through `yulius hook`. | Per-harness plugins; injecting text into the TUI only | One protocol for both CLIs; least privilege (task tokens reach only task-scoped tools). |
+| ADR-05 | Accounts are org secrets in Yulius; provider homes are per sandbox. Claude uses long-lived OAuth tokens from `claude setup-token` passed by environment. | One global home per account; copying credentials per task | Prevents cross-sandbox transcript leakage via shared homes; an account switch needs no file copy. (Codex homes with `auth.json` write-back were removed with Codex, F 2026-10-08.) |
+| ADR-06 | Withdrawn (F 2026-10-08): no cross-provider switches. The provider-neutral transcript IR, the native transcript writers and the handoff fallback were removed; a task resumes its own session on another account. | Keep translation for a later second harness | Yulius runs Claude Code only; a returning harness gets its own decision. |
+| ADR-07 | Yulius MCP (Streamable HTTP, JSON-RPC) on a loopback listener with per-run bearer tokens; hooks call the same listener through `yulius hook`. | Per-harness plugins; injecting text into the TUI only | One protocol for every harness; least privilege (task tokens reach only task-scoped tools). |
 | ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. |
-| ADR-09 | Per-sandbox headless Chromium with a CDP screencast viewer; agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. | noVNC desktop; Playwright server | Real browser, shared by users and agents (BRW-002/003); screencast is efficient and works on phones. |
-| ADR-10 | openvscode-server per sandbox on demand, reverse-proxied with Yulius auth. | code-server; Monaco-only editor | "Normal VS Code" (EDT-001); binary is an external prerequisite on the VM. |
+| ADR-09 | Per-sandbox headless Chromium; the user's view is a live DOM mirror: the rrweb recorder is injected through CDP into the page's main world (it must see the page's CSSOM patches) and reports to a CDP binding; the UI replays the events in rrweb's script-free iframe (sandbox `allow-same-origin` only — never `UNSAFE_replayCanvas`, which would let any page run script as Yulius through the binding) and paints sampled canvas frames itself; page resources the user's browser cannot reach are fetched by the server browser through a same-origin-only endpoint served with a `sandbox` CSP. The CDP screencast is the labelled fallback; input is dispatched with CDP `Input.*`; viewers learn viewport changes at once. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer; recorder in an isolated world (misses CSS-in-JS rules) | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; plugins, internal pages and pages that send no DOM need the fallback. |
+| ADR-10 | Built-in editor: Monaco (VS Code's editor component, vendored AMD build without its translations) in the web UI over a small file API (`/api/sandboxes/{sid}/files…`) on the sandbox repository or a task worktree; per-user view state stays in the browser. | openvscode-server per sandbox (original: needed a token cookie fix, ran outside containment, too heavy); per-user contained openvscode-server (built, then dropped by the founder: "much simpler, without 90% of the features"); CodeMirror (needs a bundler) | No editor process or prerequisite on the VM; 14 MB of static assets (the TypeScript worker is 7 MB, loaded only for JS/TS); no extensions, debugging or integrated terminal (shells cover that). |
+| ADR-12 | Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
+| ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 
 ## 3. Code organization
@@ -86,16 +88,15 @@ Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
 
 | Crate | Layer | Responsibility |
 | --- | --- | --- |
-| `crates/yulius-domain` | domain | IDs, task/attempt/switch state machines, permission mapping, rotation policy, spec/format validator, cron evaluation, delivery profile model, transcript IR and translation planning, briefing assembly. Only `thiserror`. |
+| `crates/yulius-domain` | domain | IDs, task/attempt/switch state machines, permission mapping, rotation policy, spec/format validator, cron evaluation, delivery profile model, briefing assembly. Only `thiserror`. |
 | `crates/yulius-contracts` | contracts | Versioned DTOs: HTTP API, UI event stream, terminal WS frames, ptyhost wire protocol, MCP tool schemas, hook payloads, import manifest. |
 | `crates/yulius-app` | application | Use cases and ports: `Store`, `GitHubPort`, `GitPort`, `SessionHostPort`, `HarnessPort`, `BrowserPort`, `EditorPort`, `Clock`, `Ids`, `SecretBox`, event bus. Authorization decisions. |
 | `crates/yulius-store` | adapter | SQLite schema, migrations, repositories, backup. |
 | `crates/yulius-ptyhost` | adapter | ptyhost process (PTY, containment, vt100, socket server) and client. |
-| `crates/yulius-harness` | adapter | Claude/Codex launch specs, home layout, hook/MCP config rendering, transcript tailers and wire parsers, usage extraction, native transcript writers, login flows. |
+| `crates/yulius-harness` | adapter | Claude Code launch specs, home layout, hook/MCP config rendering, transcript tailers and wire parsers, usage extraction, login flows. |
 | `crates/yulius-github` | adapter | GitHub REST, App JWT, OAuth, installation tokens. |
 | `crates/yulius-git` | adapter | Git CLI wrapper: clone/fetch, worktrees, branches, bundles, diff stats, hooks install. |
 | `crates/yulius-browser` | adapter | Chromium lifecycle, CDP client, screencast, browser tools. |
-| `crates/yulius-editor` | adapter | openvscode-server lifecycle and proxy target. |
 | `crates/yulius-server` | interface | axum routes, auth middleware, WS endpoints, MCP and hook endpoints, embedded web UI (`web/`). |
 | `crates/yulius-cli` | interface | `import`, `login`, admin client commands (HTTP client, argument parsing). |
 | `crates/yulius` | composition | Configuration, wiring, subcommand dispatch, signal handling. |
@@ -112,9 +113,10 @@ setup.token                         one-time setup token until superadmin exists
 sandboxes/<sandbox>/repo/           primary clone; tracks the integration branch; tasks never edit it
 sandboxes/<sandbox>/worktrees/<task>/   one worktree + branch per task
 sandboxes/<sandbox>/home/           sandbox HOME inside containment (caches, .claude config dir)
-sandboxes/<sandbox>/codex/<account>/    CODEX_HOME per account; sessions -> ../sessions
-sandboxes/<sandbox>/codex/sessions/     shared Codex rollouts for the sandbox
 sandboxes/<sandbox>/browser/        Chromium profile
+users/<user>/home/                  user's home in their shells (bound at /home/<login>; ADR-12)
+users/<user>/identity/              generated passwd/group files of the user's sandbox identity
+runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
 runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files
 shells/<shell>/                     ptyhost run directories of sandbox shells (UI-015)
@@ -146,7 +148,7 @@ Schema version 1 (tables; columns abbreviated):
 | `permission_cache` | user_id, sandbox_id, level (none/read/write/admin), checked_at |
 | `sandboxes` | id, slug, repo_owner, repo_name, github_repo_id, default_branch, profile (json), port_base, created_by, onboarding_state, removed_at |
 | `tasks` | id, sandbox_id, number (per sandbox), title, harness, workflow_id, status, activity, branch, worktree_path, spec_path, created_by, created_at, closed_at, archived_at, origin (ui/automation/import/onboarding), automation_run_id |
-| `attempts` | id, task_id, seq, harness, account_id, provider_session_id, launch_kind (new/resume/translated/handoff), state, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason; partial unique index: one attempt per task in (spawning, live) |
+| `attempts` | id, task_id, seq, harness, account_id, provider_session_id, launch_kind (new/resume), state, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason; partial unique index: one attempt per task in (spawning, live) |
 | `provider_sessions` | id, task_id, harness, session_id, transcript_ref, first_seen, last_seen, origin |
 | `accounts` | id, provider, label, credential (enc), priority, enabled, status, last_usage (json), last_error |
 | `usage_samples` | account_id, at, window, used_percent, resets_at, source |
@@ -195,13 +197,12 @@ exhausted, waiting for capacity). `archived_at` is allowed only in non-live stat
 persisted (compare-and-set on `state`). A process exit racing a cancel records the first durable
 observation; the other is ignored (RUN-002).
 
-### 6.3 Switch (account or provider)
+### 6.3 Switch (account)
 
 1. Decide (domain policy, inputs persisted in `switch_decisions`).
 2. Quiesce: proactive → wait for turn end (Stop hook) up to 10 min; reactive → turn already ended.
 3. Stop old attempt (as `stopping`, but final state `exited(switched)`).
-4. Prepare target: same provider → nothing to copy for Claude (shared home) / ensure rollout visible
-   for Codex; other provider → translate transcript (§7.3).
+4. Prepare target: nothing to copy (the sandbox home is shared); a task never changes harness.
 5. Launch new attempt with native resume and a continuation prompt when the last turn failed.
 6. Bridge viewers to the new attempt; write a one-line notice into the terminal stream.
 
@@ -293,39 +294,27 @@ Launch preparation verified against the real CLIs (2026-10-07): with an isolated
 a folder-trust prompt whose default answer is "No, exit". Before each launch Yulius merges
 `hasCompletedOnboarding`, `theme`, `projects[<worktree realpath>].hasTrustDialogAccepted` (and
 `bypassPermissionsModeAccepted` for contained runs) into `<CLAUDE_CONFIG_DIR>/.claude.json`, keeping
-Claude's own keys. Codex added `--no-daemon` after 0.154 (0.154.0 rejects it as an unexpected
-argument); Yulius probes `codex --help` once (empty `CODEX_HOME`, 10 s bound) and passes the flag
-only when it is advertised. Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` and
-`<CODEX_HOME>/skills` at each launch.
+Claude's own keys. Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` at each launch.
 
-| Concern | Claude Code (verified 2.1.292 flags) | Codex CLI (verified 0.160.1 flags) |
-| --- | --- | --- |
-| New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json [--model m] [--effort e] [--dangerously-skip-permissions when contained] "<prompt>"` | `codex --no-daemon -C <worktree> -c mcp_servers…  [--dangerously-bypass-approvals-and-sandbox when contained] [--dangerously-bypass-hook-trust] "<prompt>"`; session id read from the new rollout's `session_meta` |
-| Resume | `claude --resume <uuid> … ["<continuation>"]` | `codex resume <uuid> … ["<continuation>"]` |
-| Credentials | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`); `CLAUDE_CONFIG_DIR=<sandbox>/home/.claude` | `CODEX_HOME=<sandbox>/codex/<account>` with `auth.json` from the vault; written back after the run if refreshed (newest `last_refresh` wins) |
-| Transcript | `<config>/projects/<cwd-slug>/<session>.jsonl` | `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-*.jsonl` (shared dir) |
-| Usage | `message.usage` per assistant message (dedupe by message id + request id); limit errors from synthetic API error messages | `token_count.info.total_token_usage` (cumulative; last wins); `rate_limits.primary/secondary.used_percent`, `resets_at`, `rate_limit_reached_type` |
-| Hooks | `--settings` JSON `hooks` for SessionStart, UserPromptSubmit, Stop, Notification | `hooks.json` in CODEX_HOME for SessionStart, UserPromptSubmit, Stop, PermissionRequest (location verified live, R-03) |
-| Skills | `<config>/skills/<name>/SKILL.md` + repository `.claude/skills` | `<CODEX_HOME>/skills/<name>/SKILL.md` + repository `.agents/skills` |
-| Login (account add) | `claude setup-token` in a server-owned PTY; token captured from output and masked before display | `codex login --device-auth` in a server-owned PTY with temporary CODEX_HOME; `auth.json` moved into the vault |
-| Session-id drift | new `.jsonl` for the same worktree slug → adopt into lineage (HRN-004) | new rollout whose `session_meta.cwd` is the worktree → adopt |
+| Concern | Claude Code (verified 2.1.292 flags) |
+| --- | --- |
+| New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json [--model m] [--effort e] [--dangerously-skip-permissions when contained] "<prompt>"` |
+| Resume | `claude --resume <uuid> … ["<continuation>"]` |
+| Credentials | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`); `CLAUDE_CONFIG_DIR=<sandbox>/home/.claude` |
+| Transcript | `<config>/projects/<cwd-slug>/<session>.jsonl` |
+| Usage | `message.usage` per assistant message (dedupe by message id + request id); limit errors from synthetic API error messages |
+| Hooks | `--settings` JSON `hooks` for SessionStart, UserPromptSubmit, Stop, Notification |
+| Skills | `<config>/skills/<name>/SKILL.md` + repository `.claude/skills` |
+| Login (account add) | `claude setup-token` in a server-owned PTY; token captured from output and masked before display |
+| Session-id drift | new `.jsonl` for the same worktree slug → adopt into lineage (HRN-004) |
 
 Transcript tailing: poll size every 1 s; parse only complete lines; max line 4 MiB (longer lines
 skipped with a diagnostic); unknown record types ignored; malformed lines counted, never fatal.
 
-### 7.3 Translation (ADR-06)
+### 7.3 Translation (withdrawn)
 
-IR (`yulius-domain::transcript`): ordered turns `{role: user|assistant, blocks: [text | tool_call{name,
-input_summary} | tool_result{summary, is_error}], at}` plus metadata (cwd, model, original ids).
-Writers: Claude JSONL (user/assistant records with uuid chain, sessionId, cwd, version, timestamps,
-text content blocks) and Codex rollout (`session_meta`, `turn_context`, `response_item` messages with
-`input_text`/`output_text`). Tool activity is rendered as assistant text (`[tool Bash] …`, outputs
-truncated to 2 KiB) because cross-provider tool-call pairing is not portable; reasoning and images
-are dropped with a marker. Size bound: last 400 KiB or 300 messages, prefixed by a note pointing to
-the task spec and Yulius context. The continuation prompt includes task goal, current step, spec
-path, branch and `git status` summary. Acceptance requires live verification per CLI version;
-when a resume of the synthesized transcript fails (exit within 15 s or explicit error), the
-adapter falls back to a new session bootstrapped with a handoff file in the run directory.
+Removed with Codex (F 2026-10-08, ADR-06): a task never changes harness, so no transcript is
+translated. A switch resumes the task's own Claude session on another account.
 
 ### 7.4 Yulius MCP (internal listener `/mcp`, Streamable HTTP, JSON-RPC 2.0)
 
@@ -418,6 +407,19 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   merges or deployments (SEC-003). Deployment commands run only on explicit user action with an
   audit entry.
 
+- User processes (UI-016): shells run contained as the user's identity (ADR-12). A user's home
+  is bound only into that user's processes; agent runs never see it. Shells are attachable only
+  by their creator. Git in user processes asks the internal listener with a workspace token and
+  receives the user's own GitHub token.
+- Editor file API (ADR-10): write users only; relative paths of normal components, every
+  existing path resolved and kept inside the folder (symbolic links cannot escape), `.git`
+  refused, 2 MiB text limit, atomic writes with an optimistic SHA-256 check.
+- Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
+  Argon2; the failure counter and permanent lock are persisted before the response is sent.
+- Browser mirror (ADR-09): the recorder runs in an isolated world, so page scripts cannot tamper
+  with it; the replay iframe runs no page scripts; resource fetches go through the server browser
+  with the same URL policy as navigation.
+
 ## 8a. Imported repository specifics (Product, Studio)
 
 - Sandboxes clone from GitHub; local machine state arrives only through `yulius import` uploads.
@@ -429,7 +431,7 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 - Repository hooks (Studio `.githooks/pre-commit` mass-delete guard): worktrees honor the
   repository's `core.hooksPath` when the preparation task configures it per the repo's AGENTS.md;
   Yulius adds its own `pre-push` guard without replacing repository hooks.
-- Instructions: repositories' `AGENTS.md`/`CLAUDE.md`/`.agents/skills`/`.claude/skills`/`.codex`
+- Instructions: repositories' `AGENTS.md`/`CLAUDE.md`/`.agents/skills`/`.claude/skills`
   remain authoritative inside the sandbox; the Yulius briefing points to them instead of
   overriding them.
 - Product: integration branch `quartio`, `main` fast-forwarded, CI `node scripts/test-all.mjs`,
@@ -484,31 +486,31 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 
 | Level | What | Notes |
 | --- | --- | --- |
-| Unit | state machines, rotation policy, validator, cron, permission mapping, briefing budgets, frame codecs, transcript parsers, translation writers | pure, fast |
-| Contract fixtures | Claude 2.1.292 / Codex 0.160.1 transcript shapes (synthetic content, real structure) | fixtures labeled with version and date |
+| Unit | state machines, rotation policy, validator, cron, permission mapping, briefing budgets, frame codecs, transcript parsers | pure, fast |
+| Contract fixtures | Claude 2.1.292 transcript shapes (synthetic content, real structure) | fixtures labeled with version and date |
 | Integration (fake agent) | ptyhost spawn/flood/ignore-SIGTERM/descendant/early-exit/cancel races, reconnect, server restart reattach, rotation with fake usage, hooks & MCP end-to-end | `tools/fake-agent` |
 | Integration (fake GitHub) | OAuth, permissions, repo creation, PR/checks/merge/ff | axum fake server |
 | Linux-only | bubblewrap containment escape attempts | CI ubuntu job |
 | UI | browser verification of layout, terminal, panels, phone viewport | manual with recorded evidence |
-| Live (opt-in, never CI) | real Claude/Codex: launch, hooks, MCP, resume, synthesized-transcript resume both directions | uses local credentials; minimal prompts |
+| Live (opt-in, never CI) | real Claude Code: launch, hooks, MCP, resume | uses local credentials; minimal prompts |
 | Deploy | VM install | **out of scope**; packaging reviewed only |
 
 ## 12. Risks
 
 | ID | Risk | Mitigation |
 | --- | --- | --- |
-| R-01 | Undocumented transcript formats change. | Version-pinned parsers, unknown-record tolerance, fallback handoff, live smoke per CLI upgrade. |
-| R-02 | Codex refresh-token rotation when one account is used in several homes. | Write-back newest auth; mark account `relogin` on auth failure; live check. |
-| R-03 | Codex hook configuration location/trust semantics. | Verify live; fallback to idle-time prompt injection for discipline/messages. |
-| R-04 | Claude usage percentage not available for setup tokens. | Reactive switching on limit errors; proactive only where usage is known. |
+| R-01 | Undocumented transcript formats change. | Version-pinned parsers, unknown-record tolerance, live smoke per CLI upgrade. |
+| R-02 | Closed (F 2026-10-08): Codex refresh-token rotation (Codex removed). | — |
+| R-03 | Closed (F 2026-10-08): Codex hook configuration semantics (Codex removed). | — |
+| R-04 | Claude usage percentage not available for setup tokens. | Reactive switching on limit errors; proactive switching (99 %) when an administrator's usage refresh (`/api/oauth/usage`) reports the windows. |
 | R-05 | Browser screencast performance on phones. | Adaptive frame rate/quality; snapshot mode. |
 | R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
 | R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; sandboxes share the loopback network, so any local process (including other sandboxes' agents) can drive a sandbox browser and its logged-in sessions; in contained mode CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's containment/network namespace. |
 | R-08 | An unrestricted GitHub installation token works for every repository of the installation. | Mitigated: agents receive tokens restricted to their sandbox repository (`repositories` parameter), only for live task tokens and only for `github.com/<owner>/<repo>`; unrestricted tokens stay server-side (delivery pushes, repository creation). |
-| R-09 | Delivery environment commands and openvscode-server run with the server's privileges outside containment, in a clone whose `.git` and the sandbox home are agent-writable (repository-local Git config such as filter drivers, tools reading `HOME`). | Hooks, fsmonitor and global/system Git config disabled for the checkout; editor disabled by default in contained mode (`--editor-uncontained` to accept). Open: run environment commands inside the sandbox containment. |
+| R-09 | Delivery environment commands run with the server's privileges outside containment, in a clone whose `.git` and the sandbox home are agent-writable (repository-local Git config such as filter drivers, tools reading `HOME`). | Hooks, fsmonitor and global/system Git config disabled for the checkout (the editor is now a file API, no process). Open: run environment commands inside the sandbox containment. |
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
-| R-12 | Codex releases without `--no-daemon` may host sessions in a shared app-server daemon outside the spawned process (containment, ownership). | Probe and prefer releases with the flag; live verification pending (no dedicated Codex account). |
+| R-12 | Closed (F 2026-10-08): Codex releases without `--no-daemon` (Codex removed). | — |
 
 ## 13. Delivery checkpoints
 
@@ -521,7 +523,7 @@ Tracked as GitHub issues (one per checkpoint) with evidence comments.
 | CP2 | ptyhost, fake agent, terminal streaming, reconnect, restart reconciliation, cancellation | HRN-001/002, TSK-004, NFR-001..005 |
 | CP3 | Harness adapters: launch, hooks, transcript tailing, usage, accounts and login | TSK-001..003, HRN-003/004, ROT-001/002/009 |
 | CP4 | GitHub App/OAuth, permission mirroring, sandboxes, worktrees, task lifecycle, workspace UI | ACC-006..009, PRJ-*, TSK-005..008, UI-* |
-| CP5 | Rotation and provider translation | ROT-003..011 |
+| CP5 | Rotation | ROT-003..012 |
 | CP6 | Yulius MCP, messages, scopes, steps, briefing, discipline gates, format validator | COM-*, STP-*, DSC-001..006, DSC-009 |
 | CP7 | Skills catalog, MCP management, workflows, automations | SKL-*, MCP-*, AUT-* |
 | CP8 | Git page and delivery profiles (standard/product/studio) | GIT-*, DLV-*, DSC-007/008 |
@@ -539,19 +541,28 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Area | Evidence |
 | --- | --- |
 | Process supervision (NFR-001..005, AC-TSK-3, AC-NFR-3) | `crates/yulius/tests/supervision.rs`: real detached ptyhost + fake agent + real git worktrees; a server runtime is dropped and a new one reconciles and reattaches the same child pid, snapshot restores the screen, crash exit code recorded, stop escalation, queueing at the session limit, normal exit closes the task; `crates/yulius-ptyhost/tests/*` (13 + orphan watchdog). |
-| Rotation (AC-ROT-2 reactive, AC-ROT-6) | `supervision.rs`: a provider usage limit at turn end moves the same session to the next account with a native resume and a recorded decision; with no capacity the task waits. Proactive (99 %) rotation and cross-provider translation: unit/fixture tests only. |
+| Rotation (AC-ROT-2 reactive, AC-ROT-6) | `supervision.rs`: a provider usage limit at turn end moves the same session to the next account with a native resume and a recorded decision; usage refreshed at 99 % moves it at the next turn boundary; with no capacity the task waits. |
 | Terminal and permissions (AC-TSK-2, AC-TSK-6, AC-ACC-5) | `terminal_ws.rs`: task created via the public API, two WebSocket viewers, read-only input refused, writer input reaches the agent, a GitHub downgrade turns an open socket read-only and revocation closes it (4003). |
 | Messages and steps (AC-COM-2, AC-STP-3) | `supervision.rs` wake test (notice typed into the idle recipient only); `agent_hooks.rs` plan-checklist → steps sync. |
 | Operator CLI (AC-OPS-3) | `cli.rs`: `yulius backup` consistent copy, refuses an existing destination; `yulius doctor` fails on a too-long data dir. |
 | Hooks, briefing, discipline (COM-004, DSC-003) | `crates/yulius/tests/agent_hooks.rs` over the internal HTTP listener. |
 | Live Claude Code 2.1.292 | `tests/live_claude.rs` (opt-in): hooks fire, Yulius MCP `steps_set` with the task bearer token, session id and transcript path as predicted. `supervision.rs::real_claude_tui_reaches_the_prompt_inside_ptyhost` (opt-in): the real TUI in the real ptyhost reaches its prompt without first-run screens. |
-| Live Codex | Help-level flag check of 0.160.1 and 0.154.0 only; no live session (no dedicated account). |
+| Codex | Removed (F 2026-10-08); creating a Codex task or account is refused (`task_delete.rs`, `accounts.rs`, `automations.rs`). |
 | Real adapters | `tests/git_adapter.rs` (real git); GitHub adapter unit-tested against recorded HTTP (no real App configured). |
 | Areas | `accounts.rs`, `analytics.rs`, `automations.rs`, `skills_mcp.rs`, `delivery.rs`, `projects.rs`, `import_server.rs`, `browser.rs`, `editor.rs`, `shells.rs`, `http_auth.rs`, `mcp_coordination.rs`. |
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
-| Not exercised | Real GitHub App/OAuth, real Chromium (as sandbox browser), openvscode-server, Codex sessions, cross-provider resume with real CLIs, deployment (out of scope). Linux results: see the container runs below. |
+| Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
+
+- 2026-10-08 (F 2026-10-08): Claude Code only — Codex adapter, homes, login, usage probe, import,
+  provider switching, harness proposals and the translation stack removed (ADR-05 narrowed, ADR-06
+  and §7.3 withdrawn, R-02/R-03/R-12 closed); proactive rotation driven by usage refreshes;
+  migration 0003 drops `tasks.harness_proposal` and `instance.auto_harness_switch`.
+
+- 2026-10-07 (F 2026-10-07): ADR-09 DOM mirror, ADR-10 built-in Monaco editor (replacing
+  openvscode-server), ADR-12 sandbox identity, ADR-13 recovery code; data directory additions;
+  security notes.
 
 - 2026-10-07: initial architecture and runtime contracts.
 - 2026-10-07: implementation findings — socket path bound, ptyhost orphan watchdog, Claude config

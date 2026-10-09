@@ -95,7 +95,7 @@ pub struct Deps {
     pub github: Arc<dyn GitHubPort>,
     /// Detached process hosts.
     pub session_host: Arc<dyn SessionHost>,
-    /// Claude Code / Codex adapters.
+    /// Claude Code adapter.
     pub harness: Arc<dyn HarnessPort>,
     /// Git.
     pub git: Arc<dyn GitPort>,
@@ -103,8 +103,8 @@ pub struct Deps {
     pub system: Arc<dyn SystemProbe>,
     /// Per-sandbox shared browser (SPEC-001 BRW-001..004).
     pub browser: Arc<dyn crate::ports::browser::BrowserPort>,
-    /// Per-sandbox VS Code server (SPEC-001 EDT-001/002).
-    pub editor: Arc<dyn crate::ports::editor::EditorPort>,
+    /// Provider usage windows of accounts (ROT-009).
+    pub usage: Arc<dyn crate::ports::usage::UsageProbe>,
 }
 
 /// The application.
@@ -125,6 +125,10 @@ pub struct App {
     pub(crate) logins: crate::accounts::LoginRegistry,
     /// Sandbox shell sessions (SPEC-001 UI-015).
     pub(crate) shells: crate::shells::ShellState,
+    /// Workspace tokens of user processes (SPEC-002 ADR-12).
+    pub(crate) workspace_grants: crate::identity::WorkspaceGrants,
+    /// Serializes recovery-code checks so parallel guesses cannot exceed the limit (ADR-13).
+    pub(crate) recovery_lock: tokio::sync::Mutex<()>,
 }
 
 impl App {
@@ -140,6 +144,8 @@ impl App {
             supervisor: crate::supervisor::SupervisorState::default(),
             logins: crate::accounts::LoginRegistry::default(),
             shells: crate::shells::ShellState::default(),
+            workspace_grants: crate::identity::WorkspaceGrants::default(),
+            recovery_lock: tokio::sync::Mutex::new(()),
         })
     }
 

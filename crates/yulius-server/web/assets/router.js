@@ -39,6 +39,16 @@ export function href(path) {
   return `${window.location.pathname}${window.location.search}#${path}`;
 }
 
+/**
+ * Replace the current URL without a route change (a page keeping its own state in the query, such as
+ * Tasks filters). The router records it, so a later link to the plain path is a real change.
+ */
+export function replaceQuietly(path) {
+  const url = hashMode ? `${window.location.pathname}${window.location.search}#${path}` : path;
+  window.history.replaceState(window.history.state, '', url);
+  lastKey = currentLocation().full;
+}
+
 /** Navigate to an app path, e.g. navigate('/s/studio/t/12'). */
 export function navigate(path, { replace = false } = {}) {
   const url = hashMode ? `${window.location.pathname}${window.location.search}#${path}` : path;
@@ -77,11 +87,18 @@ export function matchRoute(path, query = new URLSearchParams()) {
   const base = { query, path };
   if (parts.length === 0) return { ...base, name: 'home' };
   const [first, second, third, fourth] = parts;
-  if (parts.length === 1 && ['setup', 'signin', 'device', 'archived'].includes(first)) return { ...base, name: first };
+  if (parts.length === 1 && ['setup', 'signin', 'device', 'archived', 'settings', 'design'].includes(first)) return { ...base, name: first };
   if (first === 'admin' && parts.length === 2 && ADMIN_PAGES.has(second)) return { ...base, name: 'admin', page: second };
   if (first === 's' && second) {
     if (parts.length === 2) return { ...base, name: 'composer', slug: second };
     if (parts.length === 4 && third === 't' && /^\d+$/.test(fourth)) return { ...base, name: 'task', slug: second, number: Number(fourth) };
+    // Tasks → a task's overview, and Git → a task's changes, before opening its session.
+    if (parts.length === 4 && third === 'tasks' && /^\d+$/.test(fourth)) return { ...base, name: 'taskInfo', slug: second, page: 'tasks', number: Number(fourth) };
+    if (parts.length === 4 && third === 'skills') return { ...base, name: 'skill', slug: second, page: 'skills', skill: fourth };
+    if (parts.length === 4 && third === 'workflows') return { ...base, name: 'workflow', slug: second, page: 'workflows', workflow: fourth };
+    if (parts.length === 4 && third === 'mcp') return { ...base, name: 'mcpServer', slug: second, page: 'mcp', server: fourth };
+    if (parts.length === 4 && third === 'automations') return { ...base, name: 'automation', slug: second, page: 'automations', automation: fourth };
+    if (parts.length === 5 && third === 'git' && fourth === 't' && /^\d+$/.test(parts[4])) return { ...base, name: 'gitTask', slug: second, page: 'git', number: Number(parts[4]) };
     if (parts.length === 3 && third === 'browser') return { ...base, name: 'composer', slug: second, browserTab: query.get('tab') || '' };
     if (parts.length === 3 && SANDBOX_PAGES.has(third)) return { ...base, name: 'page', slug: second, page: third };
   }

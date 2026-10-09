@@ -1,8 +1,7 @@
 //! Provider accounts: administration and the native login flow (SPEC-001 ROT-001/002/009,
 //! ACC-009; SPEC-002 ADR-05, §7.2 "Login", §8).
 //!
-//! Each login runs the provider CLI's own sign-in (`claude setup-token`, `codex login
-//! --device-auth`) in a server-owned PTY through the process host, with a temporary config
+//! Each login runs the provider CLI's own sign-in (`claude setup-token`) in a server-owned PTY through the process host, with a temporary config
 //! directory under `<data_dir>/logins/<login_id>/`. Viewers (instance administrators) watch it
 //! through a [`Hub`]; every output chunk passes through the harness masker first, so a Claude
 //! token never reaches a browser. A bounded copy of the raw output is kept in memory for token
@@ -21,8 +20,8 @@ use std::time::Duration;
 
 use tokio::sync::Notify;
 use yulius_contracts::api::admin::{
-    AccountLoginStarted, AccountUsageView, AccountView, CreateAccount, UpdateAccount,
-    UsageWindowView,
+    AccountLoginStarted, AccountUsageView, AccountView, CreateAccount, TokenTotalsView,
+    UpdateAccount, UsageWindowView,
 };
 use yulius_contracts::events::UiEvent;
 use yulius_contracts::terminal::TerminalServerMsg;
@@ -37,8 +36,7 @@ use crate::hub::{Hub, Subscription};
 use crate::model::{AccountRecord, AccountStatus, AttemptRecord, Secret};
 use crate::ports::harness::OutputMasker;
 use crate::ports::session::{
-    Containment, LaunchPlan, PlannedFile, RunEvent, RunExit, RunInspection, RunReader, RunSignal,
-    RunWriter,
+    Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal, RunWriter,
 };
 use crate::usage_json;
 
@@ -69,8 +67,6 @@ pub const PRIORITY_RANGE: std::ops::RangeInclusive<i32> = 0..=10_000;
 const STOP_WAIT: Duration = Duration::from_secs(10);
 /// Grace given to the process on a stop request before the host escalates.
 const STOP_GRACE_MS: u32 = 2_000;
-/// Largest Codex `auth.json` accepted.
-const CODEX_AUTH_MAX: u64 = 1024 * 1024;
 /// Secure-deletion walk bounds.
 const WIPE_MAX_DEPTH: usize = 16;
 const WIPE_MAX_ENTRIES: usize = 10_000;
@@ -284,8 +280,24 @@ pub fn account_view(account: &AccountRecord, live: &[AttemptRecord]) -> AccountV
         usage: usage_view(&account_usage(account)),
         last_error: account.last_error.clone(),
         in_use_by: in_use_count(&account.id, live),
+        tokens_24h: None,
+        tokens_7d: None,
     }
 }
+
+fn totals_view(tokens: Option<&crate::model::AccountTokens>) -> TokenTotalsView {
+    tokens.map_or_else(TokenTotalsView::default, |t| TokenTotalsView {
+        runs: t.runs,
+        tasks: t.tasks,
+        input: t.input,
+        output: t.output,
+        cache_read: t.cache_read,
+        cache_write: t.cache_write,
+    })
+}
+
+/// One day in milliseconds.
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 fn validate_label(label: &str) -> AppResult<String> {
     let label = label.trim();
@@ -393,21 +405,6 @@ pub fn secure_delete(dir: &Path) {
     }
 }
 
-/// Reads and validates a Codex `auth.json` (regular file, bounded, a JSON object).
-fn read_codex_auth(path: &Path) -> Result<String, String> {
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|_| "the Codex sign-in did not store credentials".to_owned())?;
-    if !meta.is_file() || meta.len() > CODEX_AUTH_MAX || meta.len() == 0 {
-        return Err("the Codex credentials file is not usable".into());
-    }
-    let text = std::fs::read_to_string(path)
-        .map_err(|_| "the Codex credentials file could not be read".to_owned())?;
-    match serde_json::from_str::<serde_json::Value>(&text) {
-        Ok(v) if v.as_object().is_some_and(|o| !o.is_empty()) => Ok(text),
-        _ => Err("the Codex credentials file is not valid".into()),
-    }
-}
-
 impl App {
     fn login_timeout(&self) -> Duration {
         match self.logins.timeout_ms.load(Ordering::SeqCst) {
@@ -459,12 +456,84 @@ impl App {
         self.require_instance_admin(ctx)?;
         let store = &self.deps.store;
         let live = store.live_attempts().await?;
+        let now = self.now();
+        let day = store.account_tokens(now.plus_millis(-DAY_MS)).await?;
+        let week = store.account_tokens(now.plus_millis(-7 * DAY_MS)).await?;
+        let find = |list: &[crate::model::AccountTokens], id: &str| {
+            list.iter().find(|t| t.account_id == id).cloned()
+        };
         Ok(store
             .accounts()
             .await?
             .iter()
-            .map(|a| account_view(a, &live))
+            .map(|a| {
+                let mut view = account_view(a, &live);
+                view.tokens_24h = Some(totals_view(find(&day, a.id.as_str()).as_ref()));
+                view.tokens_7d = Some(totals_view(find(&week, a.id.as_str()).as_ref()));
+                view
+            })
             .collect())
+    }
+
+    /// Asks the provider for the account's current usage windows and stores them (ROT-009).
+    /// A failure is recorded as the account's last error and returned.
+    ///
+    /// # Errors
+    /// `Forbidden` for non-admins, `NotFound`, `Conflict` without a credential, `Upstream` when
+    /// the provider does not answer usefully.
+    pub async fn refresh_account_usage(
+        &self,
+        ctx: &AuthContext,
+        id: &str,
+    ) -> AppResult<AccountView> {
+        self.require_instance_admin(ctx)?;
+        let id = AccountId::parse(id).map_err(|_| AppError::NotFound)?;
+        let store = &self.deps.store;
+        let account = store.account(&id).await?.ok_or(AppError::NotFound)?;
+        let sealed = account
+            .credential
+            .as_ref()
+            .ok_or_else(|| AppError::Conflict("the account is not signed in yet".into()))?;
+        let credential =
+            Secret(String::from_utf8(self.deps.crypto.open(sealed)?).map_err(AppError::internal)?);
+        match self.deps.usage.fetch(account.provider, &credential).await {
+            Ok(mut usage) => {
+                usage.observed_at = Some(self.now());
+                // Keep a reached limit that the provider still reports through the windows.
+                self.record_account_usage(&id, &usage).await;
+            }
+            Err(problem) => {
+                let message = format!("usage: {problem}");
+                let _ = store
+                    .set_account_state(
+                        &id,
+                        account.status,
+                        account.usage_json.as_deref(),
+                        Some(&message),
+                        self.now(),
+                    )
+                    .await;
+                return Err(AppError::Upstream(message));
+            }
+        }
+        let updated = store.account(&id).await?.ok_or(AppError::NotFound)?;
+        let mut view = account_view(&updated, &store.live_attempts().await?);
+        let now = self.now();
+        view.tokens_24h = Some(totals_view(
+            store
+                .account_tokens(now.plus_millis(-DAY_MS))
+                .await?
+                .iter()
+                .find(|t| t.account_id == id.as_str()),
+        ));
+        view.tokens_7d = Some(totals_view(
+            store
+                .account_tokens(now.plus_millis(-7 * DAY_MS))
+                .await?
+                .iter()
+                .find(|t| t.account_id == id.as_str()),
+        ));
+        Ok(view)
     }
 
     /// Creates an account in `pending_login` and starts its login terminal (ROT-001/002).
@@ -481,7 +550,7 @@ impl App {
     ) -> AppResult<AccountLoginStarted> {
         self.require_instance_admin(ctx)?;
         let provider = Provider::parse(req.provider.trim())
-            .map_err(|_| AppError::Invalid("provider must be anthropic or openai".into()))?;
+            .map_err(|_| AppError::Invalid("provider must be anthropic (Claude)".into()))?;
         let label = validate_label(&req.label)?;
         let store = &self.deps.store;
         let priority = store
@@ -745,7 +814,6 @@ impl App {
         let home = dir.join("home");
         let config_dir = dir.join(match account.provider {
             Provider::Anthropic => "claude",
-            Provider::OpenAi => "codex",
         });
         create_private_dir(&self.logins_dir())?;
         for d in [&dir, &home, &config_dir] {
@@ -821,32 +889,18 @@ impl App {
             ("LANG".to_owned(), "C.UTF-8".to_owned()),
             ("COLUMNS".to_owned(), LOGIN_COLS.to_string()),
         ];
-        let mut files = Vec::new();
         match provider {
             Provider::Anthropic => env.push((
                 "CLAUDE_CONFIG_DIR".to_owned(),
                 config_dir.to_string_lossy().into_owned(),
             )),
-            Provider::OpenAi => {
-                env.push((
-                    "CODEX_HOME".to_owned(),
-                    config_dir.to_string_lossy().into_owned(),
-                ));
-                // Keep credentials in CODEX_HOME/auth.json (never the OS keyring) so they can be
-                // moved into the vault.
-                files.push(PlannedFile {
-                    path: config_dir.join("config.toml"),
-                    contents: b"cli_auth_credentials_store = \"file\"\n".to_vec(),
-                    mode: 0o600,
-                });
-            }
         }
         LaunchPlan {
             argv: self.deps.harness.login_argv(provider.harness()),
             cwd: home.to_path_buf(),
             env,
             secret_env: Vec::new(),
-            files,
+            files: Vec::new(),
             containment: Containment::None,
         }
     }
@@ -984,9 +1038,6 @@ impl App {
                     .extract_claude_token(&String::from_utf8_lossy(&raw))
                     .map(Secret)
                     .ok_or_else(|| "the sign-in ended without producing a token".to_owned()),
-                Provider::OpenAi => {
-                    read_codex_auth(&session.dir.join("codex").join("auth.json")).map(Secret)
-                }
             };
             Some(credential.map_err(|reason| match &ending {
                 Ending::TimedOut => format!(
@@ -1154,20 +1205,6 @@ mod tests {
         assert!(!root.exists());
         assert_eq!(std::fs::read(&outside)?, b"keep me");
         std::fs::remove_file(&outside)?;
-        Ok(())
-    }
-
-    #[test]
-    fn codex_auth_must_be_a_bounded_json_object() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!("yulius-codex-auth-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join("auth.json");
-        assert!(read_codex_auth(&path).is_err(), "missing file");
-        std::fs::write(&path, b"[]")?;
-        assert!(read_codex_auth(&path).is_err(), "not an object");
-        std::fs::write(&path, br#"{"tokens":{"id_token":"x"}}"#)?;
-        assert!(read_codex_auth(&path).is_ok());
-        std::fs::remove_dir_all(&dir)?;
         Ok(())
     }
 }

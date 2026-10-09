@@ -14,7 +14,6 @@ use yulius_harness::secret::Secret;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const CLAUDE_TOKEN: &str = "sk-ant-oat01-SYNTHETIC_token_value_for_tests_only_0123456789";
-const CODEX_AUTH: &str = r#"{"tokens":{"access_token":"SYNTHETIC-ACCESS","refresh_token":"SYNTHETIC-REFRESH"},"last_refresh":"2026-10-07T08:00:00Z"}"#;
 const SESSION: &str = "3f2b1c9e-aaaa-4bbb-8ccc-0123456789ab";
 
 fn servers() -> Vec<McpServerSpec> {
@@ -44,7 +43,6 @@ fn claude_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         worktree: PathBuf::from("/data/sandboxes/s1/worktrees/t1"),
         sandbox_home: PathBuf::from("/data/sandboxes/s1/home"),
         run_dir: PathBuf::from("/data/runs/a1"),
-        codex_home: None,
         model: Some("claude-opus-4-1".into()),
         effort: Some("high".into()),
         contained,
@@ -52,17 +50,6 @@ fn claude_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         yulius_url: "http://127.0.0.1:7801/".into(),
         mcp_servers: servers(),
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
-        codex_features: yulius_harness::probe::CodexFeatures::default(),
-    }
-}
-
-fn codex_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
-    LaunchRequest {
-        harness: Harness::Codex,
-        codex_home: Some(PathBuf::from("/data/sandboxes/s1/codex/acc1")),
-        model: Some("gpt-5.1-codex".into()),
-        credential: Credential::CodexAuthJson(Secret::new(CODEX_AUTH.as_bytes().to_vec())),
-        ..claude_request(mode, contained)
     }
 }
 
@@ -238,152 +225,6 @@ fn claude_new_session_without_id_or_prompt() -> TestResult {
 }
 
 #[test]
-fn codex_new_session_argv_snapshot_and_files() -> TestResult {
-    let plan = plan_launch(&codex_request(
-        LaunchMode::New {
-            session_id: Some(SESSION.into()),
-            prompt: Some("Build the login page".into()),
-        },
-        true,
-    ))?;
-    assert_eq!(
-        plan.argv,
-        [
-            "codex",
-            "--no-daemon",
-            "-C",
-            "/data/sandboxes/s1/worktrees/t1",
-            "-c",
-            "mcp_servers.yulius.url=\"http://127.0.0.1:7801/mcp\"",
-            "-c",
-            "mcp_servers.yulius.bearer_token_env_var=\"YULIUS_TASK_TOKEN\"",
-            "-c",
-            "mcp_servers.apify.command=\"npx\"",
-            "-c",
-            "mcp_servers.apify.args=[\"-y\",\"@apify/actors-mcp-server\"]",
-            "-c",
-            "mcp_servers.apify.env_vars=[\"APIFY_TOKEN\"]",
-            "-c",
-            "mcp_servers.quartio.url=\"https://mcp.example.test/mcp\"",
-            "-c",
-            "mcp_servers.quartio.bearer_token_env_var=\"QUARTIO_MCP_TOKEN\"",
-            "-c",
-            "model_reasoning_effort=\"high\"",
-            "-m",
-            "gpt-5.1-codex",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--dangerously-bypass-hook-trust",
-            "Build the login page",
-        ]
-    );
-    // Codex assigns its own session id; it is discovered from the new rollout.
-    assert_eq!(plan.session_id, None);
-    assert_eq!(
-        plan.env,
-        [
-            (
-                "CODEX_HOME".to_owned(),
-                "/data/sandboxes/s1/codex/acc1".to_owned()
-            ),
-            ("YULIUS_URL".to_owned(), "http://127.0.0.1:7801".to_owned()),
-        ]
-    );
-    assert!(plan.secret_env.is_empty());
-    for secret in ["SYNTHETIC-ACCESS", "SYNTHETIC-REFRESH"] {
-        assert_secret_absent(&plan, secret);
-    }
-    let auth = file(&plan, "auth.json")?;
-    assert_eq!(
-        auth.path,
-        PathBuf::from("/data/sandboxes/s1/codex/acc1/auth.json")
-    );
-    assert_eq!(auth.mode, 0o600);
-    assert_eq!(auth.contents, CODEX_AUTH.as_bytes());
-    let hooks = json_of(file(&plan, "hooks.json")?)?;
-    for event in [
-        "SessionStart",
-        "UserPromptSubmit",
-        "Stop",
-        "PermissionRequest",
-    ] {
-        assert_eq!(
-            hooks["hooks"][event],
-            json!([{ "hooks": [{
-                "type": "command",
-                "command": format!("'/opt/yulius/bin/yulius' hook codex {event}")
-            }] }])
-        );
-    }
-    assert_eq!(file(&plan, "hooks.json")?.mode, 0o600);
-    Ok(())
-}
-
-#[test]
-fn codex_resume_uses_subcommand_and_never_bypasses_when_uncontained() -> TestResult {
-    let mut request = codex_request(
-        LaunchMode::Resume {
-            session_id: SESSION.into(),
-            prompt: Some("Continue the task.".into()),
-        },
-        false,
-    );
-    request.mcp_servers.clear();
-    request.effort = None;
-    let plan = plan_launch(&request)?;
-    assert_eq!(
-        plan.argv,
-        [
-            "codex",
-            "--no-daemon",
-            "-C",
-            "/data/sandboxes/s1/worktrees/t1",
-            "-c",
-            "mcp_servers.yulius.url=\"http://127.0.0.1:7801/mcp\"",
-            "-c",
-            "mcp_servers.yulius.bearer_token_env_var=\"YULIUS_TASK_TOKEN\"",
-            "-m",
-            "gpt-5.1-codex",
-            "--dangerously-bypass-hook-trust",
-            "resume",
-            SESSION,
-            "Continue the task.",
-        ]
-    );
-    assert_eq!(plan.session_id.as_deref(), Some(SESSION));
-    Ok(())
-}
-
-#[test]
-fn toml_values_are_escaped_not_interpolated() -> TestResult {
-    let mut request = codex_request(
-        LaunchMode::New {
-            session_id: None,
-            prompt: None,
-        },
-        false,
-    );
-    request.mcp_servers = vec![McpServerSpec {
-        name: "odd".into(),
-        transport: McpTransport::Stdio {
-            command: "/opt/my \"tool\"".into(),
-            args: vec!["a\\b".into(), "$(rm -rf /)".into()],
-            env_names: vec![],
-        },
-    }];
-    let plan = plan_launch(&request)?;
-    assert!(
-        plan.argv
-            .contains(&"mcp_servers.odd.command=\"/opt/my \\\"tool\\\"\"".to_owned())
-    );
-    assert!(
-        plan.argv
-            .contains(&"mcp_servers.odd.args=[\"a\\\\b\",\"$(rm -rf /)\"]".to_owned())
-    );
-    assert!(!plan.argv.iter().any(|a| a.contains("env_vars")));
-    Ok(())
-}
-
-#[test]
 fn hook_command_quotes_the_executable_path() -> TestResult {
     let mut request = claude_request(
         LaunchMode::New {
@@ -408,20 +249,6 @@ fn invalid_requests_are_rejected_without_echoing_values() {
         session_id: None,
         prompt: None,
     };
-    let mismatch = LaunchRequest {
-        credential: Credential::CodexAuthJson(Secret::new(b"{}".to_vec())),
-        ..claude_request(new(), false)
-    };
-    assert_eq!(
-        plan_launch(&mismatch),
-        Err(LaunchError::CredentialMismatch(Harness::ClaudeCode))
-    );
-    let no_home = LaunchRequest {
-        codex_home: None,
-        ..codex_request(new(), false)
-    };
-    assert_eq!(plan_launch(&no_home), Err(LaunchError::MissingCodexHome));
-
     let bad_session = claude_request(
         LaunchMode::Resume {
             session_id: "--help".into(),
@@ -502,15 +329,15 @@ fn invalid_requests_are_rejected_without_echoing_values() {
 #[test]
 fn planned_file_write_is_private_and_replaces_atomically() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let path = dir.path().join("auth.json");
+    let path = dir.path().join("claude-settings.json");
     std::fs::write(&path, b"old")?;
     let planned = PlannedFile {
         path: path.clone(),
-        contents: CODEX_AUTH.as_bytes().to_vec(),
+        contents: CLAUDE_TOKEN.as_bytes().to_vec(),
         mode: PRIVATE_FILE_MODE,
     };
     planned.write()?;
-    assert_eq!(std::fs::read(&path)?, CODEX_AUTH.as_bytes());
+    assert_eq!(std::fs::read(&path)?, CLAUDE_TOKEN.as_bytes());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -526,29 +353,5 @@ fn planned_file_write_is_private_and_replaces_atomically() -> TestResult {
     };
     assert!(missing_parent.write().is_err());
     assert!(!format!("{missing_parent:?}").contains("SYNTHETIC"));
-    Ok(())
-}
-
-#[test]
-fn codex_without_no_daemon_support_omits_the_flag() -> TestResult {
-    // Codex 0.154 rejects `--no-daemon` ("unexpected argument"); 0.160 supports it.
-    let request = LaunchRequest {
-        codex_features: yulius_harness::probe::CodexFeatures { no_daemon: false },
-        ..codex_request(
-            LaunchMode::New {
-                session_id: None,
-                prompt: None,
-            },
-            true,
-        )
-    };
-    let plan = plan_launch(&request)?;
-    assert_eq!(plan.argv.first().map(String::as_str), Some("codex"));
-    assert!(
-        !plan.argv.iter().any(|a| a == "--no-daemon"),
-        "{:?}",
-        plan.argv
-    );
-    assert_eq!(plan.argv.get(1).map(String::as_str), Some("-C"));
     Ok(())
 }

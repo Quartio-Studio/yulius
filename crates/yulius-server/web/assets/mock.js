@@ -140,9 +140,9 @@ function seed(params) {
       origin: extra.origin || 'ui', created_by: { login: extra.author || 'mkarp' },
       created_at: iso(extra.age || number * 3 * HOUR), updated_at: iso(extra.updated ?? number * 7 * MIN),
       unread_messages: extra.unread || 0, archived: Boolean(extra.archived),
-      account_label: LIVE.has(status) ? (harness === 'claude' ? 'Claude #2' : 'Codex #1') : null,
+      account_label: LIVE.has(status) ? 'Claude #2' : null,
       stepsList: extra.noSteps ? [] : makeSteps(id, done, current),
-      model: harness === 'claude' ? 'claude-opus-4' : 'gpt-5-codex',
+      model: 'claude-opus-4',
       effort: 'high',
       delivery: extra.delivery || null, // {stage, environment, pr} once delivery started
     };
@@ -150,34 +150,38 @@ function seed(params) {
   const pr = (number, title, state, base, checks) => ({ number, url: `https://github.com/Quartio-Studio/${number > 400 ? 'product' : 'studio'}/pull/${number}`, title, state, base, head: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, checks });
   db.tasks = [
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, unread: 2, updated: 20e3 }),
-    t('sb_studio', 11, '3D model viewer', 'codex', 'running', 'waiting', { done: 2, author: 'anna-q' }),
+    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 2, author: 'anna-q' }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
-    t('sb_studio', 9, 'Translate session to Codex', 'codex', 'switching', null, { done: 3 }),
+    t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3 }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
     t('sb_studio', 7, 'Search indexing', 'claude', 'waiting_capacity', 'needs_attention', { done: 1 }),
-    t('sb_studio', 6, 'Fix flaky checkout test', 'codex', 'starting', null, { noSteps: true }),
+    t('sb_studio', 6, 'Fix flaky checkout test', 'claude', 'starting', null, { noSteps: true }),
     t('sb_studio', 5, 'Docs restructure', 'claude', 'closed', null, { done: 7, current: false, updated: 5 * HOUR, delivery: { stage: 'pr_open', environment: null, pr: pr(214, 'Docs restructure', 'open', 'quartio', 'success') } }),
     t('sb_studio', 4, 'Payment webhook', 'claude', 'stopped_cancelled', null, { done: 3, current: false, updated: 9 * HOUR, delivery: { stage: 'pr_open', environment: null, pr: pr(209, 'Payment webhook', 'open', 'quartio', 'failure') } }),
-    t('sb_studio', 3, 'Image pipeline', 'codex', 'stopped_crashed', null, { done: 2, current: false, updated: DAY }),
+    t('sb_studio', 3, 'Image pipeline', 'claude', 'stopped_crashed', null, { done: 2, current: false, updated: DAY }),
     t('sb_studio', 2, 'Legacy import', 'claude', 'failed_spawn_error', null, { noSteps: true, updated: 2 * DAY, origin: 'import' }),
     t('sb_studio', 1, 'Old landing page', 'claude', 'closed', null, { done: 7, current: false, archived: true, updated: 6 * DAY, delivery: { stage: 'production_done', environment: null, pr: pr(180, 'Old landing page', 'merged', 'quartio', 'success') } }),
     t('sb_product', 1, 'Prepare repository for Yulius', 'claude', 'closed', null, { origin: 'onboarding', done: 7, current: false, updated: 2 * DAY }),
-    t('sb_product', 2, 'Pricing page', 'codex', 'closed', null, { done: 7, current: false, updated: 3 * HOUR, delivery: { stage: 'merged_integration', environment: null, pr: pr(512, 'Pricing page', 'merged', 'quartio', 'none') } }),
+    t('sb_product', 2, 'Pricing page', 'claude', 'closed', null, { done: 7, current: false, updated: 3 * HOUR, delivery: { stage: 'merged_integration', environment: null, pr: pr(512, 'Pricing page', 'merged', 'quartio', 'none') } }),
+    t('sb_product', 3, 'Search filters', 'claude', 'closed', null, { done: 7, current: false, updated: 70 * MIN, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(515, 'Search filters', 'open', 'quartio', 'success') } }),
+    t('sb_product', 4, 'Invoice PDF export', 'claude', 'running', 'working', { done: 3, updated: 4 * MIN }),
+    t('sb_product', 5, 'Onboarding emails', 'claude', 'closed', null, { done: 7, current: false, updated: 2 * DAY, delivery: { stage: 'production_done', environment: null, pr: pr(498, 'Onboarding emails', 'merged', 'quartio', 'none') } }),
+    t('sb_product', 6, 'Team invites', 'claude', 'closed', null, { done: 7, current: false, updated: 26 * HOUR, author: 'anna-q', delivery: { stage: 'merged_integration', environment: null, pr: pr(505, 'Team invites', 'merged', 'quartio', 'none') } }),
     t('sb_three', 2, 'Write README', 'claude', 'closed', null, { done: 7, current: false }),
-    t('sb_three', 1, 'Explore data model', 'codex', 'running', 'working', { done: 1, author: 'anna-q' }),
+    t('sb_three', 1, 'Explore data model', 'claude', 'running', 'working', { done: 1, author: 'anna-q' }),
   ];
   db.messages = [
-    { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_11', login: null, title: '#11 3D model viewer (codex)' }, to_task_id: 'tsk_studio_12', kind: 'scope', subject: 'Scope: src/viewer/**', body: 'I am working in src/viewer/** and public/models/**. Please avoid those paths; I will stay out of src/api/**.', created_at: iso(42 * MIN), read: true },
+    { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_11', login: null, title: '#11 3D model viewer (claude)' }, to_task_id: 'tsk_studio_12', kind: 'scope', subject: 'Scope: src/viewer/**', body: 'I am working in src/viewer/** and public/models/**. Please avoid those paths; I will stay out of src/api/**.', created_at: iso(42 * MIN), read: true },
     { id: 'msg_2', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_10', login: null, title: '#10 AWS login for deploy (claude)' }, to_task_id: 'tsk_studio_12', kind: 'question', subject: 'Which port does the API use?', body: 'Is the checkout API served on http://localhost:20003 in this sandbox? I need it for the deploy smoke test.', created_at: iso(8 * MIN), read: false },
     { id: 'msg_3', task: 'tsk_studio_12', from: { task_id: null, login: 'mkarp', title: 'mkarp' }, to_task_id: 'tsk_studio_12', kind: 'info', subject: '', body: 'Use the Stripe test keys only. The AWS sign-in tab is open: ' + `${ORIGIN}/s/studio/browser?tab=tab-aws`, created_at: iso(3 * MIN), read: false },
   ];
   db.accounts = [
-    { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
-    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', enabled: true, priority: 2, status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: null, in_use_by: 3 },
-    { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', enabled: true, priority: 3, status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
-    { id: 'acc_x1', provider: 'openai', label: 'Codex #1', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
-    { id: 'acc_x2', provider: 'openai', label: 'Codex #2', enabled: true, priority: 2, status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
-    { id: 'acc_x3', provider: 'openai', label: 'Codex spare', enabled: false, priority: 9, status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', email: 'michal.karp@example.com', plan: 'Max 20x', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
+    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', email: 'team.dev@example.com', plan: 'Max 20x', enabled: true, priority: 2, status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: null, in_use_by: 3 },
+    { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', email: 'ops@example.com', plan: 'Max 5x', enabled: true, priority: 3, status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
+    { id: 'acc_x1', provider: 'anthropic', label: 'Claude #4', email: 'studio@example.com', plan: 'Max 5x', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
+    { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', email: 'product@example.com', plan: 'Pro', enabled: true, priority: 2, status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_x3', provider: 'anthropic', label: 'Claude spare', email: null, plan: null, enabled: false, priority: 9, status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
   // `wf-feature` and `wf-quick-task` are the built-in instance workflows the server seeds.
   db.workflows = [
@@ -194,7 +198,7 @@ function seed(params) {
   ];
   db.automations = [
     { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
-    { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'codex', enabled: false, created_via: 'ui', next_run_at: null, last_run: null },
+    { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, created_via: 'ui', next_run_at: null, last_run: null },
   ];
   db.mcp = [
     { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true },
@@ -208,6 +212,8 @@ function seed(params) {
     { id: 'usr_4', github_login: 'old-contractor', display_name: 'old-contractor', is_instance_admin: false, disabled: true, github_linked: true },
   ];
   db.runs = []; // EnvironmentRun records, newest last
+  const pastRun = (n, env, kind, by, ago) => ({ run_id: `run_seed_${n}`, sandbox_id: 'sb_product', environment: env, kind, state: 'succeeded', command: kind === 'manual' ? null : 'node scripts/deployer.mjs --target dev-vm', commit: 'b7e9f01c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a', requested_by: by, output: kind === 'manual' ? `${by} confirmed ${env}.` : 'deploying… done in 2m 14s', exit_code: kind === 'manual' ? null : 0, started_at: iso(ago), ended_at: iso(ago - 2 * MIN), startedMs: Date.now() - ago - 1e9 });
+  db.runs.push(pastRun(1, 'dev-vm', 'command', 'mkarp', 2 * DAY + HOUR), pastRun(2, 'dev-vm', 'manual', 'mkarp', 2 * DAY + 30 * MIN), pastRun(3, 'rollout', 'manual', 'anna-q', 2 * DAY - HOUR), pastRun(4, 'dev-vm', 'command', 'mkarp', 3 * HOUR));
   db.promotionPr = new Map(); // sandbox id → open promotion PR URL (merge_commit promotion)
   recount(db);
   return db;
@@ -321,7 +327,7 @@ function detail(db, task) {
       : { wall_ms: Date.now() - Date.parse(task.created_at), active_ms: 41 * MIN, input_tokens: 182340, output_tokens: 23410, cache_read_tokens: 1204000, cache_write_tokens: 90210, models: [task.model], switches: task.number === 9 ? 1 : 0, turns: 17 },
     feedback: [],
     delivery: delivery(db, task),
-    switches: task.number === 9 ? [{ at: iso(2 * MIN), reason: 'claude accounts exhausted', from: 'claude/Claude #2', to: 'codex/Codex #1' }] : [],
+    switches: task.number === 9 ? [{ at: iso(2 * MIN), reason: 'account exhausted', from: 'Claude Code (Claude #2)', to: 'Claude Code (Claude #4)' }] : [],
   };
 }
 
@@ -534,24 +540,24 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
   need(sandbox, 'write');
   if (sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing') fail(409, 'conflict', 'The project is being prepared; new tasks start after the preparation task lands (or an admin skips it).');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
-  if (!['claude', 'codex'].includes(body.harness)) fail(422, 'invalid', 'Unknown harness.');
+  if (body.harness && body.harness !== 'claude') fail(422, 'invalid', 'harness must be claude (Yulius runs Claude Code only)');
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
   const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
   const wf = db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {
-    id, sandbox_id: sandbox.id, number, title, harness: body.harness, status: 'queued', activity: null,
+    id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     unread_messages: 0, archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
-    model: body.model || (body.harness === 'claude' ? 'claude-opus-4' : 'gpt-5-codex'), effort: body.effort || 'default', prompt: body.prompt,
+    model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
     delivery: null,
   };
   db.tasks.push(task);
   recount(db);
   later(() => touch(db, task, { status: 'starting' }), 700);
-  later(() => touch(db, task, { status: 'running', activity: 'working', account_label: task.harness === 'claude' ? 'Claude #1' : 'Codex #1' }), 1800);
+  later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return json(201, summary(task));
 });
 route('GET', `/api/tasks/${ID}`, ({ db, p }) => detail(db, taskOf(db, p[0])));
@@ -567,9 +573,9 @@ const continueHandler = ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (LIVE.has(task.status)) fail(409, 'conflict', 'The task is already running.');
-  if (body && body.harness) task.harness = body.harness;
   touch(db, task, { status: 'starting', activity: null });
-  later(() => touch(db, task, { status: 'running', activity: 'waiting', account_label: task.harness === 'claude' ? 'Claude #1' : 'Codex #1' }), 1300);
+  const account = db.accounts.find((a) => body && a.id === body.account_id);
+  later(() => touch(db, task, { status: 'running', activity: 'waiting', account_label: account ? account.label : 'Claude #1' }), 1300);
   return summary(task);
 };
 route('POST', `/api/tasks/${ID}/continue`, continueHandler);
@@ -577,14 +583,13 @@ route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (!['running', 'waiting_capacity'].includes(task.status)) fail(409, 'conflict', 'Only running tasks can switch.');
-  const from = `${task.harness}/${task.account_label}`;
-  const target = body.harness || task.harness;
+  const from = task.account_label;
   const account = db.accounts.find((a) => a.id === body.account_id);
   touch(db, task, { status: 'switching' });
   later(() => {
-    touch(db, task, { status: 'running', activity: 'waiting', harness: target, account_label: account ? account.label : target === 'claude' ? 'Claude #1' : 'Codex #1' });
+    touch(db, task, { status: 'running', activity: 'waiting', account_label: account ? account.label : 'Claude #1' });
     const session = db.sessions.get(task.id);
-    if (session) session.notice(`↻ switched from ${from} to ${target}/${task.account_label}`);
+    if (session) session.notice(`↻ switched from ${from} to ${task.account_label}`);
   }, 2500);
   return summary(task);
 });
@@ -645,7 +650,7 @@ route('GET', `/api/sandboxes/${ID}/git`, ({ db, p }) => {
     recent_commits: [
       { sha: '9f3c2a17b0e4d5c6a7b8c9d0e1f2a3b4c5d6e7f8', subject: 'feat(checkout): cart totals with tax rules', author: 'task #12 (claude)', at: iso(25 * MIN) },
       { sha: '4b1d9e0c7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d', subject: 'docs: restructure architecture section', author: 'task #5 (claude)', at: iso(5 * HOUR) },
-      { sha: 'c0ffee1234567890abcdef1234567890abcdef12', subject: 'fix(viewer): dispose WebGL context on unmount', author: 'task #11 (codex)', at: iso(7 * HOUR) },
+      { sha: 'c0ffee1234567890abcdef1234567890abcdef12', subject: 'fix(viewer): dispose WebGL context on unmount', author: 'task #11', at: iso(7 * HOUR) },
     ],
     // Open pull requests only.
     pulls: tasks.map(pull).filter((pr) => pr && pr.state === 'open'),
@@ -654,6 +659,9 @@ route('GET', `/api/sandboxes/${ID}/git`, ({ db, p }) => {
   };
 });
 route('GET', `/api/tasks/${ID}/delivery`, ({ db, p }) => delivery(db, taskOf(db, p[0])));
+// The server has no task changes API yet (GET /api/tasks/{tid}/changes and /commits are proposed in
+// docs/api.md): the mock answers 404 like it, so the Git review shows its Branch-only view here too.
+
 route('POST', `/api/tasks/${ID}/delivery/pr`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -682,7 +690,6 @@ route('POST', `/api/tasks/${ID}/delivery/merge`, ({ db, p }) => {
   if (sandbox.profile.auto_promote && pos.kind === 'promote') {
     const production = (sandbox.profile.environments || []).filter((e) => e.after === 'production');
     task.delivery.stage = production.length ? 'promoted' : 'production_done';
-    notes.push(`Promoted ${sandbox.profile.integration_branch} → ${sandbox.profile.production_branch} automatically (auto_promote).`);
   }
   touch(db, task);
   return { ...delivery(db, task), notes };
@@ -781,19 +788,160 @@ route('GET', `/api/sandboxes/${ID}/delivery/runs/${ID}`, ({ db, p }) => {
 
 // ---- Skills, workflows, automations, MCP
 
-route('GET', `/api/sandboxes/${ID}/skills`, ({ db, p }) => { sandboxOf(db, p[0]); return db.skills; });
+// A believable SKILL.md: frontmatter, headings, steps, a checklist, a code block and a table.
+function skillContent(skill) {
+  return `---
+name: ${skill.name}
+description: ${skill.description}
+---
+
+# ${skill.name}
+
+Use this skill when the task matches the description above. Keep changes small and **verify them** before you report.
+
+## Steps
+
+1. Read \`AGENTS.md\` and the task spec.
+2. Make the smallest complete change.
+3. Verify with tests and report *evidence*, not intentions.
+
+## Checklist
+
+- [x] The spec names the goal and the plan
+- [ ] Tests cover the new behaviour
+- [ ] The PR description links the spec
+
+> Ask before changing public APIs or the database schema.
+
+## Commands
+
+\`\`\`bash
+cargo test --workspace
+scripts/dev check
+\`\`\`
+
+| Check | When |
+| --- | --- |
+| Unit tests | every change |
+| UI contracts | web changes |
+
+See [the contributing guide](https://example.com/contributing) for the details.
+`;
+}
+// The sandbox repository's files, as the files API serves them (root `sandbox`, or a task's
+// worktree as `task:<id>`), kept in memory per sandbox and root. Repository skills are files here
+// (.agents/skills/<name>/SKILL.md, .claude/skills/<name>/SKILL.md), as on the server, so editing or
+// adding one through the files API shows in the skill catalog.
+const REPO_SKILL = /^(\.agents\/skills|\.claude\/skills)\/([a-z0-9][a-z0-9-]*)\/SKILL\.md$/;
+function mockSha(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return (h.toString(16).padStart(8, '0') + text.length.toString(16)).padEnd(64, '0').slice(0, 64);
+}
+function repoTree(db, sid, root = 'sandbox') {
+  db.repoTrees = db.repoTrees || {};
+  const key = `${sid}|${root}`;
+  if (!db.repoTrees[key]) {
+    const files = new Map();
+    for (const skill of db.skills.filter((sk) => sk.source === 'repository')) files.set(skill.path, skillContent(skill));
+    files.set('README.md', `# ${(sandboxOf(db, sid).repo || {}).name || sandboxOf(db, sid).slug}\n\nThe ${sandboxOf(db, sid).name} storefront.\n`);
+    files.set('AGENTS.md', '# Agents\n\nRead the task spec first. Keep changes small; run the tests before you report.\n');
+    files.set('src/api/checkout.rs', 'pub fn cart_total(cart: &Cart) -> Money {\n    cart.subtotal()\n}\n');
+    db.repoTrees[key] = { files, dirs: new Set() };
+  }
+  return db.repoTrees[key];
+}
+function repoPath(raw) {
+  const path = String(raw || '').replace(/^\/+|\/+$/g, '');
+  if (path.split('/').some((part) => part === '..' || part === '.git')) fail(403, 'forbidden', 'that path is outside the folder or reserved');
+  return path;
+}
+const isDir = (tree, path) => path === '' || tree.dirs.has(path) || [...tree.files.keys(), ...tree.dirs].some((f) => f.startsWith(`${path}/`));
+const parentOf = (path) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
+function skillCatalog(db, sid) {
+  const tree = repoTree(db, sid);
+  const repo = [...tree.files.keys()].map((path) => [path, path.match(REPO_SKILL)]).filter(([, m]) => m).map(([path, m]) => {
+    const text = tree.files.get(path);
+    const description = text.match(/^---\n[\s\S]*?^description:\s*(.+)$[\s\S]*?\n---/m);
+    return { name: m[2], description: description ? description[1].replace(/^["']|["']$/g, '').trim() : '', source: 'repository', path, enabled: true };
+  });
+  return [...repo, ...db.skills.filter((sk) => sk.source !== 'repository')];
+}
+route('GET', `/api/sandboxes/${ID}/skills`, ({ db, p }) => { sandboxOf(db, p[0]); return skillCatalog(db, p[0]); });
 route('GET', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p }) => {
-  const skill = db.skills.find((s) => s.name === p[1]);
+  const skill = skillCatalog(db, p[0]).find((s) => s.name === p[1]);
   if (!skill) fail(404, 'not_found', 'not found');
-  return { name: skill.name, content: `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n# ${skill.name}\n\n1. Read AGENTS.md and the task spec.\n2. Make the smallest complete change.\n3. Verify with tests and report evidence.\n` };
+  if (skill.source === 'repository') return { name: skill.name, content: repoTree(db, p[0]).files.get(skill.path) };
+  const stored = db.skills.find((s) => s.name === p[1]);
+  if (stored.content === undefined) stored.content = skillContent(stored);
+  return { name: stored.name, content: stored.content };
 });
+// PUT {enabled} toggles an instance or Open Mercato skill (SetSkillEnabled; repository skills: 422).
 route('PUT', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
-  const skill = db.skills.find((s) => s.name === p[1]);
+  if (typeof body.enabled !== 'boolean') fail(422, 'invalid', 'missing field `enabled`');
+  const skill = skillCatalog(db, p[0]).find((s) => s.name === p[1]);
   if (!skill) fail(404, 'not_found', 'not found');
   if (skill.source === 'repository') fail(422, 'invalid', 'repository skills are always available inside the repository');
   if (skill.source === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance skills are managed by instance administrators');
-  skill.enabled = Boolean(body.enabled);
+  db.skills.find((s) => s.name === p[1]).enabled = body.enabled;
+  return json(204);
+});
+
+// ---- Built-in editor files API (EDT-001..004): list, read, write (atomic, base_sha256), create, delete.
+route('GET', `/api/sandboxes/${ID}/files`, ({ db, p, query }) => {
+  sandboxOf(db, p[0]);
+  const tree = repoTree(db, p[0], query.get('root') || 'sandbox');
+  const dir = repoPath(query.get('path'));
+  if (!isDir(tree, dir)) fail(404, 'not_found', 'not found');
+  const prefix = dir ? `${dir}/` : '';
+  const entries = new Map();
+  for (const path of [...tree.dirs, ...tree.files.keys()]) {
+    if (!path.startsWith(prefix) || path === dir) continue;
+    const rest = path.slice(prefix.length);
+    const name = rest.split('/')[0];
+    const isFile = !rest.includes('/') && tree.files.has(path);
+    if (!entries.has(name) || !isFile) entries.set(name, { name, path: prefix + name, kind: isFile ? 'file' : 'dir', size: isFile ? tree.files.get(path).length : 0 });
+  }
+  const list = [...entries.values()].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1));
+  return { path: dir, entries: list, truncated: false };
+});
+route('GET', `/api/sandboxes/${ID}/files/content`, ({ db, p, query }) => {
+  sandboxOf(db, p[0]);
+  const tree = repoTree(db, p[0], query.get('root') || 'sandbox');
+  const path = repoPath(query.get('path'));
+  if (!tree.files.has(path)) fail(404, 'not_found', 'not found');
+  const content = tree.files.get(path);
+  return { path, content, binary: false, too_large: false, size: content.length, sha256: mockSha(content) };
+});
+route('PUT', `/api/sandboxes/${ID}/files/content`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const tree = repoTree(db, p[0], body.root || 'sandbox');
+  const path = repoPath(body.path);
+  if (typeof body.content !== 'string') fail(422, 'invalid', 'content is required');
+  if (!isDir(tree, parentOf(path))) fail(404, 'not_found', 'the folder does not exist');
+  const exists = tree.files.has(path);
+  if (body.base_sha256 ? !exists || mockSha(tree.files.get(path)) !== body.base_sha256 : exists) fail(409, 'conflict', exists ? 'the file changed since it was read' : 'the file no longer exists');
+  tree.files.set(path, body.content);
+  return { path, sha256: mockSha(body.content), size: body.content.length };
+});
+route('POST', `/api/sandboxes/${ID}/files`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const tree = repoTree(db, p[0], body.root || 'sandbox');
+  const path = repoPath(body.path);
+  if (!path) fail(422, 'invalid', 'path is required');
+  if (tree.files.has(path) || isDir(tree, path)) fail(409, 'conflict', 'it already exists');
+  if (!isDir(tree, parentOf(path))) fail(404, 'not_found', 'the folder does not exist');
+  if (body.kind === 'dir') tree.dirs.add(path); else tree.files.set(path, '');
+  return json(201, { name: path.split('/').pop(), path, kind: body.kind === 'dir' ? 'dir' : 'file', size: 0 });
+});
+route('DELETE', `/api/sandboxes/${ID}/files`, ({ db, p, query }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const tree = repoTree(db, p[0], query.get('root') || 'sandbox');
+  const path = repoPath(query.get('path'));
+  if (!path) fail(403, 'forbidden', 'the folder itself cannot be deleted');
+  for (const f of [...tree.files.keys()]) if (f === path || f.startsWith(`${path}/`)) tree.files.delete(f);
+  for (const d of [...tree.dirs]) if (d === path || d.startsWith(`${path}/`)) tree.dirs.delete(d);
   return json(204);
 });
 
@@ -924,7 +1072,7 @@ route('GET', '/api/admin/accounts', ({ db }) => { adminOnly(db); return db.accou
 // 201 {account, login_id}: the account waits in `pending_login` until the login terminal finishes.
 route('POST', '/api/admin/accounts', ({ db, body }) => {
   adminOnly(db);
-  if (!['anthropic', 'openai'].includes(body.provider)) fail(422, 'invalid', 'provider must be anthropic or openai');
+  if (body.provider !== 'anthropic') fail(422, 'invalid', 'provider must be anthropic (Claude)');
   if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
   db.nextId += 1;
   const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, enabled: true, priority: 100, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
@@ -948,6 +1096,16 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   if (account.in_use_by > 0) fail(409, 'conflict', `${account.label} is used by ${account.in_use_by} live task(s)`);
   db.accounts = db.accounts.filter((a) => a.id !== p[0]);
   return json(204);
+});
+// Refreshes the provider's usage windows; an account that must sign in again gets the provider's 502.
+route('POST', `/api/admin/accounts/${ID}/usage`, ({ db, p }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  if (account.status === 'relogin' || account.status === 'pending_login') fail(502, 'upstream', account.last_error || 'the provider refused the usage request; sign in again');
+  account.usage = { ...account.usage, observed_at: new Date().toISOString() };
+  account.last_error = null;
+  return account;
 });
 route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
   adminOnly(db);
@@ -988,7 +1146,7 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
       total,
       closed: Math.round(total * 0.62),
       by_status: { closed: Math.round(total * 0.62), stopped_cancelled: Math.round(total * 0.12), running: 3, failed_spawn_error: 1, stopped_crashed: 2 },
-      by_harness: { claude: Math.round(total * 0.68), codex: Math.round(total * 0.32) },
+      by_harness: { claude: total },
       by_origin: { ui: Math.round(total * 0.8), automation: Math.round(total * 0.15), import: Math.round(total * 0.05) },
     },
     tasks_per_day: perDay,
@@ -996,18 +1154,17 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
     tokens: tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown),
     tokens_by_model: [
       { model: 'claude-opus-4', ...tokenTotals(Math.round(runs * 0.6), Math.round(total * 0.6), n(26e6), n(3.1e6), n(200e6), null, 0) },
-      { model: 'gpt-5-codex', ...tokenTotals(Math.round(runs * 0.3), Math.round(total * 0.3), n(12e6), n(1.7e6), n(90e6), null, 0) },
+      { model: 'claude-sonnet-4', ...tokenTotals(Math.round(runs * 0.3), Math.round(total * 0.3), n(12e6), n(1.7e6), n(90e6), null, 0) },
       { model: 'unknown', ...tokenTotals(unknown, unknown, null, null, null, null, unknown) },
     ],
     tokens_by_harness: [
-      { harness: 'claude', ...tokenTotals(Math.round(runs * 0.68), Math.round(total * 0.68), n(29e6), n(3.5e6), n(220e6), null, unknown) },
-      { harness: 'codex', ...tokenTotals(Math.round(runs * 0.32), Math.round(total * 0.32), n(12e6), n(1.7e6), n(90e6), null, 0) },
+      { harness: 'claude', ...tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown) },
     ],
     tokens_by_account: [
       ...db.accounts.filter((a) => a.enabled).map((a, i) => ({ account_id: a.id, account_label: a.label, ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
       { account_id: 'acc_deleted', account_label: null, ...tokenTotals(2, 1, n(1e6), n(0.1e6), null, null, 0) },
     ],
-    switches: { total: Math.round(total * 0.15), account: Math.round(total * 0.11), provider: Math.round(total * 0.04) },
+    switches: { total: Math.round(total * 0.15) },
     feedback: { correct: Math.round(total * 0.3), incorrect: Math.round(total * 0.06) },
     truncated: false,
   };
@@ -1048,8 +1205,8 @@ route('GET', '/api/status', ({ db }) => {
     sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: 8, queued: db.tasks.filter((t) => t.status === 'queued').length },
     sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: s.counts.running })),
     accounts: db.accounts.map((a) => (admin
-      ? { label: a.label, provider: a.provider, status: a.status, enabled: a.enabled, usage: a.usage, id: a.id, priority: a.priority, last_error: a.last_error, in_use_by: a.in_use_by }
-      : { label: a.label, provider: a.provider, status: a.status, enabled: a.enabled, usage: a.usage })),
+      ? { label: a.label, provider: a.provider, plan: a.plan, status: a.status, enabled: a.enabled, usage: a.usage, id: a.id, priority: a.priority, last_error: a.last_error, in_use_by: a.in_use_by, email: a.email }
+      : { label: a.label, provider: a.provider, plan: a.plan, status: a.status, enabled: a.enabled, usage: a.usage })),
     contained: db.me.instance.contained,
   };
 });
@@ -1060,6 +1217,7 @@ const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/a
 
 async function handleFetch(db, url, init = {}) {
   await delay(50 + Math.random() * 150);
+  if (db.offline) throw new TypeError('Failed to fetch'); // simulated outage (__yuliusMock.goOffline())
   const u = new URL(url, ORIGIN);
   const method = (init.method || 'GET').toUpperCase();
   let body = {};
@@ -1170,20 +1328,9 @@ const SCRIPT_CLAUDE = [
   `     ${c(114, 'test result: ok. 14 passed; 0 failed')}`,
   `${c(255, '⏺')} The API is running at ${c(39, 'http://localhost:20003/api/cart')} — I opened it in the sandbox browser.`,
   `${c(255, '⏺')} ${bold('yulius')} - message_send (MCP)(to: "#11", kind: "scope", subject: "I own src/api/**")`,
-  `  ${dim('⎿  Delivered to #11 3D model viewer (codex)')}`,
+  `  ${dim('⎿  Delivered to #11 3D model viewer')}`,
   `${c(173, '✻')} ${c(173, 'Pondering…')} ${dim('(esc to interrupt)')}`,
   `${c(255, '⏺')} Done with this step. Anything else before I write the UI wiring?`,
-];
-
-const SCRIPT_CODEX = [
-  `${c(141, '•')} Explored`,
-  `  ${dim('└ Read viewer.tsx, scene.ts')}`,
-  `${c(141, '•')} Ran ${bold('pnpm test --filter viewer')}`,
-  `  ${dim('└ 23 passed')}`,
-  `${c(141, '•')} Edited src/viewer/scene.ts ${c(114, '(+12')} ${c(203, '-3)')}`,
-  `${c(141, '•')} Preview: ${c(39, 'http://localhost:20005/')}`,
-  `${c(141, '•')} Working ${dim('(12s • esc to interrupt)')}`,
-  `${c(255, '›')} Ready. Tell me what to change next.`,
 ];
 
 /** Persistent fake PTY for one task: a scroll region above a native-looking footer. */
@@ -1197,7 +1344,7 @@ class TermSession {
     this.viewers = new Set();
     this.cols = 120;
     this.rows = 36;
-    this.script = task.harness === 'codex' ? SCRIPT_CODEX : SCRIPT_CLAUDE;
+    this.script = SCRIPT_CLAUDE;
     this.scriptIndex = 0;
     this.timer = null;
     this.exited = !LIVE.has(task.status);
@@ -1210,9 +1357,7 @@ class TermSession {
 
   writeHeader() {
     const cwd = `/srv/yulius/sandboxes/${this.sandbox().slug}/worktrees/${this.task.number}`;
-    if (this.task.harness === 'codex') {
-      this.lines.push(`${c(141, '>_')} ${bold('OpenAI Codex')} ${dim('(v0.46.0)')}`, `   ${dim('model:')} ${this.task.model} ${this.task.effort}   ${dim('/model to change')}`, `   ${dim('directory:')} ${cwd}`, '');
-    } else {
+    {
       const w = 54;
       const row = (s, visible) => `${c(173, '│')} ${s}${' '.repeat(Math.max(0, w - 3 - visible))}${c(173, '│')}`;
       this.lines.push(
@@ -1242,19 +1387,29 @@ class TermSession {
     if (this.exited) this.lines.push('', dim(`Session ended (${this.task.status}).`));
   }
 
+  // The bottom of Claude Code as it really looks: the input between two rules, then the status line
+  // (the repository and the task's branch, as Yulius would configure it) and the mode line —
+  // contained runs use --dangerously-skip-permissions, so "bypass permissions on" — with the
+  // background shells and agents when there are any.
   footer() {
     const sep = dim('─'.repeat(Math.max(10, this.cols - 1)));
-    const prompt = `${c(245, '>')} ${this.input}`;
-    const hint = this.task.harness === 'codex'
-      ? `${dim(' ⏎ send   ⇧⏎ newline   ⌃C quit')}${' '.repeat(6)}${c(141, `${this.task.model} · ${this.task.effort}`)} ${dim('· 62% context left')}`
-      : `${dim(' ⏵⏵ accept edits on (shift+tab to cycle)')}${' '.repeat(6)}${c(173, `${this.task.model} · effort ${this.task.effort}`)}`;
-    const visible = hint.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').length;
-    const short = this.task.harness === 'codex' ? c(141, ` ${this.task.model}`) : c(173, ` ${this.task.model}`);
-    return { sep, prompt, hint: visible < this.cols ? hint : short };
+    const prompt = `${bold('❯')} ${this.input}`;
+    const sandbox = this.sandbox();
+    const repo = (sandbox.repo && sandbox.repo.name) || sandbox.slug;
+    const branch = this.task.branch || sandbox.default_branch || 'main';
+    const status = ` ${c(114, '→')} ${c(80, repo)} ${c(75, 'git:(')}${c(203, branch)}${c(75, ')')}`;
+    const contained = !(this.db.me.instance && this.db.me.instance.contained === false);
+    const extras = [];
+    if (!this.exited && this.task.number % 2 === 0) extras.push(c(80, '1 shell'));
+    if (!this.exited && this.task.unread_messages) extras.push(dim(`← ${this.task.unread_messages === 1 ? '1 agent' : `${this.task.unread_messages} agents`}`));
+    const mode = contained
+      ? ` ${c(204, '⏵⏵ bypass permissions on')}${extras.length ? '' : dim(' (shift+tab to cycle)')}`
+      : ` ${dim('? for shortcuts')}`;
+    return { sep, prompt, status, mode: `${mode}${extras.map((x) => ` ${dim('·')} ${x}`).join('')}` };
   }
 
   regionBottom() {
-    return Math.max(3, this.rows - 3);
+    return Math.max(3, this.rows - 5);
   }
 
   snapshot() {
@@ -1265,7 +1420,7 @@ class TermSession {
     let out = `${E}?25l${E}2J${E}r${E}H`;
     out += visible.join('\r\n');
     out += `${E}1;${bottom}r`;
-    out += `${E}${bottom + 1};1H${f.sep}${E}${bottom + 2};1H${E}2K${f.prompt}${E}${bottom + 3};1H${E}2K${f.hint}`;
+    out += `${E}${bottom + 1};1H${f.sep}${E}${bottom + 2};1H${E}2K${f.prompt}${E}${bottom + 3};1H${f.sep}${E}${bottom + 4};1H${E}2K${f.status}${E}${bottom + 5};1H${E}2K${f.mode}`;
     out += `${E}${bottom + 2};${3 + this.input.length}H${E}?25h`;
     return out;
   }
@@ -1539,15 +1694,13 @@ class LoginSession {
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
       this.ws = ws;
-      const account = this.db.accounts.find((a) => a.id === this.accountId);
-      const codex = account && account.provider === 'openai';
-      ws.push(JSON.stringify(this.state(codex)));
+      ws.push(JSON.stringify(this.state()));
       this.seq += 1;
       ws.push(terminalFrame(2, this.seq, [
-        bold(codex ? 'Codex login' : 'Claude Code login'),
+        bold('Claude Code login'),
         '',
         'Open this URL in your browser and approve access:',
-        c(39, codex ? 'https://auth.openai.com/oauth/authorize?client_id=mock&state=xyz' : 'https://claude.ai/oauth/authorize?code=true&client_id=mock&state=xyz'),
+        c(39, 'https://claude.ai/oauth/authorize?code=true&client_id=mock&state=xyz'),
         '',
         'Paste the authorization code here (any text in mock mode), then press Enter:',
         '> ',
@@ -1560,8 +1713,8 @@ class LoginSession {
     }
   }
 
-  state(codex) {
-    return { type: 'state', attempt_seq: null, harness: codex ? 'codex' : 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.done ? 'ok' : 'running' };
+  state() {
+    return { type: 'state', attempt_seq: null, harness: 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.done ? 'ok' : 'running' };
   }
 
   finish() {
@@ -1573,7 +1726,7 @@ class LoginSession {
       emit(this.db, { type: 'account.updated', account });
     }
     if (this.ws) {
-      this.ws.push(JSON.stringify(this.state(account && account.provider === 'openai')));
+      this.ws.push(JSON.stringify(this.state()));
       this.ws.push(JSON.stringify({ type: 'exit', status: 'ok', code: 0 }));
     }
   }
@@ -1602,7 +1755,14 @@ class BrowserSession {
   open(ws) {
     this.viewers.add(ws);
     this.sendTabs();
+    this.domUnavailable(ws);
     this.render();
+  }
+
+  /** The mock renders pixels only: the panel shows its pixel view at once. */
+  domUnavailable(ws) {
+    const active = this.tabs.find((t) => t.active);
+    if (active) ws.push(JSON.stringify({ type: 'dom_unavailable', tab_id: active.id, reason: 'the mock browser renders pixels only' }));
   }
 
   receive(ws, data) {
@@ -1616,12 +1776,16 @@ class BrowserSession {
         this.sendTabs();
         this.render();
         break;
+      case 'view':
+        if (msg.mode === 'dom') this.domUnavailable(ws);
+        break;
       case 'open': {
         this.next += 1;
         for (const t of this.tabs) t.active = false;
-        let host = msg.url;
-        try { host = new URL(msg.url).host || msg.url; } catch { /* keep raw */ }
-        this.tabs.push({ id: `tab-${this.next}`, title: host, url: msg.url, active: true, action_requested: null });
+        const url = msg.url || 'about:blank';
+        let host = url;
+        try { host = new URL(url).host || 'New tab'; } catch { /* keep raw */ }
+        this.tabs.push({ id: `tab-${this.next}`, title: host, url, active: true, action_requested: null });
         this.sendTabs();
         this.render();
         break;
@@ -1750,6 +1914,12 @@ class BrowserSession {
 
 function openSocket(db, path) {
   const ws = new MockSocket(path);
+  if (db.offline) {
+    // Simulated outage: the connection never opens and fails as an unreachable server's would.
+    ws.readyState = 3;
+    setTimeout(() => { if (ws.onerror) ws.onerror({}); if (ws.onclose) ws.onclose({ code: 1006, reason: '', wasClean: false }); }, 30);
+    return ws;
+  }
   const fatal = (code, message) => {
     ws.server = { open: () => { ws.push(JSON.stringify({ type: 'error', code, message })); ws.serverClose(1008, code); } };
   };
@@ -1802,9 +1972,9 @@ function startAmbient(db) {
     if (tick === 5 && queued) touch(db, queued, { status: 'running', activity: 'working', account_label: 'Claude #1' });
     const switching = db.tasks.find((t) => t.id === 'tsk_studio_9');
     if (tick === 4 && switching && switching.status === 'switching') {
-      touch(db, switching, { status: 'running', activity: 'waiting', account_label: 'Codex #1' });
+      touch(db, switching, { status: 'running', activity: 'waiting', account_label: 'Claude #4' });
       const session = db.sessions.get(switching.id);
-      if (session) session.notice('↻ switched from claude/Claude #2 to codex/Codex #1 (account exhausted)');
+      if (session) session.notice('↻ switched from Claude #2 to Claude #4 (account exhausted)');
     }
     const working = db.tasks.find((t) => t.id === 'tsk_studio_12');
     if (working && tick % 4 === 0 && working.status === 'running') touch(db, working);
@@ -1815,9 +1985,27 @@ function startAmbient(db) {
 export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
+  // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
+  db.goOffline = () => {
+    db.offline = true;
+    for (const ws of [...db.eventSockets]) ws.serverClose(1006, '');
+    for (const session of db.sessions.values()) for (const ws of [...(session.viewers || [])]) ws.serverClose(1006, '');
+  };
+  db.goOnline = () => { db.offline = false; };
   return {
     kind: 'mock',
-    fetch: (url, init) => handleFetch(db, url, init),
+    // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
+    fetch: (url, init = {}) => {
+      const work = handleFetch(db, url, init);
+      const { signal } = init;
+      if (!signal) return work;
+      return new Promise((resolve, reject) => {
+        const abort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
+        if (signal.aborted) { abort(); return; }
+        signal.addEventListener('abort', abort, { once: true });
+        work.then(resolve, reject);
+      });
+    },
     openSocket: (path) => openSocket(db, path),
   };
 }

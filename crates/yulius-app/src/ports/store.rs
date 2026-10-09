@@ -44,6 +44,15 @@ pub trait InstanceStore: Send + Sync {
     async fn set_installation(&self, installation_id: Option<u64>) -> AppResult<()>;
     /// Updates the public URL.
     async fn set_public_url(&self, url: &str) -> AppResult<()>;
+    /// Replaces the recovery code hash, clearing failures and the lock (ACC-011).
+    async fn set_recovery_code(&self, hash: &str) -> AppResult<()>;
+    /// Counts a wrong recovery code atomically; at `max_failures` the code is erased and
+    /// recovery locked at `at`. Returns (failures, locked).
+    async fn record_recovery_failure(
+        &self,
+        at: Timestamp,
+        max_failures: u32,
+    ) -> AppResult<(u32, bool)>;
 }
 
 /// Users and GitHub tokens.
@@ -68,6 +77,8 @@ pub trait UserStore: Send + Sync {
         disabled_at: Option<Option<Timestamp>>,
         is_instance_admin: Option<bool>,
     ) -> AppResult<()>;
+    /// Replaces a user's password hash (superadmin recovery, ACC-011).
+    async fn set_password_hash(&self, id: &UserId, phc: &str) -> AppResult<()>;
     /// Links GitHub identity details after OAuth.
     async fn link_github(
         &self,
@@ -263,6 +274,10 @@ pub trait TaskStore: Send + Sync {
         update: &TaskFieldUpdate,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Deletes a task and everything recorded for it (attempts, lineage, steps, messages to or
+    /// from it, metrics, feedback, delivery, switch decisions, claims); references from
+    /// automation runs and sandbox onboarding are cleared. Returns whether it existed.
+    async fn delete_task(&self, id: &TaskId) -> AppResult<bool>;
     /// Inserts an attempt (`Conflict` when another live attempt exists for the task).
     async fn insert_attempt(&self, attempt: &AttemptRecord) -> AppResult<()>;
     /// Attempt by id.
@@ -354,6 +369,9 @@ pub trait AccountStore: Send + Sync {
     ) -> AppResult<()>;
     /// Deletes an account.
     async fn delete_account(&self, id: &AccountId) -> AppResult<()>;
+    /// Token totals per account of the runs started at or after `since`.
+    async fn account_tokens(&self, since: Timestamp)
+    -> AppResult<Vec<crate::model::AccountTokens>>;
 }
 
 /// Steps, messages and scope claims.

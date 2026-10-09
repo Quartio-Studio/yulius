@@ -52,6 +52,9 @@ pub struct BrowserConfig {
     pub max_tabs: usize,
     /// Tool wait for the load event.
     pub load_timeout: Duration,
+    /// Address of new and blank tabs, `{sandbox}` replaced by the sandbox id (the Yulius
+    /// welcome page, BRW-006); `None` keeps `about:blank`.
+    pub new_tab_url: Option<String>,
 }
 
 impl BrowserConfig {
@@ -74,6 +77,7 @@ impl BrowserConfig {
             screencast: instance.screencast,
             max_tabs: instance.max_tabs,
             load_timeout: instance.load_timeout,
+            new_tab_url: None,
         }
     }
 
@@ -259,6 +263,13 @@ impl BrowserManager {
             }
         }
         let instance = self.launch(sandbox, profile_dir).await?;
+        instance.set_new_tab_url(
+            self.config
+                .new_tab_url
+                .as_ref()
+                .map(|template| template.replace("{sandbox}", sandbox.as_str())),
+        );
+        instance.show_welcome_in_blank_tabs().await;
         *guard = Some(Arc::clone(&instance));
         Ok(instance)
     }

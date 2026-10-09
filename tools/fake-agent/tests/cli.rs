@@ -145,46 +145,17 @@ fn claude_transcript_has_one_user_and_assistant_record_per_turn_and_a_limit() ->
 }
 
 #[test]
-fn codex_transcript_has_session_meta_and_cumulative_token_counts() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let path = dir.path().join("rollout.jsonl");
-    let path_text = path.to_string_lossy().into_owned();
-    run(
-        &[
-            "--session-id",
-            "s-3",
+fn only_claude_transcripts_are_written() -> TestResult {
+    let output = Command::new(EXE)
+        .args([
             "--transcript",
-            &path_text,
+            "/tmp/unused.jsonl",
             "--transcript-kind",
             "codex",
-            "--limit-after",
-            "2",
-        ],
-        "a\nbb\n/exit\n",
-    )?;
-    let records = read_jsonl(&path)?;
-    assert_eq!(records[0]["type"], "session_meta");
-    assert_eq!(records[0]["payload"]["id"], "s-3");
-    let counts: Vec<&Value> = records
-        .iter()
-        .filter(|r| r["payload"]["type"] == "token_count")
-        .collect();
-    assert_eq!(counts.len(), 3);
-    let total = |r: &Value| r["payload"]["info"]["total_token_usage"]["total_tokens"].as_u64();
-    assert!(total(counts[1]) > total(counts[0]));
-    assert_eq!(
-        counts[2]["payload"]["rate_limits"]["rate_limit_reached_type"],
-        "primary"
-    );
-    assert_eq!(
-        counts[2]["payload"]["rate_limits"]["primary"]["used_percent"],
-        100.0
-    );
-    let users: Vec<&Value> = records
-        .iter()
-        .filter(|r| r["type"] == "response_item" && r["payload"]["role"] == "user")
-        .collect();
-    assert_eq!(users[1]["payload"]["content"][0]["text"], "bb");
+        ])
+        .stdin(Stdio::null())
+        .output()?;
+    assert!(!output.status.success(), "other kinds are refused");
     Ok(())
 }
 

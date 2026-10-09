@@ -162,8 +162,44 @@ where a statement depended on pointing.
 | 13 | Risk of presenting design choices as requirements. | SPEC-002 is labelled engineering assumptions; SPEC-001 A-class rows marked. |
 | 14 | "whatsapp" note unexplained. | U-07: no feature invented. |
 
-Remaining genuine uncertainties are listed in SPEC-001 §9 (U-01…U-11) and SPEC-002 §12 (R-01…R-06).
+Remaining genuine uncertainties are listed in SPEC-001 §9 (U-01…U-12) and SPEC-002 §12 (R-01…R-06).
+
+## 6. Feedback on the deployed instance (F 2026-10-07)
+
+The founder's numbered goal after using the deployed instance, its follow-ups the same day, the
+Claude-only decision of the next day, and where each item landed. Later follow-ups win over earlier items (class C).
+
+| # | Feedback (paraphrased) | Requirements |
+| --- | --- | --- |
+| 1 | Per-user VS Code with profile and GitHub import. Replaced later the same day: no VS Code; a much simpler VS Code-styled editor with syntax colors and suggestions for popular languages, a clean per-user view, neither shared nor saved, no profile import. | EDT-001 (changed), EDT-003 |
+| 2 | Delete a task, not only archive it. | TSK-009 |
+| 3 | Leaving the agent session should return to the app and close the task view. | HRN-002 (changed) |
+| 4 | Goal mode selectable and the default. | TSK-010 |
+| 5 | The browser must show real DOM (or a faithful simulation), not a rendered image, and be robust. | BRW-005, ADR-09 |
+| 6 | User-scoped terminals; every user has root, but as a separate user. | UI-016, U-12 |
+| 7 | A welcome page in the browser. | BRW-006 |
+| 8 | The coding editor still did not work. | EDT-004 |
+| 9 | Usage in the accounts section. | ROT-009 |
+| 10 | Changing the harness disabled by default, with explicit approval; rotation between accounts of the same provider stays automatic. | ROT-004 (changed), ROT-012 |
+| 11 | A 6-digit recovery code from setup; three wrong tries end recovery; kept perfectly safe. | ACC-002 (changed), ACC-011, ADR-13 |
+| 12 | Agents' mouse cursor visible in the browser, like the official plugins. | BRW-007 |
+| 13 | The whole right bar hidden by default. | UI-017 |
+| 14 | The "unknown tab" error. | BRW-004 (vanished tabs are not errors) |
+| 15 | Links open in a normal new tab; localhost links in the internal browser. | UI-018 |
+| 16 | TUI, terminal and browser as HTML text with instant copying; double-click selects in the terminal. | UI-019, BRW-005 |
+| 17 | (2026-10-08, `F 2026-10-08`) Prune Codex support and provider switching now; only Claude is used; Codex returns if it gets better. Supersedes the harness approval of item 10. | TSK-001/003, ROT-001/004/007/012, ROT-005/006 withdrawn, IMP-003/004, COM-002, SKL-004, MCP-001, ADR-05/06 |
+| 18 | (2026-10-08, `F 2026-10-08 UI`) All notifications in one place, behind an icon next to Status. | UI-020 |
+| 19 | (2026-10-08, `F 2026-10-08 UI`) Model and effort as elegant lists like in Claude, workflow integrated under the chat, a rounded chat box; models are picked from a list, never typed; several providers may exist. | UI-021 |
+| 20 | (2026-10-08, `F 2026-10-08 UI`) The Status panel must be intuitive with icons (understood in 3 seconds); sandboxes and accounts as expandable lists; each account with an initials avatar, email and plan (5x, 20x… per provider), usage as horizontal bars, accounts clearly separated. | UI-022 (email/plan need the server) |
+| 21 | (2026-10-08, `F 2026-10-08 UI`) The user menu has no link to settings; add it there, with icons everywhere. | ACC-010 (changed) |
+| 22 | (2026-10-08, `F 2026-10-08 UI`) New task by keyboard; ⌘N is browser-reserved, so ⌘⇧O (as ChatGPT, Claude, Gemini, Codex) was chosen. | UI-023 |
+| 23 | (2026-10-08, `F 2026-10-08 UI`) The Tasks page is ugly and unreadable; research the state of the art and add filters. | UI-024 |
+| 24 | (2026-10-08, `F 2026-10-08 UI`) Nothing is visible on the Git page; what information should it give me? | UI-025 |
+| 25 | (2026-10-08, `F 2026-10-08 UI`) Prepare the UI and UX technically to best practice and the state of the art (audit wave 2: say what the agent needs; wave 3: technical review fixes and gaps). | UI-026, UI-027, UI-028, UI-029, UI-030, UI-031, UI-032, UI-033, HRN-005, UI-034, UI-035, UI-036, UI-037, UI-038, UI-039, UI-040, UI-041 |
 
 ## Changelog
 
+- 2026-10-08: the notification center, the composer, the Status panel and Settings from the UI review (§6 items 18–21).
+- 2026-10-08: the Claude-only decision (§6 item 17).
+- 2026-10-07: feedback coverage (§6).
 - 2026-10-07: initial traceability review and self-review log.

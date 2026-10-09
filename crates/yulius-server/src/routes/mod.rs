@@ -6,8 +6,8 @@ mod analytics;
 mod automations;
 mod browser;
 mod delivery;
-mod editor;
 mod events;
+mod files;
 mod git;
 mod imports;
 mod internal;
@@ -26,7 +26,8 @@ mod workflows;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::{any, get, patch, post, put};
+use axum::extract::DefaultBodyLimit;
+use axum::routing::{get, patch, post, put};
 use yulius_app::context::App;
 
 use crate::AppState;
@@ -38,6 +39,12 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/setup/status", get(setup_auth::setup_status))
         .route("/api/setup", post(setup_auth::setup))
         .route("/api/auth/password", post(setup_auth::password_login))
+        .route("/api/auth/recovery", get(setup_auth::recovery_status))
+        .route("/api/auth/recover", post(setup_auth::recover))
+        .route(
+            "/api/admin/recovery-code",
+            post(setup_auth::regenerate_recovery),
+        )
         .route("/api/auth/github/start", get(setup_auth::github_start))
         .route(
             "/api/auth/github/callback",
@@ -69,7 +76,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/tasks/{tid}/continue", post(tasks::resume))
         .route("/api/tasks/{tid}/switch", post(tasks::switch))
         .route("/api/archived-tasks", get(tasks::archived))
-        .route("/api/tasks/{tid}", get(tasks::detail))
+        .route("/api/tasks/{tid}", get(tasks::detail).delete(tasks::delete))
         .route("/api/tasks/{tid}/archive", post(tasks::archive))
         .route("/api/tasks/{tid}/restore", post(tasks::restore))
         .route("/api/tasks/{tid}/feedback", post(tasks::feedback))
@@ -121,6 +128,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/admin/accounts/{id}/relogin", post(accounts::relogin))
         .route(
+            "/api/admin/accounts/{id}/usage",
+            post(accounts::refresh_usage),
+        )
+        .route(
             "/api/admin/accounts/login/{lid}/terminal",
             get(accounts::login_terminal),
         )
@@ -169,17 +180,34 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             get(delivery::run),
         )
         .route("/api/sandboxes/{sid}/browser", get(browser::browser))
+        .route(
+            "/api/sandboxes/{sid}/browser/resource",
+            get(browser::resource),
+        )
         .route("/api/sandboxes/{sid}/shells", post(shells::create))
+        .route(
+            "/api/sandboxes/{sid}/files",
+            get(files::list).post(files::create).delete(files::delete),
+        )
+        .route(
+            "/api/sandboxes/{sid}/files/content",
+            // JSON-escaped file content up to yulius_app::files::MAX_FILE_BYTES.
+            get(files::read)
+                .put(files::write)
+                .layer(DefaultBodyLimit::max(6 << 20)),
+        )
         .route("/api/shells/{id}/terminal", get(shells::terminal))
-        .route("/s/{sid}/editor", any(editor::redirect_root))
-        .route("/s/{sid}/editor/", any(editor::proxy))
-        .route("/s/{sid}/editor/{*rest}", any(editor::proxy))
 }
 
 /// Internal (loopback) routes.
 pub fn internal(_app: Arc<App>) -> Router<AppState> {
     Router::new()
         .route("/internal/healthz", get(|| async { "ok" }))
+        .route("/browser/welcome", get(internal::browser_welcome))
+        .route(
+            "/browser/welcome/ports",
+            get(internal::browser_welcome_ports),
+        )
         .route("/mcp", post(mcp::post).get(mcp::get))
         .route("/hooks/{harness}/{event}", post(internal::hook))
         .route("/internal/git-credential", post(internal::git_credential))

@@ -766,13 +766,12 @@ pub fn perms(level: &str) -> GitHubPermissions {
 pub type ConfigureFn = Box<dyn FnOnce(&mut AppConfig)>;
 
 /// Adapters and data directory for [`harness_with`]; unset fields keep the [`harness`]
-/// defaults (browser and editor "unavailable", no process host, no git).
+/// defaults (browser "unavailable", no process host, no git).
 #[derive(Default)]
 pub struct HarnessOptions {
     pub git: Option<Arc<dyn yulius_app::ports::git::GitPort>>,
     pub session_host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
     pub browser: Option<Arc<dyn yulius_app::ports::browser::BrowserPort>>,
-    pub editor: Option<Arc<dyn yulius_app::ports::editor::EditorPort>>,
     /// Data directory (default: a new temporary directory). Unix socket paths are short, so
     /// tests with real session hosts pass a directory under `/tmp`.
     pub dir: Option<tempfile::TempDir>,
@@ -780,6 +779,8 @@ pub struct HarnessOptions {
     pub configure: Option<ConfigureFn>,
     /// Harness port (default: the real adapter with `/bin/false` hooks).
     pub harness: Option<Arc<dyn yulius_app::ports::harness::HarnessPort>>,
+    /// Provider usage probe (default: unavailable).
+    pub usage: Option<Arc<dyn yulius_app::ports::usage::UsageProbe>>,
 }
 
 /// Like [`harness`] with the given adapters. The data directory path is canonical.
@@ -821,9 +822,9 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         browser: options
             .browser
             .unwrap_or_else(|| Arc::new(yulius::wiring::browser::UnavailableBrowser)),
-        editor: options
-            .editor
-            .unwrap_or_else(|| Arc::new(yulius::wiring::editor::UnavailableEditor::default())),
+        usage: options
+            .usage
+            .unwrap_or_else(|| Arc::new(yulius_app::ports::usage::NoUsageProbe)),
         system: Arc::new(FixedSystem),
     };
     let app = App::new(config, deps);
@@ -1011,6 +1012,7 @@ pub async fn seed_task(
         queued_at: None,
         gate_blocks: 0,
         wake_enabled: true,
+        mode: yulius_app::model::TaskMode::Prompt,
     };
     Ok(h.store.insert_task(&task).await?)
 }

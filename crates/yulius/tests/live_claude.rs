@@ -95,6 +95,7 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
         queued_at: None,
         gate_blocks: 0,
         wake_enabled: false,
+        mode: yulius_app::model::TaskMode::Prompt,
     };
     store.insert_task(&task).await?;
     let work = tempfile::tempdir()?;
@@ -142,7 +143,6 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
         worktree: worktree.clone(),
         sandbox_home: work.path().join("home"),
         run_dir: run_dir.clone(),
-        codex_home: None,
         model: None,
         effort: None,
         contained: false,

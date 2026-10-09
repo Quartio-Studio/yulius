@@ -171,7 +171,6 @@ pub struct AppliedTask {
 fn harness_of(harness: ImportHarness) -> Harness {
     match harness {
         ImportHarness::Claude => Harness::ClaudeCode,
-        ImportHarness::Codex => Harness::Codex,
     }
 }
 
@@ -244,19 +243,6 @@ pub fn parse_rfc3339(text: &str) -> Option<Timestamp> {
     let seconds =
         date.days_since_epoch() * 86_400 + hour * 3600 + minute * 60 + second - offset_minutes * 60;
     Some(Timestamp(seconds.checked_mul(1000)?.checked_add(millis)?))
-}
-
-/// `YYYY-MM-DDTHH-MM-SS` (UTC) as used in Codex rollout file names.
-fn rollout_stamp(ts: Timestamp) -> Option<(CivilDate, String)> {
-    let date = CivilDate::from_timestamp(ts, 0)?;
-    let second_of_day = ts.0.div_euclid(1000).rem_euclid(86_400);
-    let stamp = format!(
-        "{date}T{:02}-{:02}-{:02}",
-        second_of_day / 3600,
-        (second_of_day % 3600) / 60,
-        second_of_day % 60
-    );
-    Some((date, stamp))
 }
 
 /// The branch prefix component for a user (`import/<login>/…`).
@@ -880,6 +866,7 @@ impl App {
                 origin: TaskOrigin::Import,
                 automation_run: None,
                 start: false,
+                mode: crate::model::TaskMode::Prompt,
             })
             .await?;
         let final_dir = self
@@ -1128,9 +1115,8 @@ impl App {
     /// Prepares the native resume of an imported session (IMP-004): when the task's latest
     /// lineage entry is `imported`, creates the task worktree from the imported base if it is
     /// missing, copies the stored transcript to where the harness expects it for that worktree
-    /// (Claude: `HarnessPort::claude_transcript` under the sandbox home, every record's `cwd`
-    /// rewritten; Codex: a rollout under the sandbox's Codex sessions directory with
-    /// `session_meta`/`turn_context` `cwd` rewritten) unless a native copy already exists, and
+    /// (`HarnessPort::claude_transcript` under the sandbox home, every record's `cwd`
+    /// rewritten) unless a native copy already exists, and
     /// returns the session id to resume. Returns `None` for tasks whose latest session is not
     /// imported. Call it before `ensure_worktree`/launch of a `Resume`.
     ///
@@ -1180,27 +1166,6 @@ impl App {
                     copy_claude_aux(&aux_src, &aux_dest, &cwd)
                 })
                 .await?;
-            }
-            Harness::Codex => {
-                let sessions = self.sandbox_dir(&sandbox.id).join("codex").join("sessions");
-                if self
-                    .deps
-                    .harness
-                    .find_codex_rollout(&sessions, &entry.session_id)?
-                    .is_none()
-                {
-                    let (date, stamp) = rollout_stamp(entry.first_seen)
-                        .ok_or_else(|| AppError::Internal("session time out of range".into()))?;
-                    let dest = sessions
-                        .join(format!("{:04}", date.year()))
-                        .join(format!("{:02}", date.month()))
-                        .join(format!("{:02}", date.day()))
-                        .join(format!("rollout-{stamp}-{}.jsonl", entry.session_id));
-                    blocking(move || {
-                        rewrite_transcript(&stored, &dest, |record| rewrite_codex(record, &cwd))
-                    })
-                    .await?;
-                }
             }
         }
         Ok(Some(entry.session_id))
@@ -1578,24 +1543,6 @@ fn rewrite_claude(record: &mut serde_json::Value, cwd: &str) -> bool {
     }
 }
 
-/// Sets `payload.cwd` of Codex `session_meta` and `turn_context` records.
-fn rewrite_codex(record: &mut serde_json::Value, cwd: &str) -> bool {
-    let kind = record.get("type").and_then(serde_json::Value::as_str);
-    if !matches!(kind, Some("session_meta" | "turn_context")) {
-        return false;
-    }
-    match record
-        .get_mut("payload")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        Some(payload) if payload.get("cwd").is_some_and(serde_json::Value::is_string) => {
-            payload.insert("cwd".into(), serde_json::Value::String(cwd.to_owned()));
-            true
-        }
-        _ => false,
-    }
-}
-
 /// Reads one line of at most `max` bytes into `buf` (newline included). Returns `false` at end
 /// of input; an over-long line fills `buf` with its first `max + 1` bytes.
 fn read_line_bounded(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -> io::Result<bool> {
@@ -1722,9 +1669,6 @@ mod tests {
         ] {
             assert_eq!(parse_rfc3339(bad), None, "{bad}");
         }
-        let (date, stamp) = rollout_stamp(Timestamp(1_790_848_800_500)).ok_or("stamp")?;
-        assert_eq!(date.to_string(), "2026-10-01");
-        assert_eq!(stamp, "2026-10-01T10-00-00");
         Ok(())
     }
 
@@ -1867,15 +1811,10 @@ mod tests {
         assert_eq!(first["sessionId"], "s");
         assert_eq!(lines[1], "not json");
         assert_eq!(lines[2], long, "over-long lines are copied verbatim");
-        let codex = dir.path().join("out/codex.jsonl");
-        rewrite_transcript(&src, &codex, |r| rewrite_codex(r, "/wt"))?;
-        let text = fs::read_to_string(&codex)?;
-        let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap_or(""))?;
-        assert_eq!(last["payload"]["cwd"], "/wt");
-        let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap_or(""))?;
+        let other: serde_json::Value = serde_json::from_str(lines[3])?;
         assert_eq!(
-            first["cwd"], "/home/me/repo",
-            "codex rewrite ignores other records"
+            other["payload"]["cwd"], "/old",
+            "records without a top-level cwd are untouched"
         );
         Ok(())
     }

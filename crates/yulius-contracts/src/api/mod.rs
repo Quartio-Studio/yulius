@@ -7,6 +7,7 @@ pub mod analytics;
 pub mod auth;
 pub mod automations;
 pub mod common;
+pub mod files;
 pub mod git;
 pub mod mcp;
 pub mod sandboxes;

@@ -1,0 +1,77 @@
+//! Sandbox files for the built-in editor (docs/api.md; SPEC-001 EDT-001..004).
+
+use axum::Json;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use serde::Deserialize;
+use yulius_contracts::api::files::{
+    CreateEntry, DirListing, FileContent, FileEntry, FileWritten, WriteFile,
+};
+
+use crate::AppState;
+use crate::auth::Auth;
+use crate::error::ApiResult;
+
+#[derive(Deserialize)]
+pub struct FileQuery {
+    #[serde(default)]
+    root: Option<String>,
+    #[serde(default)]
+    path: String,
+}
+
+pub async fn list(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Query(q): Query<FileQuery>,
+) -> ApiResult<Json<DirListing>> {
+    Ok(Json(
+        app.files_list(&ctx, &sid, q.root.as_deref(), &q.path)
+            .await?,
+    ))
+}
+
+pub async fn read(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Query(q): Query<FileQuery>,
+) -> ApiResult<Json<FileContent>> {
+    Ok(Json(
+        app.file_read(&ctx, &sid, q.root.as_deref(), &q.path)
+            .await?,
+    ))
+}
+
+pub async fn write(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(req): Json<WriteFile>,
+) -> ApiResult<Json<FileWritten>> {
+    Ok(Json(app.file_write(&ctx, &sid, &req).await?))
+}
+
+pub async fn create(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(req): Json<CreateEntry>,
+) -> ApiResult<(StatusCode, Json<FileEntry>)> {
+    Ok((
+        StatusCode::CREATED,
+        Json(app.file_create(&ctx, &sid, &req).await?),
+    ))
+}
+
+pub async fn delete(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Query(q): Query<FileQuery>,
+) -> ApiResult<StatusCode> {
+    app.file_delete(&ctx, &sid, q.root.as_deref(), &q.path)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}

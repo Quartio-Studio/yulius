@@ -36,12 +36,34 @@ export function relLong(iso, now = Date.now()) {
   return future ? `in ${text}` : `${text} ago`;
 }
 
+// Formatters are built once: toLocaleString with options builds a new one on every call, which
+// made date tooltips most of the cost of re-rendering long task lists (PERF-06).
+const DATE_TIME = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+const WEEKDAY = new Intl.DateTimeFormat(undefined, { weekday: 'long' });
+const MONTH_DAY = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
+
 /** Local date-time for tooltips and tables. */
 export function dateTime(iso) {
   if (!iso) return '—';
   const t = new Date(iso);
   if (Number.isNaN(t.getTime())) return String(iso);
-  return t.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return DATE_TIME.format(t);
+}
+
+/**
+ * When a usage limit resets, the way Claude says it: "Resets at 5:50 PM" within a day,
+ * "Resets Friday 10:00 AM" within a week, otherwise "Resets Oct 12".
+ */
+export function resetLabel(iso, now = Date.now()) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const ahead = t - now;
+  const time = TIME.format(t);
+  if (ahead <= 0) return 'Resetting now';
+  if (ahead < 20 * 3600e3 && new Date(t).getDate() === new Date(now).getDate()) return `Resets at ${time}`;
+  if (ahead < 6.5 * 86400e3) return `Resets ${WEEKDAY.format(t)} ${time}`;
+  return `Resets ${MONTH_DAY.format(t)}`;
 }
 
 /** Duration from milliseconds: "45 s", "12 min", "1 h 05 min", "2 d 3 h". */
@@ -91,14 +113,6 @@ export function utcOffset(minutes) {
   return `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
 }
 
-/** Usage window label: 300 → "5 h window", 10080 → "7 d window". */
-export function windowLabel(minutes) {
-  if (!minutes) return '';
-  if (minutes % 1440 === 0) return `${minutes / 1440} d window`;
-  if (minutes % 60 === 0) return `${minutes / 60} h window`;
-  return `${minutes} min window`;
-}
-
 const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 /** Validate a 5-field cron expression syntactically (the server is authoritative). */
@@ -123,6 +137,16 @@ export function describeCron(expr) {
     if (dow === '*') return `Every day at ${hhmm()}`;
     if (dow === '1-5') return `Weekdays at ${hhmm()}`;
     if (isNum(dow) && Number(dow) <= 7) return `Every ${DOW[Number(dow) % 7]} at ${hhmm()}`;
+    // A list of days ("1,3,5", "0,6", "1-3,5"): their names, Monday first.
+    if (/^\d(-\d)?(,\d(-\d)?)+$/.test(dow)) {
+      const days = new Set();
+      for (const item of dow.split(',')) { const [a, b = a] = item.split('-').map(Number); for (let d = a; d <= b && d <= 7; d += 1) days.add(d % 7); }
+      const key = [...days].sort().join(',');
+      if (key === '0,6') return `Weekends at ${hhmm()}`;
+      if (key === '0,1,2,3,4,5,6') return `Every day at ${hhmm()}`;
+      const names = [1, 2, 3, 4, 5, 6, 0].filter((d) => days.has(d)).map((d) => DOW[d].slice(0, 3));
+      return `${names.slice(0, -1).join(', ')} and ${names.at(-1)} at ${hhmm()}`;
+    }
   }
   if (isNum(min) && isNum(hour) && isNum(dom) && mon === '*' && dow === '*') return `Monthly on day ${dom} at ${hhmm()}`;
   return expr;

@@ -137,6 +137,66 @@ impl App {
         Ok(self.browser_session(&ctx.task.sandbox_id).await?)
     }
 
+    /// The label viewers see on the agent's cursor (BRW-007).
+    fn agent_label(ctx: &AgentContext) -> String {
+        format!("#{} {}", ctx.task.number, ctx.task.harness.display_name())
+    }
+
+    /// A page resource for a viewer's DOM mirror, fetched by the sandbox browser (BRW-005).
+    ///
+    /// # Errors
+    /// Access errors; browser failures (the browser must already run).
+    pub async fn browser_resource(
+        &self,
+        grant: &BrowserGrant,
+        tab: &str,
+        url: &str,
+    ) -> AppResult<crate::ports::browser::FetchedResource> {
+        let tab = yulius_contracts::browser::TabId::parse(tab)
+            .map_err(|_| AppError::Invalid("invalid tab id".into()))?;
+        let session = self
+            .deps
+            .browser
+            .running(&grant.sandbox_id)
+            .await
+            .ok_or(AppError::NotFound)?;
+        Ok(session.fetch_resource(&tab, url).await?)
+    }
+
+    /// The sandbox's listening dev-server ports (its assigned port range, probed on loopback).
+    ///
+    /// # Errors
+    /// `NotFound` for unknown sandboxes.
+    pub async fn sandbox_listening_ports(
+        &self,
+        sandbox: &str,
+    ) -> AppResult<(String, u16, u16, Vec<u16>)> {
+        let id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        let record = self
+            .deps
+            .store
+            .sandbox(&id)
+            .await?
+            .filter(|s| s.removed_at.is_none())
+            .ok_or(AppError::NotFound)?;
+        let first = record.port_base;
+        let last = first.saturating_add(record.port_count.saturating_sub(1));
+        let mut probes = tokio::task::JoinSet::new();
+        for port in first..=last {
+            probes.spawn(async move {
+                let connect = tokio::net::TcpStream::connect(("127.0.0.1", port));
+                matches!(
+                    tokio::time::timeout(std::time::Duration::from_millis(300), connect).await,
+                    Ok(Ok(_))
+                )
+                .then_some(port)
+            });
+        }
+        let mut open: Vec<u16> = probes.join_all().await.into_iter().flatten().collect();
+        open.sort_unstable();
+        Ok((record.slug, first, last, open))
+    }
+
     /// `browser_tabs`.
     pub(crate) async fn tool_browser_tabs(
         &self,
@@ -156,7 +216,9 @@ impl App {
     ) -> AppResult<Value> {
         let params: OpenParams = parse_args(args)?;
         let browser = self.agent_browser(ctx).await?;
-        to_value(&browser.tool_open(&params).await?)
+        let result = browser.tool_open(&params).await?;
+        browser.agent_activity(&result.tab.id, None, "open", &Self::agent_label(ctx));
+        to_value(&result)
     }
 
     /// `browser_navigate`.
@@ -167,7 +229,9 @@ impl App {
     ) -> AppResult<Value> {
         let params: NavigateParams = parse_args(args)?;
         let browser = self.agent_browser(ctx).await?;
-        to_value(&browser.tool_navigate(&params).await?)
+        let result = browser.tool_navigate(&params).await?;
+        browser.agent_activity(&params.tab_id, None, "navigate", &Self::agent_label(ctx));
+        to_value(&result)
     }
 
     /// `browser_click`.
@@ -178,7 +242,14 @@ impl App {
     ) -> AppResult<Value> {
         let params: ClickParams = parse_args(args)?;
         let browser = self.agent_browser(ctx).await?;
-        to_value(&browser.tool_click(&params).await?)
+        let result = browser.tool_click(&params).await?;
+        browser.agent_activity(
+            &params.tab_id,
+            Some((result.x, result.y)),
+            "click",
+            &Self::agent_label(ctx),
+        );
+        to_value(&result)
     }
 
     /// `browser_type`.
@@ -189,7 +260,9 @@ impl App {
     ) -> AppResult<Value> {
         let params: TypeParams = parse_args(args)?;
         let browser = self.agent_browser(ctx).await?;
-        to_value(&browser.tool_type(&params).await?)
+        let result = browser.tool_type(&params).await?;
+        browser.agent_activity(&params.tab_id, None, "type", &Self::agent_label(ctx));
+        to_value(&result)
     }
 
     /// `browser_snapshot`.

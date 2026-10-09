@@ -5,7 +5,7 @@
 
 use crate::time::Timestamp;
 
-/// One provider rate-limit window as last reported (for example Codex `rate_limits.primary`).
+/// One provider rate-limit window as last reported (for example Claude's five-hour window).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct UsageWindow {
     /// Percentage of the window already used (0–100, may exceed 100); `None` when unknown.

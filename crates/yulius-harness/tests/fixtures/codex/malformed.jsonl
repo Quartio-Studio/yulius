@@ -1,6 +1,0 @@
-{"timestamp":"2026-10-07T09:00:00.000Z","type":"session_meta","payload":{"id":"x"
-{"timestamp":"2026-10-07T09:00:00.000Z","type":"event_msg"}
-{"timestamp":"2026-10-07T09:00:00.000Z","type":"session_meta","payload":{"cwd":"/w"}}
-{"timestamp":"2026-10-07T09:00:00.000Z","type":"brand_new_type","payload":{"x":1}}
-{"timestamp":"2026-10-07T09:00:00.000Z","payload":{}}
-42

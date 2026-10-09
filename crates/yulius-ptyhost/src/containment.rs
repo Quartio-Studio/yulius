@@ -10,6 +10,21 @@ pub const BWRAP_PROGRAM: &str = "bwrap";
 /// Host system directories bound read-only at the same path (skipped by bwrap when absent).
 pub const SYSTEM_READONLY_DIRS: [&str; 6] = ["/usr", "/bin", "/lib", "/lib64", "/etc", "/opt"];
 
+/// The host resolver configuration.
+const RESOLV_CONF: &str = "/etc/resolv.conf";
+
+/// The directory holding the real resolver file when `resolv_conf` is a symbolic link out of the
+/// bound system directories (Ubuntu: `/run/systemd/resolve/stub-resolv.conf`). Without it name
+/// resolution fails inside the sandbox even though the network is shared.
+fn resolver_dir(resolv_conf: &Path) -> Option<String> {
+    let target = std::fs::canonicalize(resolv_conf).ok()?;
+    let dir = target.parent()?;
+    let inside = SYSTEM_READONLY_DIRS
+        .iter()
+        .any(|system| dir.starts_with(system));
+    (!inside).then(|| dir.to_string_lossy().into_owned())
+}
+
 /// Builds the full `bwrap` argv that runs `inner_argv` with working directory `cwd` inside the
 /// sandbox described by `c`.
 ///
@@ -37,11 +52,28 @@ pub fn bwrap_argv(c: &BubblewrapSpec, inner_argv: &[String], cwd: &str) -> Vec<S
     .into_iter()
     .map(str::to_owned)
     .collect();
+    if let Some(identity) = &c.identity {
+        argv.extend([
+            "--unshare-user".into(),
+            "--uid".into(),
+            identity.uid.to_string(),
+            "--gid".into(),
+            identity.gid.to_string(),
+            "--hostname".into(),
+            identity.hostname.clone(),
+        ]);
+    }
     for dir in SYSTEM_READONLY_DIRS {
         push_bind(&mut argv, "--ro-bind-try", dir);
     }
+    if c.share_net
+        && let Some(dir) = resolver_dir(Path::new(RESOLV_CONF))
+    {
+        push_bind(&mut argv, "--ro-bind-try", &dir);
+    }
     push_bind(&mut argv, "--bind", &c.sandbox_root);
-    if !Path::new(&c.home).starts_with(&c.sandbox_root) {
+    let home_mounted = c.binds.iter().any(|b| b.dest == c.home);
+    if !home_mounted && !Path::new(&c.home).starts_with(&c.sandbox_root) {
         push_bind(&mut argv, "--bind", &c.home);
     }
     for path in &c.writable {
@@ -49,6 +81,10 @@ pub fn bwrap_argv(c: &BubblewrapSpec, inner_argv: &[String], cwd: &str) -> Vec<S
     }
     for path in &c.readonly {
         push_bind(&mut argv, "--ro-bind", path);
+    }
+    for bind in &c.binds {
+        let option = if bind.writable { "--bind" } else { "--ro-bind" };
+        argv.extend([option.to_owned(), bind.source.clone(), bind.dest.clone()]);
     }
     argv.extend(["--setenv".into(), "HOME".into(), c.home.clone()]);
     argv.extend(["--chdir".into(), cwd.to_owned()]);
@@ -68,16 +104,82 @@ fn push_bind(argv: &mut Vec<String>, option: &str, path: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resolver_dir_follows_symlinks_out_of_the_system_dirs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let run = dir.path().join("run-resolve");
+        std::fs::create_dir_all(&run)?;
+        std::fs::write(run.join("stub-resolv.conf"), "nameserver 127.0.0.53\n")?;
+        let link = dir.path().join("resolv.conf");
+        std::os::unix::fs::symlink(run.join("stub-resolv.conf"), &link)?;
+        let expected = run.canonicalize()?.to_string_lossy().into_owned();
+        assert_eq!(super::resolver_dir(&link), Some(expected));
+        assert_eq!(super::resolver_dir(&dir.path().join("missing")), None);
+        Ok(())
+    }
+
     use super::*;
 
     fn spec() -> BubblewrapSpec {
         BubblewrapSpec {
             sandbox_root: "/data/sandboxes/s1".into(),
             home: "/data/sandboxes/s1/home".into(),
-            writable: vec!["/data/sandboxes/s1/codex/acct".into()],
+            writable: vec!["/data/sandboxes/s1/cache".into()],
             readonly: vec!["/data/sandboxes/s1/repo/.git/hooks".into()],
             share_net: true,
+            binds: Vec::new(),
+            identity: None,
         }
+    }
+
+    #[test]
+    fn identity_maps_root_and_binds_the_user_home_elsewhere() {
+        let mut c = spec();
+        c.home = "/home/alice".into();
+        c.binds = vec![
+            yulius_contracts::ptyhost::BindMount {
+                source: "/data/users/u1/home".into(),
+                dest: "/home/alice".into(),
+                writable: true,
+            },
+            yulius_contracts::ptyhost::BindMount {
+                source: "/data/users/u1/identity/passwd".into(),
+                dest: "/etc/passwd".into(),
+                writable: false,
+            },
+        ];
+        c.identity = Some(yulius_contracts::ptyhost::SandboxIdentity {
+            uid: 0,
+            gid: 0,
+            hostname: "s1".into(),
+        });
+        let argv = bwrap_argv(&c, &["bash".into()], "/data/sandboxes/s1/repo");
+        let ns = position(
+            &argv,
+            &[
+                "--unshare-user",
+                "--uid",
+                "0",
+                "--gid",
+                "0",
+                "--hostname",
+                "s1",
+            ],
+        );
+        assert!(ns.is_some(), "{argv:?}");
+        assert!(
+            position(&argv, &["--bind", "/home/alice", "/home/alice"]).is_none(),
+            "{argv:?}"
+        );
+        let home = position(&argv, &["--bind", "/data/users/u1/home", "/home/alice"]);
+        let passwd = position(
+            &argv,
+            &["--ro-bind", "/data/users/u1/identity/passwd", "/etc/passwd"],
+        );
+        let etc = position(&argv, &["--ro-bind-try", "/etc", "/etc"]);
+        assert!(home.is_some() && passwd > etc, "{argv:?}");
+        assert!(position(&argv, &["--setenv", "HOME", "/home/alice"]).is_some());
     }
 
     fn position(argv: &[String], window: &[&str]) -> Option<usize> {
@@ -128,7 +230,7 @@ mod tests {
             &argv,
             &["--bind", "/data/sandboxes/s1", "/data/sandboxes/s1"],
         );
-        let writable = position(&argv, &["--bind", "/data/sandboxes/s1/codex/acct"]);
+        let writable = position(&argv, &["--bind", "/data/sandboxes/s1/cache"]);
         let readonly = position(&argv, &["--ro-bind", "/data/sandboxes/s1/repo/.git/hooks"]);
         assert!(root < writable && writable < readonly && root.is_some());
         assert!(position(&argv, &["--setenv", "HOME", "/data/sandboxes/s1/home"]).is_some());

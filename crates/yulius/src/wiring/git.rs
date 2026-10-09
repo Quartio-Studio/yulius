@@ -165,6 +165,23 @@ impl GitPort for GitAdapter {
         .await
     }
 
+    async fn discard_worktree(
+        &self,
+        repo: &Path,
+        path: &Path,
+        owned_root: &Path,
+        branch: Option<&str>,
+    ) -> AppResult<()> {
+        let (git, repo, path, root, branch) = (
+            self.git(),
+            repo.to_path_buf(),
+            path.to_path_buf(),
+            owned_root.to_path_buf(),
+            branch.map(str::to_owned),
+        );
+        blocking(move || git.worktree_discard(&repo, &path, &root, branch.as_deref())).await
+    }
+
     async fn has_changes(&self, worktree: &Path) -> AppResult<bool> {
         let (git, wt) = (self.git(), worktree.to_path_buf());
         blocking(move || git.has_changes(&wt)).await

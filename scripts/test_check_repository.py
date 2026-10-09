@@ -1,8 +1,9 @@
 """Negative cases prove boundary and integrity checks fail closed."""
 from pathlib import Path
 import tempfile
+import re
 import unittest
-from check_repository import dependency_errors, link_errors, manifest_errors, skill_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
 
 
 def package(name, layer, dependencies=()):
@@ -57,6 +58,136 @@ class RepositoryContracts(unittest.TestCase):
             self.assertEqual(skill_errors(skill), [])
             skill.write_text(skill.read_text().replace("name: sample-skill", "name: wrong"))
             self.assertTrue(skill_errors(skill))
+
+
+
+class StyleContracts(unittest.TestCase):
+    def test_tokens_and_scales_pass(self):
+        css = ".a { color: var(--text); background: var(--surface); box-shadow: var(--shadow); font-size: var(--fs); line-height: var(--lh); border-radius: var(--radius); padding: 4px 12px; gap: 8px; margin-top: 1px; font-weight: 600; white-space: nowrap; }"
+        self.assertEqual(style_errors(css), [])
+
+    def test_literal_type_values_rejected(self):
+        for rule in ("font-size: 14px", "line-height: 1.45", "font-family: Arial", "font-weight: 700", "font: 600 12px/1.4 system-ui"):
+            with self.subTest(rule=rule):
+                self.assertTrue(style_errors(f".a {{ {rule}; }}"))
+
+    def test_off_scale_radius_and_spacing_rejected(self):
+        for rule in ("border-radius: 8px", "padding: 10px", "gap: 14px", "margin: 0 18px", "transition: opacity .15s", "transition: width 0.3s ease", "z-index: 999"):
+            with self.subTest(rule=rule):
+                self.assertTrue(style_errors(f".a {{ {rule}; }}"))
+
+    def test_colour_literals_rejected(self):
+        for rule in ("color: #fff", "background: rgba(0, 0, 0, 0.5)", "border-color: hsl(10 50% 50%)", "fill: white", "--x: #123456"):
+            with self.subTest(rule=rule):
+                self.assertTrue(style_errors(f".a {{ {rule}; }}"))
+
+    def test_shipped_stylesheet_follows_the_scales(self):
+        self.assertEqual(style_errors((ROOT / STYLESHEET).read_text()), [])
+
+
+class ContrastContracts(unittest.TestCase):
+    def test_wcag_ratio_matches_reference_values(self):
+        self.assertAlmostEqual(contrast_ratio((0, 0, 0, 1), (255, 255, 255, 1)), 21.0, places=2)
+        self.assertAlmostEqual(contrast_ratio((118, 118, 118, 1), (255, 255, 255, 1)), 4.54, places=2)
+
+    def test_tokens_resolve_through_var_and_color_mix(self):
+        env = theme_tokens(":root { --brand: #4c9dff; } :root, [data-theme=\"dark\"] { --accent: var(--brand); } :root { --soft: color-mix(in srgb, var(--accent) 14%, transparent); }")["dark"]
+        r, g, b, a = _resolve("--soft", env)
+        self.assertEqual((round(r), round(g), round(b), round(a, 2)), (76, 157, 255, 0.14))
+
+    def test_low_contrast_role_is_reported_per_theme(self):
+        # A pale --text-faint in the light theme only (whatever the palette): reported for [light].
+        tokens = (ROOT / TOKENS).read_text()
+        light = tokens.index('[data-theme="light"]')
+        css = tokens[:light] + re.sub(r"--text-faint: [^;]+;", "--text-faint: #c0c4cc;", tokens[light:], count=1)
+        self.assertTrue(any("[light]: --text-faint" in e for e in contrast_errors(css)))
+
+    def test_shipped_tokens_meet_contrast(self):
+        self.assertEqual(contrast_errors((ROOT / TOKENS).read_text()), [])
+
+
+class CopyTests(unittest.TestCase):
+    def test_requirement_ids_in_strings(self):
+        self.assertEqual(copy_errors("toast('Merged (GIT-002).');"), ["web script:1: requirement ID in a user-visible string; say it in words"])
+        self.assertEqual(copy_errors("// GIT-002: merges are human actions\n/* SPEC-001 §6.2 */\nconst a = 'Merged';"), [])
+
+
+
+class BrandTests(unittest.TestCase):
+    def test_index_follows_brand_and_tokens(self):
+        index, brand, tokens = ((ROOT / path).read_text() for path in (INDEX, BRAND, TOKENS))
+        self.assertEqual(brand_errors(index, brand, tokens), [])
+        renamed = brand.replace("name: 'Yulius'", "name: 'Acme'")
+        self.assertEqual(sorted(e.split(": ")[1].split(" ")[0] for e in brand_errors(index, renamed, tokens)), ["noscript", "title"])
+        restyled = brand.replace("markStyle: 'fill'", "markStyle: 'stroke'")
+        self.assertTrue(any(": icon " in e for e in brand_errors(index, restyled, tokens)))
+        recoloured = tokens.replace("--brand-mark: var(--text);", "--brand-mark: var(--accent);")
+        self.assertTrue(any(": icon " in e for e in brand_errors(index, brand, recoloured)))
+
+
+
+class InlineStyleTests(unittest.TestCase):
+    def test_only_computed_values_inline(self):
+        self.assertEqual(inline_style_errors("h('i', { style: { width: `${pct}%`, '--cols': String(n), color: 'var(--ok)' } })"), [])
+        self.assertTrue(inline_style_errors("h('i', { style: { maxWidth: '640px' } })"))
+        self.assertTrue(inline_style_errors("h('i', { style: { color: '#ff0000' } })"))
+
+
+
+class ControlHeightTests(unittest.TestCase):
+    def test_controls_use_tokens(self):
+        self.assertEqual(control_height_errors(".btn { height: var(--control-md); } .tab-dot { height: 7px; } .btn.busy::after { height: 12px; }"), [])
+        self.assertTrue(control_height_errors(".ed-tab { height: 30px; }"))
+        self.assertEqual(control_height_errors((ROOT / STYLESHEET).read_text()), [])
+
+
+
+class BrandNameTests(unittest.TestCase):
+    def test_name_only_from_brand(self):
+        self.assertTrue(brand_name_errors("toast('Cannot reach the Acme server.');", "Acme"))
+        self.assertEqual(brand_name_errors("headers['X-Acme-CSRF'] = t; // Acme notes\ntoast(`${BRAND.name} restarted`);", "Acme"), [])
+
+
+
+class BypassTests(unittest.TestCase):
+    def test_closed_bypasses(self):
+        for rule in ("color: var(--x, #f00)", "background: crimson", "border-color: Cyan", "animation: spin 1s linear", "color: color(display-p3 1 0 0)"):
+            self.assertTrue(style_errors(f".a {{ {rule}; }}"), rule)
+        self.assertEqual(style_errors(".a { color: var(--text); border-color: transparent; animation: spin var(--duration-spin) linear infinite; }"), [])
+        self.assertTrue(inline_style_errors("el.style.color = '#ff0000';"))
+        self.assertTrue(inline_style_errors("el.style.setProperty('width', '640px');"))
+        self.assertEqual(inline_style_errors("el.style.width = `${pct}%`; el.style.opacity = '0.6';"), [])
+        css = (ROOT / TOKENS).read_text().replace('[data-theme="light"]', "[data-theme=light]")
+        self.assertIn("light", theme_tokens(css))
+
+
+
+class ModuleTests(unittest.TestCase):
+    def test_imports_match_exports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.js").write_text("export function used() {}\nexport const other = 1;\n")
+            (root / "a.js").write_text("export function used() {}\nexport const other = 1;\nexport const spread = {};\n")
+            (root / "b.js").write_text("import { used, missing, other, spread } from './a.js';\nused();\nconst x = { ...spread };\nx.other = 2;\n")
+            errors = module_errors(root, root)
+            self.assertTrue(any("missing" in e and "does not export" in e for e in errors))
+            self.assertTrue(any("other" in e and "never uses" in e for e in errors))
+        self.assertEqual(module_errors((ROOT / STYLESHEET).parent), [])
+
+    def test_preloads_follow_static_imports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pages").mkdir()
+            (root / "app.js").write_text("import { a } from './a.js';\nimport './pages/p.js';\nconst lazy = () => import('./lazy.js');\n")
+            (root / "a.js").write_text("// pages/*.js are pages\nexport { b } from './b.js';\n// import { x } from './commented.js';\nexport const a = 1; /* note */\n")
+            (root / "b.js").write_text("export const b = 2;\n")
+            (root / "pages" / "p.js").write_text("import { a } from '../a.js';\n")
+            (root / "lazy.js").write_text("export const z = 0;\n")
+            self.assertEqual(startup_modules(root), ["/assets/a.js", "/assets/pages/p.js", "/assets/b.js"])
+            good = '<link rel="modulepreload" href="/assets/a.js">\n<link rel="modulepreload" href="/assets/pages/p.js">\n<link rel="modulepreload" href="/assets/b.js">\n'
+            self.assertEqual(preload_errors(good, root), [])
+            self.assertTrue(preload_errors(good.replace("/assets/b.js", "/assets/lazy.js"), root))
+        self.assertEqual(preload_errors((ROOT / INDEX).read_text(), (ROOT / STYLESHEET).parent), [])
 
 
 if __name__ == "__main__":

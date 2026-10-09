@@ -54,6 +54,13 @@ pub struct InstanceRecord {
     pub setup_token_hash: Option<String>,
     /// When the superadmin was created.
     pub setup_completed_at: Option<Timestamp>,
+    /// Argon2id PHC string of the superadmin recovery code (ACC-011); `None` when none is set
+    /// or recovery is locked.
+    pub recovery_hash: Option<String>,
+    /// Consecutive wrong recovery codes.
+    pub recovery_failures: u32,
+    /// When recovery was permanently disabled by too many wrong codes.
+    pub recovery_locked_at: Option<Timestamp>,
 }
 
 /// A user.
@@ -223,6 +230,38 @@ impl TaskOrigin {
     }
 }
 
+/// How the task prompt reaches the agent (SPEC-001 TSK-010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TaskMode {
+    /// The prompt becomes the session's goal through the harness's `/goal` command (default
+    /// for new tasks).
+    #[default]
+    Goal,
+    /// The prompt is the first message.
+    Prompt,
+}
+
+impl TaskMode {
+    /// Wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Goal => "goal",
+            Self::Prompt => "prompt",
+        }
+    }
+
+    /// Parses a wire name.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "goal" => Some(Self::Goal),
+            "prompt" => Some(Self::Prompt),
+            _ => None,
+        }
+    }
+}
+
 /// A task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
@@ -274,6 +313,8 @@ pub struct TaskRecord {
     pub gate_blocks: u32,
     /// Whether idle-wake on messages is enabled.
     pub wake_enabled: bool,
+    /// Goal or prompt mode (TSK-010).
+    pub mode: TaskMode,
 }
 
 /// How an attempt was launched.
@@ -283,10 +324,6 @@ pub enum LaunchKind {
     New,
     /// Native resume of the same provider session.
     Resume,
-    /// Resume of a synthesized transcript from the other provider.
-    Translated,
-    /// Fresh session bootstrapped with a handoff document.
-    Handoff,
 }
 
 impl LaunchKind {
@@ -296,8 +333,6 @@ impl LaunchKind {
         match self {
             Self::New => "new",
             Self::Resume => "resume",
-            Self::Translated => "translated",
-            Self::Handoff => "handoff",
         }
     }
 
@@ -306,8 +341,6 @@ impl LaunchKind {
     pub fn parse(text: &str) -> Self {
         match text {
             "resume" => Self::Resume,
-            "translated" => Self::Translated,
-            "handoff" => Self::Handoff,
             _ => Self::New,
         }
     }
@@ -326,7 +359,7 @@ pub struct AttemptRecord {
     pub harness: Harness,
     /// Account used.
     pub account_id: Option<AccountId>,
-    /// Provider session id (known at launch for Claude; discovered for Codex).
+    /// Provider session id (known at launch).
     pub provider_session_id: Option<String>,
     /// Launch kind.
     pub launch_kind: LaunchKind,
@@ -365,9 +398,9 @@ pub struct ProviderSessionRecord {
     pub harness: Harness,
     /// Provider session id.
     pub session_id: String,
-    /// Stored transcript path (imported/translated copies).
+    /// Stored transcript path (imported copies).
     pub transcript_ref: Option<String>,
-    /// `native`, `imported`, `translated`.
+    /// `native` or `imported`.
     pub origin: String,
     /// First seen.
     pub first_seen: Timestamp,
@@ -425,7 +458,7 @@ pub struct AccountRecord {
     pub provider: Provider,
     /// Label.
     pub label: String,
-    /// Sealed credential (Claude token or Codex auth.json).
+    /// Sealed credential (the Claude OAuth token).
     pub credential: Option<Sealed>,
     /// Priority (lower first).
     pub priority: i32,
@@ -553,6 +586,25 @@ pub struct MetricsRecord {
     pub turns: Option<u32>,
     /// Active milliseconds.
     pub active_ms: Option<u64>,
+}
+
+/// Token totals of one account's runs since a time (ROT-009).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AccountTokens {
+    /// Account.
+    pub account_id: String,
+    /// Runs started since the time.
+    pub runs: u32,
+    /// Distinct tasks.
+    pub tasks: u32,
+    /// Input tokens (`None` when no run reported usage).
+    pub input: Option<u64>,
+    /// Output tokens.
+    pub output: Option<u64>,
+    /// Cache-read tokens.
+    pub cache_read: Option<u64>,
+    /// Cache-write tokens.
+    pub cache_write: Option<u64>,
 }
 
 /// Feedback of one user on one task.

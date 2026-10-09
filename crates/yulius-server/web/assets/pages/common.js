@@ -1,6 +1,6 @@
 // Shared page scaffolding: frame, tables, async loading.
 
-import { h, setChildren, placeholder } from '../dom.js';
+import { h, setChildren, placeholder, loadError, keepFocus } from '../dom.js';
 
 /** Page frame: title row with actions, then the content area. Returns {el, body, actions}. */
 export function pageFrame({ title, sub, actions = [] }) {
@@ -22,7 +22,7 @@ export function dataTable(columns, rows, { onRowClick, empty = 'Nothing here yet
   if (!rows || rows.length === 0) return h('div', { class: 'card' }, placeholder(empty));
   return h('div', { class: 'table-wrap' },
     h('table', { class: 'table' },
-      h('thead', null, h('tr', null, columns.map((c) => h('th', { class: [c.class, c.phoneHide && 'hide-phone'] }, c.label)))),
+      h('thead', null, h('tr', null, columns.map((c) => h('th', { class: [c.class, c.phoneHide && 'hide-phone'] }, c.label || h('span', { class: 'sr-only' }, 'Actions'))))),
       h('tbody', null, rows.map((row) => {
         const tr = h('tr', { class: [onRowClick && 'clickable', rowClass && rowClass(row)] },
           columns.map((c) => h('td', { class: [c.class, c.phoneHide && 'hide-phone'] }, c.render(row))));
@@ -50,11 +50,13 @@ export function loader(container, fetcher, render) {
     try {
       const data = await fetcher();
       if (mine !== generation) return;
-      setChildren(container, render(data));
+      // A reload after an action (a switch, Run now) keeps keyboard focus on the same control.
+      keepFocus(container, () => setChildren(container, render(data)));
       hasContent = true;
     } catch (error) {
       if (mine !== generation) return;
-      setChildren(container, placeholder(error.message || String(error), 'error'));
+      // Say it inline with a way out, like the Git page (UX2-07).
+      setChildren(container, loadError(`Couldn’t load this: ${error.message || String(error)}`, () => reload()));
       hasContent = false;
     } finally {
       if (mine === generation) container.style.opacity = '';

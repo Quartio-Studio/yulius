@@ -1,0 +1,444 @@
+//! The user's own space for user processes (sandbox shells and editors): SPEC-001 UI-016 and
+//! EDT-003, SPEC-002 ADR-12.
+//!
+//! Contract:
+//! - every user has one persistent home, `<data>/users/<user id>/home` (0700), shared by all of
+//!   their shells and editors in every sandbox and never bound into agent runs or other users'
+//!   processes; it is seeded once from `/etc/skel` with a Git identity;
+//! - contained user processes run in their own user namespace as uid/gid 0 with generated
+//!   `/etc/passwd` and `/etc/group` that name uid 0 after the user's login, `HOME=/home/<login>`,
+//!   the sandbox slug as host name and a `sudo` shim first on `PATH` (the user is root of the
+//!   sandbox; host system directories stay read-only, U-12);
+//! - uncontained (development) user processes keep the server's identity and use the home's
+//!   host path;
+//! - Git in user processes authenticates through the credential helper with a workspace token
+//!   that the internal listener maps to the user's own GitHub token
+//!   ([`App::workspace_git_credential`]); a grant is checked against the user's current access
+//!   on every use.
+
+use std::collections::HashMap;
+use std::io::Write as _;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use yulius_domain::ids::{SandboxId, UserId};
+use yulius_domain::permission::Action;
+
+use crate::auth::hex_token;
+use crate::context::App;
+use crate::error::{AppError, AppResult};
+use crate::hooks::GitCredential;
+use crate::model::{SandboxRecord, UserRecord};
+use crate::ports::session::{Bind, Containment, Identity};
+
+/// Directory of Yulius helper commands inside user processes.
+pub const SANDBOX_BIN: &str = "/yulius/bin";
+/// The host's sudo, replaced by the shim inside user processes.
+const HOST_SUDO: &str = "/usr/bin/sudo";
+
+/// The `sudo` shim: the user already is root (uid 0) inside the sandbox, so `sudo` only drops
+/// its own options and runs the command (`sudo -i`/`-s` or no command start a shell).
+const SUDO_SHIM: &str = r#"#!/bin/sh
+# Yulius sandbox sudo: you are already root (uid 0) inside this sandbox.
+shell=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -i|-s|--login|--shell) shell=1; shift ;;
+    -u|-g|-p|-C|-h|-r|-t|-T|-U|-D) shift 2 ;;
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+if [ $# -eq 0 ]; then
+  if [ "$shell" = 1 ] || [ -t 0 ]; then exec "${SHELL:-/bin/sh}" -l; fi
+  echo "usage: sudo command [args...]" >&2
+  exit 1
+fi
+exec "$@"
+"#;
+
+/// Registry of workspace tokens (process-local; user processes do not survive a restart).
+#[derive(Default)]
+pub struct WorkspaceGrants {
+    by_token: Mutex<HashMap<String, (UserId, SandboxId)>>,
+    by_owner: Mutex<HashMap<(UserId, SandboxId), String>>,
+}
+
+/// Paths and settings of a user's process space in one sandbox.
+#[derive(Debug, Clone)]
+pub struct UserSpace {
+    /// Login name inside sandboxes.
+    pub login: String,
+    /// Host path of the user's home.
+    pub home_host: PathBuf,
+    /// `HOME` as seen by the user's processes.
+    pub home: PathBuf,
+    /// Containment of the user's processes in this sandbox.
+    pub containment: Containment,
+    /// Environment shared by the user's shells and editors.
+    pub env: Vec<(String, String)>,
+}
+
+impl UserSpace {
+    /// A path inside the user's home as seen by the user's processes, and its host path.
+    #[must_use]
+    pub fn home_path(&self, relative: &str) -> (PathBuf, PathBuf) {
+        (self.home.join(relative), self.home_host.join(relative))
+    }
+}
+
+/// The user's login inside sandboxes: the GitHub login in lower case (letters, digits, `-`,
+/// `_`), else `user-<id prefix>`; never `root`.
+#[must_use]
+pub fn sandbox_login(user: &UserRecord) -> String {
+    let login: String = user
+        .github_login
+        .as_deref()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .flat_map(char::to_lowercase)
+        .take(32)
+        .collect();
+    let valid = login.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && login != "root";
+    if valid {
+        login
+    } else {
+        let id: String = user
+            .id
+            .as_str()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(8)
+            .collect();
+        format!("user-{}", id.to_ascii_lowercase())
+    }
+}
+
+/// The sandbox slug as a host name (letters, digits, `-`; at most 63 characters).
+#[must_use]
+pub fn sandbox_hostname(slug: &str) -> String {
+    let name: String = slug
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .take(63)
+        .collect();
+    let name = name.trim_matches('-').to_owned();
+    if name.is_empty() {
+        "sandbox".into()
+    } else {
+        name
+    }
+}
+
+fn private_dir(path: &Path) -> AppResult<()> {
+    std::fs::create_dir_all(path).map_err(AppError::internal)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .map_err(AppError::internal)
+}
+
+/// Writes `bytes` atomically with `mode`.
+fn write_file(path: &Path, bytes: &[u8], mode: u32) -> AppResult<()> {
+    let temporary = path.with_extension("tmp");
+    let _ = std::fs::remove_file(&temporary);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(&temporary)
+        .map_err(AppError::internal)?;
+    file.write_all(bytes).map_err(AppError::internal)?;
+    file.sync_all().map_err(AppError::internal)?;
+    drop(file);
+    std::fs::rename(&temporary, path).map_err(AppError::internal)
+}
+
+/// `passwd` and `group` naming uid/gid 0 after `login` (first, so it wins lookups by id).
+fn identity_files(login: &str, display_name: &str, home: &Path) -> (String, String) {
+    let gecos: String = display_name
+        .chars()
+        .filter(|c| !matches!(c, ':' | '\n' | '\r' | ','))
+        .take(64)
+        .collect();
+    let shell = if Path::new("/bin/bash").exists() {
+        "/bin/bash"
+    } else {
+        "/bin/sh"
+    };
+    let passwd = format!(
+        "{login}:x:0:0:{gecos}:{home}:{shell}\nroot:x:0:0:root:/root:{shell}\nnobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n",
+        home = home.display()
+    );
+    let group = format!("{login}:x:0:\nroot:x:0:\nnogroup:x:65534:\n");
+    (passwd, group)
+}
+
+/// Seeds a new home: `/etc/skel` dotfiles and a Git identity.
+fn seed_home(home: &Path, user: &UserRecord, login: &str) {
+    for name in [".bashrc", ".profile", ".bash_logout"] {
+        let source = Path::new("/etc/skel").join(name);
+        if source.is_file() {
+            let _ = std::fs::copy(&source, home.join(name));
+        }
+    }
+    let email = match (user.github_login.as_deref(), user.github_id) {
+        (Some(gh), Some(id)) => format!("{id}+{gh}@users.noreply.github.com"),
+        (Some(gh), None) => format!("{gh}@users.noreply.github.com"),
+        _ => format!("{login}@users.noreply.github.com"),
+    };
+    let name: String = user
+        .display_name
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\\' | '\n' | '\r'))
+        .collect();
+    let name = if name.trim().is_empty() {
+        login.to_owned()
+    } else {
+        name
+    };
+    let gitconfig = format!("[user]\n\tname = \"{name}\"\n\temail = {email}\n");
+    let _ = write_file(&home.join(".gitconfig"), gitconfig.as_bytes(), 0o644);
+}
+
+impl App {
+    fn users_dir(&self) -> PathBuf {
+        self.config.data_dir.join("users")
+    }
+
+    /// The `sudo` shim directory (written on first use).
+    fn runtime_bin(&self) -> AppResult<PathBuf> {
+        let dir = self.config.data_dir.join("runtime").join("bin");
+        std::fs::create_dir_all(&dir).map_err(AppError::internal)?;
+        let sudo = dir.join("sudo");
+        let current = std::fs::read(&sudo).ok();
+        if current.as_deref() != Some(SUDO_SHIM.as_bytes()) {
+            write_file(&sudo, SUDO_SHIM.as_bytes(), 0o755)?;
+        }
+        Ok(dir)
+    }
+
+    /// Prepares `user`'s space in `sandbox`: home (created and seeded once), identity files
+    /// and the containment and environment of their processes.
+    ///
+    /// # Errors
+    /// `Internal` when the directories or files cannot be written.
+    pub fn user_space(&self, user: &UserRecord, sandbox: &SandboxRecord) -> AppResult<UserSpace> {
+        let login = sandbox_login(user);
+        let root = self.users_dir().join(user.id.as_str());
+        let home_host = root.join("home");
+        let fresh = !home_host.exists();
+        private_dir(&root)?;
+        private_dir(&home_host)?;
+        if fresh {
+            seed_home(&home_host, user, &login);
+        }
+        let token = self.workspace_token(&user.id, &sandbox.id);
+        let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
+        let mut env = vec![
+            ("USER".to_owned(), login.clone()),
+            ("LOGNAME".to_owned(), login.clone()),
+            ("YULIUS_URL".to_owned(), self.config.internal_url.clone()),
+            ("YULIUS_TASK_TOKEN".to_owned(), token),
+        ];
+        env.extend(crate::supervisor::git_credential_env(
+            &self.config.yulius_exe,
+        ));
+        if !self.config.contained {
+            env.push(("HOME".into(), home_host.to_string_lossy().into_owned()));
+            env.push(("PATH".into(), path));
+            return Ok(UserSpace {
+                login,
+                home: home_host.clone(),
+                home_host,
+                containment: Containment::None,
+                env,
+            });
+        }
+        let home = PathBuf::from("/home").join(&login);
+        let identity_dir = root.join("identity");
+        private_dir(&identity_dir)?;
+        let (passwd, group) = identity_files(&login, &user.display_name, &home);
+        write_file(&identity_dir.join("passwd"), passwd.as_bytes(), 0o644)?;
+        write_file(&identity_dir.join("group"), group.as_bytes(), 0o644)?;
+        let bin = self.runtime_bin()?;
+        env.push(("HOME".into(), home.to_string_lossy().into_owned()));
+        env.push(("PATH".into(), format!("{SANDBOX_BIN}:{path}")));
+        let containment = Containment::Bubblewrap {
+            sandbox_root: self.sandbox_dir(&sandbox.id),
+            home: home.clone(),
+            writable: Vec::new(),
+            readonly: std::iter::once(self.config.yulius_exe.clone())
+                .chain(self.config.contained_readonly.iter().cloned())
+                .collect(),
+            binds: vec![
+                Bind {
+                    source: home_host.clone(),
+                    dest: home.clone(),
+                    writable: true,
+                },
+                Bind {
+                    source: identity_dir.join("passwd"),
+                    dest: PathBuf::from("/etc/passwd"),
+                    writable: false,
+                },
+                Bind {
+                    source: identity_dir.join("group"),
+                    dest: PathBuf::from("/etc/group"),
+                    writable: false,
+                },
+                Bind {
+                    source: bin.clone(),
+                    dest: PathBuf::from(SANDBOX_BIN),
+                    writable: false,
+                },
+            ]
+            .into_iter()
+            // Login shells of uid 0 get a fresh PATH from /etc/profile; the shim also replaces
+            // the host's setuid sudo, which cannot work in an unprivileged namespace.
+            .chain(Path::new(HOST_SUDO).is_file().then(|| Bind {
+                source: bin.join("sudo"),
+                dest: PathBuf::from(HOST_SUDO),
+                writable: false,
+            }))
+            .collect(),
+            identity: Some(Identity {
+                uid: 0,
+                gid: 0,
+                hostname: sandbox_hostname(&sandbox.slug),
+            }),
+        };
+        Ok(UserSpace {
+            login,
+            home_host,
+            home,
+            containment,
+            env,
+        })
+    }
+
+    /// The workspace token of `user` in `sandbox` (stable for the server's lifetime).
+    fn workspace_token(&self, user: &UserId, sandbox: &SandboxId) -> String {
+        let key = (user.clone(), sandbox.clone());
+        let mut owners = self
+            .workspace_grants
+            .by_owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(token) = owners.get(&key) {
+            return token.clone();
+        }
+        let token = format!("ws_{}", hex_token(&self.deps.crypto.random_bytes()));
+        owners.insert(key.clone(), token.clone());
+        self.workspace_grants
+            .by_token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(token.clone(), key);
+        token
+    }
+
+    /// A GitHub credential for a user process: the user's own token, for the sandbox's
+    /// repository only, while the user may still work in the sandbox.
+    ///
+    /// # Errors
+    /// `Unauthenticated` for unknown tokens; `Forbidden` for other hosts or repositories or a
+    /// user who lost write access; GitHub failures as usual.
+    pub async fn workspace_git_credential(
+        &self,
+        token: &str,
+        host: &str,
+        path: Option<&str>,
+    ) -> AppResult<GitCredential> {
+        let (user_id, sandbox_id) = self
+            .workspace_grants
+            .by_token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(token)
+            .cloned()
+            .ok_or(AppError::Unauthenticated)?;
+        if host != "github.com" {
+            return Err(AppError::Forbidden(
+                "credentials are only issued for github.com".into(),
+            ));
+        }
+        let user = self
+            .deps
+            .store
+            .user(&user_id)
+            .await?
+            .filter(|u| u.disabled_at.is_none())
+            .ok_or(AppError::Unauthenticated)?;
+        let (sandbox, _) = self.require(&user, &sandbox_id, Action::Work).await?;
+        if let Some(path) = path {
+            let wanted = path
+                .trim_matches('/')
+                .trim_end_matches(".git")
+                .to_ascii_lowercase();
+            let own = format!("{}/{}", sandbox.repo_owner, sandbox.repo_name).to_ascii_lowercase();
+            if wanted != own {
+                return Err(AppError::Forbidden(
+                    "credentials are only issued for this project's repository".into(),
+                ));
+            }
+        }
+        let token = self.user_github_token(&user).await?;
+        Ok(GitCredential { token })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use yulius_domain::time::Timestamp;
+
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn user(login: Option<&str>) -> Result<UserRecord, Box<dyn std::error::Error>> {
+        Ok(UserRecord {
+            id: UserId::parse("u-01hzx3k9q7a1b2c3")?,
+            github_login: login.map(str::to_owned),
+            github_id: Some(42),
+            display_name: "Alice: Example".into(),
+            avatar_url: None,
+            is_superadmin: false,
+            is_instance_admin: false,
+            password_hash: None,
+            created_at: Timestamp(1),
+            disabled_at: None,
+        })
+    }
+
+    #[test]
+    fn logins_are_safe_and_never_root() -> TestResult {
+        assert_eq!(sandbox_login(&user(Some("MrFishPL"))?), "mrfishpl");
+        assert_eq!(sandbox_login(&user(Some("a-b_c"))?), "a-b_c");
+        assert!(sandbox_login(&user(Some("root"))?).starts_with("user-"));
+        assert!(sandbox_login(&user(Some("9lives"))?).starts_with("user-"));
+        assert!(sandbox_login(&user(None)?).starts_with("user-"));
+        Ok(())
+    }
+
+    #[test]
+    fn hostnames_are_valid() {
+        assert_eq!(sandbox_hostname("test-app"), "test-app");
+        assert_eq!(sandbox_hostname("my.repo_x"), "my-repo-x");
+        assert_eq!(sandbox_hostname("..."), "sandbox");
+        assert_eq!(sandbox_hostname(&"a".repeat(80)).len(), 63);
+    }
+
+    #[test]
+    fn uid_zero_is_named_after_the_user_first() {
+        let (passwd, group) = identity_files("alice", "Alice: Example", Path::new("/home/alice"));
+        let first = passwd.lines().next().unwrap_or_default();
+        assert!(
+            first.starts_with("alice:x:0:0:Alice Example:/home/alice:"),
+            "{first}"
+        );
+        assert!(passwd.contains("\nroot:x:0:0:"));
+        assert!(group.starts_with("alice:x:0:\n"));
+    }
+}

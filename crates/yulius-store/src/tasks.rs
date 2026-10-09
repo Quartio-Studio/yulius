@@ -5,7 +5,7 @@ use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
     AttemptRecord, FeedbackRecord, LaunchKind, MetricsRecord, ProviderSessionRecord,
-    SwitchDecisionRecord, TaskOrigin, TaskRecord,
+    SwitchDecisionRecord, TaskMode, TaskOrigin, TaskRecord,
 };
 use yulius_app::ports::store::{AttemptUpdate, TaskFieldUpdate, TaskStore};
 use yulius_domain::harness::Harness;
@@ -17,7 +17,7 @@ use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
 
 const TASK_COLS: &str = "id, sandbox_id, number, title, prompt, harness, model, effort, workflow_id, \
     status, activity, branch, worktree_path, spec_path, origin, automation_run, created_by, created_at, \
-    updated_at, closed_at, archived_at, queued_at, gate_blocks, wake_enabled";
+    updated_at, closed_at, archived_at, queued_at, gate_blocks, wake_enabled, mode";
 
 const ATTEMPT_COLS: &str = "id, task_id, seq, harness, account_id, provider_session_id, launch_kind, \
     state, run_dir, token_hash, host_token, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason";
@@ -67,6 +67,10 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
         queued_at: row.get::<_, Option<i64>>("queued_at")?.map(Timestamp),
         gate_blocks: to_u32(row.get("gate_blocks")?),
         wake_enabled: row.get("wake_enabled")?,
+        mode: {
+            let mode: String = row.get("mode")?;
+            TaskMode::parse(&mode).ok_or_else(|| bad_column("mode", &mode))?
+        },
     })
 }
 
@@ -162,7 +166,7 @@ impl TaskStore for SqliteStore {
                 )
                 .map_err(db)?;
             tx.execute(
-                &format!("INSERT INTO tasks ({TASK_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)"),
+                &format!("INSERT INTO tasks ({TASK_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)"),
                 params![
                     t.id.as_str(),
                     t.sandbox_id.as_str(),
@@ -188,6 +192,7 @@ impl TaskStore for SqliteStore {
                     t.queued_at.map(|x| x.0),
                     i64::from(t.gate_blocks),
                     t.wake_enabled,
+                    t.mode.as_str(),
                 ],
             )
             .map_err(db)?;
@@ -309,6 +314,38 @@ impl TaskStore for SqliteStore {
             )
             .map_err(db)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn delete_task(&self, id: &TaskId) -> AppResult<bool> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let statements = [
+                "DELETE FROM metrics WHERE task_id = ?1",
+                "DELETE FROM message_receipts WHERE task_id = ?1",
+                "DELETE FROM message_receipts WHERE message_id IN (SELECT id FROM messages WHERE from_task = ?1 OR to_task = ?1)",
+                "DELETE FROM messages WHERE from_task = ?1 OR to_task = ?1",
+                "DELETE FROM step_events WHERE task_id = ?1",
+                "DELETE FROM steps WHERE task_id = ?1",
+                "DELETE FROM switch_decisions WHERE task_id = ?1",
+                "DELETE FROM scope_claims WHERE task_id = ?1",
+                "DELETE FROM feedback WHERE task_id = ?1",
+                "DELETE FROM delivery WHERE task_id = ?1",
+                "DELETE FROM provider_sessions WHERE task_id = ?1",
+                "DELETE FROM attempts WHERE task_id = ?1",
+                "UPDATE automation_runs SET task_id = NULL WHERE task_id = ?1",
+                "UPDATE sandboxes SET onboarding_task_id = NULL WHERE onboarding_task_id = ?1",
+            ];
+            for sql in statements {
+                tx.execute(sql, [id.as_str()]).map_err(db)?;
+            }
+            let deleted = tx
+                .execute("DELETE FROM tasks WHERE id = ?1", [id.as_str()])
+                .map_err(db)?;
+            tx.commit().map_err(db)?;
+            Ok(deleted > 0)
         })
         .await
     }

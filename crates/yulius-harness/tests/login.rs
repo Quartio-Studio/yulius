@@ -1,11 +1,8 @@
-//! Login flow contracts: token capture, streaming masking and Codex auth write-back ordering
-//! (SPEC-002 §7.2 "Login", §8, AC-NFR-7). All tokens are synthetic.
-
-use std::cmp::Ordering;
+//! Login flow contracts: token capture and streaming masking (SPEC-002 §7.2 "Login", §8,
+//! AC-NFR-7). All tokens are synthetic.
 
 use yulius_harness::login::{
-    MASK, TokenMasker, claude_setup_token_argv, codex_auth_last_refresh, codex_device_login_argv,
-    extract_claude_oauth_token, newer_codex_auth,
+    MASK, TokenMasker, claude_setup_token_argv, extract_claude_oauth_token,
 };
 
 const TOKEN: &str = "sk-ant-oat01-SYNTH_abc-DEF0123456789xyzSYNTHETICtoken";
@@ -24,12 +21,8 @@ fn mask_in_chunks(input: &[u8], cuts: &[usize]) -> Vec<u8> {
 }
 
 #[test]
-fn argv_of_login_commands() {
+fn argv_of_the_login_command() {
     assert_eq!(claude_setup_token_argv(), ["claude", "setup-token"]);
-    assert_eq!(
-        codex_device_login_argv(),
-        ["codex", "login", "--device-auth"]
-    );
 }
 
 #[test]
@@ -84,24 +77,4 @@ fn masker_holds_back_only_a_bounded_tail() {
     let mut short = TokenMasker::new();
     assert_eq!(short.push(b"sk-ant-oat01-ABC"), b"");
     assert_eq!(short.finish(), b"sk-ant-oat01-ABC");
-}
-
-#[test]
-fn codex_auth_newest_last_refresh_wins() {
-    let a = br#"{"tokens":{"refresh_token":"SYNTH-A"},"last_refresh":"2026-10-07T08:00:00.000Z"}"#;
-    let b = br#"{"tokens":{"refresh_token":"SYNTH-B"},"last_refresh":"2026-10-07T10:00:00+02:00"}"#;
-    let c = br#"{"tokens":{"refresh_token":"SYNTH-C"},"last_refresh":"2026-10-07T09:30:00Z"}"#;
-    let none = br#"{"tokens":{}}"#;
-    assert_eq!(
-        codex_auth_last_refresh(a).as_deref(),
-        Some("2026-10-07T08:00:00.000Z")
-    );
-    assert_eq!(codex_auth_last_refresh(b"not json"), None);
-    // b is 08:00Z, the same instant as a.
-    assert_eq!(newer_codex_auth(a, b), Ordering::Equal);
-    assert_eq!(newer_codex_auth(c, a), Ordering::Greater);
-    assert_eq!(newer_codex_auth(a, c), Ordering::Less);
-    assert_eq!(newer_codex_auth(none, a), Ordering::Less);
-    assert_eq!(newer_codex_auth(a, b"garbage"), Ordering::Greater);
-    assert_eq!(newer_codex_auth(none, none), Ordering::Equal);
 }

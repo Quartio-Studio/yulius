@@ -1,4 +1,4 @@
-//! Launch plans for Claude Code and Codex sessions (SPEC-002 §7.2, ADR-05, ADR-07).
+//! Launch plans for Claude Code sessions (SPEC-002 §7.2, ADR-05, ADR-07).
 //!
 //! [`plan_launch`] is pure: it turns a [`LaunchRequest`] into the argv, environment and config
 //! files of one run. The caller (supervisor) writes [`LaunchPlan::files`], adds the common
@@ -15,14 +15,11 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value, json};
 use yulius_domain::harness::Harness;
 
-use crate::json::{toml_string, toml_string_array};
 use crate::paths::valid_session_id;
 use crate::secret::Secret;
 
 /// Claude Code executable name (resolved through `PATH` by the spawner).
 pub const CLAUDE_PROGRAM: &str = "claude";
-/// Codex CLI executable name (resolved through `PATH` by the spawner).
-pub const CODEX_PROGRAM: &str = "codex";
 /// Environment variable holding the per-attempt Yulius bearer token (set by the supervisor).
 pub const TASK_TOKEN_ENV: &str = "YULIUS_TASK_TOKEN";
 /// Environment variable holding the internal Yulius listener URL.
@@ -32,13 +29,6 @@ pub const YULIUS_MCP_NAME: &str = "yulius";
 /// Hook events registered for Claude Code.
 pub const CLAUDE_HOOK_EVENTS: [&str; 4] =
     ["SessionStart", "UserPromptSubmit", "Stop", "Notification"];
-/// Hook events registered for Codex.
-pub const CODEX_HOOK_EVENTS: [&str; 4] = [
-    "SessionStart",
-    "UserPromptSubmit",
-    "Stop",
-    "PermissionRequest",
-];
 /// Claude settings file name inside the run directory.
 pub const CLAUDE_SETTINGS_FILE: &str = "claude-settings.json";
 /// Claude MCP config file name inside the run directory.
@@ -53,8 +43,7 @@ pub const CLAUDE_HOOK_TIMEOUT_SECONDS: u64 = 15;
 pub enum LaunchMode {
     /// A new session.
     New {
-        /// Session id to assign (Claude `--session-id`); Codex assigns its own id and ignores
-        /// this value.
+        /// Session id to assign (`--session-id`).
         session_id: Option<String>,
         /// Initial prompt.
         prompt: Option<String>,
@@ -104,8 +93,6 @@ pub struct McpServerSpec {
 pub enum Credential {
     /// Claude long-lived OAuth token from `claude setup-token`.
     ClaudeOauthToken(Secret<String>),
-    /// Contents of a Codex `auth.json`.
-    CodexAuthJson(Secret<Vec<u8>>),
 }
 
 /// Everything needed to plan one run.
@@ -121,8 +108,6 @@ pub struct LaunchRequest {
     pub sandbox_home: PathBuf,
     /// Run directory for generated config files.
     pub run_dir: PathBuf,
-    /// Codex home of the (sandbox, account) pair; required for Codex.
-    pub codex_home: Option<PathBuf>,
     /// Model override.
     pub model: Option<String>,
     /// Reasoning effort override.
@@ -137,8 +122,6 @@ pub struct LaunchRequest {
     pub mcp_servers: Vec<McpServerSpec>,
     /// Provider credential.
     pub credential: Credential,
-    /// Optional flags of the installed Codex CLI (ignored for Claude Code).
-    pub codex_features: crate::probe::CodexFeatures,
 }
 
 /// A config file the supervisor writes before spawning.
@@ -215,8 +198,7 @@ pub struct LaunchPlan {
     pub secret_env: Vec<(String, String)>,
     /// Files to write before spawning.
     pub files: Vec<PlannedFile>,
-    /// Session id the run will have, when known before spawning (`None` for a new Codex
-    /// session: read it from the new rollout's `session_meta`).
+    /// Session id the run will have, when known before spawning.
     pub session_id: Option<String>,
 }
 
@@ -237,12 +219,6 @@ impl fmt::Debug for LaunchPlan {
 /// A request that cannot be planned. Messages name the field, never its value.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LaunchError {
-    /// The credential kind does not belong to the harness.
-    #[error("credential does not match harness {0}")]
-    CredentialMismatch(Harness),
-    /// Codex needs a `CODEX_HOME`.
-    #[error("codex launch requires codex_home")]
-    MissingCodexHome,
     /// A path that must appear in argv or config is not valid UTF-8.
     #[error("path {0} is not valid UTF-8")]
     NonUtf8Path(&'static str),
@@ -361,14 +337,12 @@ fn validate(request: &LaunchRequest) -> Result<(), LaunchError> {
 /// Builds the launch plan of one run.
 ///
 /// # Errors
-/// [`LaunchError`] when the credential does not fit the harness, Codex lacks `codex_home`, a
-/// path is not UTF-8, or a session id, model, effort, prompt, URL or MCP server definition
-/// cannot be passed safely.
+/// [`LaunchError`] when a path is not UTF-8, or a session id, model, effort, prompt, URL or MCP
+/// server definition cannot be passed safely.
 pub fn plan_launch(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     validate(request)?;
     match request.harness {
         Harness::ClaudeCode => plan_claude(request),
-        Harness::Codex => plan_codex(request),
     }
 }
 
@@ -397,9 +371,7 @@ fn push_prompt(argv: &mut Vec<String>, prompt: Option<&str>) {
 }
 
 fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
-    let Credential::ClaudeOauthToken(token) = &request.credential else {
-        return Err(LaunchError::CredentialMismatch(request.harness));
-    };
+    let Credential::ClaudeOauthToken(token) = &request.credential;
     check(
         !token.expose().is_empty() && !token.expose().contains(['\0', '\n', '\r']),
         "credential",
@@ -518,113 +490,6 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     })
 }
 
-fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
-    let Credential::CodexAuthJson(auth) = &request.credential else {
-        return Err(LaunchError::CredentialMismatch(request.harness));
-    };
-    check(!auth.expose().is_empty(), "credential")?;
-    let codex_home = request
-        .codex_home
-        .as_ref()
-        .ok_or(LaunchError::MissingCodexHome)?;
-
-    let mut hooks = Map::new();
-    for event in CODEX_HOOK_EVENTS {
-        hooks.insert(
-            event.to_owned(),
-            json!([{ "hooks": [{
-                "type": "command",
-                "command": hook_command(request, "codex", event)?
-            }] }]),
-        );
-    }
-    let hooks_json = json!({ "hooks": hooks });
-
-    let mut argv = vec![CODEX_PROGRAM.to_owned()];
-    if request.codex_features.no_daemon {
-        argv.push("--no-daemon".into());
-    }
-    argv.extend(["-C".into(), utf8(&request.worktree, "worktree")?.to_owned()]);
-    let mut config = |key: String, value: String| {
-        argv.extend(["-c".into(), format!("{key}={value}")]);
-    };
-    let yulius_key = format!("mcp_servers.{YULIUS_MCP_NAME}");
-    config(
-        format!("{yulius_key}.url"),
-        toml_string(&format!("{}/mcp", base_url(request))),
-    );
-    config(
-        format!("{yulius_key}.bearer_token_env_var"),
-        toml_string(TASK_TOKEN_ENV),
-    );
-    for server in &request.mcp_servers {
-        let key = format!("mcp_servers.{}", server.name);
-        match &server.transport {
-            McpTransport::Stdio {
-                command,
-                args,
-                env_names,
-            } => {
-                config(format!("{key}.command"), toml_string(command));
-                config(format!("{key}.args"), toml_string_array(args));
-                if !env_names.is_empty() {
-                    config(format!("{key}.env_vars"), toml_string_array(env_names));
-                }
-            }
-            McpTransport::Http { url, bearer_env } => {
-                config(format!("{key}.url"), toml_string(url));
-                if let Some(name) = bearer_env {
-                    config(format!("{key}.bearer_token_env_var"), toml_string(name));
-                }
-            }
-        }
-    }
-    if let Some(effort) = &request.effort {
-        config("model_reasoning_effort".into(), toml_string(effort));
-    }
-    if let Some(model) = &request.model {
-        argv.extend(["-m".into(), model.clone()]);
-    }
-    if request.contained {
-        argv.push("--dangerously-bypass-approvals-and-sandbox".into());
-    }
-    argv.push("--dangerously-bypass-hook-trust".into());
-    let (session_id, prompt) = match &request.mode {
-        LaunchMode::New { prompt, .. } => (None, prompt.as_deref()),
-        LaunchMode::Resume { session_id, prompt } => {
-            argv.extend(["resume".into(), session_id.clone()]);
-            (Some(session_id.clone()), prompt.as_deref())
-        }
-    };
-    push_prompt(&mut argv, prompt);
-
-    Ok(LaunchPlan {
-        argv,
-        cwd: request.worktree.clone(),
-        env: vec![
-            (
-                "CODEX_HOME".into(),
-                utf8(codex_home, "codex_home")?.to_owned(),
-            ),
-            (YULIUS_URL_ENV.into(), base_url(request).to_owned()),
-        ],
-        secret_env: Vec::new(),
-        files: vec![
-            PlannedFile {
-                path: codex_home.join("auth.json"),
-                contents: auth.expose().clone(),
-                mode: PRIVATE_FILE_MODE,
-            },
-            PlannedFile {
-                path: codex_home.join("hooks.json"),
-                contents: pretty(&hooks_json),
-                mode: PRIVATE_FILE_MODE,
-            },
-        ],
-        session_id,
-    })
-}
-
 fn pretty(value: &Value) -> Vec<u8> {
     let mut bytes = serde_json::to_vec_pretty(value).unwrap_or_default();
     bytes.push(b'\n');
@@ -644,7 +509,7 @@ mod tests {
     #[test]
     fn validators() {
         assert!(valid_model("claude-opus-4-1[1m]"));
-        assert!(valid_model("gpt-5.1-codex"));
+        assert!(valid_model("claude-sonnet-5-5"));
         assert!(!valid_model("--help"));
         assert!(!valid_model("a b"));
         assert!(valid_effort("xhigh"));

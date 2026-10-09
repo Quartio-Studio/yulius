@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use yulius::wiring::harness::HarnessAdapter;
 use yulius_app::error::AppResult;
 use yulius_app::ports::harness::{
-    HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch, TranslationTarget,
+    HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
 };
 use yulius_domain::harness::Harness;
 use yulius_domain::time::Timestamp;
@@ -18,16 +18,6 @@ pub struct FakeAgentOptions {
     pub transcript: bool,
     /// Report a usage limit after this many turns.
     pub limit_after: Option<u32>,
-}
-
-/// The session id a fake Codex run uses: the resumed id, or a new id derived from the run
-/// directory (the attempt id) so Yulius can discover it from the rollout's `session_meta`.
-fn codex_session(plan_session: Option<&String>, run_dir: &Path) -> String {
-    plan_session.cloned().unwrap_or_else(|| {
-        run_dir
-            .file_name()
-            .map_or_else(|| "fake-codex".into(), |n| n.to_string_lossy().into_owned())
-    })
 }
 
 /// See the module docs.
@@ -66,40 +56,15 @@ impl HarnessPort for FakeAgentHarness {
             "YULIUS_TASK_TOKEN".into(),
         ];
         if self.options.transcript {
-            match (launch.harness, launch.codex_home.as_ref()) {
-                (Harness::Codex, Some(home)) => {
-                    let session = codex_session(plan.session_id.as_ref(), &launch.run_dir);
-                    argv[4].clone_from(&session);
-                    let path = match self
-                        .inner
-                        .find_codex_rollout(&home.join("sessions"), &session)
-                    {
-                        Ok(Some(existing)) => existing,
-                        _ => home
-                            .join("sessions/2026/01/01")
-                            .join(format!("rollout-2026-01-01T00-00-00-{session}.jsonl")),
-                    };
-                    argv.extend([
-                        "--transcript".into(),
-                        path.to_string_lossy().into_owned(),
-                        "--transcript-kind".into(),
-                        "codex".into(),
-                    ]);
-                }
-                _ => {
-                    let path = self.inner.claude_transcript(
-                        &launch.sandbox_home,
-                        &launch.worktree,
-                        &session,
-                    );
-                    argv.extend([
-                        "--transcript".into(),
-                        path.to_string_lossy().into_owned(),
-                        "--transcript-kind".into(),
-                        "claude".into(),
-                    ]);
-                }
-            }
+            let path =
+                self.inner
+                    .claude_transcript(&launch.sandbox_home, &launch.worktree, &session);
+            argv.extend([
+                "--transcript".into(),
+                path.to_string_lossy().into_owned(),
+                "--transcript-kind".into(),
+                "claude".into(),
+            ]);
         }
         if let Some(n) = self.options.limit_after {
             argv.extend(["--limit-after".into(), n.to_string()]);
@@ -109,17 +74,6 @@ impl HarnessPort for FakeAgentHarness {
     }
     fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
         self.inner.claude_transcript(home, worktree, session)
-    }
-    fn find_codex_rollout(&self, dir: &Path, session: &str) -> AppResult<Option<PathBuf>> {
-        self.inner.find_codex_rollout(dir, session)
-    }
-    fn discover_codex_session(
-        &self,
-        dir: &Path,
-        worktree: &Path,
-        since: Timestamp,
-    ) -> AppResult<Option<(String, PathBuf)>> {
-        self.inner.discover_codex_session(dir, worktree, since)
     }
     fn newest_claude_session(
         &self,
@@ -137,15 +91,6 @@ impl HarnessPort for FakeAgentHarness {
     ) -> AppResult<Box<dyn TranscriptWatch>> {
         self.inner.watch(harness, path, from_start)
     }
-    fn translate(
-        &self,
-        from: Harness,
-        source: &Path,
-        to: Harness,
-        target: &TranslationTarget,
-    ) -> AppResult<PathBuf> {
-        self.inner.translate(from, source, to, target)
-    }
     fn login_argv(&self, harness: Harness) -> Vec<String> {
         self.inner.login_argv(harness)
     }
@@ -155,12 +100,7 @@ impl HarnessPort for FakeAgentHarness {
     fn masker(&self) -> Box<dyn OutputMasker> {
         self.inner.masker()
     }
-    fn install_skills(
-        &self,
-        skills: &[(String, PathBuf)],
-        claude: &Path,
-        codex: &Path,
-    ) -> AppResult<()> {
-        self.inner.install_skills(skills, claude, codex)
+    fn install_skills(&self, skills: &[(String, PathBuf)], claude: &Path) -> AppResult<()> {
+        self.inner.install_skills(skills, claude)
     }
 }

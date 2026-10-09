@@ -1,7 +1,9 @@
-// Workflows page (AUT-004): reusable task recipes — initial steps, instructions, gates.
+// Workflows page (AUT-004): reusable task recipes — initial steps, instructions, gates. A card opens
+// the workflow in the builder (workflowedit.js, UI-034); so does New workflow, starting from a template.
 
 import { enc } from '../api.js';
-import { h, badge, openModal, field, toast, confirmDialog, errorToast } from '../dom.js';
+import { h, toast, confirmDialog, errorToast, iconButton, iconBadge, itemCard, emptyState } from '../dom.js';
+import { navigate } from '../router.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
@@ -9,29 +11,39 @@ import { pageFrame, loader } from './common.js';
 export function mountWorkflowsPage(ctx, sandbox) {
   const write = allows(sandbox.access, 'write');
   const instanceAdmin = ctx.isInstanceAdmin();
+  const base = `/s/${encodeURIComponent(sandbox.slug)}/workflows`;
+  const create = () => navigate(`${base}/new`);
   const frame = pageFrame({
     title: 'Workflows',
     sub: 'selectable when starting a task',
-    actions: [h('button', { type: 'button', class: 'btn btn-primary btn-sm', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'New workflow')],
+    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: create }, 'New workflow')],
   });
   const host = h('div');
   frame.body.append(host);
 
   const reload = loader(host, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`), (list) => {
     const workflows = Array.isArray(list) ? list : [];
-    if (workflows.length === 0) return h('div', { class: 'card placeholder' }, 'No workflows yet. A workflow seeds a task’s steps, instructions and required gates.');
-    return h('div', { class: 'card list' }, workflows.map((wf) => {
+    if (workflows.length === 0) return emptyState({ iconName: 'workflow', title: 'No workflows yet', text: 'A workflow seeds a task’s steps, instructions and required gates — pick one when you start a task.', action: write ? h('button', { type: 'button', class: 'btn btn-primary', onClick: create }, 'New workflow') : null });
+    return h('div', { class: 'item-list' }, workflows.map((wf) => {
       const canEdit = write && (wf.scope !== 'instance' || instanceAdmin);
       const gates = wf.gates || {};
-      return h('div', { class: 'list-item' },
-        h('div', { class: 'list-main' },
-          h('div', { class: 'list-title' }, wf.name, badge(wf.scope || 'sandbox', wf.scope === 'instance' ? 'violet' : ''),
-            gates.require_spec ? badge('spec required', 'accent') : null, gates.require_tests ? badge('tests required', 'accent') : null),
-          h('div', { class: 'list-sub' }, wf.description || ''),
-          h('div', { class: 'list-sub' }, Array.isArray(wf.steps) && wf.steps.length ? wf.steps.map((s, i) => `${i + 1}. ${s}`).join('   ') : 'No initial steps')),
-        h('div', { class: 'list-actions' },
-          h('button', { type: 'button', class: 'btn btn-sm', disabled: !canEdit, title: canEdit ? null : 'Instance workflows are managed by instance administrators', onClick: () => edit(wf) }, 'Edit'),
-          h('button', { type: 'button', class: 'btn btn-sm btn-danger', disabled: !canEdit, onClick: () => remove(wf) }, 'Delete')));
+      const steps = Array.isArray(wf.steps) ? wf.steps : [];
+      return itemCard({
+        iconName: 'workflow',
+        title: wf.name,
+        badges: [
+          wf.scope === 'instance' ? iconBadge('globe', 'Whole instance', 'violet', 'Available in every sandbox') : iconBadge('folder', 'This sandbox', '', 'Available in this sandbox only'),
+          gates.require_spec ? iconBadge('book', 'Spec required', '', 'The task must write a spec before it can be delivered') : null,
+          gates.require_tests ? iconBadge('check', 'Tests required', '', 'The task must add or run tests before it can be delivered') : null,
+        ],
+        description: wf.description || null,
+        extra: steps.length
+          ? h('ol', { class: 'steps-line', 'aria-label': 'Steps' }, steps.map((step, i) => h('li', null, h('span', { class: 'step-num' }, String(i + 1)), step)))
+          : h('div', { class: 'item-meta' }, 'No starting steps'),
+        controls: canEdit ? [iconButton('trash', `Delete ${wf.name}`, () => remove(wf), { class: 'btn-quiet-danger' })] : [],
+        onOpen: () => navigate(`${base}/${encodeURIComponent(wf.id)}`),
+        openLabel: canEdit ? `Edit workflow ${wf.name}` : `Open workflow ${wf.name}`,
+      });
     }));
   });
 
@@ -44,49 +56,6 @@ export function mountWorkflowsPage(ctx, sandbox) {
     } catch (error) {
       errorToast(error, 'Could not delete workflow');
     }
-  }
-
-  function edit(wf) {
-    const name = h('input', { class: 'input', value: wf ? wf.name : '', maxlength: 100, autofocus: true });
-    const description = h('input', { class: 'input', value: wf ? wf.description : '', maxlength: 500 });
-    const steps = h('textarea', { class: 'textarea', rows: 6, placeholder: 'One step per line, e.g.\nWrite spec\nImplement\nTest\nOpen PR', value: wf && Array.isArray(wf.steps) ? wf.steps.join('\n') : '' });
-    const instructions = h('textarea', { class: 'textarea', rows: 6, placeholder: 'Extra instructions given to the agent at start', value: wf ? wf.instructions || '' : '' });
-    const requireSpec = h('input', { type: 'checkbox', checked: wf ? Boolean(wf.gates && wf.gates.require_spec) : true });
-    const requireTests = h('input', { type: 'checkbox', checked: wf ? Boolean(wf.gates && wf.gates.require_tests) : true });
-    const scope = h('select', { class: 'select', disabled: Boolean(wf) }, h('option', { value: 'sandbox' }, `This sandbox (${sandbox.name})`), instanceAdmin ? h('option', { value: 'instance' }, 'Whole instance') : null);
-    scope.value = wf ? wf.scope || 'sandbox' : 'sandbox';
-    openModal({
-      title: wf ? `Edit workflow · ${wf.name}` : 'New workflow',
-      wide: true,
-      body: h('div', { class: 'stack' },
-        h('div', { class: 'form-grid' }, field('Name', name), field('Scope', scope)),
-        field('Description', description),
-        field('Initial steps', steps),
-        field('Instructions', instructions),
-        h('div', { class: 'row-wrap' },
-          h('label', { class: 'check' }, requireSpec, h('span', null, 'Require a valid task spec before delivery')),
-          h('label', { class: 'check' }, requireTests, h('span', null, 'Require tests'))))
-      ,
-      actions: [
-        { label: 'Cancel', value: false },
-        { label: wf ? 'Save' : 'Create', kind: 'primary', run: async () => {
-          if (!name.value.trim()) { name.focus(); toast('Name is required.', { kind: 'warn' }); return false; }
-          const body = {
-            name: name.value.trim(),
-            description: description.value.trim(),
-            steps: steps.value.split('\n').map((s) => s.trim()).filter(Boolean),
-            instructions: instructions.value,
-            gates: { require_spec: requireSpec.checked, require_tests: requireTests.checked },
-            scope: scope.value,
-          };
-          if (wf) await ctx.api.put(`/api/workflows/${enc(wf.id)}`, body);
-          else await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/workflows`, body);
-          toast(wf ? 'Workflow saved.' : 'Workflow created.', { kind: 'ok' });
-          reload();
-          return true;
-        } },
-      ],
-    });
   }
 
   return { el: frame.el, key: `workflows:${sandbox.id}` };

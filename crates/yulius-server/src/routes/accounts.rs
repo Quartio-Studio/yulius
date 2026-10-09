@@ -159,3 +159,11 @@ async fn serve(
         }
     }
 }
+
+pub async fn refresh_usage(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+) -> ApiResult<Json<AccountView>> {
+    Ok(Json(app.refresh_account_usage(&ctx, &id).await?))
+}

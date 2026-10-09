@@ -1,7 +1,7 @@
 // Application state store and the UI event stream (docs/api.md "UI event stream").
 // Topics: sandboxes, tasks (sid), task (TaskSummary), task-removed (tid), steps (tid),
 // message ({task_id, message}), browser-action (event), automation-run (event),
-// account (Account), resync, events-status (status).
+// account (Account), resync, events-status (status), pulls (sandbox id).
 //
 // The server sends `resync` (not `sandbox.updated`) after sandbox changes, and sandbox
 // counters (running / needs attention / queued) are not pushed at all: task events
@@ -17,7 +17,14 @@ const COUNTS_REFRESH_MS = 1500;
 function readJson(key, fallback) {
   try {
     const raw = window.localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
+    if (!raw) return fallback;
+    const value = JSON.parse(raw);
+    // A stored value of the wrong shape (edited by hand, an older version) falls back instead of
+    // breaking the page: arrays stay arrays, objects stay objects, and so on.
+    if (fallback !== null && fallback !== undefined) {
+      if (Array.isArray(fallback) !== Array.isArray(value) || typeof value !== typeof fallback || value === null) return fallback;
+    }
+    return value;
   } catch {
     return fallback;
   }
@@ -34,7 +41,11 @@ export function createStore(api) {
     me: null,
     sandboxes: [],
     tasks: new Map(), // sandbox id → Map(task id → TaskSummary)
+    taskErrors: new Map(), // sandbox id → the error of its last failed list load
+    sandboxesError: null, // the error of the last failed sandbox list load
     actionRequests: new Map(), // sandbox id → Map(tab id → {reason, task_id})
+    pulls: new Map(), // sandbox id → Map(task id → pull request), from the sandbox's Git overview
+    gitRows: new Map(), // sandbox id → Map(task id → overview row: files_changed, insertions, deletions, ahead, behind)
     eventsStatus: 'closed',
   };
   let events = null;
@@ -66,7 +77,14 @@ export function createStore(api) {
   }
 
   async function loadSandboxes() {
-    const list = await api.get('/api/sandboxes');
+    let list;
+    try {
+      list = await api.get('/api/sandboxes');
+    } catch (error) {
+      state.sandboxesError = error; // views say so instead of "no sandboxes" (CODE-12)
+      throw error;
+    }
+    state.sandboxesError = null;
     state.sandboxes = orderedSandboxes(Array.isArray(list) ? list : []);
     emit('sandboxes');
     return state.sandboxes;
@@ -93,7 +111,16 @@ export function createStore(api) {
   }
 
   async function loadTasks(sandboxId) {
-    const list = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
+    let list;
+    try {
+      list = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
+    } catch (error) {
+      // Lists show this with a retry instead of "Loading…" forever.
+      state.taskErrors.set(sandboxId, error);
+      emit('tasks', sandboxId);
+      throw error;
+    }
+    state.taskErrors.delete(sandboxId);
     const map = new Map();
     for (const task of Array.isArray(list) ? list : []) if (!task.archived) map.set(task.id, task);
     state.tasks.set(sandboxId, map);
@@ -103,10 +130,12 @@ export function createStore(api) {
 
   function upsertTask(task) {
     if (!task || !task.id) return;
-    let map = state.tasks.get(task.sandbox_id);
+    // Only a full load creates a sandbox's list: a list built from live events alone would show
+    // just the tasks that changed and look complete. Watchers of the task still hear about it.
+    const map = state.tasks.get(task.sandbox_id);
     if (!map) {
-      map = new Map();
-      state.tasks.set(task.sandbox_id, map);
+      emit('task', task);
+      return;
     }
     if (task.archived) map.delete(task.id);
     else map.set(task.id, task);
@@ -114,11 +143,12 @@ export function createStore(api) {
     emit('task', task);
   }
 
-  function removeTask(taskId) {
+  /** Drop a task from its list; `byUser` marks a removal this browser asked for (its own toast says so). */
+  function removeTask(taskId, { byUser = false } = {}) {
     for (const [sandboxId, map] of state.tasks) {
       if (map.delete(taskId)) emit('tasks', sandboxId);
     }
-    emit('task-removed', taskId);
+    emit('task-removed', { taskId, byUser });
   }
 
   /** Non-archived tasks of a sandbox, most recently updated first. */
@@ -194,6 +224,45 @@ export function createStore(api) {
     events.start();
   }
 
+  // Pull requests per sandbox, for the sidebar and the Tasks page: one read of the Git overview
+  // shared by every view watching the sandbox, refreshed every minute while the tab is in view and
+  // online and when it is shown again (at most every 15 s) — never while hidden (PERF-12).
+  const pullWatch = new Map(); // sandbox id → { views, at, timer }
+  const pollPaused = () => document.hidden || navigator.onLine === false;
+  async function loadPulls(sandboxId) {
+    const entry = pullWatch.get(sandboxId);
+    if (entry) entry.at = Date.now();
+    try {
+      const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
+      const rows = Array.isArray(git.tasks) ? git.tasks : [];
+      state.pulls.set(sandboxId, new Map(rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr])));
+      state.gitRows.set(sandboxId, new Map(rows.map((t) => [t.task_id, t])));
+      emit('pulls', sandboxId);
+    } catch { /* the chips stay as they were; the lists work without them */ }
+  }
+  function watchPulls(sandboxId) {
+    let entry = pullWatch.get(sandboxId);
+    if (!entry) {
+      entry = { views: 0, at: 0, timer: setInterval(() => { if (!pollPaused()) loadPulls(sandboxId); }, 60_000) };
+      pullWatch.set(sandboxId, entry);
+    }
+    entry.views += 1;
+    if (Date.now() - entry.at > 15_000) loadPulls(sandboxId);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      entry.views -= 1;
+      if (entry.views <= 0) { clearInterval(entry.timer); pullWatch.delete(sandboxId); }
+    };
+  }
+  const refreshPulls = () => {
+    if (pollPaused()) return;
+    for (const [id, entry] of pullWatch) if (Date.now() - entry.at > 15_000) loadPulls(id);
+  };
+  document.addEventListener('visibilitychange', refreshPulls);
+  window.addEventListener('focus', refreshPulls);
+
   function stopEvents() {
     if (events) events.stop();
     events = null;
@@ -213,6 +282,7 @@ export function createStore(api) {
     upsertTask,
     removeTask,
     tasksOf,
+    tasksError: (sandboxId) => state.taskErrors.get(sandboxId) || null,
     findTask,
     clearActionRequest,
     handleEvent,
@@ -221,6 +291,11 @@ export function createStore(api) {
     sandboxBySlug: (slug) => state.sandboxes.find((s) => s.slug === slug) || null,
     sandboxById: (id) => state.sandboxes.find((s) => s.id === id) || null,
     retryEvents: () => events && events.retry(),
+    /** Keeps the sandbox's pull requests fresh while a view shows them; returns a stop function. */
+    watchPulls,
+    pullsOf: (sandboxId) => state.pulls.get(sandboxId) || new Map(),
+    /** A task's row of its sandbox's Git overview (changed files and lines), or null. */
+    gitRowOf: (sandboxId, taskId) => (state.gitRows.get(sandboxId) || new Map()).get(taskId) || null,
   };
 }
 

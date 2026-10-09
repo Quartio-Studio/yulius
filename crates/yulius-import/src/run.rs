@@ -21,7 +21,7 @@ use crate::hash::file_ref;
 use crate::http::{ApiError, RetryPolicy};
 use crate::process::GitError;
 use crate::secret::Secret;
-use crate::sessions::{DiscoveredSession, discover_claude_sessions, discover_codex_sessions};
+use crate::sessions::{DiscoveredSession, discover_claude_sessions};
 use crate::since::{DEFAULT_SINCE, SinceError, parse_since, prompt_since};
 use crate::snapshot::{SNAPSHOT_NAME, SkipReason, Snapshot, SnapshotError, snapshot_uncommitted};
 use crate::time::format_rfc3339;
@@ -44,17 +44,15 @@ pub struct ImportOptions {
     pub assume_yes: bool,
 }
 
-/// Where the local harnesses keep their sessions.
+/// Where Claude Code keeps its sessions.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionSources {
     /// Claude configuration directory (`CLAUDE_CONFIG_DIR` or `~/.claude`).
     pub claude_dir: Option<PathBuf>,
-    /// Codex home (`CODEX_HOME` or `~/.codex`).
-    pub codex_home: Option<PathBuf>,
 }
 
 impl SessionSources {
-    /// Locations from `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `HOME` (absolute paths only).
+    /// Locations from `CLAUDE_CONFIG_DIR` and `HOME` (absolute paths only).
     #[must_use]
     pub fn from_env() -> Self {
         let absolute = |name: &str| {
@@ -66,8 +64,6 @@ impl SessionSources {
         Self {
             claude_dir: absolute("CLAUDE_CONFIG_DIR")
                 .or_else(|| home.as_ref().map(|home| home.join(".claude"))),
-            codex_home: absolute("CODEX_HOME")
-                .or_else(|| home.as_ref().map(|home| home.join(".codex"))),
         }
     }
 }
@@ -333,16 +329,6 @@ fn discover_sessions(
             })?,
         );
     }
-    if let Some(home) = &sources.codex_home {
-        sessions.extend(
-            discover_codex_sessions(home, &paths, &repo.remote_url, since).map_err(|source| {
-                ImportError::Sessions {
-                    path: home.clone(),
-                    source,
-                }
-            })?,
-        );
-    }
     Ok(sessions)
 }
 
@@ -578,25 +564,19 @@ fn summary_text(
         "Sessions     since {} ({window} window, opened in this repository or its worktrees):",
         manifest.since
     );
-    for harness in [ImportHarness::Claude, ImportHarness::Codex] {
-        let matching: Vec<&SessionRef> = manifest
-            .sessions
-            .iter()
-            .filter(|session| session.harness == harness)
-            .collect();
-        let bytes: u64 = matching
-            .iter()
-            .flat_map(|session| session.files.iter())
-            .map(|file| file.size)
-            .sum();
-        let _ = writeln!(
-            text,
-            "  {:<7}{} session(s), {}",
-            harness.as_str(),
-            matching.len(),
-            human_bytes(bytes)
-        );
-    }
+    let bytes: u64 = manifest
+        .sessions
+        .iter()
+        .flat_map(|session| session.files.iter())
+        .map(|file| file.size)
+        .sum();
+    let _ = writeln!(
+        text,
+        "  {:<7}{} session(s), {}",
+        ImportHarness::Claude.as_str(),
+        manifest.sessions.len(),
+        human_bytes(bytes)
+    );
     for session in manifest.sessions.iter().take(MAX_LISTED_SESSIONS) {
         let day: String = session.ended_at.chars().take(10).collect();
         let size: u64 = session.files.iter().map(|file| file.size).sum();

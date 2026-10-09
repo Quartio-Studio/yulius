@@ -286,7 +286,9 @@ fn validate_prompt(prompt: &str) -> AppResult<String> {
 }
 
 fn validate_harness(text: &str) -> AppResult<Harness> {
-    Harness::parse(text).map_err(|_| AppError::Invalid("harness must be claude or codex".into()))
+    Harness::parse(text).map_err(|_| {
+        AppError::Invalid("harness must be claude (Yulius runs Claude Code only)".into())
+    })
 }
 
 fn validate(input: &Automation) -> AppResult<Fields> {
@@ -859,6 +861,7 @@ impl App {
                 origin: TaskOrigin::Automation,
                 automation_run: Some(key.to_owned()),
                 start: true,
+                mode: crate::model::TaskMode::Prompt,
             })
             .await?;
         Ok(task.id)

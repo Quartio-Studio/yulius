@@ -1,4 +1,4 @@
-//! Yulius MCP: harness-independent task awareness, messages and steps (AC-COM-1/2, AC-STP-1).
+//! Yulius MCP: task awareness, messages and steps between parallel tasks (AC-COM-1/2, AC-STP-1).
 
 mod support;
 
@@ -51,6 +51,7 @@ async fn seed_run(
             queued_at: None,
             gate_blocks: 0,
             wake_enabled: true,
+            mode: yulius_app::model::TaskMode::Prompt,
         })
         .await?;
     h.store
@@ -122,7 +123,7 @@ async fn tool(
 }
 
 #[tokio::test]
-async fn claude_and_codex_tasks_coordinate_through_yulius() -> TestResult {
+async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     let h = harness()?;
     h.store
         .insert_user(&UserRecord {
@@ -157,7 +158,7 @@ async fn claude_and_codex_tasks_coordinate_through_yulius() -> TestResult {
         })
         .await?;
     seed_run(&h, "claude1", Harness::ClaudeCode, "tok-claude").await?;
-    seed_run(&h, "codex1", Harness::Codex, "tok-codex").await?;
+    seed_run(&h, "claude2", Harness::ClaudeCode, "tok-other").await?;
     let internal = yulius_server::internal_router(h.app.clone())
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
 
@@ -179,7 +180,7 @@ async fn claude_and_codex_tasks_coordinate_through_yulius() -> TestResult {
         .collect();
     assert!(names.contains(&"message_send") && names.contains(&"steps_set"));
 
-    // Claude sees the parallel Codex task (COM-001).
+    // A task sees the parallel task (COM-001).
     let (tasks, err) = tool(
         &internal,
         "tok-claude",
@@ -188,20 +189,20 @@ async fn claude_and_codex_tasks_coordinate_through_yulius() -> TestResult {
     )
     .await?;
     assert!(!err);
-    assert_eq!(tasks["tasks"][0]["harness"], "codex");
+    assert_eq!(tasks["tasks"][0]["harness"], "claude");
     assert_eq!(tasks["you"]["harness"], "claude");
 
-    // Claude messages Codex by number; Codex reads it (COM-002).
-    let codex_number = tasks["tasks"][0]["number"].as_u64().ok_or("number")?;
-    let (sent, err) = tool(&internal, "tok-claude", "message_send", json!({"number": codex_number, "kind": "scope", "subject": "split", "body": "I take src/api; you take src/ui?"})).await?;
+    // It messages the other task by number; the other task reads it (COM-002).
+    let other_number = tasks["tasks"][0]["number"].as_u64().ok_or("number")?;
+    let (sent, err) = tool(&internal, "tok-claude", "message_send", json!({"number": other_number, "kind": "scope", "subject": "split", "body": "I take src/api; you take src/ui?"})).await?;
     assert!(!err, "{sent}");
-    let (inbox, _) = tool(&internal, "tok-codex", "messages_inbox", json!({})).await?;
+    let (inbox, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
     assert_eq!(
         inbox["messages"][0]["body"],
         "I take src/api; you take src/ui?"
     );
     assert_eq!(inbox["messages"][0]["kind"], "scope");
-    let (empty, _) = tool(&internal, "tok-codex", "messages_inbox", json!({})).await?;
+    let (empty, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
     assert_eq!(
         empty["messages"].as_array().map(Vec::len),
         Some(0),
@@ -257,12 +258,12 @@ async fn claude_and_codex_tasks_coordinate_through_yulius() -> TestResult {
     // A run that ended can no longer use its token.
     h.store
         .transition_attempt(
-            &AttemptId::parse("a-codex1")?,
+            &AttemptId::parse("a-claude2")?,
             AttemptState::Exited,
             &AttemptUpdate::default(),
         )
         .await?;
-    let denied = rpc(&internal, "tok-codex", "tools/list", json!({})).await?;
+    let denied = rpc(&internal, "tok-other", "tools/list", json!({})).await?;
     assert_eq!(denied["error"]["code"], -32001);
     let none = call(
         &internal,

@@ -12,7 +12,7 @@ use yulius_domain::task::TaskStatus;
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::{StepRecord, TaskOrigin, TaskRecord};
+use crate::model::{StepRecord, TaskMode, TaskOrigin, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
 use crate::supervisor::{RunStart, branch_for};
 use crate::tasks::title_from_prompt;
@@ -47,10 +47,14 @@ pub struct NewTask {
     pub automation_run: Option<String>,
     /// Start a run immediately (false for imported/archived tasks).
     pub start: bool,
+    /// Goal or prompt mode (TSK-010).
+    pub mode: TaskMode,
 }
 
 fn parse_harness(text: &str) -> AppResult<Harness> {
-    Harness::parse(text).map_err(|_| AppError::Invalid("harness must be claude or codex".into()))
+    Harness::parse(text).map_err(|_| {
+        AppError::Invalid("harness must be claude (Yulius runs Claude Code only)".into())
+    })
 }
 
 impl App {
@@ -116,6 +120,7 @@ impl App {
             queued_at: req.start.then_some(now),
             gate_blocks: 0,
             wake_enabled: true,
+            mode: req.mode,
         };
         let task = store.insert_task(&record).await?;
         let branch = branch_for(task.number, &task.title);
@@ -165,7 +170,7 @@ impl App {
             let id = task.id.clone();
             tokio::spawn(async move {
                 if let Err(err) = app
-                    .start_run(&id, RunStart::Fresh { prompt: None }, None, None)
+                    .start_run(&id, RunStart::Fresh { prompt: None }, None)
                     .await
                 {
                     tracing::warn!(error = %err, task = %id, "task failed to start");
@@ -188,6 +193,12 @@ impl App {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require(&ctx.user, &sid, Action::Work).await?;
         let harness = parse_harness(&req.harness)?;
+        // New tasks run in goal mode unless the user picks prompt mode (TSK-010).
+        let mode = match req.mode.as_deref().map(str::trim) {
+            None | Some("") => TaskMode::Goal,
+            Some(text) => TaskMode::parse(text)
+                .ok_or_else(|| AppError::Invalid("mode must be goal or prompt".into()))?,
+        };
         let steps = self
             .workflow_steps(&sid, req.workflow_id.as_deref())
             .await?;
@@ -205,6 +216,7 @@ impl App {
                 origin: TaskOrigin::Ui,
                 automation_run: None,
                 start: true,
+                mode,
             })
             .await?;
         self.task_summary(&task).await
@@ -246,7 +258,7 @@ impl App {
     }
 
     /// `POST /api/tasks/{tid}/continue`: resumes the latest session (optionally on another
-    /// harness or account) — TSK-007, IMP-004.
+    /// account) — TSK-007, IMP-004.
     ///
     /// # Errors
     /// `Conflict` when the task is live.
@@ -263,13 +275,7 @@ impl App {
                 task.status.as_str()
             )));
         }
-        let harness = req.harness.as_deref().map(parse_harness).transpose()?;
-        let account = req
-            .account_id
-            .as_deref()
-            .map(AccountId::parse)
-            .transpose()
-            .map_err(|_| AppError::Invalid("invalid account".into()))?;
+        let account = parse_account(req)?;
         if task.archived_at.is_some() {
             let now = self.now();
             self.deps
@@ -284,13 +290,8 @@ impl App {
                 )
                 .await?;
         }
-        self.start_run(
-            &task.id,
-            RunStart::Resume { prompt: None },
-            harness,
-            account,
-        )
-        .await?;
+        self.start_run(&task.id, RunStart::Resume { prompt: None }, account)
+            .await?;
         let task = self
             .deps
             .store
@@ -300,7 +301,7 @@ impl App {
         self.task_summary(&task).await
     }
 
-    /// `POST /api/tasks/{tid}/switch`: manual account/harness switch of a running task (ROT-007).
+    /// `POST /api/tasks/{tid}/switch`: manual account switch of a running task (ROT-007).
     ///
     /// # Errors
     /// `Conflict` when not running.
@@ -311,16 +312,9 @@ impl App {
         req: &ContinueTask,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
-        let harness = req.harness.as_deref().map(parse_harness).transpose()?;
-        let account = req
-            .account_id
-            .as_deref()
-            .map(AccountId::parse)
-            .transpose()
-            .map_err(|_| AppError::Invalid("invalid account".into()))?;
+        let account = parse_account(req)?;
         self.switch_task_now(
             &task.id,
-            harness,
             account,
             "manual",
             Some("Continue the task exactly where you left off.".into()),
@@ -334,4 +328,13 @@ impl App {
             .ok_or(AppError::NotFound)?;
         self.task_summary(&task).await
     }
+}
+
+/// The requested account of a Continue or Switch, if any.
+fn parse_account(req: &ContinueTask) -> AppResult<Option<AccountId>> {
+    req.account_id
+        .as_deref()
+        .map(AccountId::parse)
+        .transpose()
+        .map_err(|_| AppError::Invalid("invalid account".into()))
 }

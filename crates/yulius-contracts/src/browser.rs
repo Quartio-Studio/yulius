@@ -281,6 +281,24 @@ pub enum ViewerClientMsg {
         /// Height.
         height: u32,
     },
+    /// How this viewer sees the active tab: its live DOM (default) or screencast pixels.
+    View {
+        /// The view.
+        mode: ViewMode,
+    },
+    /// Ask for a fresh DOM snapshot of the active tab (after a replay error).
+    DomResync,
+}
+
+/// How a viewer sees pages (SPEC-001 BRW-005).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewMode {
+    /// The page's DOM mirrored into the viewer (rrweb events).
+    #[default]
+    Dom,
+    /// Screencast frames (JPEG).
+    Pixels,
 }
 
 /// Error codes sent to viewers in [`ViewerServerMsg::Error`].
@@ -301,8 +319,9 @@ pub enum ViewerErrorCode {
     Internal,
 }
 
-/// Server → viewer text message on the browser WebSocket.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Server → viewer text message on the browser WebSocket. DOM batches are built with
+/// [`encode_dom_batch`] (their events are raw rrweb JSON).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ViewerServerMsg {
     /// Full tab list; sent on connect and after every change.
@@ -326,6 +345,57 @@ pub enum ViewerServerMsg {
         /// Human-readable text (never contains secrets).
         message: String,
     },
+    /// An agent acted in a tab: its cursor position and action (BRW-007).
+    AgentActivity {
+        /// The tab.
+        tab_id: TabId,
+        /// Position in CSS pixels of the page viewport, when the action has one.
+        x: Option<f64>,
+        /// Position in CSS pixels of the page viewport, when the action has one.
+        y: Option<f64>,
+        /// `click`, `type`, `open` or `navigate`.
+        action: String,
+        /// Who acted (e.g. `#12 Claude Code`).
+        label: String,
+    },
+    /// The viewport of all tabs (sent on connect and after every change): a DOM mirror lays the
+    /// page out at this size right away instead of waiting for the page's own resize event.
+    Viewport {
+        /// Width in CSS pixels.
+        width: u32,
+        /// Height in CSS pixels.
+        height: u32,
+    },
+    /// The active tab cannot be mirrored (browser-internal page, recorder failure); the viewer
+    /// shows pixels.
+    DomUnavailable {
+        /// The tab.
+        tab_id: TabId,
+        /// Why.
+        reason: String,
+    },
+}
+
+/// The DOM batch message `{"type":"dom","tab_id","reset","events":[…]}`, whose events are
+/// rrweb event JSON texts inserted verbatim.
+#[must_use]
+pub fn encode_dom_batch(tab_id: &TabId, reset: bool, events: &[std::sync::Arc<str>]) -> String {
+    let mut text = String::with_capacity(64 + events.iter().map(|e| e.len() + 1).sum::<usize>());
+    text.push_str(r#"{"type":"dom","tab_id":"#);
+    text.push_str(&serde_json::to_string(tab_id.as_str()).unwrap_or_else(|_| "\"\"".into()));
+    text.push_str(if reset {
+        r#","reset":true,"events":["#
+    } else {
+        r#","reset":false,"events":["#
+    });
+    for (index, event) in events.iter().enumerate() {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push_str(event);
+    }
+    text.push_str("]}");
+    text
 }
 
 /// Malformed binary browser frame.

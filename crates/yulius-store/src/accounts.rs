@@ -150,6 +150,38 @@ impl AccountStore for SqliteStore {
         .await
     }
 
+    async fn account_tokens(
+        &self,
+        since: Timestamp,
+    ) -> AppResult<Vec<yulius_app::model::AccountTokens>> {
+        self.call(move |c| {
+            let mut statement = c
+                .prepare(
+                    "SELECT a.account_id, COUNT(*), COUNT(DISTINCT a.task_id), \
+                     SUM(m.input_tokens), SUM(m.output_tokens), SUM(m.cache_read), SUM(m.cache_write) \
+                     FROM attempts a LEFT JOIN metrics m ON m.attempt_id = a.id \
+                     WHERE a.account_id IS NOT NULL AND a.started_at >= ?1 GROUP BY a.account_id",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map([since.0], |row| {
+                    let opt = |i: usize| row.get::<_, Option<i64>>(i).map(|v| v.map(crate::to_u64));
+                    Ok(yulius_app::model::AccountTokens {
+                        account_id: row.get(0)?,
+                        runs: crate::to_u32(row.get(1)?),
+                        tasks: crate::to_u32(row.get(2)?),
+                        input: opt(3)?,
+                        output: opt(4)?,
+                        cache_read: opt(5)?,
+                        cache_write: opt(6)?,
+                    })
+                })
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
     async fn delete_account(&self, id: &AccountId) -> AppResult<()> {
         let id = id.as_str().to_owned();
         self.call(move |c| {

@@ -90,7 +90,7 @@ pub struct ImportManifest {
     pub bundle: Option<FileRef>,
     /// Snapshot archive of uncommitted changes, when any exist.
     pub snapshot: Option<FileRef>,
-    /// Claude and Codex sessions opened in the repository within the window.
+    /// Claude Code sessions opened in the repository within the window.
     pub sessions: Vec<SessionRef>,
     /// Start of the session window as an RFC 3339 UTC timestamp.
     pub since: String,
@@ -128,17 +128,14 @@ pub struct FileRef {
 pub enum ImportHarness {
     /// Claude Code (`claude`).
     Claude,
-    /// Codex CLI (`codex`).
-    Codex,
 }
 
 impl ImportHarness {
-    /// Stable wire name (`claude` or `codex`).
+    /// Stable wire name (`claude`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Claude => "claude",
-            Self::Codex => "codex",
         }
     }
 }
@@ -562,7 +559,7 @@ mod tests {
         for good in [
             "repo.bundle",
             "snapshot.tar.gz",
-            "sessions/codex/rollout-2026-10-01T10-00-00-abc.jsonl",
+            "sessions/claude/5b0d9c1e-2f4a-4c6b-9e7d-1a2b3c4d5e6f.jsonl",
             "a_b-c.d",
         ] {
             assert!(is_safe_file_name(good), "{good}");

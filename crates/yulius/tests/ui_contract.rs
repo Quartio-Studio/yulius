@@ -4,9 +4,8 @@
 //! type-checks its calls against the Rust router. These tests read the JavaScript sources at
 //! test time and check that:
 //!
-//! - every `/api/...` path literal the UI uses (HTTP calls, WebSocket paths, links) and the
-//!   editor iframe path resolve to a real route of the public router with the method the UI
-//!   uses: an unauthenticated probe must reach the handler (401, or for the few public
+//! - every `/api/...` path literal the UI uses (HTTP calls, WebSocket paths, links) resolves
+//!   to a real route of the public router with the method the UI uses: an unauthenticated probe must reach the handler (401, or for the few public
 //!   endpoints anything but 404/405) instead of the API fallback (404 `not_found`) or a
 //!   405 for a wrong method;
 //! - the `?mock=1` backend (`assets/mock.js`) only fakes routes the server has;
@@ -31,6 +30,8 @@ const PUBLIC_PATHS: &[&str] = &[
     "/api/setup/status",
     "/api/setup",
     "/api/auth/password",
+    "/api/auth/recovery",
+    "/api/auth/recover",
     "/api/auth/github/start",
     "/api/auth/github/callback",
     "/api/device/start",
@@ -40,10 +41,15 @@ const PUBLIC_PATHS: &[&str] = &[
 /// Mock-only endpoints: stand-ins for flows the mock cannot run (the GitHub OAuth redirect).
 const MOCK_ONLY: &[(&str, &str)] = &[("POST", "/api/auth/mock-github")];
 
-/// Documented in docs/api.md but not routed by the server yet. The UI handles their 404
-/// (the GitHub page falls back to `/api/me`). This list must not go stale: the test fails
-/// once a route appears, so the entry and the UI fallback can be revisited.
-const KNOWN_UNROUTED: &[(&str, &str)] = &[];
+/// Documented in docs/api.md but not routed by the server yet. The UI handles their 404.
+/// This list must not go stale: the test fails once a route appears, so the entry and the UI
+/// fallback can be revisited.
+const KNOWN_UNROUTED: &[(&str, &str)] = &[
+    // The Git page's task review (UI-031) reads these when the server has them (docs/api.md
+    // "Task changes", proposed); on a 404 it shows its Branch tab alone.
+    ("GET", "/api/tasks/{}/changes"),
+    ("GET", "/api/tasks/{}/commits"),
+];
 
 /// A path template with `{}` for each interpolated segment, e.g. `/api/tasks/{}/stop`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -170,7 +176,7 @@ fn line_of(src: &[u8], index: usize) -> usize {
         + 1
 }
 
-/// Every `/api/...` literal (and `/s/…/editor/` literal) of one source file.
+/// Every `/api/...` literal of one source file.
 fn calls_in(file: &str, source: &str) -> Vec<Call> {
     let src = source.as_bytes();
     let mut out = Vec::new();
@@ -179,9 +185,7 @@ fn calls_in(file: &str, source: &str) -> Vec<Call> {
             continue;
         }
         let rest = src.get(i + 1..).unwrap_or_default();
-        let api = rest.starts_with(b"/api/");
-        let editor = rest.starts_with(b"/s/");
-        if !api && !editor {
+        if !rest.starts_with(b"/api/") {
             continue;
         }
         let Some((text, _)) = read_literal(src, i) else {
@@ -189,21 +193,11 @@ fn calls_in(file: &str, source: &str) -> Vec<Call> {
         };
         let path = text.split(['?', '#']).next().unwrap_or_default().to_owned();
         let origin = format!("{file}:{}", line_of(src, i));
-        if api {
-            out.push(Call {
-                method: method_at(src, i).to_owned(),
-                path,
-                origin,
-            });
-        } else if path.contains("/editor") {
-            for method in ["GET", "HEAD"] {
-                out.push(Call {
-                    method: method.to_owned(),
-                    path: path.clone(),
-                    origin: origin.clone(),
-                });
-            }
-        }
+        out.push(Call {
+            method: method_at(src, i).to_owned(),
+            path,
+            origin,
+        });
     }
     out
 }
@@ -341,7 +335,8 @@ async fn every_api_call_of_the_ui_exists_in_the_router() -> TestResult {
         ("DELETE", "/api/sandboxes/{}"),
         ("POST", "/api/sandboxes/{}/delivery/environments/{}/confirm"),
         ("GET", "/api/admin/accounts/login/{}/terminal"),
-        ("HEAD", "/s/{}/editor/"),
+        ("PUT", "/api/sandboxes/{}/files/content"),
+        ("DELETE", "/api/tasks/{}"),
     ] {
         assert!(
             calls
@@ -455,6 +450,8 @@ async fn ui_routes_serve_the_shell_and_unknown_api_paths_stay_json_404() -> Test
         "/signin?next=%2Fs%2Fstudio",
         "/device?code=ABCD-EFGH",
         "/archived",
+        "/settings",
+        "/design",
         "/s/studio",
         "/s/studio/t/12",
         "/s/studio/browser?tab=E3C8B2A1",
@@ -590,8 +587,7 @@ fn literal_scanner_handles_templates_methods_and_partial_segments() -> TestResul
     let src = "ctx.api.post(`/api/tasks/${enc(task.id)}/stop`);\n\
                const x = live ? await ctx.api.del(\n  `/api/a/${f({ b: '}' })}/c?x=${y}`) : 0;\n\
                socket({ path: '/api/events' });\n\
-               el.href = `/api/analytics/tasks?${query({ format: 'csv' })}`;\n\
-               frame.src = `/s/${enc(sandbox.id)}/editor/`;\n";
+               el.href = `/api/analytics/tasks?${query({ format: 'csv' })}`;\n";
     let calls = calls_in("t.js", src);
     let pairs: Vec<(&str, &str)> = calls
         .iter()
@@ -604,8 +600,6 @@ fn literal_scanner_handles_templates_methods_and_partial_segments() -> TestResul
             ("DELETE", "/api/a/{}/c"),
             ("GET", "/api/events"),
             ("GET", "/api/analytics/tasks"),
-            ("GET", "/s/{}/editor/"),
-            ("HEAD", "/s/{}/editor/"),
         ]
     );
     assert_eq!(calls.first().map(|c| c.origin.as_str()), Some("t.js:1"));

@@ -2,13 +2,15 @@
 //! terminal (SPEC-001 UI-015, AC-UI-7, U-11; SPEC-002 §7.2).
 //!
 //! Contract:
-//! - only users with write access to the sandbox create or attach to shells;
+//! - only users with write access to the sandbox create shells, and a shell is private to the
+//!   user who opened it: nobody else (administrators included) can attach to it (UI-016);
 //! - a shell is the user's login shell (`$SHELL`, else `/bin/bash`, else `/bin/sh`, unless
 //!   [`App::set_shell_program`] configured one) started through the session host in the sandbox
-//!   repository or a task worktree of that sandbox, with the sandbox `HOME` and the same
-//!   containment as task runs; it gets no task token, hooks or Git credential helper;
-//! - at most [`MAX_SHELLS_PER_SANDBOX`] live shells per sandbox and [`MAX_SHELL_VIEWERS`]
-//!   viewers per shell;
+//!   repository or a task worktree of that sandbox, as the user's sandbox identity
+//!   ([`App::user_space`]: their own home, root in the sandbox, Git as their GitHub account); it
+//!   gets no task token or hooks;
+//! - at most [`MAX_SHELLS_PER_SANDBOX`] live shells per user and sandbox and
+//!   [`MAX_SHELL_VIEWERS`] viewers per shell;
 //! - a shell ends when its process exits, after [`SHELL_IDLE_MS`] without viewers
 //!   ([`App::reap_idle_shells`]) or on server shutdown ([`App::stop_workspace_services`]);
 //! - shells never read or write task state (HRN-002): the task terminal stays the agent's.
@@ -29,13 +31,12 @@ use crate::auth::{AuthContext, hex_token};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::hub::{Hub, Subscription};
+use crate::identity::UserSpace;
 use crate::model::SandboxRecord;
 use crate::ports::Clock;
-use crate::ports::session::{
-    Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunWriter,
-};
+use crate::ports::session::{LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunWriter};
 
-/// Live shells allowed per sandbox.
+/// Live shells allowed per user and sandbox.
 pub const MAX_SHELLS_PER_SANDBOX: usize = 4;
 /// Viewers allowed per shell.
 pub const MAX_SHELL_VIEWERS: u64 = 16;
@@ -43,7 +44,7 @@ pub const MAX_SHELL_VIEWERS: u64 = 16;
 pub const SHELL_IDLE_MS: i64 = 30 * 60 * 1000;
 /// Largest accepted input frame.
 pub const MAX_SHELL_INPUT_BYTES: usize = 64 * 1024;
-/// Interval of the idle reaper for shells, browsers and editors.
+/// Interval of the idle reaper for shells and browsers.
 pub const REAP_INTERVAL: Duration = Duration::from_secs(60);
 /// Grace per escalation step of a shutdown request (Ctrl-C, then SIGTERM, then SIGKILL;
 /// interactive shells ignore SIGTERM, so ending a shell takes about two steps).
@@ -153,7 +154,7 @@ impl Drop for ShellAttach {
     }
 }
 
-/// Background reaper of idle shells, browsers and editors; aborted on drop.
+/// Background reaper of idle shells and browsers; aborted on drop.
 pub struct WorkspaceReaper {
     task: JoinHandle<()>,
 }
@@ -227,13 +228,11 @@ impl App {
     fn shell_env(
         &self,
         sandbox: &SandboxRecord,
-        home: &Path,
+        space: &UserSpace,
         program: &Path,
     ) -> Vec<(String, String)> {
-        let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
-        vec![
-            ("HOME".into(), home.to_string_lossy().into_owned()),
-            ("PATH".into(), path),
+        let mut env = space.env.clone();
+        env.extend([
             ("SHELL".into(), program.to_string_lossy().into_owned()),
             ("TERM".into(), "xterm-256color".into()),
             ("COLORTERM".into(), "truecolor".into()),
@@ -242,7 +241,8 @@ impl App {
             ("YULIUS_PORT_COUNT".into(), sandbox.port_count.to_string()),
             ("PORT".into(), sandbox.port_base.to_string()),
             ("YULIUS_SANDBOX".into(), sandbox.slug.clone()),
-        ]
+        ]);
+        env
     }
 
     /// Opens a sandbox shell for a write user in the sandbox repository or the worktree of
@@ -290,7 +290,9 @@ impl App {
             let mut map = self.shells.shells.lock().map_err(AppError::internal)?;
             let live = map
                 .values()
-                .filter(|shell| shell.sandbox == record.id && !shell.has_ended())
+                .filter(|shell| {
+                    shell.sandbox == record.id && shell.creator == ctx.user.id && !shell.has_ended()
+                })
                 .count();
             if live >= MAX_SHELLS_PER_SANDBOX {
                 return Err(AppError::Capacity(format!(
@@ -299,7 +301,8 @@ impl App {
             }
             map.insert(id.clone(), Arc::clone(&runtime));
         }
-        match self.launch_shell(&record, &runtime, &cwd).await {
+        let space = self.user_space(&ctx.user, &record)?;
+        match self.launch_shell(&record, &space, &runtime, &cwd).await {
             Ok(reader) => {
                 let app = Arc::clone(self);
                 let shell = Arc::clone(&runtime);
@@ -322,34 +325,20 @@ impl App {
     async fn launch_shell(
         &self,
         record: &SandboxRecord,
+        space: &UserSpace,
         runtime: &ShellRuntime,
         cwd: &Path,
     ) -> AppResult<Box<dyn RunReader>> {
-        let home = self.sandbox_home(&record.id);
-        std::fs::create_dir_all(&home).map_err(AppError::internal)?;
         std::fs::create_dir_all(&runtime.run_dir).map_err(AppError::internal)?;
         let _ = std::fs::set_permissions(&runtime.run_dir, std::fs::Permissions::from_mode(0o700));
         let program = self.shell_program();
-        // Containment exactly as the supervisor plans task runs (SPEC-002 ADR-03).
-        let containment = if self.config.contained {
-            Containment::Bubblewrap {
-                sandbox_root: self.sandbox_dir(&record.id),
-                home: home.clone(),
-                writable: Vec::new(),
-                readonly: std::iter::once(self.config.yulius_exe.clone())
-                    .chain(self.config.contained_readonly.iter().cloned())
-                    .collect(),
-            }
-        } else {
-            Containment::None
-        };
         let plan = LaunchPlan {
             argv: vec![program.to_string_lossy().into_owned(), "-l".into()],
             cwd: cwd.to_path_buf(),
-            env: self.shell_env(record, &home, &program),
+            env: self.shell_env(record, space, &program),
             secret_env: Vec::new(),
             files: Vec::new(),
-            containment,
+            containment: space.containment.clone(),
         };
         let host = &self.deps.session_host;
         host.spawn(
@@ -473,14 +462,17 @@ impl App {
         }
     }
 
-    /// Attaches a viewer to a shell: write access to the shell's sandbox is required (the
-    /// creator or any other write user of that sandbox).
+    /// Attaches a viewer to a shell: only its creator, while they keep write access to the
+    /// shell's sandbox (UI-016).
     ///
     /// # Errors
-    /// `NotFound` for unknown or ended shells and invisible sandboxes, `Forbidden` for read
-    /// users, `Capacity` beyond [`MAX_SHELL_VIEWERS`].
+    /// `NotFound` for unknown or ended shells, other users' shells and invisible sandboxes,
+    /// `Forbidden` for read users, `Capacity` beyond [`MAX_SHELL_VIEWERS`].
     pub async fn shell_open(&self, ctx: &AuthContext, shell_id: &str) -> AppResult<ShellAttach> {
-        let runtime = self.shell(shell_id).ok_or(AppError::NotFound)?;
+        let runtime = self
+            .shell(shell_id)
+            .filter(|shell| shell.creator == ctx.user.id)
+            .ok_or(AppError::NotFound)?;
         self.require(&ctx.user, &runtime.sandbox, Action::Work)
             .await?;
         if runtime.hub.viewer_count() >= MAX_SHELL_VIEWERS {
@@ -610,7 +602,7 @@ impl App {
     }
 
     /// Removes shells orphaned by a previous server process, then starts the periodic reaper of
-    /// idle shells, browsers and editors; call once at startup, before serving requests. The
+    /// idle shells and browsers; call once at startup, before serving requests. The
     /// reaper stops when the handle is dropped or the app is gone.
     #[must_use]
     pub fn start_workspace_services(self: &Arc<Self>) -> WorkspaceReaper {
@@ -633,15 +625,12 @@ impl App {
                 for sandbox in app.deps.browser.reap_idle().await {
                     tracing::info!(sandbox = %sandbox, "stopped an idle sandbox browser");
                 }
-                for sandbox in app.deps.editor.reap_idle().await {
-                    tracing::info!(sandbox = %sandbox, "stopped an idle sandbox editor");
-                }
             }
         });
         WorkspaceReaper { task }
     }
 
-    /// Server shutdown: ends every shell and stops every browser and editor (their processes
+    /// Server shutdown: ends every shell and stops every browser (their processes
     /// are reaped; unlike agent sessions they are not meant to outlive the server).
     pub async fn stop_workspace_services(&self) {
         let shells: Vec<Arc<ShellRuntime>> = self
@@ -652,13 +641,8 @@ impl App {
             .unwrap_or_default();
         self.end_shells(&shells).await;
         let browsers = self.deps.browser.shutdown_all().await;
-        let editors = self.deps.editor.shutdown_all().await;
-        if !browsers.is_empty() || !editors.is_empty() {
-            tracing::error!(
-                ?browsers,
-                ?editors,
-                "some browser or editor processes could not be reaped"
-            );
+        if !browsers.is_empty() {
+            tracing::error!(?browsers, "some browser processes could not be reaped");
         }
     }
 }

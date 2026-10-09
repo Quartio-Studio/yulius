@@ -225,7 +225,7 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          Problems Yulius found:\n{problems}\n\n\
          How to work:\n\
          1. Read the repository's own instructions first (AGENTS.md, CLAUDE.md, .agents/skills, \
-         .claude/skills, .codex, CONTRIBUTING and README). They stay authoritative: follow them for \
+         .claude/skills, CONTRIBUTING and README). They stay authoritative: follow them for \
          branches, commits, tests and reviews.\n\
          2. Ask the user once whether you should reverse-engineer the existing project into these \
          documents (product summary, architecture and decisions derived from the code and its \
@@ -298,6 +298,7 @@ impl App {
                 origin: TaskOrigin::Onboarding,
                 automation_run: None,
                 start: false,
+                mode: crate::model::TaskMode::Prompt,
             })
             .await?;
         // Tasks created without a run start archived; the preparation task must stay visible.
@@ -457,7 +458,7 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         if task.status.is_resting() {
-            self.start_run(&task.id, RunStart::Resume { prompt: None }, None, None)
+            self.start_run(&task.id, RunStart::Resume { prompt: None }, None)
                 .await?;
         }
         let actor = self.login_of(&ctx.user.id).await;

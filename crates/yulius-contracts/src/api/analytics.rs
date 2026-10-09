@@ -27,7 +27,7 @@ pub struct TaskCounts {
     pub closed: u32,
     /// Count per status wire name.
     pub by_status: BTreeMap<String, u32>,
-    /// Count per current harness (`claude`, `codex`).
+    /// Count per current harness (`claude`).
     pub by_harness: BTreeMap<String, u32>,
     /// Count per origin (`ui`, `automation`, `import`, `onboarding`, `agent`).
     pub by_origin: BTreeMap<String, u32>,
@@ -87,7 +87,7 @@ pub struct ModelTokens {
 /// Tokens of the runs of one harness.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HarnessTokens {
-    /// `claude` or `codex`.
+    /// Harness (`claude`).
     pub harness: String,
     /// Totals.
     #[serde(flatten)]
@@ -106,15 +106,11 @@ pub struct AccountTokens {
     pub tokens: TokenTotals,
 }
 
-/// Account/provider switches of the cohort.
+/// Account switches of the cohort.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SwitchCounts {
-    /// Recorded switch decisions.
+    /// Recorded switch decisions (each moves a task to another account).
     pub total: u32,
-    /// Switches that kept the harness (another account of the same provider).
-    pub account: u32,
-    /// Switches to the other harness/provider.
-    pub provider: u32,
 }
 
 /// Feedback verdicts of the cohort.

@@ -151,6 +151,19 @@ impl UserStore for SqliteStore {
         .await
     }
 
+    async fn set_password_hash(&self, id: &UserId, phc: &str) -> AppResult<()> {
+        let (id, phc) = (id.as_str().to_owned(), phc.to_owned());
+        self.call(move |c| {
+            c.execute(
+                "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+                params![phc, id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn link_github(
         &self,
         id: &UserId,

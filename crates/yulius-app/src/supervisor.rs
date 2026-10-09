@@ -31,11 +31,9 @@ use crate::error::{AppError, AppResult};
 use crate::hub::Hub;
 use crate::model::{
     AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MetricsRecord, ProviderSessionRecord,
-    SandboxRecord, Secret, SwitchDecisionRecord, TaskRecord,
+    SandboxRecord, Secret, SwitchDecisionRecord, TaskMode, TaskRecord,
 };
-use crate::ports::harness::{
-    HarnessLaunch, Observation, SessionMode, TranslationTarget, UsageSnapshot,
-};
+use crate::ports::harness::{HarnessLaunch, Observation, SessionMode, UsageSnapshot};
 use crate::ports::session::{Containment, RunEvent, RunExit, RunInspection, RunWriter};
 use crate::ports::store::{AttemptUpdate, TaskFieldUpdate};
 use crate::usage_json;
@@ -116,10 +114,86 @@ pub struct SupervisorState {
     launch: tokio::sync::Mutex<()>,
 }
 
+/// File in a run directory holding the run's final screen (`<cols> <rows>\n` + redraw bytes).
+pub(crate) const FINAL_SCREEN_FILE: &str = "final-screen";
+
+/// Writes `bytes` to `path` readable by the owner only.
+pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+/// Reads a saved final screen: (cols, rows, redraw bytes).
+pub(crate) fn read_final_screen(run_dir: &Path) -> Option<(u16, u16, Vec<u8>)> {
+    let bytes = std::fs::read(run_dir.join(FINAL_SCREEN_FILE)).ok()?;
+    let newline = bytes.iter().position(|b| *b == b'\n')?;
+    let header = std::str::from_utf8(&bytes[..newline]).ok()?;
+    let (cols, rows) = header.split_once(' ')?;
+    Some((
+        cols.parse().ok()?,
+        rows.parse().ok()?,
+        bytes[newline + 1..].to_vec(),
+    ))
+}
+
 /// The Git credential helper command line for `exe` (shell-quoted for Git's `!` form).
 fn credential_helper(exe: &Path) -> String {
     let quoted = exe.to_string_lossy().replace('\'', "'\\''");
     format!("!'{quoted}' git-credential")
+}
+
+/// Git configuration (environment form) that makes Git ask Yulius for GitHub credentials
+/// through the helper (never stored on disk): agents get installation tokens, user processes
+/// the user's own token (SPEC-002 ADR-12).
+pub(crate) fn git_credential_env(exe: &Path) -> Vec<(String, String)> {
+    vec![
+        ("GIT_CONFIG_COUNT".into(), "3".into()),
+        (
+            "GIT_CONFIG_KEY_0".into(),
+            "credential.https://github.com.helper".into(),
+        ),
+        ("GIT_CONFIG_VALUE_0".into(), String::new()),
+        (
+            "GIT_CONFIG_KEY_1".into(),
+            "credential.https://github.com.helper".into(),
+        ),
+        ("GIT_CONFIG_VALUE_1".into(), credential_helper(exe)),
+        (
+            "GIT_CONFIG_KEY_2".into(),
+            "credential.https://github.com.useHttpPath".into(),
+        ),
+        ("GIT_CONFIG_VALUE_2".into(), "true".into()),
+    ]
+}
+
+/// Quiet time after the TUI's first output before the goal is typed.
+const GOAL_QUIET: Duration = Duration::from_millis(1500);
+/// Upper bound for waiting until the TUI is ready for the goal.
+const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(45);
+/// Longest prompt used as the goal itself (Claude Code caps goal conditions at 500 characters).
+const GOAL_INLINE_MAX: usize = 450;
+/// The goal of a task whose prompt is too long to be the goal: the prompt is the first message.
+const GOAL_FOR_LONG_PROMPTS: &str =
+    "Everything requested in the first message of this session is done and verified.";
+
+/// The prompt as a one-line goal (control characters and runs of whitespace become single
+/// spaces), or `None` when it is too long to be the goal.
+pub(crate) fn goal_text(prompt: &str) -> Option<String> {
+    let line = prompt
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (line.chars().count() <= GOAL_INLINE_MAX).then_some(line)
 }
 
 /// Branch name for a task: `feat/<number>-<slug>`.
@@ -155,6 +229,13 @@ impl App {
             .clone()
     }
 
+    /// Drops a deleted task's runtime state.
+    pub(crate) fn forget_runtime(&self, task: &TaskId) {
+        if let Ok(mut map) = self.supervisor.runtimes.lock() {
+            map.remove(task);
+        }
+    }
+
     fn existing_runtime(&self, task: &TaskId) -> Option<Arc<TaskRuntime>> {
         self.supervisor
             .runtimes
@@ -176,24 +257,6 @@ impl App {
 
     pub(crate) fn sandbox_home(&self, sandbox: &SandboxId) -> PathBuf {
         self.sandbox_dir(sandbox).join("home")
-    }
-
-    fn codex_sessions(&self, sandbox: &SandboxId) -> PathBuf {
-        self.sandbox_dir(sandbox).join("codex").join("sessions")
-    }
-
-    fn codex_home(&self, sandbox: &SandboxId, account: &AccountId) -> AppResult<PathBuf> {
-        let home = self
-            .sandbox_dir(sandbox)
-            .join("codex")
-            .join(account.as_str());
-        std::fs::create_dir_all(&home).map_err(AppError::internal)?;
-        std::fs::create_dir_all(self.codex_sessions(sandbox)).map_err(AppError::internal)?;
-        let link = home.join("sessions");
-        if std::fs::symlink_metadata(&link).is_err() {
-            std::os::unix::fs::symlink("../sessions", &link).map_err(AppError::internal)?;
-        }
-        Ok(home)
     }
 
     /// Account views for the rotation policy.
@@ -232,26 +295,19 @@ impl App {
     ) -> AppResult<AccountRecord> {
         let views = self.account_views().await?;
         if !views.iter().any(|v| v.provider == provider) {
-            return Err(AppError::Conflict(format!(
-                "no {} account is connected; an instance administrator can add one",
-                if provider == Provider::Anthropic {
-                    "Claude"
-                } else {
-                    "Codex"
-                }
-            )));
+            return Err(AppError::Conflict(
+                "no Claude account is connected; an instance administrator can add one".into(),
+            ));
         }
         let trigger = match requested {
             Some(id) => Trigger::Manual {
                 account: Some(id.clone()),
-                provider: Some(provider),
             },
             None => Trigger::Start,
         };
         let input = RotationInput {
             current: None,
             task_provider: provider,
-            allow_cross_provider: false,
             accounts: views,
             now: self.now(),
             threshold: rotation::DEFAULT_THRESHOLD,
@@ -346,28 +402,14 @@ impl App {
         Ok(worktree)
     }
 
-    /// Installs the enabled skills into the agent homes and, for Open Mercato skills, writes a
+    /// Installs the enabled skills into the agent home and, for Open Mercato skills, writes a
     /// compatible `.ai/agentic.config.json` into the worktree (git-excluded so it never counts as
     /// a change). Failures are logged; a run never fails because of them.
-    async fn prepare_run_extras(
-        &self,
-        sandbox: &SandboxRecord,
-        worktree: &Path,
-        home: &Path,
-        codex_home: Option<&Path>,
-    ) {
+    async fn prepare_run_extras(&self, sandbox: &SandboxRecord, worktree: &Path, home: &Path) {
         match self.skills_for_run(sandbox).await {
             Ok(skills) if !skills.is_empty() => {
                 let claude_dir = home.join(".claude").join("skills");
-                let codex_dir = codex_home.map_or_else(
-                    || self.sandbox_dir(&sandbox.id).join("codex-skills"),
-                    |h| h.join("skills"),
-                );
-                if let Err(err) = self
-                    .deps
-                    .harness
-                    .install_skills(&skills, &claude_dir, &codex_dir)
-                {
+                if let Err(err) = self.deps.harness.install_skills(&skills, &claude_dir) {
                     tracing::warn!(error = %err, sandbox = %sandbox.id, "skill installation failed");
                 }
             }
@@ -425,7 +467,6 @@ impl App {
         self: &'a Arc<Self>,
         task_id: &'a TaskId,
         start: RunStart,
-        harness_override: Option<Harness>,
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
@@ -464,9 +505,7 @@ impl App {
                 }
                 return Ok(());
             }
-            let result = self
-                .launch_attempt(&task, start, harness_override, account)
-                .await;
+            let result = self.launch_attempt(&task, start, account).await;
             drop(guard);
             if let Err(err) = &result {
                 let reason = match err {
@@ -503,7 +542,6 @@ impl App {
         self: &Arc<Self>,
         task: &TaskRecord,
         start: RunStart,
-        harness_override: Option<Harness>,
         requested: Option<AccountId>,
     ) -> AppResult<()> {
         let store = &self.deps.store;
@@ -536,61 +574,33 @@ impl App {
         let task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
-        let target_harness = harness_override.unwrap_or(task.harness);
+        let harness = task.harness;
         let account = self
-            .choose_account(target_harness.provider(), requested.as_ref())
+            .choose_account(harness.provider(), requested.as_ref())
             .await?;
         let credential = self.open_credential(&account)?;
         let home = self.sandbox_home(&sandbox.id);
         std::fs::create_dir_all(&home).map_err(AppError::internal)?;
-        let codex_home = if target_harness == Harness::Codex {
-            Some(self.codex_home(&sandbox.id, &account.id)?)
-        } else {
-            None
-        };
-        self.prepare_run_extras(&sandbox, &worktree, &home, codex_home.as_deref())
-            .await;
+        self.prepare_run_extras(&sandbox, &worktree, &home).await;
 
-        // Decide new / resume / translated.
+        // Goal mode (TSK-010): the prompt is set as the session goal through `/goal` once the
+        // TUI is ready; Claude's goal is per session, so a resumed session gets it again.
+        let goal_mode = task.mode == TaskMode::Goal;
+        // Decide new / resume.
         let (mode, launch_kind) = match (&start, &previous) {
-            (RunStart::Resume { prompt }, Some(prev)) if prev.harness == target_harness => (
+            (RunStart::Resume { prompt }, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
                     prompt: prompt.clone(),
                 },
                 LaunchKind::Resume,
             ),
-            (RunStart::Resume { prompt }, Some(prev)) => {
-                let session_id = self.deps.crypto.new_id();
-                match self.translate_session(
-                    &sandbox,
-                    &task,
-                    prev,
-                    target_harness,
-                    &session_id,
-                    &worktree,
-                ) {
-                    Ok(()) => (
-                        SessionMode::Resume {
-                            session_id,
-                            prompt: prompt.clone(),
-                        },
-                        LaunchKind::Translated,
-                    ),
-                    Err(err) => {
-                        tracing::warn!(error = %err, "transcript translation failed; using handoff");
-                        (
-                            SessionMode::New {
-                                session_id: Some(session_id),
-                                prompt: Some(self.handoff_prompt(&task, prompt.as_deref()).await),
-                            },
-                            LaunchKind::Handoff,
-                        )
-                    }
-                }
-            }
             (RunStart::Resume { prompt }, None) | (RunStart::Fresh { prompt }, _) => {
-                let prompt = prompt.clone().or_else(|| Some(task.prompt.clone()));
+                // In goal mode a short task prompt arrives as the goal itself; a long one is the
+                // first message and the goal refers to it (Claude caps goal conditions).
+                let prompt = prompt.clone().or_else(|| {
+                    (!goal_mode || goal_text(&task.prompt).is_none()).then(|| task.prompt.clone())
+                });
                 (
                     SessionMode::New {
                         session_id: Some(self.deps.crypto.new_id()),
@@ -605,12 +615,11 @@ impl App {
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
         let plan = self.deps.harness.plan(&HarnessLaunch {
-            harness: target_harness,
+            harness,
             mode,
             worktree: worktree.clone(),
             sandbox_home: home.clone(),
             run_dir: run_dir.clone(),
-            codex_home,
             model: task.model.clone(),
             effort: task.effort.clone(),
             contained: self.config.contained,
@@ -625,13 +634,25 @@ impl App {
             .push(("YULIUS_TASK_TOKEN".into(), task_token.clone()));
         launch.env.extend(self.base_env(&sandbox, &home));
         launch.containment = if self.config.contained {
+            let sandbox_root = self.sandbox_dir(&sandbox.id);
+            // Generated per-run config (Claude settings and MCP config live in the run directory,
+            // which stays hidden): bind exactly those files read-only.
+            let run_files: Vec<PathBuf> = launch
+                .files
+                .iter()
+                .map(|f| f.path.clone())
+                .filter(|p| !p.starts_with(&sandbox_root))
+                .collect();
             Containment::Bubblewrap {
-                sandbox_root: self.sandbox_dir(&sandbox.id),
+                sandbox_root,
                 home: home.clone(),
                 writable: Vec::new(),
                 readonly: std::iter::once(self.config.yulius_exe.clone())
                     .chain(self.config.contained_readonly.iter().cloned())
+                    .chain(run_files)
                     .collect(),
+                binds: Vec::new(),
+                identity: None,
             }
         } else {
             Containment::None
@@ -641,7 +662,7 @@ impl App {
             id: attempt_id.clone(),
             task_id: task.id.clone(),
             seq,
-            harness: target_harness,
+            harness,
             account_id: Some(account.id.clone()),
             provider_session_id: plan.session_id.clone(),
             launch_kind,
@@ -657,18 +678,6 @@ impl App {
             exit_reason: None,
         };
         store.insert_attempt(&attempt).await?;
-        if target_harness != task.harness {
-            store
-                .update_task(
-                    &task.id,
-                    &TaskFieldUpdate {
-                        harness: Some(target_harness),
-                        ..TaskFieldUpdate::default()
-                    },
-                    self.now(),
-                )
-                .await?;
-        }
         let runtime = self.runtime(&task.id);
         let size = runtime.hub.size();
         let spawned = match self
@@ -726,22 +735,59 @@ impl App {
                 .await?;
         }
         if let Some(session_id) = &plan.session_id {
-            self.record_lineage(
-                &task,
-                target_harness,
-                session_id,
-                if launch_kind == LaunchKind::Translated {
-                    "translated"
-                } else {
-                    "native"
-                },
-            )
-            .await?;
+            self.record_lineage(&task, harness, session_id, "native")
+                .await?;
         }
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
+        if goal_mode {
+            self.spawn_goal(&task.id, &attempt_id, &task.prompt);
+        }
         Ok(())
+    }
+
+    /// Types `/goal <prompt>` into the attempt once its TUI is ready: after the first output
+    /// and [`GOAL_QUIET`] without new output, or at most [`GOAL_READY_TIMEOUT`] after the start.
+    fn spawn_goal(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId, prompt: &str) {
+        let app = Arc::clone(self);
+        let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
+        let command = format!(
+            "/goal {}",
+            goal_text(prompt).unwrap_or_else(|| GOAL_FOR_LONG_PROMPTS.to_owned())
+        );
+        tokio::spawn(async move {
+            let runtime = app.runtime(&task_id);
+            let started = tokio::time::Instant::now();
+            let mut last = runtime.hub.output_seq();
+            let mut quiet_since = started;
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let live = matches!(
+                    app.deps.store.live_attempt(&task_id).await,
+                    Ok(Some(a)) if a.id == attempt_id
+                );
+                if !live {
+                    return;
+                }
+                let seq = runtime.hub.output_seq();
+                if seq != last {
+                    last = seq;
+                    quiet_since = tokio::time::Instant::now();
+                }
+                let ready = last > 0 && quiet_since.elapsed() >= GOAL_QUIET;
+                if ready || started.elapsed() >= GOAL_READY_TIMEOUT {
+                    break;
+                }
+            }
+            if let Err(err) = app.send_input(&task_id, command.as_bytes()).await {
+                tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
+                return;
+            }
+            // A separate Enter, so the TUI sees typed text first and then a submit.
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let _ = app.send_input(&task_id, b"\r").await;
+        });
     }
 
     fn open_credential(&self, account: &AccountRecord) -> AppResult<Secret> {
@@ -755,7 +801,7 @@ impl App {
 
     fn base_env(&self, sandbox: &SandboxRecord, home: &Path) -> Vec<(String, String)> {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
-        vec![
+        let mut env = vec![
             ("HOME".into(), home.to_string_lossy().into_owned()),
             ("PATH".into(), path),
             ("TERM".into(), "xterm-256color".into()),
@@ -766,27 +812,9 @@ impl App {
             ("YULIUS_PORT_COUNT".into(), sandbox.port_count.to_string()),
             ("PORT".into(), sandbox.port_base.to_string()),
             ("YULIUS_SANDBOX".into(), sandbox.slug.clone()),
-            // Git asks Yulius for a short-lived installation token (never stored on disk).
-            ("GIT_CONFIG_COUNT".into(), "3".into()),
-            (
-                "GIT_CONFIG_KEY_0".into(),
-                "credential.https://github.com.helper".into(),
-            ),
-            ("GIT_CONFIG_VALUE_0".into(), String::new()),
-            (
-                "GIT_CONFIG_KEY_1".into(),
-                "credential.https://github.com.helper".into(),
-            ),
-            (
-                "GIT_CONFIG_VALUE_1".into(),
-                credential_helper(&self.config.yulius_exe),
-            ),
-            (
-                "GIT_CONFIG_KEY_2".into(),
-                "credential.https://github.com.useHttpPath".into(),
-            ),
-            ("GIT_CONFIG_VALUE_2".into(), "true".into()),
-        ]
+        ];
+        env.extend(git_credential_env(&self.config.yulius_exe));
+        env
     }
 
     async fn record_lineage(
@@ -830,70 +858,7 @@ impl App {
                 worktree,
                 session_id,
             ))),
-            Harness::Codex => self
-                .deps
-                .harness
-                .find_codex_rollout(&self.codex_sessions(&sandbox.id), session_id),
         }
-    }
-
-    fn translate_session(
-        &self,
-        sandbox: &SandboxRecord,
-        task: &TaskRecord,
-        previous: &ProviderSessionRecord,
-        to: Harness,
-        session_id: &str,
-        worktree: &Path,
-    ) -> AppResult<()> {
-        let source = self
-            .transcript_path(
-                sandbox,
-                worktree,
-                previous.harness,
-                &previous.session_id,
-                previous.transcript_ref.as_deref(),
-            )?
-            .ok_or_else(|| AppError::Conflict("previous transcript not found".into()))?;
-        self.deps.harness.translate(
-            previous.harness,
-            &source,
-            to,
-            &TranslationTarget {
-                session_id: session_id.to_owned(),
-                cwd: worktree.to_path_buf(),
-                sandbox_home: self.sandbox_home(&sandbox.id),
-                codex_sessions: self.codex_sessions(&sandbox.id),
-                model: task.model.clone(),
-                effort: task.effort.clone(),
-                git_branch: task.branch.clone(),
-                now: self.now(),
-            },
-        )?;
-        Ok(())
-    }
-
-    async fn handoff_prompt(&self, task: &TaskRecord, extra: Option<&str>) -> String {
-        let steps = self.deps.store.steps(&task.id).await.unwrap_or_default();
-        let plan: Vec<String> = steps
-            .iter()
-            .map(|s| format!("- [{}] {}", s.status, s.title))
-            .collect();
-        format!(
-            "You are continuing task #{} \"{}\" started earlier by another coding agent session whose transcript could not be transferred.\n\
-             Original request:\n{}\n\nSpec: {}\nBranch: {}\nPlan:\n{}\n\nInspect the worktree (git status, git log) to see what was done, then continue. {}",
-            task.number,
-            task.title,
-            task.prompt,
-            task.spec_path.as_deref().unwrap_or("(not registered yet)"),
-            task.branch.as_deref().unwrap_or("(unknown)"),
-            if plan.is_empty() {
-                "(no steps yet)".into()
-            } else {
-                plan.join("\n")
-            },
-            extra.unwrap_or("")
-        )
     }
 
     /// Attaches to a run's host, resets the hub and starts the output pump and transcript watcher.
@@ -1051,6 +1016,16 @@ impl App {
         let runtime = self.runtime(task_id);
         let intent = runtime.intent.lock().ok().and_then(|mut g| g.take());
         runtime.watcher_alive.store(false, Ordering::SeqCst);
+        // Keep the last screen so viewers still see how the run ended after a server restart.
+        if let Ok(Some(attempt)) = store.attempt(attempt_id).await {
+            let (screen, (cols, rows)) = runtime.hub.formatted_screen();
+            let mut record = format!("{cols} {rows}\n").into_bytes();
+            record.extend_from_slice(&screen);
+            let path = PathBuf::from(&attempt.run_dir).join(FINAL_SCREEN_FILE);
+            if let Err(err) = crate::supervisor::write_private_file(&path, &record) {
+                tracing::debug!(error = %err, "cannot save the final screen");
+            }
+        }
         let state = if intent.is_some() {
             AttemptState::Killed
         } else {
@@ -1180,7 +1155,7 @@ impl App {
             let app = self.clone();
             let id = task.id.clone();
             tokio::spawn(async move {
-                if let Err(err) = app.start_run(&id, start, None, None).await {
+                if let Err(err) = app.start_run(&id, start, None).await {
                     tracing::warn!(error = %err, task = %id, "queued task failed to start");
                 }
             });
@@ -1247,14 +1222,13 @@ impl App {
         Ok(())
     }
 
-    /// Switches a running task to another account or harness (manual or rotation-driven).
+    /// Switches a running task to another account (manual or rotation-driven).
     ///
     /// # Errors
     /// `Conflict` when the task is not running.
     pub async fn switch_task_now(
         self: &Arc<Self>,
         task_id: &TaskId,
-        harness: Option<Harness>,
         account: Option<AccountId>,
         reason: &str,
         prompt: Option<String>,
@@ -1276,16 +1250,16 @@ impl App {
             Some(a) => self.account_desc(a.harness, a.account_id.as_ref()).await,
             None => task.harness.as_str().to_owned(),
         };
-        let target_harness = harness.unwrap_or(task.harness);
         let decision_id = self.deps.crypto.new_id();
-        let to_desc = self.account_desc(target_harness, account.as_ref()).await;
+        let to_desc = self.account_desc(task.harness, account.as_ref()).await;
         store
             .insert_switch(&SwitchDecisionRecord {
                 id: decision_id.clone(),
                 task_id: task_id.clone(),
                 at: self.now(),
                 reason: reason.to_owned(),
-                inputs: serde_json::json!({"harness": target_harness.as_str(), "account": account.as_ref().map(AccountId::as_str)}).to_string(),
+                inputs: serde_json::json!({"account": account.as_ref().map(AccountId::as_str)})
+                    .to_string(),
                 from_desc: from_desc.clone(),
                 to_desc: to_desc.clone(),
                 outcome: "started".into(),
@@ -1326,10 +1300,7 @@ impl App {
             }
         }
         let start = RunStart::Resume { prompt };
-        match self
-            .start_run(task_id, start, Some(target_harness), account)
-            .await
-        {
+        match self.start_run(task_id, start, account).await {
             Ok(()) => {
                 store.set_switch_outcome(&decision_id, "completed").await?;
                 runtime.hub.notice(format!("↻ Continuing on {to_desc}"));
@@ -1369,21 +1340,8 @@ impl App {
             None => None,
         };
         match label {
-            Some(l) => format!(
-                "{} ({l})",
-                if harness == Harness::ClaudeCode {
-                    "Claude Code"
-                } else {
-                    "Codex"
-                }
-            ),
-            None => {
-                if harness == Harness::ClaudeCode {
-                    "Claude Code".into()
-                } else {
-                    "Codex".into()
-                }
-            }
+            Some(l) => format!("{} ({l})", harness.display_name()),
+            None => harness.display_name().to_owned(),
         }
     }
 
@@ -1515,6 +1473,20 @@ impl App {
             .store
             .set_account_state(account, status, Some(&json), None, self.now())
             .await;
+        // At or above the threshold: tasks on this account rotate at their next turn boundary
+        // (ROT-003).
+        if usage.exhausted(self.now(), rotation::DEFAULT_THRESHOLD)
+            && let Ok(live) = self.deps.store.live_attempts().await
+        {
+            for attempt in live
+                .iter()
+                .filter(|a| a.account_id.as_ref() == Some(account))
+            {
+                self.runtime(&attempt.task_id)
+                    .proactive_switch
+                    .store(true, Ordering::SeqCst);
+            }
+        }
     }
 
     fn start_watcher(self: &Arc<Self>, task_id: &TaskId, attempt: &AttemptRecord) {
@@ -1555,21 +1527,6 @@ impl App {
                 break;
             }
             let now = self.now();
-            // Codex assigns its own id: discover the rollout created for this worktree.
-            if session_id.is_none()
-                && attempt.harness == Harness::Codex
-                && let Ok(Some((id, _))) = self.deps.harness.discover_codex_session(
-                    &self.codex_sessions(&sandbox.id),
-                    &worktree,
-                    started,
-                )
-            {
-                let _ = self.deps.store.set_attempt_session(&attempt.id, &id).await;
-                let _ = self
-                    .record_lineage(&task, Harness::Codex, &id, "native")
-                    .await;
-                session_id = Some(id);
-            }
             // Claude session-id drift (/clear, /resume inside the TUI): adopt into the lineage.
             if attempt.harness == Harness::ClaudeCode && now.millis_since(last_drift_check) > 5_000
             {
@@ -1631,14 +1588,6 @@ impl App {
     ) {
         let runtime = self.runtime(task_id);
         match observation {
-            Observation::RateLimits(usage) => {
-                if let Some(account) = &attempt.account_id {
-                    self.record_account_usage(account, &usage).await;
-                    if usage.exhausted(self.now(), rotation::DEFAULT_THRESHOLD) {
-                        runtime.proactive_switch.store(true, Ordering::SeqCst);
-                    }
-                }
-            }
             Observation::LimitReached { resets_at, message } => {
                 tracing::info!(task = %task_id, %message, "usage limit reached");
                 if let Some(account) = &attempt.account_id {
@@ -1697,7 +1646,6 @@ impl App {
         let input = RotationInput {
             current: current.clone(),
             task_provider: task.harness.provider(),
-            allow_cross_provider: true,
             accounts,
             now: self.now(),
             threshold: rotation::DEFAULT_THRESHOLD,
@@ -1707,20 +1655,12 @@ impl App {
         runtime.proactive_switch.store(false, Ordering::SeqCst);
         match decision {
             Decision::Stay => {}
-            Decision::Switch {
-                account, provider, ..
-            } => {
+            Decision::Switch { account } => {
                 let prompt = matches!(trigger, Trigger::LimitReached).then(|| {
                     "Yulius moved this session to another account because the previous one reached its usage limit. Continue the task exactly where you left off.".to_owned()
                 });
                 if let Err(err) = self
-                    .switch_task_now(
-                        task_id,
-                        Some(provider.harness()),
-                        Some(account),
-                        &format!("{reason:?}"),
-                        prompt,
-                    )
+                    .switch_task_now(task_id, Some(account), &format!("{reason:?}"), prompt)
                     .await
                 {
                     tracing::warn!(error = %err, task = %task_id, "automatic switch failed");
@@ -1741,7 +1681,9 @@ impl App {
                         .await;
                 }
                 let when = until.map_or_else(|| "an unknown time".to_owned(), crate::auth::rfc3339);
-                runtime.hub.notice(format!("All connected accounts are at their usage limit. Yulius will continue at {when}."));
+                runtime.hub.notice(format!(
+                    "All connected accounts are at their usage limit. Yulius will continue at {when}."
+                ));
                 self.publish_task(task_id).await;
                 let app = self.clone();
                 let tid = task_id.clone();
@@ -1781,20 +1723,14 @@ impl App {
             let input = RotationInput {
                 current: None,
                 task_provider: task.harness.provider(),
-                allow_cross_provider: true,
                 accounts,
                 now: self.now(),
                 threshold: rotation::DEFAULT_THRESHOLD,
             };
             match rotation::decide(&input, Trigger::Start) {
-                (
-                    Decision::Switch {
-                        account, provider, ..
-                    },
-                    reason,
-                ) => {
+                (Decision::Switch { account }, reason) => {
                     let prompt = Some("Usage capacity is available again. Continue the task exactly where you left off.".to_owned());
-                    if Some(&account) == current.as_ref() && provider == task.harness.provider() {
+                    if Some(&account) == current.as_ref() {
                         // Same account recovered: just nudge the live session.
                         let _ = self
                             .deps
@@ -1812,13 +1748,7 @@ impl App {
                         }
                         self.publish_task(task_id).await;
                     } else if let Err(err) = self
-                        .switch_task_now(
-                            task_id,
-                            Some(provider.harness()),
-                            Some(account),
-                            &format!("{reason:?}"),
-                            prompt,
-                        )
+                        .switch_task_now(task_id, Some(account), &format!("{reason:?}"), prompt)
                         .await
                     {
                         tracing::warn!(error = %err, "resume after capacity wait failed");
@@ -1839,7 +1769,35 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn final_screen_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join(super::FINAL_SCREEN_FILE);
+        super::write_private_file(&path, b"120 40\n\x1b[1mbye")?;
+        let (cols, rows, bytes) = super::read_final_screen(dir.path()).ok_or("unreadable")?;
+        assert_eq!(
+            (cols, rows, bytes.as_slice()),
+            (120, 40, b"\x1b[1mbye".as_slice())
+        );
+        assert!(super::read_final_screen(&dir.path().join("missing")).is_none());
+        Ok(())
+    }
+
     use super::branch_for;
+
+    #[test]
+    fn goals_are_one_line_and_short() {
+        assert_eq!(
+            super::goal_text("Build the\n  widget\tnow").as_deref(),
+            Some("Build the widget now")
+        );
+        assert_eq!(super::goal_text("a\u{1b}[31mb").as_deref(), Some("a [31mb"));
+        assert!(super::goal_text(&"x".repeat(450)).is_some());
+        assert!(
+            super::goal_text(&"x".repeat(451)).is_none(),
+            "long prompts go first"
+        );
+    }
 
     #[test]
     fn branch_names_are_safe_and_bounded() {

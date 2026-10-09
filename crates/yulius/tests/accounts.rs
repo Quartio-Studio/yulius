@@ -46,8 +46,6 @@ struct Script {
     chunks: Vec<String>,
     /// Exit code after the chunks; `None` = keep running until signalled.
     exit: Option<i32>,
-    /// Written to `$CODEX_HOME/auth.json` just before exiting (simulates `codex login`).
-    codex_auth: Option<String>,
     /// Wait for [`FakeHost::release`] before emitting anything.
     gated: bool,
 }
@@ -56,7 +54,6 @@ struct Run {
     tx: mpsc::Sender<RunEvent>,
     rx: Option<mpsc::Receiver<RunEvent>>,
     script: Script,
-    codex_home: Option<PathBuf>,
 }
 
 /// A recorded spawn: run directory, plan and PTY size.
@@ -184,11 +181,6 @@ impl SessionHost for FakeHost {
             .ok()
             .and_then(|mut s| s.pop_front())
             .unwrap_or_default();
-        let codex_home = plan
-            .env
-            .iter()
-            .find(|(k, _)| k == "CODEX_HOME")
-            .map(|(_, v)| PathBuf::from(v));
         let (tx, rx) = mpsc::channel(64);
         if let Ok(mut runs) = self.runs.lock() {
             runs.insert(
@@ -197,7 +189,6 @@ impl SessionHost for FakeHost {
                     tx,
                     rx: Some(rx),
                     script,
-                    codex_home,
                 },
             );
         }
@@ -208,7 +199,7 @@ impl SessionHost for FakeHost {
     }
 
     async fn attach(&self, run_dir: &Path, _token: &[u8; 32]) -> AppResult<AttachedRun> {
-        let (tx, rx, script, codex_home) = {
+        let (tx, rx, script) = {
             let mut runs = self
                 .runs
                 .lock()
@@ -220,7 +211,6 @@ impl SessionHost for FakeHost {
                 run.tx.clone(),
                 run.rx.take().ok_or(yulius_app::error::AppError::NotFound)?,
                 run.script.clone(),
-                run.codex_home.clone(),
             )
         };
         let exited = Arc::new(AtomicBool::new(false));
@@ -243,19 +233,16 @@ impl SessionHost for FakeHost {
                     return;
                 }
             }
-            if let Some(code) = script.exit {
-                if let (Some(auth), Some(home)) = (&script.codex_auth, &codex_home) {
-                    let _ = std::fs::write(home.join("auth.json"), auth);
-                }
-                if !emitter_exited.swap(true, Ordering::SeqCst) {
-                    let _ = emitter_tx
-                        .send(RunEvent::Exit(RunExit {
-                            code: Some(code),
-                            signal: None,
-                            spawn_failed: false,
-                        }))
-                        .await;
-                }
+            if let Some(code) = script.exit
+                && !emitter_exited.swap(true, Ordering::SeqCst)
+            {
+                let _ = emitter_tx
+                    .send(RunEvent::Exit(RunExit {
+                        code: Some(code),
+                        signal: None,
+                        spawn_failed: false,
+                    }))
+                    .await;
             }
         });
         Ok(AttachedRun {
@@ -393,7 +380,6 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
         ],
         exit: Some(0),
         gated: true,
-        ..Script::default()
     });
     let mut events = s.h.app.events.subscribe();
     let (account_id, login_id) = create(&s, "anthropic", "Claude #1").await?;
@@ -482,48 +468,23 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
 }
 
 #[tokio::test]
-async fn codex_login_moves_auth_json_into_the_vault() -> TestResult {
+async fn only_claude_accounts_can_be_added() -> TestResult {
     let s = setup().await?;
-    let auth = r#"{"OPENAI_API_KEY":null,"tokens":{"id_token":"synthetic-id","access_token":"synthetic-access","refresh_token":"synthetic-refresh"},"last_refresh":"2026-10-07T00:00:00Z"}"#;
-    s.host.push(Script {
-        chunks: vec![
-            "Open https://auth.openai.com/codex/device and enter code ABCD-1234\r\n".into(),
-            "Successfully logged in\r\n".into(),
-        ],
-        exit: Some(0),
-        codex_auth: Some(auth.into()),
-        ..Script::default()
-    });
-    let mut events = s.h.app.events.subscribe();
-    let (account_id, login_id) = create(&s, "openai", "Codex #1").await?;
-    let account = account_settled(&mut events, &account_id).await?;
-    assert_eq!(account["status"], "ok");
-    assert_eq!(account["provider"], "openai");
-
-    let plans = s.host.plans();
-    let (run_dir, plan, _) = plans.first().ok_or("spawned")?;
-    assert_eq!(plan.argv, ["codex", "login", "--device-auth"]);
-    let codex_home = plan
-        .env
-        .iter()
-        .find(|(k, _)| k == "CODEX_HOME")
-        .map(|(_, v)| PathBuf::from(v))
-        .ok_or("CODEX_HOME")?;
-    assert!(codex_home.starts_with(login_dir(&s, &login_id)));
-    assert!(
-        plan.files
-            .iter()
-            .any(|f| f.path == codex_home.join("config.toml") && f.mode == 0o600),
-        "credentials are kept in a file, not the keyring"
+    let refused = call(
+        &s.h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "openai", "label": "Codex"})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        refused.body
     );
-    let record =
-        s.h.store
-            .account(&AccountId::parse(&account_id)?)
-            .await?
-            .ok_or("account")?;
-    let sealed = record.credential.ok_or("credential")?;
-    assert_eq!(s.h.app.deps.crypto.open(&sealed)?, auth.as_bytes());
-    assert!(!run_dir.exists(), "auth.json does not stay on disk");
+    assert!(s.host.plans().is_empty(), "no login was started");
     Ok(())
 }
 
@@ -663,13 +624,13 @@ async fn one_login_per_account_bounded_logins_and_delete_cancels() -> TestResult
 
     // At most eight logins run at once (the second login above is one of them).
     for i in 0..7 {
-        create(&s, "openai", &format!("Codex {i}")).await?;
+        create(&s, "anthropic", &format!("Claude extra {i}")).await?;
     }
     let refused = call(
         &s.h.router,
         Method::POST,
         "/api/admin/accounts",
-        Some(json!({"provider": "openai", "label": "one too many"})),
+        Some(json!({"provider": "anthropic", "label": "one too many"})),
         &s.admin,
     )
     .await?;
@@ -868,6 +829,7 @@ async fn insert_live_attempt(h: &support::Harness, account: &AccountId) -> TestR
             queued_at: None,
             gate_blocks: 0,
             wake_enabled: true,
+            mode: yulius_app::model::TaskMode::Prompt,
         })
         .await?;
     h.store
@@ -908,7 +870,6 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
         ],
         exit: Some(0),
         gated: true,
-        ..Script::default()
     });
     let (_, login_id) = create(&s, "anthropic", "Claude WS").await?;
 

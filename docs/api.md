@@ -26,8 +26,11 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 | Method | Path | Body → Response |
 | --- | --- | --- |
 | GET | `/api/setup/status` | → `{"setup_required": bool}` |
-| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + cookie. Refused once a superadmin exists. |
+| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. Refused once a superadmin exists. |
 | POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; rate limited) |
+| GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
+| POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left); 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
+| POST | `/api/admin/recovery-code` | superadmin session, `{"password"}` → `{"recovery_code"}`: replaces the code and re-enables a locked recovery; 403 for a wrong password |
 | GET | `/api/auth/github/start?next=/` | → 302 to GitHub |
 | GET | `/api/auth/github/callback?code&state` | → 302 to `next`, sets cookie; refuses users not admitted |
 | POST | `/api/auth/logout` | → 204 |
@@ -105,7 +108,7 @@ in `crates/yulius-contracts/src/import.rs`.
 Applying: bundle branches become `import/<login>/<branch>`; the snapshot is committed on
 `import/<login>/snapshot-<YYYY-MM-DD>[-n]` created from the client's `HEAD`; each new session
 becomes an archived task (`origin: "import"`) whose transcript is kept immutably and resumed
-natively on Continue (same or other harness).
+natively on Continue. Only Claude Code sessions are imported.
 
 `PATCH /api/sandboxes/{sid}` validates the profile (branch names, distinct branches, environment
 names, single-line commands ≤ 2000 bytes, `verify: command` needs a command, ≤ 8 environments) and
@@ -121,12 +124,13 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness":"claude|codex","workflow_id?","model?","effort?","title?"}` → 201 `TaskSummary` |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt","workflow_id?","model?","effort?","title?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010) |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary` |
-| POST | `/api/tasks/{tid}/continue` | write | `{"harness?","account_id?"}` → `TaskSummary` |
-| POST | `/api/tasks/{tid}/switch` | write | `{"harness?","account_id?"}` → `TaskSummary` |
+| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the given Claude account or the best one |
+| POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; moves a running task to another Claude account (the best one when absent) with a native resume |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
+| DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
 | POST | `/api/tasks/{tid}/messages` | write | `{"body"}` → `Message` (user → agent, delivered like task messages) |
 | GET | `/api/tasks/{tid}/messages` | read | → `[Message]` |
@@ -136,16 +140,17 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 ```json
 TaskSummary = {
   "id": "…", "sandbox_id": "…", "number": 12, "title": "Checkout API",
-  "harness": "claude|codex", "status": "running|…(see domain wire names)",
+  "harness": "claude", "status": "running|…(see domain wire names)",
   "activity": "working|waiting|needs_attention|null",
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null"},
-  "unread_messages": 0, "archived": false, "account_label": "Claude #2|null"
+  "unread_messages": 0, "archived": false, "account_label": "Claude #2|null",
+  "mode": "goal|prompt"
 }
 TaskDetail = TaskSummary + {
   "spec_path": "docs/specs/2026-10-07-checkout-api.md|null",
-  "worktree": "…", "attempts": [{"seq","harness","account_label","launch_kind","state",
+  "worktree": "…", "attempts": [{"seq","harness","account_label","account_id (proposed)","launch_kind","state",
                                   "started_at","ended_at","exit_code","exit_reason"}],
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
   "delivery": Delivery, "switches": [{"at","reason","from","to"}]
@@ -220,6 +225,28 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   reads use the caller's token, else the GitHub App installation token. Task branch statistics
   compare the local task branch with `origin/<integration>` of the sandbox clone (refreshed by
   merges, promotions and environment runs, not by reads).
+- **Overview stages (proposed).** The Git page (UI-025) reads `GET /api/tasks/{tid}/delivery`
+  once per overview row to learn each task's stage. Adding `stage`, `environment`, `next_actions`
+  and `blocked` to `GitOverview.tasks[]` lets it skip those reads (it uses them when present);
+  a `release` summary (production and integration heads, what is waiting, the last release:
+  who, when, which tasks) would let it say *when* and *by whom* production last changed.
+- **Task changes (proposed).** The Git page's review of a task (UI-031: Git → a task → Changes,
+  Commits, Branch, then "Go to task") reads two endpoints the server does not have yet; until it
+  does, they answer 404 and the review shows its Branch tab alone (the position and size from
+  `GET /api/sandboxes/{sid}/git`, and the comparison on GitHub). `GET /api/tasks/{tid}/changes` (read) → `TaskChanges`, the task
+  worktree (committed and uncommitted) against the merge base with `origin/<integration>`;
+  `GET /api/tasks/{tid}/commits` (read) → `[TaskCommit]`, the task branch's commits not on the
+  integration branch, newest first. Large diffs may be cut (`truncated: true`); binary files carry
+  no hunks.
+
+  ```json
+  TaskChanges = {"base":"<integration>","head":"<task branch>","base_sha","head_sha",
+    "ahead":0,"behind":0,"uncommitted":0,"truncated":false,
+    "files":[{"path","old_path":"…|null","status":"added|modified|deleted|renamed",
+      "insertions":0,"deletions":0,"binary":false,
+      "hunks":[{"header":"@@ -12,7 +12,19 @@","lines":[{"kind":"ctx|add|del","old":12|null,"new":12|null,"text":"…"}]}]}]}
+  TaskCommit = {"sha","subject","author","at","files":0,"insertions":0,"deletions":0}
+  ```
 - **Stage reconciliation.** Reading a task's delivery aligns the stored stage with GitHub: a PR
   opened, merged or closed outside Yulius moves the stage (`none`→`pr_open`, →`merged_integration`,
   `pr_open`→`none`). `env_done` carries the environment in `environment`. `blocked` lists the
@@ -272,6 +299,12 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 | GET | `/api/sandboxes/{sid}/skills` | read | `[{"name","description","source":"repository|instance|open-mercato","path","enabled"}]` |
 | GET | `/api/sandboxes/{sid}/skills/{name}` | read | `{"name","content"}` (`SKILL.md`, at most 512 KiB) |
 | PUT | `/api/sandboxes/{sid}/skills/{name}` | write (instance skills: instance admin) | `{"enabled":bool}` → 204. Repository skills → 422 (always available inside the repository). |
+
+The web UI edits and creates repository skills as files: a repository skill is
+`.agents/skills/<name>/SKILL.md` (or `.claude/skills/…`) in the sandbox repository, so its skill page
+(UI-033) reads and saves it with the built-in editor's files API (root `sandbox`, the save carrying
+the read's `sha256`) and New skill (UI-035) creates the folder and the file there. Instance skills
+and the Open Mercato pack have no write API and are read-only in the UI.
 | GET/POST | `/api/sandboxes/{sid}/workflows` | read/write | `Workflow`; POST → 201. `"scope":"instance"` creates an instance workflow (instance admins). |
 | PUT/DELETE | `/api/workflows/{id}` | write (instance: admin) | PUT replaces name, description, steps, instructions, gates → `Workflow`; DELETE → 204 |
 | GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201 |
@@ -286,7 +319,7 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 Workflow = {"id","name","description","steps":["Write spec","Implement","Test","Open PR"],
             "instructions":"…","gates":{"require_spec":true,"require_tests":true},"scope":"instance|sandbox"}
 Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","workflow_id|null",
-              "harness":"claude|codex","enabled":true,"created_via":"ui|agent",
+              "harness":"claude","enabled":true,"created_via":"ui|agent",
               "next_run_at":"…|null","last_run":AutomationRun|null}
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
                  "task_id|null","error|null"}
@@ -308,41 +341,66 @@ keeps the stored values; a given map replaces all values of that map (`{}` clear
 for the always-attached Yulius tool server. A sandbox server overrides an instance server of the
 same name for that sandbox (also when disabled). Agent runs receive HTTP secrets only as an
 `Authorization: Bearer` token; other headers are used by the test endpoint but not yet passed to
-the harnesses.
+Claude Code.
 
 ## Browser, editor, shell
 
-- `WS /api/sandboxes/{sid}/browser` (write): client `{"type":"open","url"}`, `{"type":"navigate",
-  "tab_id","url"}`, `{"type":"activate","tab_id"}`, `{"type":"close","tab_id"}`,
+- `WS /api/sandboxes/{sid}/browser` (write): client `{"type":"open","url"}` (`""` opens the
+  welcome page), `{"type":"navigate","tab_id","url"}`, `{"type":"activate","tab_id"}`,
+  `{"type":"close","tab_id"}`,
   `{"type":"mouse","tab_id","event":"down|up|move|wheel","x","y","button","dx","dy"}`,
   `{"type":"key","tab_id","event":"down|up|char","key","code","text","modifiers"}`,
-  `{"type":"viewport","width","height"}`; server `{"type":"tabs","tabs":[{"id","title","url",
-  "active","action_requested":{"reason","task_id"}|null}]}`, binary JPEG frames prefixed by
-  `u8 3` + 32-byte tab id (ASCII, space padded) + image, `{"type":"action_requested",
+  `{"type":"viewport","width","height"}`, `{"type":"view","mode":"dom|pixels"}` (this
+  connection's view, default `dom`), `{"type":"dom_resync"}` (a fresh snapshot); server
+  `{"type":"tabs","tabs":[{"id","title","url","active","action_requested":{"reason","task_id"}|
+  null}]}`, `{"type":"viewport","width","height"}` (on connect and after every change; lay the
+  mirror out at this size), `{"type":"dom","tab_id","reset","events":[…]}` ([rrweb 2.1.7
+  events](https://github.com/rrweb-io/rrweb); `reset` starts a new stream from a `Meta` and a
+  full snapshot — on connect, navigation, resync or after lost events), `{"type":
+  "dom_unavailable","tab_id","reason"}` (this tab is sent as pixels), binary JPEG frames
+  (pixel view) prefixed by `u8 3` + 32-byte tab id (ASCII, space padded) + image,
+  `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
+  agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested",
   "tab_id","reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|
-  capacity|upstream|internal","message"}`. One browser per sandbox, started on first use;
-  frames are those of the active tab. A slow client loses frames (never the browser); a client
-  that stops reading JSON messages is closed with 4008. Access is re-checked every 60 s (close
-  4003). When Chromium is missing or the browser stops, the server sends an `upstream` error
-  with the reason and closes with 1011.
+  capacity|upstream|internal","message"}`. One browser per sandbox, started on first use; the
+  view is of the active tab. A slow client loses frames (never the browser) and DOM batches are
+  never dropped: a client that stops reading JSON messages is closed with 4008. Access is
+  re-checked every 60 s (close 4003). When Chromium is missing or the browser stops, the server
+  sends an `upstream` error with the reason and closes with 1011.
+  Replay DOM events only in a script-free iframe (rrweb's default sandbox `allow-same-origin`):
+  pages can send crafted events.
+- `GET /api/sandboxes/{sid}/browser/resource?tab&url` (write): a page resource (image,
+  stylesheet, font) fetched by the sandbox browser with its cookies — for mirrored pages whose
+  resources only the VM can reach (localhost, private networks, plain http). Answers with the
+  resource's status and `Content-Type`, `X-Content-Type-Options: nosniff`,
+  `Content-Security-Policy: sandbox; default-src 'none'` and `Cache-Control: private,
+  max-age=300`; at most 20 MiB. Browser requests must be same-origin subresources: a
+  `Sec-Fetch-Site` other than `same-origin` or `Sec-Fetch-Mode: navigate` is 403. 404 while the
+  sandbox browser is not running.
+- New tabs open `GET /browser/welcome?sandbox=<id>` on the internal (loopback) listener: the
+  sandbox name and links to its listening dev-server ports (probed on 127.0.0.1 every 5 s via
+  `/browser/welcome/ports`).
 - Agents print `<public_url>/s/<slug>/browser?tab=<tab_id>` (returned by the
   `browser_request_user_action` MCP tool, which also marks the task `needs_attention` and
   publishes `browser.action_requested`); the web UI opens the browser panel on that tab.
-- `/s/{sid}/editor/*` (write; any method, WebSocket upgrades included): reverse-proxied VS Code
-  (iframe in the editor panel). `/s/{sid}/editor` redirects to `/s/{sid}/editor/`. The editor
-  opens the sandbox repository; `?folder=<path>` is VS Code's own folder selection and
-  `GET /s/{sid}/editor/?worktree=<task id>` answers 302 to `?folder=<that task's worktree>`
-  (tasks of the same sandbox only: 404 otherwise, 409 without a worktree). Cookie sessions
-  need a same-origin `Origin` (or `Sec-Fetch-Site: same-origin`) for non-GET requests and
-  upgrades instead of the CSRF header. The editor's connection token stays on the server (it
-  is added to forwarded requests, never sent to the browser); Yulius credentials are not
-  forwarded. Request bodies ≤ 8 MiB (413). 503 `unavailable` when openvscode-server is missing
-  or disabled (contained mode without `--editor-uncontained`), 409 before the repository is
-  cloned.
+- Built-in editor (write; EDT-001..004). `root` is `sandbox` (default, the repository) or
+  `task:<task id>` (that task's worktree); `path` is relative (normal components only; `.git`
+  is refused, 403; a path leading outside the folder, also through symbolic links, is 403).
+  `GET /api/sandboxes/{sid}/files?root&path` → `{"path","entries":[{"name","path",
+  "kind":"file|dir|symlink","size"}],"truncated"}` (directories first; `.git` hidden; at most
+  2000 entries). `GET /api/sandboxes/{sid}/files/content?root&path` → `{"path","content":
+  "…|null","binary","too_large","size","sha256"}` (UTF-8 text up to 2 MiB). `PUT
+  /api/sandboxes/{sid}/files/content` `{"root?","path","content","base_sha256?"}` →
+  `{"path","sha256","size"}`: atomic; 409 when the file changed since `base_sha256` or, without
+  a base, when it exists. `POST /api/sandboxes/{sid}/files` `{"root?","path","kind":"file|dir"}`
+  → 201 entry (409 when it exists). `DELETE /api/sandboxes/{sid}/files?root&path` → 204 (files,
+  links and directory trees; never the folder itself). 409 before the repository is cloned.
+  The editor UI (Monaco) keeps each user's open files and unsaved text in their browser only.
 - `POST /api/sandboxes/{sid}/shells` (write) `{"task_id?"}` (or an empty body) → 201 `{"id"}`:
-  a login shell in the sandbox repository or that task's worktree, with the sandbox HOME and
-  the containment of task runs. At most 4 live shells per sandbox (429). `WS
-  /api/shells/{id}/terminal` (write users of that sandbox) speaks the terminal protocol
+  a login shell in the sandbox repository or that task's worktree, as the caller's sandbox
+  identity (their home; uid 0 with `sudo` when contained; UI-016). At most 4 live shells per
+  user and sandbox (429). `WS /api/shells/{id}/terminal` (only the shell's creator; 404 for
+  everybody else) speaks the terminal protocol
   (`state` has `attempt_seq` and `harness` `null`); a shell ends when its process exits (the
   server sends `exit` and closes) or after 30 min without viewers. Shells never change tasks.
 
@@ -353,11 +411,12 @@ the harnesses.
 | GET/POST | `/api/admin/users` | superadmin | GET → `[AdminUser]` (the superadmin is not listed); POST `{"github_login","display_name?","is_instance_admin?"}` → 201 `AdminUser` |
 | PATCH | `/api/admin/users/{id}` | superadmin | `{"disabled?","is_instance_admin?"}` → `AdminUser` |
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
-| POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic|openai","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
+| POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
 | PATCH | `/api/admin/accounts/{id}` | instance admin | `{"enabled?","priority?" (0–10000),"label?" (1–80 chars)}` → `Account` |
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
+| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 99 % its tasks move to the next account at their next turn boundary; 502 with the reason (also kept as `last_error`) when the provider refuses or fails. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
 | GET | `/api/admin/github/manifest/callback?code&state` | superadmin | converts the code, stores the sealed App credentials and owner, 303 to the App's installation page; failures 303 to `/admin/github?error=…` |
@@ -372,19 +431,25 @@ Account = {"id","provider","label","enabled","priority",
   "status":"pending_login|ok|relogin|error|limited",
   "usage":{"primary":{"used_percent":42.0,"resets_at":"…","window_minutes":300}|null,
            "secondary":{…}|null,"observed_at":"…|null"},
-  "last_error":"…|null","in_use_by":0}
+  "last_error":"…|null","in_use_by":0,
+  "email":"…|null","plan":"Pro|Max 5x|Max 20x|…|null"}
 ```
 
-Unknown usage is `null`, never zero. Credentials are never returned.
+Unknown usage is `null`, never zero. Credentials are never returned. `email` (the provider sign-in,
+administrators only) and `plan` (the subscription tier) are planned for UI-022: the web UI shows
+them when present, but **the server does not report them yet** (only the mock does), so today they
+are absent and the UI falls back to the label and provider. A task's overview names each session's
+account by that email when it has it, matching `TaskDetail.attempts[].account_label` to the
+Status accounts; an `account_id` on attempts (proposed) would make the match independent of labels.
 
-**Login terminal.** Each login runs the provider CLI's own sign-in (`claude setup-token`;
-`codex login --device-auth` with a temporary `CODEX_HOME`) in a server-owned PTY 500 columns
+**Login terminal.** Each login runs Claude Code's own sign-in (`claude setup-token`) with a
+temporary config directory in a server-owned PTY 500 columns
 wide so tokens and URLs never wrap. It uses the terminal protocol above: `resize` and
 `take_control` only re-send `state` (the size is fixed), `input` is forwarded while the login
 runs. `state.status` is `running`, then `ok|error|cancelled`; the `exit` frame carries the same
 status and the CLI's exit code. Output is masked before it reaches any viewer (Claude tokens
-become `sk-ant-oat01-[REDACTED]`). On exit the credential (Claude token from the output, Codex
-`auth.json`) is sealed into the account (`ok`, `account.updated`), and the temporary directory
+become `sk-ant-oat01-[REDACTED]`). On exit the credential (the Claude token from the output) is sealed
+into the account (`ok`, `account.updated`), and the temporary directory
 is overwritten and removed. A login that ends without a credential sets `error` with a message;
 an account that still holds a working credential keeps its status and records
 `re-login failed: …`. Bounds: one login per account, 8 at once (`capacity`), 16 viewers per
@@ -408,7 +473,7 @@ AnalyticsSummary = {
   "tokens_by_model": [{"model": "claude-opus|unknown", …Tokens}],
   "tokens_by_harness": [{"harness": "claude", …Tokens}],
   "tokens_by_account": [{"account_id": "…|null", "account_label": "…|null", …Tokens}],
-  "switches": {"total": 2, "account": 1, "provider": 1},
+  "switches": {"total": 2},
   "feedback": {"correct": 1, "incorrect": 1},
   "truncated": false
 }

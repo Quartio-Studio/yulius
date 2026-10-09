@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-/// Yulius: a self-hosted orchestrator of native Claude Code and Codex sessions.
+/// Yulius: a self-hosted orchestrator of native Claude Code sessions.
 #[derive(Debug, Parser)]
 #[command(name = "yulius", version, about)]
 struct Cli {
@@ -37,10 +37,10 @@ enum Command {
         #[arg(long)]
         run_dir: PathBuf,
     },
-    /// Internal: forward a Claude Code / Codex hook to Yulius (always exits 0).
+    /// Internal: forward a Claude Code hook to Yulius (always exits 0).
     #[command(hide = true)]
     Hook {
-        /// Harness (`claude` or `codex`).
+        /// Harness (`claude`).
         harness: String,
         /// Hook event name.
         event: String,
@@ -57,7 +57,7 @@ enum Command {
         #[arg(long, env = "YULIUS_SERVER")]
         server: String,
     },
-    /// Import a local repository and its recent Claude/Codex sessions into Yulius.
+    /// Import a local repository and its recent Claude Code sessions into Yulius.
     Import {
         /// Repository path (default: current directory).
         #[arg(default_value = ".")]

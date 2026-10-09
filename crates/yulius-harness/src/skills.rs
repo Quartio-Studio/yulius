@@ -1,8 +1,7 @@
-//! Installs the skill catalog into both harness homes (SPEC-001 SKL-001/002/004, SPEC-002 §7.2
-//! "Skills", AC-SKL-1).
+//! Installs the skill catalog into the Claude Code home (SPEC-001 SKL-001/002/004, SPEC-002
+//! §7.2 "Skills", AC-SKL-1).
 //!
-//! Each skill directory (containing `SKILL.md`) is copied to `<claude_skills_dir>/<name>` and
-//! `<codex_skills_dir>/<name>`. A copy is staged next to the target and swapped in by rename, so
+//! Each skill directory (containing `SKILL.md`) is copied to `<claude_skills_dir>/<name>`. A copy is staged next to the target and swapped in by rename, so
 //! readers see either the old or the new complete skill. Installed copies carry a
 //! [`MANAGED_MARKER`] file; managed copies whose skill is no longer in the catalog are removed,
 //! while skills Yulius did not install are left alone.
@@ -83,8 +82,8 @@ fn io_error(name: &str) -> impl FnOnce(io::Error) -> SkillsError + '_ {
     }
 }
 
-/// Copies every skill into both skills directories, replacing stale copies, and removes
-/// managed copies of skills no longer listed.
+/// Copies every skill into the skills directory, replacing stale copies, and removes managed
+/// copies of skills no longer listed.
 ///
 /// # Errors
 /// [`SkillsError`] for an invalid name, a missing `SKILL.md`, an exceeded bound or an I/O
@@ -92,7 +91,6 @@ fn io_error(name: &str) -> impl FnOnce(io::Error) -> SkillsError + '_ {
 pub fn install_skills(
     sources: &[SkillDir],
     claude_skills_dir: &Path,
-    codex_skills_dir: &Path,
 ) -> Result<InstallReport, SkillsError> {
     let mut names: Vec<&str> = Vec::new();
     for skill in sources {
@@ -106,25 +104,14 @@ pub fn install_skills(
         }
     }
     let mut report = InstallReport::default();
-    for dir in [claude_skills_dir, codex_skills_dir] {
-        fs::create_dir_all(dir).map_err(io_error(""))?;
-        clean_leftovers(dir).map_err(io_error(""))?;
-    }
+    let dir = claude_skills_dir;
+    fs::create_dir_all(dir).map_err(io_error(""))?;
+    clean_leftovers(dir).map_err(io_error(""))?;
     for skill in sources {
-        let mut skipped = 0;
-        for dir in [claude_skills_dir, codex_skills_dir] {
-            skipped = install_one(skill, dir)?;
-        }
-        report.skipped_links += skipped;
+        report.skipped_links += install_one(skill, dir)?;
         report.installed.push(skill.name.clone());
     }
-    for dir in [claude_skills_dir, codex_skills_dir] {
-        for name in prune(dir, &names).map_err(io_error(""))? {
-            if !report.removed.contains(&name) {
-                report.removed.push(name);
-            }
-        }
-    }
+    report.removed = prune(dir, &names).map_err(io_error(""))?;
     report.removed.sort();
     Ok(report)
 }

@@ -1,8 +1,7 @@
 //! Provider transcript locations and session discovery (SPEC-002 §7.2, SPEC-001 HRN-004).
 //!
-//! Claude Code: `<CLAUDE_CONFIG_DIR>/projects/<cwd-slug>/<sessionId>.jsonl`. Codex:
-//! `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl`. Directory walks are
-//! bounded by [`MAX_WALK_ENTRIES`] and never follow symbolic links below the given root.
+//! Claude Code: `<CLAUDE_CONFIG_DIR>/projects/<cwd-slug>/<sessionId>.jsonl`. Directory walks
+//! are bounded by [`MAX_WALK_ENTRIES`] and never follow symbolic links below the given root.
 
 use std::fs;
 use std::io;
@@ -77,90 +76,8 @@ fn sorted_entries(dir: &Path, budget: &mut usize) -> io::Result<Vec<fs::DirEntry
     Ok(entries)
 }
 
-fn is_real_dir(entry: &fs::DirEntry) -> io::Result<bool> {
-    Ok(entry.file_type()?.is_dir())
-}
-
 fn is_real_file(entry: &fs::DirEntry) -> io::Result<bool> {
     Ok(entry.file_type()?.is_file())
-}
-
-/// Calls `visit` for every regular file in `<sessions_dir>/*/*/*/`, newest date directories
-/// first, until it returns `Some`.
-fn walk_rollouts<T>(
-    sessions_dir: &Path,
-    mut visit: impl FnMut(&fs::DirEntry) -> io::Result<Option<T>>,
-) -> io::Result<Option<T>> {
-    let mut budget = MAX_WALK_ENTRIES;
-    for year in sorted_entries(sessions_dir, &mut budget)? {
-        if !is_real_dir(&year)? {
-            continue;
-        }
-        for month in sorted_entries(&year.path(), &mut budget)? {
-            if !is_real_dir(&month)? {
-                continue;
-            }
-            for day in sorted_entries(&month.path(), &mut budget)? {
-                if !is_real_dir(&day)? {
-                    continue;
-                }
-                for file in sorted_entries(&day.path(), &mut budget)? {
-                    if is_real_file(&file)?
-                        && let Some(found) = visit(&file)?
-                    {
-                        return Ok(Some(found));
-                    }
-                }
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn is_rollout_name(name: &str) -> bool {
-    name.starts_with("rollout-") && name.ends_with(".jsonl")
-}
-
-/// Finds the rollout file of a Codex session under `<CODEX_HOME>/sessions`.
-///
-/// # Errors
-/// `InvalidInput` for an invalid session id; an error when more than [`MAX_WALK_ENTRIES`]
-/// entries would be examined; other I/O errors except a missing directory.
-pub fn find_codex_rollout(sessions_dir: &Path, session_id: &str) -> io::Result<Option<PathBuf>> {
-    if !valid_session_id(session_id) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid session id",
-        ));
-    }
-    let suffix = format!("-{session_id}.jsonl");
-    walk_rollouts(sessions_dir, |entry| {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        Ok((is_rollout_name(&name) && name.ends_with(&suffix)).then(|| entry.path()))
-    })
-}
-
-/// Codex rollout files modified at or after `since`, newest first (for discovering the id of a
-/// new session from its `session_meta`, and session drift).
-///
-/// # Errors
-/// An error when more than [`MAX_WALK_ENTRIES`] entries would be examined; other I/O errors
-/// except a missing directory.
-pub fn recent_codex_rollouts(sessions_dir: &Path, since: SystemTime) -> io::Result<Vec<PathBuf>> {
-    let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
-    walk_rollouts::<()>(sessions_dir, |entry| {
-        let name = entry.file_name();
-        if is_rollout_name(&name.to_string_lossy()) {
-            let modified = entry.metadata()?.modified()?;
-            if modified >= since {
-                found.push((modified, entry.path()));
-            }
-        }
-        Ok(None)
-    })?;
-    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-    Ok(found.into_iter().map(|(_, path)| path).collect())
 }
 
 /// A Claude session transcript file.

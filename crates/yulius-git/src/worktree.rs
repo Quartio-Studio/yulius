@@ -177,6 +177,65 @@ impl Git {
         )?;
         Ok(WorktreeRemoval::Removed)
     }
+
+    /// Discards a task worktree on explicit request (task deletion, SPEC-001 TSK-009): removes
+    /// it even with uncommitted changes, prunes stale registrations and deletes the local
+    /// branch. Only worktrees strictly inside `owned_root` are touched; the main worktree never.
+    ///
+    /// # Errors
+    /// Git failures; `Invalid` for unsafe branch names.
+    pub fn worktree_discard(
+        &self,
+        repo: &Path,
+        path: &Path,
+        owned_root: &Path,
+        branch: Option<&str>,
+    ) -> Result<(), GitError> {
+        if let Some(branch) = branch {
+            validate_branch_name(branch)?;
+        }
+        let root = owned_root.canonicalize().map_err(|source| GitError::Io {
+            context: "resolving the owned worktree root",
+            source,
+        })?;
+        if let Ok(target) = path.canonicalize()
+            && target != root
+            && target.starts_with(&root)
+        {
+            let worktrees = self.worktree_list(repo)?;
+            let registered = worktrees.iter().skip(1).any(|entry| {
+                entry
+                    .path
+                    .canonicalize()
+                    .is_ok_and(|candidate| candidate == target)
+            });
+            if registered {
+                self.run_ok(
+                    Invocation::new(self, "worktree remove", Some(repo))
+                        .args(["worktree", "remove", "--force", "--force", "--"])
+                        .arg(&target),
+                )?;
+            } else {
+                std::fs::remove_dir_all(&target).map_err(|source| GitError::Io {
+                    context: "removing an unregistered worktree directory",
+                    source,
+                })?;
+            }
+        }
+        self.run_ok(
+            Invocation::new(self, "worktree prune", Some(repo)).args(["worktree", "prune"]),
+        )?;
+        if let Some(branch) = branch
+            && self.branch_exists(repo, branch)?
+        {
+            self.run_ok(
+                Invocation::new(self, "branch delete", Some(repo))
+                    .args(["branch", "-D"])
+                    .arg(branch),
+            )?;
+        }
+        Ok(())
+    }
 }
 
 fn bytes_to_path(bytes: &[u8]) -> PathBuf {

@@ -7,11 +7,12 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tokio::sync::{broadcast, watch};
 use yulius_app::ports::browser::{
-    BrowserFailure, BrowserFailureKind, BrowserFrames, BrowserNotice, BrowserNotices, BrowserPort,
-    BrowserSession, Screenshot,
+    BrowserDom, BrowserFailure, BrowserFailureKind, BrowserFrames, BrowserNotice, BrowserNotices,
+    BrowserPort, BrowserSession, DomUpdate, FetchedResource, Screenshot,
 };
 use yulius_browser::{
-    BrowserConfig, BrowserError, BrowserEvent, BrowserInstance, BrowserManager, FrameSubscription,
+    BrowserConfig, BrowserError, BrowserEvent, BrowserInstance, BrowserManager, DomEvent,
+    DomSubscription, FrameSubscription,
 };
 use yulius_contracts::browser::{
     ActionRequest, ClickParams, ClickResult, NavigateParams, NavigationResult, OpenParams,
@@ -106,6 +107,25 @@ impl BrowserFrames for Frames {
     }
 }
 
+struct Dom(DomSubscription);
+
+#[async_trait]
+impl BrowserDom for Dom {
+    fn tab_id(&self) -> &TabId {
+        self.0.tab_id()
+    }
+
+    async fn next(&mut self) -> Option<DomUpdate> {
+        Some(match self.0.recv().await? {
+            DomEvent::Batch(batch) => DomUpdate::Batch {
+                reset: batch.reset,
+                events: batch.events,
+            },
+            DomEvent::Lagged => DomUpdate::Lagged,
+        })
+    }
+}
+
 struct Notices(broadcast::Receiver<BrowserEvent>);
 
 #[async_trait]
@@ -128,6 +148,24 @@ impl BrowserNotices for Notices {
                     return Some(BrowserNotice::ActionCleared { tab_id });
                 }
                 Ok(BrowserEvent::Disconnected) => return Some(BrowserNotice::Disconnected),
+                Ok(BrowserEvent::AgentActivity {
+                    tab_id,
+                    x,
+                    y,
+                    action,
+                    label,
+                }) => {
+                    return Some(BrowserNotice::AgentActivity {
+                        tab_id,
+                        x,
+                        y,
+                        action,
+                        label,
+                    });
+                }
+                Ok(BrowserEvent::Viewport { width, height }) => {
+                    return Some(BrowserNotice::Viewport { width, height });
+                }
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
@@ -149,6 +187,10 @@ impl BrowserSession for Session {
         self.0.tabs()
     }
 
+    fn viewport(&self) -> (u32, u32) {
+        self.0.viewport()
+    }
+
     fn watch_tabs(&self) -> watch::Receiver<Vec<TabInfo>> {
         self.0.subscribe_tabs()
     }
@@ -168,6 +210,28 @@ impl BrowserSession for Session {
     async fn frames(&self, tab: &TabId) -> Result<Box<dyn BrowserFrames>, BrowserFailure> {
         let subscription = self.0.subscribe_frames(tab).await.map_err(failure)?;
         Ok(Box::new(Frames(subscription)))
+    }
+
+    async fn dom(&self, tab: &TabId) -> Result<Box<dyn BrowserDom>, BrowserFailure> {
+        let subscription = self.0.subscribe_dom(tab).await.map_err(failure)?;
+        Ok(Box::new(Dom(subscription)))
+    }
+
+    async fn fetch_resource(
+        &self,
+        tab: &TabId,
+        url: &str,
+    ) -> Result<FetchedResource, BrowserFailure> {
+        let resource = self.0.fetch_resource(tab, url).await.map_err(failure)?;
+        Ok(FetchedResource {
+            status: resource.status,
+            content_type: resource.content_type,
+            body: resource.body,
+        })
+    }
+
+    fn agent_activity(&self, tab: &TabId, position: Option<(f64, f64)>, action: &str, label: &str) {
+        self.0.agent_activity(tab, position, action, label);
     }
 
     fn tool_tabs(&self) -> TabsResult {

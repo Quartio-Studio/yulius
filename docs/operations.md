@@ -12,14 +12,12 @@ been performed or verified** as part of the implementation work.
 | Linux x86_64 or arm64, systemd | the service | macOS works for development (runs are "not contained"). |
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
-| Codex CLI (`codex`) | Codex tasks and Codex account login | verified flags with 0.160.1; releases without `--no-daemon` (e.g. 0.154) are detected and warned about. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. |
-| `openvscode-server` | editor panel | optional; disabled in contained mode unless `--editor-uncontained`. |
 
 Inside containment an agent sees only `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/opt`, its own
-sandbox directory and the `yulius` binary. Install the agent CLIs (and Node.js for Codex' npm
-wrapper) system-wide under `/usr/local` or `/opt`; a per-user install such as Claude Code's
+sandbox directory and the `yulius` binary. Install Claude Code system-wide under `/usr/local` or
+`/opt`; a per-user install such as Claude Code's
 default `~/.local/bin/claude` is invisible to contained runs unless its directories are added with
 `--contained-readonly <dir>[:<dir>…]` (`YULIUS_CONTAINED_READONLY`).
 
@@ -82,8 +80,10 @@ journalctl -u yulius -f
 
 Only the public listener (`YULIUS_BIND`) is proxied. The internal listener (`YULIUS_INTERNAL_BIND`)
 serves agents' MCP, hooks and Git credentials; it must stay on loopback and is never proxied.
-WebSockets are used for terminals, the event stream, the browser panel and the editor; import
-chunks are up to 8 MiB.
+WebSockets are used for terminals, the event stream and the browser panel; import
+chunks are up to 8 MiB. Let the proxy compress responses: Yulius serves its web UI uncompressed,
+and compression cuts the first load from about 1 MB to about 300 KB (the editor's first open from
+4.6 MB to about 1.2 MB), which matters most on phones.
 
 Caddy:
 
@@ -92,6 +92,7 @@ yulius.example.com {
     request_body {
         max_size 16MB
     }
+    encode zstd gzip
     reverse_proxy 127.0.0.1:8080
 }
 ```
@@ -104,6 +105,9 @@ server {
     server_name yulius.example.com;
     # ssl_certificate / ssl_certificate_key ...
     client_max_body_size 16m;
+    gzip on;
+    gzip_min_length 1024;
+    gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
@@ -131,8 +135,8 @@ WebSocket origins are checked against it.
    at `YULIUS_PUBLIC_URL`.
 4. Administration → Users: admit GitHub logins; they sign in with GitHub. Repository access in
    Yulius mirrors their GitHub permissions (read / write / admin).
-5. Administration → Accounts: add Claude and Codex accounts; each login runs the provider's own
-   sign-in in a terminal in the browser.
+5. Administration → Accounts: add Claude accounts; each login runs Claude's own sign-in in a
+   terminal in the browser. Yulius rotates between them automatically.
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
    `studio` delivery presets.
 
@@ -171,4 +175,4 @@ never respawns). Queued tasks start when capacity allows.
 - Agents receive per-run task tokens (MCP, hooks) and GitHub tokens restricted to their sandbox
   repository; provider credentials reach the agent process only through its environment.
 - Known open risks are listed in SPEC-002 §12 (notably R-07: Chromium's DevTools port is
-  unauthenticated on loopback; R-09: environment commands and the editor run outside containment).
+  unauthenticated on loopback; R-09: environment commands run outside containment).

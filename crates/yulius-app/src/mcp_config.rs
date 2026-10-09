@@ -1,7 +1,7 @@
 //! MCP servers attached to agent runs (SPEC-001 MCP-001..003, AC-MCP-1/2).
 //!
 //! Servers are configured once per instance (instance administrators) or per sandbox (write
-//! access) and attached to every Claude Code and Codex run of the sandbox; the Yulius tool server
+//! access) and attached to every Claude Code run of the sandbox; the Yulius tool server
 //! itself is always attached by the harness adapter, so the name `yulius` is reserved. Secrets
 //! (stdio environment, HTTP headers) are sealed with the instance key, never returned (only
 //! their names), and opened only to build a run's attachments. Names are unique per scope

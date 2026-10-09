@@ -23,7 +23,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 type Error = Box<dyn std::error::Error>;
 
 const CLAUDE_SESSION: &str = "4f1c2d3e-0000-4000-8000-000000000001";
-const CODEX_SESSION: &str = "019a-codex-0001";
+const MAIN_SESSION: &str = "4f1c2d3e-0000-4000-8000-000000000002";
 const LAPTOP_DIR: &str = "/Users/alice/shop";
 /// Chunk size used by the test client: larger than the 1 MiB JSON body limit.
 const CHUNK: usize = 2 * 1024 * 1024;
@@ -55,7 +55,8 @@ fn file_ref(w: &World, name: &str, bytes: &[u8]) -> FileRef {
 }
 
 /// A laptop checkout of the remote with an unpushed commit on `feature-x` and uncommitted
-/// changes, captured as a bundle and a snapshot archive, plus one Claude and one Codex session.
+/// changes, captured as a bundle and a snapshot archive, plus two Claude sessions (one on
+/// `feature-x`, one on `main`).
 fn laptop_offer(w: &World, remote: &Path) -> Result<Offer, Error> {
     let laptop = w.scratch.path().join("laptop");
     std::fs::create_dir_all(&laptop)?;
@@ -115,14 +116,8 @@ fn laptop_offer(w: &World, remote: &Path) -> Result<Offer, Error> {
     );
     let subagent =
         format!("{{\"type\":\"user\",\"cwd\":\"{LAPTOP_DIR}/src\",\"isSidechain\":true}}\n");
-    let codex = format!(
-        concat!(
-            "{{\"timestamp\":\"2026-10-02T09:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{dir}\",\"cli_version\":\"0.50.0\"}}}}\n",
-            "{{\"timestamp\":\"2026-10-02T09:00:01.000Z\",\"type\":\"turn_context\",\"payload\":{{\"cwd\":\"{dir}\",\"model\":\"gpt-5\"}}}}\n",
-            "{{\"timestamp\":\"2026-10-02T09:00:02.000Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"Fix login\"}}]}}}}\n"
-        ),
-        id = CODEX_SESSION,
-        dir = LAPTOP_DIR
+    let on_main = format!(
+        "{{\"type\":\"user\",\"cwd\":\"{LAPTOP_DIR}\",\"sessionId\":\"{MAIN_SESSION}\",\"gitBranch\":\"main\",\"message\":{{\"role\":\"user\",\"content\":\"Fix login\"}}}}\n"
     );
 
     let mut contents = BTreeMap::new();
@@ -130,7 +125,7 @@ fn laptop_offer(w: &World, remote: &Path) -> Result<Offer, Error> {
     let snapshot = std::fs::read(&snapshot_path)?;
     let claude_name = format!("sessions/claude/{CLAUDE_SESSION}.jsonl");
     let subagent_name = format!("sessions/claude/{CLAUDE_SESSION}/subagents/agent-1.jsonl");
-    let codex_name = format!("sessions/codex/{CODEX_SESSION}.jsonl");
+    let main_name = format!("sessions/claude/{MAIN_SESSION}.jsonl");
     let manifest = ImportManifest {
         version: IMPORT_MANIFEST_VERSION,
         repo: RepoDescriptor {
@@ -157,14 +152,14 @@ fn laptop_offer(w: &World, remote: &Path) -> Result<Offer, Error> {
                 ],
             },
             SessionRef {
-                harness: ImportHarness::Codex,
-                session_id: CODEX_SESSION.to_owned(),
+                harness: ImportHarness::Claude,
+                session_id: MAIN_SESSION.to_owned(),
                 title: "Fix login".to_owned(),
                 cwd_relative: None,
                 started_at: "2026-10-02T09:00:00.000Z".to_owned(),
                 ended_at: "2026-10-02T09:30:00.000Z".to_owned(),
                 git_branch: Some("main".to_owned()),
-                files: vec![file_ref(w, &codex_name, codex.as_bytes())],
+                files: vec![file_ref(w, &main_name, on_main.as_bytes())],
             },
         ],
         since: "2026-09-23T00:00:00.000Z".to_owned(),
@@ -173,7 +168,7 @@ fn laptop_offer(w: &World, remote: &Path) -> Result<Offer, Error> {
     contents.insert("snapshot.tar.gz".to_owned(), snapshot);
     contents.insert(claude_name, claude.into_bytes());
     contents.insert(subagent_name, subagent.into_bytes());
-    contents.insert(codex_name, codex.into_bytes());
+    contents.insert(main_name, on_main.into_bytes());
     Ok(Offer { manifest, contents })
 }
 
@@ -495,7 +490,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         Ok(TaskId::parse(text(&task["id"]))?)
     };
     let claude_task = by_title("Add a cart")?;
-    let codex_task = by_title("Fix login")?;
+    let main_task = by_title("Fix login")?;
     let lineage = w.h.store.provider_sessions(&claude_task).await?;
     assert_eq!(lineage.len(), 1);
     assert_eq!(lineage[0].origin, "imported");
@@ -605,7 +600,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     assert_eq!(archived.body.as_array().map(Vec::len), Some(3));
 
     // AC-IMP-5: another member continues imported sessions natively.
-    assert_imported_resume(&w, &sandbox.id, &claude_task, &codex_task).await?;
+    assert_imported_resume(&w, &sandbox.id, &claude_task, &main_task).await?;
     Ok(())
 }
 
@@ -613,7 +608,7 @@ async fn assert_imported_resume(
     w: &World,
     sandbox: &SandboxId,
     claude_task: &TaskId,
-    codex_task: &TaskId,
+    main_task: &TaskId,
 ) -> TestResult {
     let app = &w.h.app;
     let sandbox_dir = w.data_dir().join("sandboxes").join(sandbox.as_str());
@@ -652,26 +647,22 @@ async fn assert_imported_resume(
     app.prepare_imported_resume(claude_task).await?;
     assert_eq!(std::fs::read_to_string(&native)?, continued);
 
-    let session = app.prepare_imported_resume(codex_task).await?;
-    assert_eq!(session.as_deref(), Some(CODEX_SESSION));
-    let task = w.h.store.task(codex_task).await?.ok_or("task")?;
-    let codex_worktree = PathBuf::from(task.worktree_path.clone().ok_or("worktree")?);
+    let session = app.prepare_imported_resume(main_task).await?;
+    assert_eq!(session.as_deref(), Some(MAIN_SESSION));
+    let task = w.h.store.task(main_task).await?.ok_or("task")?;
+    let main_worktree = PathBuf::from(task.worktree_path.clone().ok_or("worktree")?);
     assert_eq!(
-        std::fs::read_to_string(codex_worktree.join("src/app.txt"))?,
+        std::fs::read_to_string(main_worktree.join("src/app.txt"))?,
         "v1\n",
-        "the Codex session ran on main"
+        "the second session ran on main"
     );
-    let rollout = sandbox_dir
-        .join("codex/sessions/2026/10/02")
-        .join(format!("rollout-2026-10-02T09-00-00-{CODEX_SESSION}.jsonl"));
-    let lines: Vec<Value> = std::fs::read_to_string(&rollout)?
-        .lines()
-        .map(serde_json::from_str)
-        .collect::<Result<_, _>>()?;
-    let codex_cwd = codex_worktree.to_string_lossy().into_owned();
-    assert_eq!(lines[0]["payload"]["cwd"], codex_cwd.as_str());
-    assert_eq!(lines[1]["payload"]["cwd"], codex_cwd.as_str());
-    assert_eq!(lines[2]["payload"]["content"][0]["text"], "Fix login");
+    let native =
+        app.deps
+            .harness
+            .claude_transcript(&sandbox_dir.join("home"), &main_worktree, MAIN_SESSION);
+    let record: Value = serde_json::from_str(std::fs::read_to_string(&native)?.trim())?;
+    assert_eq!(record["cwd"], main_worktree.to_string_lossy().as_ref());
+    assert_eq!(record["message"]["content"], "Fix login");
 
     // Tasks without an imported session need no preparation.
     let removed_or_other = w.h.store.sandbox(sandbox).await?.ok_or("sandbox")?;

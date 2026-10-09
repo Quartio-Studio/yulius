@@ -3,6 +3,8 @@
 // The real transport uses window.fetch / WebSocket; ?mock=1 swaps in assets/mock.js, so
 // request building, error parsing and the WebSocket protocol code run unchanged in both.
 
+import { BRAND } from './brand.js';
+
 /** Error carrying the server's `{"error": {"code", "message"}}` and HTTP status. */
 export class ApiError extends Error {
   constructor(status, code, message) {
@@ -35,12 +37,13 @@ export const enc = (value) => encodeURIComponent(String(value));
 
 /**
  * Create the API client. `onUnauthenticated` runs when a request returns 401
- * (session expired), unless the call passes {allow401: true}.
+ * (session expired), unless the call passes {allow401: true}. A `signal` cancels the request
+ * (a view that goes away aborts its reads); it then rejects with code `aborted`.
  */
 export function createApi(transport, { onUnauthenticated } = {}) {
   let csrf = null;
 
-  async function request(method, path, body, { allow401 = false, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  async function request(method, path, body, { allow401 = false, timeoutMs = REQUEST_TIMEOUT_MS, signal = null } = {}) {
     const headers = { Accept: 'application/json' };
     const init = { method, headers, credentials: 'same-origin', cache: 'no-store' };
     if (method !== 'GET') {
@@ -52,6 +55,11 @@ export function createApi(transport, { onUnauthenticated } = {}) {
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const cancel = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) cancel();
+      else signal.addEventListener('abort', cancel, { once: true });
+    }
     init.signal = controller.signal;
     let response;
     let text = '';
@@ -59,10 +67,12 @@ export function createApi(transport, { onUnauthenticated } = {}) {
       response = await transport.fetch(path, init);
       text = response.status === 204 ? '' : await response.text();
     } catch (error) {
+      if (signal && signal.aborted) throw new ApiError(0, 'aborted', 'Cancelled.');
       if (error && error.name === 'AbortError') throw new ApiError(0, 'timeout', 'The server did not answer in time.');
-      throw new ApiError(0, 'network', 'Cannot reach the Yulius server.');
+      throw new ApiError(0, 'network', `Cannot reach the ${BRAND.name} server.`);
     } finally {
       clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', cancel);
     }
     let data = null;
     if (text) {

@@ -91,6 +91,8 @@ mod linux {
                 writable: Vec::new(),
                 readonly: vec![fake_dir],
                 share_net: false,
+                binds: Vec::new(),
+                identity: None,
             }),
             ring_bytes: 0,
             token_sha256: token_sha256_hex(&TOKEN),

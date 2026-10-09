@@ -1,0 +1,318 @@
+/*
+ * Yulius design tokens — the single source of every colour, font, size, radius, shadow and motion
+ * value in the web UI (SPEC-001 UI-014; how to rebrand: web/README.md "Theming and branding").
+ *
+ *   Layer 1  Brand and palette: raw hues. Rebrand by editing the brand ramp (and, if wanted, the
+ *            palette). Nothing outside this file names a raw colour.
+ *   Layer 2  Roles per theme: what components use (--surface, --text, --accent-fg…). Each theme
+ *            maps roles to Layer 1 (or to its own neutrals). Add a theme by adding a block.
+ *   Layer 3  Derived roles: soft fills, borders and tracks mixed from a role, so changing --accent
+ *            changes every accent tint.
+ *   Scales   Theme-independent: type, control heights, radii, spacing, elevation, motion, layers.
+ *
+ * Components (styles.css) use roles and scales only; scripts/check_repository.py rejects colour,
+ * type, radius and spacing literals there, and checks the text/background contrast of each theme.
+ */
+
+/* ---------------------------------------------------------------- Layer 1: brand and palette */
+:root {
+  /* Brand (Roma, "smoke and chalk"): no accent hue. The ramp runs from chalk (top) to smoke: chalk
+     is the accent on the dark theme (buttons, focus, links), smoke ink on the light one. */
+  --brand-200: #f9f6f1;
+  --brand-300: #efebe1;
+  --brand-400: #e2ded5;
+  --brand-500: #d4d0c8;
+  --brand-600: #484746;
+  --brand-700: #252423;
+  --brand-800: #181716;
+  --brand-ink: #100f0e;    /* text on a --brand-500 fill */
+
+  /* Palette: state hues in Roman pigments — verdigris (green), yellow ochre (amber), cinnabar (red),
+     Egyptian blue (info, "your turn") and Tyrian purple (violet). */
+  --info-200: #c5e1ff;
+  --info-300: #a2cfff;
+  --info-500: #73a9e1;
+  --info-700: #2c6194;
+  --info-800: #124a7b;
+  --green-300: #95deae;
+  --green-500: #6fb789;
+  --green-600: #438c60;
+  --green-700: #236e44;
+  --amber-200: #ffd79a;
+  --amber-300: #f6c16b;
+  --amber-500: #ce9a43;
+  --amber-600: #a17003;
+  --amber-700: #7c5500;
+  --amber-800: #604100;
+  --red-200: #ffd2ca;
+  --red-300: #ffb5a8;
+  --red-500: #f47c6b;
+  --red-600: #c35141;
+  --red-700: #a13124;
+  --violet-300: #f7aef0;
+  --violet-400: #e39bdc;
+  --violet-500: #cf88c8;
+  --violet-600: #a15e9c;
+  --violet-650: #955290;
+  --violet-700: #82417d;
+  --violet-ink: #0c0b0a;
+  --white: #ffffff;
+  --logo-tile-dark: #191918; /* behind light-coloured third-party marks, in both themes */
+}
+
+/* ---------------------------------------------------------------- Layer 2: dark theme (default) */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  /* surfaces, darkest to lightest */
+  --term-bg: #0c0b0a;      /* terminal and editor wells */
+  --bg: #100f0e;           /* the canvas */
+  --surface: #191918;      /* sidebar, panels, cards */
+  --surface-2: #201f1e;    /* menus, popovers, raised controls */
+  --surface-3: #292827;    /* neutral fills: secondary buttons, badges */
+  --surface-hover: #2e2e2d;
+  --canvas: #1e1d1c;       /* behind the pixel browser view */
+  --mirror-bg: var(--white); /* web pages in the browser panel are white */
+  /* lines */
+  --border: #2c2b2a;
+  --border-strong: #3f3e3d;
+  --border-control: #7e7b76;  /* edges of inputs, selects, switches: ≥ 3:1 (WCAG 1.4.11) */
+  /* ink, strongest to faintest (all ≥ 4.5:1 on --surface, faint ≥ 3:1 for placeholders) */
+  --text: #efebe1;
+  --text-2: #d1cdc5;
+  --muted: #afaca5;
+  --text-faint: #a19e98;      /* placeholders and tertiary text, still ≥ 4.5:1 */
+  --on-solid: #100f0e; /* knobs and marks on solid fills */
+  /* accent */
+  --accent: #e9e4da;
+  --accent-hover: #f6f3ec;
+  --accent-strong: #d4d0c8;
+  --accent-fg: #efebe1;       /* accent-coloured text on dark surfaces */
+  --accent-fg-strong: #f9f6f1;
+  --accent-ink: #100f0e;      /* text on --accent */
+  /* states */
+  --ok: #6fb789;
+  --ok-fg: #9bd4ae;
+  --warn: #e8b45e;
+  --warn-fg: #f3c67f;
+  --warn-fg-strong: #fdd89f;
+  --danger: #df6a59;
+  --danger-fg: #f79b8c;
+  --danger-fg-strong: #ffbaae;
+  --violet: #c27cbb;
+  --violet-fg: #dfa9da;
+  --info: #6da3da;
+  --info-fg: #9ac5f3;
+  --info-fg-strong: #badbfe;
+  --agent: #cf88c8;          /* the agent's cursor in the browser */
+  --agent-ink: #0c0b0a;
+  /* data */
+  --series-1: #cecac2;       /* charts, meters and progress follow the brand */
+  --series-1-hover: #efebe1;
+  --grid: #282726;
+  --axis: #3e3d3c;
+  /* overlays and depth */
+  --backdrop: rgba(8, 8, 7, 0.72);
+  --scrim: rgba(0, 0, 0, 0.6);
+  --overlay-hover: rgba(240, 235, 225, 0.05);
+  --overlay-active: rgba(240, 235, 225, 0.09);
+  --shadow-color: rgba(0, 0, 0, 0.55);
+  --shadow-soft-color: rgba(0, 0, 0, 0.32);
+  --highlight: rgba(240, 235, 225, 0.03);
+  /* terminal (xterm) and editor (Monaco) read these when they start and on theme changes */
+  --term-fg: #e5e1d9;
+  --term-cursor: #f5f1ea;
+  --term-selection: #403c39;
+  --ansi-black: #252423;   --ansi-bright-black: #8e8c87;
+  --ansi-red: #ed7665;     --ansi-bright-red: #fea292;
+  --ansi-green: #75be8f;   --ansi-bright-green: #a1dbb4;
+  --ansi-yellow: #e8b45e;  --ansi-bright-yellow: #fbd08e;
+  --ansi-blue: #6da3da;    --ansi-bright-blue: #97c2f0;
+  --ansi-magenta: #c882c2; --ansi-bright-magenta: #e1a7db;
+  --ansi-cyan: #6fc1c5;    --ansi-bright-cyan: #96dce0;
+  --ansi-white: #cdcac3;   --ansi-bright-white: #f5f1ea;
+  /* material: a fine grain and a soft light from above over the canvas, pages, sidebar and rail */
+  --texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.94 0 0 0 0 0.92 0 0 0 0 0.88 0 0 0 0.075 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  --light: radial-gradient(120% 60% at 50% -12%, rgba(240, 235, 225, 0.075), rgba(240, 235, 225, 0.02) 45%, transparent 70%);
+}
+
+/* ---------------------------------------------------------------- Layer 2: light theme */
+[data-theme="light"] {
+  color-scheme: light;
+  --term-bg: #f9f6f1;
+  --bg: #efebe1;
+  --surface: #f7f4ed;
+  --surface-2: #fcfaf5;
+  --surface-3: #e6e1d8;
+  --surface-hover: #e1dcd2;
+  --canvas: #e8e4dc;
+  --mirror-bg: var(--white);
+  --border: #d9d5cd;
+  --border-strong: #c1bdb5;
+  --border-control: #7a7772;
+  --text: #171412;
+  --text-2: #373532;
+  --muted: #565350;
+  --text-faint: #63605d;
+  --on-solid: #f9f6f1;
+  --accent: #191714;
+  --accent-hover: #2d2b28;
+  --accent-strong: #0c0b09;
+  --accent-fg: #191714;
+  --accent-fg-strong: #0c0b09;
+  --accent-ink: #f6f3ec;
+  --ok: #2a7449;
+  --ok-fg: #095c34;
+  --warn: #ad7c1d;
+  --warn-fg: #724d00;
+  --warn-fg-strong: #593c00;
+  --danger: #af3e30;
+  --danger-fg: #97271b;
+  --danger-fg-strong: #861309;
+  --violet: #884783;
+  --violet-fg: #70306c;
+  --info: #2c6194;
+  --info-fg: #194f81;
+  --info-fg-strong: #023f6f;
+  --agent: #8f4d89;
+  --agent-ink: #f9f6f1;
+  --series-1: #302d2b;
+  --series-1-hover: #13110f;
+  --grid: #dbd7cf;
+  --axis: #bbb7af;
+  --backdrop: rgba(24, 22, 20, 0.38);
+  --scrim: rgba(24, 22, 20, 0.32);
+  --overlay-hover: rgba(30, 28, 26, 0.045);
+  --overlay-active: rgba(30, 28, 26, 0.08);
+  --shadow-color: rgba(30, 26, 20, 0.16);
+  --shadow-soft-color: rgba(30, 26, 20, 0.08);
+  --highlight: rgba(255, 253, 248, 0.6);
+  --term-fg: #1f1c1a;
+  --term-cursor: #1f1c1a;
+  --term-selection: #d6d0c5;
+  --ansi-black: #222120;   --ansi-bright-black: #5d5a57;
+  --ansi-red: #a8372a;     --ansi-bright-red: #8d1c11;
+  --ansi-green: #1b683e;   --ansi-bright-green: #00572f;
+  --ansi-yellow: #845a00;  --ansi-bright-yellow: #674600;
+  --ansi-blue: #265b8d;    --ansi-bright-blue: #124a7b;
+  --ansi-magenta: #7c3b77; --ansi-bright-magenta: #6a2a66;
+  --ansi-cyan: #147175;    --ansi-bright-cyan: #04585c;
+  --ansi-white: #5d5a57;   --ansi-bright-white: #222120;
+  /* material: a fine grain and a soft light from above over the canvas, pages, sidebar and rail */
+  --texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0 0.07 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  --light: radial-gradient(120% 60% at 50% -12%, rgba(255, 253, 248, 0.7), transparent 65%);
+}
+
+/* ---------------------------------------------------------------- Layer 3 and scales */
+/* Also on every [data-theme] element, so a nested theme island derives its tints from its own roles. */
+:root, [data-theme] {
+  /* Derived roles: tints of a role colour, so they follow the theme and the brand. */
+  --text-disabled: color-mix(in srgb, var(--muted) 50%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --selection: color-mix(in srgb, var(--accent) 35%, transparent); /* selected text, in the brand */
+  --brand-mark: var(--text);   /* the logo mark: monochrome, like the brand's own lockup */
+  --wordmark-case: uppercase;  /* the wordmark as set in the lockup: capitals, wide tracking */
+  --wordmark-tracking: 0.32em;
+  --accent-border: color-mix(in srgb, var(--accent) 40%, transparent);
+  --accent-border-strong: color-mix(in srgb, var(--accent) 60%, transparent);
+  --accent-track: color-mix(in srgb, var(--series-1) 20%, transparent);
+  --ok-soft: color-mix(in srgb, var(--ok) 14%, transparent);
+  --ok-border: color-mix(in srgb, var(--ok) 35%, transparent);
+  --warn-soft: color-mix(in srgb, var(--warn) 14%, transparent);
+  --warn-border: color-mix(in srgb, var(--warn) 40%, transparent);
+  --warn-track: color-mix(in srgb, var(--warn) 18%, transparent);
+  --danger-soft: color-mix(in srgb, var(--danger) 14%, transparent);
+  --danger-soft-hover: color-mix(in srgb, var(--danger) 25%, transparent);
+  --danger-border: color-mix(in srgb, var(--danger) 50%, transparent);
+  --danger-track: color-mix(in srgb, var(--danger) 18%, transparent);
+  --violet-soft: color-mix(in srgb, var(--violet) 15%, transparent);
+  --info-soft: color-mix(in srgb, var(--info) 14%, transparent);
+  --violet-border: color-mix(in srgb, var(--violet) 45%, transparent);
+
+  /* Elevation: L0 canvas, L1 cards (border only), L2 menus/popovers/toasts, L3 modals/drawer. */
+  --shadow-sm: 0 2px 8px var(--shadow-soft-color);
+  --shadow: 0 8px 28px var(--shadow-color);
+  --shadow-raised: 0 1px 0 var(--highlight), 0 6px 20px var(--shadow-soft-color);
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); /* a gap, then the ring: visible on accent fills too */
+  --focus-inset: inset 0 0 0 2px var(--accent); /* focus inside a row, menu item or segment */
+
+  /* Icons: the same 24-unit shapes at any size draw a stroke this thick on screen. */
+  --icon-stroke: 1.25px;
+
+  /* Layers: inside a component, then the page's floating layers from low to high. Modal dialogs
+     use the browser's top layer, above all of these. */
+  --z-raised: 1;          /* a control above its card's stretched link */
+  --z-sticky: 2;          /* sticky headers, input catchers */
+  --z-float: 4;           /* in-component overlays: notices, tooltips, resize handles, cursors */
+  --z-drawer-scrim: 790;  /* behind the phone drawer */
+  --z-drawer: 800;        /* the phone drawer */
+  --z-panel: 850;         /* a tool panel over the page on phones */
+  --z-popover: 900;       /* bell and Status panels */
+  --z-menu: 1000;         /* menus */
+  --z-toast: 1100;        /* toasts */
+
+  /* Type: one scale; every size has an integer line height; weights are 400, 500 and 600 only.
+     A brand typeface goes first in --font (titles and the wordmark follow it unless --font-display
+     names a display face; --font-mono is used by terminals and the editor too); declare its files with
+     @font-face at the end of this file (web/README.md). */
+  --font: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Tenor Sans", "Instrument Sans", system-ui, sans-serif; /* titles and the wordmark: a brand display face may go here */
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --fs-xs: 11px;  --lh-xs: 16px;   /* captions: badges, counters, kbd, timestamps */
+  --fs-sm: 12px;  --lh-sm: 18px;   /* secondary lines, hints, meta */
+  --fs: 14px;     --lh: 20px;      /* body: the UI default */
+  --fs-md: 15px;  --lh-md: 22px;   /* prose and item titles: the prompt, card and server names */
+  --fs-lg: 17px;  --lh-lg: 24px;   /* section, panel and modal titles */
+  --fs-xl: 22px;  --lh-xl: 28px;   /* page titles, wordmark, tile values */
+  --fs-2xl: 28px; --lh-2xl: 36px;  /* display numbers */
+  --fs-term: var(--fs);            /* terminals on wider screens (phones use --fs-sm) */
+
+  /* Control heights: every button, input, select, picker and clickable row. */
+  --control-sm: 24px;  /* small buttons, inline row actions, inline selects */
+  --control-md: 28px;  /* default: buttons, inputs, selects, segments, menu items, list rows */
+  --control-lg: 32px;  /* top bar, composer pickers and Start, navigation, rail, status rows */
+  --control-xl: 40px;  /* prominent (New task, user, sign-in) and every control on touch screens */
+
+  /* Radii by role (circles may use 50%). */
+  --radius-sm: 6px;      /* small: kbd, tiny tiles, menu items, nav and list rows */
+  --radius: 8px;         /* controls: buttons, inputs, segments, banners, inline boxes */
+  --radius-lg: 12px;     /* containers: cards, tables, menus, popovers, toasts, modals, tiles */
+  --radius-xl: 20px;     /* the composer and the sign-in card */
+  --radius-full: 999px;  /* pills: badges, chips, counters, switches, progress bars */
+
+  /* Motion: three durations, one easing; all of it stops under prefers-reduced-motion. */
+  --duration-fast: 120ms;
+  --duration: 200ms;
+  --duration-slow: 300ms;  /* progress fills and the agent's cursor */
+  --duration-instant: 0.01ms; /* what reduced motion collapses every animation to */
+  --duration-spin: 0.9s;      /* one turn of a spinner */
+  --duration-spin-slow: 1.6s; /* one turn of a slower spinner (switching account) */
+  --duration-pulse: 1.6s;     /* one pulse of an attention highlight */
+  --duration-ripple: 0.7s;    /* the agent's click ripple in the browser view */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Layout */
+  --tabrow-h: 34px;
+  --sidebar-w: 300px;
+  --rail-w: 140px;
+}
+
+/* ---------------------------------------------------------------- Brand typefaces
+   Self-hosted only (no font CDNs: the serving contract allows this origin alone): Instrument Sans
+   (interface), Tenor Sans (titles and the wordmark: Roman capital proportions) and IBM Plex Mono
+   (terminals, the editor, code), all SIL Open Font License 1.1 (assets/fonts/LICENSE.*), from the
+   Fontsource 5.3.0 packages; Latin and Latin Extended subsets, one file per weight the UI uses. */
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-ext-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-ext-500.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-500.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-ext-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "Tenor Sans"; src: url("/assets/fonts/tenor-sans-latin-ext-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "Tenor Sans"; src: url("/assets/fonts/tenor-sans-latin-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-ext-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-ext-500.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-500.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-ext-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/ibm-plex-mono-latin-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }

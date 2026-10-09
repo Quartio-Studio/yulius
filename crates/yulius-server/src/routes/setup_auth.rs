@@ -10,8 +10,8 @@ use serde::Deserialize;
 use yulius_app::auth::NewSession;
 use yulius_app::model::Secret;
 use yulius_contracts::api::auth::{
-    DeviceApprove, DevicePoll, DevicePollRequest, DeviceStart, Me, PasswordLogin, SetupRequest,
-    SetupStatus,
+    DeviceApprove, DevicePoll, DevicePollRequest, DeviceStart, Me, PasswordLogin, RecoverRequest,
+    RecoveryCode, RecoveryStatus, RegenerateRecovery, SetupRequest, SetupStatus,
 };
 
 use crate::AppState;
@@ -19,7 +19,12 @@ use crate::auth::{Auth, clear_cookie, session_cookie};
 use crate::error::ApiResult;
 
 fn with_cookie(app: &AppState, session: NewSession, status: StatusCode) -> Response {
-    let mut response = (status, Json(session.me)).into_response();
+    // Setup also returns the recovery code, once (ACC-011).
+    let mut body = serde_json::to_value(&session.me).unwrap_or_default();
+    if let (Some(code), Some(object)) = (&session.recovery_code, body.as_object_mut()) {
+        object.insert("recovery_code".into(), code.expose().into());
+    }
+    let mut response = (status, Json(body)).into_response();
     let cookie = session_cookie(
         session.cookie.expose(),
         session.max_age_s,
@@ -133,4 +138,42 @@ pub async fn device_approve(
     app.device_approve(&ctx, &req.user_code, req.approve)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn recovery_status(State(app): State<AppState>) -> ApiResult<Json<RecoveryStatus>> {
+    let state = app.recovery_state().await?;
+    Ok(Json(RecoveryStatus {
+        available: state.available,
+        locked: state.locked,
+        attempts_left: state.attempts_left,
+    }))
+}
+
+pub async fn recover(
+    State(app): State<AppState>,
+    Json(req): Json<RecoverRequest>,
+) -> ApiResult<Json<RecoveryCode>> {
+    let code = app
+        .recover_password(
+            &req.code,
+            &Secret(req.password),
+            &Secret(req.password_confirm),
+        )
+        .await?;
+    Ok(Json(RecoveryCode {
+        recovery_code: code.expose().to_owned(),
+    }))
+}
+
+pub async fn regenerate_recovery(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<RegenerateRecovery>,
+) -> ApiResult<Json<RecoveryCode>> {
+    let code = app
+        .regenerate_recovery_code(&ctx, &Secret(req.password))
+        .await?;
+    Ok(Json(RecoveryCode {
+        recovery_code: code.expose().to_owned(),
+    }))
 }

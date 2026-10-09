@@ -1,43 +1,54 @@
-// Skills page (SKL-005): catalog with source badges, enable toggle and content viewer.
+// Skills page (SKL-005): catalog with source badges and the enable toggle; a skill opens in its
+// editor (pages/skilledit.js, UI-033); New skill opens pages/skillnew.js (UI-035).
 
 import { enc } from '../api.js';
-import { h, badge, openModal, toggle, toast, errorToast, setChildren, placeholder } from '../dom.js';
+import { h, toggle, toast, errorToast, setChildren, iconBadge, itemCard, emptyState, filterTabs } from '../dom.js';
+import { navigate } from '../router.js';
 import { allows } from '../status.js';
 import { pageFrame, loader } from './common.js';
 
-const SOURCES = [['', 'All sources'], ['repository', 'Repository'], ['instance', 'Instance'], ['open-mercato', 'Open Mercato']];
-const SOURCE_TONE = { repository: '', instance: 'violet', 'open-mercato': 'accent' };
+const SOURCES = [{ value: '', label: 'All' }, { value: 'repository', label: 'Repository', icon: 'branch' }, { value: 'instance', label: 'Instance', icon: 'globe' }, { value: 'open-mercato', label: 'Open Mercato', icon: 'book' }];
+/** How each source reads: icon, label and tone of its badge. */
+export const SOURCE_BADGE = { repository: ['branch', 'Repository', ''], instance: ['globe', 'Whole instance', 'violet'], 'open-mercato': ['book', 'Open Mercato', ''] };
 
 /** Mount the Skills page; ?source=instance pre-filters (admin "Instance skills" entry). */
 export function mountSkillsPage(ctx, sandbox, route) {
   const write = allows(sandbox.access, 'write');
-  const frame = pageFrame({ title: 'Skills', sub: 'one catalog for Claude Code and Codex — activated automatically by relevance' });
-  const source = h('select', { class: 'select', 'aria-label': 'Source filter' }, SOURCES.map(([v, l]) => h('option', { value: v }, l)));
-  source.value = route.query.get('source') || '';
+  const frame = pageFrame({
+    title: 'Skills',
+    sub: 'one catalog for Claude Code — activated automatically by relevance',
+    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills/new`) }, 'New skill')],
+  });
+  const source = filterTabs({ label: 'Source', options: SOURCES, value: route.query.get('source') || '', onChange: () => rerender() });
   const search = h('input', { class: 'input', type: 'search', placeholder: 'Search skills…', 'aria-label': 'Search skills' });
   const host = h('div');
-  frame.body.append(h('div', { class: 'toolbar' }, search, source), host);
+  frame.body.append(h('div', { class: 'toolbar' }, source.el, search), host);
   let skills = [];
 
   function render() {
     const q = search.value.trim().toLowerCase();
     const shown = skills.filter((s) => (!source.value || s.source === source.value) && (!q || `${s.name} ${s.description}`.toLowerCase().includes(q)));
-    frame.sub.textContent = `${shown.length} of ${skills.length} · activated automatically by relevance in both harnesses`;
-    if (shown.length === 0) return h('div', { class: 'card placeholder' }, skills.length ? 'No skill matches.' : 'No skills found. Repository skills live in .agents/skills or .claude/skills.');
-    return h('div', { class: 'card list' }, shown.map((skill) => {
+    frame.sub.textContent = `${shown.length} of ${skills.length} · activated automatically by relevance`;
+    if (shown.length === 0) return skills.length
+      ? emptyState({ iconName: 'book', title: 'No skill matches', text: 'Try another word or source.' })
+      : emptyState({ iconName: 'book', title: 'No skills yet', text: 'Skills are instructions Claude Code loads when they are relevant. Create one here, or add it to the repository under .agents/skills or .claude/skills.' });
+    return h('div', { class: 'item-list' }, shown.map((skill) => {
       // Repository skills are always available inside the repository (PUT → 422);
       // instance skills are toggled by instance administrators.
       const repository = skill.source === 'repository';
       const canToggle = write && !repository && (skill.source !== 'instance' || ctx.isInstanceAdmin());
       const why = repository ? 'Repository skills are always available inside the repository' : !write ? 'Requires write access' : skill.source === 'instance' && !ctx.isInstanceAdmin() ? 'Instance skills are managed by instance administrators' : null;
-      return h('div', { class: 'list-item' },
-        h('div', { class: 'list-main' },
-          h('div', { class: 'list-title' }, h('button', { type: 'button', class: 'btn-ghost btn btn-sm', style: { padding: 0, height: 'auto', fontWeight: 600, color: 'var(--text)' }, onClick: () => view(skill) }, skill.name), badge(skill.source, SOURCE_TONE[skill.source] || '')),
-          h('div', { class: 'list-sub', style: { whiteSpace: 'normal' } }, skill.description || ''),
-          skill.path ? h('div', { class: 'list-sub mono' }, skill.path) : null),
-        h('div', { class: 'list-actions' },
-          h('button', { type: 'button', class: 'btn btn-sm', onClick: () => view(skill) }, 'View'),
-          h('span', { title: why }, toggle({ checked: skill.enabled, disabled: !canToggle, label: `${skill.enabled ? 'Disable' : 'Enable'} ${skill.name}`, onChange: async (checked, input) => {
+      const [badgeIcon, badgeLabel, badgeTone] = SOURCE_BADGE[skill.source] || ['book', skill.source, ''];
+      return itemCard({
+        iconName: 'book',
+        title: skill.name,
+        badges: [iconBadge(badgeIcon, badgeLabel, badgeTone)],
+        description: skill.description || null,
+        extra: skill.path ? h('div', { class: 'item-meta mono' }, skill.path) : null,
+        onOpen: () => navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills/${encodeURIComponent(skill.name)}`),
+        openLabel: `Open skill ${skill.name}`,
+        dim: !skill.enabled,
+        controls: [h('span', { title: why || (skill.enabled ? 'On: Claude Code may use it' : 'Off') }, toggle({ checked: skill.enabled, disabled: !canToggle, label: `${skill.name} enabled`, onChange: async (checked, input) => {
             try {
               await ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/skills/${enc(skill.name)}`, { enabled: checked });
               skill.enabled = checked;
@@ -46,26 +57,20 @@ export function mountSkillsPage(ctx, sandbox, route) {
               input.checked = !checked;
               errorToast(error, 'Could not change skill');
             }
-          } }))));
+          } }))],
+      });
     }));
   }
 
   const reload = loader(host, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/skills`), (list) => {
     skills = Array.isArray(list) ? list : [];
+    const counts = new Map();
+    for (const s of skills) counts.set(s.source, (counts.get(s.source) || 0) + 1);
+    source.setCounts(counts, skills.length);
     return render();
   });
   const rerender = () => setChildren(host, render());
   search.addEventListener('input', rerender);
-  source.addEventListener('change', rerender);
-
-  function view(skill) {
-    const content = h('pre', { class: 'code-view' }, '');
-    const modal = openModal({ title: `${skill.name} · ${skill.source}`, wide: true, body: h('div', { class: 'stack' }, skill.path ? h('div', { class: 'muted small mono' }, skill.path) : null, placeholder('Loading…', 'loading')), actions: [{ label: 'Close' }] });
-    ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/skills/${enc(skill.name)}`).then((data) => {
-      content.textContent = data && data.content ? data.content : '';
-      setChildren(modal.body, skill.path ? h('div', { class: 'muted small mono', style: { marginBottom: '8px' } }, skill.path) : null, content);
-    }).catch((error) => setChildren(modal.body, placeholder(error.message, 'error')));
-  }
 
   return { el: frame.el, key: `skills:${sandbox.id}:${route.query.get('source') || ''}`, reload };
 }

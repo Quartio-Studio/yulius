@@ -68,6 +68,8 @@ struct FakeState {
     screenshot_base64_len: usize,
     ax_nodes: Value,
     emit_load_events: bool,
+    /// Pages run the DOM recorder (Runtime.addBinding etc. succeed and snapshots are sent).
+    mirror: bool,
     connections: Vec<Arc<Connection>>,
 }
 
@@ -154,6 +156,7 @@ impl FakeCdpServer {
                 screenshot_base64_len: 0,
                 ax_nodes: default_ax_nodes(),
                 emit_load_events: true,
+                mirror: false,
                 connections: Vec::new(),
             }),
             calls_seen: watch::channel(0).0,
@@ -276,6 +279,13 @@ impl FakeCdpServer {
     /// Whether `Page.navigate` is followed by `Page.loadEventFired` (default true).
     pub fn set_emit_load_events(&self, emit: bool) {
         lock(&self.shared.state).emit_load_events = emit;
+    }
+
+    /// Lets pages run the DOM recorder (default: the mirror's CDP calls are unknown, so viewers
+    /// fall back to the screencast). A started recorder or a snapshot request sends a `Meta` and
+    /// a full snapshot naming the page's URL; a navigation sends a new pair.
+    pub fn enable_mirror(&self) {
+        lock(&self.shared.state).mirror = true;
     }
 
     /// Current page target ids.
@@ -562,6 +572,9 @@ fn respond(
                                   "sessionId": session_id}),
                 );
             }
+            if state.mirror {
+                after.push(mirror_snapshot(session_id, &url));
+            }
             Ok(json!({"frameId": "frame-1", "loaderId": "loader-1"}))
         }
         "Page.startScreencast" => {
@@ -610,6 +623,56 @@ fn respond(
             Ok(json!({"data": data}))
         }
         "Accessibility.getFullAXTree" => Ok(json!({"nodes": lock(&shared.state).ax_nodes.clone()})),
+        "Runtime.evaluate"
+            if lock(&shared.state).mirror && text("expression").contains("__yuliusMirror") =>
+        {
+            let expression = text("expression");
+            // The recorder starting in the current document, or a snapshot request.
+            if !expression.contains(".stop()") || expression.contains("record(") {
+                let state = lock(&shared.state);
+                let url = session_id
+                    .and_then(|s| state.sessions.get(s))
+                    .and_then(|target| state.targets.iter().find(|t| &t.id == target))
+                    .map(|t| t.url.clone())
+                    .unwrap_or_default();
+                after.push(mirror_snapshot(session_id, &url));
+            }
+            Ok(json!({"result": {"type": "undefined"}}))
+        }
+        "Runtime.addBinding"
+        | "Runtime.removeBinding"
+        | "Page.removeScriptToEvaluateOnNewDocument"
+            if lock(&shared.state).mirror =>
+        {
+            Ok(json!({}))
+        }
+        "Page.addScriptToEvaluateOnNewDocument" if lock(&shared.state).mirror => {
+            Ok(json!({"identifier": "1"}))
+        }
+        "Page.getFrameTree" => Ok(
+            json!({"frameTree": {"frame": {"id": "frame-1", "loaderId": "loader-1",
+            "url": "about:blank", "securityOrigin": "://", "mimeType": "text/html"}}}),
+        ),
+        "Network.loadNetworkResource" => {
+            let url = params
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if url.contains("missing") {
+                return Ok(
+                    json!({"resource": {"success": false, "netErrorName": "net::ERR_CONNECTION_REFUSED"}}),
+                );
+            }
+            Ok(
+                json!({"resource": {"success": true, "httpStatusCode": 200, "stream": "stream-1",
+                "headers": {"Content-Type": "image/svg+xml"}}}),
+            )
+        }
+        "IO.read" => Ok(
+            json!({"data": base64::engine::general_purpose::STANDARD.encode(FAKE_RESOURCE),
+            "base64Encoded": true, "eof": true}),
+        ),
+        "IO.close" => Ok(json!({})),
         "Runtime.evaluate" => {
             if text("expression") == "document" {
                 Ok(
@@ -649,6 +712,23 @@ fn respond(
         | "Browser.close" => Ok(json!({})),
         other => Err((-32601, format!("'{other}' wasn't found"))),
     }
+}
+
+/// Body of every resource the fake serves through `Network.loadNetworkResource`.
+pub const FAKE_RESOURCE: &[u8] = b"<svg xmlns='http://www.w3.org/2000/svg'/>";
+
+/// A recorder batch for a new document: `Meta` and a full snapshot whose text names `url`.
+fn mirror_snapshot(session_id: Option<&str>, url: &str) -> Value {
+    let events = json!([
+        {"type": 4, "data": {"href": url, "width": 1280, "height": 800}, "timestamp": 1},
+        {"type": 2, "data": {"node": {"type": 0, "id": 1, "childNodes": [
+            {"type": 2, "id": 2, "tagName": "html", "attributes": {}, "childNodes": [
+                {"type": 2, "id": 3, "tagName": "body", "attributes": {}, "childNodes": [
+                    {"type": 3, "id": 4, "textContent": format!("page {url}")}]}]}]},
+            "initialOffset": {"left": 0, "top": 0}}, "timestamp": 2}
+    ]);
+    json!({"method": "Runtime.bindingCalled", "sessionId": session_id,
+           "params": {"name": crate::mirror::BINDING, "payload": events.to_string(), "executionContextId": 1}})
 }
 
 /// Synthetic size of a configured screenshot: PNG keeps `len`; JPEG shrinks with `quality`

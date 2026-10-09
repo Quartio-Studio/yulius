@@ -301,6 +301,7 @@ mod tests {
                 queued_at: None,
                 gate_blocks: 0,
                 wake_enabled: true,
+                mode: yulius_app::model::TaskMode::Prompt,
             })
             .await?;
         Ok(task.id)

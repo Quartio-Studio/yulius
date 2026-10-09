@@ -1,26 +1,29 @@
-// Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with Status panel and user
-// menu, and the collapsible left sidebar with navigation and the active task list.
+// Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
+// left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, meter, errorToast, badge } from './dom.js';
-import { relShort, relLong, bytes, duration, windowLabel, dateTime } from './format.js';
-import { statusInfo, harnessInfo, allows } from './status.js';
+import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip } from './dom.js';
+import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
+import { taskInfo, activityLine, allows } from './status.js';
 import { href } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions.js';
+import { createNotificationCenter } from './notifications.js';
+import { BRAND } from './brand.js';
 import { readJson, writeJson } from './store.js';
+import { NEW_TASK_KEYS, NEW_TASK_ARIA } from './shortcuts.js';
 
 const NAV = [
-  ['tasks', 'Tasks'],
-  ['git', 'Git'],
-  ['workflows', 'Workflows'],
-  ['skills', 'Skills'],
-  ['automations', 'Automations'],
-  ['mcp', 'MCP'],
-  ['dashboard', 'Dashboard'],
+  ['tasks', 'Tasks', 'tasks'],
+  ['git', 'Git', 'branch'],
+  ['workflows', 'Workflows', 'workflow'],
+  ['skills', 'Skills', 'book'],
+  ['automations', 'Automations', 'zap'],
+  ['mcp', 'MCP', 'plug'],
+  ['dashboard', 'Dashboard', 'chart'],
 ];
 
 // ---------------------------------------------------------------- tab row
 
-/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, user menu. */
+/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, notifications, tools toggle. */
 export function createTabRow(ctx) {
   const tabs = h('nav', { class: 'tabrow-tabs', 'aria-label': 'Sandboxes' });
   const select = h('select', { class: 'select tab-select', 'aria-label': 'Sandbox', onChange: () => {
@@ -31,23 +34,43 @@ export function createTabRow(ctx) {
       ctx.navigate(`/s/${encodeURIComponent(select.value)}`);
     }
   } });
-  const hamburger = iconButton('menu', 'Open navigation', () => document.body.classList.toggle('drawer-open'), { class: 'hamburger' });
+  const hamburger = iconButton('menu', 'Open navigation', () => document.body.classList.toggle('drawer-open'), { class: 'hamburger', 'aria-controls': 'sidebar', 'aria-expanded': 'false' });
   const addButton = iconButton('plus', 'Add sandbox: create or import a repository', () => openSandboxDialog(ctx), { class: 'tab-add' });
-  const contained = h('span', { class: 'chip chip-warn', hidden: true, title: 'Host mode: agent sessions are not isolated by an OS sandbox on this server (SPEC-002 SEC-001).' }, icon('warn', { size: 12 }), h('span', { class: 'chip-text' }, 'Not contained'));
+  const contained = h('span', { class: 'chip chip-warn', hidden: true, title: 'Host mode: agent sessions on this server are not isolated in an OS sandbox, so an agent can reach files outside its sandbox.' }, icon('warn', { size: 12 }), h('span', { class: 'chip-text' }, 'Not contained'));
   const eventDot = h('span', { class: 'ev-dot', title: 'Live updates connected' });
-  const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and account usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), icon('down', { size: 12 }));
-  const avatar = h('button', { type: 'button', class: 'avatar', 'aria-label': 'User menu', 'aria-haspopup': 'menu' }, '?');
+  const eventText = h('span', { class: 'sr-only' }, ', live updates connected');
+  const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and account usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), eventText, icon('down', { size: 12 }));
+  // Shows/hides the right tool rail (browser, editor, shell, messages); hidden by default.
+  const toolsButton = iconButton('tools', 'Show tools (browser, editor, shell, messages)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
+  const toolsDot = h('span', { class: 'rail-dot', hidden: true });
+  toolsButton.append(toolsDot);
+  toolsButton.style.position = 'relative';
+  // The button's name carries the attention dot too ("…, an agent needs your action").
+  let toolsAttention = false;
+  let railVisible = false;
+  const labelTools = () => {
+    toolsButton.title = railVisible ? 'Hide tools' : 'Show tools (browser, editor, shell, messages)';
+    toolsButton.setAttribute('aria-label', `${toolsButton.title}${toolsAttention ? ', an agent needs your action' : ''}`);
+  };
+  ctx.onToolsAttention = (attention) => { toolsAttention = attention; toolsDot.hidden = !attention; labelTools(); };
+  ctx.onRailChange = (visible) => {
+    railVisible = visible;
+    toolsButton.classList.toggle('active', visible);
+    toolsButton.setAttribute('aria-pressed', String(visible));
+    labelTools();
+  };
+  const notifications = createNotificationCenter(ctx);
+  ctx.notifications = notifications;
   const statusPanel = createStatusPanel(ctx, statusButton);
   statusButton.addEventListener('click', () => statusPanel.toggle());
-  avatar.addEventListener('click', () => openUserMenu(ctx, avatar));
+  ctx.openStatus = () => statusPanel.open();
 
   const el = h('header', { class: 'tabrow' },
-    h('div', { class: 'brand', title: 'Yulius' }, 'Y'),
     hamburger,
     tabs,
     select,
     addButton,
-    h('div', { class: 'tabrow-right' }, contained, statusButton, avatar),
+    h('div', { class: 'tabrow-right' }, contained, statusButton, notifications.button, toolsButton),
   );
 
   let currentSlug = null;
@@ -66,15 +89,27 @@ export function createTabRow(ctx) {
         'aria-current': sandbox.slug === currentSlug ? 'page' : null,
       },
       h('span', { class: 'tab-name' }, sandbox.name),
-      counts.running ? h('span', { class: 'tab-running', title: `${counts.running} running` }, String(counts.running)) : null,
+      h('span', { class: 'sr-only' }, [counts.running ? `, ${counts.running} running` : '', counts.needs_attention ? `, ${counts.needs_attention} need${counts.needs_attention === 1 ? 's' : ''} attention` : ''].join('')),
+      counts.running ? h('span', { class: 'tab-running', title: `${counts.running} running`, 'aria-hidden': 'true' }, String(counts.running)) : null,
       counts.needs_attention ? h('span', { class: 'tab-dot', title: `${counts.needs_attention} need attention` }) : null);
+      const index = sandboxes.indexOf(sandbox);
+      const move = (step) => {
+        const ids = sandboxes.map((sb) => sb.id);
+        const [moved] = ids.splice(index, 1);
+        ids.splice(index + step, 0, moved);
+        ctx.store.setSandboxOrder(ids);
+      };
       a.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         openMenu({ x: event.clientX, y: event.clientY }, [
           { label: 'Open', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`) },
           sandbox.repo && sandbox.repo.url ? { label: 'Open on GitHub', onSelect: () => window.open(sandbox.repo.url, '_blank', 'noopener,noreferrer') } : null,
           { separator: true },
-          { label: 'Remove from Yulius…', danger: true, disabled: !allows(sandbox.access, 'admin'), title: allows(sandbox.access, 'admin') ? null : 'Requires repository admin', onSelect: () => confirmRemoveSandbox(ctx, sandbox) },
+          // Reordering without dragging (WCAG 2.5.7): the menu moves a tab one place.
+          { label: 'Move left', icon: 'left', disabled: index === 0, onSelect: () => move(-1) },
+          { label: 'Move right', icon: 'right', disabled: index === sandboxes.length - 1, onSelect: () => move(1) },
+          { separator: true },
+          { label: `Remove from ${BRAND.name}…`, danger: true, disabled: !allows(sandbox.access, 'admin'), title: allows(sandbox.access, 'admin') ? null : 'Requires repository admin', onSelect: () => confirmRemoveSandbox(ctx, sandbox) },
         ]);
       });
       a.addEventListener('dragstart', (event) => { dragId = sandbox.id; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', sandbox.id); });
@@ -92,7 +127,7 @@ export function createTabRow(ctx) {
       a.addEventListener('dragend', () => { dragId = null; });
       return a;
     });
-    setChildren(tabs, anchors);
+    keepFocus(tabs, () => setChildren(tabs, anchors)); // counts refresh often; focus stays
     const active = tabs.querySelector('.tab.active');
     if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 
@@ -106,22 +141,23 @@ export function createTabRow(ctx) {
   function renderMe() {
     const me = ctx.store.state.me;
     if (!me) return;
-    const user = me.user || {};
-    const name = user.display_name || user.login || '?';
-    avatar.textContent = initials(name);
-    avatar.title = `${name}${user.login ? ` (@${user.login})` : ''}`;
     contained.hidden = !(me.instance && me.instance.contained === false);
   }
 
-  ctx.store.on('sandboxes', renderTabs);
-  ctx.store.on('events-status', (status) => {
-    const ok = status === 'open';
-    eventDot.classList.toggle('off', !ok);
-    eventDot.title = ok ? 'Live updates connected' : 'Live updates reconnecting…';
-  });
+  const offs = [
+    ctx.store.on('sandboxes', renderTabs),
+    ctx.store.on('events-status', (status) => {
+      const ok = status === 'open';
+      eventDot.classList.toggle('off', !ok);
+      eventDot.title = ok ? 'Live updates connected' : 'Live updates reconnecting…';
+      eventText.textContent = ok ? ', live updates connected' : ', live updates reconnecting'; // not colour alone (WCAG 1.4.1)
+    }),
+  ];
 
   return {
     el,
+    /** Sign-out: unsubscribe and close the Status panel. */
+    destroy() { offs.forEach((off) => off()); statusPanel.close(); },
     update(slug) {
       currentSlug = slug;
       renderTabs();
@@ -131,7 +167,7 @@ export function createTabRow(ctx) {
   };
 }
 
-function initials(name) {
+export function initials(name) {
   const parts = String(name).trim().split(/[\s._-]+/).filter(Boolean);
   if (parts.length === 0) return '?';
   return (parts[0][0] + (parts[1] ? parts[1][0] : parts[0][1] || '')).slice(0, 2);
@@ -145,27 +181,28 @@ function openUserMenu(ctx, anchor) {
   const sandbox = ctx.currentSandbox() || ctx.store.state.sandboxes[0] || null;
   const items = [
     { header: `${user.display_name || user.login || 'Signed in'}${user.login ? ` · @${user.login}` : ''}${superadmin ? ' · superadmin' : ''}` },
-    { label: 'Archived tasks', onSelect: () => ctx.navigate('/archived') },
-    { label: 'CLI device approval', onSelect: () => ctx.navigate('/device') },
+    { label: 'Archived tasks', icon: 'archive', onSelect: () => ctx.navigate('/archived') },
+    { label: 'CLI device approval', icon: 'key', onSelect: () => ctx.navigate('/device') },
   ];
   if (instanceAdmin) {
     items.push({ separator: true }, { header: 'Administration' });
-    if (superadmin) items.push({ label: 'Users', onSelect: () => ctx.navigate('/admin/users') });
-    items.push({ label: 'Accounts', onSelect: () => ctx.navigate('/admin/accounts') });
-    if (superadmin) items.push({ label: 'GitHub connection', onSelect: () => ctx.navigate('/admin/github') });
+    if (superadmin) items.push({ label: 'Users', icon: 'users', onSelect: () => ctx.navigate('/admin/users') });
+    items.push({ label: 'AI accounts', icon: 'user', onSelect: () => ctx.navigate('/admin/accounts') });
+    if (superadmin) items.push({ label: 'GitHub connection', icon: 'github', onSelect: () => ctx.navigate('/admin/github') });
     items.push(
-      { label: 'Instance MCP', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/mcp?scope=instance`) },
-      { label: 'Instance skills', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills?source=instance`) },
+      { label: 'Instance MCP', icon: 'plug', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/mcp?scope=instance`) },
+      { label: 'Instance skills', icon: 'book', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills?source=instance`) },
     );
   }
-  items.push({ separator: true }, { label: 'Sign out', onSelect: () => ctx.signOut() });
-  openMenu(anchor, items, { align: 'end' });
+  items.push({ separator: true }, { label: 'Settings', icon: 'gear', onSelect: () => ctx.navigate('/settings') }, { label: 'Sign out', icon: 'logout', onSelect: () => ctx.signOut() });
+  openMenu(anchor, items);
 }
 
 // ---------------------------------------------------------------- status panel
 
 /** Hidden-by-default Status panel with VM metrics and account usage (UI-007, AC-STA-1). */
 function createStatusPanel(ctx, button) {
+  let offFocus = null;
   let el = null;
   let timer = null;
   let onDoc = null;
@@ -175,7 +212,7 @@ function createStatusPanel(ctx, button) {
     if (!el) return;
     try {
       const data = await ctx.api.get('/api/status');
-      if (el) setChildren(el, renderStatus(data || {}));
+      if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {})));
     } catch (error) {
       if (el) setChildren(el, h('div', { class: 'status-section' }, h('div', { class: 'placeholder placeholder-error' }, error.message)));
     }
@@ -185,242 +222,417 @@ function createStatusPanel(ctx, button) {
     el = h('div', { class: 'status-pop', role: 'dialog', 'aria-label': 'Status' }, h('div', { class: 'placeholder placeholder-loading' }, 'Loading status…'));
     document.body.append(el);
     button.setAttribute('aria-expanded', 'true');
+    offFocus = popoverFocus(el, button, close);
     load();
-    timer = setInterval(load, 10000);
+    timer = setInterval(() => { if (!pollPaused()) load(); }, 10000);
     onDoc = (event) => { if (el && !el.contains(event.target) && !button.contains(event.target)) close(); };
-    onKey = (event) => { if (event.key === 'Escape') { close(); button.focus(); } };
+    onKey = (event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); button.focus(); } };
     setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true); // before the drawer's Escape: innermost layer first
   }
 
   function close() {
     clearInterval(timer);
     timer = null;
+    if (offFocus) offFocus();
+    offFocus = null;
     document.removeEventListener('pointerdown', onDoc, true);
-    document.removeEventListener('keydown', onKey);
+    document.removeEventListener('keydown', onKey, true);
     if (el) el.remove();
     el = null;
     button.setAttribute('aria-expanded', 'false');
   }
 
-  return { toggle: () => (el ? close() : open()), close };
+  return { toggle: () => (el ? close() : open()), open: () => { if (!el) open(); }, close };
 }
 
 function pct(used, total) {
   return Number.isFinite(used) && Number.isFinite(total) && total > 0 ? (used / total) * 100 : null;
 }
 
+const STATUS_OPEN_KEY = 'yulius.statusOpen';
+/** Account states as a person reads them: icon, tone and a plain label. */
+const ACCOUNT_STATES = {
+  ok: { icon: 'check', tone: 'ok', label: 'Ready' },
+  limited: { icon: 'clock', tone: 'warn', label: 'Limit reached' },
+  relogin: { icon: 'lock', tone: 'warn', label: 'Sign in again' },
+  pending_login: { icon: 'lock', tone: 'warn', label: 'Not signed in' },
+  error: { icon: 'warn', tone: 'danger', label: 'Error' },
+};
+
+function toneOf(percent) {
+  if (!Number.isFinite(percent)) return 'unknown';
+  return percent >= 90 ? 'danger' : percent >= 70 ? 'warn' : 'ok';
+}
+
+/** A bare usage bar (the number is shown next to it). Unknown renders hatched, never as zero. */
+function usageBar(percent, label) {
+  const known = Number.isFinite(percent);
+  const value = known ? Math.max(0, Math.min(100, percent)) : 0;
+  return h('div', { class: ['meter', `meter-${toneOf(percent)}`] },
+    h('div', { class: 'meter-track', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': known ? value : 0, 'aria-valuetext': known ? `${Math.round(value)}% used` : 'unknown', 'aria-label': label },
+      h('div', { class: 'meter-fill', style: { width: `${value}%` } })));
+}
+
+const percentText = (percent) => (Number.isFinite(percent) ? `${Math.round(percent)}%` : '—');
+
+/** The names Claude uses for its usage windows: "Current session" (5 h), "This week"… */
+function limitName(minutes, fallback) {
+  if (!minutes) return fallback;
+  if (minutes === 300) return 'Current session';
+  if (minutes === 10080) return 'This week';
+  if (minutes === 1440) return 'Today';
+  if (minutes % 1440 === 0) return `${minutes / 1440}-day window`;
+  if (minutes % 60 === 0) return `${minutes / 60}-hour window`;
+  return `${minutes}-minute window`;
+}
+
+/** Keeps a <details> open or closed across the panel's refresh (per browser). */
+function rememberOpen(details, key, openByDefault) {
+  const saved = readJson(STATUS_OPEN_KEY, {}) || {};
+  details.open = key in saved ? Boolean(saved[key]) : openByDefault;
+  details.addEventListener('toggle', () => {
+    const next = readJson(STATUS_OPEN_KEY, {}) || {};
+    next[key] = details.open;
+    writeJson(STATUS_OPEN_KEY, next);
+  });
+  return details;
+}
+
+/** One machine tile: icon and name, a big value, a bar and a detail line. */
+function statTile(iconName, name, value, percent, detail) {
+  return h('div', { class: ['stat-tile', `stat-${toneOf(percent)}`] },
+    h('div', { class: 'stat-head' }, icon(iconName, { size: 15 }), h('span', null, name)),
+    h('div', { class: 'tile-value' }, value),
+    usageBar(percent, name),
+    h('div', { class: 'stat-detail' }, detail || ' '));
+}
+
+/** A collapsible status section whose open state survives the panel's refresh. */
+function statusSection(key, iconName, title, summary, body, openByDefault) {
+  return rememberOpen(h('details', { class: 'status-section status-fold' },
+    h('summary', null, icon('right', { size: 12 }), icon(iconName, { size: 15 }), h('h2', null, title), h('span', { class: 'status-summary-text' }, summary)),
+    h('div', { class: 'status-fold-body' }, body)), key, openByDefault);
+}
+
 /**
- * Render GET /api/status (`StatusView`: vm, sessions, sandboxes, accounts, contained).
- * VM fields are null when unknown (CPU needs two readings) and render as "—"/"unknown",
- * never as zero. Account id/priority/last_error/in_use_by are present for admins only.
+ * Render GET /api/status (`StatusView`: vm, sessions, sandboxes, accounts, contained) so it reads
+ * in seconds: one health line, machine tiles, then sandboxes and accounts as collapsible lists.
+ * VM fields are null when unknown (CPU needs two readings) and render as "—"/"unknown", never as
+ * zero. Account id/priority/last_error/in_use_by are present for admins only.
  */
 export function renderStatus(data) {
   const vm = data.vm || {};
   const memPct = pct(vm.memory_used_bytes, vm.memory_total_bytes);
   const diskPct = pct(vm.disk_used_bytes, vm.disk_total_bytes);
   const sessions = data.sessions || {};
+  const sessionsPct = Number.isFinite(sessions.live) && sessions.limit ? pct(sessions.live, sessions.limit) : null;
   const sandboxes = Array.isArray(data.sandboxes) ? data.sandboxes : [];
   const accounts = Array.isArray(data.accounts) ? data.accounts : [];
-  const load = Array.isArray(vm.load) ? vm.load.map((v) => Number(v).toFixed(2)).join(' · ') : Number.isFinite(vm.load_1m) ? Number(vm.load_1m).toFixed(2) : '—';
+  const load = Array.isArray(vm.load) ? vm.load.map((v) => Number(v).toFixed(2)) : Number.isFinite(vm.load_1m) ? [Number(vm.load_1m).toFixed(2)] : null;
+
+  // One line that says whether anything needs a person; those accounts are listed first.
+  const troubled = accounts.filter((a) => a.enabled !== false && a.status && a.status !== 'ok');
+  const hot = [vm.cpu_percent, memPct, diskPct].some((v) => Number.isFinite(v) && v >= 90);
+  let health = { tone: 'ok', icon: 'check', text: 'Everything is running normally' };
+  if (data.contained === false) health = { tone: 'warn', icon: 'shield', text: 'Host mode: agent sessions are not isolated' };
+  if (hot) health = { tone: 'warn', icon: 'warn', text: 'The machine is under heavy load' };
+  if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'account needs' : 'accounts need'} attention` };
+
+  const facts = [
+    h('span', { class: 'status-fact', title: 'Time since the machine started' }, icon('clock', { size: 13 }), Number.isFinite(vm.uptime_s) ? `Up ${duration(vm.uptime_s * 1000)}` : 'Uptime unknown'),
+    load ? h('span', { class: 'status-fact', title: 'Load average over 1, 5 and 15 minutes' }, icon('pulse', { size: 13 }), `Load ${load.join(' · ')}`) : null,
+    h('span', { class: ['status-fact', data.contained === false && 'fact-warn'], title: 'Isolation: whether agent sessions run inside an OS sandbox on this server' }, icon('shield', { size: 13 }), data.contained === true ? 'Isolated' : data.contained === false ? 'Not isolated' : 'Isolation unknown'),
+  ];
+
+  const liveTotal = sandboxes.reduce((n, s) => n + (Number.isFinite(s.live_sessions) ? s.live_sessions : 0), 0);
+  const busy = sandboxes.filter((s) => s.live_sessions > 0).length;
+  const sandboxRows = sandboxes.map((s) => h('div', { class: 'status-row' },
+    icon('folder', { size: 15 }),
+    h('span', { class: 'status-row-name' }, s.name || s.slug || s.id),
+    Number.isFinite(s.live_sessions) && s.live_sessions > 0
+      ? h('span', { class: 'status-count live', title: `${s.live_sessions} live sessions` }, h('span', { class: 'live-dot' }), `${s.live_sessions} running`)
+      : h('span', { class: 'status-count' }, Number.isFinite(s.live_sessions) ? 'idle' : '—')));
+
+  const ready = accounts.filter((a) => a.enabled !== false && a.status === 'ok').length;
+  const accountSummary = [`${ready} ready`, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean).join(' · ');
+
   return [
+    h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
     h('div', { class: 'status-section' },
-      h('h3', null, 'Machine'),
-      h('div', { class: 'status-grid' },
-        meter(vm.cpu_percent ?? null, { label: `CPU${vm.cpu_count ? ` · ${vm.cpu_count} cores` : ''}` }),
-        meter(memPct, { label: 'Memory', detail: vm.memory_total_bytes ? `${bytes(vm.memory_used_bytes)} of ${bytes(vm.memory_total_bytes)}` : null }),
-        meter(diskPct, { label: 'Disk', detail: vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null }),
-        h('dl', { class: 'kv' },
-          h('dt', null, 'Load'), h('dd', null, load),
-          h('dt', null, 'Uptime'), h('dd', null, Number.isFinite(vm.uptime_s) ? duration(vm.uptime_s * 1000) : '—'),
-          h('dt', null, 'Sessions'), h('dd', null, Number.isFinite(sessions.live) ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}${sessions.queued ? ` · ${sessions.queued} queued` : ''}` : '—'),
-          h('dt', null, 'Containment'), h('dd', null, data.contained === true ? 'on' : data.contained === false ? 'off (host mode)' : '—'))),
-    ),
-    sandboxes.length ? h('div', { class: 'status-section' },
-      h('h3', null, 'Sandboxes'),
-      h('table', { class: 'table' },
-        h('thead', null, h('tr', null, h('th', null, 'Sandbox'), h('th', { class: 'num' }, 'Live sessions'))),
-        h('tbody', null, sandboxes.map((s) => h('tr', null,
-          h('td', { class: 'title-cell' }, s.name || s.slug || s.id),
-          h('td', { class: 'num' }, Number.isFinite(s.live_sessions) ? String(s.live_sessions) : '—')))))) : null,
-    h('div', { class: 'status-section' },
-      h('h3', null, 'Accounts'),
-      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No accounts connected.') : accounts.map(accountUsage),
-    ),
+      h('h2', null, 'Machine'),
+      h('div', { class: 'stat-tiles' },
+        statTile('cpu', 'CPU', percentText(vm.cpu_percent), vm.cpu_percent, vm.cpu_count ? `${vm.cpu_count} cores` : null),
+        statTile('memory', 'Memory', percentText(memPct), memPct, vm.memory_total_bytes ? `${bytes(vm.memory_used_bytes)} of ${bytes(vm.memory_total_bytes)}` : null),
+        statTile('disk', 'Disk', diskPct === null ? 'unknown' : percentText(diskPct), diskPct, vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null),
+        statTile('terminal', 'Sessions', Number.isFinite(sessions.live) ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}` : '—', sessionsPct, sessions.queued ? `${sessions.queued} queued` : 'agent sessions running')),
+      h('div', { class: 'status-facts' }, facts)),
+    sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
+    statusSection('accounts', 'user', 'AI accounts', accounts.length ? accountSummary : 'none connected',
+      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No accounts connected.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map((a) => accountUsage(a, { foldable: true, open: troubled.includes(a) }))), troubled.length > 0 || accounts.length <= 3),
   ];
 }
 
-/** Account usage block shared by the Status panel and the Accounts page. */
-export function accountUsage(account) {
+/** Initials for an account's avatar: from the email's name part, else from the label. */
+function accountInitials(account) {
+  const source = account.email ? account.email.split('@')[0] : (account.label || account.id || '?');
+  const parts = String(source).split(/[^A-Za-z0-9]+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  return (parts.length > 1 ? parts[0][0] + parts[1][0] : parts[0].slice(0, 2)).toUpperCase();
+}
+
+/**
+ * One account, shared by the Status panel (foldable: a row that expands) and the Accounts page:
+ * an avatar with initials, label, email and plan (when the provider reports them), its state when
+ * it is not ready, and each usage window as a horizontal row like Claude's own usage page.
+ */
+export function accountUsage(account, { foldable = false, open = false } = {}) {
   const usage = account.usage || {};
-  const provider = account.provider === 'openai' ? 'Codex' : account.provider === 'anthropic' ? 'Claude' : account.provider;
-  const tone = { ok: 'ok', relogin: 'warn', limited: 'warn', error: 'danger' }[account.status] || '';
-  const windowMeter = (w, name) => w ? meter(w.used_percent ?? null, {
-    label: `${name}${w.window_minutes ? ` · ${windowLabel(w.window_minutes)}` : ''}`,
-    detail: w.resets_at ? `resets ${relLong(w.resets_at)} (${dateTime(w.resets_at)})` : null,
-  }) : meter(null, { label: name });
-  return h('div', { class: 'stack-sm', style: { opacity: account.enabled === false ? 0.55 : 1 } },
-    h('div', { class: 'row' },
-      h('strong', { class: 'ellipsis' }, account.label || account.id),
-      badge(provider, account.provider === 'openai' ? 'violet' : 'accent'),
-      badge(account.status || 'unknown', tone),
-      account.enabled === false ? badge('disabled') : null,
-      h('span', { class: 'spacer' }),
-      account.in_use_by ? h('span', { class: 'muted xs' }, `${account.in_use_by} in use`) : null),
-    h('div', { class: 'status-grid' }, windowMeter(usage.primary, 'Primary'), windowMeter(usage.secondary, 'Secondary')),
-    usage.observed_at ? h('div', { class: 'muted xs' }, `observed ${relLong(usage.observed_at)}`) : h('div', { class: 'muted xs' }, 'usage not observed yet'),
-    account.last_error ? h('div', { class: 'field-error' }, account.last_error) : null,
-  );
+  const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
+  const state = account.enabled === false
+    ? { icon: 'x', tone: 'muted', label: 'Disabled' }
+    : ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
+  const usageRow = (w, fallback) => {
+    const name = limitName(w && w.window_minutes, fallback);
+    const used = w ? w.used_percent : null;
+    return h('div', { class: 'usage-row' },
+      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? resetLabel(w.resets_at) : Number.isFinite(used) ? '' : 'Not known yet')),
+      usageBar(used, name),
+      h('span', { class: ['usage-pct', `tone-${toneOf(used)}`] }, Number.isFinite(used) ? `${Math.round(used)}% used` : '—'));
+  };
+  const primary = usage.primary;
+  const head = [
+    h('span', { class: 'avatar account-avatar', 'aria-hidden': 'true' }, accountInitials(account)),
+    h('span', { class: 'account-who' },
+      h('span', { class: 'account-name' }, h('strong', { class: 'ellipsis' }, account.label || account.id), account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
+      h('span', { class: 'account-sub' }, account.email || provider)),
+    state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`] }, icon(state.icon, { size: 12 }), state.label) : null,
+    foldable ? h('span', { class: 'account-glance', title: 'Current session' }, usageBar(primary ? primary.used_percent : null, 'Current session'), h('span', { class: ['usage-pct', `tone-${toneOf(primary ? primary.used_percent : null)}`] }, primary && Number.isFinite(primary.used_percent) ? `${Math.round(primary.used_percent)}%` : '—')) : null,
+    foldable ? icon('down', { size: 14 }) : null,
+  ];
+  const body = h('div', { class: 'account-body' },
+    account.last_error ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.last_error)) : null,
+    usageRow(usage.primary, 'Current session'),
+    usageRow(usage.secondary, 'Longer window'),
+    h('div', { class: 'account-foot' },
+      account.in_use_by ? h('span', { class: 'status-count live' }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'} on this account`) : h('span', null, 'No tasks right now'),
+      h('span', null, usage.observed_at ? `Updated ${relLong(usage.observed_at)}` : 'Usage not known yet')));
+  if (!foldable) return h('div', { class: ['account-card', account.enabled === false && 'disabled'] }, h('div', { class: 'account-head' }, head), body);
+  return rememberOpen(h('details', { class: ['account-fold', account.enabled === false && 'disabled'] }, h('summary', { class: 'account-head' }, head), body), `account:${account.id}`, open);
 }
 
 // ---------------------------------------------------------------- sidebar
 
-const COLLAPSE_KEY = 'yulius.sidebarCollapsed';
-
-/** Left sidebar: New task, navigation, active task list with status icons (UI-004, UI-005). */
-export function createSidebar(ctx, appEl) {
-  const newTask = h('a', { class: 'btn btn-primary btn-newtask', href: '#', dataset: { route: '/' } }, icon('plus', { size: 14 }), 'New task');
+/**
+ * Left sidebar: New task, navigation, active task list with status icons (UI-004, UI-005) and
+ * the signed-in user at its foot, which opens the user menu.
+ */
+export function createSidebar(ctx) {
+  // The logo slot holds the favicon's Y until Yulius has a real logo.
+  const brand = h('a', { class: 'sidebar-brand', href: href('/'), dataset: { route: '/' }, title: BRAND.name },
+    h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 34 })),
+    h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, BRAND.name), h('span', { class: 'brand-by' }, BRAND.tagline)));
+  const shortcut = NEW_TASK_KEYS;
+  const newTask = h('a', { class: 'btn btn-newtask', href: '#', dataset: { route: '/' }, title: `New task (${shortcut})`, 'aria-keyshortcuts': NEW_TASK_ARIA },
+    h('span', { class: 'newtask-plus', 'aria-hidden': 'true' }, icon('plus', { size: 16 })), h('span', null, 'New task'), h('span', { class: 'newtask-key', 'aria-hidden': 'true' }, shortcut));
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sandbox' });
-  const count = h('span', null, '');
-  const list = h('div', { class: 'task-list', role: 'list', 'aria-label': 'Active tasks' });
-  const mini = h('div', { class: 'sidebar-mini', 'aria-label': 'Active tasks' });
-  const collapseButton = iconButton('sidebar', 'Collapse sidebar', () => setCollapsed(!collapsed), { class: 'collapse-btn' });
-  const el = h('aside', { class: 'sidebar' },
-    h('div', { class: 'sidebar-full', style: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 } },
-      h('div', { class: 'sidebar-top' }, newTask),
+  const list = h('div', { class: 'task-list', 'aria-label': 'Active tasks' });
+  const avatar = h('span', { class: 'avatar', 'aria-hidden': 'true' }, '?');
+  const userName = h('span', { class: 'user-name' });
+  const userButton = h('button', { type: 'button', class: 'user-btn', 'aria-label': 'User menu', 'aria-haspopup': 'menu', onClick: () => openUserMenu(ctx, userButton) }, avatar, userName);
+  const el = h('aside', { class: 'sidebar', id: 'sidebar' },
+    h('div', { class: 'sidebar-full' },
+      h('div', { class: 'sidebar-top' }, brand, newTask),
       nav,
-      h('div', { class: 'sidebar-sep' }, h('span', null, 'Active tasks'), count),
       list),
-    mini,
-    h('div', { class: 'sidebar-foot' }, collapseButton),
+    h('div', { class: 'sidebar-foot' }, userButton),
   );
 
   let sandbox = null;
   let route = null;
-  let collapsed = Boolean(readJson(COLLAPSE_KEY, false));
   const rows = new Map();
 
-  function setCollapsed(value) {
-    collapsed = value;
-    writeJson(COLLAPSE_KEY, value);
-    appEl.classList.toggle('sidebar-collapsed', value);
-    collapseButton.setAttribute('aria-label', value ? 'Expand sidebar' : 'Collapse sidebar');
-    collapseButton.title = value ? 'Expand sidebar' : 'Collapse sidebar';
+  function renderUser() {
+    const user = (ctx.store.state.me && ctx.store.state.me.user) || {};
+    const name = user.display_name || user.login || '?';
+    avatar.textContent = initials(name);
+    userName.textContent = name;
+    userButton.setAttribute('aria-label', `${name}, account menu`);
+    userButton.title = `${name}${user.login ? ` (@${user.login})` : ''}`;
   }
-  setCollapsed(collapsed);
 
   function renderNav() {
     const slug = sandbox ? encodeURIComponent(sandbox.slug) : null;
     newTask.dataset.route = slug ? `/s/${slug}` : '/';
     newTask.href = href(newTask.dataset.route);
     newTask.classList.toggle('disabled', !slug);
-    setChildren(nav, NAV.map(([page, label]) => {
+    // Links are built once and updated in place, so a focused link keeps focus across routes.
+    if (!nav.children.length) nav.append(...NAV.map(([, label, iconName]) => h('a', { class: 'nav-item' }, h('span', { class: 'nav-slot' }, icon(iconName, { size: 20 })), h('span', null, label))));
+    NAV.forEach(([page], i) => {
+      const link = nav.children[i];
       const path = slug ? `/s/${slug}/${page}` : '/';
-      const active = route && route.name === 'page' && route.page === page;
-      return h('a', { class: ['nav-item', active && 'active'], href: href(path), dataset: { route: path }, 'aria-current': active ? 'page' : null }, label);
-    }));
+      const active = Boolean(route && ['page', 'gitTask', 'taskInfo', 'skill'].includes(route.name) && route.page === page);
+      link.href = href(path);
+      link.dataset.route = path;
+      link.classList.toggle('active', active);
+      if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
+    });
   }
+
+  // Active tasks (UI-005), grouped so what needs the user comes first: "Needs you", "Working",
+  // "Stopped" (collapsible). Each row says in words what is happening, not just a mark.
+  const GROUPS = [
+    { id: 'needs', name: 'Needs you', icon: 'bell' },
+    { id: 'working', name: 'Working', icon: 'pulse' },
+    { id: 'ended', name: 'Stopped', icon: 'st-stopped' },
+  ];
+  const ENDED_OPEN_KEY = 'yulius.sidebarStoppedOpen';
+  let endedOpen = readJson(ENDED_OPEN_KEY, true) !== false;
+  let shape = '';
+
+  const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests);
 
   function rowFor(task) {
     let row = rows.get(task.id);
     if (!row) {
-      const glyph = h('span', { class: 'glyph' });
+      // One line: state icon, pull request, title, unread count, age. What the task needs is said by
+      // the icon, the tooltip and (for screen readers) the hidden sentence after the title.
+      const mark = h('span', { class: 'task-mark' });
+      const chips = h('span', { class: 'task-chips' });
       const title = h('span', { class: 'task-title' });
-      const harness = h('span', { class: 'task-harness' });
-      const time = h('span', { class: 'task-time' });
+      const sub = h('span', { class: 'sr-only' });
       const unread = h('span', { class: 'task-unread' });
-      const meta = h('span', { class: 'task-meta' }, unread, harness, time);
-      const anchor = h('a', { class: 'task-row', role: 'listitem' }, glyph, title, meta);
+      const age = h('span', { class: 'task-age' });
+      const link = h('a', { class: 'task-link' }, mark, chips, title, sub, unread, age);
       const kebab = iconButton('more', 'Task actions', (event) => {
         event.preventDefault();
         event.stopPropagation();
         openTaskMenu(ctx, kebab, row.task);
-      }, { class: 'task-kebab' });
-      anchor.append(kebab);
-      anchor.addEventListener('contextmenu', (event) => {
+      }, { class: 'task-kebab', 'aria-haspopup': 'menu' });
+      const el = h('div', { class: 'task-row', role: 'listitem' }, link, kebab);
+      el.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, row.task);
       });
-      anchor.addEventListener('click', () => document.body.classList.remove('drawer-open'));
-      const miniLink = h('a', { class: 'mini-task' }, h('span', { class: 'glyph' }));
-      row = { anchor, glyph, title, harness, time, unread, miniLink, task };
+      link.addEventListener('click', () => document.body.classList.remove('drawer-open'));
+      row = { el, link, mark, chips, title, unread, age, sub, task };
       rows.set(task.id, row);
     }
     row.task = task;
-    const info = statusInfo(task);
-    const hi = harnessInfo(task.harness);
-    const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`;
-    const active = route && route.name === 'task' && route.number === task.number;
-    row.anchor.href = href(path);
-    row.anchor.dataset.route = path;
-    row.anchor.classList.toggle('active', Boolean(active));
-    row.anchor.setAttribute('aria-current', active ? 'page' : 'false');
-    row.anchor.title = `#${task.number} ${task.title} — ${info.label} · ${hi.name}${task.branch ? ` · ${task.branch}` : ''}`;
-    row.glyph.className = `glyph tone-${info.tone}`;
-    row.glyph.textContent = info.glyph;
-    row.glyph.setAttribute('aria-label', info.label);
-    row.glyph.setAttribute('role', 'img');
-    row.title.textContent = task.title || `Task #${task.number}`;
-    row.harness.textContent = hi.glyph;
-    row.harness.className = `task-harness ${task.harness}`;
-    row.harness.title = hi.name;
-    row.time.textContent = relShort(task.updated_at);
-    row.time.title = dateTime(task.updated_at);
-    row.unread.hidden = !task.unread_messages;
-    row.unread.textContent = task.unread_messages ? String(task.unread_messages) : '';
-    row.unread.title = task.unread_messages ? `${task.unread_messages} unread messages` : '';
-    row.miniLink.href = row.anchor.href;
-    row.miniLink.dataset.route = path;
-    row.miniLink.title = row.anchor.title;
-    row.miniLink.classList.toggle('active', Boolean(active));
-    const miniGlyph = row.miniLink.firstChild;
-    miniGlyph.className = `glyph tone-${info.tone}`;
-    miniGlyph.textContent = info.glyph;
+    row.info = rowInfo(task);
+    // Repaint only a row whose content would change (PERF-02): the key holds all it shows.
+    const active = Boolean(route && route.name === 'task' && route.number === task.number);
+    row.pr = ctx.store.pullsOf(sandbox.id).get(task.id) || null;
+    const key = JSON.stringify([task, row.info, active, relShort(task.updated_at), sandbox.slug, row.pr]);
+    if (row.key !== key) {
+      row.key = key;
+      paintRow(row, active);
+    }
     return row;
+  }
+
+  function paintRow(row, active) {
+    const task = row.task;
+    const info = row.info;
+    const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`;
+    row.link.href = href(path);
+    row.link.dataset.route = path;
+    row.link.setAttribute('aria-current', active ? 'page' : 'false');
+    row.el.classList.toggle('active', active);
+    row.el.dataset.group = info.group;
+    row.el.dataset.tone = info.tone;
+    row.link.title = `#${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${dateTime(task.updated_at)}`;
+    setChildren(row.mark, statusMark(info, 16));
+    setChildren(row.chips, row.pr ? prChip(row.pr, { link: false }) : null);
+    row.title.textContent = task.title || `Task #${task.number}`;
+    // Colour stays on the state icon; the words (tooltip, screen readers) say what to do.
+    row.sub.textContent = `, ${activityLine(task, info)}`;
+    row.age.textContent = relShort(task.updated_at);
+    row.age.title = `Last change ${dateTime(task.updated_at)}`;
+    row.unread.hidden = !task.unread_messages;
+    setChildren(row.unread, task.unread_messages ? [String(task.unread_messages), h('span', { class: 'sr-only' }, ' unread')] : null);
+    row.unread.title = task.unread_messages ? `${task.unread_messages} unread message${task.unread_messages === 1 ? '' : 's'} from other agents` : '';
+  }
+
+  function groupHead(group, size) {
+    const label = [h('span', { class: 'nav-slot' }, icon(group.icon, { size: 16 })), h('span', { class: 'task-group-name' }, group.name), h('span', { class: 'task-group-count' }, String(size))];
+    if (group.id !== 'ended') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label);
+    return h('button', { type: 'button', class: ['task-group-head', 'group-ended'], 'aria-expanded': String(endedOpen), onClick: () => {
+      endedOpen = !endedOpen;
+      writeJson(ENDED_OPEN_KEY, endedOpen);
+      shape = '';
+      renderTasks();
+    } }, label, icon(endedOpen ? 'down' : 'right', { size: 12 }));
   }
 
   function renderTasks() {
     if (!sandbox) {
+      shape = '';
       setChildren(list, h('div', { class: 'placeholder' }, 'No sandbox selected.'));
-      mini.replaceChildren();
-      count.textContent = '';
       return;
     }
-    const tasks = ctx.store.tasksOf(sandbox.id);
-    if (tasks === null) {
-      setChildren(list, h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
+    const all = ctx.store.tasksOf(sandbox.id);
+    if (all === null) {
+      shape = '';
+      const error = ctx.store.tasksError(sandbox.id);
+      setChildren(list, error
+        ? loadError(`Couldn’t load tasks: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
+        : h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
       return;
     }
-    count.textContent = tasks.length ? String(tasks.length) : '';
+    // A task the user left normally is done for now: it stays under Tasks (with Continue) but
+    // leaves the Active list (HRN-002).
+    const tasks = all.filter((task) => task.status !== 'closed');
     if (tasks.length === 0) {
       rows.clear();
+      shape = '';
       setChildren(list, h('div', { class: 'placeholder small' }, 'No active tasks. Start one with “New task”.'));
-      mini.replaceChildren();
       return;
     }
     const seen = new Set();
-    const ordered = tasks.map((task) => { seen.add(task.id); return rowFor(task); });
-    for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
-    // Reorder only when needed so focus is not lost on every update.
-    const current = [...list.children];
-    if (current.length !== ordered.length || ordered.some((row, i) => current[i] !== row.anchor)) {
-      setChildren(list, ordered.map((row) => row.anchor));
-      setChildren(mini, ordered.map((row) => row.miniLink));
+    const grouped = new Map(GROUPS.map((g) => [g.id, []]));
+    for (const task of tasks) {
+      seen.add(task.id);
+      const row = rowFor(task);
+      grouped.get(row.info.group).push(row);
     }
+    for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
+    // Rebuild only when the grouping or order changed, so focus is not lost on every update.
+    const next = GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${grouped.get(g.id).map((r) => r.task.id).join(',')}`).join('|');
+    if (next === shape) return;
+    shape = next;
+    setChildren(list, GROUPS.filter((g) => grouped.get(g.id).length).map((g) => h('section', { class: ['task-group', `group-${g.id}`], 'aria-label': g.name },
+      groupHead(g, grouped.get(g.id).length),
+      g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, grouped.get(g.id).map((r) => r.el)))));
   }
 
-  ctx.store.on('tasks', (sandboxId) => { if (sandbox && sandboxId === sandbox.id) renderTasks(); });
+  const repaint = coalesce(() => renderTasks(), { minInterval: 150 });
+  let unwatchPulls = null;
+  const offs = [
+    ctx.store.on('tasks', (sandboxId) => { if (sandbox && sandboxId === sandbox.id) repaint(); }),
+    ctx.store.on('pulls', (sandboxId) => { if (sandbox && sandboxId === sandbox.id) repaint(); }),
+    ctx.store.on('browser-action', (event) => { if (sandbox && event.sandbox_id === sandbox.id) repaint(); }),
+  ];
   // Refresh relative times twice a minute (single bounded timer).
-  setInterval(() => {
-    for (const row of rows.values()) row.time.textContent = relShort(row.task.updated_at);
+  const ageTimer = setInterval(() => {
+    for (const row of rows.values()) row.age.textContent = relShort(row.task.updated_at);
   }, 30000);
 
   return {
     el,
+    /** Sign-out: unsubscribe and stop the timer. */
+    destroy() { offs.forEach((off) => off()); repaint.cancel(); clearInterval(ageTimer); if (unwatchPulls) unwatchPulls(); },
     update(nextRoute, nextSandbox) {
-      if (!nextSandbox || !sandbox || nextSandbox.id !== sandbox.id) rows.clear();
+      if (!nextSandbox || !sandbox || nextSandbox.id !== sandbox.id) {
+        rows.clear();
+        shape = '';
+        // The rows show the sandbox's pull requests: keep them fresh while it is the one in view.
+        if (unwatchPulls) unwatchPulls();
+        unwatchPulls = nextSandbox ? ctx.store.watchPulls(nextSandbox.id) : null;
+      }
       route = nextRoute;
       sandbox = nextSandbox;
+      renderUser();
       renderNav();
       renderTasks();
     },

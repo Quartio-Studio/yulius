@@ -1,4 +1,4 @@
-//! Session discovery filters (IMP-003, AC-IMP-3) over synthetic Claude and Codex stores.
+//! Session discovery filters (IMP-003, AC-IMP-3) over synthetic Claude Code stores.
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -6,14 +6,12 @@ use std::time::Duration;
 
 use serde_json::json;
 use yulius_contracts::import::ImportHarness;
-use yulius_import::{DiscoveredSession, discover_claude_sessions, discover_codex_sessions};
+use yulius_import::{DiscoveredSession, discover_claude_sessions};
 
 use crate::support::{
-    OLD, RECENT, RECENT_LATER, TestResult, claude_line, codex_response, codex_user,
-    simple_claude_session, since, write, write_claude_session, write_codex_session,
+    OLD, RECENT, RECENT_LATER, TestResult, claude_line, simple_claude_session, since, write,
+    write_claude_session,
 };
-
-const REMOTE: &str = "https://github.com/Quartio-Studio/demo";
 
 /// Repository layout: `<temp>/work/demo` with a linked worktree at
 /// `<temp>/work/demo-wt` and an unrelated sibling `<temp>/work/demo-other`.
@@ -241,87 +239,10 @@ fn claude_sessions_inside_repo_and_worktrees_within_the_window() -> TestResult {
 }
 
 #[test]
-fn codex_sessions_by_directory_or_repository_url() -> TestResult {
-    let layout = Layout::new()?;
-    let codex = layout.store("codex");
-    let repo = &layout.repo;
-    let elsewhere = layout.temp.path().join("other-clone");
-
-    write_codex_session(
-        &codex,
-        "c1-inside",
-        &repo.join("crates"),
-        "",
-        &[
-            codex_response(RECENT, "<environment_context>cwd</environment_context>"),
-            json!("not an object"),
-            codex_user(RECENT, "Add rate limiting"),
-            json!({"timestamp": RECENT_LATER, "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": []}}),
-        ],
-    )?;
-    write_codex_session(
-        &codex,
-        "c2-url-match",
-        &elsewhere,
-        "git@github.com:quartio-studio/DEMO.git",
-        &[codex_user(RECENT, "From another clone")],
-    )?;
-    write_codex_session(
-        &codex,
-        "c3-unrelated",
-        &elsewhere,
-        "https://github.com/Quartio-Studio/other.git",
-        &[codex_user(RECENT, "Unrelated")],
-    )?;
-    write_codex_session(&codex, "c4-old", repo, REMOTE, &[codex_user(OLD, "Old")])?;
-    write_codex_session(
-        &codex,
-        "c6-fallback-title",
-        repo,
-        "",
-        &[
-            codex_response(RECENT, "# AGENTS.md instructions for the repo"),
-            codex_response(RECENT, "Investigate flaky test"),
-        ],
-    )?;
-    // Not a session: first line is not session_meta.
-    write(
-        &codex.join("sessions/2026/10/01/rollout-2026-10-01T10-00-00-c5-bad.jsonl"),
-        &(codex_user(RECENT, "orphan").to_string() + "\n"),
-    )?;
-    // Wrong depth and wrong name are ignored.
-    write(&codex.join("sessions/rollout-top-level.jsonl"), "{}\n")?;
-
-    let sessions = discover_codex_sessions(&codex, &layout.paths(), REMOTE, since())?;
-
-    let mut found = ids(&sessions);
-    found.sort_unstable();
-    assert_eq!(found, ["c1-inside", "c2-url-match", "c6-fallback-title"]);
-    let inside = find(&sessions, "c1-inside")?;
-    assert_eq!(inside.harness, ImportHarness::Codex);
-    assert_eq!(inside.title, "Add rate limiting");
-    assert_eq!(inside.cwd_relative.as_deref(), Some("crates"));
-    assert_eq!(inside.git_branch.as_deref(), Some("main"));
-    assert_eq!(inside.ended_at, RECENT_LATER);
-    assert_eq!(inside.skipped_lines, 1);
-    assert_eq!(inside.files.len(), 1);
-    assert_eq!(inside.files[0].name, "sessions/codex/c1-inside.jsonl");
-    let by_url = find(&sessions, "c2-url-match")?;
-    assert_eq!(by_url.cwd_relative, None);
-    assert_eq!(by_url.cwd, elsewhere);
-    assert_eq!(
-        find(&sessions, "c6-fallback-title")?.title,
-        "Investigate flaky test"
-    );
-    Ok(())
-}
-
-#[test]
 fn missing_stores_yield_no_sessions() -> TestResult {
     let layout = Layout::new()?;
     let nowhere = layout.store("does-not-exist");
     assert!(discover_claude_sessions(&nowhere, &layout.paths(), since())?.is_empty());
-    assert!(discover_codex_sessions(&nowhere, &layout.paths(), REMOTE, since())?.is_empty());
     Ok(())
 }
 

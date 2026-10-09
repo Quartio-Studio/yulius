@@ -54,6 +54,20 @@ pub trait GitPort: Send + Sync {
     /// Removes a worktree only when it is clean, registered and inside `owned_root`.
     async fn remove_worktree(&self, repo: &Path, path: &Path, owned_root: &Path)
     -> AppResult<bool>;
+    /// Discards a task worktree on explicit request (task deletion): removed even when dirty,
+    /// and the local `branch` deleted; only paths inside `owned_root`.
+    async fn discard_worktree(
+        &self,
+        repo: &Path,
+        path: &Path,
+        owned_root: &Path,
+        branch: Option<&str>,
+    ) -> AppResult<()> {
+        let _ = branch;
+        self.remove_worktree(repo, path, owned_root)
+            .await
+            .map(|_| ())
+    }
     /// Whether a worktree has tracked or untracked (non-ignored) changes.
     async fn has_changes(&self, worktree: &Path) -> AppResult<bool>;
     /// Installs the pre-push guard rejecting pushes to `protected` branches.
