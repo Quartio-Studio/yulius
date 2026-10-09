@@ -936,11 +936,11 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 /* The terminal and what floats over it: the attention bar never resizes the terminal (each resize
    makes the agent's TUI redraw, F 2026-10-09). */
 .taskview-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.attention-bar { position: absolute; top: 8px; right: 16px; z-index: var(--z-float); display: flex; align-items: center; gap: 12px; max-width: min(560px, calc(100% - 32px)); padding: 8px 8px 8px 12px; border: 1px solid var(--border-strong); border-left: 3px solid var(--warn); border-radius: var(--radius); background: var(--warn-soft); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow-sm); }
+.attention-bar { position: absolute; top: 8px; right: 16px; z-index: var(--z-float); display: flex; align-items: center; gap: 12px; max-width: min(560px, calc(100% - 32px)); padding: 8px 8px 8px 12px; border: 1px solid var(--border-strong); border-left: 3px solid var(--warn); border-radius: var(--radius); background: var(--warn-soft-solid); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }
 .attention-bar[hidden] { display: none; }
 /* Below the attention bar, the terminal's own notices. */
 .taskview-term:has(.attention-bar:not([hidden])) .term-notice, .taskview-term:has(.attention-bar:not([hidden])) .term-mouse-toggle { top: 64px; }
-.attention-bar.waiting { border-left-color: var(--info); background: var(--info-soft); color: var(--info-fg-strong); }
+.attention-bar.waiting { border-left-color: var(--info); background: var(--info-soft-solid); color: var(--info-fg-strong); }
 .attention-bar .icon { flex: none; }
 .attention-text { flex: 1; min-width: 0; }
 .stepstrip { flex: none; background: var(--surface); border-bottom: 1px solid var(--border); }
@@ -1643,8 +1643,8 @@ a.dl-task:hover { text-decoration: underline; }
 }
 
 /* Terminal mouse hand-over (shown only when the program asked for the mouse). */
-.term-mouse-toggle { position: absolute; top: 6px; right: 16px; z-index: var(--z-float); font-size: var(--fs-xs); line-height: var(--lh-xs); opacity: 0; transition: opacity var(--duration-fast) var(--ease); }
-.term:hover .term-mouse-toggle, .term-mouse-toggle:focus-visible { opacity: .9; }
+.term-mouse-toggle { position: absolute; top: 6px; right: 16px; z-index: var(--z-float); background: var(--surface-2); box-shadow: var(--shadow-sm); font-size: var(--fs-xs); line-height: var(--lh-xs); opacity: 0; transition: opacity var(--duration-fast) var(--ease); }
+.term:hover .term-mouse-toggle, .term-mouse-toggle:focus-visible { opacity: 1; }
 
 /* Harness change waiting for approval (ROT-012). */
 

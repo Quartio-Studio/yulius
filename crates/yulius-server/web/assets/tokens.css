@@ -227,6 +227,9 @@
   --danger-track: color-mix(in srgb, var(--danger) 18%, transparent);
   --violet-soft: color-mix(in srgb, var(--violet) 15%, transparent);
   --info-soft: color-mix(in srgb, var(--info) 14%, transparent);
+  /* The same tints made opaque, for what floats over text (the terminal's attention bar). */
+  --warn-soft-solid: color-mix(in srgb, var(--warn) 14%, var(--surface-2));
+  --info-soft-solid: color-mix(in srgb, var(--info) 14%, var(--surface-2));
   --violet-border: color-mix(in srgb, var(--violet) 45%, transparent);
 
   /* Elevation: L0 canvas, L1 cards (border only), L2 menus/popovers/toasts, L3 modals/drawer. */
