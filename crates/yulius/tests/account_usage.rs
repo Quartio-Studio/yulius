@@ -67,6 +67,39 @@ impl UsageProbe for FakeProbe {
     }
 }
 
+/// A usage request during which a running task observes the account's limit (the transcript
+/// observer marks it limited), answered with throttling (#72).
+struct LimitDuringRequest(std::sync::Mutex<Option<yulius_store::SqliteStore>>);
+
+/// The usage a task's limit hit stores: the session window full.
+const LIMITED_USAGE: &str = r#"{"primary":{"used_percent":100.0,"window_minutes":300,"resets_at":null},"limit_reached":true}"#;
+
+#[async_trait]
+impl UsageProbe for LimitDuringRequest {
+    async fn fetch(
+        &self,
+        _provider: Provider,
+        _credential: &Secret,
+    ) -> Result<AccountUsage, UsageFailure> {
+        let store = self.0.lock().ok().and_then(|s| s.clone());
+        if let (Some(store), Ok(id)) = (store, AccountId::parse("a-hit")) {
+            let _ = store
+                .set_account_state(
+                    &id,
+                    AccountStatus::Limited,
+                    Some(LIMITED_USAGE),
+                    None,
+                    Timestamp(2),
+                )
+                .await;
+        }
+        Err(UsageFailure {
+            message: "the provider is limiting usage requests for this account (HTTP 429)".into(),
+            retry_after: Some(Duration::from_secs(120)),
+        })
+    }
+}
+
 async fn account(h: &support::Harness, id: &str, credential: &[u8]) -> TestResult {
     h.store
         .insert_account(&AccountRecord {
@@ -209,5 +242,38 @@ async fn background_rounds_refresh_usage_and_back_off_on_throttling() -> TestRes
         .ok_or("no back-off")?
         .millis_since(h.app.now());
     assert!((60_000..=120_000).contains(&wait), "{wait} ms");
+    Ok(())
+}
+
+/// #72: a failed usage request must not write back the account as it was when the round began:
+/// a limit a running task observed meanwhile stays, so routing keeps skipping the account.
+#[tokio::test]
+async fn a_failed_refresh_keeps_a_limit_observed_meanwhile() -> TestResult {
+    let probe = Arc::new(LimitDuringRequest(std::sync::Mutex::new(None)));
+    let h = harness_with(HarnessOptions {
+        usage: Some(probe.clone()),
+        ..HarnessOptions::default()
+    })?;
+    if let Ok(mut slot) = probe.0.lock() {
+        *slot = Some(h.store.clone());
+    }
+    account(&h, "a-hit", b"credential").await?;
+    let mut not_before = HashMap::new();
+    h.app.refresh_usage_round(&mut not_before).await;
+    let hit = h
+        .store
+        .account(&AccountId::parse("a-hit")?)
+        .await?
+        .ok_or("a-hit")?;
+    assert_eq!(
+        hit.status,
+        AccountStatus::Limited,
+        "the limit observed during the request is kept"
+    );
+    assert_eq!(hit.usage_json.as_deref(), Some(LIMITED_USAGE));
+    assert!(
+        hit.last_error.as_deref().unwrap_or("").contains("HTTP 429"),
+        "the failure is still reported"
+    );
     Ok(())
 }

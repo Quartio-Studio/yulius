@@ -546,17 +546,13 @@ impl App {
                 Ok(())
             }
             Err(failure) => {
+                // Only the error: the status and usage may have changed since `account` was
+                // read (a task's limit hit during the request), and must stay (#72).
                 let message = format!("usage: {}", failure.message);
                 let _ = self
                     .deps
                     .store
-                    .set_account_state(
-                        &account.id,
-                        account.status,
-                        account.usage_json.as_deref(),
-                        Some(&message),
-                        self.now(),
-                    )
+                    .set_account_error(&account.id, &message, self.now())
                     .await;
                 Err(failure)
             }
