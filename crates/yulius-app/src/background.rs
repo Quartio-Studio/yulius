@@ -1,6 +1,8 @@
-//! Server-lifetime background work: crash recovery, queue draining, capacity re-evaluation and
-//! waking idle tasks when messages arrive (SPEC-002 §6.1, §7.5, §10).
+//! Server-lifetime background work: crash recovery, queue draining, capacity re-evaluation,
+//! account usage refresh (ROT-009) and waking idle tasks when messages arrive (SPEC-002 §6.1,
+//! §7.5, §10).
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -18,6 +20,10 @@ pub const WAKE_IDLE_MS: i64 = 30_000;
 const TICK: Duration = Duration::from_secs(60);
 /// Capacity re-evaluation interval, in ticks (5 min).
 const CAPACITY_TICKS: u64 = 5;
+/// First background usage round after start: lets the server settle first (ROT-009).
+const USAGE_FIRST: Duration = Duration::from_secs(2 * 60);
+/// Background usage rounds: modest, so the provider's usage endpoint is not hammered.
+const USAGE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// Text typed into an idle agent session.
 const WAKE_TEXT: &str =
     "Yulius: you have new messages. Read them with the messages_inbox tool and act on them.";
@@ -63,6 +69,17 @@ impl App {
                         app.retry_waiting(&task.id).await;
                     }
                 }
+            }
+        });
+        // Account usage in its own loop: a slow provider never delays queue draining.
+        let app = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(USAGE_FIRST).await;
+            let mut not_before = HashMap::new();
+            let mut every = tokio::time::interval(USAGE_EVERY);
+            loop {
+                every.tick().await;
+                app.refresh_usage_round(&mut not_before).await;
             }
         });
     }

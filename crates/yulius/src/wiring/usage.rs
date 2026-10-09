@@ -9,7 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 use yulius_app::model::Secret;
-use yulius_app::ports::usage::UsageProbe;
+use yulius_app::ports::usage::{UsageFailure, UsageProbe};
 use yulius_domain::harness::Provider;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
 
@@ -39,29 +39,63 @@ impl ProviderUsage {
         Ok(Self { http })
     }
 
-    async fn get_json(&self, request: reqwest::RequestBuilder) -> Result<Value, String> {
-        let response = request
-            .send()
-            .await
-            .map_err(|e| format!("the provider is not reachable ({})", e.without_url()))?;
+    async fn get_json(&self, request: reqwest::RequestBuilder) -> Result<Value, UsageFailure> {
+        let response = request.send().await.map_err(|e| {
+            UsageFailure::new(format!(
+                "the provider is not reachable ({})",
+                e.without_url()
+            ))
+        })?;
         let status = response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Err(format!(
+            return Err(UsageFailure::new(format!(
                 "the provider refused this account's token for usage (HTTP {}); it refreshes on the next run or needs a re-login",
                 status.as_u16()
+            )));
+        }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(throttled(
+                response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok()),
             ));
         }
         if !status.is_success() {
-            return Err(format!("the provider answered HTTP {}", status.as_u16()));
+            return Err(UsageFailure::new(format!(
+                "the provider answered HTTP {}",
+                status.as_u16()
+            )));
         }
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| format!("reading the usage answer failed ({})", e.without_url()))?;
+        let bytes = response.bytes().await.map_err(|e| {
+            UsageFailure::new(format!(
+                "reading the usage answer failed ({})",
+                e.without_url()
+            ))
+        })?;
         if bytes.len() > MAX_BODY {
-            return Err("the usage answer is too large".into());
+            return Err(UsageFailure::new("the usage answer is too large"));
         }
-        serde_json::from_slice(&bytes).map_err(|_| "the usage answer is not JSON".into())
+        serde_json::from_slice(&bytes)
+            .map_err(|_| UsageFailure::new("the usage answer is not JSON"))
+    }
+}
+
+/// HTTP 429 on the usage request: the provider throttles usage requests for this token (the
+/// account itself may be fine). `Retry-After` in seconds, when given, says when to ask again.
+fn throttled(retry_after: Option<&str>) -> UsageFailure {
+    let retry_after = retry_after
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_secs);
+    let when = retry_after.map_or_else(
+        || "later".to_owned(),
+        |d| format!("in about {} min", d.as_secs().div_ceil(60).max(1)),
+    );
+    UsageFailure {
+        message: format!(
+            "the provider is limiting usage requests for this account (HTTP 429); Yulius asks again {when}"
+        ),
+        retry_after,
     }
 }
 
@@ -91,7 +125,11 @@ pub fn parse_claude(body: &Value) -> Result<AccountUsage, String> {
 
 #[async_trait]
 impl UsageProbe for ProviderUsage {
-    async fn fetch(&self, provider: Provider, credential: &Secret) -> Result<AccountUsage, String> {
+    async fn fetch(
+        &self,
+        provider: Provider,
+        credential: &Secret,
+    ) -> Result<AccountUsage, UsageFailure> {
         match provider {
             Provider::Anthropic => {
                 let request = self
@@ -100,7 +138,7 @@ impl UsageProbe for ProviderUsage {
                     .bearer_auth(credential.expose().trim())
                     .header("anthropic-beta", "oauth-2025-04-20")
                     .header("accept", "application/json");
-                parse_claude(&self.get_json(request).await?)
+                parse_claude(&self.get_json(request).await?).map_err(UsageFailure::new)
             }
         }
     }
@@ -126,5 +164,17 @@ mod tests {
         assert_eq!(usage.secondary.ok_or("secondary")?.used_percent, Some(12.5));
         assert!(parse_claude(&json!({})).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn throttling_reads_retry_after_seconds() {
+        let with = throttled(Some("120"));
+        assert_eq!(with.retry_after, Some(Duration::from_secs(120)));
+        assert!(with.message.contains("HTTP 429"));
+        assert!(with.message.ends_with("in about 2 min"));
+        let date = throttled(Some("Wed, 21 Oct 2026 07:28:00 GMT"));
+        assert_eq!(date.retry_after, None, "only seconds are honoured");
+        assert!(date.message.ends_with("later"));
+        assert_eq!(throttled(None).retry_after, None);
     }
 }

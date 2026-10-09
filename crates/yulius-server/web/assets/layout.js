@@ -410,8 +410,12 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
     foldable ? h('span', { class: 'account-glance', title: 'Current session' }, usageBar(primary ? primary.used_percent : null, 'Current session'), h('span', { class: ['usage-pct', `tone-${toneOf(primary ? primary.used_percent : null)}`] }, primary && Number.isFinite(primary.used_percent) ? `${Math.round(primary.used_percent)}%` : '—')) : null,
     foldable ? icon('down', { size: 14 }) : null,
   ];
+  // A usage request the provider throttled or refused ("usage: …") is a note, not a broken
+  // account: tasks still run on it and the last known usage stays (ROT-009, #27).
+  const usageNote = Boolean(account.last_error) && account.last_error.startsWith('usage:') && !['relogin', 'error'].includes(account.status);
   const body = h('div', { class: 'account-body' },
-    account.last_error ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.last_error)) : null,
+    account.last_error && usageNote ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, `Usage: ${account.last_error.slice('usage:'.length).trim()}`)) : null,
+    account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.last_error)) : null,
     usageRow(usage.primary, 'Current session'),
     usageRow(usage.secondary, 'Longer window'),
     h('div', { class: 'account-foot' },

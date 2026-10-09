@@ -23,7 +23,7 @@ use yulius_domain::task::{
     STOP_TERM_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::AccountUsage;
+use yulius_domain::usage::{AccountUsage, UsageWindow};
 
 use crate::auth::hex_token;
 use crate::context::App;
@@ -40,6 +40,9 @@ use crate::usage_json;
 
 /// Boxed `Send` future (breaks recursive async cycles between start, pump and finalize).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// The provider's short (session) window in minutes; longer limits are the secondary window.
+const SESSION_WINDOW_MINUTES: u32 = 5 * 60;
 
 /// Default PTY size before the first viewer reports its size.
 pub const DEFAULT_SIZE: (u16, u16) = (120, 40);
@@ -1608,7 +1611,11 @@ impl App {
     ) {
         let runtime = self.runtime(task_id);
         match observation {
-            Observation::LimitReached { resets_at, message } => {
+            Observation::LimitReached {
+                resets_at,
+                message,
+                window_minutes,
+            } => {
                 tracing::info!(task = %task_id, %message, "usage limit reached");
                 if let Some(account) = &attempt.account_id {
                     let mut usage = match self.deps.store.account(account).await {
@@ -1622,6 +1629,21 @@ impl App {
                     usage.limit_reached = true;
                     usage.limit_resets_at = resets_at;
                     usage.observed_at = Some(self.now());
+                    // What the CLI was told is the account's state (ROT-009): the limited window
+                    // full until its reset, even when the provider's usage request does not
+                    // answer.
+                    let full = |minutes: u32| UsageWindow {
+                        used_percent: Some(100.0),
+                        window_minutes: Some(minutes),
+                        resets_at,
+                    };
+                    match window_minutes {
+                        Some(minutes) if minutes <= SESSION_WINDOW_MINUTES => {
+                            usage.primary = Some(full(minutes));
+                        }
+                        Some(minutes) => usage.secondary = Some(full(minutes)),
+                        None => {}
+                    }
                     self.record_account_usage(account, &usage).await;
                 }
                 runtime
