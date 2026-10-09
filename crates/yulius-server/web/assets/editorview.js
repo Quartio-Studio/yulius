@@ -7,7 +7,7 @@
 // the same files) is not overwritten silently.
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field, closableTabKeys } from './dom.js';
 import { allows } from './status.js';
 import { token, activeTheme, onThemeChange, px, hexToken } from './theme.js';
 
@@ -193,7 +193,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   });
 
   const tree = h('div', { class: 'ed-tree', role: 'tree', 'aria-label': 'Files' });
-  const tabbar = h('div', { class: 'ed-tabs', role: 'tablist' });
+  const tabbar = h('div', { class: 'ed-tabs', role: 'tablist', 'aria-label': 'Open files' });
   const host = h('div', { class: 'ed-host' });
   const empty = h('div', { class: 'ed-empty' }, h('p', null, 'Open a file from the explorer.'), h('p', { class: 'muted xs' }, '⌘S / Ctrl+S saves. Your open files and unsaved changes stay in this browser tab only.'));
   const status = h('div', { class: 'ed-status' });
@@ -484,15 +484,22 @@ export function createEditorView(ctx, sandbox, getTask) {
   }
 
   function renderTabs() {
-    setChildren(tabbar, tabs.map((tab) => {
+    const focused = tabbar.contains(document.activeElement) ? document.activeElement.dataset.path : null;
+    const items = tabs.map((tab) => {
       const name = tab.path.split('/').pop();
-      const button = h('div', { class: ['ed-tab', tab === active && 'active'], role: 'tab', title: tab.path, 'aria-selected': String(tab === active) },
+      const button = h('div', { class: ['ed-tab', tab === active && 'active'], role: 'tab', tabindex: tab === active ? '0' : '-1', dataset: { path: tab.path }, title: tab.path, 'aria-selected': String(tab === active), 'aria-keyshortcuts': 'Delete Backspace' },
         h('span', { class: 'ed-tab-name' }, name),
-        h('button', { type: 'button', class: 'ed-tab-close', 'aria-label': `Close ${name}`, onClick: (event) => { event.stopPropagation(); closeTab(tab); } }, tab.dirty ? '●' : '×'));
+        tab.dirty ? h('span', { class: 'sr-only' }, ', modified') : null,
+        // Not a button: see closableTabKeys. Delete or Backspace closes the focused tab.
+        h('span', { class: 'ed-tab-close', 'aria-hidden': 'true', title: `Close ${name}`, onClick: (event) => { event.stopPropagation(); closeTab(tab); } }, tab.dirty ? '●' : '×'));
       button.addEventListener('click', () => activate(tab));
       button.addEventListener('auxclick', (event) => { if (event.button === 1) closeTab(tab); });
+      button.addEventListener('keydown', (event) => closableTabKeys(event, { select: () => activate(tab), close: () => closeTab(tab) }));
       return button;
-    }));
+    });
+    if (items.length && !tabs.includes(active)) items[0].tabIndex = 0;
+    setChildren(tabbar, items);
+    if (focused) items.find((item) => item.dataset.path === focused)?.focus();
   }
 
   function renderStatus() {

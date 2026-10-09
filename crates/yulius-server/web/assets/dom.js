@@ -207,6 +207,31 @@ export function svgEl(tag, attrs, ...children) {
 }
 
 /** Icon-only button with an accessible label and tooltip. */
+/**
+ * Keyboard for a closable tab (browser and editor tabs, roving tabindex): Enter or Space selects,
+ * Delete or Backspace closes, ←/→/Home/End move the focus along its tablist. The close mark inside
+ * a tab is not a button: a tab presents its children as plain content, so a nested button would be
+ * unreachable for assistive technology.
+ */
+export function closableTabKeys(event, { select, close }) {
+  const tab = event.currentTarget;
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    select();
+  } else if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault();
+    close();
+  } else if (['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault();
+    const all = [...tab.parentElement.querySelectorAll('[role="tab"]')];
+    const at = all.indexOf(tab);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? all.length - 1
+      : (at + (event.key === 'ArrowRight' ? 1 : -1) + all.length) % all.length;
+    for (const other of all) other.tabIndex = other === all[next] ? 0 : -1;
+    all[next].focus();
+  }
+}
+
 export function iconButton(name, label, onClick, attrs = {}) {
   return h('button', { type: 'button', class: ['btn-icon', attrs.class], 'aria-label': label, title: label, onClick, ...withoutClass(attrs) }, icon(name));
 }
