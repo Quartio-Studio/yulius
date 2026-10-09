@@ -10,7 +10,7 @@ failOnPageErrors();
 test('a sandbox port opens live and the sandbox Chrome tabs share the strip', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await screen.getByRole('button', /^Show tools/).click();
-  await screen.getByRole('button', 'Browser').click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
 
   const start = screen.getByRole('region', 'New tab');
   await expect(start.getByRole('heading', /^Browser of /)).toBeVisible();
