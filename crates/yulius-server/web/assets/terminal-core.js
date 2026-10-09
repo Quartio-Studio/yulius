@@ -14,6 +14,9 @@ import { h, icon, setChildren } from './dom.js';
 import { terminalColors, onThemeChange, token, isPhone, px } from './theme.js';
 import { readJson } from './store.js';
 
+/** Wheel travel (px) of one notch sent to an app that scrolls itself, and the most notches per event. */
+const WHEEL_NOTCH_PX = 40;
+const WHEEL_MAX_NOTCHES = 10;
 
 /**
  * Create a terminal view. Options:
@@ -147,6 +150,26 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }, 120);
   });
   term.onData((data) => send(data));
+  // Claude Code draws full screen (the alternate buffer has no scrollback) and scrolls its own
+  // transcript with the mouse wheel. Text selection keeps the mouse from the app (mousefilter.js),
+  // so there only wheel turns go to the app, in its encoding; clicks still select. In the normal
+  // buffer xterm scrolls its own scrollback (#34).
+  let wheelRest = 0;
+  term.attachCustomWheelEventHandler((event) => {
+    if (!mouse.requested() || mouse.appMouse() || term.buffer.active.type !== 'alternate' || !state.can_write) return true;
+    event.preventDefault();
+    const pixels = event.deltaMode === 1 ? event.deltaY * WHEEL_NOTCH_PX : event.deltaMode === 2 ? event.deltaY * term.rows * WHEEL_NOTCH_PX : event.deltaY;
+    wheelRest += pixels;
+    const notches = Math.trunc(wheelRest / WHEEL_NOTCH_PX);
+    if (!notches) return false;
+    wheelRest -= notches * WHEEL_NOTCH_PX;
+    const screen = host.querySelector('.xterm-screen') || host;
+    const box = screen.getBoundingClientRect();
+    const col = Math.min(term.cols, Math.max(1, 1 + Math.floor(((event.clientX - box.left) / Math.max(1, box.width)) * term.cols)));
+    const row = Math.min(term.rows, Math.max(1, 1 + Math.floor(((event.clientY - box.top) / Math.max(1, box.height)) * term.rows)));
+    send(mouse.wheelReport(notches < 0, col, row).repeat(Math.min(Math.abs(notches), WHEEL_MAX_NOTCHES)));
+    return false;
+  });
   term.onBinary((data) => send(data));
 
   function proposed() {

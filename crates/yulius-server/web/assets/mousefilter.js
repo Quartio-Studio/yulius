@@ -127,5 +127,16 @@ export function createMouseFilter() {
       if (!requested.size) return EMPTY;
       return sequence([...requested].sort((a, b) => a - b), on);
     },
+    /**
+     * A wheel turn as the app's mouse reporting encodes it, at 1-based cell (col, row): SGR
+     * (`ESC [ < 64|65 ; col ; row M`) when the app asked for 1006, otherwise the X10 bytes.
+     * Lets the app scroll with the wheel while clicks stay with text selection (#34).
+     */
+    wheelReport(up, col, row) {
+      const button = up ? 64 : 65;
+      if (requested.has(1006)) return `\x1b[<${button};${col};${row}M`;
+      const byte = (n) => String.fromCharCode(32 + Math.min(Math.max(n, 1), 223));
+      return `\x1b[M${String.fromCharCode(32 + button)}${byte(col)}${byte(row)}`;
+    },
   };
 }
