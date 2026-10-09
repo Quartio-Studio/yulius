@@ -25,7 +25,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
     });
     let mut message_props = task_ref.clone();
     if let Some(obj) = message_props.as_object_mut() {
-        obj.insert("to".into(), json!({"type": "string", "enum": ["all"], "description": "Use \"all\" to broadcast to every active task"}));
+        obj.insert("to".into(), json!({"type": "string", "enum": ["all", "people"], "description": "\"all\" broadcasts to the other tasks of the sandbox; \"people\" answers the people using Yulius (for example a reply to a message from a person): it shows in this task's Messages and in their notifications"}));
         obj.insert(
             "kind".into(),
             json!({"type": "string", "enum": ["info", "question", "request", "scope"]}),
@@ -34,6 +34,11 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         obj.insert("body".into(), json!({"type": "string"}));
     }
     let mut tools = vec![
+        ToolDescriptor {
+            name: "project_context".into(),
+            description: "The project context, rebuilt now: project summary, architecture and decision index, recent changes, delivery rules and the parallel tasks with their scope claims (the same briefing the session started with).".into(),
+            input_schema: schema(json!({}), &[]),
+        },
         ToolDescriptor {
             name: "tasks_list".into(),
             description: "List previous and parallel tasks of this project (other Claude Code sessions): status, branch, spec and step progress. Use it before starting work to avoid duplicating or conflicting with others.".into(),
@@ -46,13 +51,40 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "message_send".into(),
-            description: "Send a message to another task (by task_id or number) or broadcast with to=\"all\". Use kind=scope to agree who works on which files.".into(),
+            description: "Send a message to another task (by task_id or number), broadcast to the other tasks with to=\"all\", or answer the people using Yulius with to=\"people\" (use this to reply to a message from a person). Use kind=scope to agree who works on which files.".into(),
             input_schema: schema(message_props, &["body"]),
         },
         ToolDescriptor {
             name: "messages_inbox".into(),
-            description: "Read messages sent to this task by other tasks or by people; marks them read.".into(),
+            description: "Read messages sent to this task by other tasks or by people; marks them read. Answer a person with message_send to=\"people\".".into(),
             input_schema: schema(json!({"unread_only": {"type": "boolean"}}), &[]),
+        },
+        ToolDescriptor {
+            name: "scope_claim".into(),
+            description: "Claim repository paths this task is about to change, so parallel tasks avoid conflicts: path globs relative to the repository (* within a segment, ** across segments, a trailing / claims a directory, e.g. \"src/api/\", \"docs/**/*.md\"). Claims are advisory and never block files. Overlaps with other live tasks' claims are returned and reported to those tasks; agree who changes what with message_send kind=scope.".into(),
+            input_schema: schema(json!({
+                "pattern": {"type": "string", "description": "One path glob"},
+                "patterns": {"type": "array", "items": {"type": "string"}, "maxItems": crate::scopes::MAX_PATTERNS_PER_CLAIM, "description": "Several path globs"},
+                "note": {"type": "string", "description": "Why this task needs these paths"}
+            }), &[]),
+        },
+        ToolDescriptor {
+            name: "scope_release".into(),
+            description: "Release this task's scope claims named by pattern (one glob) or patterns (a list), or all of them when neither is given, e.g. when the work on those paths is done.".into(),
+            input_schema: schema(json!({
+                "pattern": {"type": "string"},
+                "patterns": {"type": "array", "items": {"type": "string"}, "maxItems": crate::scopes::MAX_PATTERNS_PER_CLAIM}
+            }), &[]),
+        },
+        ToolDescriptor {
+            name: "scopes_list".into(),
+            description: "Current scope claims of the live tasks in this project (yours marked mine) and the overlaps with your claims.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "spec_check".into(),
+            description: "Validate this task's spec in the Yulius format (frontmatter, required sections, Plan checklist) and the project documentation; returns the problems to fix. The same check runs when you stop.".into(),
+            input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
             name: "steps_set".into(),
@@ -171,10 +203,15 @@ impl App {
             .cloned()
             .unwrap_or_else(|| json!({}));
         let outcome: AppResult<Value> = match name {
+            "project_context" => self.tool_project_context(ctx).await,
             "tasks_list" => self.tool_tasks_list(ctx, &args).await,
             "task_get" => self.tool_task_get(ctx, &args).await,
             "message_send" => self.tool_message_send(ctx, &args).await,
             "messages_inbox" => self.tool_messages_inbox(ctx, &args).await,
+            "scope_claim" => self.tool_scope_claim(ctx, &args).await,
+            "scope_release" => self.tool_scope_release(ctx, &args).await,
+            "scopes_list" => self.tool_scopes_list(ctx).await,
+            "spec_check" => self.tool_spec_check(ctx).await,
             "steps_set" => self.tool_steps_set(ctx, &args).await,
             "step_update" => self.tool_step_update(ctx, &args).await,
             "steps_get" => self.tool_steps_get(ctx).await,
@@ -210,6 +247,23 @@ impl App {
                 text_result(text, false)
             }
             Err(err) => text_result(err.public_message(), true),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_descriptors;
+    use yulius_domain::briefing::YULIUS_TOOLS;
+
+    #[test]
+    fn every_tool_the_briefing_announces_is_served() {
+        let served: Vec<String> = tool_descriptors().into_iter().map(|t| t.name).collect();
+        for (name, _) in YULIUS_TOOLS {
+            assert!(
+                served.iter().any(|s| s == name),
+                "the briefing announces `{name}`, which tools/list does not serve"
+            );
         }
     }
 }

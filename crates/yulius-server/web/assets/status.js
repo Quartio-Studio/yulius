@@ -1,6 +1,7 @@
 // Task status presentation and permitted actions (SPEC-001 §6.1, §6.3, §7.1; SPEC-002 §6.1).
 
 import { BRAND } from './brand.js';
+import { resetLabel } from './format.js';
 
 /** Statuses with a live process or pending start. */
 export const LIVE_STATUSES = new Set(['queued', 'starting', 'running', 'switching', 'waiting_capacity', 'stopping']);
@@ -67,8 +68,9 @@ export function statusInfo(task) {
   if (status === 'queued') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Queued', group: 'working' };
   if (status === 'starting') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Starting', group: 'working' };
   if (status === 'switching') return { glyph: '↻', icon: 'refresh', tone: 'switching', label: 'Switching account', group: 'working' };
-  // Nothing for the user to do: Yulius starts it when a session slot frees up.
-  if (status === 'waiting_capacity') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Waiting for a free slot', group: 'working' };
+  // Every account is at its usage limit (ROT-010): the agent is paused, not working. It waits in
+  // Needs you with the reset time and continues by itself; the user may switch or add an account.
+  if (status === 'waiting_capacity') return { glyph: '⧗', icon: 'clock', tone: 'attention', label: 'Usage limit reached', group: 'needs' };
   if (status === 'stopping') return { glyph: '■', icon: 'st-stopped', tone: 'stopping', label: 'Stopping', group: 'working' };
   if (status === 'closed') return { glyph: '✓', icon: 'st-closed', tone: 'closed', label: 'Closed', group: 'ended' };
   if (status === 'stopped_cancelled') return { glyph: '■', icon: 'st-stopped', tone: 'stopped', label: STOP_LABELS[status], group: 'ended' };
@@ -83,6 +85,7 @@ export function statusInfo(task) {
  */
 export function activityLine(task, info = statusInfo(task)) {
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
+  if (info.pr) return info.label;
   const steps = task.steps || {};
   if (task.status === 'running') {
     if (task.activity === 'needs_attention') return 'Approve or answer in the terminal';
@@ -90,22 +93,39 @@ export function activityLine(task, info = statusInfo(task)) {
     if (steps.total) return `Step ${Math.min((steps.done || 0) + 1, steps.total)}/${steps.total}${steps.current ? ` · ${steps.current}` : ''}`;
     return 'Working';
   }
+  if (task.status === 'waiting_capacity') {
+    const reset = task.resumes_at ? resetLabel(task.resumes_at) : '';
+    // The reset time first: narrow columns cut the end of the line.
+    return reset ? `${reset} · continues by itself` : 'Every account at its limit · continues when one resets';
+  }
   if (info.group === 'ended' && steps.total) return `${info.label} · ${steps.done || 0}/${steps.total} steps`;
   return info.label;
 }
 
 /**
  * statusInfo plus what only the live store knows: a browser action request from the agent makes
- * a live task "Needs you in the browser". `actionRequests` is store.state.actionRequests. The
- * sidebar and the Tasks page both use this, so they always agree.
+ * a live task "Needs you in the browser", and the pull request of a finished turn makes it
+ * "Done" (tested: checks green or not required, or merged), "In review" (checks running) or
+ * "Needs you" (checks failing) (#35). `actionRequests` is store.state.actionRequests and `pr` the
+ * task's pull request from store.pullsOf(). The sidebar and the Tasks page both use this, so they
+ * always agree.
  */
-export function taskInfo(task, actionRequests) {
+export function taskInfo(task, actionRequests, pr) {
   const info = statusInfo(task);
   const map = actionRequests && actionRequests.get(task.sandbox_id);
   if (map && info.group !== 'ended') {
     for (const [tabId, request] of map) {
       if (request.task_id === task.id) return { ...info, icon: 'globe', tone: 'attention', label: 'Needs you in the browser', group: 'needs', detail: request.reason, request: { ...request, tab_id: tabId } };
     }
+  }
+  // The agent finished and its pull request exists (#35): done once it is tested — checks green
+  // or not required — or merged; in review while checks run; needs you when they fail.
+  // Only after a finished turn: a task waiting for approval (needs_attention) or working is not done (#68).
+  if (pr && task.status === 'running' && task.activity === 'waiting' && (pr.state === 'open' || pr.state === 'merged')) {
+    if (pr.state === 'open' && pr.checks === 'failure') return { ...info, icon: 'branch', tone: 'attention', label: `PR #${pr.number} · checks failing`, group: 'needs', pr };
+    // Tested means known green (or no required checks); running or unreadable checks are not.
+    if (pr.state === 'open' && !['success', 'none'].includes(pr.checks)) return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · ${pr.checks === 'pending' ? 'checks running' : 'checks not known yet'}`, group: 'working', pr };
+    return { ...info, glyph: '✓', icon: 'check', tone: 'done', label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, group: 'done', pr };
   }
   return info;
 }

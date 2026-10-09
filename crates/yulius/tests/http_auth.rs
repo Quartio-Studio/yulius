@@ -1,15 +1,19 @@
-//! End-to-end HTTP tests: setup, sign-in, CSRF, admission and GitHub-mirrored visibility
-//! (AC-ACC-1..5).
+//! End-to-end HTTP tests: setup, sign-in, CSRF, admission, GitHub-mirrored visibility and
+//! access on every sandbox and task route (AC-ACC-1..5).
 
 mod support;
 
 use axum::http::{Method, StatusCode};
-use serde_json::json;
-use support::{Creds, TestResult, call, harness, session_from};
+use serde_json::{Value, json};
+use support::{
+    Creds, TestResult, call, harness, perms, seed_github_user, seed_sandbox, seed_task,
+    session_from,
+};
 use yulius_app::model::SandboxRecord;
 use yulius_app::ports::store::{InstanceStore, SandboxStore};
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::GitHubPermissions;
+use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
 async fn setup_superadmin(h: &support::Harness) -> Result<Creds, Box<dyn std::error::Error>> {
@@ -154,6 +158,151 @@ async fn password_login_rate_limit_and_csrf() -> TestResult {
     assert_eq!(logout.status, StatusCode::NO_CONTENT);
     let after = call(&h.router, Method::GET, "/api/me", None, &creds).await?;
     assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+/// Every sandbox- and task-scoped route with a body its extractor accepts. `{sid}`/`{tid}` are
+/// replaced; websocket routes are called without an upgrade.
+fn scoped_routes() -> Vec<(Method, &'static str, Option<Value>)> {
+    let empty = || Some(json!({}));
+    vec![
+        (Method::GET, "/api/sandboxes/{sid}", None),
+        (Method::PATCH, "/api/sandboxes/{sid}", empty()),
+        (Method::DELETE, "/api/sandboxes/{sid}", None),
+        (Method::GET, "/api/sandboxes/{sid}/tasks", None),
+        (
+            Method::POST,
+            "/api/sandboxes/{sid}/tasks",
+            Some(json!({"prompt": "x"})),
+        ),
+        (Method::GET, "/api/sandboxes/{sid}/workflows", None),
+        (Method::GET, "/api/sandboxes/{sid}/automations", None),
+        (Method::GET, "/api/sandboxes/{sid}/skills", None),
+        (Method::GET, "/api/sandboxes/{sid}/skills/x", None),
+        (Method::GET, "/api/sandboxes/{sid}/mcp", None),
+        (Method::GET, "/api/sandboxes/{sid}/git", None),
+        (Method::GET, "/api/sandboxes/{sid}/delivery/runs", None),
+        (Method::GET, "/api/sandboxes/{sid}/delivery/runs/r1", None),
+        (
+            Method::POST,
+            "/api/sandboxes/{sid}/delivery/promote",
+            empty(),
+        ),
+        (
+            Method::POST,
+            "/api/sandboxes/{sid}/delivery/environments/production/runs",
+            empty(),
+        ),
+        (
+            Method::POST,
+            "/api/sandboxes/{sid}/onboarding/skip",
+            empty(),
+        ),
+        (Method::GET, "/api/sandboxes/{sid}/files?path=", None),
+        (
+            Method::GET,
+            "/api/sandboxes/{sid}/files/content?path=README.md",
+            None,
+        ),
+        (Method::POST, "/api/sandboxes/{sid}/shells", empty()),
+        (Method::GET, "/api/sandboxes/{sid}/browser", None),
+        (Method::GET, "/api/tasks/{tid}", None),
+        (Method::DELETE, "/api/tasks/{tid}", None),
+        (Method::GET, "/api/tasks/{tid}/messages", None),
+        (
+            Method::POST,
+            "/api/tasks/{tid}/messages",
+            Some(json!({"body": "hi"})),
+        ),
+        (Method::POST, "/api/tasks/{tid}/stop", empty()),
+        (Method::POST, "/api/tasks/{tid}/continue", empty()),
+        (Method::POST, "/api/tasks/{tid}/switch", empty()),
+        (Method::POST, "/api/tasks/{tid}/archive", empty()),
+        (Method::POST, "/api/tasks/{tid}/restore", empty()),
+        (
+            Method::POST,
+            "/api/tasks/{tid}/feedback",
+            Some(json!({"verdict": "correct"})),
+        ),
+        (Method::GET, "/api/tasks/{tid}/delivery", None),
+        (Method::GET, "/api/tasks/{tid}/changes", None),
+        (Method::GET, "/api/tasks/{tid}/commits", None),
+        (Method::POST, "/api/tasks/{tid}/delivery/pr", empty()),
+        (Method::POST, "/api/tasks/{tid}/delivery/merge", empty()),
+        (Method::GET, "/api/tasks/{tid}/terminal", None),
+    ]
+}
+
+fn fill(path: &str, sandbox: &str, task: &str) -> String {
+    path.replace("{sid}", sandbox).replace("{tid}", task)
+}
+
+/// AC-ACC-4 (#52): a sandbox the user cannot see answers exactly like one that does not exist
+/// on every sandbox and task route, and a read user is refused every change to a task.
+#[tokio::test]
+async fn invisible_sandboxes_answer_like_missing_ones_and_read_users_cannot_change_tasks()
+-> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "studio", "u-alice").await?;
+    seed_sandbox(&h, "s2", "product", "u-alice").await?;
+    h.github.set_perm("alice", "acme/studio", perms("read"));
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    seed_task(&h, "t2", "s2", "u-alice", TaskStatus::Closed, None).await?;
+
+    // Alice is signed in and reads her sandbox and its task.
+    for path in [
+        "/api/sandboxes/s1",
+        "/api/tasks/t1",
+        "/api/tasks/t1/messages",
+    ] {
+        let seen = call(&h.router, Method::GET, path, None, &alice).await?;
+        assert_eq!(seen.status, StatusCode::OK, "{path}");
+    }
+
+    // The sandbox she cannot see (and its task) answers exactly like a missing one.
+    for (method, path, body) in scoped_routes() {
+        let hidden = fill(path, "s2", "t2");
+        let missing = fill(path, "s9", "t9");
+        let a = call(&h.router, method.clone(), &hidden, body.clone(), &alice).await?;
+        let b = call(&h.router, method.clone(), &missing, body, &alice).await?;
+        assert_eq!(
+            (a.status, &a.body),
+            (b.status, &b.body),
+            "{method} {hidden} reveals the invisible sandbox"
+        );
+        assert!(
+            a.status.is_client_error(),
+            "{method} {hidden}: {}",
+            a.status
+        );
+        if !path.ends_with("/terminal") && !path.ends_with("/browser") {
+            assert_eq!(a.status, StatusCode::NOT_FOUND, "{method} {hidden}");
+        }
+    }
+
+    // A read user cannot change a task of a sandbox she can read.
+    for (method, path, body) in [
+        (Method::POST, "/api/tasks/t1/continue", Some(json!({}))),
+        (Method::POST, "/api/tasks/t1/switch", Some(json!({}))),
+        (Method::POST, "/api/tasks/t1/stop", Some(json!({}))),
+        (Method::POST, "/api/tasks/t1/archive", Some(json!({}))),
+        (
+            Method::POST,
+            "/api/tasks/t1/messages",
+            Some(json!({"body": "steer"})),
+        ),
+        (Method::DELETE, "/api/tasks/t1", None),
+        (Method::POST, "/api/tasks/t1/delivery/pr", Some(json!({}))),
+        (
+            Method::POST,
+            "/api/sandboxes/s1/tasks",
+            Some(json!({"prompt": "x"})),
+        ),
+    ] {
+        let refused = call(&h.router, method.clone(), path, body, &alice).await?;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{method} {path}");
+    }
     Ok(())
 }
 
@@ -581,5 +730,177 @@ async fn allowlisted_origins_get_cors_and_websockets() -> TestResult {
     let refused = ws_connect(served.addr, "/api/events", &creds, "https://evil.test").await;
     let status = refused.err().as_ref().and_then(ws_refusal_status);
     assert_eq!(status, Some(403));
+    Ok(())
+}
+
+/// #56: every public response carries the baseline security headers (no framing by other
+/// sites, no MIME sniffing, no referrer to other origins).
+#[tokio::test]
+async fn public_responses_carry_security_headers() -> TestResult {
+    use tower::ServiceExt;
+    let h = harness()?;
+    for path in [
+        "/",
+        "/s/studio/tasks",
+        "/api/me",
+        "/api/setup/status",
+        "/healthz",
+    ] {
+        let request = axum::http::Request::builder()
+            .uri(path)
+            .body(axum::body::Body::empty())?;
+        let response = h.router.clone().oneshot(request).await?;
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            header("x-frame-options").as_deref(),
+            Some("SAMEORIGIN"),
+            "{path}"
+        );
+        assert_eq!(
+            header("content-security-policy").as_deref(),
+            Some("frame-ancestors 'self'"),
+            "{path}"
+        );
+        assert_eq!(
+            header("x-content-type-options").as_deref(),
+            Some("nosniff"),
+            "{path}"
+        );
+        assert_eq!(
+            header("referrer-policy").as_deref(),
+            Some("same-origin"),
+            "{path}"
+        );
+    }
+    Ok(())
+}
+
+/// #60: after GitHub sign-in the server returns only to a path on this site.
+#[tokio::test]
+async fn github_sign_in_returns_only_to_local_paths() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin(&h).await?;
+    configure_github(&h).await?;
+    h.github.add_user("code-alice", 11, "alice");
+    let admit = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/users",
+        Some(json!({"github_login": "alice"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(admit.status, StatusCode::CREATED);
+    for (next, expected) in [
+        ("/s/studio/tasks", "/s/studio/tasks"),
+        ("/s/a%20b", "/s/a b"),
+        ("%2F%5Cexample.org", "/"),
+        ("%2F%09%2Fexample.org", "/"),
+        ("%2F%0Aexample", "/"),
+        ("%2F%2Fexample.org", "/"),
+        ("https%3A%2F%2Fexample.org", "/"),
+    ] {
+        let state = github_state(&h, &format!("next={next}")).await?;
+        let done = github_callback(&h, &format!("code=code-alice&state={state}")).await?;
+        assert_eq!(done.status, StatusCode::SEE_OTHER, "{next}");
+        assert_eq!(done.location.as_deref(), Some(expected), "{next}");
+    }
+    Ok(())
+}
+
+/// #66: an open event stream follows revoked access and closes for a disabled user within the
+/// re-check interval, as new requests would.
+#[tokio::test]
+async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> TestResult {
+    use futures::StreamExt as _;
+    use support::{HarnessOptions, harness_with, serve, ws_connect};
+    use tokio_tungstenite::tungstenite::Message;
+    use yulius_app::ports::store::UserStore;
+    use yulius_contracts::events::UiEvent;
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(|c| c.viewer_recheck_ms = 200)),
+        ..HarnessOptions::default()
+    })?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "studio", "u-alice").await?;
+    h.github.set_perm("alice", "acme/studio", perms("read"));
+    let served = serve(h.router.clone()).await?;
+    let origin = h.app.config.public_url.clone();
+    let mut socket = ws_connect(served.addr, "/api/events", &alice, &origin).await?;
+    let sandbox = SandboxId::parse("s1")?;
+    let publish = |task: &str| {
+        h.app.events.publish(
+            Some(sandbox.clone()),
+            false,
+            UiEvent::TaskRemoved {
+                task_id: task.into(),
+            },
+        );
+    };
+    // The next text frame within `wait`, if any.
+    async fn next_text(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        wait: std::time::Duration,
+    ) -> Option<Result<String, Option<u16>>> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(deadline, socket.next()).await {
+                Err(_) => return None,
+                Ok(Some(Ok(Message::Text(text)))) => return Some(Ok(text.to_string())),
+                Ok(Some(Ok(Message::Close(frame)))) => {
+                    return Some(Err(frame.map(|f| u16::from(f.code))));
+                }
+                Ok(None | Some(Err(_))) => return Some(Err(None)),
+                Ok(Some(Ok(_))) => {}
+            }
+        }
+    }
+
+    // The server subscribes once the upgrade completes: publish until the stream has it.
+    let mut seen = None;
+    for _ in 0..20 {
+        publish("t-visible");
+        seen = next_text(&mut socket, std::time::Duration::from_millis(250)).await;
+        if seen.is_some() {
+            break;
+        }
+    }
+    assert!(
+        matches!(&seen, Some(Ok(text)) if text.contains("t-visible")),
+        "{seen:?}"
+    );
+    // Drain duplicates of the first event.
+    while let Some(Ok(_)) = next_text(&mut socket, std::time::Duration::from_millis(300)).await {}
+
+    // Access removed on GitHub: after the permission cache expires and a re-check, this
+    // sandbox's events no longer reach the open stream.
+    if let Ok(mut map) = h.github.perms.lock() {
+        map.remove(&("alice".to_owned(), "acme/studio".to_owned()));
+    }
+    h.clock
+        .0
+        .fetch_add(6 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    publish("t-hidden");
+    let hidden = next_text(&mut socket, std::time::Duration::from_secs(1)).await;
+    assert!(
+        hidden.is_none(),
+        "an event of a revoked sandbox arrived: {hidden:?}"
+    );
+
+    // A disabled user's stream closes with 4003.
+    h.store
+        .update_user_flags(&UserId::parse("u-alice")?, Some(Some(Timestamp(5))), None)
+        .await?;
+    let closed = next_text(&mut socket, std::time::Duration::from_secs(5)).await;
+    assert_eq!(closed, Some(Err(Some(4003))), "{closed:?}");
     Ok(())
 }

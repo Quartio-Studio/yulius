@@ -144,6 +144,7 @@ impl App {
             archived: task.archived_at.is_some(),
             account_label,
             mode: task.mode.as_str().to_owned(),
+            resumes_at: self.capacity_returns_at(task).await.map(rfc3339),
         })
     }
 

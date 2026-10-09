@@ -29,6 +29,7 @@ pub mod ports;
 pub mod projects;
 pub mod recovery;
 pub mod sandboxes;
+pub mod scopes;
 pub mod shells;
 pub mod skills;
 pub mod status;

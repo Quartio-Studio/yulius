@@ -54,6 +54,10 @@ pub struct TaskSummary {
     /// `goal` or `prompt` (TSK-010).
     #[serde(default = "default_mode")]
     pub mode: String,
+    /// While `waiting_capacity` (every account at its usage limit): when the earliest known limit
+    /// resets and the task resumes, RFC 3339 (ROT-010). Null otherwise or when unknown.
+    #[serde(default)]
+    pub resumes_at: Option<String>,
 }
 
 fn default_mode() -> String {

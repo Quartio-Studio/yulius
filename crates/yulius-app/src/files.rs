@@ -73,9 +73,11 @@ fn io_error(err: &std::io::Error) -> AppError {
     }
 }
 
-/// Whether `path` (resolved) stays inside `root` (resolved).
+/// Whether `path` (resolved) stays inside `root` (resolved) and out of every `.git` directory,
+/// also when a symbolic link inside the folder leads into one (#59).
 fn inside(root: &Path, path: &Path) -> bool {
-    path.starts_with(root)
+    path.strip_prefix(root)
+        .is_ok_and(|rest| !rest.components().any(|part| part.as_os_str() == ".git"))
 }
 
 impl App {

@@ -161,7 +161,7 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: ShellAttach, mut sock
                         app.shell_resize(&ctx, &attach, cols, rows).await
                     }
                     TerminalClientMsg::TakeControl => Ok(()),
-                    TerminalClientMsg::Input { data, seq } => {
+                    TerminalClientMsg::Input { data, seq, .. } => {
                         if seq.is_some() && seq <= last_input_seq { Ok(()) } else {
                             if seq.is_some() { last_input_seq = seq; }
                             app.shell_input(&ctx, &attach, data.as_bytes()).await
@@ -175,6 +175,10 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: ShellAttach, mut sock
                 }
             }
             _ = recheck.tick() => {
+                if !app.still_signed_in(&ctx).await {
+                    close(&mut socket, CLOSE_REVOKED, "signed out").await;
+                    break;
+                }
                 if !app.shell_still_allowed(&ctx, &attach).await {
                     close(&mut socket, CLOSE_REVOKED, "access revoked").await;
                     break;

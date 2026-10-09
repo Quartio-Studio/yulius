@@ -37,6 +37,11 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
 Use the full gate after implementation stabilizes.
+
+The web UI has end-to-end tests in [`e2e/`](../../e2e/README.md): flows, accessibility (axe-core)
+and page errors, run in a browser against the UI's mock mode. They need Node 24.8+ (test-only;
+the UI has no Node at runtime) and are not part of `scripts/dev ci`. Run them after UI changes:
+`cd e2e && npm ci --ignore-scripts && npx e2e run`.
 No provider login, database, Docker daemon or paid model call is part of ordinary CI.
 Product crates are added per the SPEC-002 delivery checkpoints.
 Its binary-only workspace has no doctest targets; the gate reports this as not
@@ -72,10 +77,24 @@ can use the same rust-analyzer component and toolchain. No global editor setting
 or agent permission overrides are installed.
 
 GitHub Actions uses full-commit action pins, read-only permissions and the same
-bootstrap/CI commands. It runs on pull requests and dev/main pushes, plus a weekly
-advisory refresh. The workflow is committed configuration; hosted execution is
-only proven when GitHub actually runs it. No deployment job is present. [Git delivery](git.md) defines promotion checks and
-post-merge evidence. Pinned tool binaries are cached per OS/architecture/tool pin.
+bootstrap/CI commands. `quality (ubuntu-latest)` runs on pull requests and dev/main
+pushes, plus a weekly advisory refresh. `quality (macos-latest)` runs on dev/main
+pushes, promotion pull requests into main, the weekly refresh and manual runs
+(`workflow_dispatch`, also the way to test a branch on macOS); on pull requests into
+dev it is skipped. `Branch policy` is its own workflow (`policy.yml`), so editing a
+pull request's title or description re-runs only the policy. The workflow is
+committed configuration; hosted execution is only proven when GitHub actually runs
+it. No deployment job is present. [Git delivery](git.md) defines promotion checks and
+post-merge evidence. Pinned tool binaries are cached per OS/architecture/tool pin;
+Rust dependencies are cached per OS (written by dev/main pushes, read by pull
+requests). Jobs run on [Blacksmith](https://docs.blacksmith.sh/) runners
+(`blacksmith-4vcpu-ubuntu-2404` for Linux checks, `blacksmith-6vcpu-macos-latest` for
+macOS, `blacksmith-2vcpu-ubuntu-2404` for the policy); the check names stay the ones
+the rulesets require, and Blacksmith serves `actions/cache` and `Swatinem/rust-cache`
+from its own cache without workflow changes. Without the Blacksmith app, switch
+`runs-on` back to `ubuntu-latest` / `macos-latest`. `Web UI e2e` (`e2e.yml`) runs the
+end-to-end suite when the UI, the suite or the workflow changes; it is advisory, not a
+required check, and gets no model key (agent steps are skipped).
 
 ## Troubleshooting
 

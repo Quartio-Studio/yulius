@@ -249,6 +249,28 @@ impl GitPort for LocalGit {
         ))
     }
 
+    async fn review_changes(
+        &self,
+        _: &Path,
+        _: &str,
+    ) -> AppResult<yulius_app::ports::git::ReviewChanges> {
+        Err(AppError::Upstream(
+            "review_changes is not used by these tests".into(),
+        ))
+    }
+
+    async fn review_commits(
+        &self,
+        _: &Path,
+        _: &str,
+        _: &str,
+        _: u32,
+    ) -> AppResult<Vec<yulius_contracts::api::git::TaskCommit>> {
+        Err(AppError::Upstream(
+            "review_commits is not used by these tests".into(),
+        ))
+    }
+
     async fn ahead_behind(&self, _: &Path, _: &str, _: &str) -> AppResult<(u32, u32)> {
         Err(AppError::Upstream(
             "ahead_behind is not used by these tests".into(),

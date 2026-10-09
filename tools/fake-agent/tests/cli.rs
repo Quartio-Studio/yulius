@@ -137,10 +137,12 @@ fn claude_transcript_has_one_user_and_assistant_record_per_turn_and_a_limit() ->
     assert!(records[1]["message"]["usage"]["output_tokens"].is_u64());
     assert_eq!(records[1]["parentUuid"], records[0]["uuid"]);
     assert_eq!(records[4]["isApiErrorMessage"], true);
+    assert_eq!(records[4]["apiError"], "usage_limit_reached");
+    assert!(records[4]["apiErrorParams"]["rate_limit_info"]["resetsAt"].is_u64());
     let limit_text = records[4]["message"]["content"][0]["text"]
         .as_str()
         .unwrap_or("");
-    assert!(limit_text.starts_with("Claude AI usage limit reached|"));
+    assert!(limit_text.starts_with("You've hit your session limit"));
     Ok(())
 }
 

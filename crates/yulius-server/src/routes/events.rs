@@ -1,9 +1,10 @@
 //! `WS /api/events`: permission-filtered UI events with bounded buffering.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use axum::extract::State;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::response::Response;
 use tokio::sync::broadcast::error::RecvError;
@@ -39,8 +40,20 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
     let mut rx = app.events.subscribe();
     let mut visible: HashMap<String, bool> = HashMap::new();
     let is_admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
+    let mut recheck =
+        tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
+    recheck.tick().await;
     loop {
         tokio::select! {
+            _ = recheck.tick() => {
+                // Like the terminal viewers (ACC-008): an ended session closes the stream, and
+                // sandbox visibility is decided again from the current permissions (#66).
+                if !app.still_signed_in(&ctx).await {
+                    let _ = socket.send(Message::Close(Some(CloseFrame { code: 4003, reason: "signed out".into() }))).await;
+                    break;
+                }
+                visible.clear();
+            }
             incoming = socket.recv() => {
                 match incoming {
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,

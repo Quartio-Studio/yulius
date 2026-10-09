@@ -146,8 +146,16 @@ TaskSummary = {
   "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null"},
   "unread_messages": 0, "archived": false, "account_label": "Claude #2|null",
-  "mode": "goal|prompt"
+  "mode": "goal|prompt",
+  "resumes_at": "2026-10-09T08:20:00Z|null"
 }
+```
+
+`resumes_at` is set only while `status` is `waiting_capacity` (every account of the task's provider
+at its usage limit, ROT-010): the earliest known reset, as the rotation policy would decide now. The
+UI shows such a task under Needs you as "Usage limit reached" with that time.
+
+```json
 TaskDetail = TaskSummary + {
   "spec_path": "docs/specs/2026-10-07-checkout-api.md|null",
   "worktree": "…", "attempts": [{"seq","harness","account_label","account_id (proposed)","launch_kind","state",
@@ -172,9 +180,14 @@ Client → server text frames:
 ```json
 {"type":"hello","last_seq":null,"cols":120,"rows":40}
 {"type":"input","data":"text or escape sequences","seq":17}
+{"type":"input","data":"\u001b[<65;10;5M","seq":18,"scroll":true}
 {"type":"resize","cols":120,"rows":40}
 {"type":"take_control"}
 ```
+
+Input makes its viewer the controller (the last viewer to type sets the size), except
+`"scroll":true`: a wheel turn forwarded to a full-screen app, which neither takes control nor
+resizes the terminal.
 
 Server → client:
 
@@ -194,6 +207,8 @@ The account-login terminal (`/api/admin/accounts/login/{lid}/terminal`) and sand
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview` |
 | GET | `/api/tasks/{tid}/delivery` | read | → `Delivery` |
+| GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the worktree is gone |
+| GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100) |
 | POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes) |
 | POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile) |
 | POST | `/api/sandboxes/{sid}/delivery/promote` | write | → `{"result":"promoted|pr_opened","sha"}` |
@@ -230,14 +245,12 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   and `blocked` to `GitOverview.tasks[]` lets it skip those reads (it uses them when present);
   a `release` summary (production and integration heads, what is waiting, the last release:
   who, when, which tasks) would let it say *when* and *by whom* production last changed.
-- **Task changes (proposed).** The Git page's review of a task (UI-031: Git → a task → Changes,
-  Commits, Branch, then "Go to task") reads two endpoints the server does not have yet; until it
-  does, they answer 404 and the review shows its Branch tab alone (the position and size from
-  `GET /api/sandboxes/{sid}/git`, and the comparison on GitHub). `GET /api/tasks/{tid}/changes` (read) → `TaskChanges`, the task
-  worktree (committed and uncommitted) against the merge base with `origin/<integration>`;
-  `GET /api/tasks/{tid}/commits` (read) → `[TaskCommit]`, the task branch's commits not on the
-  integration branch, newest first. Large diffs may be cut (`truncated: true`); binary files carry
-  no hunks.
+- **Task changes.** The Git page's review of a task (UI-031: Git → a task → Changes, Commits,
+  Branch, then "Go to task") reads `GET /api/tasks/{tid}/changes` and `GET /api/tasks/{tid}/commits`.
+  Changes are bounded: at most 300 files with hunks, 3 000 lines per file and 20 000 lines in all
+  (`truncated: true` when cut; counts stay exact); untracked files over 256 KiB, binary files and
+  symbolic links carry no hunks. A server without these routes answers 404 and the review shows
+  its Branch tab alone.
 
   ```json
   TaskChanges = {"base":"<integration>","head":"<task branch>","base_sha","head_sha",
@@ -416,7 +429,7 @@ Claude Code.
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
-| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 99 % its tasks move to the next account at their next turn boundary; 502 with the reason (also kept as `last_error`) when the provider refuses or fails. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) |
+| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 99 % its tasks move to the next account at their next turn boundary; 502 with the reason (also kept as `last_error`) when the provider refuses or fails. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) The server also refreshes every enabled account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
 | GET | `/api/admin/github/manifest/callback?code&state` | superadmin | converts the code, stores the sealed App credentials and owner, 303 to the App's installation page; failures 303 to `/admin/github?error=…` |

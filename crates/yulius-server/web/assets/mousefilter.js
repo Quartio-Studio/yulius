@@ -13,6 +13,8 @@ const H = 0x68;
 const L = 0x6c;
 /** Private modes that turn mouse reporting on or change its encoding. */
 const MOUSE_MODES = new Set([9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016]);
+/** Modes that turn mouse reporting on; the others only choose its encoding (#78). */
+const TRACKING_MODES = new Set([9, 1000, 1001, 1002, 1003]);
 /** Longest private-mode sequence considered (anything longer passes through untouched). */
 const MAX_SEQUENCE = 64;
 const EMPTY = new Uint8Array(0);
@@ -117,15 +119,26 @@ export function createMouseFilter() {
 
   return {
     feed,
-    /** Forget carried bytes (the screen was replaced by a snapshot). */
-    reset() { carry = EMPTY; },
-    requested: () => requested.size > 0,
+    /** The screen was replaced by a snapshot, which carries the current modes again (#78). */
+    reset() { carry = EMPTY; requested.clear(); },
+    requested: () => [...requested].some((mode) => TRACKING_MODES.has(mode)),
     appMouse: () => appMouse,
     /** Hands the mouse to the app (true) or back to text selection (false). */
     setAppMouse(on) {
       appMouse = on;
       if (!requested.size) return EMPTY;
       return sequence([...requested].sort((a, b) => a - b), on);
+    },
+    /**
+     * A wheel turn as the app's mouse reporting encodes it, at 1-based cell (col, row): SGR
+     * (`ESC [ < 64|65 ; col ; row M`) when the app asked for 1006, otherwise the X10 bytes.
+     * Lets the app scroll with the wheel while clicks stay with text selection (#34).
+     */
+    wheelReport(up, col, row) {
+      const button = up ? 64 : 65;
+      if (requested.has(1006)) return `\x1b[<${button};${col};${row}M`;
+      const byte = (n) => String.fromCharCode(32 + Math.min(Math.max(n, 1), 223));
+      return `\x1b[M${String.fromCharCode(32 + button)}${byte(col)}${byte(row)}`;
     },
   };
 }

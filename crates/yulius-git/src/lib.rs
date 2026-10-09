@@ -27,6 +27,7 @@ mod error;
 mod hooks;
 mod redact;
 mod repo;
+mod review;
 mod runner;
 mod status;
 mod validate;
@@ -38,6 +39,10 @@ pub use credential::run_credential_helper;
 pub use error::GitError;
 pub use hooks::HOOKS_DIR_NAME;
 pub use redact::redact;
+pub use review::{
+    CommitStat, DiffHunk, DiffLine, FileDiff, FileStatus, LineKind, MAX_REVIEW_COMMITS,
+    MAX_REVIEW_FILES, MAX_REVIEW_LINES, WorktreeDiff,
+};
 pub use status::{AheadBehind, Commit, DiffStat, MAX_LOG_ENTRIES, StatusEntry};
 pub use validate::{MAX_BRANCH_LEN, validate_branch_name, validate_relative_path};
 pub use worktree::{RemovalRefusal, Worktree, WorktreeRemoval};

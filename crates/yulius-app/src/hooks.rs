@@ -31,21 +31,6 @@ const MAX_DECISION_FILES: usize = 200;
 /// Largest message digest injected into a turn.
 const MAX_DIGEST_BYTES: usize = 8 * 1024;
 
-fn read_bounded(path: &Path) -> Option<String> {
-    use std::io::Read;
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    if !meta.is_file() {
-        return None;
-    }
-    let mut text = String::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(MAX_DOC_BYTES)
-        .read_to_string(&mut text)
-        .ok()?;
-    Some(text)
-}
-
 /// Joins a repository-relative path, refusing absolute paths and `..` components.
 fn repo_path(root: &Path, relative: &str) -> Option<PathBuf> {
     let rel = Path::new(relative);
@@ -57,6 +42,48 @@ fn repo_path(root: &Path, relative: &str) -> Option<PathBuf> {
         return None;
     }
     Some(root.join(rel))
+}
+
+/// Reads `root/relative` as a document of the repository: a regular file (not a link) whose
+/// resolved path stays under `root`. Directories linked out of the repository are not followed,
+/// and on Linux the opened file's real path is checked again, so a link swapped in after the
+/// check cannot lead outside either (#70). These files are agent-written and read by the server
+/// outside containment for the briefing, `project_context` and the Stop gate.
+fn read_repo_doc(root: &Path, relative: &str) -> Option<String> {
+    use std::io::Read;
+    let path = repo_path(root, relative)?;
+    let canonical_root = std::fs::canonicalize(root).ok()?;
+    if !std::fs::symlink_metadata(&path).ok()?.is_file() {
+        return None;
+    }
+    let resolved = std::fs::canonicalize(&path).ok()?;
+    if !resolved.starts_with(&canonical_root) {
+        return None;
+    }
+    let file = std::fs::File::open(&resolved).ok()?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let real = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()?;
+        if !real.starts_with(&canonical_root) {
+            return None;
+        }
+    }
+    let mut text = String::new();
+    file.take(MAX_DOC_BYTES).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// Whether `root/relative` is a regular file of the repository (see [`read_repo_doc`]).
+fn repo_doc_exists(root: &Path, relative: &str) -> bool {
+    let Some(path) = repo_path(root, relative) else {
+        return false;
+    };
+    std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file())
+        && std::fs::canonicalize(root)
+            .ok()
+            .zip(std::fs::canonicalize(&path).ok())
+            .is_some_and(|(root, path)| path.starts_with(root))
 }
 
 fn digest(entries: &[InboxEntry]) -> String {
@@ -334,6 +361,10 @@ impl App {
             }
             self.set_task_activity(task, Activity::Waiting).await?;
             self.turn_ended(&task.id, ctx.attempt.account_id.clone());
+            // A clean stop of a finished task opens its pull request (#35).
+            let app = Arc::clone(self);
+            let task_id = task.id.clone();
+            tokio::spawn(async move { app.auto_open_pr(&task_id).await });
             return Ok(HookOutput::default());
         }
 
@@ -404,14 +435,14 @@ impl App {
         if !dirty && !ahead {
             return Ok(None);
         }
-        let Some(path) = repo_path(&worktree, spec_path) else {
+        if repo_path(&worktree, spec_path).is_none() {
             return Ok(Some(format!(
                 "The task spec path `{spec_path}` is not a repository path."
             )));
-        };
+        }
         let expected = task.id.clone();
         let spec_path = spec_path.clone();
-        tokio::task::spawn_blocking(move || match read_bounded(&path) {
+        tokio::task::spawn_blocking(move || match read_repo_doc(&worktree, &spec_path) {
             None => Some(format!(
                 "You changed code but the task spec `{spec_path}` does not exist. Create it in the Yulius format (frontmatter with `yulius-task: {expected}`, the required sections and a Plan checklist) before finishing."
             )),
@@ -440,12 +471,10 @@ impl App {
         else {
             return Ok(false);
         };
-        let Some(path) = repo_path(Path::new(worktree), spec_path) else {
-            return Ok(false);
-        };
+        let (root, rel) = (PathBuf::from(worktree), spec_path.clone());
         let expected = task.id.clone();
         let plan = tokio::task::spawn_blocking(move || {
-            read_bounded(&path).map(|text| validate_spec_for(&text, &expected).plan)
+            read_repo_doc(&root, &rel).map(|text| validate_spec_for(&text, &expected).plan)
         })
         .await
         .map_err(AppError::internal)?;
@@ -583,31 +612,33 @@ struct RepoDocs {
 
 impl RepoDocs {
     fn read(root: &Path) -> Self {
-        let toml = read_bounded(&root.join("yulius.toml"));
+        let toml = read_repo_doc(root, "yulius.toml");
         let layout = project_layout(toml.as_deref());
-        let doc = |rel: &str| repo_path(root, rel).and_then(|p| read_bounded(&p));
+        let doc = |rel: &str| read_repo_doc(root, rel);
         let product = doc(&layout.product).map(|t| t.chars().take(4_000).collect());
-        let architecture_present =
-            repo_path(root, &layout.architecture).is_some_and(|p| p.is_file());
+        let architecture_present = repo_doc_exists(root, &layout.architecture);
         let changes = doc(&layout.changes).map(|t| t.chars().take(4_000).collect());
         let (mut decision_file, mut decision_dir) = (None, Vec::new());
         match &layout.decisions {
             DecisionsLocation::File(rel) => decision_file = doc(rel.as_str()),
             DecisionsLocation::Directory(rel) => {
+                // The directory itself must be a real one inside the repository (#70).
                 if let Some(dir) = repo_path(root, rel.as_str())
-                    && let Ok(entries) = std::fs::read_dir(dir)
+                    && std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir())
+                    && std::fs::canonicalize(root)
+                        .ok()
+                        .zip(std::fs::canonicalize(&dir).ok())
+                        .is_some_and(|(root, dir)| dir.starts_with(root))
+                    && let Ok(entries) = std::fs::read_dir(&dir)
                 {
-                    let mut names: Vec<PathBuf> = entries
+                    let mut names: Vec<String> = entries
                         .filter_map(Result::ok)
-                        .map(|e| e.path())
-                        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+                        .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+                        .filter(|name| name.ends_with(".md"))
                         .collect();
                     names.sort();
-                    for path in names.into_iter().take(MAX_DECISION_FILES) {
-                        if let (Some(name), Some(text)) = (
-                            path.file_name().map(|n| n.to_string_lossy().into_owned()),
-                            read_bounded(&path),
-                        ) {
+                    for name in names.into_iter().take(MAX_DECISION_FILES) {
+                        if let Some(text) = read_repo_doc(root, &format!("{rel}/{name}")) {
                             decision_dir.push((name, text));
                         }
                     }
@@ -616,7 +647,7 @@ impl RepoDocs {
         }
         let instructions = [layout.agents.as_str(), "CLAUDE.md"]
             .iter()
-            .filter(|rel| repo_path(root, rel).is_some_and(|p| p.is_file()))
+            .filter(|rel| repo_doc_exists(root, rel))
             .map(|rel| (*rel).to_owned())
             .collect();
         Self {
@@ -648,8 +679,52 @@ impl RepoDocs {
 
 #[cfg(test)]
 mod tests {
-    use super::repo_path;
+    use super::{RepoDocs, repo_path};
     use std::path::Path;
+
+    /// #70: a document path through a linked directory never leaves the repository (the
+    /// briefing and `project_context` would hand the agent a host file otherwise).
+    #[test]
+    fn repo_docs_never_follow_linked_directories_out_of_the_repository()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().join("repo");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&root)?;
+        std::fs::create_dir_all(outside.join("decisions"))?;
+        std::fs::write(outside.join("secret.md"), "TOP SECRET")?;
+        std::fs::write(
+            outside.join("decisions/0001-secret.md"),
+            "# Secret decision",
+        )?;
+        std::os::unix::fs::symlink(&outside, root.join("x"))?;
+        std::fs::write(
+            root.join("yulius.toml"),
+            "[docs]\nproduct = \"x/secret.md\"\nchanges = \"x/secret.md\"\ndecisions = \"x/decisions\"\n",
+        )?;
+        let docs = RepoDocs::read(&root);
+        assert_eq!(
+            docs.product, None,
+            "product read through a linked directory"
+        );
+        assert_eq!(
+            docs.changes, None,
+            "changes read through a linked directory"
+        );
+        assert!(
+            docs.decision_dir.is_empty(),
+            "decisions listed through a link"
+        );
+        // A real document inside the repository is still read.
+        std::fs::create_dir_all(root.join("docs"))?;
+        std::fs::write(root.join("docs/product.md"), "# Product")?;
+        std::fs::write(
+            root.join("yulius.toml"),
+            "[docs]\nproduct = \"docs/product.md\"\n",
+        )?;
+        assert_eq!(RepoDocs::read(&root).product.as_deref(), Some("# Product"));
+        Ok(())
+    }
 
     #[test]
     fn repo_paths_stay_inside_the_root() {

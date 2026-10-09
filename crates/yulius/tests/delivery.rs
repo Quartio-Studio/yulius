@@ -19,15 +19,18 @@ use yulius_app::delivery::profile_to_contract;
 use yulius_app::delivery::runner::{CommandEnd, CommandSpec, OutputRing, run_bounded};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
-    AttemptRecord, GitHubTokenRecord, LaunchKind, SandboxRecord, Sealed, Secret, TaskOrigin,
-    TaskRecord, UserRecord,
+    AttemptRecord, GitHubTokenRecord, LaunchKind, SandboxRecord, Sealed, Secret, StepRecord,
+    TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort};
 use yulius_app::ports::github::ChecksState;
-use yulius_app::ports::store::{InstanceStore, SandboxStore, TaskStore, UserStore};
-use yulius_domain::delivery::DeliveryProfile;
+use yulius_app::ports::store::{
+    CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
+};
+use yulius_app::ports::store_ext::DeliveryStore;
+use yulius_domain::delivery::{DeliveryProfile, DeliveryStage};
 use yulius_domain::harness::Harness;
-use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
+use yulius_domain::ids::{AttemptId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::task::{AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
@@ -180,6 +183,29 @@ impl GitPort for RealGit {
             .await
             .map(drop)
     }
+    /// The production adapter: the review reads real Git output.
+    async fn review_changes(
+        &self,
+        worktree: &Path,
+        base: &str,
+    ) -> AppResult<yulius_app::ports::git::ReviewChanges> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .review_changes(worktree, base)
+            .await
+    }
+
+    async fn review_commits(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+        limit: u32,
+    ) -> AppResult<Vec<yulius_contracts::api::git::TaskCommit>> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .review_commits(repo, base, head, limit)
+            .await
+    }
+
     async fn diff_stat(&self, repo: &Path, base: &str, head: &str) -> AppResult<DiffStat> {
         let text = self
             .run(repo, &["diff", "--shortstat", &format!("{base}...{head}")])
@@ -704,6 +730,31 @@ fn product_with_deploy() -> Value {
     }})
 }
 
+/// Replaces a task's steps with one step per status.
+async fn set_steps(f: &Fixture, task: &str, statuses: &[&str]) -> BoxResult<()> {
+    let id = TaskId::parse(task)?;
+    let steps = statuses
+        .iter()
+        .enumerate()
+        .map(|(i, status)| {
+            Ok(StepRecord {
+                id: StepId::parse(&format!("{task}-step-{i}"))?,
+                task_id: id.clone(),
+                ordinal: u32::try_from(i)?,
+                title: format!("Step {i}"),
+                status: (*status).to_owned(),
+                note: None,
+                updated_by: None,
+                updated_at: None,
+            })
+        })
+        .collect::<BoxResult<Vec<_>>>()?;
+    f.h.store
+        .replace_steps(&id, &steps, "test", Timestamp(2))
+        .await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------- tests
 
 /// AC-DSC-2, AC-GIT-1: the PR is refused until the task has a valid committed spec, which is
@@ -818,7 +869,8 @@ async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
     assert_eq!(task["behind"], 0);
     assert_eq!(task["files_changed"], 2);
     assert_eq!(task["pr"]["number"], 1);
-    assert_eq!(task["pr"]["checks"], "none");
+    // The standard profile requires checks: none reported yet reads as pending (#68).
+    assert_eq!(task["pr"]["checks"], "pending");
     assert_eq!(page.body["pulls"].as_array().map(Vec::len), Some(1));
     assert_eq!(page.body["recent_commits"][0]["subject"], "Initial commit");
     assert_eq!(page.body["notes"], json!([]));
@@ -1731,5 +1783,158 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
         "{}",
         page.body
     );
+    Ok(())
+}
+
+/// #35: a task ready for delivery opens its pull request by itself — with its creator's GitHub
+/// account, after the branch is pushed — while open steps or uncommitted work keep it waiting;
+/// a merge on GitHub then moves the stage in the background without anyone reading the task.
+#[tokio::test]
+async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let t1 = TaskId::parse("t1")?;
+    let pulls_opened = || {
+        f.h.github
+            .writes()
+            .iter()
+            .filter(|w| w.starts_with("create_pull"))
+            .count()
+    };
+
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 0, "a step is still open");
+
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    std::fs::write(wt.join("scratch.txt"), "work in progress")?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 0, "uncommitted work");
+    std::fs::remove_file(wt.join("scratch.txt"))?;
+
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 1, "{:?}", f.h.github.writes());
+    let d = f.delivery("t1").await?;
+    assert_eq!(d["stage"], "pr_open");
+    assert_eq!(d["pr"]["base"], "dev");
+    assert_eq!(d["pr"]["head"], "feat/1-checkout-api");
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, head, "pushed first");
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 1, "one pull request per task");
+
+    // #68: commits made after the pull request opened are pushed to it at the next clean Stop.
+    commit_file(&wt, "follow-up.txt", "more", "Follow-up")?;
+    let follow_up = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/1-checkout-api")?,
+        follow_up,
+        "the open pull request gets the new commits"
+    );
+    assert_eq!(pulls_opened(), 1, "no second pull request");
+
+    // Merged on GitHub: the background round follows it; nobody read the task meanwhile.
+    yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        1,
+        "squash",
+        &follow_up,
+    )
+    .await?;
+    f.h.app.reconcile_deliveries().await;
+    let record = f.h.store.delivery(&t1).await?.ok_or("delivery row")?;
+    assert_eq!(record.stage, DeliveryStage::MergedIntegration);
+    // #68: the merged pull request stays on its task, so the task stays "Done · merged".
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    let row = &page.body["tasks"][0];
+    assert_eq!(row["pr"]["number"], 1, "{}", page.body);
+    assert_eq!(row["pr"]["state"], "merged");
+    Ok(())
+}
+
+/// #28 (UI-031): the task review reads the worktree's committed, uncommitted and untracked
+/// changes against the merge base with `origin/dev`, and the branch's commits, with read access;
+/// a symbolic link is listed but never followed.
+#[tokio::test]
+async fn task_review_shows_changes_and_commits() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello\nworld\n", "Add feature")?;
+    std::fs::write(wt.join("feature.txt"), "hello\nthere\nworld\n")?;
+    std::fs::write(wt.join("notes.md"), "draft\n")?;
+    std::os::unix::fs::symlink("/etc/passwd", wt.join("outside"))?;
+
+    let changes = f
+        .req(Method::GET, "/api/tasks/t1/changes", None, &f.rita)
+        .await?;
+    assert_eq!(changes.status, StatusCode::OK, "{}", changes.body);
+    let c = &changes.body;
+    assert_eq!(c["base"], "dev");
+    assert_eq!(c["head"], "feat/1-checkout-api");
+    assert_eq!(c["ahead"], 1);
+    assert_eq!(c["behind"], 0);
+    assert_eq!(c["uncommitted"], 3, "{c}");
+    assert_eq!(c["truncated"], false);
+    let files = c["files"].as_array().ok_or("files")?;
+    let file = |path: &str| files.iter().find(|f| f["path"] == path).cloned();
+    let feature = file("feature.txt").ok_or("feature.txt")?;
+    assert_eq!(feature["status"], "added", "new since the merge base");
+    let added: Vec<&str> = feature["hunks"][0]["lines"]
+        .as_array()
+        .ok_or("lines")?
+        .iter()
+        .filter(|l| l["kind"] == "add")
+        .filter_map(|l| l["text"].as_str())
+        .collect();
+    assert_eq!(
+        added,
+        ["hello", "there", "world"],
+        "uncommitted work included"
+    );
+    let notes = file("notes.md").ok_or("notes.md")?;
+    assert_eq!(notes["status"], "added");
+    assert_eq!(notes["hunks"][0]["lines"][0]["text"], "draft");
+    let link = file("outside").ok_or("outside")?;
+    assert!(
+        link["hunks"].as_array().is_some_and(Vec::is_empty),
+        "a symlink is not followed"
+    );
+    assert!(
+        !changes.body.to_string().contains("root:"),
+        "nothing outside the worktree"
+    );
+
+    let commits = f
+        .req(Method::GET, "/api/tasks/t1/commits", None, &f.rita)
+        .await?;
+    assert_eq!(commits.status, StatusCode::OK, "{}", commits.body);
+    let list = commits.body.as_array().ok_or("commits")?;
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["subject"], "Add feature");
+    assert_eq!(list[0]["files"], 1);
+    assert_eq!(list[0]["insertions"], 2);
+    assert!(list[0]["at"].as_str().is_some_and(|t| t.ends_with('Z')));
+
+    let anonymous = f
+        .req(
+            Method::GET,
+            "/api/tasks/t1/changes",
+            None,
+            &Creds::default(),
+        )
+        .await?;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
     Ok(())
 }

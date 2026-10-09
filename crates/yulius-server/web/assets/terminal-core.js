@@ -14,6 +14,12 @@ import { h, icon, setChildren } from './dom.js';
 import { terminalColors, onThemeChange, token, isPhone, px } from './theme.js';
 import { readJson } from './store.js';
 
+/** Font sizes a view may take to fit a terminal whose size someone else sets (#30). */
+const FIT_MIN_FONT = 8;
+const FIT_MAX_SCALE = 1.6;
+/** Wheel travel (px) of one notch sent to an app that scrolls itself, and the most notches per event. */
+const WHEEL_NOTCH_PX = 40;
+const WHEEL_MAX_NOTCHES = 10;
 
 /**
  * Create a terminal view. Options:
@@ -147,6 +153,29 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }, 120);
   });
   term.onData((data) => send(data));
+  // Claude Code draws full screen (the alternate buffer has no scrollback) and scrolls its own
+  // transcript with the mouse wheel. Text selection keeps the mouse from the app (mousefilter.js),
+  // so there only wheel turns go to the app, in its encoding; clicks still select. In the normal
+  // buffer xterm scrolls its own scrollback (#34).
+  let wheelRest = 0;
+  term.attachCustomWheelEventHandler((event) => {
+    if (!mouse.requested() || mouse.appMouse() || term.buffer.active.type !== 'alternate' || !state.can_write) return true;
+    // Pinch-zoom (ctrl+wheel) and horizontal swipes stay with the browser (#78).
+    if (event.ctrlKey || !event.deltaY) return true;
+    event.preventDefault();
+    const pixels = event.deltaMode === 1 ? event.deltaY * WHEEL_NOTCH_PX : event.deltaMode === 2 ? event.deltaY * term.rows * WHEEL_NOTCH_PX : event.deltaY;
+    wheelRest += pixels;
+    const notches = Math.trunc(wheelRest / WHEEL_NOTCH_PX);
+    if (!notches) return false;
+    wheelRest -= notches * WHEEL_NOTCH_PX;
+    const screen = host.querySelector('.xterm-screen') || host;
+    const box = screen.getBoundingClientRect();
+    const col = Math.min(term.cols, Math.max(1, 1 + Math.floor(((event.clientX - box.left) / Math.max(1, box.width)) * term.cols)));
+    const row = Math.min(term.rows, Math.max(1, 1 + Math.floor(((event.clientY - box.top) / Math.max(1, box.height)) * term.rows)));
+    // Scrolling is not typing: it takes neither control nor the terminal size (#78).
+    socket.sendInput(mouse.wheelReport(notches < 0, col, row).repeat(Math.min(Math.abs(notches), WHEEL_MAX_NOTCHES)), { scroll: true });
+    return false;
+  });
   term.onBinary((data) => send(data));
 
   function proposed() {
@@ -167,18 +196,37 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       if (state.cols && state.rows && (term.cols !== state.cols || term.rows !== state.rows)) term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
       return;
     }
+    const following = !(state.controller || exited || !state.cols || !state.rows);
+    // Back to this screen's own font before measuring what fits it.
+    if (!following && term.options.fontSize !== termSize()) term.options.fontSize = termSize();
     const fitted = proposed();
     // An ended session has no PTY to follow: fit it to this screen (a desktop-sized screen would
     // otherwise overflow a phone).
-    if (state.controller || exited || !state.cols || !state.rows) {
+    if (!following) {
       if (!fitted) return;
       if (term.cols !== fitted.cols || term.rows !== fitted.rows) term.resize(fitted.cols, fitted.rows);
       if (state.controller && !exited && (!lastSent || lastSent.cols !== fitted.cols || lastSent.rows !== fitted.rows)) {
         if (socket.resize(fitted.cols, fitted.rows)) lastSent = fitted;
       }
-    } else if (term.cols !== state.cols || term.rows !== state.rows) {
-      term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
+    } else {
+      if (term.cols !== state.cols || term.rows !== state.rows) term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
+      fitFontToWidth();
     }
+  }
+
+  // Someone else sets the terminal's size (#30): show their columns across this view's whole
+  // width instead of a narrower block with an empty band — by font size, not a CSS transform, so
+  // text selection and links keep their positions.
+  function fitFontToWidth() {
+    // How many columns this view holds at the current font, as the fit addon measures them.
+    const room = proposed();
+    if (!room || !room.cols || !state.cols) return;
+    const current = term.options.fontSize;
+    // Rows too: growing the font to the width alone could push the bottom rows (the agent's
+    // input box) out of view when the controller's window is taller (#78).
+    const scale = Math.min(room.cols / state.cols, room.rows && state.rows ? room.rows / state.rows : Infinity);
+    const next = Math.min(termSize() * FIT_MAX_SCALE, Math.max(FIT_MIN_FONT, Math.floor(current * scale * 4) / 4));
+    if (Math.abs(next - current) >= 0.25) term.options.fontSize = next;
   }
 
   function send(data) {
@@ -237,7 +285,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     } else if (conn === 'open' && !state.can_write) {
       rows.push(bannerRow('readonly', readOnlyLabel ? readOnlyLabel() : 'Read-only'));
     } else if (conn === 'open' && state.can_write && !state.controller && state.cols && !followServerSize) {
-      rows.push(bannerRow('info', 'Someone else controls this terminal; you see it at their size.', [{ label: 'Take control', run: () => { if (socket.takeControl()) { state = { ...state, controller: true }; lastSent = null; applySize(); render(); term.focus(); } } }]));
+      rows.push(bannerRow('info', 'Someone else controls this terminal’s size; it is fitted to your width.', [{ label: 'Take control', run: () => { if (socket.takeControl()) { state = { ...state, controller: true }; lastSent = null; applySize(); render(); term.focus(); } } }]));
     }
     setChildren(banner, rows);
     banner.hidden = rows.length === 0;

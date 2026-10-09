@@ -145,12 +145,15 @@ function seed(params) {
       model: 'claude-opus-4',
       effort: 'high',
       delivery: extra.delivery || null, // {stage, environment, pr} once delivery started
+      // Every account at its usage limit: when the earliest one resets (ROT-010).
+      resumes_at: status === 'waiting_capacity' ? new Date(Date.now() + 38 * MIN).toISOString() : null,
     };
   };
   const pr = (number, title, state, base, checks) => ({ number, url: `https://github.com/Quartio-Studio/${number > 400 ? 'product' : 'studio'}/pull/${number}`, title, state, base, head: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, checks });
   db.tasks = [
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, unread: 2, updated: 20e3 }),
-    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 2, author: 'anna-q' }),
+    // Finished its turn with a tested pull request (checks green): "Done" (#35).
+    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 2, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
     t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3 }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
@@ -177,7 +180,7 @@ function seed(params) {
   ];
   db.accounts = [
     { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', email: 'michal.karp@example.com', plan: 'Max 20x', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
-    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', email: 'team.dev@example.com', plan: 'Max 20x', enabled: true, priority: 2, status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: null, in_use_by: 3 },
+    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', email: 'team.dev@example.com', plan: 'Max 20x', enabled: true, priority: 2, status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: the provider is limiting usage requests for this account (HTTP 429); Yulius asks again in about 12 min', in_use_by: 3 },
     { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', email: 'ops@example.com', plan: 'Max 5x', enabled: true, priority: 3, status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
     { id: 'acc_x1', provider: 'anthropic', label: 'Claude #4', email: 'studio@example.com', plan: 'Max 5x', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
     { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', email: 'product@example.com', plan: 'Pro', enabled: true, priority: 2, status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
@@ -233,6 +236,7 @@ function summary(task) {
     status: task.status, activity: task.status === 'running' || task.status === 'waiting_capacity' ? task.activity : null,
     branch: task.branch, origin: task.origin, created_by: task.created_by, created_at: task.created_at, updated_at: task.updated_at,
     steps: stepsSummary(task), unread_messages: task.unread_messages, archived: task.archived, account_label: task.account_label,
+    resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
   };
 }
 
@@ -867,6 +871,85 @@ function skillCatalog(db, sid) {
   });
   return [...repo, ...db.skills.filter((sk) => sk.source !== 'repository')];
 }
+// A task's changes and commits (docs/api.md "Task changes", #28): synthetic but
+// consistent with the overview's counts, so the Git page's review shows believable diffs.
+const CHANGE_FILES = [
+  ['src/api/checkout.rs', 'rs'], ['src/domain/tax.rs', 'rs'], ['src/api/cart.rs', 'rs'], ['tests/checkout_test.rs', 'rs'],
+  ['web/src/pages/Checkout.tsx', 'tsx'], ['web/src/components/CartSummary.tsx', 'tsx'], ['web/src/api/client.ts', 'ts'],
+  ['docs/specs/checkout.md', 'md'], ['migrations/0007_tax_rules.sql', 'sql'], ['Cargo.toml', 'toml'], ['src/lib.rs', 'rs'],
+  ['web/src/styles/checkout.css', 'css'], ['.agents/skills/checkout/SKILL.md', 'md'], ['config/tax.yaml', 'yaml'],
+  ['src/domain/money.rs', 'rs'], ['web/src/hooks/useCart.ts', 'ts'], ['README.md', 'md'], ['src/api/mod.rs', 'rs'],
+  ['web/src/components/TaxBreakdown.tsx', 'tsx'], ['tests/tax_rules_test.rs', 'rs'], ['src/domain/discount.rs', 'rs'],
+  ['web/src/pages/Cart.tsx', 'tsx'], ['docs/adr/0012-tax-engine.md', 'md'],
+];
+const CODE = {
+  rs: ['use crate::domain::{Cart, Money};', 'pub fn cart_total(cart: &Cart, rules: &TaxRules) -> Result<Money, CheckoutError> {', '    let subtotal = cart.subtotal();', '    let tax = rules.tax_for(&cart.region)?;', '    let discount = cart.discount().unwrap_or_default();', '    Ok(subtotal + tax - discount)', '}', '', '#[derive(Debug, Clone, PartialEq)]', 'pub struct TaxLine { pub label: String, pub amount: Money }', 'impl TaxRules {', '    pub fn for_region(region: &Region) -> Option<&TaxRule> {', '        self.rules.iter().find(|rule| rule.applies_to(region))', '    }', '}', '#[test]', 'fn totals_include_tax() {', '    assert_eq!(cart_total(&cart(), &rules()).unwrap(), Money::eur(12_30));', '}'],
+  tsx: ['import { useCart } from "../hooks/useCart";', 'export function CartSummary({ cart }: Props) {', '  const { total, tax } = useCart(cart);', '  return (', '    <section className="cart-summary">', '      <TaxBreakdown lines={tax.lines} />', '      <p className="total">{format(total)}</p>', '    </section>', '  );', '}', '', "const format = (money: Money) => money.toLocaleString('en', { style: 'currency', currency: money.currency });"],
+  ts: ["export async function getCart(id: string): Promise<Cart> {", "  const res = await fetch(`/api/carts/${id}`);", "  if (!res.ok) throw new ApiError(res.status, await res.text());", '  return res.json();', '}', '', 'export type Cart = { id: string; lines: CartLine[]; region: string };'],
+  md: ['# Checkout', '', '## Goal', 'Customers see the tax for their region before they pay.', '', '## Plan', '- [x] Tax rules per region', '- [x] Cart totals with tax', '- [ ] Checkout page shows the breakdown', '', 'Totals are computed on the server; the page only formats them.'],
+  sql: ['CREATE TABLE tax_rules (', '  id BIGSERIAL PRIMARY KEY,', '  region TEXT NOT NULL,', '  rate_basis_points INTEGER NOT NULL,', '  valid_from DATE NOT NULL', ');', 'CREATE INDEX tax_rules_region ON tax_rules (region, valid_from);'],
+  toml: ['[dependencies]', 'rust_decimal = "1.36"', 'serde = { version = "1", features = ["derive"] }', 'thiserror = "2"'],
+  css: ['.cart-summary {', '  display: grid;', '  gap: 8px;', '}', '.cart-summary .total { font-weight: 600; }'],
+  yaml: ['regions:', '  - code: PL', '    rate: 23', '  - code: DE', '    rate: 19', '  - code: FR', '    rate: 20'],
+};
+function taskChanges(db, task) {
+  const sandbox = sandboxOf(db, task.sandbox_id);
+  const n = task.number;
+  const count = (n * 7) % 23 + 1;
+  let adds = (n * 131) % 900 + 12;
+  let dels = (n * 37) % 200;
+  const files = [];
+  for (let i = 0; i < count; i += 1) {
+    const [path, ext] = CHANGE_FILES[(i + n) % CHANGE_FILES.length];
+    const left = count - i;
+    const reserve = adds >= left ? left - 1 : 0; // every later file keeps at least one line when it can
+    const add = i === count - 1 ? Math.max(0, adds) : Math.max(adds >= left ? 1 : 0, Math.min(adds - reserve, Math.round(adds / left * (0.6 + ((i * 7 + n) % 9) / 10))));
+    const del = i === count - 1 ? dels : Math.min(dels, Math.round(dels / left * (((i * 5 + n) % 7) / 4)));
+    adds -= add;
+    dels -= del;
+    const status = del === 0 && i % 3 === 0 ? 'added' : 'modified';
+    const lines = CODE[ext] || CODE.ts;
+    const hunks = [];
+    let oldLine = status === 'added' ? 0 : 10 + ((i * 13) % 40);
+    let newLine = status === 'added' ? 1 : oldLine;
+    let a = add;
+    let d = del;
+    let k = i;
+    while (a > 0 || d > 0) {
+      const chunkA = Math.min(a, 6 + ((k * 3) % 14));
+      const chunkD = Math.min(d, (k * 2) % 5);
+      const body = [];
+      if (status !== 'added') for (let c = 0; c < 3; c += 1) body.push({ kind: 'ctx', old: oldLine + c, new: newLine + c, text: lines[(k + c) % lines.length] });
+      const oStart = oldLine;
+      const nStart = newLine;
+      if (status !== 'added') { oldLine += 3; newLine += 3; }
+      for (let c = 0; c < chunkD; c += 1) body.push({ kind: 'del', old: oldLine++, new: null, text: lines[(k + c + 5) % lines.length] });
+      for (let c = 0; c < chunkA; c += 1) body.push({ kind: 'add', old: null, new: newLine++, text: lines[(k + c + 2) % lines.length] });
+      const oldCount = body.filter((l) => l.kind !== 'add').length;
+      const newCount = body.filter((l) => l.kind !== 'del').length;
+      hunks.push({ header: `@@ -${oStart},${oldCount} +${nStart},${newCount} @@`, lines: body });
+      a -= chunkA;
+      d -= chunkD;
+      oldLine += 20 + (k % 30);
+      newLine += 20 + (k % 30);
+      k += 1;
+    }
+    files.push({ path, old_path: null, status, insertions: add, deletions: del, binary: false, hunks });
+  }
+  const profile = sandbox.profile || {};
+  return { base: profile.integration_branch || sandbox.default_branch, head: task.branch, base_sha: '2c9e41f07a1d', head_sha: `${(n * 2654435761 >>> 0).toString(16)}f00d`, ahead: (n * 3) % 11 + 1, behind: n % 3, uncommitted: n % 4 === 0 ? 2 : 0, files, truncated: false };
+}
+function taskCommits(task) {
+  const n = task.number;
+  const subjects = [`feat: ${task.title.toLowerCase()}`, 'test: cover the new rules', 'refactor: split the handler', 'docs: update the task spec', 'fix: rounding of tax lines', 'chore: format'];
+  const count = (n * 3) % 11 + 1;
+  return Array.from({ length: Math.min(count, 12) }, (_, i) => ({
+    sha: `${((n * 40503 + i * 2654435761) >>> 0).toString(16).padStart(8, '0')}${'ab12cd34ef56ab78cd90ef12ab34cd56'.slice(0, 32)}`,
+    subject: subjects[i % subjects.length], author: `task #${n} (claude)`, at: iso((i * 37 + 5) * MIN), files: (i * 3) % 7 + 1, insertions: (i * 41 + n) % 160 + 3, deletions: (i * 13 + n) % 40,
+  }));
+}
+route('GET', `/api/tasks/${ID}/changes`, ({ db, p }) => { const task = taskOf(db, p[0]); return task.branch ? taskChanges(db, task) : json(404, { error: { code: 'not_found', message: 'This task has no branch yet.' } }); });
+route('GET', `/api/tasks/${ID}/commits`, ({ db, p }) => { const task = taskOf(db, p[0]); return task.branch ? taskCommits(task) : []; });
 route('GET', `/api/sandboxes/${ID}/skills`, ({ db, p }) => { sandboxOf(db, p[0]); return skillCatalog(db, p[0]); });
 route('GET', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p }) => {
   const skill = skillCatalog(db, p[0]).find((s) => s.name === p[1]);
@@ -1340,6 +1423,13 @@ class TermSession {
     this.task = task;
     this.seq = 0;
     this.lines = [];
+    // Lines scrolled up from the bottom (the full-screen TUI scrolls its own transcript).
+    this.scroll = 0;
+    // ?othercols=N: another viewer controls the size at N columns (#30) until this one types or
+    // takes control, as on the server.
+    const otherCols = Number(new URLSearchParams(location.search).get('othercols'));
+    this.otherController = Number.isFinite(otherCols) && otherCols >= 20;
+    if (this.otherController) this.cols = Math.min(400, otherCols);
     this.input = '';
     this.viewers = new Set();
     this.cols = 120;
@@ -1414,10 +1504,13 @@ class TermSession {
 
   snapshot() {
     const bottom = this.regionBottom();
-    const visible = this.lines.slice(-bottom);
+    const end = this.lines.length - this.scroll;
+    const visible = this.lines.slice(Math.max(0, end - bottom), end);
     while (visible.length < bottom) visible.unshift(''); // bottom-align like a scrolled TUI
     const f = this.footer();
-    let out = `${E}?25l${E}2J${E}r${E}H`;
+    // Like Claude Code 2.1.292: full screen (alternate buffer) with mouse reporting, so the wheel
+    // scrolls the transcript inside the app (#34).
+    let out = `${E}?1049h${E}?1000h${E}?1006h${E}?25l${E}2J${E}r${E}H`;
     out += visible.join('\r\n');
     out += `${E}1;${bottom}r`;
     out += `${E}${bottom + 1};1H${f.sep}${E}${bottom + 2};1H${E}2K${f.prompt}${E}${bottom + 3};1H${f.sep}${E}${bottom + 4};1H${E}2K${f.status}${E}${bottom + 5};1H${E}2K${f.mode}`;
@@ -1438,6 +1531,12 @@ class TermSession {
   appendLine(line) {
     this.lines.push(line);
     if (this.lines.length > 400) this.lines.splice(0, this.lines.length - 400);
+    if (this.scroll) {
+      // New output while scrolled up: back to the bottom, as the real TUI does.
+      this.scroll = 0;
+      this.broadcast(this.snapshot());
+      return;
+    }
     const bottom = this.regionBottom();
     this.broadcast(`${E}?25l${E}${bottom};1H\r\n${line}${E}${bottom + 2};${3 + this.input.length}H${E}?25h`);
   }
@@ -1451,10 +1550,10 @@ class TermSession {
     return (RANK[this.sandbox().access] || 0) >= RANK.write && LIVE.has(this.task.status);
   }
 
-  // Like the server: every viewer with write access controls the size (controller = can_write).
+  // Like the server: a viewer with write access controls the size unless another one does.
   state(_ws) {
     const write = this.canWrite();
-    return JSON.stringify({ type: 'state', attempt_seq: 1, harness: this.task.harness, cols: this.cols, rows: this.rows, can_write: write, controller: write, status: this.task.status });
+    return JSON.stringify({ type: 'state', attempt_seq: 1, harness: this.task.harness, cols: this.cols, rows: this.rows, can_write: write, controller: write && !this.otherController, status: this.task.status });
   }
 
   sendStates() {
@@ -1468,12 +1567,12 @@ class TermSession {
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
       this.viewers.add(ws);
-      if (this.canWrite() && msg.cols && msg.rows) { this.cols = Math.max(20, Math.min(400, msg.cols)); this.rows = Math.max(8, Math.min(200, msg.rows)); }
+      if (this.canWrite() && !this.otherController && msg.cols && msg.rows) { this.cols = Math.max(20, Math.min(400, msg.cols)); this.rows = Math.max(8, Math.min(200, msg.rows)); }
       ws.push(this.state(ws));
       this.sendSnapshot(ws);
       this.ensureTicking();
     } else if (msg.type === 'resize') {
-      if (!this.canWrite()) return;
+      if (!this.canWrite() || this.otherController) return;
       const cols = Math.max(20, Math.min(400, msg.cols));
       const rows = Math.max(8, Math.min(200, msg.rows));
       if (cols === this.cols && rows === this.rows) return;
@@ -1482,9 +1581,11 @@ class TermSession {
       this.seq += 1;
       for (const viewer of this.viewers) { viewer.push(this.state(viewer)); viewer.push(terminalFrame(2, this.seq, this.snapshot())); }
     } else if (msg.type === 'take_control') {
+      this.otherController = false;
       ws.push(this.state(ws));
     } else if (msg.type === 'input') {
       if (!this.canWrite()) { ws.push(JSON.stringify({ type: 'error', code: 'forbidden', message: 'Input requires write access to the repository.' })); return; }
+      if (this.otherController) { this.otherController = false; this.sendStates(); } // the typist controls
       this.onInput(String(msg.data || ''));
     }
   }
@@ -1494,8 +1595,19 @@ class TermSession {
     if (this.viewers.size === 0) this.stopTicking();
   }
 
+  /** A wheel turn (SGR button 64 up, 65 down) scrolls the transcript by three lines. */
+  wheel(button) {
+    const most = Math.max(0, this.lines.length - this.regionBottom());
+    const next = Math.min(most, Math.max(0, this.scroll + (button === 64 ? 3 : button === 65 ? -3 : 0)));
+    if (next === this.scroll) return;
+    this.scroll = next;
+    this.broadcast(this.snapshot());
+  }
+
   onInput(data) {
-    for (const ch of data.replace(/\x1b\[[AB]/g, '')) {
+    // Mouse reports (the viewer's wheel) are not typed text.
+    const typed = data.replace(/\x1b\[<(\d+);\d+;\d+[Mm]/g, (_, button) => { this.wheel(Number(button)); return ''; });
+    for (const ch of typed.replace(/\x1b\[[AB]/g, '')) {
       if (ch === '\r' || ch === '\n') this.submit();
       else if (ch === '\x7f' || ch === '\b') { this.input = this.input.slice(0, -1); this.redrawPrompt(); }
       else if (ch === '\x03') { this.input = ''; this.redrawPrompt(); this.appendLine(dim('Interrupted by user')); }

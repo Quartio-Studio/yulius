@@ -42,13 +42,18 @@ const INHERITED_ENV: &[&str] = &[
 ];
 
 /// Hardening configuration applied to every command. Constant; never derived from input.
-/// `protocol.ext.allow=never` blocks `ext::` transports that run arbitrary commands and
-/// `core.fsmonitor=false` stops repository configuration from launching a monitor daemon.
+/// `protocol.ext.allow=never` blocks `ext::` transports that run arbitrary commands,
+/// `core.fsmonitor=false` stops repository configuration from launching a monitor daemon, and
+/// `core.hooksPath=/dev/null` keeps repository hooks from running: the sandbox repository's Git
+/// directory is writable by its agents, and these commands run outside containment (#54). The
+/// agents' own Git, inside containment, still runs hooks, so the pre-push guard applies to them.
 const FIXED_CONFIG: &[&str] = &[
     "-c",
     "protocol.ext.allow=never",
     "-c",
     "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
 ];
 
 /// Captured result of a finished command.

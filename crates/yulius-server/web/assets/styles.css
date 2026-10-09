@@ -323,6 +323,7 @@ p { margin: 0; }
   background: var(--surface-2); color: var(--text-2); font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; text-align: left;
 }
 .task-group-head.group-needs .nav-slot, .task-group-head.group-needs .task-group-count { color: var(--warn-fg); }
+.task-group-head.group-done .nav-slot { color: var(--ok-fg); }
 button.task-group-head { cursor: pointer; border-radius: var(--radius); }
 button.task-group-head:hover { color: var(--text); }
 .task-group-count { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; }
@@ -374,6 +375,7 @@ button.task-group-head:hover { color: var(--text); }
 .glyph { display: inline-flex; align-items: center; justify-content: center; width: 14px; font-size: var(--fs-sm); font-weight: 600; line-height: 1; }
 .tone-working, .tone-running { color: var(--ok); }
 .tone-running { opacity: 0.75; }
+.tone-done { color: var(--ok); } /* finished with a tested pull request (#35) */
 .tone-waiting { color: var(--info); } /* "your turn": the info hue, apart from brand, warning and error */
 .tone-attention { color: var(--warn); }
 .tone-switching { color: var(--violet); }
@@ -513,6 +515,8 @@ body.resizing iframe { pointer-events: none; }
 .card .account-card .account-head, .card .account-card .account-body { padding-left: 0; padding-right: 0; }
 .account-error { display: flex; align-items: flex-start; gap: 6px; color: var(--danger-fg); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .account-error .icon { flex: none; margin-top: 2px; }
+.account-note { display: flex; align-items: flex-start; gap: 6px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.account-note .icon { flex: none; margin-top: 2px; }
 .usage-row { display: grid; grid-template-columns: minmax(132px, 1fr) minmax(64px, 1.3fr) 72px; align-items: center; gap: 12px; }
 .usage-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text); }
 .usage-reset { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
@@ -1475,7 +1479,10 @@ a.dl-task:hover { text-decoration: underline; }
 .bp-tab.attention { background: var(--warn-soft); color: var(--warn-fg-strong); animation: pulse var(--duration-pulse) ease-in-out infinite; }
 .bp-tab.attention.active { animation: none; border-bottom-color: var(--warn); }
 .bp-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bp-tab .btn-icon { width: var(--control-sm); height: var(--control-sm); }
+.bp-tablist { display: flex; align-items: stretch; flex: none; }
+.bp-tab:focus-visible { box-shadow: var(--focus-inset); }
+.bp-tab-close { display: inline-flex; align-items: center; justify-content: center; width: var(--control-sm); height: var(--control-sm); border-radius: var(--radius); color: var(--text-2); flex: none; }
+.bp-tab-close:hover { background: var(--surface-3); color: var(--text); }
 .bp-bar { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-bottom: 1px solid var(--border); flex: none; }
 .bp-bar .input { height: var(--control-md); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .bp-attn { margin: 6px; }
@@ -1614,7 +1621,8 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-tabs { display: flex; overflow-x: auto; flex: none; background: var(--surface); border-bottom: 1px solid var(--border); min-height: var(--control-lg); }
 .ed-tab { display: flex; align-items: center; gap: 6px; padding: 0 4px 0 12px; height: var(--control-lg); border-right: 1px solid var(--border); font-size: var(--fs); line-height: var(--lh); cursor: pointer; color: var(--muted); white-space: nowrap; }
 .ed-tab.active { background: var(--term-bg); color: var(--text); box-shadow: inset 0 1px 0 var(--accent); }
-.ed-tab-close { border: 0; background: none; color: inherit; width: var(--control-sm); height: var(--control-sm); border-radius: var(--radius-sm); cursor: pointer; font-size: var(--fs); line-height: 1; }
+.ed-tab:focus-visible { box-shadow: var(--focus-inset); }
+.ed-tab-close { display: inline-flex; align-items: center; justify-content: center; color: inherit; width: var(--control-sm); height: var(--control-sm); border-radius: var(--radius-sm); cursor: pointer; font-size: var(--fs); line-height: 1; }
 .ed-tab-close:hover { background: var(--overlay-active); }
 .ed-stage { position: relative; flex: 1; min-height: 0; }
 .ed-host { position: absolute; inset: 0; }

@@ -197,9 +197,64 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 24 | (2026-10-08, `F 2026-10-08 UI`) Nothing is visible on the Git page; what information should it give me? | UI-025 |
 | 25 | (2026-10-08, `F 2026-10-08 UI`) Prepare the UI and UX technically to best practice and the state of the art (audit wave 2: say what the agent needs; wave 3: technical review fixes and gaps). | UI-026, UI-027, UI-028, UI-029, UI-030, UI-031, UI-032, UI-033, HRN-005, UI-034, UI-035, UI-036, UI-037, UI-038, UI-039, UI-040, UI-041 |
 | 26 | (2026-10-09, `F 2026-10-09`) Signed in as superadmin, admitted themself, signed out and signed in with GitHub in the same window: a raw "not admitted" error, then "sign-in expired" on reload. Make it work in the same window; it will be a very frequent case. (GitHub had signed the browser's current GitHub account in, not the admitted one.) | ACC-004 (changed), AC-ACC-3 |
+| 27 | (2026-10-09, `F 2026-10-09`) Claude Code hit the usage limit ("You've hit your session limit · resets 10:20am"), yet the sidebar still showed the conversation as in progress; an edge case we had not foreseen. (Claude Code 2.1.292 words the limit differently; its record carries `apiError: "usage_limit_reached"` and `resetsAt`.) | ROT-010 (changed), AC-ROT-6 |
+| 28 | (2026-10-09, `F 2026-10-09`) Automatic routing does not work: with two accounts used up and one working, a new task goes to an exhausted account. (Yulius knew nothing about the accounts: no usage, and the limit hits were not recognised.) | ROT-003 (changed), AC-ROT-2 |
+| 29 | (2026-10-09, `F 2026-10-09`) Account statuses do not work, neither in Status nor in Settings ("usage: the provider answered HTTP 429", "Not known yet"). | ROT-009 (changed), AC-ROT-7 |
+| 30 | (2026-10-09, `F 2026-10-09`) Dashboard tokens do not update in real time. (Run metrics were written only when a run ended; active agent time was never measured.) | ANL-001 (changed), AC-ANL-1 |
+| 31 | (2026-10-09, `F 2026-10-09`) The chats cannot be scrolled up in any case. (Claude Code 2.1.292 draws full screen and scrolls with the mouse wheel itself; Yulius kept the mouse for text selection, so the wheel reached nothing.) | UI-019 (changed), AC-UI-11 |
+| 32 | (2026-10-09, `F 2026-10-09`) The system does not show who did what: the Tasks list's By column is empty. (Your own rows hid the author, against UI-024/UI-032.) | UI-024, UI-032 (fix) |
+| 33 | (2026-10-09, `F 2026-10-09`) When everything is ready for a pull request it should happen by itself; the task's icon should become the PR icon with its status, as in the preview; the Git board should move tasks on by itself; a task is done when its PR is created, tested and everything works, and the sidebar must say Done. (The agent had no way to open the PR and its briefing told it to ask; stages were reconciled only when a task was read.) | GIT-001 (changed), AC-GIT-1 |
+| 34 | (2026-10-09, `F 2026-10-09`) The Git tab shows no commits and branch changes per task; it should be as in the preview. (The server had no task changes/commits API; the UI fell back to the Branch tab.) | UI-031 (changed), AC-UI-24 |
+| 35 | (2026-10-09, `F 2026-10-09`) Sometimes the task view breaks and is cut on the right. (Another viewer controlled the terminal's size; this view showed it at their narrower size with an empty band.) | UI-019 (changed), AC-UI-11 |
+| 36 | (2026-10-09, `F 2026-10-09`) Typing in a task is noticeably slower than in the OpenAI or Claude web apps; optimise it so it feels great. (Each echo is a round trip through the agent's TUI; the server sent small frames behind Nagle's algorithm. First step: `TCP_NODELAY`; a local composer is proposed on #29.) | SPEC-002 §7.7 |
+| 37 | (2026-10-09, hardening) Every agent session showed "Auto-update failed": Claude Code's self-updater ran inside contained sessions. | SPEC-002 §7 launch contract |
+| 38 | (2026-10-09, hardening; seen on the instance) An agent answered a person's message, but its reply went out as a broadcast with 0 recipients: `message_send` could not address people. | COM-005 (changed), AC-COM-2 |
+| 39 | (2026-10-09, hardening; axe sweep of the mock UI) The browser and editor tab strips nested a Close button in each tab and held a non-tab in the tablist (critical); editor tabs could not be reached from the keyboard; the task preview's sessions table could not be scrolled from the keyboard. | BRW-004, EDT-001, UI-029, UI-031; web/README.md (WCAG) |
+| 40 | (2026-10-09, hardening; spec-to-test review) The briefing told agents to use `scope_claim`, `scope_release`, `scopes_list`, `spec_check` and `project_context`, but the Yulius MCP served none of them; AC-COM-3 had no implementation. | COM-003, COM-004, DSC-003, DSC-009; SPEC-002 §7.4 |
+| 41 | (2026-10-09, hardening; spec-to-test review) Continuing a closed task (AC-TSK-7), a manual account switch keeping model and effort (AC-ROT-5) and invisible-sandbox 404s on task and tool routes (AC-ACC-4) had no test. | AC-TSK-7, AC-ROT-5, AC-ACC-4 |
+| 42 | (2026-10-09, hardening; code review) The server's own Git ran repository hooks (and honors repository config) in Git directories the sandbox's agents can write, outside containment; only the environment checkout disabled hooks. | SPEC-002 R-13 (new), R-09 |
+| 43 | (2026-10-09, hardening; seen on the instance) No security headers on the UI or the API: any site could frame the signed-in app (clickjacking), no `nosniff`, no referrer policy. | SPEC-002 §8 security; docs/operations.md |
+| 44 | (2026-10-09, hardening; code review) A symbolic link to `.git` inside the editor's folder opened the Git directory to the file API despite the `.git` refusal. | ADR-10, SPEC-002 §8, AC-EDT-2 |
+| 45 | (2026-10-09, hardening; code review) The GitHub sign-in return path accepted backslash and control-character forms that browsers turn into another host: an open redirect right after sign-in. | ACC-003, AC-ACC-3 |
+| 46 | (2026-10-09, hardening; spec-to-test review) No test checked that creating a task installs the push guard, that supervisor status transitions reach the UI, or that feedback is read back per user. | AC-DSC-5, AC-UI-3, AC-ANL-2 |
+| 47 | (2026-10-09, hardening; code review) Open WebSockets outlived logout, disabling and revoked access: the event stream cached sandbox visibility for its lifetime and no socket re-checked the session. | ACC-008, AC-ACC-5, AC-ACC-3 |
+| 48 | (2026-10-09, hardening; self-review of #40/#41) A task waiting for approval showed Done; a merged PR fell back to "Your turn"; required checks not yet reported counted as tested; commits after the PR opened were never pushed and a failed push never retried; diff counts were wrong past the review budget; untracked files were unbounded; merged deliveries were re-read forever. | GIT-001, UI-024, UI-031, AC-UI-24 |
+| 49 | (2026-10-09, hardening; code review, reproduced) Briefing, `project_context` and Stop-gate document paths followed directory links out of the worktree, so a contained agent could read host files through the server. | SPEC-002 §8 containment, COM-004, DSC-003 |
+| 50 | (2026-10-09, hardening; self-review of #32, reproduced) A failed usage refresh wrote back the account as read at the start of the round, undoing a limit a running task observed meanwhile, so routing used the exhausted account again. | ROT-003, ROT-009, AC-ROT-2 |
+| 51 | (2026-10-09, hardening; self-review of #53, reproduced) A repeated scope claim messaged and woke the overlapping task every time; a malformed scope_release freed every claim; claims per task were unbounded. | COM-003, AC-COM-3 |
+| 52 | (2026-10-09, hardening; goal item c) Parsers fed by untrusted input had hand-written cases only; randomized tests (no defect found) now cover the diff parser, the spec format, scope patterns, the transcript observer and usage JSON. | AC-UI-24, DSC-003, COM-003, ROT-009 |
+| 53 | (2026-10-09, hardening; self-review of #37/#42, reproduced) Viewers who opened a task after a full-screen app started could not wheel-scroll it (snapshot without alternate screen and mouse modes); a wheel turn took control and resized the terminal; fitted text could lose its bottom rows. | UI-019, AC-UI-11, TSK-006 |
+| 54 | (2026-10-09, hardening; self-review of #51, reproduced) Closing an editor tab with Delete moved focus into the next file, so the next Delete edited it; held keys repeated; focus was lost after some closes; a clicked browser tab could keep focus while its page loaded. | EDT-001, BRW-004, UI-029 |
 
 ## Changelog
 
+- 2026-10-09: tab keys keep focus on the strip and ignore key repeat (§6 item 54, hardening).
+- 2026-10-09: terminal follow-ups: full snapshot for late viewers, scrolling without taking control, fit by rows too (§6 item 53, hardening).
+- 2026-10-09: randomized parser tests (§6 item 52, hardening).
+- 2026-10-09: scope claims: no repeated messages, strict release, at most 50 per task (§6 item 51, hardening).
+- 2026-10-09: a failed usage refresh records only its error (§6 item 50, hardening).
+- 2026-10-09: repository documents are read only inside the worktree (§6 item 49, hardening).
+- 2026-10-09: follow-ups to the automatic pull request and the task review (§6 item 48, hardening).
+- 2026-10-09: open sockets re-check the session and the event stream re-checks visibility (§6 item 47, hardening).
+- 2026-10-09: tests for the task push guard, status events and feedback readback (§6 item 46, hardening).
+- 2026-10-09: the sign-in return path stays on the site (§6 item 45, hardening).
+- 2026-10-09: the file API refuses paths that resolve into `.git` (§6 item 44, hardening).
+- 2026-10-09: baseline security headers on every public response (§6 item 43, hardening).
+- 2026-10-09: server-side Git ignores repository hooks (§6 item 42, hardening; config is #54 part B).
+- 2026-10-09: tests for continue, manual switch and invisible-sandbox access (§6 item 41, hardening).
+- 2026-10-09: the announced scope, spec-check and project-context tools are served (§6 item 40, hardening).
+- 2026-10-09: accessible browser and editor tabs, focusable sessions table (§6 item 39, hardening).
+- 2026-10-09: agents answer people (§6 item 38, hardening).
+- 2026-10-09: Claude Code's self-updater off in agent sessions (§6 item 37, hardening).
+- 2026-10-09: typing latency, first step (§6 item 36).
+- 2026-10-09: a terminal sized by another viewer fitted to the width (§6 item 35).
+- 2026-10-09: the task review's changes and commits served (§6 item 34).
+- 2026-10-09: automatic pull requests and a self-moving Git board (§6 item 33).
+- 2026-10-09: the By column on every Tasks row (§6 item 32).
+- 2026-10-09: terminal scrolling from feedback on the deployed instance (§6 item 31).
+- 2026-10-09: live run metrics from feedback on the deployed instance (§6 item 30).
+- 2026-10-09: routing past limited accounts and account usage from feedback on the deployed instance (§6 items 28–29).
+- 2026-10-09: the usage-limit status from feedback on the deployed instance (§6 item 27).
 - 2026-10-09: the sign-in refusal flow from feedback on the deployed instance (§6 item 26).
 - 2026-10-08: the notification center, the composer, the Status panel and Settings from the UI review (§6 items 18–21).
 - 2026-10-08: the Claude-only decision (§6 item 17).

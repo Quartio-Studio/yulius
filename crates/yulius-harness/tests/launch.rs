@@ -120,6 +120,7 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
                 "/data/sandboxes/s1/home/.claude".to_owned()
             ),
             ("YULIUS_URL".to_owned(), "http://127.0.0.1:7801".to_owned()),
+            ("DISABLE_AUTOUPDATER".to_owned(), "1".to_owned()),
         ]
     );
     assert_eq!(

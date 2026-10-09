@@ -28,7 +28,8 @@
 //!
 //! With `--transcript`, each echoed turn appends JSONL records shaped like Claude Code
 //! (`--transcript-kind claude`, the only kind). `--limit-after N` prints
-//! `LIMIT REACHED` and appends a usage-limit record after N turns; later turns only repeat
+//! `LIMIT REACHED` and appends a usage-limit record after N turns, shaped like Claude Code
+//! 2.1.292's (`apiError: "usage_limit_reached"`, `resetsAt` one hour ahead); later turns only repeat
 //! `LIMIT REACHED`. `--report-env NAME` prints `ENV NAME=set len=<n>` or `ENV NAME=unset` (never
 //! the value).
 
@@ -265,13 +266,19 @@ impl Transcript {
         let mut record = self.claude_envelope("assistant", &uuid, &timestamp);
         record["isApiErrorMessage"] = json!(true);
         record["error"] = json!("rate_limit");
+        record["apiError"] = json!("usage_limit_reached");
+        record["apiErrorStatus"] = json!(429);
+        let info =
+            json!({"status": "rejected", "resetsAt": resets_at, "rateLimitType": "five_hour"});
+        record["apiErrorParams"] = json!({"rate_limit_info": info.clone()});
+        record["quotaLimits"] = info;
         record["message"] = json!({
             "id": format!("msg_fake_limit_{}", self.turns),
             "type": "message",
             "role": "assistant",
             "model": "<synthetic>",
             "content": [{"type": "text",
-                "text": format!("Claude AI usage limit reached|{resets_at}")}],
+                "text": "You've hit your session limit · resets in 1 hour"}],
             "stop_reason": "stop_sequence",
             "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
                 "cache_read_input_tokens": 0, "output_tokens": 0}

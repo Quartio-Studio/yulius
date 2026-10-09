@@ -11,9 +11,14 @@ use support::{Creds, TestResult, call, harness};
 use yulius_app::model::{
     AttemptRecord, LaunchKind, SandboxRecord, Sealed, TaskOrigin, TaskRecord, UserRecord,
 };
-use yulius_app::ports::store::{AttemptUpdate, SandboxStore, TaskStore, UserStore};
+use yulius_app::ports::store::{
+    AttemptUpdate, CoordinationStore, SandboxStore, TaskFieldUpdate, TaskStore, UserStore,
+};
+use yulius_contracts::events::UiEvent;
+use yulius_domain::cron::CivilDate;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
+use yulius_domain::spec_format::spec_template;
 use yulius_domain::task::{AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
 
@@ -179,6 +184,15 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
         .filter_map(|t| t["name"].as_str())
         .collect();
     assert!(names.contains(&"message_send") && names.contains(&"steps_set"));
+    for announced in [
+        "project_context",
+        "scope_claim",
+        "scope_release",
+        "scopes_list",
+        "spec_check",
+    ] {
+        assert!(names.contains(&announced), "#50: `{announced}` is served");
+    }
 
     // A task sees the parallel task (COM-001).
     let (tasks, err) = tool(
@@ -216,6 +230,227 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     )
     .await?;
     assert!(err, "cannot message yourself: {selfmsg}");
+
+    // #46: an answer to the people (a reply to a person's message) is shown in the task's thread
+    // and published to the UI; no task receives it.
+    let mut events = h.app.events.subscribe();
+    let (answer, err) = tool(
+        &internal,
+        "tok-claude",
+        "message_send",
+        json!({"to": "people", "body": "The app is up on port 20000"}),
+    )
+    .await?;
+    assert!(!err, "{answer}");
+    assert_eq!(answer["to"], "people");
+    let thread = h
+        .store
+        .task_messages(&TaskId::parse("claude1")?, 50)
+        .await?;
+    assert!(
+        thread
+            .iter()
+            .any(|e| e.message.body == "The app is up on port 20000" && e.message.to_task.is_none()),
+        "shown in the task's Messages"
+    );
+    let published = events.try_recv()?;
+    match published.event {
+        UiEvent::Message { task_id, message } => {
+            assert_eq!(task_id, "claude1");
+            assert_eq!(message.body, "The app is up on port 20000");
+        }
+        other => return Err(format!("unexpected event {other:?}").into()),
+    }
+    let (others, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
+    assert_eq!(
+        others["messages"].as_array().map(Vec::len),
+        Some(0),
+        "no task receives an answer to people"
+    );
+
+    // Scope claims (COM-003, AC-COM-3, #50): overlaps are reported to both tasks.
+    let (claimed, err) = tool(
+        &internal,
+        "tok-claude",
+        "scope_claim",
+        json!({"patterns": ["src/api/", "docs/x.md", "src/api/"], "note": "API work"}),
+    )
+    .await?;
+    assert!(!err, "{claimed}");
+    assert_eq!(claimed["claimed"], json!(["src/api/**", "docs/x.md"]));
+    assert_eq!(claimed["conflicts"], json!([]));
+    let (overlap, err) = tool(
+        &internal,
+        "tok-other",
+        "scope_claim",
+        json!({"pattern": "src/**/*.rs"}),
+    )
+    .await?;
+    assert!(!err, "{overlap}");
+    assert_eq!(overlap["conflicts"].as_array().map(Vec::len), Some(1));
+    assert_eq!(overlap["conflicts"][0]["pattern"], "src/**/*.rs");
+    assert_eq!(overlap["conflicts"][0]["their_pattern"], "src/api/**");
+    assert_eq!(overlap["conflicts"][0]["their_note"], "API work");
+    let (told, _) = tool(&internal, "tok-claude", "messages_inbox", json!({})).await?;
+    let told = told["messages"].as_array().ok_or("messages")?;
+    assert!(
+        told.iter().any(|m| m["kind"] == "scope"
+            && m["body"]
+                .as_str()
+                .is_some_and(|b| b.contains("`src/**/*.rs` overlaps your claim `src/api/**`"))),
+        "the other task is told: {told:?}"
+    );
+    let (listed, _) = tool(&internal, "tok-other", "scopes_list", json!({})).await?;
+    let claims = listed["claims"].as_array().ok_or("claims")?;
+    assert_eq!(claims.len(), 3, "a repeated pattern is claimed once");
+    assert!(
+        claims
+            .iter()
+            .any(|c| c["pattern"] == "src/**/*.rs" && c["mine"] == true)
+    );
+    assert_eq!(listed["conflicts"].as_array().map(Vec::len), Some(1));
+    for bad in ["/etc/passwd", "../x", "src//a"] {
+        let (refused, err) = tool(
+            &internal,
+            "tok-claude",
+            "scope_claim",
+            json!({"pattern": bad}),
+        )
+        .await?;
+        assert!(err, "{bad} is refused: {refused}");
+    }
+    let (released, _) = tool(
+        &internal,
+        "tok-claude",
+        "scope_release",
+        json!({"pattern": "src/api/"}),
+    )
+    .await?;
+    assert_eq!(released["released"], 1);
+    let (after, _) = tool(&internal, "tok-other", "scopes_list", json!({})).await?;
+    assert_eq!(after["conflicts"].as_array().map(Vec::len), Some(0));
+
+    // #73: claiming a pattern the task already holds tells nobody again; a malformed release
+    // is refused instead of releasing every claim; claims per task are bounded.
+    let (_, err) = tool(
+        &internal,
+        "tok-claude",
+        "scope_claim",
+        json!({"pattern": "src/**/*.rs"}),
+    )
+    .await?;
+    assert!(!err);
+    let (_, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
+    let (again, err) = tool(
+        &internal,
+        "tok-claude",
+        "scope_claim",
+        json!({"pattern": "src/**/*.rs"}),
+    )
+    .await?;
+    assert!(!err, "{again}");
+    let (quiet, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
+    assert_eq!(
+        quiet["messages"].as_array().map(Vec::len),
+        Some(0),
+        "a repeated claim does not message the other task again: {quiet}"
+    );
+    // `patterns` releases exactly those claims; a malformed release is refused, not "all".
+    let (partial, err) = tool(
+        &internal,
+        "tok-claude",
+        "scope_release",
+        json!({"patterns": ["docs/x.md"]}),
+    )
+    .await?;
+    assert!(!err, "{partial}");
+    assert_eq!(partial["released"], 1, "only the named claim: {partial}");
+    let (refused, err) = tool(
+        &internal,
+        "tok-claude",
+        "scope_release",
+        json!({"pattern": ["src/**/*.rs"]}),
+    )
+    .await?;
+    assert!(err, "a malformed release is refused: {refused}");
+    let (still, _) = tool(&internal, "tok-claude", "scopes_list", json!({})).await?;
+    assert!(
+        still["claims"]
+            .as_array()
+            .ok_or("claims")?
+            .iter()
+            .any(|c| c["pattern"] == "src/**/*.rs" && c["mine"] == true),
+        "the other claim was kept: {still}"
+    );
+    let mut capped = false;
+    for batch in 0..4 {
+        let patterns: Vec<String> = (0..20).map(|i| format!("cap/{batch}/{i}.txt")).collect();
+        let (_, err) = tool(
+            &internal,
+            "tok-claude",
+            "scope_claim",
+            json!({"patterns": patterns}),
+        )
+        .await?;
+        if err {
+            capped = true;
+            break;
+        }
+    }
+    assert!(capped, "claims per task are bounded");
+
+    // spec_check runs the Stop gate's validator (DSC-003); project_context rebuilds the briefing.
+    let (no_tree, err) = tool(&internal, "tok-claude", "spec_check", json!({})).await?;
+    assert!(!err, "{no_tree}");
+    assert_eq!(no_tree["spec"]["valid"], false);
+    let worktree = h._dir.path().join("wt-claude2");
+    std::fs::create_dir_all(worktree.join("docs/specs"))?;
+    let date = CivilDate::new(2026, 10, 9).ok_or("date")?;
+    std::fs::write(
+        worktree.join("docs/specs/split.md"),
+        spec_template("Split work", &TaskId::parse("claude2")?, date),
+    )?;
+    h.store
+        .update_task(
+            &TaskId::parse("claude2")?,
+            &TaskFieldUpdate {
+                worktree_path: Some(worktree.to_string_lossy().into_owned()),
+                spec_path: Some("docs/specs/split.md".into()),
+                ..TaskFieldUpdate::default()
+            },
+            Timestamp(10),
+        )
+        .await?;
+    let (checked, err) = tool(&internal, "tok-other", "spec_check", json!({})).await?;
+    assert!(!err, "{checked}");
+    assert_eq!(checked["spec"]["path"], "docs/specs/split.md");
+    assert_eq!(checked["spec"]["valid"], false);
+    assert!(
+        checked["spec"]["problems"].as_array().is_some_and(|p| p
+            .iter()
+            .any(|x| x == "Section '## Goal' (line 10) is empty.")),
+        "{checked}"
+    );
+    assert!(
+        checked["spec"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("does not satisfy the Yulius format")),
+        "{checked}"
+    );
+    assert!(
+        checked["docs"]["problems"]
+            .as_array()
+            .is_some_and(|p| !p.is_empty()),
+        "a checkout without project docs is reported: {checked}"
+    );
+    let (context, err) = tool(&internal, "tok-claude", "project_context", json!({})).await?;
+    assert!(!err, "{context}");
+    assert!(
+        context["context"]
+            .as_str()
+            .is_some_and(|c| c.contains("studio") && c.contains("scope_claim")),
+        "{context}"
+    );
 
     // Steps: set, update, and status preserved on re-plan (STP-001/002).
     let (_, err) = tool(

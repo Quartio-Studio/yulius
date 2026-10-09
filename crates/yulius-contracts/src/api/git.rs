@@ -179,3 +179,88 @@ pub struct PromoteResult {
     /// Resulting SHA or PR URL.
     pub sha: Option<String>,
 }
+
+/// A task's changes for review (`GET /api/tasks/{tid}/changes`, UI-031): the task worktree —
+/// committed and uncommitted work, untracked files as added — against its merge base with
+/// `origin/<integration>`. Large diffs are cut (`truncated`); binary files carry no hunks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskChanges {
+    /// Integration branch the changes are shown against.
+    pub base: String,
+    /// Task branch.
+    pub head: String,
+    /// The merge base.
+    pub base_sha: String,
+    /// The task's `HEAD`.
+    pub head_sha: String,
+    /// Commits of the task branch not on the integration branch.
+    pub ahead: u32,
+    /// Commits of the integration branch not on the task branch.
+    pub behind: u32,
+    /// Files with uncommitted changes (untracked files included).
+    pub uncommitted: u32,
+    /// Some hunks or lines were left out to stay within the limits.
+    pub truncated: bool,
+    /// Changed files.
+    pub files: Vec<ChangedFile>,
+}
+
+/// One changed file of [`TaskChanges`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangedFile {
+    /// Path (the old path for a deletion).
+    pub path: String,
+    /// Old path of a rename.
+    pub old_path: Option<String>,
+    /// `added`, `modified`, `deleted` or `renamed`.
+    pub status: String,
+    /// Added lines.
+    pub insertions: u64,
+    /// Deleted lines.
+    pub deletions: u64,
+    /// Binary file: no hunks.
+    pub binary: bool,
+    /// Hunks.
+    pub hunks: Vec<DiffHunk>,
+}
+
+/// A hunk of a [`ChangedFile`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffHunk {
+    /// `@@ -a,b +c,d @@ …`.
+    pub header: String,
+    /// Lines.
+    pub lines: Vec<DiffLine>,
+}
+
+/// A line of a [`DiffHunk`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffLine {
+    /// `ctx`, `add` or `del`.
+    pub kind: String,
+    /// Line number in the old file (null for an added line).
+    pub old: Option<u32>,
+    /// Line number in the new file (null for a deleted line).
+    pub new: Option<u32>,
+    /// Text without the marker.
+    pub text: String,
+}
+
+/// A commit of the task branch (`GET /api/tasks/{tid}/commits`), newest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskCommit {
+    /// Full commit id.
+    pub sha: String,
+    /// First line of the message.
+    pub subject: String,
+    /// Author name.
+    pub author: String,
+    /// Author date (RFC 3339).
+    pub at: String,
+    /// Changed files.
+    pub files: u64,
+    /// Added lines.
+    pub insertions: u64,
+    /// Deleted lines.
+    pub deletions: u64,
+}

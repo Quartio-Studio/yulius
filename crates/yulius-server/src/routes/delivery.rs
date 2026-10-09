@@ -5,7 +5,9 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use yulius_app::delivery::preset_profiles;
-use yulius_contracts::api::git::{Delivery, EnvironmentRun, OpenPr, PromoteResult, RunEnvironment};
+use yulius_contracts::api::git::{
+    Delivery, EnvironmentRun, OpenPr, PromoteResult, RunEnvironment, TaskChanges, TaskCommit,
+};
 use yulius_contracts::api::sandboxes::{Profile, Sandbox, UpdateSandbox};
 
 use crate::AppState;
@@ -31,6 +33,22 @@ pub async fn task_delivery(
     Path(tid): Path<String>,
 ) -> ApiResult<Json<Delivery>> {
     Ok(Json(app.task_delivery(&ctx, &tid).await?))
+}
+
+pub async fn task_changes(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskChanges>> {
+    Ok(Json(app.task_changes(&ctx, &tid).await?))
+}
+
+pub async fn task_commits(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<Vec<TaskCommit>>> {
+    Ok(Json(app.task_commits(&ctx, &tid).await?))
 }
 
 pub async fn open_pr(

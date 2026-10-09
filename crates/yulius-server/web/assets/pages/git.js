@@ -164,7 +164,7 @@ export function mountGitPage(ctx, sandbox) {
     const envs = environments(profile);
     const items = model.items.map((item) => {
       const task = ctx.store.findTask(item.row.task_id);
-      return { ...item, task, info: task ? taskInfo(task, ctx.store.state.actionRequests) : null, column: columnOf(item.delivery, profile) };
+      return { ...item, task, info: task ? taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id)) : null, column: columnOf(item.delivery, profile) };
     });
     const by = (column) => items.filter((item) => item.column === column);
     // Live updates rebuild the page; keyboard focus stays on the same control (keepFocus).

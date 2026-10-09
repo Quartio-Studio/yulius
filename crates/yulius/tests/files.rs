@@ -140,6 +140,37 @@ async fn write_users_edit_files_inside_the_folder_only() -> TestResult {
     assert_eq!(through_link.status, StatusCode::FORBIDDEN);
     assert_eq!(std::fs::read_to_string(data.join("secret.txt"))?, "outside");
 
+    // A link to the Git directory inside the folder does not open it either (#59).
+    std::fs::write(repo.join(".git/config"), "[core]\n")?;
+    std::os::unix::fs::symlink(".git", repo.join("meta"))?;
+    for path in [
+        "/api/sandboxes/s1/files?path=meta",
+        "/api/sandboxes/s1/files/content?path=meta/config",
+    ] {
+        let refused = call(&h.router, Method::GET, path, None, &alice).await?;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{path}");
+    }
+    for (path, base) in [
+        ("meta/config", json!("0")),
+        ("meta/hooks-note.txt", json!(null)),
+    ] {
+        let refused = call(
+            &h.router,
+            Method::PUT,
+            "/api/sandboxes/s1/files/content",
+            Some(json!({"path": path, "content": "x", "base_sha256": base})),
+            &alice,
+        )
+        .await?;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{path}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(repo.join(".git/config"))?,
+        "[core]\n"
+    );
+    assert!(!repo.join(".git/hooks-note.txt").exists());
+    std::fs::remove_file(repo.join("meta"))?;
+
     // Create and delete entries; the folder itself cannot be deleted.
     let created = call(
         &h.router,

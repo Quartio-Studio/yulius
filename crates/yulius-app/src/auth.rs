@@ -87,6 +87,21 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// Longest return path kept across GitHub sign-in.
+const MAX_RETURN_PATH: usize = 2048;
+
+/// A same-site path to return to after sign-in: one leading `/`, no backslash and no control
+/// character. Browsers read `\\` as `/` and drop tabs and newlines, so `/\\host` and
+/// `/<tab>/host` would leave the site, and a newline cannot go into a `Location` header (#60).
+#[must_use]
+pub fn local_return_path(next: &str) -> Option<&str> {
+    let local = next.starts_with('/')
+        && !next.starts_with("//")
+        && next.len() <= MAX_RETURN_PATH
+        && !next.chars().any(|c| c == '\\' || c.is_control());
+    local.then_some(next)
+}
+
 impl App {
     /// Ensures the instance row exists and, while no superadmin exists, issues a fresh one-time
     /// setup token (returned in plain text for the operator; only its hash is stored).
@@ -271,6 +286,25 @@ impl App {
         }))
     }
 
+    /// Whether an authenticated context still holds: the user exists and is not disabled, and a
+    /// cookie session is neither revoked nor expired. Open WebSockets re-check it, so logout,
+    /// disabling and session expiry end them as they end new requests (#66).
+    pub async fn still_signed_in(&self, ctx: &AuthContext) -> bool {
+        let Ok(Some(user)) = self.deps.store.user(&ctx.user.id).await else {
+            return false;
+        };
+        if user.disabled_at.is_some() {
+            return false;
+        }
+        match &ctx.session_hash {
+            Some(hash) => matches!(
+                self.deps.store.web_session(hash).await,
+                Ok(Some(session)) if session.revoked_at.is_none() && session.expires_at > self.now()
+            ),
+            None => true,
+        }
+    }
+
     /// Resolves a bearer API token (`yul_…`).
     ///
     /// # Errors
@@ -385,11 +419,7 @@ impl App {
         let app = self.github_app().await?;
         let state = hex_token(&self.deps.crypto.random_bytes());
         let now = self.now();
-        let next = if next.starts_with('/') && !next.starts_with("//") {
-            next
-        } else {
-            "/"
-        };
+        let next = local_return_path(next).unwrap_or("/");
         self.deps
             .store
             .insert_oauth_state(

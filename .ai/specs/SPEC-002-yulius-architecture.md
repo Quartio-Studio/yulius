@@ -301,6 +301,7 @@ Claude's own keys. Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` a
 | New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json [--model m] [--effort e] [--dangerously-skip-permissions when contained] "<prompt>"` |
 | Resume | `claude --resume <uuid> … ["<continuation>"]` |
 | Credentials | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`); `CLAUDE_CONFIG_DIR=<sandbox>/home/.claude` |
+| Updates | `DISABLE_AUTOUPDATER=1` in every session and sign-in terminal: the operator updates the CLI on the host (docs/operations.md); a contained session could only fail to update itself (#45) |
 | Transcript | `<config>/projects/<cwd-slug>/<session>.jsonl` |
 | Usage | `message.usage` per assistant message (dedupe by message id + request id); limit errors from synthetic API error messages |
 | Hooks | `--settings` JSON `hooks` for SessionStart, UserPromptSubmit, Stop, Notification |
@@ -333,6 +334,13 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `workflows_list` | Workflows available (AUT-004) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
+
+Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
+`scope_claim` takes one glob or up to 20, a task holds at most 50; claims of tasks that are no
+longer live are ignored, a repeated claim is kept once and messages nobody again, and each other
+task whose claim overlaps a new claim gets one `scope` message (which wakes it when idle).
+`scope_release` takes `pattern`, `patterns` or nothing (all) and refuses anything else. `spec_check` returns the Stop gate's verdict and fix-it message for
+the task spec plus the project-docs problems; `project_context` returns the briefing rebuilt now.
 
 ### 7.5 Hooks (`yulius hook <harness> <event>`)
 
@@ -369,6 +377,8 @@ Binary frames mirror §7.1 (Output/Snapshot/Exit) plus JSON text control frames:
 viewer queue 512 frames / 8 MiB; overflow closes with code 4008; client reconnects with backoff
 (0.5 s → 10 s). Input requires write permission and is applied in arrival order; each input frame
 carries a client sequence for duplicate suppression after reconnect. At most 16 viewers per task.
+Accepted TCP connections set `TCP_NODELAY`, so a keystroke's echo — one small frame — is sent at once
+instead of waiting behind Nagle's algorithm for the proxy's delayed ACK (F 2026-10-09, #29).
 
 ### 7.8 UI event stream (`/api/events`, WS)
 
@@ -393,7 +403,10 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   Linux. Host mode provides no containment and is labelled in the UI and logs (SEC-001).
 - Public listener: HTTPS terminated by the reverse proxy; cookies HttpOnly, Secure, SameSite=Lax;
   CSRF header on state-changing requests; WebSocket Origin must equal the public URL (or an
-  allowlisted desktop origin); login rate limits; Argon2id for the superadmin password.
+  allowlisted desktop origin); login rate limits; Argon2id for the superadmin password. Every
+  response carries `X-Frame-Options: SAMEORIGIN`, `Content-Security-Policy: frame-ancestors
+  'self'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin` unless the route
+  sets a stricter policy (#56); HSTS is set by the TLS proxy.
 - Internal listener binds 127.0.0.1 only; accepts task tokens only; tokens are per attempt, random
   256-bit, stored hashed, revoked when the attempt ends.
 - Secrets (provider credentials, GitHub App key, MCP env/headers) are encrypted at rest with the
@@ -403,6 +416,10 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   uses the credential helper over the internal listener; task worktrees get a `pre-push` hook that
   rejects pushes to the profile's integration/production branches; scaffolded repositories get
   GitHub rulesets (DSC-007).
+- Repository documents the server reads for agents (briefing, `project_context`, the Stop gate,
+  step sync) are read only when their resolved path stays inside the worktree; a directory
+  linked out of it reads as missing, and on Linux the opened file's real path is checked again
+  (#70).
 - Repository content, skills and MCP output are untrusted input; they cannot grant permissions,
   merges or deployments (SEC-003). Deployment commands run only on explicit user action with an
   audit entry.
@@ -413,7 +430,8 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   receives the user's own GitHub token.
 - Editor file API (ADR-10): write users only; relative paths of normal components, every
   existing path resolved and kept inside the folder (symbolic links cannot escape), `.git`
-  refused, 2 MiB text limit, atomic writes with an optimistic SHA-256 check.
+  refused, also when a link inside the folder resolves into it (#59), 2 MiB text limit, atomic
+  writes with an optimistic SHA-256 check.
 - Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
   Argon2; the failure counter and permanent lock are persisted before the response is sent.
 - Browser mirror (ADR-09): the recorder runs in an isolated world, so page scripts cannot tamper
@@ -430,7 +448,8 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   before checkout (Studio's own procedure) and is not offered in this version.
 - Repository hooks (Studio `.githooks/pre-commit` mass-delete guard): worktrees honor the
   repository's `core.hooksPath` when the preparation task configures it per the repo's AGENTS.md;
-  Yulius adds its own `pre-push` guard without replacing repository hooks.
+  Yulius adds its own `pre-push` guard without replacing repository hooks. Hooks run in the
+  agents' own Git inside containment only; the server's Git never runs them (R-13, #54).
 - Instructions: repositories' `AGENTS.md`/`CLAUDE.md`/`.agents/skills`/`.claude/skills`
   remain authoritative inside the sandbox; the Yulius briefing points to them instead of
   overriding them.
@@ -491,7 +510,7 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | Integration (fake agent) | ptyhost spawn/flood/ignore-SIGTERM/descendant/early-exit/cancel races, reconnect, server restart reattach, rotation with fake usage, hooks & MCP end-to-end | `tools/fake-agent` |
 | Integration (fake GitHub) | OAuth, permissions, repo creation, PR/checks/merge/ff | axum fake server |
 | Linux-only | bubblewrap containment escape attempts | CI ubuntu job |
-| UI | browser verification of layout, terminal, panels, phone viewport | manual with recorded evidence |
+| UI | end-to-end tests in `e2e/` (e2e by TesterArmy, Playwright) against the UI's mock mode: flows, keyboard, WCAG 2.x A/AA (axe-core), page errors, phone viewport; agent steps opt-in with a model key | Node test-only (ADR-01 unchanged); advisory CI job `Web UI e2e`. The real server, terminal rendering and panels against live agents: manual with recorded evidence |
 | Live (opt-in, never CI) | real Claude Code: launch, hooks, MCP, resume | uses local credentials; minimal prompts |
 | Deploy | VM install | **out of scope**; packaging reviewed only |
 
@@ -511,6 +530,7 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
 | R-12 | Closed (F 2026-10-08): Codex releases without `--no-daemon` (Codex removed). | — |
+| R-13 | The server's own Git (worktree creation, commits, status and readiness checks, fetch, delivery pushes) runs outside containment in the sandbox repository and worktrees, whose Git directories agents can write (#54). | Every server-side Git command runs with repository hooks off (`core.hooksPath=/dev/null`), fsmonitor off and `ext::` refused; agents' own Git still runs hooks, so the pre-push guard applies to them. Open (#54 part B): repository-local configuration that runs programs or redirects remotes (filter, diff and merge drivers, credential helpers, URL rewriting) — read-only Git config in containment or a Yulius-owned mirror. |
 
 ## 13. Delivery checkpoints
 
@@ -555,6 +575,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-09 (hardening): server-side Git never runs repository hooks; risk R-13 (#54).
 - 2026-10-08 (F 2026-10-08): Claude Code only — Codex adapter, homes, login, usage probe, import,
   provider switching, harness proposals and the translation stack removed (ADR-05 narrowed, ADR-06
   and §7.3 withdrawn, R-02/R-03/R-12 closed); proactive rotation driven by usage refreshes;

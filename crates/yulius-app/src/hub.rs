@@ -110,7 +110,7 @@ impl Hub {
             screen.parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
             screen.parser.process(snapshot);
             screen.seq = seq;
-            screen.parser.screen().contents_formatted()
+            viewer_snapshot(screen.parser.screen())
         } else {
             snapshot.to_vec()
         };
@@ -206,7 +206,7 @@ impl Hub {
                 let (rows, cols) = s.parser.screen().size();
                 Subscription {
                     seq: s.seq,
-                    snapshot: s.parser.screen().contents_formatted(),
+                    snapshot: viewer_snapshot(s.parser.screen()),
                     size: (cols, rows),
                     rx,
                 }
@@ -279,6 +279,23 @@ impl Hub {
     }
 }
 
+/// What a viewer needs to redraw the terminal as the app left it: the alternate screen when it
+/// is on, the contents, the input modes (mouse reporting and its encoding, application keys,
+/// bracketed paste), the cursor and the attributes — as the process host's own snapshot does.
+/// Without the screen and mouse modes, a viewer who opens the task after a full-screen app
+/// started could never scroll it with the wheel (#78).
+fn viewer_snapshot(screen: &vt100::Screen) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if screen.alternate_screen() {
+        bytes.extend_from_slice(b"\x1b[?1049h");
+    }
+    bytes.extend(screen.contents_formatted());
+    bytes.extend(screen.input_mode_formatted());
+    bytes.extend(screen.cursor_state_formatted());
+    bytes.extend(screen.attributes_formatted());
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +315,26 @@ mod tests {
         assert_eq!(hub.controller(), b, "only the controller's leave releases");
         hub.release(b);
         assert_eq!(hub.controller(), 0);
+    }
+
+    /// #78: a viewer who opens or reloads the task while a full-screen app runs gets the
+    /// alternate screen and the app's mouse modes, so the wheel reaches the app (#34) for every
+    /// viewer, not only those present when the app started.
+    #[test]
+    fn late_viewers_get_the_alternate_screen_and_mouse_modes() {
+        let hub = Hub::new(40, 10);
+        hub.output(1, b"\x1b[?1049h\x1b[?1000h\x1b[?1006hfull screen");
+        let text = String::from_utf8_lossy(&hub.subscribe().snapshot).into_owned();
+        for mode in ["\x1b[?1049h", "\x1b[?1000h", "\x1b[?1006h"] {
+            assert!(text.contains(mode), "{mode:?} missing from {text:?}");
+        }
+        assert!(text.contains("full screen"));
+        hub.reset(2, b"\x1b[?1049h\x1b[?1002h\x1b[?1006hagain", 40, 10);
+        let again = String::from_utf8_lossy(&hub.subscribe().snapshot).into_owned();
+        assert!(
+            again.contains("\x1b[?1049h") && again.contains("\x1b[?1002h"),
+            "after a host reset: {again:?}"
+        );
     }
 
     #[test]

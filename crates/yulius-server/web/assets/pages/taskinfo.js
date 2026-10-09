@@ -49,7 +49,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     meta);
 
   function renderHead() {
-    const info = taskInfo(current, ctx.store.state.actionRequests);
+    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
     setChildren(titleEl, h('span', { class: 'muted' }, `#${current.number} `), current.title || `Task #${current.number}`);
     const pr = ctx.store.pullsOf(sandbox.id).get(current.id);
     setChildren(meta,
@@ -70,7 +70,8 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   function sessions() {
     const list = detail && Array.isArray(detail.attempts) ? detail.attempts : [];
     if (!list.length) return h('p', { class: 'muted small' }, 'No session has started yet.');
-    return h('div', { class: 'table-wrap' }, h('table', { class: 'table ti-sessions' },
+    // Scrolls sideways on a phone: a named, focusable region so the keyboard can scroll it.
+    return h('div', { class: 'table-wrap', role: 'region', 'aria-label': 'Sessions table', tabindex: '0' }, h('table', { class: 'table ti-sessions' },
       h('thead', null, h('tr', null, ['#', 'Account', 'Started', 'Ended', 'Length', 'State'].map((label) => h('th', { scope: 'col' }, label)))),
       h('tbody', null, list.map((a) => h('tr', null,
         h('td', null, String(a.seq)),

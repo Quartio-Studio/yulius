@@ -160,6 +160,8 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/delivery/presets", get(delivery::presets))
         .route("/api/sandboxes/{sid}/git", get(git::overview))
         .route("/api/tasks/{tid}/delivery", get(delivery::task_delivery))
+        .route("/api/tasks/{tid}/changes", get(delivery::task_changes))
+        .route("/api/tasks/{tid}/commits", get(delivery::task_commits))
         .route("/api/tasks/{tid}/delivery/pr", post(delivery::open_pr))
         .route("/api/tasks/{tid}/delivery/merge", post(delivery::merge))
         .route(

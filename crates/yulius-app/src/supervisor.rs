@@ -23,7 +23,7 @@ use yulius_domain::task::{
     STOP_TERM_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::AccountUsage;
+use yulius_domain::usage::{AccountUsage, UsageWindow};
 
 use crate::auth::hex_token;
 use crate::context::App;
@@ -40,6 +40,9 @@ use crate::usage_json;
 
 /// Boxed `Send` future (breaks recursive async cycles between start, pump and finalize).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// The provider's short (session) window in minutes; longer limits are the secondary window.
+const SESSION_WINDOW_MINUTES: u32 = 5 * 60;
 
 /// Default PTY size before the first viewer reports its size.
 pub const DEFAULT_SIZE: (u16, u16) = (120, 40);
@@ -75,6 +78,13 @@ pub struct TaskRuntime {
     pub proactive_switch: AtomicBool,
     /// Last seen limit reset time (ms, 0 = unknown).
     pub limit_resets_at: AtomicI64,
+    /// When the current turn started (ms, 0 = no turn in progress), for active agent time.
+    turn_started_ms: AtomicI64,
+    /// Active agent time of the current attempt: its finished turns (ms).
+    active_ms: AtomicI64,
+    /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
+    /// not repeated every turn.
+    pub(crate) auto_pr_head: Mutex<Option<String>>,
 }
 
 impl TaskRuntime {
@@ -88,9 +98,37 @@ impl TaskRuntime {
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
             limit_resets_at: AtomicI64::new(0),
+            turn_started_ms: AtomicI64::new(0),
+            active_ms: AtomicI64::new(0),
+            auto_pr_head: Mutex::new(None),
         }
     }
+
+    /// Ends the turn in progress, if any, adding its time to the attempt's active time.
+    fn end_turn(&self, now: Timestamp) {
+        let started = self.turn_started_ms.swap(0, Ordering::SeqCst);
+        if started > 0 {
+            self.active_ms
+                .fetch_add(now.0.saturating_sub(started).max(0), Ordering::SeqCst);
+        }
+    }
+
+    /// Active agent time so far: finished turns plus the one in progress.
+    fn active_ms_at(&self, now: Timestamp) -> i64 {
+        let started = self.turn_started_ms.load(Ordering::SeqCst);
+        let running = if started > 0 {
+            now.0.saturating_sub(started).max(0)
+        } else {
+            0
+        };
+        self.active_ms
+            .load(Ordering::SeqCst)
+            .saturating_add(running)
+    }
 }
+
+/// Longest gap between live metrics saves of a run in progress (#31).
+const LIVE_METRICS_MS: i64 = 30_000;
 
 /// How the next run starts.
 #[derive(Debug, Clone)]
@@ -286,6 +324,26 @@ impl App {
                 .unwrap_or(u32::MAX),
             })
             .collect())
+    }
+
+    /// When a task waiting for capacity resumes: the earliest known usage-limit reset among its
+    /// provider's accounts, as the rotation policy decides now (ROT-010). `None` while the task
+    /// is not waiting, once capacity is back, or when no reset time is known.
+    pub(crate) async fn capacity_returns_at(&self, task: &TaskRecord) -> Option<Timestamp> {
+        if task.status != TaskStatus::WaitingCapacity {
+            return None;
+        }
+        let input = RotationInput {
+            current: None,
+            task_provider: task.harness.provider(),
+            accounts: self.account_views().await.ok()?,
+            now: self.now(),
+            threshold: rotation::DEFAULT_THRESHOLD,
+        };
+        match rotation::decide(&input, Trigger::Start).0 {
+            Decision::Wait { until } => until,
+            Decision::Switch { .. } | Decision::Stay => None,
+        }
     }
 
     async fn choose_account(
@@ -1101,8 +1159,11 @@ impl App {
         self.drain_queue().await;
     }
 
+    /// Stores a run's metrics: while it goes (live, #31) and once more when it ends. The store
+    /// upserts by attempt, so the last save wins and nothing is counted twice.
     async fn save_metrics(&self, task_id: &TaskId, attempt_id: &AttemptId, runtime: &TaskRuntime) {
         let snapshot = runtime.usage.lock().map(|u| u.clone()).unwrap_or_default();
+        let active = runtime.active_ms_at(self.now());
         let metrics = MetricsRecord {
             model: snapshot.model,
             input_tokens: snapshot.tokens.input,
@@ -1110,7 +1171,7 @@ impl App {
             cache_read: snapshot.tokens.cache_read,
             cache_write: snapshot.tokens.cache_write,
             turns: u32::try_from(snapshot.turns).ok().filter(|t| *t > 0),
-            active_ms: None,
+            active_ms: u64::try_from(active).ok().filter(|ms| *ms > 0),
         };
         let _ = self
             .deps
@@ -1495,6 +1556,8 @@ impl App {
         if let Ok(mut u) = runtime.usage.lock() {
             *u = UsageSnapshot::default();
         }
+        runtime.turn_started_ms.store(0, Ordering::SeqCst);
+        runtime.active_ms.store(0, Ordering::SeqCst);
         let app = self.clone();
         let tid = task_id.clone();
         let attempt = attempt.clone();
@@ -1521,6 +1584,8 @@ impl App {
         let mut session_id = attempt.provider_session_id.clone();
         let mut watch = None;
         let mut last_drift_check = Timestamp(0);
+        let mut saved: Option<UsageSnapshot> = None;
+        let mut saved_at = Timestamp(0);
         while alive.load(Ordering::SeqCst) {
             tokio::time::sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
             if !alive.load(Ordering::SeqCst) {
@@ -1572,10 +1637,24 @@ impl App {
             let usage = w.usage();
             let runtime = self.runtime(&task_id);
             if let Ok(mut u) = runtime.usage.lock() {
-                *u = usage;
+                *u = usage.clone();
             }
+            let turn_ended = observations
+                .iter()
+                .any(|o| matches!(o, Observation::TurnComplete));
             for observation in observations {
                 self.on_observation(&task_id, &attempt, observation).await;
+            }
+            // Live metrics (#31): the dashboard counts a run while it goes, saved after each turn
+            // and at most every 30 s while something changes.
+            let now = self.now();
+            let working = runtime.turn_started_ms.load(Ordering::SeqCst) > 0;
+            if (saved.as_ref() != Some(&usage) || working)
+                && (turn_ended || now.millis_since(saved_at) >= LIVE_METRICS_MS)
+            {
+                self.save_metrics(&task_id, &attempt.id, &runtime).await;
+                saved = Some(usage);
+                saved_at = now;
             }
         }
     }
@@ -1588,8 +1667,13 @@ impl App {
     ) {
         let runtime = self.runtime(task_id);
         match observation {
-            Observation::LimitReached { resets_at, message } => {
+            Observation::LimitReached {
+                resets_at,
+                message,
+                window_minutes,
+            } => {
                 tracing::info!(task = %task_id, %message, "usage limit reached");
+                runtime.end_turn(self.now());
                 if let Some(account) = &attempt.account_id {
                     let mut usage = match self.deps.store.account(account).await {
                         Ok(Some(a)) => a
@@ -1602,6 +1686,21 @@ impl App {
                     usage.limit_reached = true;
                     usage.limit_resets_at = resets_at;
                     usage.observed_at = Some(self.now());
+                    // What the CLI was told is the account's state (ROT-009): the limited window
+                    // full until its reset, even when the provider's usage request does not
+                    // answer.
+                    let full = |minutes: u32| UsageWindow {
+                        used_percent: Some(100.0),
+                        window_minutes: Some(minutes),
+                        resets_at,
+                    };
+                    match window_minutes {
+                        Some(minutes) if minutes <= SESSION_WINDOW_MINUTES => {
+                            usage.primary = Some(full(minutes));
+                        }
+                        Some(minutes) => usage.secondary = Some(full(minutes)),
+                        None => {}
+                    }
                     self.record_account_usage(account, &usage).await;
                 }
                 runtime
@@ -1613,6 +1712,12 @@ impl App {
                 tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
             }
             Observation::UserTurn => {
+                let _ = runtime.turn_started_ms.compare_exchange(
+                    0,
+                    self.now().0,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
                 let _ = self
                     .deps
                     .store
@@ -1621,6 +1726,7 @@ impl App {
                 self.publish_task(task_id).await;
             }
             Observation::TurnComplete => {
+                runtime.end_turn(self.now());
                 self.turn_ended(task_id, attempt.account_id.clone());
             }
             Observation::Session { .. } => {}

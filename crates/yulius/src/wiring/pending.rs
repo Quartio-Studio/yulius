@@ -6,7 +6,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
-use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort};
+use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, ReviewChanges};
 use yulius_app::ports::session::{AttachedRun, LaunchPlan, RunInspection, SessionHost, SpawnedRun};
 
 fn unavailable<T>(what: &str) -> AppResult<T> {
@@ -75,6 +75,18 @@ impl GitPort for UnavailableGit {
         unavailable("git")
     }
     async fn diff_stat(&self, _: &Path, _: &str, _: &str) -> AppResult<DiffStat> {
+        unavailable("git")
+    }
+    async fn review_changes(&self, _: &Path, _: &str) -> AppResult<ReviewChanges> {
+        unavailable("git")
+    }
+    async fn review_commits(
+        &self,
+        _: &Path,
+        _: &str,
+        _: &str,
+        _: u32,
+    ) -> AppResult<Vec<yulius_contracts::api::git::TaskCommit>> {
         unavailable("git")
     }
     async fn ahead_behind(&self, _: &Path, _: &str, _: &str) -> AppResult<(u32, u32)> {

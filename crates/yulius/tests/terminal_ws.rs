@@ -278,6 +278,22 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
         last_state(v).is_some_and(|s| s["controller"] == true)
     })
     .await?;
+    // #78: a wheel turn another writer forwards to a full-screen app (`scroll`) reaches the app
+    // but neither takes control nor resizes the terminal to that viewer's window.
+    let task_id = yulius_domain::ids::TaskId::parse(&tid)?;
+    let controller = h.app.runtime(&task_id).hub.controller();
+    c.send(Message::Text(
+        json!({"type": "input", "data": "\u{1b}[<65;1;1M", "seq": 2, "scroll": true})
+            .to_string()
+            .into(),
+    ))
+    .await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        h.app.runtime(&task_id).hub.controller(),
+        controller,
+        "scrolling does not take control"
+    );
     drop(c);
 
     // AC-ACC-5: a downgrade on GitHub reaches open sockets once the permission cache expires.

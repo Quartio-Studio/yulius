@@ -37,16 +37,17 @@ export function dataTable(columns, rows, { onRowClick, empty = 'Nothing here yet
 
 /**
  * Load data into a container: shows loading, then render(data) or the error.
- * Returns a reload function. Concurrent reloads keep only the latest result.
+ * Returns a reload function. Concurrent reloads keep only the latest result. `reload({ quiet })`
+ * refreshes in place for live pages: no dimming, and a failure keeps what is shown.
  */
 export function loader(container, fetcher, render) {
   let generation = 0;
   let hasContent = false;
-  async function reload() {
+  async function reload({ quiet = false } = {}) {
     generation += 1;
     const mine = generation;
     if (!hasContent) setChildren(container, placeholder('Loading…', 'loading'));
-    else container.style.opacity = '0.6';
+    else if (!quiet) container.style.opacity = '0.6';
     try {
       const data = await fetcher();
       if (mine !== generation) return;
@@ -55,6 +56,7 @@ export function loader(container, fetcher, render) {
       hasContent = true;
     } catch (error) {
       if (mine !== generation) return;
+      if (quiet && hasContent) return;
       // Say it inline with a way out, like the Git page (UX2-07).
       setChildren(container, loadError(`Couldn’t load this: ${error.message || String(error)}`, () => reload()));
       hasContent = false;

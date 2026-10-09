@@ -150,6 +150,24 @@ impl AccountStore for SqliteStore {
         .await
     }
 
+    async fn set_account_error(
+        &self,
+        id: &AccountId,
+        last_error: &str,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (id, err) = (id.as_str().to_owned(), last_error.to_owned());
+        self.call(move |c| {
+            c.execute(
+                "UPDATE accounts SET last_error = ?1, updated_at = ?2 WHERE id = ?3",
+                params![err, at.0, id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn account_tokens(
         &self,
         since: Timestamp,

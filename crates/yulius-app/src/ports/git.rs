@@ -32,6 +32,21 @@ pub struct CommitInfo {
     pub at_ms: i64,
 }
 
+/// A task worktree's changes against its merge base, files in the API's form (UI-031).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewChanges {
+    /// The merge base.
+    pub base_sha: String,
+    /// `HEAD`.
+    pub head_sha: String,
+    /// Changed files.
+    pub files: Vec<yulius_contracts::api::git::ChangedFile>,
+    /// Files with uncommitted changes.
+    pub uncommitted: u32,
+    /// Hunks or lines were left out.
+    pub truncated: bool,
+}
+
 /// Git operations on sandbox repositories.
 #[async_trait]
 pub trait GitPort: Send + Sync {
@@ -76,6 +91,17 @@ pub trait GitPort: Send + Sync {
     async fn set_identity(&self, worktree: &Path, name: &str, email: &str) -> AppResult<()>;
     /// Diff statistics between two revisions.
     async fn diff_stat(&self, repo: &Path, base: &str, head: &str) -> AppResult<DiffStat>;
+    /// The worktree's changes against its merge base with `base` (committed, uncommitted and
+    /// untracked work), bounded, for the task review (UI-031).
+    async fn review_changes(&self, worktree: &Path, base: &str) -> AppResult<ReviewChanges>;
+    /// Commits on `head` not on `base`, newest first (at most `limit`), with their size.
+    async fn review_commits(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+        limit: u32,
+    ) -> AppResult<Vec<yulius_contracts::api::git::TaskCommit>>;
     /// Commits ahead/behind between two revisions.
     async fn ahead_behind(&self, repo: &Path, base: &str, head: &str) -> AppResult<(u32, u32)>;
     /// Recent commits of a revision.

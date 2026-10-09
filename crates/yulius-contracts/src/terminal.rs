@@ -48,6 +48,10 @@ pub enum TerminalClientMsg {
         /// Client input sequence for duplicate suppression after reconnect.
         #[serde(default)]
         seq: Option<u64>,
+        /// A wheel turn forwarded to a full-screen app: reaches the app without taking control
+        /// of the terminal (or its size) (#78).
+        #[serde(default)]
+        scroll: bool,
     },
     /// Viewport size changed.
     Resize {
@@ -131,7 +135,8 @@ mod tests {
             input,
             TerminalClientMsg::Input {
                 data: "ls\r".into(),
-                seq: None
+                seq: None,
+                scroll: false
             }
         );
         let tc: TerminalClientMsg = serde_json::from_str(r#"{"type":"take_control"}"#)?;
