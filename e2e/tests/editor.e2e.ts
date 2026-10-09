@@ -1,6 +1,6 @@
-import { test } from '@e2e-dev/web';
+import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -19,4 +19,49 @@ test('a file from the tree opens in an editor tab', async ({ app, screen }) => {
   await expect(folder).toHaveAttribute('aria-expanded', 'false');
   await folder.click();
   await expect(folder).toHaveAttribute('aria-expanded', 'true');
+});
+
+type WithMonaco = Window & { monaco: { editor: { getEditors(): { getRawOptions(): { wordWrap?: string } }[] } } };
+
+/** The open editor's word wrap as Monaco has it ('on' or 'off'). */
+const monacoWordWrap = (browser: Browser) =>
+  browser.evaluate(() => (window as unknown as WithMonaco).monaco.editor.getEditors()[0].getRawOptions().wordWrap ?? 'off');
+
+// F 2026-10-09: "In editor I should be able to select whether to break lines or not."
+test('word wrap turns on and off from the toolbar and Alt+Z, and stays after a reload', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  const content = screen.getByRole('textbox', 'Editor content');
+  await expect(content).toBeAttached();
+
+  const wrap = screen.getByRole('button', 'Word wrap');
+  await expect(wrap).toHaveAttribute('aria-pressed', 'false');
+  await expect.poll(() => monacoWordWrap(browser)).toBe('off');
+
+  await wrap.click();
+  await expect(wrap).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => monacoWordWrap(browser)).toBe('on');
+
+  // As in VS Code: Alt+Z (⌥Z) in the editor.
+  await content.focus();
+  await browser.keyboard.press('Alt+z');
+  await expect(wrap).toHaveAttribute('aria-pressed', 'false');
+  await expect.poll(() => monacoWordWrap(browser)).toBe('off');
+  await browser.keyboard.press('Alt+z');
+  await expect(wrap).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => monacoWordWrap(browser)).toBe('on');
+  // The shortcut toggles; it never types into the file (a typed character would mark it modified).
+  await expect(screen.getByRole('tab', 'README.md')).toHaveAttribute('aria-selected', 'true');
+  // The editor with its toolbar passes WCAG A/AA (explorer rows are 24 px targets).
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Kept in this browser: after a reload the editor opens wrapped.
+  await browser.reload();
+  await screen.getByRole('button', 'Editor').click();
+  await expect(screen.getByRole('button', 'Word wrap')).toHaveAttribute('aria-pressed', 'true');
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await expect(screen.getByRole('textbox', 'Editor content')).toBeAttached();
+  await expect.poll(() => monacoWordWrap(browser)).toBe('on');
 });

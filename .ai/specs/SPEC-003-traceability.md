@@ -225,9 +225,13 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 52 | (2026-10-09, hardening; goal item c) Parsers fed by untrusted input had hand-written cases only; randomized tests (no defect found) now cover the diff parser, the spec format, scope patterns, the transcript observer and usage JSON. | AC-UI-24, DSC-003, COM-003, ROT-009 |
 | 53 | (2026-10-09, hardening; self-review of #37/#42, reproduced) Viewers who opened a task after a full-screen app started could not wheel-scroll it (snapshot without alternate screen and mouse modes); a wheel turn took control and resized the terminal; fitted text could lose its bottom rows. | UI-019, AC-UI-11, TSK-006 |
 | 54 | (2026-10-09, hardening; self-review of #51, reproduced) Closing an editor tab with Delete moved focus into the next file, so the next Delete edited it; held keys repeated; focus was lost after some closes; a clicked browser tab could keep focus while its page loaded. | EDT-001, BRW-004, UI-029 |
+| 55 | (2026-10-09 evening, `F 2026-10-09`) "In editor I should be able to select whether to break lines or not." | EDT-005 (new), AC-EDT-4 |
+| 56 | (2026-10-09 evening, `F 2026-10-09`) The right tool rail is "a little broken" (screenshot: two highlighted items whose pills ran past the rail's right edge, the Messages count against it). (Reproduced: a panel opened in a wider window kept its width when the window narrowed, so the layout grew wider than the window and cut the rail's right side off; the Messages count did not fit its pill; hover and the open tool looked alike; on phones the top bar ran under the rail.) | UI-042 (new), AC-UI-36 |
 
 ## Changelog
 
+- 2026-10-09: editor word wrap toggle and ⌥Z / Alt+Z (§6 item 55, `F 2026-10-09`).
+- 2026-10-09: the tools rail keeps its items inside it and stays in the window (§6 item 56, `F 2026-10-09`).
 - 2026-10-09: tab keys keep focus on the strip and ignore key repeat (§6 item 54, hardening).
 - 2026-10-09: terminal follow-ups: full snapshot for late viewers, scrolling without taking control, fit by rows too (§6 item 53, hardening).
 - 2026-10-09: randomized parser tests (§6 item 52, hardening).

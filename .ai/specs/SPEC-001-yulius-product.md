@@ -237,6 +237,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-039 | An automation opens in a builder on its own page, made for clicking: a new one starts from a recipe (Daily feedback, Dependency updates, Fix failing checks, Triage issues, Weekly summary, Blank) that fills its name, prompt and time; the schedule is chosen with buttons — once a day on chosen days (with Every day, Weekdays, Weekends) at a time picked from chips or typed, or every hour at a chosen minute — and the page says in words when it runs next; the time zone is the browser's unless changed; cron stays under Advanced (other shapes are kept and shown as custom). The workflow is a chip; Run now, the on/off switch and the recent runs are on the same page. | F 2026-10-08 UI | C | AC-UI-33 |
 | UI-040 | The Dashboard reads like a modern product dashboard: one strip of key figures (tasks with a daily trend line, median duration, active agent time, tokens, account switches, feedback correct with its split), each with its change against the previous period of the same length — green or red only where a direction is better, neutral otherwise — and one line of context; the tasks-per-day chart as the main card, with the average dashed, weekends shaded, today marked as partial, dates as "Sep 14" (weekday names for 7 days), a hover band with the day and count, and a Table toggle; outcomes as one split bar with a legend of counts and shares; tokens by model and account and where tasks start as bar lists with shares. Export is one menu (CSV, JSON). | F 2026-10-08 UI | C | AC-UI-34 |
 | UI-041 | Brand direction Roma ("Dym i kreda"), the default look (accepted 2026-10-08; the brand lab keeps it at four contrast levels, `?lab=roma` and `roma-1`…`roma-3`, to experiment): a matte smoky black with one lighter intermediate dark and chalk white, no accent hue, states in Roman pigments, both themes; Instrument Sans, Tenor Sans (titles, wordmark) and IBM Plex Mono, self-hosted; a fine grain and a soft light over large surfaces; the mark in an arched niche over the composer with smoke rising in it (WebGPU via the vendored `shaders` library, telemetry removed; only when the niche shows, the browser has a GPU adapter and the person asked for neither reduced motion nor data saving; paused in hidden tabs). Every repository contrast pair passes in both themes. | F 2026-10-08 UI | C | AC-UI-35 |
+| UI-042 | The tools rail holds its items: each tool is a fully rounded pill inside the rail with the same space on both sides, and a count (at most "99+") or attention dot stays inside its pill; the open tool — one at a time — shows the accent fill, an accent bar and a heavier label, clearly apart from the quieter hover fill; keyboard focus shows the focus ring. An open panel never pushes the rail out of the window: when the window narrows the panel gives way (down to 300 px, the centre keeping 360 px where it fits) and grows back to its width when the window widens. On phones the rail's icons sit centred in the top bar, and the sandbox list gives way to them rather than covering them. | F 2026-10-09 ("it's a little broken") | C | AC-UI-36 |
 
 ### 5.4 Tasks and native sessions (TSK, HRN)
 
@@ -371,6 +372,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | EDT-002 | The editor opens the sandbox (task worktree selectable); access requires write permission. | — | A | AC-EDT-1 |
 | EDT-003 | Every user gets a clean editor view of their own: open files and unsaved text live only in that user's browser tab and are neither stored nor shared; saving writes the file into the sandbox. A file changed on disk since it was opened (for example by an agent) is reloaded when unchanged in the editor and never overwritten silently. Git in the user's shells authenticates as the user's own GitHub account. | F 2026-10-07 (per-user VS Code profiles dropped by the founder) | C | AC-EDT-2 |
 | EDT-004 | The editor works end to end in a real browser: it lists the folder, opens a file with syntax colors and suggestions, and saves an edit. | F 2026-10-07 ("coding editor still doesn't work") | C | AC-EDT-3 |
+| EDT-005 | The user chooses whether long lines wrap: one switch for every open file, from the editor's toolbar (a toggle that shows whether wrapping is on) or with ⌥Z / Alt+Z as in VS Code while the editor has focus, never typing a character; it is listed in the shortcut sheet. Off by default (as before); the choice is kept per user in the browser. | F 2026-10-09 ("In editor i should be able to select whether break lines or not") | C | AC-EDT-4 |
 
 ### 5.15 Import and migration (IMP)
 
@@ -450,7 +452,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
   entries: Users, Accounts, GitHub, Instance MCP, Instance skills).
 - Center: the selected task's terminal fills all remaining space. A one-line step strip sits above
   it (collapsible). No other header.
-- Right rail (≈ 128 px; icons only on phones): Browser, Editor, Shell, Messages, each shown with
+- Right rail (160 px; icons only on phones): Browser, Editor, Shell, Messages, each shown with
   its icon and name so a newcomer recognizes them. Clicking expands a resizable panel (default 45%
   width); clicking again collapses. Default collapsed (UI-002); the whole rail is hidden until the
   tools toggle shows it (UI-017). The left sidebar stays while a panel is open (developers keep their
@@ -627,6 +629,7 @@ instance — out of scope).
 | AC-UI-33 | New automation → Dependency updates reads "Every Monday at 08:00" with the next run; turning on Wednesday and Friday reads "Mon, Wed and Fri at 08:00" (cron `0 8 * * 1,3,5`); Every hour → :30 gives `30 * * * *`; Create shows it in the list with that schedule in words. | ui |
 | AC-UI-34 | Dashboard → each key figure shows a change chip against the previous 30 days; hovering a column shows its day and count; Table lists every day; 7 days labels the axis with weekday names; Outcomes shows one split bar and a legend with shares. | ui |
 | AC-UI-35 | `?mock=1` shows the smoky black and chalk look in both themes with every contrast pair passing; the composer shows the mark in an arched niche; with WebGPU the niche has smoke, without a GPU adapter no shader code is downloaded and the niche stays static; nothing is sent to shaders.com. | ui |
+| AC-UI-36 | `?mock=1` with the tools rail shown: with Editor open every rail item and Messages' unread count lie inside the rail and only Editor is pressed; opening Messages presses only it; no WCAG A/AA violation. With a panel open, narrowing the window to 1040 px keeps the rail inside the window (before the fix its right 20 px were cut off), and at 1000 px the centre keeps at least 300 px. At 390 px the rail's icons are centred in the top bar and no top-bar control reaches under them. | ui |
 | AC-TSK-8 | Deleting a stopped task removes its rows, run directories and worktree; deleting a live task is refused; read users cannot delete. | int |
 | AC-TSK-9 | A goal-mode task types `/goal <prompt>` into the session once it is ready (fake agent), prompt mode passes the prompt as before; the mode round-trips through the API. A live Claude Code smoke shows the goal being set. | int, live |
 | AC-ROT-7 | The accounts API reports provider windows, observed tokens per account (24 h, 7 d) and unknown values as null; background rounds refresh usage and back off on HTTP 429 for `Retry-After` without losing the last values; an observed limit fills its window at 100 % with the reset. | int |
@@ -636,6 +639,7 @@ instance — out of scope).
 | AC-BRW-6 | An agent's click reaches viewers with its position and label, and the UI shows the labelled cursor. | int, live (Chromium) |
 | AC-EDT-2 | The file API serves write users only, keeps every path (symbolic links included) inside the folder, hides `.git`, writes atomically and refuses a stale save with 409. | int |
 | AC-EDT-3 | Opt-in browser test: the real UI in headless Chrome opens the editor panel, colors JavaScript, suggests `console` members, saves with Cmd/Ctrl+S, and suggests words in a Python file. | live (Chrome) |
+| AC-EDT-4 | Word wrap is off in a new browser; the toolbar's Word wrap toggle turns it on (pressed) and Alt+Z (⌥Z, whose "Ω" is never typed) turns it off and on again in the editor, for the open file and the next one; after a reload the toggle is pressed and Monaco wraps; the shortcut sheet lists it. | ui, live (Chrome) |
 | AC-PRJ-1 | Creating/importing a sandbox requires a repository of the instance owner; one repository maps to one sandbox. | int |
 | AC-PRJ-2 | Task worktrees contain only the sandbox repository; there is no UI/API to add another repository. | int |
 | AC-PRJ-3 | Creating from each template creates the GitHub repo (fake), pushes the scaffold with the docs format that passes the validator, configures protection, and opens the tab. | int, ui |
@@ -720,6 +724,8 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 ## 12. Changelog
 
+- 2026-10-09 (`F 2026-10-09`): the editor's word wrap is a toolbar toggle and ⌥Z / Alt+Z, kept per user in the browser (EDT-005, AC-EDT-4).
+- 2026-10-09 (`F 2026-10-09`): the tools rail keeps its items, counts and focus ring inside it with one clear open tool, and an open panel no longer pushes it out of a narrowing window (UI-042, AC-UI-36).
 - 2026-10-09 (hardening): open connections follow revoked access and ended sessions (ACC-008).
 - 2026-10-09 (hardening): the five Yulius tools the briefing announced but the MCP did not serve now exist: `scope_claim`, `scope_release`, `scopes_list` (COM-003, AC-COM-3), `spec_check` (DSC-003) and `project_context` (COM-004).
 - 2026-10-09 (hardening): browser and editor tabs work from the keyboard and with screen readers (no button nested in a tab; ←/→, Delete closes; listed in the shortcut sheet, UI-029); the task preview's sessions table scrolls from the keyboard.

@@ -31,7 +31,8 @@ disable`); CI sets it.
 | `new-task.e2e.ts` | The new-task shortcut focuses the composer; Enter starts the task and opens it |
 | `sign-in.e2e.ts` | Signed out: a wrong superadmin password is refused, the right one signs in |
 | `shortcuts.e2e.ts` | The shortcut list opens from the keyboard and closes with Escape |
-| `editor.e2e.ts` | A file from the tree opens in a selected editor tab; a folder expands |
+| `editor.e2e.ts` | A file from the tree opens in a selected editor tab; a folder expands; word wrap turns on and off from the toolbar and Alt+Z without typing, the open editor has no WCAG violations, and wrapping stays after a reload |
+| `rail.e2e.ts` | The tools rail: items and counts inside the rail with one open tool (and no WCAG violations); the rail stays in the window when it narrows with a panel open; at 390 px it sits in the top bar without covering it |
 | `phone.e2e.ts` | At 390 px: no horizontal scroll, the quick input, the navigation drawer |
 | `quality.e2e.ts` | Every main page: no WCAG 2.x A/AA violations (axe-core) |
 | `agent.e2e.ts` | An agent reaches a goal written in plain English (needs a model, see below) |
