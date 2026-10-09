@@ -488,13 +488,15 @@ export function createSidebar(ctx) {
   const GROUPS = [
     { id: 'needs', name: 'Needs you', icon: 'bell' },
     { id: 'working', name: 'Working', icon: 'pulse' },
+    // Finished with a tested pull request (#35).
+    { id: 'done', name: 'Done', icon: 'check' },
     { id: 'ended', name: 'Stopped', icon: 'st-stopped' },
   ];
   const ENDED_OPEN_KEY = 'yulius.sidebarStoppedOpen';
   let endedOpen = readJson(ENDED_OPEN_KEY, true) !== false;
   let shape = '';
 
-  const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests);
+  const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
 
   function rowFor(task) {
     let row = rows.get(task.id);

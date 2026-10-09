@@ -87,7 +87,7 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
   const integration = () => (changes && changes.base) || profile.integration_branch || 'integration';
 
   // ---- header
-  const info = taskInfo(task, ctx.store.state.actionRequests);
+  const info = taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
   const taskPath = `${base}/t/${task.number}`;
   const meta = h('div', { class: 'gt-meta' });
   const head = h('header', { class: 'gt-head' },

@@ -334,6 +334,10 @@ impl App {
             }
             self.set_task_activity(task, Activity::Waiting).await?;
             self.turn_ended(&task.id, ctx.attempt.account_id.clone());
+            // A clean stop of a finished task opens its pull request (#35).
+            let app = Arc::clone(self);
+            let task_id = task.id.clone();
+            tokio::spawn(async move { app.auto_open_pr(&task_id).await });
             return Ok(HookOutput::default());
         }
 

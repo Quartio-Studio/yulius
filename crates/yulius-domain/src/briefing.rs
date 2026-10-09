@@ -391,9 +391,11 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
         "## Git and delivery\n\n\
          - Work only on your task branch {branch} and commit there.\n\
          - Never push to {integration} or {production}; a pre-push guard rejects it.\n\
-         - Delivery goes through a pull request into {integration}; people merge and promote \
-         in Yulius (or the profile does), never you. Run the tests before asking for delivery. \
-         {checks}\n\
+         - Delivery goes through a pull request into {integration}. When your spec is valid, \
+         every step is done and your work is committed, Yulius pushes your branch and opens \
+         the pull request itself when your turn ends; do not ask anyone to open it. People \
+         merge and promote in Yulius (or the profile does), never you. Run the tests before \
+         you finish. {checks}\n\
          - Delivery path ({preset} profile): {path}.\n\n",
         branch = code(&input.task.branch, 200),
         preset = profile.preset.as_str(),

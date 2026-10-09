@@ -24,6 +24,8 @@ const CAPACITY_TICKS: u64 = 5;
 const USAGE_FIRST: Duration = Duration::from_secs(2 * 60);
 /// Background usage rounds: modest, so the provider's usage endpoint is not hammered.
 const USAGE_EVERY: Duration = Duration::from_secs(10 * 60);
+/// Delivery reconciliation with GitHub (pull requests merged or closed outside Yulius, #35).
+const DELIVERY_EVERY: Duration = Duration::from_secs(3 * 60);
 /// Text typed into an idle agent session.
 const WAKE_TEXT: &str =
     "Yulius: you have new messages. Read them with the messages_inbox tool and act on them.";
@@ -69,6 +71,16 @@ impl App {
                         app.retry_waiting(&task.id).await;
                     }
                 }
+            }
+        });
+        // Deliveries in progress follow GitHub, so the Git board moves without anyone looking.
+        let app = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(DELIVERY_EVERY);
+            every.tick().await;
+            loop {
+                every.tick().await;
+                app.reconcile_deliveries().await;
             }
         });
         // Account usage in its own loop: a slow provider never delays queue draining.
