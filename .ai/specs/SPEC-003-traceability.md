@@ -215,9 +215,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 42 | (2026-10-09, hardening; code review) The server's own Git ran repository hooks (and honors repository config) in Git directories the sandbox's agents can write, outside containment; only the environment checkout disabled hooks. | SPEC-002 R-13 (new), R-09 |
 | 43 | (2026-10-09, hardening; seen on the instance) No security headers on the UI or the API: any site could frame the signed-in app (clickjacking), no `nosniff`, no referrer policy. | SPEC-002 §8 security; docs/operations.md |
 | 44 | (2026-10-09, hardening; code review) A symbolic link to `.git` inside the editor's folder opened the Git directory to the file API despite the `.git` refusal. | ADR-10, SPEC-002 §8, AC-EDT-2 |
+| 45 | (2026-10-09, hardening; code review) The GitHub sign-in return path accepted backslash and control-character forms that browsers turn into another host: an open redirect right after sign-in. | ACC-003, AC-ACC-3 |
 
 ## Changelog
 
+- 2026-10-09: the sign-in return path stays on the site (§6 item 45, hardening).
 - 2026-10-09: the file API refuses paths that resolve into `.git` (§6 item 44, hardening).
 - 2026-10-09: baseline security headers on every public response (§6 item 43, hardening).
 - 2026-10-09: server-side Git ignores repository hooks (§6 item 42, hardening; config is #54 part B).
