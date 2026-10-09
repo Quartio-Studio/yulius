@@ -732,3 +732,51 @@ async fn allowlisted_origins_get_cors_and_websockets() -> TestResult {
     assert_eq!(status, Some(403));
     Ok(())
 }
+
+/// #56: every public response carries the baseline security headers (no framing by other
+/// sites, no MIME sniffing, no referrer to other origins).
+#[tokio::test]
+async fn public_responses_carry_security_headers() -> TestResult {
+    use tower::ServiceExt;
+    let h = harness()?;
+    for path in [
+        "/",
+        "/s/studio/tasks",
+        "/api/me",
+        "/api/setup/status",
+        "/healthz",
+    ] {
+        let request = axum::http::Request::builder()
+            .uri(path)
+            .body(axum::body::Body::empty())?;
+        let response = h.router.clone().oneshot(request).await?;
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            header("x-frame-options").as_deref(),
+            Some("SAMEORIGIN"),
+            "{path}"
+        );
+        assert_eq!(
+            header("content-security-policy").as_deref(),
+            Some("frame-ancestors 'self'"),
+            "{path}"
+        );
+        assert_eq!(
+            header("x-content-type-options").as_deref(),
+            Some("nosniff"),
+            "{path}"
+        );
+        assert_eq!(
+            header("referrer-policy").as_deref(),
+            Some("same-origin"),
+            "{path}"
+        );
+    }
+    Ok(())
+}

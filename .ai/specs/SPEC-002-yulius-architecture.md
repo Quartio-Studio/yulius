@@ -402,7 +402,10 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   Linux. Host mode provides no containment and is labelled in the UI and logs (SEC-001).
 - Public listener: HTTPS terminated by the reverse proxy; cookies HttpOnly, Secure, SameSite=Lax;
   CSRF header on state-changing requests; WebSocket Origin must equal the public URL (or an
-  allowlisted desktop origin); login rate limits; Argon2id for the superadmin password.
+  allowlisted desktop origin); login rate limits; Argon2id for the superadmin password. Every
+  response carries `X-Frame-Options: SAMEORIGIN`, `Content-Security-Policy: frame-ancestors
+  'self'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin` unless the route
+  sets a stricter policy (#56); HSTS is set by the TLS proxy.
 - Internal listener binds 127.0.0.1 only; accepts task tokens only; tokens are per attempt, random
   256-bit, stored hashed, revoked when the attempt ends.
 - Secrets (provider credentials, GitHub App key, MCP env/headers) are encrypted at rest with the
