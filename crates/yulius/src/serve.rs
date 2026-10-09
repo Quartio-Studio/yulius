@@ -4,8 +4,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use axum::serve::ListenerExt as _;
 use clap::Args;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use yulius_app::context::{App, AppConfig, Deps};
 use yulius_store::SqliteStore;
 use yulius_store::crypto::{MasterKeyCrypto, write_private};
@@ -226,9 +227,10 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         .into_make_service_with_connect_info::<SocketAddr>();
     let internal_router = yulius_server::internal_router(app.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
-    let public_task = axum::serve(public, public_router).with_graceful_shutdown(shutdown_signal());
-    let internal_task =
-        axum::serve(internal, internal_router).with_graceful_shutdown(shutdown_signal());
+    let public_task = axum::serve(public.tap_io(no_delay), public_router)
+        .with_graceful_shutdown(shutdown_signal());
+    let internal_task = axum::serve(internal.tap_io(no_delay), internal_router)
+        .with_graceful_shutdown(shutdown_signal());
     let (a, b) = tokio::join!(public_task, internal_task);
     // Browsers and shells do not outlive the server (agent sessions do).
     drop(workspace_reaper);
@@ -264,4 +266,32 @@ pub async fn backup(data_dir: PathBuf, dest: PathBuf) -> Result<(), String> {
     store.backup_to(&dest).await.map_err(|e| e.to_string())?;
     println!("database copied to {}", dest.display());
     Ok(())
+}
+
+/// Sends small writes at once (#29). A keystroke's echo is one small WebSocket frame; with
+/// Nagle's algorithm on, it waited for the proxy's delayed ACK whenever earlier output was still
+/// unacknowledged — tens of milliseconds per character while an agent streams output.
+fn no_delay(tcp: &mut TcpStream) {
+    if let Err(err) = tcp.set_nodelay(true) {
+        tracing::debug!(error = %err, "TCP_NODELAY could not be set on a connection");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn accepted_connections_send_small_writes_at_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let client = TcpStream::connect(address).await?;
+        let (mut accepted, _) = listener.accept().await?;
+        assert!(!accepted.nodelay()?, "Nagle is on by default");
+        no_delay(&mut accepted);
+        assert!(accepted.nodelay()?);
+        drop(client);
+        Ok(())
+    }
 }

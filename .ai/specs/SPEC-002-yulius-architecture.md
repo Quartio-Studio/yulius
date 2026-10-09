@@ -369,6 +369,8 @@ Binary frames mirror §7.1 (Output/Snapshot/Exit) plus JSON text control frames:
 viewer queue 512 frames / 8 MiB; overflow closes with code 4008; client reconnects with backoff
 (0.5 s → 10 s). Input requires write permission and is applied in arrival order; each input frame
 carries a client sequence for duplicate suppression after reconnect. At most 16 viewers per task.
+Accepted TCP connections set `TCP_NODELAY`, so a keystroke's echo — one small frame — is sent at once
+instead of waiting behind Nagle's algorithm for the proxy's delayed ACK (F 2026-10-09, #29).
 
 ### 7.8 UI event stream (`/api/events`, WS)
 
