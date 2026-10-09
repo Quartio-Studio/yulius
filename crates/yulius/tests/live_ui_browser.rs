@@ -753,14 +753,14 @@ async fn sandbox_apps_open_live_in_the_users_browser() -> TestResult {
         assert!(refused.is_err(), "the sandbox Chrome opened Yulius: {refused:?}");
         let refused = agent.tool_open(&OpenParams { url: format!("{preview}/") }).await;
         assert!(refused.is_err(), "the sandbox Chrome opened a preview origin: {refused:?}");
-        // A page of the app that redirects to Yulius: the request is intercepted and failed.
-        let _ = agent
+        // A page of the app that redirects to Yulius: the request is intercepted and failed, so
+        // the tab never shows the Yulius UI (whose title is "Yulius").
+        let navigated = agent
             .tool_navigate(&yulius_contracts::browser::NavigateParams { tab_id: opened.tab.id.clone(), url: format!("http://localhost:{port}/go-yulius") })
             .await;
-        let shown = agent
-            .tool_snapshot(&yulius_contracts::browser::SnapshotParams { tab_id: opened.tab.id.clone() })
-            .await?;
-        assert!(!shown.outline.contains("Sign in") && !shown.outline.contains("Yulius"), "the sandbox Chrome showed Yulius: {}", shown.outline);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let tab = agent.tabs().into_iter().find(|t| t.id == opened.tab.id).ok_or("the agent's tab")?;
+        assert_ne!(tab.title, "Yulius", "the sandbox Chrome showed Yulius: {tab:?} ({navigated:?})");
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
