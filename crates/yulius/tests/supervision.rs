@@ -742,6 +742,127 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
     Ok(())
 }
 
+/// AC-DSC-5: a task worktree refuses the agent's pushes to the integration and production
+/// branches (the agent's own Git runs the Yulius pre-push guard) and lets the task branch go.
+/// AC-UI-3: status transitions reach the UI as task events within 2 s.
+#[test]
+fn task_worktrees_guard_protected_branches_and_status_changes_reach_the_ui() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let mut events = app.events.subscribe();
+        let id = new_task(&app, &sandbox, &user, "Guarded").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let mut seen: Vec<String> = Vec::new();
+        // Collects this task's statuses from the UI events; a lagging receiver skips ahead.
+        let drain =
+            |events: &mut tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
+             seen: &mut Vec<String>| {
+                loop {
+                    match events.try_recv() {
+                        Ok(envelope) => {
+                            if let yulius_contracts::events::UiEvent::TaskUpdated { task } =
+                                envelope.event
+                                && task.id == id.as_str()
+                            {
+                                seen.push(task.status);
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                        Err(_) => break,
+                    }
+                }
+            };
+        // The banner can come before the supervisor records the run as running: wait for it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !seen.iter().any(|s| s == "running") && Instant::now() < deadline {
+            drain(&mut events, &mut seen);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            seen.iter().any(|s| s == "running"),
+            "running reached the UI: {seen:?}"
+        );
+
+        // The agent's own Git, in the task worktree.
+        let record = task(&app, &id).await?;
+        let worktree = PathBuf::from(record.worktree_path.ok_or("worktree")?);
+        let branch = record.branch.ok_or("branch")?;
+        let agent_git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&worktree)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_AUTHOR_NAME", "Agent")
+                .env("GIT_AUTHOR_EMAIL", "agent@example.invalid")
+                .env("GIT_COMMITTER_NAME", "Agent")
+                .env("GIT_COMMITTER_EMAIL", "agent@example.invalid")
+                .output()
+        };
+        // The agent's work: without a new commit a push is "up to date" and runs no hook.
+        std::fs::write(worktree.join("guarded.txt"), "agent work\n")?;
+        for args in [
+            &["add", "guarded.txt"][..],
+            &["commit", "--quiet", "-m", "agent work"],
+        ] {
+            let done = agent_git(args)?;
+            assert!(
+                done.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&done.stderr)
+            );
+        }
+        let push = |refspec: String| agent_git(&["push", "--quiet", "origin", &refspec]);
+        for protected in ["main", "dev"] {
+            let refused = push(format!("HEAD:refs/heads/{protected}"))?;
+            assert!(
+                !refused.status.success(),
+                "push to {protected} was not refused"
+            );
+            let stderr = String::from_utf8_lossy(&refused.stderr);
+            assert!(
+                stderr.contains(&format!("protected branch {protected}")),
+                "{stderr}"
+            );
+        }
+        let allowed = push(format!("HEAD:refs/heads/{branch}"))?;
+        assert!(
+            allowed.status.success(),
+            "the task branch pushes: {}",
+            String::from_utf8_lossy(&allowed.stderr)
+        );
+
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        let stopped = task(&app, &id).await?.status.as_str().to_owned();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !seen.contains(&stopped) && Instant::now() < deadline {
+            drain(&mut events, &mut seen);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            seen.contains(&stopped),
+            "{stopped} reached the UI within 2 s: {seen:?}"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// #31: a run's tokens, turns and active time are stored while it goes, not only when it ends,
 /// so the dashboard counts work in progress.
 #[test]

@@ -41,6 +41,48 @@ async fn write_users_delete_resting_tasks_with_their_records() -> TestResult {
     .await?;
     assert_eq!(fb.status, StatusCode::NO_CONTENT, "{:?}", fb.body);
 
+    // AC-ANL-2: feedback is stored per user and shown with the task; a second answer replaces
+    // the first; a read user may answer too; an unknown verdict is refused.
+    for (who, body) in [
+        (
+            &alice,
+            json!({"verdict": "incorrect", "comment": "misses the empty cart"}),
+        ),
+        (&bob, json!({"verdict": "correct"})),
+    ] {
+        let answered = call(
+            &h.router,
+            Method::POST,
+            "/api/tasks/t1/feedback",
+            Some(body),
+            who,
+        )
+        .await?;
+        assert_eq!(
+            answered.status,
+            StatusCode::NO_CONTENT,
+            "{:?}",
+            answered.body
+        );
+    }
+    let bad = call(
+        &h.router,
+        Method::POST,
+        "/api/tasks/t1/feedback",
+        Some(json!({"verdict": "maybe"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let detail = call(&h.router, Method::GET, "/api/tasks/t1", None, &alice).await?;
+    let feedback = detail.body["feedback"].as_array().ok_or("feedback")?;
+    assert_eq!(feedback.len(), 2, "one answer per user: {feedback:?}");
+    let by = |login: &str| feedback.iter().find(|f| f["login"] == login).cloned();
+    let alices = by("alice").ok_or("alice's feedback")?;
+    assert_eq!(alices["verdict"], "incorrect");
+    assert_eq!(alices["comment"], "misses the empty cart");
+    assert_eq!(by("bob").ok_or("bob's feedback")?["verdict"], "correct");
+
     let refused = call(&h.router, Method::DELETE, "/api/tasks/t1", None, &bob).await?;
     assert_eq!(
         refused.status,

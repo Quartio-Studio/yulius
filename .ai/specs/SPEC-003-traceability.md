@@ -216,9 +216,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 43 | (2026-10-09, hardening; seen on the instance) No security headers on the UI or the API: any site could frame the signed-in app (clickjacking), no `nosniff`, no referrer policy. | SPEC-002 §8 security; docs/operations.md |
 | 44 | (2026-10-09, hardening; code review) A symbolic link to `.git` inside the editor's folder opened the Git directory to the file API despite the `.git` refusal. | ADR-10, SPEC-002 §8, AC-EDT-2 |
 | 45 | (2026-10-09, hardening; code review) The GitHub sign-in return path accepted backslash and control-character forms that browsers turn into another host: an open redirect right after sign-in. | ACC-003, AC-ACC-3 |
+| 46 | (2026-10-09, hardening; spec-to-test review) No test checked that creating a task installs the push guard, that supervisor status transitions reach the UI, or that feedback is read back per user. | AC-DSC-5, AC-UI-3, AC-ANL-2 |
 
 ## Changelog
 
+- 2026-10-09: tests for the task push guard, status events and feedback readback (§6 item 46, hardening).
 - 2026-10-09: the sign-in return path stays on the site (§6 item 45, hardening).
 - 2026-10-09: the file API refuses paths that resolve into `.git` (§6 item 44, hardening).
 - 2026-10-09: baseline security headers on every public response (§6 item 43, hardening).
