@@ -439,7 +439,8 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   before checkout (Studio's own procedure) and is not offered in this version.
 - Repository hooks (Studio `.githooks/pre-commit` mass-delete guard): worktrees honor the
   repository's `core.hooksPath` when the preparation task configures it per the repo's AGENTS.md;
-  Yulius adds its own `pre-push` guard without replacing repository hooks.
+  Yulius adds its own `pre-push` guard without replacing repository hooks. Hooks run in the
+  agents' own Git inside containment only; the server's Git never runs them (R-13, #54).
 - Instructions: repositories' `AGENTS.md`/`CLAUDE.md`/`.agents/skills`/`.claude/skills`
   remain authoritative inside the sandbox; the Yulius briefing points to them instead of
   overriding them.
@@ -520,6 +521,7 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
 | R-12 | Closed (F 2026-10-08): Codex releases without `--no-daemon` (Codex removed). | — |
+| R-13 | The server's own Git (worktree creation, commits, status and readiness checks, fetch, delivery pushes) runs outside containment in the sandbox repository and worktrees, whose Git directories agents can write (#54). | Every server-side Git command runs with repository hooks off (`core.hooksPath=/dev/null`), fsmonitor off and `ext::` refused; agents' own Git still runs hooks, so the pre-push guard applies to them. Open (#54 part B): repository-local configuration that runs programs or redirects remotes (filter, diff and merge drivers, credential helpers, URL rewriting) — read-only Git config in containment or a Yulius-owned mirror. |
 
 ## 13. Delivery checkpoints
 
@@ -564,6 +566,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-09 (hardening): server-side Git never runs repository hooks; risk R-13 (#54).
 - 2026-10-08 (F 2026-10-08): Claude Code only — Codex adapter, homes, login, usage probe, import,
   provider switching, harness proposals and the translation stack removed (ADR-05 narrowed, ADR-06
   and §7.3 withdrawn, R-02/R-03/R-12 closed); proactive rotation driven by usage refreshes;
