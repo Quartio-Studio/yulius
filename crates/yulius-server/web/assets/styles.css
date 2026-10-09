@@ -933,7 +933,13 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 /* ---------------------------------------------------------------- task view */
 
 .taskview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.attention-bar { flex: none; display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); border-left: 3px solid var(--warn); background: var(--warn-soft); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+/* The terminal and what floats over it: the attention bar never resizes the terminal (each resize
+   makes the agent's TUI redraw, F 2026-10-09). */
+.taskview-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.attention-bar { position: absolute; top: 8px; right: 16px; z-index: var(--z-float); display: flex; align-items: center; gap: 12px; max-width: min(560px, calc(100% - 32px)); padding: 8px 8px 8px 12px; border: 1px solid var(--border-strong); border-left: 3px solid var(--warn); border-radius: var(--radius); background: var(--warn-soft); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow-sm); }
+.attention-bar[hidden] { display: none; }
+/* Below the attention bar, the terminal's own notices. */
+.taskview-term:has(.attention-bar:not([hidden])) .term-notice, .taskview-term:has(.attention-bar:not([hidden])) .term-mouse-toggle { top: 64px; }
 .attention-bar.waiting { border-left-color: var(--info); background: var(--info-soft); color: var(--info-fg-strong); }
 .attention-bar .icon { flex: none; }
 .attention-text { flex: 1; min-width: 0; }
@@ -954,7 +960,15 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .strip-delivery { display: inline-flex; align-items: center; gap: 8px; }
 .strip-delivery:empty { display: none; }
 button.strip-pr { background: transparent; font-family: inherit; cursor: pointer; }
-.strip-status { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); white-space: nowrap; }
+.strip-extras { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.strip-extras:empty { display: none; }
+.strip-status { display: inline-flex; align-items: center; gap: 4px; height: var(--control-sm); padding: 0 8px; border-radius: var(--radius-full); font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); white-space: nowrap; }
+/* The session's state at a glance: waiting for you, needs you, done, failed (F 2026-10-09). */
+.strip-status[data-tone="waiting"] { background: var(--info-soft); color: var(--info-fg); }
+.strip-status[data-tone="attention"], .strip-status[data-tone="stopped-abnormal"] { background: var(--warn-soft); color: var(--warn-fg); }
+.strip-status[data-tone="done"] { background: var(--ok-soft); color: var(--ok-fg); }
+.strip-status[data-tone="failed"] { background: var(--danger-soft); color: var(--danger-fg); }
+.strip-status:is([data-tone="waiting"], [data-tone="attention"], [data-tone="stopped-abnormal"], [data-tone="done"], [data-tone="failed"]) .glyph { color: inherit; }
 .steplist { max-height: 40vh; overflow: auto; padding: 4px 12px 12px 32px; border-top: 1px solid var(--border); }
 .step-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; padding: 4px 0; align-items: baseline; }
 .step-item + .step-item { border-top: 1px solid var(--border); }
@@ -984,6 +998,26 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .term-banner-warn { background: var(--warn-soft); color: var(--warn-fg-strong); }
 .term-banner-error { background: var(--danger-soft); color: var(--danger-fg-strong); }
 .term-banner-readonly { background: var(--surface-2); color: var(--text-2); }
+/* The terminal appears once, at its final size and font (F 2026-10-09): until its first screen is
+   drawn the grid is laid out but hidden, under a calm placeholder of the terminal's colour. */
+.term-host.term-pending { visibility: hidden; }
+.term-skeleton { position: absolute; inset: 0; z-index: var(--z-float); display: flex; flex-direction: column; gap: 12px; padding: 16px 12px; background: var(--term-bg); pointer-events: none; opacity: 1; transition: opacity var(--duration) var(--ease); }
+.term-skeleton > span { display: block; height: var(--lh-sm); border-radius: var(--radius-sm); background: var(--surface-2); opacity: 0; animation: term-skeleton-in var(--duration-slow) var(--ease) var(--duration-slow) forwards; }
+.term-skeleton > span:nth-child(1) { width: 38%; }
+.term-skeleton > span:nth-child(2) { width: 62%; }
+.term-skeleton > span:nth-child(3) { width: 24%; }
+.term-skeleton.term-skeleton-done { opacity: 0; }
+@keyframes term-skeleton-in { to { opacity: .5; } }
+.term-placeholder { position: relative; }
+/* A word over a blank screen (a task that has not started yet). */
+.term-empty { position: absolute; inset: 0; z-index: var(--z-float); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 24px; text-align: center; pointer-events: none; }
+.term-empty-title { margin: 0; color: var(--text); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
+.term-empty-text { margin: 0; max-width: 48ch; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+/* Connection trouble floats over the top of the terminal: it never changes the terminal's size. */
+.term-conn { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: var(--z-float); display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 4px 4px 4px 12px; border-radius: var(--radius-full); background: var(--warn-soft); border: 1px solid var(--border-strong); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow-sm); }
+.term-conn.term-conn-error { background: var(--danger-soft); color: var(--danger-fg-strong); }
+.term-conn > .icon { flex: none; }
+.term-conn .spinner { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; }
 .term-notice { position: absolute; top: 8px; right: 14px; z-index: var(--z-float); max-width: 70%; padding: 6px 12px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--border-strong); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }
 
 /* phone quick input (UI-012, §6.4) */
@@ -1628,12 +1662,20 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-twisty { width: 12px; flex: none; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .ed-name { overflow: hidden; text-overflow: ellipsis; }
 .ed-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--term-bg); }
-.ed-tabs { display: flex; overflow-x: auto; flex: none; background: var(--surface); border-bottom: 1px solid var(--border); min-height: var(--control-lg); }
-.ed-tab { display: flex; align-items: center; gap: 6px; padding: 0 4px 0 12px; height: var(--control-lg); border-right: 1px solid var(--border); font-size: var(--fs); line-height: var(--lh); cursor: pointer; color: var(--muted); white-space: nowrap; }
-.ed-tab.active { background: var(--term-bg); color: var(--text); box-shadow: inset 0 1px 0 var(--accent); }
-.ed-tab:focus-visible { box-shadow: var(--focus-inset); }
-.ed-tab-close { display: inline-flex; align-items: center; justify-content: center; color: inherit; width: var(--control-sm); height: var(--control-sm); border-radius: var(--radius-sm); cursor: pointer; font-size: var(--fs); line-height: 1; }
-.ed-tab-close:hover { background: var(--overlay-active); }
+.ed-tabs, .term-tabs { display: flex; overflow-x: auto; flex: none; background: var(--surface); border-bottom: 1px solid var(--border); min-height: var(--control-lg); }
+.ed-tab, .term-tab { display: flex; align-items: center; gap: 6px; padding: 0 4px 0 12px; height: var(--control-lg); border-right: 1px solid var(--border); font-size: var(--fs); line-height: var(--lh); cursor: pointer; color: var(--muted); white-space: nowrap; }
+.ed-tab.active, .term-tab.active { background: var(--term-bg); color: var(--text); box-shadow: inset 0 1px 0 var(--accent); }
+.ed-tab:focus-visible, .term-tab:focus-visible { box-shadow: var(--focus-inset); }
+.ed-tab-close, .term-tab-close { display: inline-flex; align-items: center; justify-content: center; color: inherit; width: var(--control-sm); height: var(--control-sm); border-radius: var(--radius-sm); cursor: pointer; font-size: var(--fs); line-height: 1; }
+.ed-tab-close:hover, .term-tab-close:hover { background: var(--overlay-active); }
+/* Sandbox terminals (UI-016): one tab per terminal; double-click or F2 renames. */
+.term-tab-name { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; }
+.term-tab-rename { width: 14ch; height: var(--control-sm); padding: 0 6px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); font: inherit; }
+.term-tab-ended .term-tab-name { text-decoration: line-through; }
+.term-tab-add { align-self: center; margin: 0 4px; }
+.term-views { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
+.term-views > [hidden] { display: none; }
+.term-slot { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .ed-stage { position: relative; flex: 1; min-height: 0; }
 .ed-host { position: absolute; inset: 0; }
 .ed-host[hidden] { display: none; }

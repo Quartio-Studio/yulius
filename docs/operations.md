@@ -40,9 +40,10 @@ provider accounts are added inside Yulius (Administration → Accounts), not wit
 
 ## 3. systemd unit
 
-`KillMode=process` is required: each agent session runs in its own detached `yulius ptyhost`
-process so that sessions survive a restart or upgrade of the server (NFR-001). With the default
-`KillMode=control-group`, stopping the service would kill every running agent.
+`KillMode=process` is required: each agent session and each user terminal (sandbox shell) runs in
+its own detached `yulius ptyhost` process so that they survive a restart or upgrade of the server
+(NFR-001, UI-016; the next start adopts the terminals from `shells/<id>/shell.json`). With the
+default `KillMode=control-group`, stopping the service would kill every running agent and terminal.
 
 ```ini
 # /etc/systemd/system/yulius.service
@@ -177,7 +178,9 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
 
 Replace the binary and `systemctl restart yulius`. Live sessions keep running in their detached
 hosts; the new server reconciles them on start (reattaches live runs, marks dead ones stopped,
-never respawns). Queued tasks start when capacity allows.
+never respawns). Users' terminals keep running too and are adopted again before the server
+serves; a terminal whose host is gone (a machine reboot) or whose sandbox was removed is cleaned
+up. Queued tasks start when capacity allows.
 
 ## 9. Security notes
 

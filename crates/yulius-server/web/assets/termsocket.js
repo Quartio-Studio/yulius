@@ -74,7 +74,8 @@ export class Backoff {
 /**
  * A WebSocket that reconnects with backoff. Status values:
  * connecting | open | reconnecting | failed | closed.
- * `onOpen(socket, isReconnect)` sends handshakes; `onMessage(data)` receives frames.
+ * `path` is a string or a function called at each connect (e.g. to add the current terminal
+ * size); `onOpen(socket, isReconnect)` sends handshakes; `onMessage(data)` receives frames.
  */
 export class ReconnectingSocket {
   constructor({ transport, path, onOpen, onMessage, onStatus, backoff }) {
@@ -118,7 +119,7 @@ export class ReconnectingSocket {
     this.setStatus(this.connectedOnce ? 'reconnecting' : 'connecting');
     let ws;
     try {
-      ws = this.transport.openSocket(this.path);
+      ws = this.transport.openSocket(typeof this.path === 'function' ? this.path() : this.path);
     } catch {
       this.scheduleReconnect(0);
       return;
@@ -210,17 +211,25 @@ const FATAL_ERRORS = new Set(['unauthenticated', 'not_found']);
  * Terminal protocol client shared by task terminals, sandbox shells and the account
  * login terminal. Handlers: getSize() → {cols, rows}, onOutput(bytes), onSnapshot(bytes),
  * onState(state), onNotice(text), onExit(exit), onError(error), onStatus(status, detail).
+ * With `sizeInPath`, each connect asks for `path?cols=&rows=` (the size from getSize()): the
+ * server applies it before the first state and snapshot, so the terminal never appears at
+ * another size first (docs/api.md, F 2026-10-09).
  */
 export class TerminalSocket {
-  constructor({ transport, path, handlers = {}, backoff }) {
+  constructor({ transport, path, handlers = {}, backoff, sizeInPath = false }) {
     this.h = handlers;
     this.lastSeq = null;
     this.inputSeq = 0;
     this.ended = false;
     this.fatal = null;
+    const sized = () => {
+      const size = this.h.getSize && this.h.getSize();
+      if (!size || !size.cols || !size.rows) return path;
+      return `${path}${path.includes('?') ? '&' : '?'}cols=${Math.round(size.cols)}&rows=${Math.round(size.rows)}`;
+    };
     this.socket = new ReconnectingSocket({
       transport,
-      path,
+      path: sizeInPath ? sized : path,
       backoff,
       onOpen: (socket) => {
         const size = (this.h.getSize && this.h.getSize()) || { cols: 120, rows: 40 };

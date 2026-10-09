@@ -1,47 +1,58 @@
-//! Sandbox shells: a general login shell per request in the sandbox, separate from every agent
-//! terminal (SPEC-001 UI-015, AC-UI-7, U-11; SPEC-002 §7.2).
+//! Sandbox shells: the user's own terminals in a sandbox, separate from every agent terminal
+//! (SPEC-001 UI-015, UI-016, AC-UI-7, AC-UI-8, U-11; SPEC-002 §7.2).
 //!
 //! Contract:
 //! - only users with write access to the sandbox create shells, and a shell is private to the
-//!   user who opened it: nobody else (administrators included) can attach to it (UI-016);
+//!   user who opened it: nobody else (administrators included) can list, attach to, rename or
+//!   close it, and it belongs to one sandbox (UI-016);
+//! - a user may keep several shells per sandbox (tabs in the web UI), at most
+//!   [`MAX_SHELLS_PER_SANDBOX`] live ones, each with a name ("Terminal 1" by default) that
+//!   only its owner sees and can change; [`MAX_SHELL_VIEWERS`] viewers per shell;
 //! - a shell is the user's login shell (`$SHELL`, else `/bin/bash`, else `/bin/sh`, unless
 //!   [`App::set_shell_program`] configured one) started through the session host in the sandbox
 //!   repository or a task worktree of that sandbox, as the user's sandbox identity
 //!   ([`App::user_space`]: their own home, root in the sandbox, Git as their GitHub account); it
 //!   gets no task token or hooks;
-//! - at most [`MAX_SHELLS_PER_SANDBOX`] live shells per user and sandbox and
-//!   [`MAX_SHELL_VIEWERS`] viewers per shell;
-//! - a shell ends when its process exits, after [`SHELL_IDLE_MS`] without viewers
-//!   ([`App::reap_idle_shells`]) or on server shutdown ([`App::stop_workspace_services`]);
+//! - shells outlive the server like agent sessions: their detached hosts keep running across a
+//!   restart, and the next server process adopts them from their run directory
+//!   (`shells/<id>/shell.json`: owner, sandbox, name and the sealed host token) at start
+//!   ([`App::start_workspace_services`]); a run directory it cannot adopt is ended and removed;
+//! - a shell ends when its process exits, when its owner closes it ([`App::shell_close`]) or
+//!   after [`SHELL_IDLE_MS`] without viewers ([`App::reap_idle_shells`]);
 //! - shells never read or write task state (HRN-002): the task terminal stays the agent's.
 
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use yulius_domain::ids::{SandboxId, UserId};
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::permission::Action;
+use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, hex_token};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::hub::{Hub, Subscription};
 use crate::identity::UserSpace;
-use crate::model::SandboxRecord;
+use crate::model::{SandboxRecord, Sealed};
 use crate::ports::Clock;
 use crate::ports::session::{LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunWriter};
 
 /// Live shells allowed per user and sandbox.
-pub const MAX_SHELLS_PER_SANDBOX: usize = 4;
+pub const MAX_SHELLS_PER_SANDBOX: usize = 8;
 /// Viewers allowed per shell.
 pub const MAX_SHELL_VIEWERS: u64 = 16;
-/// A shell without viewers for this long is ended.
-pub const SHELL_IDLE_MS: i64 = 30 * 60 * 1000;
+/// A shell without viewers for this long is ended (a day: a terminal outlives a closed laptop
+/// and a night, like a local terminal tab, but not a forgotten week).
+pub const SHELL_IDLE_MS: i64 = 24 * 60 * 60 * 1000;
+/// Longest shell name, in characters.
+pub const MAX_SHELL_NAME_CHARS: usize = 40;
 /// Largest accepted input frame.
 pub const MAX_SHELL_INPUT_BYTES: usize = 64 * 1024;
 /// Interval of the idle reaper for shells and browsers.
@@ -55,14 +66,23 @@ const EXIT_WAIT: Duration = Duration::from_secs(10);
 const REATTACH_ATTEMPTS: u32 = 3;
 /// Initial PTY size before the first viewer reports its size.
 const DEFAULT_SIZE: (u16, u16) = (120, 40);
-/// Orphaned shell directories inspected at startup.
+/// Shell run directories inspected at startup.
 const MAX_ORPHANS: usize = 1024;
+/// The shell's record in its run directory.
+const SHELL_FILE: &str = "shell.json";
+/// Version of [`ShellFile`].
+const SHELL_FILE_VERSION: u32 = 1;
+/// Time allowed to reattach to one surviving shell at startup.
+const ADOPT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Registry of live shells (process-local; shells do not survive a server restart).
+/// Registry of live shells. The registry is process-local; the shells themselves survive a
+/// server restart and are adopted again from their run directories.
 #[derive(Default)]
 pub struct ShellState {
     shells: Mutex<HashMap<String, Arc<ShellRuntime>>>,
     program: OnceLock<PathBuf>,
+    /// The next creation number (tab order among shells created in the same millisecond).
+    next_seq: AtomicU64,
 }
 
 /// One live shell.
@@ -70,14 +90,54 @@ pub struct ShellRuntime {
     id: String,
     sandbox: SandboxId,
     creator: UserId,
+    task: Option<TaskId>,
+    name: Mutex<String>,
+    created_at: Timestamp,
+    /// Creation number, persisted with the shell (stable tab order).
+    seq: u64,
     run_dir: PathBuf,
     token: [u8; 32],
     hub: Hub,
     writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
     ended: AtomicBool,
+    /// Its owner closed it: hidden and refused while it ends.
+    closing: AtomicBool,
     ended_tx: watch::Sender<bool>,
     /// Clock time (ms) when the last viewer left; meaningful only without viewers.
     idle_since_ms: AtomicI64,
+    /// The task that forwards the host's output; aborted when the server lets go of the shell.
+    pump: Mutex<Option<JoinHandle<()>>>,
+}
+
+/// A shell as its owner sees it (`GET /api/sandboxes/{sid}/shells`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellInfo {
+    /// Shell id.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// The task whose worktree it started in; `None` for the sandbox repository.
+    pub task_id: Option<String>,
+    /// Creation time.
+    pub created_at: Timestamp,
+}
+
+/// `shells/<id>/shell.json`: what a later server process needs to adopt a surviving shell.
+/// Owner-only (0600) inside an owner-only run directory; the host token is sealed with the
+/// instance master key, like an agent attempt's. (No `Debug`: records stay out of logs.)
+#[derive(Serialize, Deserialize)]
+struct ShellFile {
+    version: u32,
+    id: String,
+    sandbox: String,
+    creator: String,
+    task: Option<String>,
+    name: String,
+    created_at: i64,
+    #[serde(default)]
+    seq: u64,
+    /// Sealed host token, lowercase hex.
+    token: String,
 }
 
 impl ShellRuntime {
@@ -99,10 +159,30 @@ impl ShellRuntime {
         &self.creator
     }
 
+    /// Display name.
+    #[must_use]
+    pub fn name(&self) -> String {
+        self.name.lock().map(|n| n.clone()).unwrap_or_default()
+    }
+
     /// Whether the shell has ended.
     #[must_use]
     pub fn has_ended(&self) -> bool {
         self.ended.load(Ordering::SeqCst)
+    }
+
+    /// Listed and attachable: not ended and not being closed.
+    fn is_live(&self) -> bool {
+        !self.has_ended() && !self.closing.load(Ordering::SeqCst)
+    }
+
+    fn info(&self) -> ShellInfo {
+        ShellInfo {
+            id: self.id.clone(),
+            name: self.name(),
+            task_id: self.task.as_ref().map(|t| t.as_str().to_owned()),
+            created_at: self.created_at,
+        }
     }
 
     /// Visible screen text (diagnostics and tests).
@@ -174,6 +254,50 @@ fn shell_dir_root(data_dir: &Path) -> PathBuf {
     data_dir.join("shells")
 }
 
+fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| {
+            text.get(i..i + 2)
+                .and_then(|b| u8::from_str_radix(b, 16).ok())
+        })
+        .collect()
+}
+
+/// A valid shell name: trimmed, 1..=[`MAX_SHELL_NAME_CHARS`] characters, no control characters.
+fn clean_name(name: &str) -> AppResult<String> {
+    let name = name.trim();
+    if name.is_empty()
+        || name.chars().count() > MAX_SHELL_NAME_CHARS
+        || name.chars().any(char::is_control)
+    {
+        return Err(AppError::Invalid(format!(
+            "a shell name has 1 to {MAX_SHELL_NAME_CHARS} characters and no control characters"
+        )));
+    }
+    Ok(name.to_owned())
+}
+
+/// Writes `shell.json` through a temporary file, an fsync and a rename (SPEC-002 §4), 0600.
+fn write_shell_file(run_dir: &Path, file: &ShellFile) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let bytes = serde_json::to_vec(file).map_err(std::io::Error::other)?;
+    let tmp = run_dir.join(format!("{SHELL_FILE}.tmp"));
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    out.write_all(&bytes)?;
+    out.sync_all()?;
+    std::fs::rename(&tmp, run_dir.join(SHELL_FILE))
+}
+
 impl App {
     /// Configures the login shell for sandbox shells (composition and tests); the first call
     /// wins. Returns whether it was applied.
@@ -207,10 +331,10 @@ impl App {
             .lock()
             .ok()
             .and_then(|map| map.get(id).cloned())
-            .filter(|shell| !shell.has_ended())
+            .filter(|shell| shell.is_live())
     }
 
-    /// Live shells of a sandbox.
+    /// Live shells of a sandbox (every user's; diagnostics and tests).
     #[must_use]
     pub fn sandbox_shells(&self, sandbox: &SandboxId) -> Vec<Arc<ShellRuntime>> {
         self.shells
@@ -218,11 +342,40 @@ impl App {
             .lock()
             .map(|map| {
                 map.values()
-                    .filter(|shell| &shell.sandbox == sandbox && !shell.has_ended())
+                    .filter(|shell| &shell.sandbox == sandbox && shell.is_live())
                     .cloned()
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The caller's live shells in `sandbox`, oldest first.
+    fn own_shells(&self, user: &UserId, sandbox: &SandboxId) -> Vec<Arc<ShellRuntime>> {
+        let mut own: Vec<Arc<ShellRuntime>> = self
+            .sandbox_shells(sandbox)
+            .into_iter()
+            .filter(|shell| &shell.creator == user)
+            .collect();
+        own.sort_by(|a, b| (a.created_at, a.seq, &a.id).cmp(&(b.created_at, b.seq, &b.id)));
+        own
+    }
+
+    /// The caller's live shell `id` of `sandbox` (write access required).
+    ///
+    /// # Errors
+    /// `NotFound` for unknown, ended or closing shells, other users' shells and shells of
+    /// another sandbox; access errors.
+    async fn own_shell(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+        id: &str,
+    ) -> AppResult<Arc<ShellRuntime>> {
+        let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        self.shell(id)
+            .filter(|shell| shell.creator == ctx.user.id && shell.sandbox == sandbox_id)
+            .ok_or(AppError::NotFound)
     }
 
     fn shell_env(
@@ -245,23 +398,44 @@ impl App {
         env
     }
 
-    /// Opens a sandbox shell for a write user in the sandbox repository or the worktree of
-    /// `task` (a task of that sandbox) and returns its id.
+    /// The caller's live shells in a sandbox, oldest first (write access; UI-016: only their
+    /// own, never another user's or another sandbox's).
     ///
     /// # Errors
-    /// `NotFound`/`Forbidden` without write access or for foreign tasks, `Conflict` when the
-    /// folder does not exist yet, `Capacity` beyond [`MAX_SHELLS_PER_SANDBOX`], `Upstream` when
-    /// the session host cannot start the shell.
+    /// `NotFound`/`Forbidden` without write access.
+    pub async fn shell_list(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<Vec<ShellInfo>> {
+        let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        Ok(self
+            .own_shells(&ctx.user.id, &sandbox_id)
+            .iter()
+            .map(|shell| shell.info())
+            .collect())
+    }
+
+    /// Opens a sandbox shell for a write user in the sandbox repository or the worktree of
+    /// `task` (a task of that sandbox), named `name` or "Terminal N" (the lowest number free
+    /// among the caller's shells there).
+    ///
+    /// # Errors
+    /// `NotFound`/`Forbidden` without write access or for foreign tasks, `Invalid` for a bad
+    /// name, `Conflict` when the folder does not exist yet, `Capacity` beyond
+    /// [`MAX_SHELLS_PER_SANDBOX`], `Upstream` when the session host cannot start the shell.
     pub async fn shell_create(
         self: &Arc<Self>,
         ctx: &AuthContext,
         sandbox: &str,
         task: Option<&str>,
-    ) -> AppResult<String> {
+        name: Option<&str>,
+    ) -> AppResult<ShellInfo> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
-        let cwd = match task {
-            Some(task) => self.sandbox_worktree(&record, task).await?,
+        let name = name.map(clean_name).transpose()?;
+        let (cwd, task_id) = match task {
+            Some(task) => (
+                self.sandbox_worktree(&record, task).await?,
+                Some(TaskId::parse(task).map_err(|_| AppError::NotFound)?),
+            ),
             None => {
                 let repo = self.sandbox_repo(&record.id);
                 if !repo.is_dir() {
@@ -269,46 +443,62 @@ impl App {
                         "the sandbox repository is not cloned yet".into(),
                     ));
                 }
-                repo
+                (repo, None)
             }
         };
         let random = self.deps.crypto.random_bytes();
         let id = hex_token(random.get(..8).unwrap_or(&random));
-        let runtime = Arc::new(ShellRuntime {
-            id: id.clone(),
-            sandbox: record.id.clone(),
-            creator: ctx.user.id.clone(),
-            run_dir: shell_dir_root(&self.config.data_dir).join(&id),
-            token: self.deps.crypto.random_bytes(),
-            hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
-            writer: tokio::sync::Mutex::new(None),
-            ended: AtomicBool::new(false),
-            ended_tx: watch::channel(false).0,
-            idle_since_ms: AtomicI64::new(self.now().0),
-        });
-        {
+        let runtime = {
             let mut map = self.shells.shells.lock().map_err(AppError::internal)?;
-            let live = map
+            let own: Vec<String> = map
                 .values()
                 .filter(|shell| {
-                    shell.sandbox == record.id && shell.creator == ctx.user.id && !shell.has_ended()
+                    shell.sandbox == record.id && shell.creator == ctx.user.id && shell.is_live()
                 })
-                .count();
-            if live >= MAX_SHELLS_PER_SANDBOX {
+                .map(|shell| shell.name())
+                .collect();
+            if own.len() >= MAX_SHELLS_PER_SANDBOX {
                 return Err(AppError::Capacity(format!(
-                    "at most {MAX_SHELLS_PER_SANDBOX} shells per sandbox; close one first"
+                    "at most {MAX_SHELLS_PER_SANDBOX} terminals per sandbox; close one first"
                 )));
             }
+            let name = name.unwrap_or_else(|| {
+                (1..)
+                    .map(|n| format!("Terminal {n}"))
+                    .find(|candidate| !own.contains(candidate))
+                    .unwrap_or_else(|| "Terminal".into())
+            });
+            let runtime = Arc::new(ShellRuntime {
+                id: id.clone(),
+                sandbox: record.id.clone(),
+                creator: ctx.user.id.clone(),
+                task: task_id,
+                name: Mutex::new(name),
+                created_at: self.now(),
+                seq: self.shells.next_seq.fetch_add(1, Ordering::SeqCst),
+                run_dir: shell_dir_root(&self.config.data_dir).join(&id),
+                token: self.deps.crypto.random_bytes(),
+                hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
+                writer: tokio::sync::Mutex::new(None),
+                ended: AtomicBool::new(false),
+                closing: AtomicBool::new(false),
+                ended_tx: watch::channel(false).0,
+                idle_since_ms: AtomicI64::new(self.now().0),
+                pump: Mutex::new(None),
+            });
             map.insert(id.clone(), Arc::clone(&runtime));
-        }
+            runtime
+        };
         let space = self.user_space(&ctx.user, &record)?;
-        match self.launch_shell(&record, &space, &runtime, &cwd).await {
+        let launched = match self.launch_shell(&record, &space, &runtime, &cwd).await {
+            Ok(reader) => self.save_shell(&runtime).map(|()| reader),
+            Err(err) => Err(err),
+        };
+        match launched {
             Ok(reader) => {
-                let app = Arc::clone(self);
-                let shell = Arc::clone(&runtime);
-                tokio::spawn(async move { app.pump_shell(shell, reader).await });
+                self.start_pump(&runtime, reader);
                 tracing::info!(shell = %id, sandbox = %record.slug, user = %ctx.user.id, "sandbox shell started");
-                Ok(id)
+                Ok(runtime.info())
             }
             Err(err) => {
                 runtime.ended.store(true, Ordering::SeqCst);
@@ -320,6 +510,75 @@ impl App {
                 Err(err)
             }
         }
+    }
+
+    /// Renames one of the caller's shells.
+    ///
+    /// # Errors
+    /// `NotFound` for unknown, ended or closing shells, other users' shells and shells of
+    /// another sandbox; access errors; `Invalid` for a bad name; `Internal` when the record
+    /// cannot be written.
+    pub async fn shell_rename(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+        id: &str,
+        name: &str,
+    ) -> AppResult<ShellInfo> {
+        let name = clean_name(name)?;
+        let shell = self.own_shell(ctx, sandbox, id).await?;
+        let previous = {
+            let mut current = shell.name.lock().map_err(AppError::internal)?;
+            std::mem::replace(&mut *current, name)
+        };
+        if let Err(err) = self.save_shell(&shell) {
+            if let Ok(mut current) = shell.name.lock() {
+                *current = previous;
+            }
+            return Err(err);
+        }
+        Ok(shell.info())
+    }
+
+    /// Closes one of the caller's shells: it disappears from the list at once and its process
+    /// is ended in the background (Ctrl-C, SIGTERM, then SIGKILL; the host is terminated if it
+    /// does not exit).
+    ///
+    /// # Errors
+    /// `NotFound` for unknown, ended or closing shells, other users' shells and shells of
+    /// another sandbox; access errors.
+    pub async fn shell_close(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        sandbox: &str,
+        id: &str,
+    ) -> AppResult<()> {
+        let shell = self.own_shell(ctx, sandbox, id).await?;
+        if shell.closing.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        // Viewers learn at once; the exit frame follows when the process is gone.
+        shell.hub.notice("Closing this terminal…");
+        let app = Arc::clone(self);
+        tokio::spawn(async move { app.end_shells(&[shell]).await });
+        Ok(())
+    }
+
+    /// Writes the shell's record for a later server process (see the module docs).
+    fn save_shell(&self, runtime: &ShellRuntime) -> AppResult<()> {
+        let sealed = self.deps.crypto.seal(&runtime.token)?;
+        let file = ShellFile {
+            version: SHELL_FILE_VERSION,
+            id: runtime.id.clone(),
+            sandbox: runtime.sandbox.as_str().to_owned(),
+            creator: runtime.creator.as_str().to_owned(),
+            task: runtime.task.as_ref().map(|t| t.as_str().to_owned()),
+            name: runtime.name(),
+            created_at: runtime.created_at.0,
+            seq: runtime.seq,
+            token: hex_token(&sealed.0),
+        };
+        write_shell_file(&runtime.run_dir, &file).map_err(AppError::internal)
     }
 
     async fn launch_shell(
@@ -350,7 +609,16 @@ impl App {
             DEFAULT_SIZE,
         )
         .await?;
-        let attached = host.attach(&runtime.run_dir, &runtime.token).await?;
+        self.attach_shell(runtime).await
+    }
+
+    /// Connects to the shell's host and loads its screen into the hub.
+    async fn attach_shell(&self, runtime: &ShellRuntime) -> AppResult<Box<dyn RunReader>> {
+        let attached = self
+            .deps
+            .session_host
+            .attach(&runtime.run_dir, &runtime.token)
+            .await?;
         let welcome = attached.welcome;
         runtime.hub.reset(
             welcome.seq,
@@ -360,6 +628,15 @@ impl App {
         );
         *runtime.writer.lock().await = Some(attached.writer);
         Ok(attached.reader)
+    }
+
+    fn start_pump(self: &Arc<Self>, runtime: &Arc<ShellRuntime>, reader: Box<dyn RunReader>) {
+        let app = Arc::clone(self);
+        let shell = Arc::clone(runtime);
+        let task = tokio::spawn(async move { app.pump_shell(shell, reader).await });
+        if let Ok(mut pump) = runtime.pump.lock() {
+            *pump = Some(task);
+        }
     }
 
     async fn pump_shell(
@@ -381,20 +658,8 @@ impl App {
                         reattaches += 1;
                         tokio::time::sleep(Duration::from_millis(200 * u64::from(reattaches)))
                             .await;
-                        if let Ok(again) = self
-                            .deps
-                            .session_host
-                            .attach(&runtime.run_dir, &runtime.token)
-                            .await
-                        {
-                            runtime.hub.reset(
-                                again.welcome.seq,
-                                again.welcome.snapshot.as_deref().unwrap_or_default(),
-                                again.welcome.cols,
-                                again.welcome.rows,
-                            );
-                            *runtime.writer.lock().await = Some(again.writer);
-                            reader = again.reader;
+                        if let Ok(again) = self.attach_shell(&runtime).await {
+                            reader = again;
                         }
                         continue;
                     }
@@ -463,12 +728,18 @@ impl App {
     }
 
     /// Attaches a viewer to a shell: only its creator, while they keep write access to the
-    /// shell's sandbox (UI-016).
+    /// shell's sandbox (UI-016). `size` (cols, rows), the viewer's terminal, is applied before
+    /// the viewer's snapshot is taken.
     ///
     /// # Errors
-    /// `NotFound` for unknown or ended shells, other users' shells and invisible sandboxes,
-    /// `Forbidden` for read users, `Capacity` beyond [`MAX_SHELL_VIEWERS`].
-    pub async fn shell_open(&self, ctx: &AuthContext, shell_id: &str) -> AppResult<ShellAttach> {
+    /// `NotFound` for unknown, ended or closing shells, other users' shells and invisible
+    /// sandboxes, `Forbidden` for read users, `Capacity` beyond [`MAX_SHELL_VIEWERS`].
+    pub async fn shell_open(
+        &self,
+        ctx: &AuthContext,
+        shell_id: &str,
+        size: Option<(u16, u16)>,
+    ) -> AppResult<ShellAttach> {
         let runtime = self
             .shell(shell_id)
             .filter(|shell| shell.creator == ctx.user.id)
@@ -477,6 +748,10 @@ impl App {
             .await?;
         if runtime.hub.viewer_count() >= MAX_SHELL_VIEWERS {
             return Err(AppError::Capacity("too many viewers on this shell".into()));
+        }
+        if let Some((cols, rows)) = size {
+            // A failed resize leaves the shell at its size; the viewer still attaches.
+            let _ = Self::resize_shell(&runtime, cols, rows).await;
         }
         let subscription = runtime.hub.subscribe();
         Ok(ShellAttach {
@@ -490,6 +765,7 @@ impl App {
     /// Whether the viewer may still use the shell (re-checked on input and periodically).
     pub async fn shell_still_allowed(&self, ctx: &AuthContext, attach: &ShellAttach) -> bool {
         ctx.user.disabled_at.is_none()
+            && !attach.runtime.closing.load(Ordering::SeqCst)
             && self
                 .require(&ctx.user, &attach.runtime.sandbox, Action::Work)
                 .await
@@ -519,7 +795,8 @@ impl App {
         }
     }
 
-    /// Viewer resize (the last resizing viewer controls the size).
+    /// Viewer resize (the last resizing viewer controls the size); the same size again is a
+    /// no-op, so a reconnect does not make the shell redraw.
     ///
     /// # Errors
     /// As [`Self::shell_input`].
@@ -533,12 +810,19 @@ impl App {
         if !self.shell_still_allowed(ctx, attach).await {
             return Err(AppError::Forbidden("write access is required".into()));
         }
+        Self::resize_shell(&attach.runtime, cols, rows).await
+    }
+
+    async fn resize_shell(runtime: &ShellRuntime, cols: u16, rows: u16) -> AppResult<()> {
         let (cols, rows) = (cols.clamp(10, 1000), rows.clamp(5, 500));
-        match attach.runtime.writer.lock().await.as_mut() {
+        if runtime.hub.size() == (cols, rows) {
+            return Ok(());
+        }
+        match runtime.writer.lock().await.as_mut() {
             Some(writer) => writer.resize(cols, rows).await?,
             None => return Err(AppError::Conflict("the shell has ended".into())),
         }
-        attach.runtime.hub.resize(cols, rows);
+        runtime.hub.resize(cols, rows);
         Ok(())
     }
 
@@ -569,12 +853,14 @@ impl App {
         idle.len()
     }
 
-    /// Terminates shell hosts left behind by a previous server process and removes their
-    /// directories (shells are not resumed after a restart).
-    pub fn reap_orphan_shells(&self) -> usize {
+    /// Adopts the shells a previous server process left running (their detached hosts survive
+    /// a restart): each run directory with a valid record whose sandbox still exists and whose
+    /// host accepts the sealed token is registered again with its screen; every other run
+    /// directory is ended and removed. Returns (adopted, removed).
+    pub async fn adopt_shells(self: &Arc<Self>) -> (usize, usize) {
         let root = shell_dir_root(&self.config.data_dir);
         let Ok(entries) = std::fs::read_dir(&root) else {
-            return 0;
+            return (0, 0);
         };
         let live: Vec<String> = self
             .shells
@@ -582,34 +868,104 @@ impl App {
             .lock()
             .map(|map| map.keys().cloned().collect())
             .unwrap_or_default();
-        let mut reaped = 0;
+        let mut attempts = Vec::new();
         for entry in entries.flatten().take(MAX_ORPHANS) {
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = entry.path();
             if live.contains(&name) || !path.is_dir() {
                 continue;
             }
-            if let RunInspection::Recorded {
-                host_alive: true, ..
-            } = self.deps.session_host.inspect(&path)
-            {
-                let _ = self.deps.session_host.terminate(&path);
-            }
-            let _ = std::fs::remove_dir_all(&path);
-            reaped += 1;
+            let app = Arc::clone(self);
+            attempts.push(tokio::spawn(async move {
+                let adopted = matches!(
+                    tokio::time::timeout(ADOPT_TIMEOUT, app.adopt_shell(&name, &path)).await,
+                    Ok(Ok(()))
+                );
+                if !adopted {
+                    if let RunInspection::Recorded {
+                        host_alive: true, ..
+                    } = app.deps.session_host.inspect(&path)
+                    {
+                        let _ = app.deps.session_host.terminate(&path);
+                    }
+                    let _ = std::fs::remove_dir_all(&path);
+                }
+                adopted
+            }));
         }
-        reaped
+        let (mut adopted, mut removed) = (0, 0);
+        for attempt in attempts {
+            if attempt.await.unwrap_or(false) {
+                adopted += 1;
+            } else {
+                removed += 1;
+            }
+        }
+        (adopted, removed)
     }
 
-    /// Removes shells orphaned by a previous server process, then starts the periodic reaper of
-    /// idle shells and browsers; call once at startup, before serving requests. The
-    /// reaper stops when the handle is dropped or the app is gone.
-    #[must_use]
-    pub fn start_workspace_services(self: &Arc<Self>) -> WorkspaceReaper {
-        // Before any shell of this process exists, so no live shell directory is touched.
-        let orphans = self.reap_orphan_shells();
-        if orphans > 0 {
-            tracing::info!(orphans, "removed shells of a previous server process");
+    async fn adopt_shell(self: &Arc<Self>, dir_name: &str, run_dir: &Path) -> AppResult<()> {
+        let bytes = std::fs::read(run_dir.join(SHELL_FILE)).map_err(AppError::internal)?;
+        let file: ShellFile = serde_json::from_slice(&bytes).map_err(AppError::internal)?;
+        if file.version != SHELL_FILE_VERSION || file.id != dir_name {
+            return Err(AppError::Invalid("unknown shell record".into()));
+        }
+        let sandbox = SandboxId::parse(&file.sandbox).map_err(|_| AppError::NotFound)?;
+        self.deps
+            .store
+            .sandbox(&sandbox)
+            .await?
+            .filter(|s| s.removed_at.is_none())
+            .ok_or(AppError::NotFound)?;
+        let sealed = hex_decode(&file.token).ok_or(AppError::NotFound)?;
+        let token: [u8; 32] = self
+            .deps
+            .crypto
+            .open(&Sealed(sealed))?
+            .try_into()
+            .map_err(|_| AppError::NotFound)?;
+        let runtime = Arc::new(ShellRuntime {
+            id: file.id.clone(),
+            sandbox,
+            creator: UserId::parse(&file.creator).map_err(|_| AppError::NotFound)?,
+            task: file
+                .task
+                .as_deref()
+                .map(TaskId::parse)
+                .transpose()
+                .map_err(|_| AppError::NotFound)?,
+            name: Mutex::new(clean_name(&file.name).unwrap_or_else(|_| "Terminal".into())),
+            created_at: Timestamp(file.created_at),
+            seq: file.seq,
+            run_dir: run_dir.to_path_buf(),
+            token,
+            hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
+            writer: tokio::sync::Mutex::new(None),
+            ended: AtomicBool::new(false),
+            closing: AtomicBool::new(false),
+            ended_tx: watch::channel(false).0,
+            idle_since_ms: AtomicI64::new(self.now().0),
+            pump: Mutex::new(None),
+        });
+        let reader = self.attach_shell(&runtime).await?;
+        self.shells
+            .next_seq
+            .fetch_max(file.seq.saturating_add(1), Ordering::SeqCst);
+        if let Ok(mut map) = self.shells.shells.lock() {
+            map.insert(runtime.id.clone(), Arc::clone(&runtime));
+        }
+        self.start_pump(&runtime, reader);
+        tracing::info!(shell = %runtime.id, sandbox = %runtime.sandbox, "adopted a running sandbox shell");
+        Ok(())
+    }
+
+    /// Adopts the shells of a previous server process ([`Self::adopt_shells`]), then starts the
+    /// periodic reaper of idle shells and browsers; call once at startup, before serving
+    /// requests. The reaper stops when the handle is dropped or the app is gone.
+    pub async fn start_workspace_services(self: &Arc<Self>) -> WorkspaceReaper {
+        let (adopted, removed) = self.adopt_shells().await;
+        if adopted + removed > 0 {
+            tracing::info!(adopted, removed, "shells of the previous server process");
         }
         let app: Weak<Self> = Arc::downgrade(self);
         let task = tokio::spawn(async move {
@@ -630,9 +986,33 @@ impl App {
         WorkspaceReaper { task }
     }
 
-    /// Server shutdown: ends every shell and stops every browser (their processes
-    /// are reaped; unlike agent sessions they are not meant to outlive the server).
+    /// Server shutdown: lets go of every shell — they keep running in their detached hosts for
+    /// the next server process, like agent sessions — and stops every browser (browsers do not
+    /// outlive the server; their processes are reaped).
     pub async fn stop_workspace_services(&self) {
+        let shells: Vec<Arc<ShellRuntime>> = self
+            .shells
+            .shells
+            .lock()
+            .map(|mut map| map.drain().map(|(_, shell)| shell).collect())
+            .unwrap_or_default();
+        for shell in &shells {
+            if let Ok(mut pump) = shell.pump.lock()
+                && let Some(task) = pump.take()
+            {
+                task.abort();
+            }
+            *shell.writer.lock().await = None;
+        }
+        let browsers = self.deps.browser.shutdown_all().await;
+        if !browsers.is_empty() {
+            tracing::error!(?browsers, "some browser processes could not be reaped");
+        }
+    }
+
+    /// Ends every shell of this server process and waits for them (tests and maintenance;
+    /// a normal shutdown keeps them running, [`Self::stop_workspace_services`]).
+    pub async fn end_all_shells(&self) {
         let shells: Vec<Arc<ShellRuntime>> = self
             .shells
             .shells
@@ -640,9 +1020,5 @@ impl App {
             .map(|map| map.values().cloned().collect())
             .unwrap_or_default();
         self.end_shells(&shells).await;
-        let browsers = self.deps.browser.shutdown_all().await;
-        if !browsers.is_empty() {
-            tracing::error!(?browsers, "some browser processes could not be reaped");
-        }
     }
 }

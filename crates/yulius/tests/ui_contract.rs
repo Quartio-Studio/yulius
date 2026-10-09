@@ -565,6 +565,8 @@ async fn embedded_assets_serve_with_content_types_and_every_import_resolves() ->
         );
         let expected = if path.ends_with(".css") {
             "text/css"
+        } else if path.ends_with(".woff2") {
+            "font/woff2"
         } else {
             "text/javascript"
         };
@@ -572,6 +574,50 @@ async fn embedded_assets_serve_with_content_types_and_every_import_resolves() ->
             response.content_type.starts_with(expected),
             "GET {path}: {}",
             response.content_type
+        );
+    }
+    Ok(())
+}
+
+/// Assets carry an ETag, so a reload revalidates them (304, no body) instead of downloading
+/// the UI again (F 2026-10-09: the terminal "loads for a while").
+#[tokio::test]
+async fn embedded_assets_revalidate_with_etags() -> TestResult {
+    let h = harness()?;
+    for (path, cache) in [
+        ("/assets/terminal-core.js", "no-cache"),
+        ("/assets/fonts/ibm-plex-mono-latin-400.woff2", "no-cache"),
+        ("/assets/vendor/xterm/xterm.mjs", "public, max-age=86400"),
+        ("/s/fixture/t/1", "no-cache"),
+    ] {
+        let get = |etag: Option<&str>| {
+            let mut request = Request::builder().method(Method::GET).uri(path);
+            if let Some(etag) = etag {
+                request = request.header(header::IF_NONE_MATCH, etag);
+            }
+            request.body(Body::empty())
+        };
+        let first = h.router.clone().oneshot(get(None)?).await?;
+        assert_eq!(first.status(), StatusCode::OK, "GET {path}");
+        assert_eq!(first.headers()[header::CACHE_CONTROL], cache, "GET {path}");
+        let etag = first.headers()[header::ETAG].to_str()?.to_owned();
+        assert!(
+            etag.starts_with('"') && etag.ends_with('"') && etag.len() == 18,
+            "{etag}"
+        );
+        let again = h.router.clone().oneshot(get(Some(&etag))?).await?;
+        assert_eq!(again.status(), StatusCode::NOT_MODIFIED, "GET {path} again");
+        assert_eq!(again.headers()[header::ETAG].to_str()?, etag);
+        assert!(again.into_body().collect().await?.to_bytes().is_empty());
+        let changed = h
+            .router
+            .clone()
+            .oneshot(get(Some("\"0000000000000000\""))?)
+            .await?;
+        assert_eq!(
+            changed.status(),
+            StatusCode::OK,
+            "GET {path} with a stale tag"
         );
     }
     Ok(())

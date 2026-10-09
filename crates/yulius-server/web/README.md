@@ -31,14 +31,14 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 
 | File | Responsibility |
 | --- | --- |
-| `index.html` | Page shell; loads `assets/tokens.css`, `assets/styles.css` and `assets/app.js` (`type=module`). xterm and its stylesheet load with the first terminal (`terminal.js`). |
+| `index.html` | Page shell; loads `assets/tokens.css`, `assets/styles.css` and `assets/app.js` (`type=module`) and preloads the terminal typeface (IBM Plex Mono, regular). xterm and its stylesheet load with the first terminal (`terminal.js`). |
 | `assets/app.js` | Entry point: boot (setup → sign-in → workspace), route dispatch, composition of the layout, link handling. |
 | `assets/api.js` | HTTP client (`X-Yulius-CSRF` on every non-GET, `{"error":{code,message}}` → `ApiError`, 30 s timeout) and the transport abstraction. |
 | `assets/router.js` | Routes and links; history API paths, hash paths in mock mode; recognizes Yulius links. |
 | `assets/store.js` | State store (sandboxes, tasks per sandbox, browser action requests) and the `/api/events` client. |
 | `assets/termsocket.js` | WebSocket protocol code: binary frame parsing, `ReconnectingSocket` (backoff 0.5–10 s, bounded attempts, 4008 → immediate resync), `TerminalSocket`. |
-| `assets/terminal.js` | Terminal views on demand: returns the view at once and loads `terminal-core.js`, xterm and `xterm.css` with the first terminal (or on idle after sign-in, `preloadTerminal()`). |
-| `assets/terminal-core.js` | xterm view: fit/resize, controller handover, read-only banner, reconnect/exit banners, web links and OSC 8 links. |
+| `assets/terminal.js` | Terminal views on demand: returns the view at once and loads `terminal-core.js`, xterm, `xterm.css` and the terminal typeface together with the first terminal (or on idle after sign-in, `preloadTerminal()`). |
+| `assets/terminal-core.js` | xterm view: fit/resize, controller handover, read-only banner, floating reconnect notices, exit banners, web links and OSC 8 links. It appears once at its final size and font: fitted before connecting (`?cols=&rows=`), hidden under a placeholder until the first state and screen are drawn (F 2026-10-09). |
 | `assets/layout.js` | Sandbox tab row (+, Status panel, notifications, tools toggle) and the sidebar (wordmark, navigation, active task list, user menu at its foot). |
 | `assets/notifications.js` | Notification center (UI-020, UI-028): the bell, its panel with the All / Unread filter, and entries derived from the event stream; kept per user in `localStorage`, bounded to 100; optional OS notifications while the tab is hidden. |
 | `assets/pages/gittask.js` | Git → a task's review (UI-031): Changes (file tree, unified or split diff, wrap), Commits, Branch and Go to task; reads the proposed `/api/tasks/{tid}/changes` and `/commits`. |
@@ -49,7 +49,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/taskview.js` | Task view (step strip, terminal, phone quick-input bar) and the new-task composer (rounded prompt box with mode, workflow, model and effort pickers). |
 | `assets/quotes.js` | 40 quotes about building great things (well-documented authors only); one shows at random above the composer. |
 | `assets/models.js` | Models (grouped by provider, each naming its harness) and effort levels the composer offers. |
-| `assets/panels.js` | Right rail and resizable panel: Editor, Shell (sandbox or task worktree), Messages; hosts the browser panel. One tool is open at a time (`aria-pressed`); the panel's width is remembered per browser and re-fitted when the window narrows, so it never pushes the rail out of the window. |
+| `assets/panels.js` | Right rail and resizable panel: Editor, Shell (the user's own terminals in this sandbox as tabs: opens one at once, "+" for more, rename with F2 or a double-click; new ones start in the sandbox repository or the task worktree), Messages; hosts the browser panel. One tool is open at a time (`aria-pressed`); the panel's width is remembered per browser and re-fitted when the window narrows, so it never pushes the rail out of the window. |
 | `assets/editorview.js` | The built-in editor (EDT-001..005): explorer, tabs and Monaco over the files API; ⌘S / Ctrl+S saves; word wrap is one toolbar toggle (or ⌥Z / Alt+Z, as in VS Code) for every open file, off by default and kept per user in this browser (`localStorage` `yulius.editorWordWrap.<user id>`). |
 | `assets/browser.js` | Sandbox browser panel: tabs, address bar, JPEG canvas, mouse/keyboard forwarding. |
 | `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery (PR, merge, environment runs and confirmations, promotion), sandbox add/remove. |
