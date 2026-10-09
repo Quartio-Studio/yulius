@@ -58,7 +58,9 @@ Principles:
    and resumes native Claude Code sessions (SPEC-001 HRN-001, P(5); Codex deferred, F 2026-10-08).
 2. **Sessions outlive the web server.** Each run is owned by a detached `ptyhost` process; the
    server reattaches after restart (NFR-001).
-3. **GitHub is the authority** for repositories and permissions (ACC-007).
+3. **GitHub is the authority** for repositories and permissions (ACC-007), with one exception:
+   the superadmin owns the instance and has admin access to every sandbox without GitHub
+   (ACC-012, F 2026-10-09).
 4. **Harness-independent coordination** through one Yulius MCP server and the hook protocol both
    CLIs implement (COM-002, STP-001, DSC-003).
 5. **Everything bounded and owned**: each queue, stream, retry and wait has a limit and an owner
@@ -407,6 +409,16 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   response carries `X-Frame-Options: SAMEORIGIN`, `Content-Security-Policy: frame-ancestors
   'self'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin` unless the route
   sets a stricter policy (#56); HSTS is set by the TLS proxy.
+- Sandbox access (ACC-007/008/012): one decision, `App::access_level`, serves every path — the
+  sandbox list and REST routes, the event stream, terminal, shell and browser sockets and their
+  re-checks, files, Git, tasks, Status and analytics. A disabled user has none; the superadmin
+  has `admin` on every sandbox without a GitHub identity, without asking GitHub and without a
+  `permission_cache` row (F 2026-10-09); everyone else gets the mirrored GitHub level (cached
+  5 min, stale ≤ 30 min on outages), and no GitHub identity means none. GitHub calls made for the
+  superadmin use the App installation where Yulius already acts as the App (opening a task's pull
+  request, listing and importing installation repositories, a repository-scoped token for Git in
+  the superadmin's shells); merging and releasing act as a person and are refused for the
+  superadmin with `403` and a message, never `401`, which the UI treats as a signed-out session.
 - Internal listener binds 127.0.0.1 only; accepts task tokens only; tokens are per attempt, random
   256-bit, stored hashed, revoked when the attempt ends.
 - Secrets (provider credentials, GitHub App key, MCP env/headers) are encrypted at rest with the
@@ -562,6 +574,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | --- | --- |
 | Process supervision (NFR-001..005, AC-TSK-3, AC-NFR-3) | `crates/yulius/tests/supervision.rs`: real detached ptyhost + fake agent + real git worktrees; a server runtime is dropped and a new one reconciles and reattaches the same child pid, snapshot restores the screen, crash exit code recorded, stop escalation, queueing at the session limit, normal exit closes the task; `crates/yulius-ptyhost/tests/*` (13 + orphan watchdog). |
 | Rotation (AC-ROT-2 reactive, AC-ROT-6) | `supervision.rs`: a provider usage limit at turn end moves the same session to the next account with a native resume and a recorded decision; usage refreshed at 99 % moves it at the next turn boundary; with no capacity the task waits. |
+| Superadmin access (AC-ACC-8) | `http_auth.rs`: every sandbox with admin access and its routes with GitHub down, no cached permission; only the superadmin (a password instance admin sees nothing, GitHub users mirrored); terminal and event stream survive re-checks. `shells.rs`: shell with the App's repository token. `projects.rs`: listing and import through the App. `delivery.rs`: pull request through the App, merge/release 403. `analytics.rs`: summary and Status cover every sandbox. `e2e/tests/access.e2e.ts` (mock UI). |
 | Terminal and permissions (AC-TSK-2, AC-TSK-6, AC-ACC-5) | `terminal_ws.rs`: task created via the public API, two WebSocket viewers, read-only input refused, writer input reaches the agent, a GitHub downgrade turns an open socket read-only and revocation closes it (4003). |
 | Messages and steps (AC-COM-2, AC-STP-3) | `supervision.rs` wake test (notice typed into the idle recipient only); `agent_hooks.rs` plan-checklist → steps sync. |
 | Operator CLI (AC-OPS-3) | `cli.rs`: `yulius backup` consistent copy, refuses an existing destination; `yulius doctor` fails on a too-long data dir. |
@@ -575,6 +588,8 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-09 (`F 2026-10-09`): the superadmin has admin access to every sandbox without GitHub;
+  principle 3 and §8 record the exception and which GitHub actions use the App (ACC-012).
 - 2026-10-09 (hardening): server-side Git never runs repository hooks; risk R-13 (#54).
 - 2026-10-08 (F 2026-10-08): Claude Code only — Codex adapter, homes, login, usage probe, import,
   provider switching, harness proposals and the translation stack removed (ADR-05 narrowed, ADR-06

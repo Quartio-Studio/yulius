@@ -160,6 +160,63 @@ async fn listings_show_templates_and_permitted_owner_repositories() -> TestResul
     Ok(())
 }
 
+/// ACC-012 (F 2026-10-09): the superadmin, without a GitHub identity, lists every owner
+/// repository the App installation can access with admin access and imports one through the
+/// App; repositories the App cannot reach stay out of reach.
+#[tokio::test]
+async fn the_superadmin_lists_and_imports_repositories_through_the_app() -> TestResult {
+    let w = World::new("org").await?;
+    let owner = support::setup_superadmin_creds(&w.h).await?;
+    w.github.add_installation_repo(OWNER, "shop", true);
+    w.github.add_installation_repo(OWNER, "docs", false);
+    w.github.add_installation_repo("someone-else", "shop", true);
+
+    let repos = call(
+        &w.h.router,
+        Method::GET,
+        "/api/github/repositories",
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(repos.status, StatusCode::OK, "{:?}", repos.body);
+    assert_eq!(
+        repos.body,
+        json!([
+            {"owner": OWNER, "name": "docs", "private": false, "access": "admin", "already_sandbox": false},
+            {"owner": OWNER, "name": "shop", "private": true, "access": "admin", "already_sandbox": false}
+        ])
+    );
+
+    w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    let shop = import(&w, &owner, "quartio-studio/SHOP").await?;
+    assert_eq!(shop.status, StatusCode::CREATED, "{:?}", shop.body);
+    assert_eq!(shop.body["slug"], "shop");
+    assert_eq!(shop.body["access"], "admin");
+    let ghost = import(&w, &owner, "Quartio-Studio/ghost").await?;
+    assert_eq!(
+        ghost.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        ghost.body
+    );
+    assert!(text(&ghost.body["error"]["message"]).contains("cannot access it"));
+    let foreign = import(&w, &owner, "someone-else/shop").await?;
+    assert_eq!(foreign.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let repos = call(
+        &w.h.router,
+        Method::GET,
+        "/api/github/repositories",
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(repos.body[1]["already_sandbox"], true);
+    assert_eq!(repos.body[1]["access"], "admin");
+    Ok(())
+}
+
 #[tokio::test]
 async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() -> TestResult {
     let w = World::new("org").await?;

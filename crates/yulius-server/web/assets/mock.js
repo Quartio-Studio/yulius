@@ -101,13 +101,16 @@ function makeSteps(taskId, done, current, total = PLAN.length) {
 
 function seed(params) {
   const role = params.get('role') || 'superadmin';
+  // `github_linked=0`: the signed-in account has no GitHub link. Like the server, only the
+  // superadmin still sees every sandbox (ACC-012); anyone else sees none.
+  const linked = params.get('github_linked') !== '0';
   const db = {
     setupRequired: params.get('setup') === '1',
     signedIn: params.get('signedout') !== '1',
     me: {
       user: {
         id: 'usr_1', login: 'mkarp', display_name: 'Michal Karp', avatar_url: null,
-        is_superadmin: role === 'superadmin', is_instance_admin: role !== 'member', github_linked: true,
+        is_superadmin: role === 'superadmin', is_instance_admin: role !== 'member', github_linked: linked,
       },
       csrf_token: 'mock-csrf-token',
       instance: { owner_login: 'Quartio-Studio', owner_kind: 'org', public_url: ORIGIN, github_configured: params.get('github') !== '0', contained: params.get('contained') !== '0' },
@@ -218,6 +221,10 @@ function seed(params) {
   const pastRun = (n, env, kind, by, ago) => ({ run_id: `run_seed_${n}`, sandbox_id: 'sb_product', environment: env, kind, state: 'succeeded', command: kind === 'manual' ? null : 'node scripts/deployer.mjs --target dev-vm', commit: 'b7e9f01c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a', requested_by: by, output: kind === 'manual' ? `${by} confirmed ${env}.` : 'deploying… done in 2m 14s', exit_code: kind === 'manual' ? null : 0, started_at: iso(ago), ended_at: iso(ago - 2 * MIN), startedMs: Date.now() - ago - 1e9 });
   db.runs.push(pastRun(1, 'dev-vm', 'command', 'mkarp', 2 * DAY + HOUR), pastRun(2, 'dev-vm', 'manual', 'mkarp', 2 * DAY + 30 * MIN), pastRun(3, 'rollout', 'manual', 'anna-q', 2 * DAY - HOUR), pastRun(4, 'dev-vm', 'command', 'mkarp', 3 * HOUR));
   db.promotionPr = new Map(); // sandbox id → open promotion PR URL (merge_commit promotion)
+  if (!linked && role !== 'superadmin') {
+    db.sandboxes = [];
+    db.tasks = [];
+  }
   recount(db);
   return db;
 }
@@ -431,7 +438,7 @@ route('POST', '/api/device/approve', ({ body }) => {
 
 route('GET', '/api/sandboxes', ({ db }) => db.sandboxes);
 route('GET', '/api/github/repositories', ({ db }) => {
-  if (!db.me.user.github_linked) fail(403, 'forbidden', 'a GitHub-linked account is required');
+  if (!db.me.user.github_linked && !db.me.user.is_superadmin) fail(403, 'forbidden', 'sign in with GitHub to work with repositories');
   if (!db.me.instance.github_configured) fail(409, 'conflict', 'the GitHub App is not configured');
   return [
     ...db.sandboxes.map((s) => ({ owner: s.repo.owner, name: s.repo.name, private: true, access: s.access, already_sandbox: true })),
@@ -2074,6 +2081,8 @@ function startAmbient(db) {
   db.ambient = true;
   let tick = 0;
   setTimeout(() => {
+    // Like the server, events reach only viewers of the sandbox (none without GitHub).
+    if (!db.sandboxes.some((s) => s.id === 'sb_studio')) return;
     emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
   }, 5000);
   setInterval(() => {

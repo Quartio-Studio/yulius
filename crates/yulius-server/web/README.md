@@ -218,7 +218,9 @@ routing to `#/…` paths so a plain static server can reload deep links. The pro
 (request building, error parsing, binary frames, reconnect) is the same code used against
 the real server. Options (combine with `&`): `setup=1` (setup required; token
 `YUL-SETUP-1234`), `signedout=1` (password `correct horse battery`), `role=member|admin`,
-`contained=0` (shows "Not contained"), `github=0` (GitHub App not configured).
+`contained=0` (shows "Not contained"), `github=0` (GitHub App not configured), `github_linked=0`
+(the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
+the home page asks them to sign in with GitHub).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and
 documentation; the [end-to-end tests](../../../e2e/README.md) run against it). It has sandboxes with admin, write and read access (`studio` with the Studio

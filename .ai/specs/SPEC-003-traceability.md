@@ -227,9 +227,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 54 | (2026-10-09, hardening; self-review of #51, reproduced) Closing an editor tab with Delete moved focus into the next file, so the next Delete edited it; held keys repeated; focus was lost after some closes; a clicked browser tab could keep focus while its page loaded. | EDT-001, BRW-004, UI-029 |
 | 55 | (2026-10-09 evening, `F 2026-10-09`) "In editor I should be able to select whether to break lines or not." | EDT-005 (new), AC-EDT-4 |
 | 56 | (2026-10-09 evening, `F 2026-10-09`) The right tool rail is "a little broken" (screenshot: two highlighted items whose pills ran past the rail's right edge, the Messages count against it). (Reproduced: a panel opened in a wider window kept its width when the window narrowed, so the layout grew wider than the window and cut the rail's right side off; the Messages count did not fit its pill; hover and the open tool looked alike; on phones the top bar ran under the rail.) | UI-042 (new), AC-UI-36 |
+| 57 | (2026-10-09 evening, `F 2026-10-09`) "Something is broken with accounts: as superadmin I should be able to see all sandboxes but I see none." (By design until now: every access decision required a GitHub identity, which the password superadmin never has, U-06; not a regression of #55/#64/#67.) The superadmin owns the instance and must see and open every sandbox with full access (#95). | ACC-012 (new), AC-ACC-8, ACC-007, ACC-009, U-06 (superseded); SPEC-002 principle 3, §8 |
 
 ## Changelog
 
+- 2026-10-09: the superadmin sees every sandbox (§6 item 57, `F 2026-10-09`).
 - 2026-10-09: editor word wrap toggle and ⌥Z / Alt+Z (§6 item 55, `F 2026-10-09`).
 - 2026-10-09: the tools rail keeps its items inside it and stays in the window (§6 item 56, `F 2026-10-09`).
 - 2026-10-09: tab keys keep focus on the strip and ignore key repeat (§6 item 54, hardening).
