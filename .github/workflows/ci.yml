@@ -20,15 +20,20 @@ concurrency:
 
 jobs:
   quality-linux:
+    # The check keeps its name (a required check in the rulesets); the job runs on Blacksmith:
+    # cheaper per minute, faster, 80 GB of disk (#84). Fall back with `runs-on: ubuntu-latest`.
     name: quality (ubuntu-latest)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
-      - name: Free disk space
-        # The workspace's test binaries nearly fill the runner; drop toolchains we never use.
+      - name: Keep login shells' HOME
+        # Blacksmith's /etc/profile.d/blacksmith.sh exports HOME=/home/runner in every login
+        # shell, and the sandbox-shell tests start login shells that must keep the HOME Yulius
+        # sets. The job's own steps do not use login shells. (macOS runners do not do this.)
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+          if [ -f /etc/profile.d/blacksmith.sh ]; then
+            sudo mv /etc/profile.d/blacksmith.sh /etc/profile.d/blacksmith.sh.off
+          fi
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
@@ -44,6 +49,7 @@ jobs:
         run: python3 scripts/bootstrap.py
       - name: Cache Rust build
         # dev/main pushes write the cache; pull requests only read it (no per-PR eviction).
+        # Blacksmith redirects this cache to its own colocated store without changes.
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.event_name == 'push' }}
@@ -64,7 +70,8 @@ jobs:
     # and manual runs keep it. Promotion needs a green dev push run, so main never receives a
     # change macOS has not passed (#82).
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
-    runs-on: macos-latest
+    # Blacksmith M4 (#84). Fall back with `runs-on: macos-latest`.
+    runs-on: blacksmith-6vcpu-macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5

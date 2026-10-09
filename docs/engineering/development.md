@@ -82,7 +82,12 @@ committed configuration; hosted execution is only proven when GitHub actually ru
 it. No deployment job is present. [Git delivery](git.md) defines promotion checks and
 post-merge evidence. Pinned tool binaries are cached per OS/architecture/tool pin;
 Rust dependencies are cached per OS (written by dev/main pushes, read by pull
-requests), and the Linux job removes preinstalled toolchains it does not use.
+requests). Jobs run on [Blacksmith](https://docs.blacksmith.sh/) runners
+(`blacksmith-4vcpu-ubuntu-2404` for Linux checks, `blacksmith-6vcpu-macos-latest` for
+macOS, `blacksmith-2vcpu-ubuntu-2404` for the policy); the check names stay the ones
+the rulesets require, and Blacksmith serves `actions/cache` and `Swatinem/rust-cache`
+from its own cache without workflow changes. Without the Blacksmith app, switch
+`runs-on` back to `ubuntu-latest` / `macos-latest`.
 
 ## Troubleshooting
 

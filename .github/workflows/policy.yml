@@ -16,7 +16,7 @@ concurrency:
 jobs:
   branch-policy:
     name: Branch policy
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 3
     permissions:
       contents: read
