@@ -367,6 +367,14 @@ pub trait AccountStore: Send + Sync {
         last_error: Option<&str>,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Records an account's last error only, leaving its status and usage as they are now
+    /// (a failed usage request must not write back an older copy, #72).
+    async fn set_account_error(
+        &self,
+        id: &AccountId,
+        last_error: &str,
+        at: Timestamp,
+    ) -> AppResult<()>;
     /// Deletes an account.
     async fn delete_account(&self, id: &AccountId) -> AppResult<()>;
     /// Token totals per account of the runs started at or after `since`.
