@@ -210,9 +210,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 37 | (2026-10-09, hardening) Every agent session showed "Auto-update failed": Claude Code's self-updater ran inside contained sessions. | SPEC-002 §7 launch contract |
 | 38 | (2026-10-09, hardening; seen on the instance) An agent answered a person's message, but its reply went out as a broadcast with 0 recipients: `message_send` could not address people. | COM-005 (changed), AC-COM-2 |
 | 39 | (2026-10-09, hardening; axe sweep of the mock UI) The browser and editor tab strips nested a Close button in each tab and held a non-tab in the tablist (critical); editor tabs could not be reached from the keyboard; the task preview's sessions table could not be scrolled from the keyboard. | BRW-004, EDT-001, UI-029, UI-031; web/README.md (WCAG) |
+| 40 | (2026-10-09, hardening; spec-to-test review) The briefing told agents to use `scope_claim`, `scope_release`, `scopes_list`, `spec_check` and `project_context`, but the Yulius MCP served none of them; AC-COM-3 had no implementation. | COM-003, COM-004, DSC-003, DSC-009; SPEC-002 §7.4 |
 
 ## Changelog
 
+- 2026-10-09: the announced scope, spec-check and project-context tools are served (§6 item 40, hardening).
 - 2026-10-09: accessible browser and editor tabs, focusable sessions table (§6 item 39, hardening).
 - 2026-10-09: agents answer people (§6 item 38, hardening).
 - 2026-10-09: Claude Code's self-updater off in agent sessions (§6 item 37, hardening).

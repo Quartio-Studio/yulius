@@ -720,6 +720,7 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 ## 12. Changelog
 
+- 2026-10-09 (hardening): the five Yulius tools the briefing announced but the MCP did not serve now exist: `scope_claim`, `scope_release`, `scopes_list` (COM-003, AC-COM-3), `spec_check` (DSC-003) and `project_context` (COM-004).
 - 2026-10-09 (hardening): browser and editor tabs work from the keyboard and with screen readers (no button nested in a tab; ←/→, Delete closes; listed in the shortcut sheet, UI-029); the task preview's sessions table scrolls from the keyboard.
 - 2026-10-09 (hardening): agents can answer people (`message_send` `to="people"`) (COM-005, AC-COM-2).
 - 2026-10-09 (`F 2026-10-09`): a terminal sized by another viewer is fitted to this view's width instead of

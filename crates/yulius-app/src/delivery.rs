@@ -2816,6 +2816,45 @@ impl App {
 
     // ---------------------------------------------------------------- agent tool
 
+    /// `spec_check` agent tool (DSC-003): validates this task's spec in the Yulius format (the
+    /// same check and fix-it message as the Stop gate) and the project documentation.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn tool_spec_check(&self, ctx: &AgentContext) -> AppResult<Value> {
+        let task = self
+            .deps
+            .store
+            .task(&ctx.task.id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let spec = self.dlv_check_spec(&task).await;
+        let message = match (&spec.report, &spec.path) {
+            (Some(report), Some(path)) => report.agent_message(path),
+            _ => spec.problems.join("\n"),
+        };
+        let root = task
+            .worktree_path
+            .as_ref()
+            .map_or_else(|| self.sandbox_repo(&task.sandbox_id), PathBuf::from);
+        let (docs, _) =
+            tokio::task::spawn_blocking(move || crate::onboarding::validate_checkout(&root))
+                .await
+                .map_err(AppError::internal)?;
+        Ok(json!({
+            "spec": {
+                "path": spec.path,
+                "valid": spec.valid,
+                "problems": spec.problems,
+                "message": message,
+            },
+            "docs": {
+                "valid": docs.is_valid(),
+                "problems": docs.problems.iter().take(50).map(ToString::to_string).collect::<Vec<_>>(),
+            },
+        }))
+    }
+
     /// `delivery_status` agent tool (read-only): the task's delivery state, pull request,
     /// checks and profile. There is deliberately no tool that merges, promotes or deploys
     /// (GIT-002, SEC-003).

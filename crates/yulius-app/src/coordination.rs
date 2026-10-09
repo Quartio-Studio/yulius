@@ -144,6 +144,22 @@ impl App {
             .ok_or(AppError::NotFound)
     }
 
+    /// `project_context` (COM-004, DSC-009): the session briefing rebuilt now — project summary,
+    /// architecture and decision index, recent changes, delivery rules and parallel tasks.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn tool_project_context(&self, ctx: &AgentContext) -> AppResult<Value> {
+        let task = self
+            .deps
+            .store
+            .task(&ctx.task.id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let context = self.briefing(&task, ctx.attempt.harness).await?;
+        Ok(json!({ "context": context }))
+    }
+
     /// `message_send`: harness-independent message to a task (by id/number), a broadcast to the
     /// other tasks (`to="all"`, COM-002), or an answer to the people using Yulius (`to="people"`,
     /// COM-005, #46): shown in this task's Messages and in their notifications.
