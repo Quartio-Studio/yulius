@@ -584,7 +584,8 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
     Ok(())
 }
 
-/// AC-ROT-6: no capacity anywhere → the task waits for capacity instead of failing.
+/// AC-ROT-6: no capacity anywhere → the task waits for capacity instead of failing, and says
+/// when it resumes. The fake writes Claude Code 2.1.292's usage-limit record (F 2026-10-09).
 #[test]
 fn without_capacity_the_task_waits() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -611,6 +612,10 @@ fn without_capacity_the_task_waits() -> TestResult {
                 .is_ok_and(|t| t.status == TaskStatus::WaitingCapacity)
         })
         .await?;
+        let waiting = app.task_summary(&task(&app, &id).await?).await?;
+        assert_eq!(waiting.status, "waiting_capacity");
+        let resumes_at = waiting.resumes_at.ok_or("no resume time while waiting")?;
+        assert!(resumes_at.ends_with('Z'), "RFC 3339 in UTC: {resumes_at}");
         app.stop_task_now(&id).await?;
         wait_for("the stop", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())

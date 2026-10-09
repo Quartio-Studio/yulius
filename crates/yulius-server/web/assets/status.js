@@ -1,6 +1,7 @@
 // Task status presentation and permitted actions (SPEC-001 §6.1, §6.3, §7.1; SPEC-002 §6.1).
 
 import { BRAND } from './brand.js';
+import { resetLabel } from './format.js';
 
 /** Statuses with a live process or pending start. */
 export const LIVE_STATUSES = new Set(['queued', 'starting', 'running', 'switching', 'waiting_capacity', 'stopping']);
@@ -67,8 +68,9 @@ export function statusInfo(task) {
   if (status === 'queued') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Queued', group: 'working' };
   if (status === 'starting') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Starting', group: 'working' };
   if (status === 'switching') return { glyph: '↻', icon: 'refresh', tone: 'switching', label: 'Switching account', group: 'working' };
-  // Nothing for the user to do: Yulius starts it when a session slot frees up.
-  if (status === 'waiting_capacity') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Waiting for a free slot', group: 'working' };
+  // Every account is at its usage limit (ROT-010): the agent is paused, not working. It waits in
+  // Needs you with the reset time and continues by itself; the user may switch or add an account.
+  if (status === 'waiting_capacity') return { glyph: '⧗', icon: 'clock', tone: 'attention', label: 'Usage limit reached', group: 'needs' };
   if (status === 'stopping') return { glyph: '■', icon: 'st-stopped', tone: 'stopping', label: 'Stopping', group: 'working' };
   if (status === 'closed') return { glyph: '✓', icon: 'st-closed', tone: 'closed', label: 'Closed', group: 'ended' };
   if (status === 'stopped_cancelled') return { glyph: '■', icon: 'st-stopped', tone: 'stopped', label: STOP_LABELS[status], group: 'ended' };
@@ -89,6 +91,11 @@ export function activityLine(task, info = statusInfo(task)) {
     if (task.activity === 'waiting') return steps.total && steps.done >= steps.total ? 'All steps done — review it' : 'Agent replied — your turn';
     if (steps.total) return `Step ${Math.min((steps.done || 0) + 1, steps.total)}/${steps.total}${steps.current ? ` · ${steps.current}` : ''}`;
     return 'Working';
+  }
+  if (task.status === 'waiting_capacity') {
+    const reset = task.resumes_at ? resetLabel(task.resumes_at) : '';
+    // The reset time first: narrow columns cut the end of the line.
+    return reset ? `${reset} · continues by itself` : 'Every account at its limit · continues when one resets';
   }
   if (info.group === 'ended' && steps.total) return `${info.label} · ${steps.done || 0}/${steps.total} steps`;
   return info.label;

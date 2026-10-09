@@ -145,6 +145,8 @@ function seed(params) {
       model: 'claude-opus-4',
       effort: 'high',
       delivery: extra.delivery || null, // {stage, environment, pr} once delivery started
+      // Every account at its usage limit: when the earliest one resets (ROT-010).
+      resumes_at: status === 'waiting_capacity' ? new Date(Date.now() + 38 * MIN).toISOString() : null,
     };
   };
   const pr = (number, title, state, base, checks) => ({ number, url: `https://github.com/Quartio-Studio/${number > 400 ? 'product' : 'studio'}/pull/${number}`, title, state, base, head: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, checks });
@@ -233,6 +235,7 @@ function summary(task) {
     status: task.status, activity: task.status === 'running' || task.status === 'waiting_capacity' ? task.activity : null,
     branch: task.branch, origin: task.origin, created_by: task.created_by, created_at: task.created_at, updated_at: task.updated_at,
     steps: stepsSummary(task), unread_messages: task.unread_messages, archived: task.archived, account_label: task.account_label,
+    resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
   };
 }
 

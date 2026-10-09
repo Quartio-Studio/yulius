@@ -288,6 +288,26 @@ impl App {
             .collect())
     }
 
+    /// When a task waiting for capacity resumes: the earliest known usage-limit reset among its
+    /// provider's accounts, as the rotation policy decides now (ROT-010). `None` while the task
+    /// is not waiting, once capacity is back, or when no reset time is known.
+    pub(crate) async fn capacity_returns_at(&self, task: &TaskRecord) -> Option<Timestamp> {
+        if task.status != TaskStatus::WaitingCapacity {
+            return None;
+        }
+        let input = RotationInput {
+            current: None,
+            task_provider: task.harness.provider(),
+            accounts: self.account_views().await.ok()?,
+            now: self.now(),
+            threshold: rotation::DEFAULT_THRESHOLD,
+        };
+        match rotation::decide(&input, Trigger::Start).0 {
+            Decision::Wait { until } => until,
+            Decision::Switch { .. } | Decision::Stay => None,
+        }
+    }
+
     async fn choose_account(
         &self,
         provider: Provider,
