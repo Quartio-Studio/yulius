@@ -146,8 +146,16 @@ TaskSummary = {
   "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null"},
   "unread_messages": 0, "archived": false, "account_label": "Claude #2|null",
-  "mode": "goal|prompt"
+  "mode": "goal|prompt",
+  "resumes_at": "2026-10-09T08:20:00Z|null"
 }
+```
+
+`resumes_at` is set only while `status` is `waiting_capacity` (every account of the task's provider
+at its usage limit, ROT-010): the earliest known reset, as the rotation policy would decide now. The
+UI shows such a task under Needs you as "Usage limit reached" with that time.
+
+```json
 TaskDetail = TaskSummary + {
   "spec_path": "docs/specs/2026-10-07-checkout-api.md|null",
   "worktree": "…", "attempts": [{"seq","harness","account_label","account_id (proposed)","launch_kind","state",

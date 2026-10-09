@@ -23,7 +23,7 @@ Companion documents:
 | `F 2026-10-07` | Founder feedback after using the deployed instance (2026-10-07 goal: ten items, then the recovery code, five additions — agent cursor, hidden tools rail, the "unknown tab" error, link routing, HTML text with instant copying — and a simpler editor instead of per-user VS Code) | Later than every other source; supersedes them where it conflicts (class C). |
 | `F 2026-10-08` | Founder decision of 2026-10-08: "prune Codex support and switching providers; we use only Claude; if Codex gets better, we'll support it" | Latest source; supersedes every Codex and cross-provider statement (class C). |
 | `F 2026-10-08 UI` | Founder UI review of 2026-10-08, given item by item while using the web UI (user menu in the sidebar, named tools, wordmark, notification center, composer pickers) | Latest source for the interface; supersedes earlier layout statements where it conflicts (class C). |
-| `F 2026-10-09` | Founder feedback of 2026-10-09 on the deployed instance: after admitting themself as superadmin and signing out, GitHub sign-in in the same window showed a raw "not admitted" error and, on reload, "sign-in expired"; it must work in the same window, a frequent case | Latest source for sign-in. |
+| `F 2026-10-09` | Founder feedback of 2026-10-09 on the deployed instance: after admitting themself as superadmin and signing out, GitHub sign-in in the same window showed a raw "not admitted" error and, on reload, "sign-in expired"; it must work in the same window, a frequent case; later the same day: a task kept showing "Working" in the sidebar after Claude Code hit the usage limit ("You've hit your session limit · resets 10:20am") | Latest source for sign-in and usage-limit status. |
 | `R:product`, `R:studio` | Read-only inspection of `/Users/mrfishpl/Desktop/quartio/product` and `/studio` | Structure, instructions, workflows. |
 
 Raw sources, frame captures and research notes stay outside Git (local notes). This document
@@ -271,7 +271,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | ROT-007 | Users can switch a task to another account manually. | P(5), T 28:20, F 2026-10-08 | C | AC-ROT-5 |
 | ROT-008 | The account orchestrator respects per-task model/effort settings and preserves them across switches where the target supports them. | T 14:00–14:18 | E | AC-ROT-5 |
 | ROT-009 | Subscription management: admins see accounts, usage, reset times and status; can add, disable, re-login, set priority. The accounts section shows each account's usage: provider-reported windows (5-hour, weekly) with percent used and reset time when known, Yulius-observed tokens of the last 24 hours and 7 days, and the tasks using it; unknown values are shown as unknown. | WA 13:12, T 33:29, F 2026-10-07 | E | AC-ROT-1, AC-ROT-7 |
-| ROT-010 | If no account has capacity, the task waits in "needs attention" with the earliest known reset time, and resumes automatically when capacity returns. | — | A | AC-ROT-6 |
+| ROT-010 | If no account has capacity, the task waits in "needs attention" with the earliest known reset time, and resumes automatically when capacity returns. A usage limit is recognised from the CLI's own limit record (Claude Code 2.1.292: `apiError: "usage_limit_reached"` with `resetsAt`), whatever its wording, so the task never keeps showing "Working" while the agent is paused at a limit; the wait shows as "Usage limit reached" with the reset time under Needs you. | —, F 2026-10-09 | A | AC-ROT-6 |
 | ROT-011 | Unknown usage is never treated as zero usage; every switch decision is recorded with its inputs for audit. | engineering rules EVT-001 | A | AC-ROT-2 |
 | ROT-012 | A task never changes harness: rotation, Continue and manual switches stay on Claude accounts; there is no harness proposal, approval or setting for it. Rotating from one Claude account to the next stays automatic (proactively at the 99 % threshold from refreshed usage, reactively on a usage limit). | F 2026-10-07, F 2026-10-08 (supersedes approval of harness changes) | C | AC-ROT-8 |
 
@@ -662,7 +662,7 @@ instance — out of scope).
 | AC-ROT-3 | With all accounts exhausted and one window reset passed, that account is chosen. | unit, int |
 | AC-ROT-4 | Withdrawn with ROT-005/006 (F 2026-10-08). | — |
 | AC-ROT-5 | Manual switch to a chosen account preserves model/effort. | int |
-| AC-ROT-6 | No capacity anywhere → task `needs attention` with earliest reset; resumes when a reset passes. | int (fake clock) |
+| AC-ROT-6 | No capacity anywhere → task `needs attention` with earliest reset (`resumes_at`); resumes when a reset passes. The limit is recognised from Claude Code 2.1.292's structured limit record ("You've hit your session limit") as well as older texts. | int (fake clock), unit (transcript records) |
 | AC-STP-1 | Agent sets/updates steps via Yulius tools; history records actor and time; UI shows current step. | int, ui |
 | AC-STP-2 | Step strip shows "n/m current step" and expands to the list. | ui |
 | AC-STP-3 | Editing the spec Plan checklist updates steps; step updates are reflected in briefing. | int |
@@ -720,6 +720,9 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 ## 12. Changelog
 
+- 2026-10-09 (`F 2026-10-09`): usage limits are recognised from Claude Code's structured limit record,
+  so a paused task no longer shows "Working"; waiting for capacity shows as "Usage limit reached"
+  with the reset time under Needs you (ROT-010, AC-ROT-6).
 - 2026-10-09 (`F 2026-10-09`): a refused GitHub sign-in returns to the sign-in page, which names
   the refused GitHub account and offers GitHub's account picker; no raw error, and a reload
   shows the sign-in page (ACC-004, AC-ACC-3).

@@ -19,8 +19,18 @@ const LIMIT_MESSAGE_BYTES: usize = 512;
 /// Model name Claude uses for locally generated (non-API) messages.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
 
-/// Lower-case phrases that identify a usage-limit error text.
-const LIMIT_PHRASES: [&str; 3] = ["usage limit", "limit reached", "hit your limit"];
+/// Lower-case phrases that identify a usage-limit error text (older CLIs record only text).
+const LIMIT_PHRASES: [&str; 5] = [
+    "usage limit",
+    "limit reached",
+    "hit your limit",
+    "session limit",
+    "weekly limit",
+];
+
+/// `apiError` of the error record Claude Code writes when the account's usage limit rejects a
+/// request (alongside `error: "rate_limit"` and HTTP 429).
+const USAGE_LIMIT_API_ERROR: &str = "usage_limit_reached";
 
 /// Normalizes one Claude Code transcript line.
 #[must_use]
@@ -76,7 +86,11 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
     let is_error =
         bool_of(record, "isApiErrorMessage") || record.get("error").is_some_and(|e| !e.is_null());
     if is_error {
-        return limit_signal(&message_text(message)).into_iter().collect();
+        let text = message_text(message);
+        return structured_limit(record, &text)
+            .or_else(|| limit_signal(&text))
+            .into_iter()
+            .collect();
     }
     let model = owned_str(message, "model").filter(|m| m != SYNTHETIC_MODEL);
     let mut out = Vec::new();
@@ -114,6 +128,33 @@ fn message_text(message: &Map<String, Value>) -> String {
             .join("\n"),
         _ => String::new(),
     }
+}
+
+/// Recognizes the usage-limit error record of Claude Code 2.1.x by its structure, whatever its
+/// wording ("You've hit your session limit · resets 10:20am"): `apiError: "usage_limit_reached"`
+/// or a `rejected` rate-limit status, with `resetsAt` (epoch seconds) in
+/// `apiErrorParams.rate_limit_info` or `quotaLimits`.
+fn structured_limit(record: &Map<String, Value>, text: &str) -> Option<Observed> {
+    let info = obj_of(record, "apiErrorParams")
+        .and_then(|params| obj_of(params, "rate_limit_info"))
+        .or_else(|| obj_of(record, "quotaLimits"));
+    let rejected = info.and_then(|i| str_of(i, "status")) == Some("rejected");
+    if str_of(record, "apiError") != Some(USAGE_LIMIT_API_ERROR) && !rejected {
+        return None;
+    }
+    let resets_at = info
+        .and_then(|i| i.get("resetsAt"))
+        .and_then(Value::as_i64)
+        .and_then(from_epoch_seconds);
+    let message = if text.trim().is_empty() {
+        "usage limit reached"
+    } else {
+        text.trim()
+    };
+    Some(Observed::LimitReached {
+        resets_at,
+        message: shorten(message, LIMIT_MESSAGE_BYTES),
+    })
 }
 
 /// Recognizes Claude usage-limit error text such as `Claude AI usage limit reached|1760000000`
@@ -166,5 +207,37 @@ mod tests {
             })
         );
         assert_eq!(limit_signal("API Error: 500 internal server error"), None);
+        assert_eq!(
+            limit_signal("You've hit your session limit · resets 10:20am (Europe/Berlin)"),
+            Some(Observed::LimitReached {
+                resets_at: None,
+                message: "You've hit your session limit · resets 10:20am (Europe/Berlin)".into()
+            })
+        );
+    }
+
+    /// The record Claude Code 2.1.292 writes (synthetic values): structure wins over wording.
+    #[test]
+    fn structured_limit_record_with_reset_time() {
+        let line = r#"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","apiError":"usage_limit_reached","apiErrorStatus":429,"apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":1760000000,"rateLimitType":"five_hour"}},"quotaLimits":{"status":"rejected","resetsAt":1760000000},"message":{"model":"<synthetic>","id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"Limit hit, see you soon"}],"stop_reason":"stop_sequence"}}"#;
+        assert_eq!(
+            observe_line(line),
+            vec![Observed::LimitReached {
+                resets_at: Some(Timestamp(1_760_000_000_000)),
+                message: "Limit hit, see you soon".into()
+            }]
+        );
+        // Only `quotaLimits` (older 2.1 builds) still carries the reset time.
+        let quota = r#"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","quotaLimits":{"status":"rejected","resetsAt":1760000000},"message":{"model":"<synthetic>","content":[]}}"#;
+        assert_eq!(
+            observe_line(quota),
+            vec![Observed::LimitReached {
+                resets_at: Some(Timestamp(1_760_000_000_000)),
+                message: "usage limit reached".into()
+            }]
+        );
+        // A transient rate limit that was retried is not a usage limit.
+        let transient = r#"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","quotaLimits":{"status":"allowed_warning","resetsAt":1760000000},"message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: Request rejected (429) · retrying"}]}}"#;
+        assert_eq!(observe_line(transient), Vec::<Observed>::new());
     }
 }
