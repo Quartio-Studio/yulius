@@ -510,7 +510,7 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | Integration (fake agent) | ptyhost spawn/flood/ignore-SIGTERM/descendant/early-exit/cancel races, reconnect, server restart reattach, rotation with fake usage, hooks & MCP end-to-end | `tools/fake-agent` |
 | Integration (fake GitHub) | OAuth, permissions, repo creation, PR/checks/merge/ff | axum fake server |
 | Linux-only | bubblewrap containment escape attempts | CI ubuntu job |
-| UI | browser verification of layout, terminal, panels, phone viewport | manual with recorded evidence |
+| UI | end-to-end tests in `e2e/` (e2e by TesterArmy, Playwright) against the UI's mock mode: flows, keyboard, WCAG 2.x A/AA (axe-core), page errors, phone viewport; agent steps opt-in with a model key | Node test-only (ADR-01 unchanged); advisory CI job `Web UI e2e`. The real server, terminal rendering and panels against live agents: manual with recorded evidence |
 | Live (opt-in, never CI) | real Claude Code: launch, hooks, MCP, resume | uses local credentials; minimal prompts |
 | Deploy | VM install | **out of scope**; packaging reviewed only |
 
