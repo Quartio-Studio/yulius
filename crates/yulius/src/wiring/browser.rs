@@ -86,6 +86,10 @@ impl BrowserPort for ChromiumBrowsers {
     async fn shutdown_all(&self) -> Vec<SandboxId> {
         self.manager.shutdown_all().await
     }
+
+    async fn devtools_ports(&self) -> Vec<u16> {
+        self.manager.devtools_ports()
+    }
 }
 
 struct Session(Arc<BrowserInstance>);

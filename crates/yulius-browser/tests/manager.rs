@@ -336,3 +336,41 @@ async fn background_reaper_stops_idle_browsers() -> TestResult {
     assert!(manager.get(&sandbox).await.is_none());
     Ok(())
 }
+
+/// BRW-008: a started browser refuses Yulius before any page loads, and a browser whose guard
+/// cannot be enabled is not used; its DevTools port is reported (never previewed).
+#[tokio::test]
+async fn the_address_guard_is_on_before_use_or_the_browser_is_not_used() -> TestResult {
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready { port: fake.port() },
+    )?;
+    let listeners: Vec<std::net::SocketAddr> = vec!["127.0.0.1:8080".parse()?];
+    let manager = BrowserManager::new(BrowserConfig {
+        deny: yulius_browser::UrlDenyList::yulius(
+            "https://yulius.example.com",
+            &listeners,
+            Vec::new(),
+        ),
+        ..config(exe, dir.path())
+    });
+    let sandbox = SandboxId::parse("sbx-guard")?;
+    let instance = manager
+        .ensure(&sandbox, &manager.default_profile_dir(&sandbox))
+        .await?;
+    assert_eq!(fake.calls_for("Fetch.enable").len(), 1);
+    assert!(instance.open("http://localhost:8080/").await.is_err());
+    assert_eq!(manager.devtools_ports(), vec![fake.port()]);
+    assert!(manager.shutdown(&sandbox).await?);
+
+    fake.fail("Fetch.enable", -32000, "not supported");
+    let refused = manager
+        .ensure(&sandbox, &manager.default_profile_dir(&sandbox))
+        .await;
+    assert!(refused.is_err(), "a browser without its guard is not used");
+    assert!(manager.get(&sandbox).await.is_none());
+    Ok(())
+}

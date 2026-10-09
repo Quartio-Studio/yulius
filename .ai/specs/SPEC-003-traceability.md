@@ -225,9 +225,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 52 | (2026-10-09, hardening; goal item c) Parsers fed by untrusted input had hand-written cases only; randomized tests (no defect found) now cover the diff parser, the spec format, scope patterns, the transcript observer and usage JSON. | AC-UI-24, DSC-003, COM-003, ROT-009 |
 | 53 | (2026-10-09, hardening; self-review of #37/#42, reproduced) Viewers who opened a task after a full-screen app started could not wheel-scroll it (snapshot without alternate screen and mouse modes); a wheel turn took control and resized the terminal; fitted text could lose its bottom rows. | UI-019, AC-UI-11, TSK-006 |
 | 54 | (2026-10-09, hardening; self-review of #51, reproduced) Closing an editor tab with Delete moved focus into the next file, so the next Delete edited it; held keys repeated; focus was lost after some closes; a clicked browser tab could keep focus while its page loaded. | EDT-001, BRW-004, UI-029 |
+| 55 | (2026-10-09 evening, `F 2026-10-09`) "We need to do the browser somehow completely differently. Even if we have this mirror thingy, it works terribly when we need to do something real. It should be rendered fully on the user's side, but we can use the VM to get around iframe problems. It should just work as a part of the page. Deny recurrence: the user can't open the VM view in the browser because it'll explode. We still need that cursor thingy." (The user's view was a replay of the server's Chrome; nothing stopped it from opening Yulius itself.) | BRW-005/006/007 (changed), BRW-008 (new), AC-BRW-4..8; SPEC-002 ADR-14 (ADR-09 narrowed) |
 
 ## Changelog
 
+- 2026-10-09: the live browser panel and no recursion (§6 item 55).
 - 2026-10-09: tab keys keep focus on the strip and ignore key repeat (§6 item 54, hardening).
 - 2026-10-09: terminal follow-ups: full snapshot for late viewers, scrolling without taking control, fit by rows too (§6 item 53, hardening).
 - 2026-10-09: randomized parser tests (§6 item 52, hardening).

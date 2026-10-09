@@ -7,9 +7,14 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
 ## Conventions
 
 - JSON bodies (`Content-Type: application/json`), ≤ 1 MiB. Timestamps are RFC 3339 UTC strings.
-- Authentication: the `yulius_session` cookie (browser) or `Authorization: Bearer yul_…` (CLI
-  tokens). State-changing requests from cookie sessions must send `X-Yulius-CSRF: <csrf_token>`
-  from `GET /api/me`.
+- Authentication: the session cookie (browser) or `Authorization: Bearer yul_…` (CLI
+  tokens). The cookie is `__Host-yulius_session` when the public URL is HTTPS (host-only and
+  `Secure`: no other host can plant or shadow it) and `yulius_session` over plain HTTP.
+  State-changing requests from cookie sessions must send `X-Yulius-CSRF: <csrf_token>` from
+  `GET /api/me`. A cookie session is refused (403) for a request that announces an `Origin` other
+  than the public URL (or an allowlisted origin), or that the browser marks `Sec-Fetch-Site:
+  same-site` or `cross-site`, unless it is a GET or HEAD navigation: a page on a live preview
+  origin (same-site with Yulius) can never use the user's session.
 - WebSockets require a valid session and an `Origin` equal to the public URL.
 - Errors: HTTP status plus `{"error": {"code": "snake_case", "message": "human text"}}`. Codes:
   `unauthenticated` (401), `forbidden` (403), `not_found` (404; also for invisible sandboxes),
@@ -364,7 +369,10 @@ Claude Code.
   `{"type":"mouse","tab_id","event":"down|up|move|wheel","x","y","button","dx","dy"}`,
   `{"type":"key","tab_id","event":"down|up|char","key","code","text","modifiers"}`,
   `{"type":"viewport","width","height"}`, `{"type":"view","mode":"dom|pixels"}` (this
-  connection's view, default `dom`), `{"type":"dom_resync"}` (a fresh snapshot); server
+  connection's view, default `dom`), `{"type":"dom_resync"}` (a fresh snapshot),
+  `{"type":"watch","tab_id"|null}` (the tab this connection watches, independently of the
+  shared active tab; `null` watches none and nothing streams; until a viewer sends it, it
+  follows the active tab); server
   `{"type":"tabs","tabs":[{"id","title","url","active","action_requested":{"reason","task_id"}|
   null}]}`, `{"type":"viewport","width","height"}` (on connect and after every change; lay the
   mirror out at this size), `{"type":"dom","tab_id","reset","events":[…]}` ([rrweb 2.1.7
@@ -375,8 +383,10 @@ Claude Code.
   `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
   agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested",
   "tab_id","reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|
-  capacity|upstream|internal","message"}`. One browser per sandbox, started on first use; the
-  view is of the active tab. A slow client loses frames (never the browser) and DOM batches are
+  capacity|upstream|internal","message"}`. One browser per sandbox (the agents' sandbox Chrome),
+  started on first use; the view is of the watched tab. Addresses of Yulius itself (its public
+  origin and its subdomains, every loopback form of its listeners) are refused with
+  `url_refused`, and pages' own requests to them fail as blocked (SPEC-001 BRW-008). A slow client loses frames (never the browser) and DOM batches are
   never dropped: a client that stops reading JSON messages is closed with 4008. Access is
   re-checked every 60 s (close 4003). When Chromium is missing or the browser stops, the server
   sends an `upstream` error with the reason and closes with 1011.
@@ -390,9 +400,50 @@ Claude Code.
   max-age=300`; at most 20 MiB. Browser requests must be same-origin subresources: a
   `Sec-Fetch-Site` other than `same-origin` or `Sec-Fetch-Mode: navigate` is 403. 404 while the
   sandbox browser is not running.
-- New tabs open `GET /browser/welcome?sandbox=<id>` on the internal (loopback) listener: the
-  sandbox name and links to its listening dev-server ports (probed on 127.0.0.1 every 5 s via
-  `/browser/welcome/ports`).
+- New tabs of the sandbox Chrome open `GET /browser/welcome?sandbox=<id>` on the internal
+  (loopback) listener: the sandbox name and links to its listening dev-server ports (probed on
+  127.0.0.1 every 5 s via `/browser/welcome/ports`; Yulius's own ports are never listed).
+- Live previews (SPEC-002 ADR-14). Every port of a sandbox's range has a **preview origin**
+  `<scheme>://<port>-<key>.<preview domain>[:<port>]` (`key`: 12 lowercase hex characters,
+  stable per sandbox; preview domain: the public URL's host unless `--preview-domain` says
+  otherwise). The public listener sends every request whose `Host` is a preview host to the
+  preview proxy, never to the UI or API.
+  - `GET /api/sandboxes/{sid}/previews` (write) → `{"enabled", "reason?", "origin_template?":
+    "https://{port}-0123456789ab.yulius.example.com", "first_port", "last_port", "listening":
+    [port], "excluded": [port]}` (`excluded`: ports of the range that belong to Yulius).
+  - `GET /api/previews/authorize?host=<preview host>&to=<path>` (write; a navigation): 303 to
+    `https://<host>/__yulius/handshake?t=<token>&to=<path>` with a single-use token valid for
+    60 s on that host only. Unknown hosts 404; not signed in, no write access or a refused port:
+    303 to the preview's `/__yulius/denied?why=signin|access`.
+  - On a preview origin, `/__yulius/` is the proxy's: `handshake` (trades the token for the
+    `__Host-yulius_preview` cookie — `yulius_preview` over HTTP —, host-only, `HttpOnly`,
+    `SameSite=Lax`, 12 h; then 303 to `landing`), `landing?to` (303 to `to` when the cookie
+    stuck, else an explanation), `bridge.js` (the script appended to proxied documents),
+    `ping` (204, reachability), `denied`. Any other request needs the grant cookie: a GET
+    navigation without one gets 302 to `/api/previews/authorize`, anything else 401. Grants are
+    re-checked against the Yulius session and write access every 30 s and live in memory.
+  - Refused: a host that names no sandbox (404), a port outside the sandbox's range or one of
+    Yulius's own (403), credentialed requests and WebSockets from other origins than the
+    preview itself and the same sandbox's other previews (403; navigations from anywhere are
+    fine), an upstream that answers with this server's `X-Yulius` tag (508).
+  - Forwarded to `127.0.0.1:<port>` (HTTP/1.1, WebSocket upgrades spliced, bodies streamed):
+    `Host: localhost:<port>`; `Origin` and `Referer` of the sandbox's previews become
+    `http://localhost:<port>`; the grant and Yulius cookies, hop-by-hop and `X-Forwarded-*`
+    headers are removed; documents are requested without compression.
+  - Responses: `X-Frame-Options`, `Strict-Transport-Security` and every CSP `frame-ancestors` are
+    removed and `Content-Security-Policy: frame-ancestors 'self' <public URL>` added;
+    `http(s)`/`ws(s)` URLs on the VM's loopback with a sandbox port in `Location`,
+    `Content-Location`, `Refresh`, `Link`, `Access-Control-Allow-Origin` and CSP sources point at
+    the preview origins; `Set-Cookie` loses `Domain` (and gains `Secure` over HTTPS); HTML
+    documents get `<script src="/__yulius/bridge.js" async>` appended. The bridge posts
+    `{"source":"yulius-preview","type":"location","href","title","back","forward"}` (and
+    `type: "f6"`) to the public URL's origin only and accepts `{"source":"yulius","type":
+    "back|forward|reload|hello"}` only from the window that frames it.
+  - Bounds: connect 5 s, response head 120 s, 512 requests awaiting a head and 256 WebSockets
+    (503 beyond).
+- `GET /internal/preview-tls?domain=<host>` on the internal (loopback) listener: the `ask`
+  endpoint of an on-demand TLS proxy; 200 for a preview host of an existing sandbox port,
+  404 otherwise (docs/operations.md).
 - Agents print `<public_url>/s/<slug>/browser?tab=<tab_id>` (returned by the
   `browser_request_user_action` MCP tool, which also marks the task `needs_attention` and
   publishes `browser.action_requested`); the web UI opens the browser panel on that tab.

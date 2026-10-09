@@ -50,6 +50,12 @@ pub struct AppConfig {
     /// Additional frontend origins (for example a desktop app) allowed for WebSockets and CORS
     /// besides the public URL (OPS-002, AC-OPS-2).
     pub allowed_origins: Vec<String>,
+    /// Live preview origins of sandbox ports (BRW-005, SPEC-002 ADR-14); by default subdomains
+    /// of the public URL's host, `None` when that host is an IP address or previews are off.
+    pub preview: Option<crate::preview::PreviewConfig>,
+    /// Loopback ports of Yulius's own listeners: never previewed, never opened by the sandbox
+    /// browser and never listed on its welcome page (no recursion, BRW-008).
+    pub own_ports: Vec<u16>,
 }
 
 impl AppConfig {
@@ -62,7 +68,18 @@ impl AppConfig {
         yulius_exe: PathBuf,
     ) -> Self {
         let public_url = public_url.trim_end_matches('/').to_owned();
+        let own_ports = [public_url.as_str(), internal_url]
+            .iter()
+            .filter_map(|url| {
+                let authority = url.split_once("://")?.1.split('/').next()?;
+                let (host, port) = authority.rsplit_once(':')?;
+                let loopback = host == "localhost" || host.starts_with("127.") || host == "[::1]";
+                loopback.then(|| port.parse::<u16>().ok()).flatten()
+            })
+            .collect();
         Self {
+            preview: crate::preview::PreviewConfig::from_public_url(&public_url),
+            own_ports,
             data_dir,
             secure_cookies: public_url.starts_with("https://"),
             viewer_recheck_ms: 60_000,
@@ -129,13 +146,23 @@ pub struct App {
     pub(crate) workspace_grants: crate::identity::WorkspaceGrants,
     /// Serializes recovery-code checks so parallel guesses cannot exceed the limit (ADR-13).
     pub(crate) recovery_lock: tokio::sync::Mutex<()>,
+    /// Live preview handshakes and grants (SPEC-002 ADR-14).
+    pub(crate) previews: crate::preview::PreviewState,
+    /// A random tag of this server process, sent with every response (`X-Yulius`): the preview
+    /// proxy refuses an upstream that answers with it, i.e. Yulius itself (BRW-008).
+    pub instance_tag: String,
 }
 
 impl App {
     /// Builds the application.
     #[must_use]
     pub fn new(config: AppConfig, deps: Deps) -> Arc<Self> {
+        let instance_tag = deps.crypto.random_bytes()[..12]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         Arc::new(Self {
+            instance_tag,
             config,
             deps,
             events: EventBus::new(1024),
@@ -146,6 +173,7 @@ impl App {
             shells: crate::shells::ShellState::default(),
             workspace_grants: crate::identity::WorkspaceGrants::default(),
             recovery_lock: tokio::sync::Mutex::new(()),
+            previews: crate::preview::PreviewState::default(),
         })
     }
 
@@ -153,12 +181,12 @@ impl App {
     #[must_use]
     pub fn origin_allowed(&self, origin: &str) -> bool {
         let origin = origin.trim_end_matches('/');
-        origin == self.config.public_url.trim_end_matches('/')
+        origin.eq_ignore_ascii_case(self.config.public_url.trim_end_matches('/'))
             || self
                 .config
                 .allowed_origins
                 .iter()
-                .any(|o| o.trim_end_matches('/') == origin)
+                .any(|o| o.trim_end_matches('/').eq_ignore_ascii_case(origin))
     }
 
     /// Current time.

@@ -534,6 +534,20 @@ route('DELETE', `/api/sandboxes/${ID}`, ({ db, p }) => {
   return json(204);
 });
 
+// Live previews (ADR-14): the mock has no preview proxy, so a "live page" is a small data: page.
+const MOCK_PREVIEW = ['<!doctype html><html lang="en"><title>Mock app</title><body><h1>Mock app on port ', '</h1><p>On a real server this tab shows the dev server live, running in your browser.</p></body></html>'];
+route('GET', `/api/sandboxes/${ID}/previews`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const first = sandbox.port_base || 20000;
+  return {
+    enabled: true,
+    origin_template: `data:text/html;charset=utf-8,${encodeURIComponent(MOCK_PREVIEW[0])}{port}${encodeURIComponent(MOCK_PREVIEW[1])}`,
+    first_port: first,
+    last_port: first + (sandbox.port_count || 20) - 1,
+    listening: [first + 3],
+    excluded: [],
+  };
+});
 route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
   sandboxOf(db, p[0]);
   const archived = query.get('archived') === 'true';
@@ -1890,6 +1904,10 @@ class BrowserSession {
         break;
       case 'view':
         if (msg.mode === 'dom') this.domUnavailable(ws);
+        break;
+      case 'watch':
+        // The viewer chose a tab: the mock renders pixels only, so say so at once.
+        if (msg.tab_id && this.tabs.some((t) => t.id === msg.tab_id)) ws.push(JSON.stringify({ type: 'dom_unavailable', tab_id: msg.tab_id, reason: 'the mock browser renders pixels only' }));
         break;
       case 'open': {
         this.next += 1;

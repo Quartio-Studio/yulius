@@ -13,6 +13,7 @@ mod imports;
 mod internal;
 mod mcp;
 mod mcp_servers;
+mod previews;
 mod projects;
 mod sandboxes;
 mod setup_auth;
@@ -186,6 +187,8 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/sandboxes/{sid}/browser/resource",
             get(browser::resource),
         )
+        .route("/api/sandboxes/{sid}/previews", get(previews::info))
+        .route("/api/previews/authorize", get(previews::authorize))
         .route("/api/sandboxes/{sid}/shells", post(shells::create))
         .route(
             "/api/sandboxes/{sid}/files",
@@ -205,6 +208,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
 pub fn internal(_app: Arc<App>) -> Router<AppState> {
     Router::new()
         .route("/internal/healthz", get(|| async { "ok" }))
+        .route("/internal/preview-tls", get(previews::tls_ask))
         .route("/browser/welcome", get(internal::browser_welcome))
         .route(
             "/browser/welcome/ports",

@@ -536,7 +536,7 @@ async fn get_raw(
     use tower::ServiceExt as _;
     let mut request = axum::http::Request::builder().uri(path);
     if let Some(cookie) = &creds.cookie {
-        request = request.header("cookie", format!("yulius_session={cookie}"));
+        request = request.header("cookie", support::cookie_header(cookie));
     }
     if let Some(token) = &creds.bearer {
         request = request.header("authorization", format!("Bearer {token}"));
@@ -749,4 +749,54 @@ async fn the_welcome_page_names_the_sandbox_and_links_its_listening_ports() -> T
     let (_, _, public) = get_raw(&h.router, "/browser/welcome?sandbox=s9", &anonymous, &[]).await?;
     assert!(!String::from_utf8(public)?.contains("Browser of welcomed"));
     Ok(())
+}
+
+/// ADR-14: each viewer watches the sandbox Chrome tab it chose (`watch`), or none while it shows
+/// one of its own live tabs — then nothing streams, even when an agent opens a tab.
+#[tokio::test]
+async fn a_viewer_watches_the_tab_it_chose_or_none() -> TestResult {
+    with_fixture(|f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let _ = next_binary(&mut socket).await?;
+        // Watching nothing stops the screencast.
+        send(&mut socket, json!({"type": "watch", "tab_id": null})).await?;
+        assert!(f.fake.wait_for_calls("Page.stopScreencast", 1, WAIT).await);
+        // Frames already queued for this viewer may still arrive; let them drain.
+        let drain = tokio::time::Instant::now() + Duration::from_millis(300);
+        while let Ok(Some(message)) = tokio::time::timeout_at(drain, socket.next()).await {
+            message?;
+        }
+        // An agent opens a tab (it becomes the shared active tab): this viewer still gets no
+        // frames, only the tab list.
+        let browser =
+            f.h.app
+                .browser_session(&yulius_domain::ids::SandboxId::parse("s1")?)
+                .await?;
+        let opened = browser
+            .tool_open(&yulius_contracts::browser::OpenParams {
+                url: "https://example.com/".into(),
+            })
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
+        let mut saw_tabs = false;
+        while let Ok(Some(message)) = tokio::time::timeout_at(deadline, socket.next()).await {
+            match message? {
+                Message::Binary(_) => return Err("a frame streamed while watching nothing".into()),
+                Message::Text(text) => saw_tabs |= text.as_str().contains(opened.tab.id.as_str()),
+                _ => {}
+            }
+        }
+        assert!(saw_tabs, "the new tab is listed");
+        // Watching the first tab streams it, although the agent's tab is the active one.
+        send(&mut socket, json!({"type": "watch", "tab_id": first})).await?;
+        let frame = next_binary(&mut socket).await?;
+        let (tab, _) = decode_frame(&frame)?;
+        assert_eq!(tab.as_str(), first);
+        Ok(())
+    })
+    .await
 }

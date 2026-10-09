@@ -17,14 +17,17 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
   ```
   default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
   img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:;
-  connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'
+  connect-src 'self' https://*.<host>; frame-src 'self' https://*.<host> data:; frame-ancestors 'none'; base-uri 'none'
   ```
 
   There are no inline scripts (`boot.js` is a file). Inline `style` attributes carry computed values
   only (bar widths, indentation). The editor (Monaco) needs `font-src data:` for its icon font and
   `worker-src blob:` for its language workers. Images inside mirrored browser pages load only when
   the browser's resource endpoint serves them (same origin); allowing `img-src https:` instead
-  would let mirrored pages load remote images. The server does not send this header yet.
+  would let mirrored pages load remote images. Live previews (SPEC-002 ADR-14) need the preview
+  origins (`https://*.<host>`) in `frame-src` and `connect-src` (the reachability ping); the mock's
+  stand-in pages are `data:` frames. The server sends only `frame-ancestors 'none'` so far, and
+  `boot.js` makes the app refuse to run inside any frame.
 - `README.md` files are documentation and need not be embedded.
 
 ## Layout of the code
@@ -50,14 +53,15 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/quotes.js` | 40 quotes about building great things (well-documented authors only); one shows at random above the composer. |
 | `assets/models.js` | Models (grouped by provider, each naming its harness) and effort levels the composer offers. |
 | `assets/panels.js` | Right rail and resizable panel: Editor (iframe, task worktree via `?worktree=`), Shell (sandbox or task worktree), Messages; hosts the browser panel. |
-| `assets/browser.js` | Sandbox browser panel: tabs, address bar, JPEG canvas, mouse/keyboard forwarding. |
+| `assets/browser.js` | Browser panel (ADR-14): one tab strip for live tabs (the sandbox's ports in iframes on their preview origins, address/back/forward/reload through the preview's bridge script, kept per browser) and the sandbox Chrome's tabs; the start page with the listening ports; agent notices over live tabs. |
+| `assets/browserremote.js` | The sandbox Chrome watched remotely: its socket and tab list, the watched tab as DOM mirror or JPEG frames, mouse/keyboard forwarding and the agent's cursor. |
 | `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery (PR, merge, environment runs and confirmations, promotion), sandbox add/remove. |
 | `assets/status.js` | Status → glyph/tone/label mapping and permitted actions per access level. |
 | `assets/dom.js`, `assets/format.js` | DOM builder (text only, never `innerHTML` with data), icons, toasts, modals, menus; formatting helpers. |
 | `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), git, workflows, skills, automations, MCP, dashboard, admin (users, accounts, GitHub), settings. |
 | `assets/mock.js` | In-memory backend and fake WebSockets used with `?mock=1`. |
 | `assets/brand.js` | Brand identity in one place: product name, tagline and mark (the SVG path used by the sidebar, sign-in, favicon and tab title). |
-| `assets/boot.js` | The only classic script: runs in `<head>` after the stylesheets and before the first paint, applies the stored theme (no dark flash for light or system) and sets the browser's theme colour from the tokens. |
+| `assets/boot.js` | The only classic script: runs in `<head>` after the stylesheets and before the first paint, applies the stored theme (no dark flash for light or system) and sets the browser's theme colour from the tokens; notes when the page is framed, and app.js then shows only a notice (Yulius never runs inside a frame). |
 | `assets/theme.js` | Theme choice (dark, light, system) per browser: sets `data-theme`, the colour-scheme and theme-color metas, and re-colours terminals and editors from the tokens. |
 | `assets/tokens.css` | Design tokens: brand and palette, colour roles per theme (dark, light), derived tints, and the type, control, radius, elevation and motion scales. |
 | `assets/styles.css` | Components and layout (including the phone layout < 768 px), using only roles and scales from `tokens.css`. |

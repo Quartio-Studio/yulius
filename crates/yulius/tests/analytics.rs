@@ -550,10 +550,7 @@ async fn raw_get(
     path: &str,
     creds: &Creds,
 ) -> Result<(StatusCode, axum::http::HeaderMap, String), Box<dyn std::error::Error>> {
-    let cookie = format!(
-        "yulius_session={}",
-        creds.cookie.as_deref().ok_or("cookie")?
-    );
+    let cookie = support::cookie_header(creds.cookie.as_deref().ok_or("cookie")?);
     let req = Request::builder()
         .method(Method::GET)
         .uri(path)

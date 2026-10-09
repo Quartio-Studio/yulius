@@ -314,6 +314,19 @@ impl FakeCdpServer {
         }
     }
 
+    /// Sends a browser-level `Fetch.requestPaused` for `url` (a page's request matched the
+    /// client's interception patterns); the client answers with `Fetch.failRequest` or
+    /// `Fetch.continueRequest` naming `request_id`.
+    pub async fn pause_request(&self, request_id: &str, url: &str) {
+        let connections = lock(&self.shared.state).connections.clone();
+        let event = json!({"method": "Fetch.requestPaused", "params": {
+            "requestId": request_id, "resourceType": "Document",
+            "request": {"url": url, "method": "GET", "headers": {}}}});
+        for connection in connections {
+            let _ = connection.outgoing.send(event.to_string()).await;
+        }
+    }
+
     /// Drops every open connection (simulates a browser crash from the client's view).
     pub fn disconnect_all(&self) {
         self.shared
@@ -702,6 +715,9 @@ fn respond(
             Ok(json!({"result": {"type": "object", "value": value}}))
         }
         "Browser.getVersion" => Ok(json!({"product": "FakeChrome/1.0", "protocolVersion": "1.3"})),
+        "Fetch.enable" | "Fetch.disable" | "Fetch.continueRequest" | "Fetch.failRequest" => {
+            Ok(json!({}))
+        }
         "Page.enable"
         | "Runtime.enable"
         | "Runtime.releaseObject"
