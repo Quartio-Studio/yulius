@@ -26,7 +26,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret, TaskRecord, UserRecord};
-use crate::ports::github::{GitHubAppConfig, RepoAccess, RulesetRequest};
+use crate::ports::github::{GhRepo, GitHubAppConfig, RepoAccess, RulesetRequest};
 
 /// First port of the first sandbox range (PRJ-010).
 pub const PORT_RANGE_START: u16 = 20_000;
@@ -270,6 +270,23 @@ impl App {
         self.deps.github.installation_token(&app, id).await
     }
 
+    /// The repository `owner/name` among those the App installation can access.
+    ///
+    /// # Errors
+    /// Installation lookup or GitHub failures.
+    async fn installation_repo(&self, owner: &str, name: &str) -> AppResult<Option<GhRepo>> {
+        let (app, installation) = self.installation().await?;
+        Ok(self
+            .deps
+            .github
+            .installation_repos(&app, installation)
+            .await?
+            .into_iter()
+            .find(|repo| {
+                repo.owner.eq_ignore_ascii_case(owner) && repo.name.eq_ignore_ascii_case(name)
+            }))
+    }
+
     /// The caller's GitHub user token; users without a GitHub identity get a clear refusal.
     async fn github_identity_token(&self, user: &UserRecord) -> AppResult<Secret> {
         if user.github_login.is_none() {
@@ -288,12 +305,17 @@ impl App {
 
     /// `GET /api/github/repositories`: repositories of the instance owner that the App
     /// installation can access and the caller can at least read, with the caller's level and
-    /// whether each is already a sandbox.
+    /// whether each is already a sandbox. The superadmin has admin on each (ACC-012) and needs
+    /// no GitHub identity.
     ///
     /// # Errors
     /// `Forbidden` without a GitHub identity, `Conflict` when the App is missing, `Upstream`.
     pub async fn github_repositories(&self, ctx: &AuthContext) -> AppResult<Vec<AvailableRepo>> {
-        let token = self.github_identity_token(&ctx.user).await?;
+        let token = if ctx.user.is_superadmin {
+            None
+        } else {
+            Some(self.github_identity_token(&ctx.user).await?)
+        };
         let (owner, _) = self.instance_owner().await?;
         let (app, installation) = self.installation().await?;
         let mut repos = self
@@ -311,15 +333,16 @@ impl App {
                 .store
                 .sandbox_by_repo(&repo.owner, &repo.name)
                 .await?;
-            let level = match &existing {
-                Some(sandbox) => self
+            let level = match (&existing, &token) {
+                (Some(sandbox), _) => self
                     .access_level(&ctx.user, sandbox)
                     .await
                     .unwrap_or(AccessLevel::None),
-                None => match self
+                (None, None) => AccessLevel::Admin,
+                (None, Some(token)) => match self
                     .deps
                     .github
-                    .repo_access(&token, &repo.owner, &repo.name)
+                    .repo_access(token, &repo.owner, &repo.name)
                     .await
                 {
                     Ok(RepoAccess::Access { permissions, .. }) => {
@@ -395,8 +418,9 @@ impl App {
     }
 
     /// Links an existing repository of the instance owner as a new sandbox (import mode,
-    /// IMP-002): requires `admin` or `maintain` on GitHub; clones it, chooses the profile,
-    /// validates the documentation format and creates the onboarding task when it fails.
+    /// IMP-002): requires `admin` or `maintain` on GitHub (the superadmin: a repository the App
+    /// installation can access, ACC-012); clones it, chooses the profile, validates the
+    /// documentation format and creates the onboarding task when it fails.
     ///
     /// # Errors
     /// See [`App::create_sandbox`].
@@ -422,22 +446,31 @@ impl App {
                 existing.slug
             )));
         }
-        let token = self.github_identity_token(user).await?;
-        let repo = match self.deps.github.repo_access(&token, owner, name).await? {
-            RepoAccess::NoAccess => {
-                return Err(AppError::Invalid(format!(
-                    "{owner}/{name} does not exist on GitHub or you cannot see it; every project \
-                     needs a GitHub repository of {instance_owner}"
-                )));
-            }
-            RepoAccess::Access { permissions, repo } => {
-                if !(permissions.admin || permissions.maintain) {
-                    return Err(AppError::Forbidden(format!(
-                        "adding {owner}/{name} needs admin or maintain permission on GitHub; you have {}",
-                        AccessLevel::from_github(permissions).as_str()
+        let repo = if user.is_superadmin {
+            self.installation_repo(owner, name).await?.ok_or_else(|| {
+                AppError::Invalid(format!(
+                    "{owner}/{name} does not exist on GitHub or the Yulius GitHub App cannot \
+                     access it; every project needs a GitHub repository of {instance_owner}"
+                ))
+            })?
+        } else {
+            let token = self.github_identity_token(user).await?;
+            match self.deps.github.repo_access(&token, owner, name).await? {
+                RepoAccess::NoAccess => {
+                    return Err(AppError::Invalid(format!(
+                        "{owner}/{name} does not exist on GitHub or you cannot see it; every \
+                         project needs a GitHub repository of {instance_owner}"
                     )));
                 }
-                repo
+                RepoAccess::Access { permissions, repo } => {
+                    if !(permissions.admin || permissions.maintain) {
+                        return Err(AppError::Forbidden(format!(
+                            "adding {owner}/{name} needs admin or maintain permission on GitHub; you have {}",
+                            AccessLevel::from_github(permissions).as_str()
+                        )));
+                    }
+                    repo
+                }
             }
         };
         let owner = if repo.owner.is_empty() {

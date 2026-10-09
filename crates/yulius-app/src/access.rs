@@ -1,4 +1,5 @@
-//! GitHub-mirrored access decisions with a bounded-staleness cache (SPEC-001 ACC-007/008).
+//! GitHub-mirrored access decisions with a bounded-staleness cache (SPEC-001 ACC-007/008), and
+//! the superadmin's access to every sandbox (ACC-012).
 
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
@@ -11,9 +12,14 @@ use crate::ports::github::RepoAccess;
 impl App {
     /// Effective access of `user` to `sandbox`.
     ///
-    /// Fresh cache entries are reused; otherwise GitHub is asked with the user's token. On a
-    /// GitHub failure a cached value younger than the staleness bound is used, else the error is
-    /// returned. Users without a GitHub identity (the superadmin until linked) have no access.
+    /// The superadmin owns the instance and has admin access to every sandbox, with or without
+    /// a GitHub link, without asking GitHub (ACC-012). Everyone else mirrors GitHub: fresh cache
+    /// entries are reused; otherwise GitHub is asked with the user's token. On a GitHub failure a
+    /// cached value younger than the staleness bound is used, else the error is returned. Other
+    /// users without a GitHub identity have no access.
+    ///
+    /// Every access path (REST, the event stream, terminal, shell and browser sockets and their
+    /// re-checks, files, Git, tasks and analytics) decides through this function.
     ///
     /// # Errors
     /// `Upstream` when GitHub cannot be reached and no usable cache exists.
@@ -22,7 +28,13 @@ impl App {
         user: &UserRecord,
         sandbox: &SandboxRecord,
     ) -> AppResult<AccessLevel> {
-        if user.disabled_at.is_some() || user.github_login.is_none() {
+        if user.disabled_at.is_some() {
+            return Ok(AccessLevel::None);
+        }
+        if user.is_superadmin {
+            return Ok(AccessLevel::Admin);
+        }
+        if user.github_login.is_none() {
             return Ok(AccessLevel::None);
         }
         let now = self.now();
@@ -97,6 +109,26 @@ impl App {
             .map_err(|_| AppError::Unauthenticated)?;
         self.save_user_token(user, &fresh).await?;
         Ok(fresh.access)
+    }
+
+    /// A GitHub token for an action that acts as the person on GitHub (merging, releasing).
+    /// An account without a GitHub identity (the superadmin, ACC-012) is refused with a message
+    /// naming `action` — never `Unauthenticated`, which would end the browser session.
+    ///
+    /// # Errors
+    /// `Forbidden` without a GitHub identity; otherwise as [`App::user_github_token`].
+    pub(crate) async fn person_github_token(
+        &self,
+        user: &UserRecord,
+        action: &str,
+    ) -> AppResult<Secret> {
+        if user.github_login.is_none() {
+            return Err(AppError::Forbidden(format!(
+                "{action} acts as a person on GitHub, and the superadmin account has no GitHub \
+                 identity. Do it on GitHub, or sign in with GitHub as an admitted user."
+            )));
+        }
+        self.user_github_token(user).await
     }
 
     /// Requires `action` on `sandbox`; invisible sandboxes yield `NotFound`.

@@ -17,6 +17,8 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
   GitHub/provider failure), `unavailable` (503; a local prerequisite such as openvscode-server
   is missing or disabled, the message says which), `internal` (500).
 - Access levels: `read`, `write`, `admin` (SPEC-001 ACC-007). Endpoints note the minimum level.
+  The superadmin has `admin` on every sandbox, with or without a GitHub link (ACC-012); everyone
+  else has the level GitHub grants, and no GitHub identity means no sandbox.
 
 
 Other frontends (for example a desktop app, OPS-002) use bearer tokens from the device flow (`POST /api/device/start`, approval in the web UI, `POST /api/device/poll`, as used by `yulius login`) and must be listed with `yulius serve --allowed-origin <origin>` (`YULIUS_ALLOWED_ORIGINS`, comma-separated): those origins get CORS responses (methods GET/POST/PUT/PATCH/DELETE; headers `Authorization`, `Content-Type`, `X-Yulius-CSRF`) and may open WebSockets; every other cross-origin WebSocket is refused with 403.
@@ -57,9 +59,9 @@ CLI device approval: `POST /api/device/start` → `{"device_code","user_code","v
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes` | read | → `[Sandbox]` (only visible ones) |
-| GET | `/api/github/repositories` | — | → `[{"owner","name","private","access","already_sandbox"}]` |
+| GET | `/api/github/repositories` | — | → `[{"owner","name","private","access","already_sandbox"}]` (the superadmin: every owner repository the App installation can access, `admin`; others need a GitHub identity, else 403) |
 | GET | `/api/templates` | — | → `[{"id","name","description"}]` |
-| POST | `/api/sandboxes` | admin on repo / owner | `{"mode":"import","repo":"owner/name"}` or `{"mode":"create","name","template","description"}` → 201 `Sandbox` |
+| POST | `/api/sandboxes` | admin on repo (superadmin: a repository the App can access) / owner | `{"mode":"import","repo":"owner/name"}` or `{"mode":"create","name","template","description"}` → 201 `Sandbox` |
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`) |
@@ -209,9 +211,9 @@ The account-login terminal (`/api/admin/accounts/login/{lid}/terminal`) and sand
 | GET | `/api/tasks/{tid}/delivery` | read | → `Delivery` |
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the worktree is gone |
 | GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100) |
-| POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes) |
-| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile) |
-| POST | `/api/sandboxes/{sid}/delivery/promote` | write | → `{"result":"promoted|pr_opened","sha"}` |
+| POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes); opened with the caller's GitHub account, the superadmin's by the App |
+| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity |
+| POST | `/api/sandboxes/{sid}/delivery/promote` | write | → `{"result":"promoted|pr_opened","sha"}`; acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/runs` | write | `{"confirm":true}` → `EnvironmentRun` (includes `run_id`) |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/confirm` | write | `{"confirm":true}` → `EnvironmentRun` (manual verification) |
 | GET | `/api/sandboxes/{sid}/delivery/runs` | read | → `[EnvironmentRun]` (newest 20, output tails of 2 KiB) |

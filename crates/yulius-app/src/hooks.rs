@@ -582,6 +582,19 @@ impl App {
                 ));
             }
         }
+        let token = self.repository_installation_token(&sandbox).await?;
+        Ok(GitCredential { token })
+    }
+
+    /// An installation token restricted to `sandbox`'s repository (agents' Git, and the
+    /// superadmin's shells, ACC-012).
+    ///
+    /// # Errors
+    /// `Conflict` when the App is not installed; GitHub failures.
+    pub(crate) async fn repository_installation_token(
+        &self,
+        sandbox: &crate::model::SandboxRecord,
+    ) -> AppResult<crate::model::Secret> {
         let installation = self
             .deps
             .store
@@ -590,12 +603,10 @@ impl App {
             .and_then(|i| i.installation_id)
             .ok_or_else(|| AppError::Conflict("the GitHub App is not installed".into()))?;
         let app = self.github_app().await?;
-        let token = self
-            .deps
+        self.deps
             .github
             .repository_token(&app, installation, &sandbox.repo_name)
-            .await?;
-        Ok(GitCredential { token })
+            .await
     }
 }
 
