@@ -121,7 +121,8 @@ users/<user>/identity/              generated passwd/group files of the user's s
 runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
 runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files
-shells/<shell>/                     ptyhost run directories of sandbox shells (UI-015)
+shells/<shell>/                     ptyhost run directories of sandbox shells (UI-015); shell.json (owner,
+                                    sandbox, folder, name, sealed host token) to adopt them after a restart
 logins/<login>/                     temporary provider login (config dir + run dir); zero-filled and removed after the login
 exports/sandbox-<slug>-<ms>.json    task export written when a sandbox is removed (PRJ-009), 0600
 transcripts/<task>/                 archived/imported provider transcripts (immutable copies)
@@ -286,10 +287,15 @@ home), `TERM=xterm-256color`, `COLORTERM=truecolor`, git author identity of the 
 (per-sandbox range of 20 ports from 20000 upward, persisted on the sandbox row; SPEC-001 PRJ-010)
 and `PORT` (first port of the range). Provider secrets are environment-only.
 
-Sandbox shell sessions (SPEC-001 UI-015) reuse the same ptyhost machinery with the user's login
-shell in the contained sandbox; they are not tasks, have no harness hooks, MCP token or Git
-credential helper, are limited to 4 live shells per sandbox, require current write access to attach,
-and end when their process exits, after 30 min without viewers, or at server shutdown.
+Sandbox shell sessions (SPEC-001 UI-015, UI-016) reuse the same ptyhost machinery with the user's
+login shell in the contained sandbox; they are not tasks, have no harness hooks or MCP token, are
+limited to 8 live shells per user and sandbox, require current write access to list or attach, and
+are private to their owner and sandbox. Like agent sessions they outlive the server: shutdown only
+detaches them, and the next start adopts each run directory whose `shell.json` names an existing
+sandbox and whose host accepts the token (sealed with the master key); every other run directory is
+ended and removed before serving. They end when their process exits, when the owner closes them
+(Ctrl-C, SIGTERM, SIGKILL; the host is terminated if it outlives the wait), or after 24 h without
+viewers (F 2026-10-09).
 
 Launch preparation verified against the real CLIs (2026-10-07): with an isolated
 `CLAUDE_CONFIG_DIR`, Claude Code 2.1.292 opens a theme picker and, for every new working directory,
@@ -375,7 +381,11 @@ scope claims, unread messages count.
 
 Binary frames mirror §7.1 (Output/Snapshot/Exit) plus JSON text control frames: client `hello
 {last_seq}`, `input`, `resize`, `take_control`; server `state {attempt, harness, controller}`,
-`notice`. Joining viewers get a snapshot from the server's own vt100 copy, then live output. Per
+`notice`. Joining viewers get a snapshot from the server's own vt100 copy, then live output. A
+viewer may give its size with the connection (`?cols=&rows=`): a writer whom nobody else controls
+gets it applied before its first state and snapshot, and when that changed the size the snapshot
+waits (≤ 400 ms, until 40 ms without output) for the agent's redraw, so the terminal is drawn once at
+the viewer's size (F 2026-10-09); the same size again (hello, reconnect) resizes nothing. Per
 viewer queue 512 frames / 8 MiB; overflow closes with code 4008; client reconnects with backoff
 (0.5 s → 10 s). Input requires write permission and is applied in arrival order; each input frame
 carries a client sequence for duplicate suppression after reconnect. At most 16 viewers per task.
@@ -437,8 +447,8 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   audit entry.
 
 - User processes (UI-016): shells run contained as the user's identity (ADR-12). A user's home
-  is bound only into that user's processes; agent runs never see it. Shells are attachable only
-  by their creator. Git in user processes asks the internal listener with a workspace token and
+  is bound only into that user's processes; agent runs never see it. Shells are listed,
+  attachable, renamed and closed only by their creator and only within their sandbox. Git in user processes asks the internal listener with a workspace token and
   receives the user's own GitHub token.
 - Editor file API (ADR-10): write users only; relative paths of normal components, every
   existing path resolved and kept inside the folder (symbolic links cannot escape), `.git`
@@ -575,7 +585,9 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Process supervision (NFR-001..005, AC-TSK-3, AC-NFR-3) | `crates/yulius/tests/supervision.rs`: real detached ptyhost + fake agent + real git worktrees; a server runtime is dropped and a new one reconciles and reattaches the same child pid, snapshot restores the screen, crash exit code recorded, stop escalation, queueing at the session limit, normal exit closes the task; `crates/yulius-ptyhost/tests/*` (13 + orphan watchdog). |
 | Rotation (AC-ROT-2 reactive, AC-ROT-6) | `supervision.rs`: a provider usage limit at turn end moves the same session to the next account with a native resume and a recorded decision; usage refreshed at 99 % moves it at the next turn boundary; with no capacity the task waits. |
 | Superadmin access (AC-ACC-8) | `http_auth.rs`: every sandbox with admin access and its routes with GitHub down, no cached permission; only the superadmin (a password instance admin sees nothing, GitHub users mirrored); terminal and event stream survive re-checks. `shells.rs`: shell with the App's repository token. `projects.rs`: listing and import through the App. `delivery.rs`: pull request through the App, merge/release 403. `analytics.rs`: summary and Status cover every sandbox. `e2e/tests/access.e2e.ts` (mock UI). |
-| Terminal and permissions (AC-TSK-2, AC-TSK-6, AC-ACC-5) | `terminal_ws.rs`: task created via the public API, two WebSocket viewers, read-only input refused, writer input reaches the agent, a GitHub downgrade turns an open socket read-only and revocation closes it (4003). |
+| Terminal and permissions (AC-TSK-2, AC-TSK-6, AC-ACC-5) | `terminal_ws.rs`: task created via the public API, two WebSocket viewers, read-only input refused, writer input reaches the agent, a GitHub downgrade turns an open socket read-only and revocation closes it (4003); the writer's `?cols=&rows=` is in its first state (AC-UI-38). |
+| User terminals (UI-016, AC-UI-8, AC-UI-37) | `shells.rs`: many named shells per user and sandbox up to the bound, privacy between users and sandboxes (list, attach, rename, close), close ends the process, idle reaping; a shell keeps running when the server stops and the next server adopts it with its screen and process (unadoptable leftovers removed). `live_ui_terminal.rs` (opt-in Chrome): the Shell panel opens a working terminal without a click and "+" adds one. |
+| Task terminal appearance (UI-043, AC-UI-38) | `live_ui_terminal.rs` (opt-in Chrome, fake agent with `--tui`, 80 ms latency): zero visible font, grid or layout changes after the first frame, cold and on reload; before this change 2 (cold) and 1 (reload), plus a font-size change before the agent's text. |
 | Messages and steps (AC-COM-2, AC-STP-3) | `supervision.rs` wake test (notice typed into the idle recipient only); `agent_hooks.rs` plan-checklist → steps sync. |
 | Operator CLI (AC-OPS-3) | `cli.rs`: `yulius backup` consistent copy, refuses an existing destination; `yulius doctor` fails on a too-long data dir. |
 | Hooks, briefing, discipline (COM-004, DSC-003) | `crates/yulius/tests/agent_hooks.rs` over the internal HTTP listener. |
@@ -588,6 +600,10 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-09 (F 2026-10-09, evening): user terminals — many shells per user and sandbox with names,
+  list/rename/close, shells adopted after a restart from `shell.json` (§4, §7.2, §8); the terminal
+  WebSocket takes the viewer's size with the connection and the snapshot waits for the redraw
+  (§7.7); embedded UI assets carry ETags and answer revalidation with 304.
 - 2026-10-09 (`F 2026-10-09`): the superadmin has admin access to every sandbox without GitHub;
   principle 3 and §8 record the exception and which GitHub actions use the App (ACC-012).
 - 2026-10-09 (hardening): server-side Git never runs repository hooks; risk R-13 (#54).

@@ -7,13 +7,17 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 
 /// Per-viewer buffered frames before a viewer is considered lagging.
 pub const VIEWER_QUEUE_FRAMES: usize = 512;
 /// Largest output chunk forwarded as one frame.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
+/// A redraw counts as finished after this long without output ([`Hub::settle`]).
+pub const SETTLE_QUIET: Duration = Duration::from_millis(40);
 
 /// A frame delivered to viewers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,13 +124,15 @@ impl Hub {
         });
     }
 
-    /// Resizes the screen model.
+    /// Resizes the screen model and tells viewers; the same size again changes nothing and
+    /// sends nothing (every viewer's hello repeats its size).
     pub fn resize(&self, cols: u16, rows: u16) {
+        let (cols, rows) = (cols.max(1), rows.max(1));
         if let Ok(mut screen) = self.screen.lock() {
-            screen
-                .parser
-                .screen_mut()
-                .set_size(rows.max(1), cols.max(1));
+            if screen.parser.screen().size() == (rows, cols) {
+                return;
+            }
+            screen.parser.screen_mut().set_size(rows, cols);
         }
         let _ = self.tx.send(HubFrame::State);
     }
@@ -192,6 +198,37 @@ impl Hub {
             status: status.to_owned(),
             code,
         });
+    }
+
+    /// A receiver of the frames from now on, for [`Self::settle`] (not a viewer).
+    #[must_use]
+    pub fn watch(&self) -> broadcast::Receiver<HubFrame> {
+        self.tx.subscribe()
+    }
+
+    /// Waits, at most `limit`, for the redraw that a resize triggers: output newer than `since`
+    /// on `watch` (taken before the resize), then [`SETTLE_QUIET`] without more. A program that
+    /// does not redraw costs the whole `limit`; a closed hub returns at once.
+    pub async fn settle(
+        &self,
+        mut watch: broadcast::Receiver<HubFrame>,
+        since: u64,
+        limit: Duration,
+    ) {
+        let deadline = tokio::time::Instant::now() + limit;
+        let mut redrawn = self.output_seq() > since;
+        loop {
+            let until = if redrawn {
+                (tokio::time::Instant::now() + SETTLE_QUIET).min(deadline)
+            } else {
+                deadline
+            };
+            match tokio::time::timeout_at(until, watch.recv()).await {
+                Ok(Ok(HubFrame::Output { .. }) | Err(RecvError::Lagged(_))) => redrawn = true,
+                Ok(Ok(_)) => {}
+                Ok(Err(RecvError::Closed)) | Err(_) => return,
+            }
+        }
     }
 
     /// Subscribes a viewer: snapshot and receiver are taken atomically so no output is lost or
@@ -334,6 +371,62 @@ mod tests {
         assert!(
             again.contains("\x1b[?1049h") && again.contains("\x1b[?1002h"),
             "after a host reset: {again:?}"
+        );
+    }
+
+    /// Every viewer's hello repeats its size: the same size again changes nothing and tells
+    /// nobody (F 2026-10-09: no state frames, no redraws for nothing).
+    #[test]
+    fn resizing_to_the_same_size_sends_nothing() {
+        let hub = Hub::new(20, 5);
+        let mut sub = hub.subscribe();
+        hub.resize(20, 5);
+        assert!(sub.rx.try_recv().is_err(), "no frame for the same size");
+        hub.resize(30, 6);
+        assert!(matches!(sub.rx.try_recv(), Ok(HubFrame::State)));
+        assert_eq!(hub.size(), (30, 6));
+    }
+
+    /// The first screen after a resize waits for the program's redraw, then for a pause, and
+    /// never longer than its limit (F 2026-10-09).
+    #[tokio::test]
+    async fn settle_waits_for_the_redraw_and_a_pause_within_its_limit() {
+        let hub = Arc::new(Hub::new(20, 5));
+        // A program that redraws in two chunks after the resize.
+        let since = hub.output_seq();
+        let watch = hub.watch();
+        let drawer = Arc::clone(&hub);
+        let redraw = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            drawer.output(1, b"redrawn ");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            drawer.output(2, b"at the new size");
+        });
+        let started = tokio::time::Instant::now();
+        hub.settle(watch, since, Duration::from_secs(5)).await;
+        let waited = started.elapsed();
+        redraw.await.ok();
+        assert!(
+            hub.screen_text().contains("at the new size"),
+            "settled after the redraw"
+        );
+        assert!(
+            waited >= Duration::from_millis(40) + SETTLE_QUIET,
+            "{waited:?}"
+        );
+        assert!(
+            waited < Duration::from_secs(2),
+            "a pause ends the wait: {waited:?}"
+        );
+
+        // A program that does not redraw costs the limit, no more.
+        let started = tokio::time::Instant::now();
+        hub.settle(hub.watch(), hub.output_seq(), Duration::from_millis(120))
+            .await;
+        let waited = started.elapsed();
+        assert!(
+            waited >= Duration::from_millis(120) && waited < Duration::from_secs(2),
+            "{waited:?}"
         );
     }
 

@@ -18,6 +18,8 @@ pub struct FakeAgentOptions {
     pub transcript: bool,
     /// Report a usage limit after this many turns.
     pub limit_after: Option<u32>,
+    /// Draw full screen like Claude Code (`--tui`), redrawing on every resize.
+    pub tui: bool,
 }
 
 /// See the module docs.
@@ -76,6 +78,9 @@ impl HarnessPort for FakeAgentHarness {
         }
         if let Some(n) = self.options.limit_after {
             argv.extend(["--limit-after".into(), n.to_string()]);
+        }
+        if self.options.tui {
+            argv.push("--tui".into());
         }
         plan.plan.argv = argv;
         Ok(plan)
