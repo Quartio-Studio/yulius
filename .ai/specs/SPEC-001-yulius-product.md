@@ -23,7 +23,7 @@ Companion documents:
 | `F 2026-10-07` | Founder feedback after using the deployed instance (2026-10-07 goal: ten items, then the recovery code, five additions — agent cursor, hidden tools rail, the "unknown tab" error, link routing, HTML text with instant copying — and a simpler editor instead of per-user VS Code) | Later than every other source; supersedes them where it conflicts (class C). |
 | `F 2026-10-08` | Founder decision of 2026-10-08: "prune Codex support and switching providers; we use only Claude; if Codex gets better, we'll support it" | Latest source; supersedes every Codex and cross-provider statement (class C). |
 | `F 2026-10-08 UI` | Founder UI review of 2026-10-08, given item by item while using the web UI (user menu in the sidebar, named tools, wordmark, notification center, composer pickers) | Latest source for the interface; supersedes earlier layout statements where it conflicts (class C). |
-| `F 2026-10-09` | Founder feedback of 2026-10-09 on the deployed instance: after admitting themself as superadmin and signing out, GitHub sign-in in the same window showed a raw "not admitted" error and, on reload, "sign-in expired"; it must work in the same window, a frequent case; later the same day: a task kept showing "Working" in the sidebar after Claude Code hit the usage limit ("You've hit your session limit · resets 10:20am"); automatic routing started new tasks on exhausted accounts; account usage showed only "HTTP 429" and "Not known yet" | Latest source for sign-in, usage-limit status, routing and account usage. |
+| `F 2026-10-09` | Founder feedback of 2026-10-09 on the deployed instance: after admitting themself as superadmin and signing out, GitHub sign-in in the same window showed a raw "not admitted" error and, on reload, "sign-in expired"; it must work in the same window, a frequent case; later the same day: a task kept showing "Working" in the sidebar after Claude Code hit the usage limit ("You've hit your session limit · resets 10:20am"); automatic routing started new tasks on exhausted accounts; account usage showed only "HTTP 429" and "Not known yet"; Dashboard tokens did not update while tasks ran | Latest source for sign-in, usage-limit status, routing, account usage and live metrics. |
 | `R:product`, `R:studio` | Read-only inspection of `/Users/mrfishpl/Desktop/quartio/product` and `/studio` | Structure, instructions, workflows. |
 
 Raw sources, frame captures and research notes stay outside Git (local notes). This document
@@ -387,7 +387,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 
 | ID | Requirement | Source | Class | Acceptance |
 | --- | --- | --- | --- | --- |
-| ANL-001 | Background collection per task: duration, model(s), tokens consumed, accounts used, switches. | T 35:19–35:38 | E | AC-ANL-1 |
+| ANL-001 | Background collection per task: duration, model(s), tokens consumed, accounts used, switches. Collection is live: a run's tokens, turns and active agent time (the time its turns took) are stored after each turn and at least every 30 s while it runs, not only when it ends, and an open Dashboard refreshes itself. | T 35:19–35:38, F 2026-10-09 | E | AC-ANL-1 |
 | ANL-002 | Users can give feedback on a task: was it done correctly (yes/no + comment). | T 35:19 | E | AC-ANL-2 |
 | ANL-003 | Full analytics for later analysis: dashboard and export. | T 35:38–35:41 ("mega important") | E | AC-ANL-3 |
 
@@ -699,7 +699,7 @@ instance — out of scope).
 | AC-IMP-4 | After import, the preparation task is created and other tasks are blocked until it lands or is skipped by an admin. | int |
 | AC-IMP-5 | Another member continues an imported session natively. | int (fake), live |
 | AC-IMP-6 | Re-running import adds only new sessions. | int |
-| AC-ANL-1 | Task metrics include durations, models, tokens per attempt, accounts and switches; unknown usage is null, not zero. | int |
+| AC-ANL-1 | Task metrics include durations, models, tokens per attempt, accounts and switches; unknown usage is null, not zero. A live run has metrics after its first turn (one row per run, updated in place). | int |
 | AC-ANL-2 | Feedback yes/no + comment is stored per user and shown. | int, ui |
 | AC-ANL-3 | Dashboard aggregates and CSV/JSON export work. | int, ui |
 | AC-OPS-1 | Packaging: single binary + systemd unit + reverse-proxy example + install guide. Deployed behavior: **not verified (out of scope)**. | review |
@@ -720,6 +720,8 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 ## 12. Changelog
 
+- 2026-10-09 (`F 2026-10-09`): run metrics are stored live (after each turn, at least every 30 s)
+  with active agent time, and an open Dashboard refreshes itself (ANL-001, AC-ANL-1).
 - 2026-10-09 (`F 2026-10-09`): accounts know their limits from what the CLI reports (the limited
   window at 100 % until its reset), new tasks skip limited accounts, usage refreshes in the
   background and a throttled usage request backs off for `Retry-After` (ROT-003, ROT-009,

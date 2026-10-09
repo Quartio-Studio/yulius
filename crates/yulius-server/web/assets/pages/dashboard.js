@@ -19,6 +19,8 @@ const LONG_DATE = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 
 const WEEKDAY = new Intl.DateTimeFormat(undefined, { weekday: 'short', timeZone: 'UTC' });
 const ORIGIN_NAMES = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task' };
 
+/** How often an open dashboard refreshes itself. */
+const LIVE_MS = 30_000;
 const isoDay = (date) => date.toISOString().slice(0, 10);
 const parseDay = (day) => new Date(`${day}T00:00:00Z`);
 
@@ -63,7 +65,12 @@ export function mountDashboardPage(ctx, sandbox) {
     ]);
     return { now: now || {}, before, days };
   }, ({ now, before, days: n }) => renderSummary(now, before, n));
-  return { el: frame.el, key: `dashboard:${sandbox.id}` };
+  // Live while open (#31): tokens and runs of tasks in progress change; refresh in place while
+  // the tab is visible.
+  const live = setInterval(() => {
+    if (document.visibilityState === 'visible') reload({ quiet: true });
+  }, LIVE_MS);
+  return { el: frame.el, key: `dashboard:${sandbox.id}`, destroy: () => clearInterval(live) };
 }
 
 /** Known input + output tokens of a `Tokens` group; null when neither was reported. */
