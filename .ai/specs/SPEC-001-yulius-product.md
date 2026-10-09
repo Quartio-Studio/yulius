@@ -292,7 +292,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | COM-002 | Tasks can communicate through a Yulius-level protocol (any task can message another). | T 13:33–13:48, T 23:47, WA 13:05 | E | AC-COM-2 |
 | COM-003 | Tasks can agree on scopes (who works on what) to avoid conflicts. | T 23:31–23:41 | E | AC-COM-3 |
 | COM-004 | Every task starts with the context of the whole project: project summary, architecture, decisions, recent changes, parallel tasks. | T 34:38–35:00, WA 13:44 | E | AC-COM-4 |
-| COM-005 | A message to an idle task can wake it so negotiation proceeds without the user. Users see messages in the UI. | — | A | AC-COM-2 |
+| COM-005 | A message to an idle task can wake it so negotiation proceeds without the user. Users see messages in the UI, and an agent answers people with `message_send` `to="people"`: the answer shows in the task's Messages and in their notifications (#46). | —, F 2026-10-09 | A | AC-COM-2 |
 
 ### 5.8 Discipline (DSC)
 
@@ -667,7 +667,7 @@ instance — out of scope).
 | AC-STP-2 | Step strip shows "n/m current step" and expands to the list. | ui |
 | AC-STP-3 | Editing the spec Plan checklist updates steps; step updates are reflected in briefing. | int |
 | AC-COM-1 | `tasks_list` returns previous and parallel tasks with status, branch, spec and summary. | int |
-| AC-COM-2 | A task messages a parallel task; the recipient receives it at its next turn or is woken when idle. | int (fake), live |
+| AC-COM-2 | A task messages a parallel task; the recipient receives it at its next turn or is woken when idle. | int (fake), live An answer to people is in the sender's thread and published to the UI, and no task receives it. |
 | AC-COM-3 | Overlapping scope claims are reported to both tasks. | int |
 | AC-COM-4 | Session start receives a bounded briefing with project summary, decisions, recent changes and parallel tasks. | int |
 | AC-DSC-1 | Validator accepts the scaffolded format and reports precise missing items otherwise. | unit |
@@ -720,6 +720,7 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 ## 12. Changelog
 
+- 2026-10-09 (hardening): agents can answer people (`message_send` `to="people"`) (COM-005, AC-COM-2).
 - 2026-10-09 (`F 2026-10-09`): a terminal sized by another viewer is fitted to this view's width instead of
   leaving an empty band (UI-019, AC-UI-11).
 - 2026-10-09 (`F 2026-10-09`): the server serves the task review's changes and commits, so Git → a task
