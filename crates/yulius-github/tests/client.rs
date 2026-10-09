@@ -95,9 +95,11 @@ async fn oauth_exchange_refresh_and_current_user() -> TestResult {
 #[tokio::test]
 async fn authorize_url_carries_client_state_and_redirect() -> TestResult {
     let (fake, client) = setup().await?;
-    let url = Url::parse(
-        &client.authorize_url("st4te", "https://yulius.example/api/auth/github/callback")?,
-    )?;
+    let url = Url::parse(&client.authorize_url(
+        "st4te",
+        "https://yulius.example/api/auth/github/callback",
+        false,
+    )?)?;
     assert_eq!(url.path(), "/web/login/oauth/authorize");
     let pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
     assert!(pairs.contains(&("client_id".into(), "Iv1.fakeyuliusapp".into())));
@@ -106,11 +108,18 @@ async fn authorize_url_carries_client_state_and_redirect() -> TestResult {
         "redirect_uri".into(),
         "https://yulius.example/api/auth/github/callback".into()
     )));
+    assert!(
+        !pairs.iter().any(|(k, _)| k == "prompt"),
+        "no picker by default"
+    );
+    let picker = Url::parse(&client.authorize_url("st4te", "https://x/cb", true)?)?;
+    let pairs: Vec<(String, String)> = picker.query_pairs().into_owned().collect();
+    assert!(pairs.contains(&("prompt".into(), "select_account".into())));
     let mut unconfigured = fake.config();
     unconfigured.app = None;
     let bare = GitHubClient::new(unconfigured)?;
     assert_eq!(
-        bare.authorize_url("s", "https://x/cb"),
+        bare.authorize_url("s", "https://x/cb", false),
         Err(GitHubError::NotConfigured)
     );
     assert!(matches!(bare.app_jwt(), Err(GitHubError::NotConfigured)));

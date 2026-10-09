@@ -81,8 +81,9 @@ fn login_of(token: &Secret) -> String {
 
 #[async_trait]
 impl GitHubPort for FakeGitHub {
-    fn authorize_url(&self, _: &GitHubAppConfig, state: &str, _: &str) -> String {
-        format!("https://github.test/login/oauth/authorize?state={state}")
+    fn authorize_url(&self, _: &GitHubAppConfig, state: &str, _: &str, select: bool) -> String {
+        let prompt = if select { "&prompt=select_account" } else { "" };
+        format!("https://github.test/login/oauth/authorize?state={state}{prompt}")
     }
     async fn exchange_code(
         &self,

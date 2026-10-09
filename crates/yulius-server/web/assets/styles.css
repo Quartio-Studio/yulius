@@ -1526,6 +1526,8 @@ a.dl-task:hover { text-decoration: underline; }
 .divider { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .btn-github { height: var(--control-xl); font-weight: 600; }
+/* The quiet "another GitHub account" link under the sign-in button (ACC-004). */
+.auth-alt { align-self: center; }
 .drawer-backdrop { display: none; }
 
 /* ---------------------------------------------------------------- phone (< 768 px, §6.4) */

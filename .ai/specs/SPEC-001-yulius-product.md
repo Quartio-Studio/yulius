@@ -23,6 +23,7 @@ Companion documents:
 | `F 2026-10-07` | Founder feedback after using the deployed instance (2026-10-07 goal: ten items, then the recovery code, five additions — agent cursor, hidden tools rail, the "unknown tab" error, link routing, HTML text with instant copying — and a simpler editor instead of per-user VS Code) | Later than every other source; supersedes them where it conflicts (class C). |
 | `F 2026-10-08` | Founder decision of 2026-10-08: "prune Codex support and switching providers; we use only Claude; if Codex gets better, we'll support it" | Latest source; supersedes every Codex and cross-provider statement (class C). |
 | `F 2026-10-08 UI` | Founder UI review of 2026-10-08, given item by item while using the web UI (user menu in the sidebar, named tools, wordmark, notification center, composer pickers) | Latest source for the interface; supersedes earlier layout statements where it conflicts (class C). |
+| `F 2026-10-09` | Founder feedback of 2026-10-09 on the deployed instance: after admitting themself as superadmin and signing out, GitHub sign-in in the same window showed a raw "not admitted" error and, on reload, "sign-in expired"; it must work in the same window, a frequent case | Latest source for sign-in. |
 | `R:product`, `R:studio` | Read-only inspection of `/Users/mrfishpl/Desktop/quartio/product` and `/studio` | Structure, instructions, workflows. |
 
 Raw sources, frame captures and research notes stay outside Git (local notes). This document
@@ -164,7 +165,7 @@ defaults that implementation may refine without changing user-visible intent.
 | ACC-001 | Exactly one superadmin per instance, created at installation with a password chosen then. | T 30:22, P(3) | E | AC-ACC-1 |
 | ACC-002 | The superadmin password can be recovered only with the instance's 6-digit recovery code (ACC-011); there is no email reset. Setup shows the password warning and the recovery code once, and requires explicit confirmation that both are stored safely. | T 30:22–30:38, P(3) "recovery code is given", F 2026-10-07 (recovery code; supersedes "no recovery code") | C | AC-ACC-1, AC-ACC-7 |
 | ACC-003 | Setup is reachable only with a one-time setup token available on the VM, so a public instance cannot be claimed by a stranger. | — | A | AC-ACC-2 |
-| ACC-004 | The superadmin admits users (by GitHub login); only admitted users may sign in; the superadmin can disable a user, which ends their sessions. | T 30:46 | E | AC-ACC-3 |
+| ACC-004 | The superadmin admits users (by GitHub login); only admitted users may sign in; the superadmin can disable a user, which ends their sessions. A refused GitHub sign-in returns to the sign-in page in the same window, never to a raw error: it names the GitHub account that was refused and offers GitHub's account picker to continue with another account; reloading the page after a refusal shows the sign-in page again. | T 30:46, F 2026-10-09 | E | AC-ACC-3 |
 | ACC-005 | Every user authenticates with GitHub; there is no user password. | T 30:52–31:00, WA 13:40, P(4) | E | AC-ACC-3 |
 | ACC-006 | The instance connects either the organization's GitHub or a private GitHub account, and every project is a repository of that owner. | T 8:41–9:00, T 31:00, P(4) | E | AC-PRJ-1 |
 | ACC-007 | Project permissions mirror GitHub repository permissions: no access → the sandbox is invisible (as if nonexistent); read → can view tasks, terminals (read-only), steps and history but not act; write → can create/continue/steer tasks and use browser/editor; admin → sandbox configuration. | T 9:00–9:39, T 31:11–31:44, P(4) | E | AC-ACC-4 |
@@ -593,7 +594,7 @@ instance — out of scope).
 | --- | --- | --- |
 | AC-ACC-1 | Setup with valid token creates the superadmin only after the user confirms that the password and the recovery code are stored safely; a second setup attempt is refused. | int, ui |
 | AC-ACC-2 | Setup without/with a wrong token is refused; token is single-use. | int |
-| AC-ACC-3 | An admitted GitHub user signs in via OAuth; a non-admitted GitHub user is refused; disabling a user ends their sessions and WebSockets. | int (fake GitHub) |
+| AC-ACC-3 | An admitted GitHub user signs in via OAuth; a non-admitted GitHub user is refused and redirected to `/signin` with the refused login; a reused or expired sign-in, a denied authorization and a disabled user also land on `/signin` with their reason; "another account" starts GitHub with `prompt=select_account`; disabling a user ends their sessions and WebSockets. | int (fake GitHub) |
 | AC-ACC-4 | With fake GitHub permissions none/read/write/admin, API and UI expose exactly the allowed operations; invisible sandboxes return 404. | int, ui |
 | AC-ACC-5 | Downgrading a permission in fake GitHub takes effect within the cache TTL and closes write-capable terminal sockets. | int |
 | AC-ACC-6 | Instance admin can manage accounts but sees no sandbox without GitHub access. | int |
@@ -718,6 +719,10 @@ Pending. Evidence is recorded per checkpoint in GitHub issues and in SPEC-002 §
 observed. Live provider compatibility and deployment are reported separately from synthetic tests.
 
 ## 12. Changelog
+
+- 2026-10-09 (`F 2026-10-09`): a refused GitHub sign-in returns to the sign-in page, which names
+  the refused GitHub account and offers GitHub's account picker; no raw error, and a reload
+  shows the sign-in page (ACC-004, AC-ACC-3).
 
 - 2026-10-07 (feedback on the deployed instance, `F 2026-10-07`): recovery code (ACC-002
   changed, ACC-011), user-scoped shells with per-user root identity (UI-016, U-12), clean-exit UI

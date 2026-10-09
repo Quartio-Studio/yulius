@@ -7,7 +7,7 @@ use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
-use yulius_app::auth::NewSession;
+use yulius_app::auth::{GitHubSignInError, NewSession};
 use yulius_app::model::Secret;
 use yulius_contracts::api::auth::{
     DeviceApprove, DevicePoll, DevicePollRequest, DeviceStart, Me, PasswordLogin, RecoverRequest,
@@ -71,29 +71,98 @@ pub async fn password_login(
 #[derive(Deserialize)]
 pub struct StartQuery {
     next: Option<String>,
+    /// `select_account` shows GitHub's account picker (sign in with another GitHub account).
+    prompt: Option<String>,
 }
 
 pub async fn github_start(
     State(app): State<AppState>,
     Query(q): Query<StartQuery>,
 ) -> ApiResult<Redirect> {
+    let select_account = q.prompt.as_deref() == Some("select_account");
     let url = app
-        .github_sign_in_url(q.next.as_deref().unwrap_or("/"))
+        .github_sign_in_url(q.next.as_deref().unwrap_or("/"), select_account)
         .await?;
     Ok(Redirect::to(&url))
 }
 
+/// GitHub's redirect: `code` and `state` on success, `error` (e.g. `access_denied`) and `state`
+/// when the user did not authorize.
 #[derive(Deserialize)]
 pub struct CallbackQuery {
-    code: String,
-    state: String,
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+/// Percent-encodes a query value (RFC 3986 unreserved characters and `/` stay as they are).
+fn query_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The sign-in page explaining why GitHub sign-in did not complete (ACC-004): a refusal never
+/// answers with a raw error body, and the callback URL (single use) does not stay in the address
+/// bar, so a reload shows the sign-in page again.
+fn sign_in_refused(reason: &str, next: Option<&str>, login: Option<&str>) -> Response {
+    let mut url = format!("/signin?error={reason}");
+    if let Some(next) = next {
+        url.push_str("&next=");
+        url.push_str(&query_value(next));
+    }
+    if let Some(login) = login {
+        url.push_str("&login=");
+        url.push_str(&query_value(login));
+    }
+    Redirect::to(&url).into_response()
 }
 
 pub async fn github_callback(
     State(app): State<AppState>,
     Query(q): Query<CallbackQuery>,
-) -> ApiResult<Response> {
-    let (session, next) = app.github_callback(&q.code, &q.state).await?;
+) -> Response {
+    let (code, state) = match (q.code, q.state) {
+        (Some(code), Some(state)) if q.error.is_none() => (code, state),
+        (_, state) => {
+            let next = match state {
+                Some(state) => app.github_sign_in_abandoned(&state).await.unwrap_or_else(|err| {
+                    tracing::warn!(error = %err, "could not forget an abandoned GitHub sign-in");
+                    None
+                }),
+                None => None,
+            };
+            let reason = if q.error.is_some() {
+                "denied"
+            } else {
+                "failed"
+            };
+            return sign_in_refused(reason, next.as_deref(), None);
+        }
+    };
+    let (session, next) = match app.github_callback(&code, &state).await {
+        Ok(done) => done,
+        Err(err) => {
+            let reason = err.reason();
+            return match err {
+                GitHubSignInError::NotAdmitted { login, next } => {
+                    sign_in_refused(reason, Some(&next), Some(&login))
+                }
+                GitHubSignInError::Disabled { next } => sign_in_refused(reason, Some(&next), None),
+                GitHubSignInError::Expired => sign_in_refused(reason, None, None),
+                GitHubSignInError::Failed(err) => {
+                    tracing::warn!(error = %err, "GitHub sign-in failed");
+                    sign_in_refused(reason, None, None)
+                }
+            };
+        }
+    };
     let mut response = Redirect::to(&next).into_response();
     let cookie = session_cookie(
         session.cookie.expose(),
@@ -103,7 +172,7 @@ pub async fn github_callback(
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
-    Ok(response)
+    response
 }
 
 pub async fn logout(State(app): State<AppState>, Auth(ctx): Auth) -> ApiResult<Response> {

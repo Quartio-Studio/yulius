@@ -411,8 +411,14 @@ fn gh_repo(owner: &str, name: &str, private: bool) -> GhRepo {
 
 #[async_trait]
 impl GitHubPort for RepoGitHub {
-    fn authorize_url(&self, app: &GitHubAppConfig, state: &str, redirect: &str) -> String {
-        self.base.authorize_url(app, state, redirect)
+    fn authorize_url(
+        &self,
+        app: &GitHubAppConfig,
+        state: &str,
+        redirect: &str,
+        select: bool,
+    ) -> String {
+        self.base.authorize_url(app, state, redirect, select)
     }
     async fn exchange_code(
         &self,

@@ -196,9 +196,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 23 | (2026-10-08, `F 2026-10-08 UI`) The Tasks page is ugly and unreadable; research the state of the art and add filters. | UI-024 |
 | 24 | (2026-10-08, `F 2026-10-08 UI`) Nothing is visible on the Git page; what information should it give me? | UI-025 |
 | 25 | (2026-10-08, `F 2026-10-08 UI`) Prepare the UI and UX technically to best practice and the state of the art (audit wave 2: say what the agent needs; wave 3: technical review fixes and gaps). | UI-026, UI-027, UI-028, UI-029, UI-030, UI-031, UI-032, UI-033, HRN-005, UI-034, UI-035, UI-036, UI-037, UI-038, UI-039, UI-040, UI-041 |
+| 26 | (2026-10-09, `F 2026-10-09`) Signed in as superadmin, admitted themself, signed out and signed in with GitHub in the same window: a raw "not admitted" error, then "sign-in expired" on reload. Make it work in the same window; it will be a very frequent case. (GitHub had signed the browser's current GitHub account in, not the admitted one.) | ACC-004 (changed), AC-ACC-3 |
 
 ## Changelog
 
+- 2026-10-09: the sign-in refusal flow from feedback on the deployed instance (§6 item 26).
 - 2026-10-08: the notification center, the composer, the Status panel and Settings from the UI review (§6 items 18–21).
 - 2026-10-08: the Claude-only decision (§6 item 17).
 - 2026-10-07: feedback coverage (§6).
