@@ -32,6 +32,7 @@ disable`); CI sets it.
 | `sign-in.e2e.ts` | Signed out: a wrong superadmin password is refused, the right one signs in |
 | `shortcuts.e2e.ts` | The shortcut list opens from the keyboard and closes with Escape |
 | `editor.e2e.ts` | A file from the tree opens in a selected editor tab; a folder expands |
+| `terminals.e2e.ts` | The Shell panel shows a working terminal without a button; "+" opens another tab; tabs switch, rename (F2) and close (Delete); each sandbox has its own terminals |
 | `phone.e2e.ts` | At 390 px: no horizontal scroll, the quick input, the navigation drawer |
 | `quality.e2e.ts` | Every main page: no WCAG 2.x A/AA violations (axe-core) |
 | `agent.e2e.ts` | An agent reaches a goal written in plain English (needs a model, see below) |

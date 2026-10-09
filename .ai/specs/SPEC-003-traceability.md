@@ -225,9 +225,12 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 52 | (2026-10-09, hardening; goal item c) Parsers fed by untrusted input had hand-written cases only; randomized tests (no defect found) now cover the diff parser, the spec format, scope patterns, the transcript observer and usage JSON. | AC-UI-24, DSC-003, COM-003, ROT-009 |
 | 53 | (2026-10-09, hardening; self-review of #37/#42, reproduced) Viewers who opened a task after a full-screen app started could not wheel-scroll it (snapshot without alternate screen and mouse modes); a wheel turn took control and resized the terminal; fitted text could lose its bottom rows. | UI-019, AC-UI-11, TSK-006 |
 | 54 | (2026-10-09, hardening; self-review of #51, reproduced) Closing an editor tab with Delete moved focus into the next file, so the next Delete edited it; held keys repeated; focus was lost after some closes; a clicked browser tab could keep focus while its page loaded. | EDT-001, BRW-004, UI-029 |
+| 55 | (2026-10-09 evening, `F 2026-10-09`) The terminal should work instantly; a terminal is the user's and a user creates many; per user per sandbox there can be many terminals, different between sandboxes and users. (The Shell panel showed only an "Open shell" button; "+" replaced the one terminal; nothing listed a user's terminals, so a reload lost them, and a restart ended them.) | UI-015, UI-016 (changed), AC-UI-7, AC-UI-8, AC-UI-36, SPEC-002 §4, §7.2, §8 |
+| 56 | (2026-10-09 evening, `F 2026-10-09`) When I open Claude the font size changes three times and it loads for a while; make the Claude view much more user friendly. (Measured: the terminal opened at its own size with a fallback font, then the first state fitted another viewer's size, the agent redrew at the new size and the web font arrived; a read-only row flickered in before the first state; the attention bar resized the terminal every turn; every reload downloaded the UI again.) | UI-026 (changed), UI-042, AC-UI-37, SPEC-002 §7.7 |
 
 ## Changelog
 
+- 2026-10-09: user terminals and how the task terminal opens (§6 items 55–56, `F 2026-10-09`).
 - 2026-10-09: tab keys keep focus on the strip and ignore key repeat (§6 item 54, hardening).
 - 2026-10-09: terminal follow-ups: full snapshot for late viewers, scrolling without taking control, fit by rows too (§6 item 53, hardening).
 - 2026-10-09: randomized parser tests (§6 item 52, hardening).

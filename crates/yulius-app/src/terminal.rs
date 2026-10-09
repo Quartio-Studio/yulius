@@ -2,6 +2,7 @@
 //! ACC-008).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use yulius_domain::ids::TaskId;
 use yulius_domain::permission::Action;
@@ -14,6 +15,8 @@ use crate::supervisor::TaskRuntime;
 
 /// Maximum concurrent viewers per task.
 pub const MAX_VIEWERS: u64 = 16;
+/// Longest wait for the agent's redraw after a viewer's size changed the terminal at attach.
+pub const REDRAW_WAIT: Duration = Duration::from_millis(400);
 
 /// An attached terminal viewer.
 pub struct TerminalAttach {
@@ -57,7 +60,12 @@ pub struct TerminalState {
 }
 
 impl App {
-    /// Attaches a viewer to a task terminal (read access suffices to watch).
+    /// Attaches a viewer to a task terminal (read access suffices to watch). `size` (cols,
+    /// rows) is the viewer's terminal: a writer gets it applied before its snapshot is taken
+    /// when nobody else controls the terminal (it then controls it, TSK-006), and when that
+    /// changed the size, the snapshot waits for the agent's redraw ([`REDRAW_WAIT`] at most) —
+    /// so the first state and screen it receives are already at its size and layout, and
+    /// nothing reflows after the terminal appears (F 2026-10-09).
     ///
     /// # Errors
     /// Access errors; `Capacity` beyond [`MAX_VIEWERS`].
@@ -65,6 +73,7 @@ impl App {
         &self,
         ctx: &AuthContext,
         task_id: &str,
+        size: Option<(u16, u16)>,
     ) -> AppResult<TerminalAttach> {
         let task = self.load_task(ctx, task_id, Action::View).await?;
         let (_, level) = self
@@ -82,8 +91,25 @@ impl App {
         if runtime.hub.viewer_count() >= MAX_VIEWERS {
             return Err(AppError::Capacity("too many viewers on this task".into()));
         }
-        let subscription = runtime.hub.subscribe();
+        let can_write = level.allows(Action::Work) && ctx.user.disabled_at.is_none();
         let viewer_id = runtime.hub.new_viewer_id();
+        if let Some((cols, rows)) = size
+            && can_write
+            && task.status.is_live()
+            && runtime.hub.may_resize(viewer_id)
+        {
+            let before = runtime.hub.size();
+            let since = runtime.hub.output_seq();
+            let watch = runtime.hub.watch();
+            if let Err(err) = self.resize_run(&task.id, cols, rows).await {
+                runtime.hub.release(viewer_id);
+                return Err(err);
+            }
+            if runtime.hub.size() != before && runtime.has_run().await {
+                runtime.hub.settle(watch, since, REDRAW_WAIT).await;
+            }
+        }
+        let subscription = runtime.hub.subscribe();
         Ok(TerminalAttach {
             task_id: task.id,
             subscription,

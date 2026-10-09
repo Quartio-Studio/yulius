@@ -88,6 +88,11 @@ pub struct TaskRuntime {
 }
 
 impl TaskRuntime {
+    /// Whether a run is attached (a process can redraw the terminal).
+    pub(crate) async fn has_run(&self) -> bool {
+        self.run.lock().await.is_some()
+    }
+
     fn new() -> Self {
         Self {
             hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),

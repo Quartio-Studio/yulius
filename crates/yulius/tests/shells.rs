@@ -1,7 +1,9 @@
 //! Sandbox shells end to end with the real detached ptyhost and `/bin/sh`: write access,
-//! selected folder and sandbox HOME, the terminal protocol, the per-sandbox bound, exit, idle
-//! reaping, shutdown and orphan cleanup, and isolation from task state (SPEC-001 UI-015,
-//! AC-UI-7, HRN-002).
+//! selected folder and the user's home, the terminal protocol, many terminals per user and
+//! sandbox with names, privacy between users and between sandboxes (list, attach, rename,
+//! close), the viewer's size before the first screen, exit, closing, idle reaping, and shells
+//! that keep running across a server restart and are adopted again (SPEC-001 UI-015, UI-016,
+//! AC-UI-7, AC-UI-8, HRN-002; F 2026-10-09).
 
 mod support;
 
@@ -42,18 +44,27 @@ struct Fixture {
 /// alice (write) and bob (read) on `s1` (repository folder, task `t1` with a worktree) and
 /// `s2` (task `t2`). Shells run `/bin/sh` through the real ptyhost.
 async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
-    fixture_with(false).await
+    fixture_with(false, None).await
 }
 
-/// [`fixture`], optionally with bubblewrap containment (Linux).
-async fn fixture_with(contained: bool) -> Result<Fixture, Box<dyn std::error::Error>> {
+/// [`fixture`], optionally with bubblewrap containment (Linux), optionally on the data directory
+/// of an earlier fixture (a server restart).
+async fn fixture_with(
+    contained: bool,
+    data_dir: Option<PathBuf>,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("ysh").tempdir_in("/tmp")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let h = harness_with(HarnessOptions {
         session_host: Some(Arc::new(PtySessionHost::new(exe))),
         dir: Some(dir),
-        configure: Some(Box::new(move |config| config.contained = contained)),
+        configure: Some(Box::new(move |config| {
+            config.contained = contained;
+            if let Some(data) = data_dir {
+                config.data_dir = data;
+            }
+        })),
         ..HarnessOptions::default()
     })?;
     let data = h.app.config.data_dir.clone();
@@ -163,17 +174,61 @@ async fn open_terminal(
     id: &str,
     creds: &Creds,
 ) -> Result<Socket, Box<dyn std::error::Error>> {
-    let mut socket = ws_connect(addr, &format!("/api/shells/{id}/terminal"), creds, ORIGIN).await?;
+    // The viewer's size travels with the connection: the first state already has it.
+    let mut socket = ws_connect(
+        addr,
+        &format!("/api/shells/{id}/terminal?cols=100&rows=30"),
+        creds,
+        ORIGIN,
+    )
+    .await?;
     let state = next_json(&mut socket).await?;
     assert_eq!(state["type"], "state");
     assert_eq!(state["can_write"], true);
     assert_eq!(state["status"], "running");
+    assert_eq!(
+        (state["cols"].as_u64(), state["rows"].as_u64()),
+        (Some(100), Some(30))
+    );
     socket
         .send(Message::text(
             json!({"type": "hello", "last_seq": null, "cols": 100, "rows": 30}).to_string(),
         ))
         .await?;
     Ok(socket)
+}
+
+async fn list(
+    f: &Fixture,
+    creds: &Creds,
+    sandbox: &str,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &f.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{sandbox}/shells"),
+        None,
+        creds,
+    )
+    .await
+}
+
+/// The ids and names of a shell list.
+fn listed(resp: &support::Resp) -> Vec<(String, String)> {
+    resp.body
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    (
+                        item["id"].as_str().unwrap_or_default().to_owned(),
+                        item["name"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn pid_alive(pid: i32) -> bool {
@@ -204,7 +259,7 @@ fn run_pids(run_dir: &Path) -> Result<(i32, i32), Box<dyn std::error::Error>> {
 async fn shells_serve_write_users_in_the_selected_folder_without_touching_tasks() -> TestResult {
     let f = fixture().await?;
     let result = scenario(&f).await;
-    f.h.app.stop_workspace_services().await;
+    f.h.app.end_all_shells().await;
     result
 }
 
@@ -222,9 +277,19 @@ async fn scenario(f: &Fixture) -> TestResult {
     let bad = create(f, &f.writer, "s1", Some(json!({"cwd": "/"}))).await?;
     assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY);
 
-    // The UI posts without a body: a login shell in the sandbox repository, sandbox HOME.
+    // Read users cannot list either; a new user has no terminals yet.
+    assert_eq!(
+        list(f, &f.reader, "s1").await?.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(listed(&list(f, &f.writer, "s1").await?), vec![]);
+
+    // An empty body: a login shell in the sandbox repository, named "Terminal 1".
     let created = create(f, &f.writer, "s1", None).await?;
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["name"], "Terminal 1");
+    assert_eq!(created.body["task_id"], Value::Null);
+    assert!(created.body["created_at"].is_string());
     let repo_shell = created.body["id"].as_str().ok_or("id")?.to_owned();
     let mut socket = open_terminal(served.addr, &repo_shell, &f.writer).await?;
     let mut screen = String::new();
@@ -283,9 +348,11 @@ async fn scenario(f: &Fixture) -> TestResult {
     .await;
     assert_eq!(cross.as_ref().err().and_then(ws_refusal_status), Some(403));
 
-    // A task worktree of the same sandbox can be selected.
+    // A task worktree of the same sandbox can be selected; names count up.
     let created = create(f, &f.writer, "s1", Some(json!({"task_id": "t1"}))).await?;
     assert_eq!(created.status, StatusCode::CREATED);
+    assert_eq!(created.body["name"], "Terminal 2");
+    assert_eq!(created.body["task_id"], "t1");
     let worktree_shell = created.body["id"].as_str().ok_or("id")?.to_owned();
     let mut worktree_socket = open_terminal(served.addr, &worktree_shell, &f.writer).await?;
     let mut worktree_screen = String::new();
@@ -301,7 +368,7 @@ async fn scenario(f: &Fixture) -> TestResult {
     .await?;
     drop(worktree_socket);
 
-    // At most four live shells per sandbox.
+    // Many terminals per user and sandbox, up to the bound; the list is in creation order.
     let mut extra = Vec::new();
     for _ in 2..MAX_SHELLS_PER_SANDBOX {
         let created = create(f, &f.writer, "s1", None).await?;
@@ -310,11 +377,134 @@ async fn scenario(f: &Fixture) -> TestResult {
     }
     let over = create(f, &f.writer, "s1", None).await?;
     assert_eq!(over.status, StatusCode::TOO_MANY_REQUESTS);
+    let mine = listed(&list(f, &f.writer, "s1").await?);
+    assert_eq!(mine.len(), MAX_SHELLS_PER_SANDBOX);
+    assert_eq!(mine[0], (repo_shell.clone(), "Terminal 1".to_owned()));
+    assert_eq!(mine[1], (worktree_shell.clone(), "Terminal 2".to_owned()));
     assert_eq!(
         create(f, &f.writer, "s2", None).await?.status,
         StatusCode::CONFLICT,
         "s2 has no repository"
     );
+
+    // Renaming: only valid names; the list shows the new one.
+    let path = format!("/api/sandboxes/s1/shells/{worktree_shell}");
+    let renamed = call(
+        &f.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"name": "  tests  "})),
+        &f.writer,
+    )
+    .await?;
+    assert_eq!(renamed.status, StatusCode::OK, "{:?}", renamed.body);
+    assert_eq!(renamed.body["name"], "tests");
+    for bad in [
+        json!({"name": ""}),
+        json!({"name": "x".repeat(41)}),
+        json!({"name": "a\u{7}b"}),
+        json!({}),
+    ] {
+        let refused = call(
+            &f.h.router,
+            Method::PATCH,
+            &path,
+            Some(bad.clone()),
+            &f.writer,
+        )
+        .await?;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    }
+    assert!(
+        listed(&list(f, &f.writer, "s1").await?)
+            .contains(&(worktree_shell.clone(), "tests".to_owned()))
+    );
+
+    // Another user's terminals stay private (UI-016): carol, a writer of the same sandbox, lists
+    // none of alice's, cannot rename, close or attach to them, and has her own bound.
+    assert_eq!(listed(&list(f, &carol, "s1").await?), vec![]);
+    for (method, body) in [
+        (Method::PATCH, Some(json!({"name": "mine"}))),
+        (Method::DELETE, None),
+    ] {
+        let refused = call(&f.h.router, method.clone(), &path, body, &carol).await?;
+        assert_eq!(refused.status, StatusCode::NOT_FOUND, "{method}");
+    }
+    let carols = create(f, &carol, "s1", None).await?;
+    assert_eq!(
+        carols.status,
+        StatusCode::CREATED,
+        "her own bound: {:?}",
+        carols.body
+    );
+    assert_eq!(carols.body["name"], "Terminal 1");
+    let carols = carols.body["id"].as_str().ok_or("id")?.to_owned();
+    assert!(
+        !listed(&list(f, &f.writer, "s1").await?)
+            .iter()
+            .any(|(id, _)| *id == carols)
+    );
+    let alice_on_carols = ws_connect(
+        served.addr,
+        &format!("/api/shells/{carols}/terminal"),
+        &f.writer,
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(
+        alice_on_carols.as_ref().err().and_then(ws_refusal_status),
+        Some(404)
+    );
+
+    // A terminal belongs to its sandbox: another sandbox's list never shows it, and it cannot be
+    // renamed or closed through another sandbox.
+    assert!(listed(&list(f, &f.writer, "s2").await?).is_empty());
+    let elsewhere = format!("/api/sandboxes/s2/shells/{worktree_shell}");
+    for (method, body) in [
+        (Method::PATCH, Some(json!({"name": "moved"}))),
+        (Method::DELETE, None),
+    ] {
+        let refused = call(&f.h.router, method.clone(), &elsewhere, body, &f.writer).await?;
+        assert_eq!(refused.status, StatusCode::NOT_FOUND, "{method}");
+    }
+
+    // Closing: gone from the list at once, its process ends and its directory goes; the next
+    // terminal takes the lowest free name ("Terminal 2" was renamed).
+    let closing = extra.pop().ok_or("extra")?;
+    let closing_dir = f.data.join("shells").join(&closing);
+    let (closing_host, closing_child) = run_pids(&closing_dir)?;
+    let closed = call(
+        &f.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/s1/shells/{closing}"),
+        None,
+        &f.writer,
+    )
+    .await?;
+    assert_eq!(closed.status, StatusCode::NO_CONTENT);
+    assert!(
+        !listed(&list(f, &f.writer, "s1").await?)
+            .iter()
+            .any(|(id, _)| *id == closing)
+    );
+    wait_for("the closed shell to exit", || {
+        !pid_alive(closing_child) && !pid_alive(closing_host)
+    })
+    .await?;
+    wait_for("its directory to go", || !closing_dir.exists()).await?;
+    let again = call(
+        &f.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/s1/shells/{closing}"),
+        None,
+        &f.writer,
+    )
+    .await?;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+    let reopened = create(f, &f.writer, "s1", None).await?;
+    assert_eq!(reopened.status, StatusCode::CREATED);
+    assert_eq!(reopened.body["name"], "Terminal 2");
+    extra.push(reopened.body["id"].as_str().ok_or("id")?.to_owned());
 
     // Leaving the shell ends it: exit frame, close, then the shell is gone.
     let sid = SandboxId::parse("s1")?;
@@ -352,12 +542,10 @@ async fn scenario(f: &Fixture) -> TestResult {
     )
     .await;
     assert_eq!(gone.as_ref().err().and_then(ws_refusal_status), Some(404));
-    assert_eq!(
-        f.h.app.sandbox_shells(&sid).len(),
-        MAX_SHELLS_PER_SANDBOX - 1
-    );
+    // alice's remaining terminals and carol's one.
+    assert_eq!(f.h.app.sandbox_shells(&sid).len(), MAX_SHELLS_PER_SANDBOX);
 
-    // Shells without viewers for 30 minutes are ended (injected clock).
+    // Shells without viewers for a day are ended (injected clock).
     wait_for("viewers to leave", || {
         f.h.app
             .sandbox_shells(&sid)
@@ -370,7 +558,7 @@ async fn scenario(f: &Fixture) -> TestResult {
         .fetch_add(SHELL_IDLE_MS - 1_000, Ordering::SeqCst);
     assert_eq!(f.h.app.reap_idle_shells().await, 0, "not idle long enough");
     f.h.clock.0.fetch_add(2_000, Ordering::SeqCst);
-    assert_eq!(f.h.app.reap_idle_shells().await, MAX_SHELLS_PER_SANDBOX - 1);
+    assert_eq!(f.h.app.reap_idle_shells().await, MAX_SHELLS_PER_SANDBOX);
     assert!(f.h.app.sandbox_shells(&sid).is_empty());
 
     // Shells never touch task state (HRN-002).
@@ -381,28 +569,75 @@ async fn scenario(f: &Fixture) -> TestResult {
 }
 
 #[tokio::test]
-async fn server_shutdown_ends_shells_and_restart_removes_orphans() -> TestResult {
+async fn shells_keep_running_across_a_server_restart_and_are_adopted() -> TestResult {
     let f = fixture().await?;
-    let created = create(&f, &f.writer, "s1", None).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let created = create(&f, &f.writer, "s1", Some(json!({"name": "dev server"}))).await?;
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
     let id = created.body["id"].as_str().ok_or("id")?.to_owned();
     let run_dir = f.data.join("shells").join(&id);
     let (host_pid, child_pid) = run_pids(&run_dir)?;
-    assert!(pid_alive(child_pid));
+    let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+    let mut screen = String::new();
+    input(&mut socket, "MARK=kept; echo \"before-$((40+2))\"\r").await?;
+    read_until(&mut socket, &mut screen, "before-42").await?;
+    drop(socket);
 
+    // The server stops: the shell keeps running in its detached host.
     f.h.app.stop_workspace_services().await;
+    assert!(f.h.app.sandbox_shells(&SandboxId::parse("s1")?).is_empty());
+    assert!(
+        pid_alive(child_pid) && pid_alive(host_pid),
+        "the shell outlives the server"
+    );
+    assert!(run_dir.join("shell.json").exists());
+
+    // Leftovers the next server cannot adopt are ended and removed: a directory without a
+    // record, and a shell of a sandbox that was removed meanwhile.
+    let orphan = f.data.join("shells").join("0123456789abcdef");
+    std::fs::create_dir_all(&orphan)?;
+    let gone_sandbox = create(&f, &f.writer, "s1", None).await?;
+    let gone_id = gone_sandbox.body["id"].as_str().ok_or("id")?.to_owned();
+    let gone_dir = f.data.join("shells").join(&gone_id);
+    let (gone_host, gone_child) = run_pids(&gone_dir)?;
+    f.h.app.stop_workspace_services().await;
+    let record: Value = serde_json::from_slice(&std::fs::read(gone_dir.join("shell.json"))?)?;
+    assert_eq!(record["sandbox"], "s1");
+    let mut edited = record.clone();
+    edited["sandbox"] = json!("s9");
+    std::fs::write(gone_dir.join("shell.json"), serde_json::to_vec(&edited)?)?;
+
+    // The next server process on the same data directory adopts it: same id, name and owner,
+    // the screen so far, and the same shell process (its variable is still set).
+    let g = fixture_with(false, Some(f.data.clone())).await?;
+    let (adopted, removed) = g.h.app.adopt_shells().await;
+    assert_eq!((adopted, removed), (1, 2));
+    assert!(!orphan.exists());
+    wait_for("the unadoptable shell to end", || {
+        !pid_alive(gone_child) && !pid_alive(gone_host)
+    })
+    .await?;
+    assert!(!gone_dir.exists());
+    let listed_after = listed(&list(&g, &g.writer, "s1").await?);
+    assert_eq!(listed_after, vec![(id.clone(), "dev server".to_owned())]);
+    assert_eq!(
+        list(&g, &g.reader, "s1").await?.status,
+        StatusCode::FORBIDDEN
+    );
+    let served = serve(g.h.router.clone()).await?;
+    let mut socket = open_terminal(served.addr, &id, &g.writer).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "before-42").await?;
+    input(&mut socket, "echo \"mark=$MARK\"\r").await?;
+    read_until(&mut socket, &mut screen, "mark=kept").await?;
+    assert!(pid_alive(child_pid), "the same process");
+
+    g.h.app.end_all_shells().await;
     wait_for("the shell processes to exit", || {
         !pid_alive(child_pid) && !pid_alive(host_pid)
     })
     .await?;
-    assert!(f.h.app.sandbox_shells(&SandboxId::parse("s1")?).is_empty());
     assert!(!run_dir.exists());
-
-    // Directories left by a crashed server are cleaned at the next start.
-    let orphan = f.data.join("shells").join("0123456789abcdef");
-    std::fs::create_dir_all(&orphan)?;
-    assert_eq!(f.h.app.reap_orphan_shells(), 1);
-    assert!(!orphan.exists());
     Ok(())
 }
 
@@ -418,7 +653,7 @@ async fn contained_shells_run_as_the_user_with_root_in_their_own_home() -> TestR
         eprintln!("SKIPPED contained_shells_run_as_the_user_with_root_in_their_own_home: {why}");
         return Ok(());
     }
-    let f = fixture_with(true).await?;
+    let f = fixture_with(true, None).await?;
     let result = async {
         let served = serve(f.h.router.clone()).await?;
         let created = create(&f, &f.writer, "s1", None).await?;
@@ -443,7 +678,7 @@ async fn contained_shells_run_as_the_user_with_root_in_their_own_home() -> TestR
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
-    f.h.app.stop_workspace_services().await;
+    f.h.app.end_all_shells().await;
     result
 }
 

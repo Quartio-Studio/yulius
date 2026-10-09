@@ -4,9 +4,9 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, placeholder, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { createTerminalView } from './terminal.js';
-import { statusInfo, taskInfo, isLive, allows, taskActions, endedMessage } from './status.js';
+import { taskInfo, isLive, allows, taskActions, endedMessage } from './status.js';
 import { openTaskMenu, continueTask, deliveryStrip } from './actions.js';
-import { relLong, dateTime } from './format.js';
+import { relLong, dateTime, resetLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
 import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
@@ -33,6 +33,24 @@ function readOnlyText(sandbox) {
   return sandbox && sandbox.access === 'read' ? 'Read-only (GitHub: read)' : 'Read-only';
 }
 
+/**
+ * What a blank terminal means while the agent has not drawn anything yet (F 2026-10-09: helpful
+ * empty states instead of an empty black screen); null once it should show the session.
+ */
+function emptyTerminalMessage(task) {
+  switch (task.status) {
+    case 'queued': return { title: 'Queued', text: 'The agent starts as soon as a session slot is free.' };
+    case 'starting': return { title: 'Starting Claude Code…', text: 'The session appears here in a moment.' };
+    case 'switching': return { title: 'Moving to another AI account…', text: 'The session continues here in a moment.' };
+    case 'waiting_capacity': {
+      const reset = task.resumes_at ? resetLabel(task.resumes_at) : '';
+      return { title: 'Usage limit reached', text: `Every AI account is at its limit${reset ? ` · ${reset}` : ''}. The agent continues by itself.` };
+    }
+    case 'running': return { title: 'Claude Code is starting…', text: 'The session appears here in a moment.' };
+    default: return null;
+  }
+}
+
 /** Mount the task view for one task. Returns {el, key, update(task), destroy()}. */
 export function mountTaskView(ctx, sandbox, task) {
   let current = task;
@@ -44,14 +62,17 @@ export function mountTaskView(ctx, sandbox, task) {
   const stripLabel = h('span', { class: 'step-label' });
   const progressFill = h('div', { class: 'step-progress-fill' });
   const progress = h('div', { class: 'step-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100 }, progressFill);
-  const statusEl = h('span', { class: 'strip-status' });
+  // The session's state in words, coloured by tone; announced when it changes. Mode and account
+  // stay beside it, in the strip's own colours.
+  const statusEl = h('span', { class: 'strip-status', role: 'status' });
+  const extrasEl = h('span', { class: 'strip-extras' });
   // The pull request, its checks and the next delivery step, beside the state (UX2-18).
   const deliveryEl = h('span', { class: 'strip-delivery' });
   const toggleButton = h('button', { type: 'button', class: 'stepstrip-toggle', 'aria-expanded': String(stripOpen) }, icon('right', { size: 14 }), stripLabel);
   const kebab = iconButton('more', 'Task actions', () => openTaskMenu(ctx, kebab, current), { 'aria-haspopup': 'menu' });
   const stepList = h('div', { class: 'steplist', hidden: !stripOpen });
   const strip = h('div', { class: ['stepstrip', stripOpen && 'open'] },
-    h('div', { class: 'stepstrip-main' }, toggleButton, progress, statusEl, deliveryEl, kebab),
+    h('div', { class: 'stepstrip-main' }, toggleButton, progress, statusEl, extrasEl, deliveryEl, kebab),
     stepList);
   toggleButton.addEventListener('click', () => {
     stripOpen = !stripOpen;
@@ -70,6 +91,7 @@ export function mountTaskView(ctx, sandbox, task) {
     onLink: (uri, event) => ctx.openLink(uri, event),
     readOnlyLabel: () => readOnlyText(ctx.store.sandboxById(sandbox.id) || sandbox),
     exitMessage: (exit) => endedMessage(exit.status || current.status),
+    emptyMessage: () => emptyTerminalMessage(current),
     exitActions: (exit) => {
       const message = endedMessage(exit.status || current.status);
       const actions = [];
@@ -97,7 +119,9 @@ export function mountTaskView(ctx, sandbox, task) {
     h('div', { class: 'quickbar-input' }, quickInput, h('button', { type: 'button', class: 'btn btn-primary', onClick: sendQuick }, 'Send')),
     h('div', { class: 'quickbar-keys', role: 'group', 'aria-label': 'Keys' }, QUICK_KEYS.map(([label, seq]) => h('button', { type: 'button', class: 'btn', onClick: () => terminal.sendKeys(seq), 'aria-label': `Send ${label}` }, label))));
 
-  // ---- attention bar (UX-03): what the agent needs from the user, with the way to do it
+  // ---- attention bar (UX-03): what the agent needs from the user, with the way to do it. It
+  // floats over the top of the terminal: coming and going with every turn, it must not resize
+  // the terminal (each resize makes Claude Code redraw its whole screen, F 2026-10-09).
   const attention = h('div', { class: 'attention-bar', role: 'status', hidden: true });
   function renderAttention() {
     const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
@@ -117,16 +141,18 @@ export function mountTaskView(ctx, sandbox, task) {
     attention.classList.toggle('waiting', !info.request && current.activity === 'waiting');
     setChildren(attention, content);
   }
-  destroyers.push(ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderAttention(); }));
+  // A browser request changes the bar and the state in the strip ("Needs you in the browser").
+  destroyers.push(ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderStrip(); }));
 
   // The view's heading for screen readers and the page title (the strip shows it visually).
   const heading = h('h1', { class: 'sr-only' }, `#${task.number} ${task.title || ''}`);
-  const el = h('div', { class: 'taskview' }, heading, strip, attention, terminal.el, quickbar);
+  const el = h('div', { class: 'taskview' }, heading, strip, h('div', { class: 'taskview-term' }, terminal.el, attention), quickbar);
 
   function renderStrip() {
     renderAttention();
     const steps = current.steps || { done: 0, total: 0, current: null };
-    const info = statusInfo(current);
+    // The session's state as the sidebar says it (pull request, browser request, usage limit).
+    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
     const total = steps.total || 0;
     const done = steps.done || 0;
     let n = total ? Math.min(total, done + (steps.current ? 1 : 0)) : 0;
@@ -145,9 +171,13 @@ export function mountTaskView(ctx, sandbox, task) {
     progress.setAttribute('aria-valuenow', String(pct));
     progress.setAttribute('aria-label', `${done} of ${total} steps done`);
     progress.hidden = !total;
+    statusEl.dataset.tone = info.tone;
+    const reset = current.status === 'waiting_capacity' && current.resumes_at ? resetLabel(current.resumes_at) : '';
+    statusEl.title = [info.label, reset, info.detail].filter(Boolean).join(' · ');
     setChildren(statusEl,
       statusMark(info),
-      h('span', { class: 'strip-state' }, info.label),
+      h('span', { class: 'strip-state' }, info.label, reset ? h('span', { class: 'strip-reset' }, ` · ${reset}`) : null));
+    setChildren(extrasEl,
       current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       current.account_label ? h('span', { class: 'muted xs strip-extra' }, current.account_label) : null);
   }
@@ -212,13 +242,15 @@ export function mountTaskView(ctx, sandbox, task) {
     key: `task:${task.id}`,
     start() {
       terminal.start();
-      if (!isPhone()) setTimeout(() => terminal.focus(), 50);
+      // Focus lands in the terminal as soon as it shows (the keyboard is the agent's).
+      if (!isPhone()) terminal.focus();
     },
     update(next) {
       const wasLive = isLive(current.status);
       const previousStatus = current.status;
       current = { ...current, ...next };
       renderStrip();
+      if (current.status !== previousStatus) terminal.refreshEmpty();
       if (current.status !== previousStatus) loadDelivery(); // a finished task may now be ready for a pull request
       else renderDelivery();
       // A continued task gets a new attempt: reconnect if the socket had ended.

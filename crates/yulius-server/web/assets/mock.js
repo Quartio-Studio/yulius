@@ -118,7 +118,7 @@ function seed(params) {
     eventSockets: new Set(),
     sessions: new Map(),
     browsers: new Map(),
-    liveShells: new Set(),
+    shells: new Map(), // id → {id, sandbox_id, name, task_id, created_at, session}
 
     nextId: 100,
   };
@@ -1114,19 +1114,43 @@ route('POST', `/api/mcp/${ID}/test`, ({ db, p }) => {
   return m.name === 'apify' ? { ok: false, tools: [], error: 'APIFY_TOKEN rejected (401)' } : { ok: true, tools: ['search_knowledge', 'get_customer', 'list_feedback', 'get_product_doc'], error: null };
 });
 
-// ---- Shells: 201 {"id"}; an empty body or {"task_id"}; at most 4 live shells per sandbox.
+// ---- Shells (UI-016): the user's terminals per sandbox; at most 8 live ones per user and sandbox.
+const shellDto = (shell) => ({ id: shell.id, name: shell.name, task_id: shell.task_id, created_at: shell.created_at });
+route('GET', `/api/sandboxes/${ID}/shells`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  return [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0]).map(shellDto);
+});
 route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (body.task_id) {
     const task = db.tasks.find((t) => t.id === body.task_id && t.sandbox_id === p[0]);
     if (!task) fail(404, 'not_found', 'not found');
   }
-  const prefix = `sh_${p[0]}_`;
-  if ([...db.liveShells].filter((id) => id.startsWith(prefix)).length >= 4) fail(429, 'capacity', 'at most 4 live shells per sandbox');
+  const own = [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0]);
+  if (own.length >= 8) fail(429, 'capacity', 'at most 8 terminals per sandbox; close one first');
+  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 40)
+    : `Terminal ${[1, 2, 3, 4, 5, 6, 7, 8, 9].find((n) => !own.some((shell) => shell.name === `Terminal ${n}`))}`;
   db.nextId += 1;
-  const id = `${prefix}${db.nextId}`;
-  db.liveShells.add(id);
-  return json(201, { id });
+  const shell = { id: `sh_${p[0]}_${db.nextId}`, sandbox_id: p[0], name, task_id: body.task_id || null, created_at: new Date().toISOString(), session: null };
+  db.shells.set(shell.id, shell);
+  return json(201, shellDto(shell));
+});
+route('PATCH', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const shell = db.shells.get(p[1]);
+  if (!shell || shell.sandbox_id !== p[0]) fail(404, 'not_found', 'not found');
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name || name.length > 40) fail(422, 'invalid', 'a shell name has 1 to 40 characters and no control characters');
+  shell.name = name;
+  return shellDto(shell);
+});
+route('DELETE', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const shell = db.shells.get(p[1]);
+  if (!shell || shell.sandbox_id !== p[0]) fail(404, 'not_found', 'not found');
+  if (shell.session) shell.session.end(null);
+  db.shells.delete(shell.id);
+  return json(204);
 });
 
 // ---- Administration
@@ -1720,21 +1744,29 @@ class TermSession {
   }
 }
 
-/** Fake bash in the sandbox shell panel (`state` has attempt_seq and harness null). */
+/**
+ * Fake bash behind a sandbox terminal (`state` has attempt_seq and harness null). It outlives its
+ * viewers like the real shell: a reload or another tab reattaches and gets the screen so far.
+ */
 class ShellSession {
-  constructor(db, id, slug) {
+  constructor(db, shell, slug) {
     this.db = db;
-    this.id = id;
+    this.shell = shell;
     this.slug = slug;
     this.seq = 0;
     this.input = '';
-    this.ws = null;
-    this.prompt = `${c(114, `yulius@${slug}`)}:${c(39, '~/sandbox')}$ `;
+    this.viewers = new Set();
+    this.cols = 100;
+    this.rows = 30;
+    const cwd = shell.task_id ? `~/sandbox/worktrees/${shell.task_id}` : '~/sandbox';
+    this.prompt = `${c(114, `you@${slug}`)}:${c(39, cwd)}$ `;
+    this.screen = `${dim('Contained sandbox shell (mock). Try: ls, pwd, git status, exit')}\r\n${this.prompt}`;
   }
 
   out(text) {
     this.seq += 1;
-    if (this.ws) this.ws.push(terminalFrame(1, this.seq, text));
+    this.screen = (this.screen + text).slice(-8000);
+    for (const ws of this.viewers) ws.push(terminalFrame(1, this.seq, text));
   }
 
   open() {}
@@ -1743,10 +1775,12 @@ class ShellSession {
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
-      this.ws = ws;
-      ws.push(JSON.stringify({ type: 'state', attempt_seq: null, harness: null, cols: msg.cols, rows: msg.rows, can_write: true, controller: true, status: 'running' }));
-      this.seq += 1;
-      ws.push(terminalFrame(2, this.seq, `${dim('Contained sandbox shell (mock). Try: ls, pwd, git status, exit')}\r\n${this.prompt}`));
+      this.viewers.add(ws);
+      if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; }
+      ws.push(JSON.stringify({ type: 'state', attempt_seq: null, harness: null, cols: this.cols, rows: this.rows, can_write: true, controller: true, status: 'running' }));
+      ws.push(terminalFrame(2, this.seq, `${E}2J${E}H${this.screen}`));
+    } else if (msg.type === 'resize') {
+      if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; }
     } else if (msg.type === 'input') {
       for (const ch of String(msg.data || '')) {
         if (ch === '\r') this.run();
@@ -1764,20 +1798,28 @@ class ShellSession {
       ls: 'AGENTS.md  Cargo.toml  README.md  docs  src  tests',
       pwd: `/srv/yulius/sandboxes/${this.slug}/main`,
       'git status': 'On branch main\r\nYour branch is up to date with \'origin/main\'.\r\n\r\nnothing to commit, working tree clean',
-      whoami: 'yulius-sandbox',
+      whoami: 'you',
     };
     if (cmd === 'exit') {
       this.out('\r\nlogout\r\n');
-      // The server sends `exit` and closes the socket when the shell process ends.
-      if (this.ws) { this.ws.push(JSON.stringify({ type: 'exit', status: 'closed', code: 0 })); const ws = this.ws; setTimeout(() => ws.serverClose(1000, 'shell ended'), 50); }
-      this.db.liveShells.delete(this.id);
+      this.end(0);
       return;
     }
     const result = cmd ? outputs[cmd] ?? `bash: ${cmd.split(' ')[0]}: command not found (mock shell)` : '';
     this.out(`\r\n${result ? `${result}\r\n` : ''}${this.prompt}`);
   }
 
-  closed() { this.ws = null; }
+  /** The shell process ended: the server sends `exit` and closes every viewer's socket. */
+  end(code) {
+    for (const ws of [...this.viewers]) {
+      ws.push(JSON.stringify({ type: 'exit', status: 'closed', code }));
+      setTimeout(() => ws.serverClose(1000, 'shell ended'), 50);
+    }
+    this.viewers.clear();
+    this.db.shells.delete(this.shell.id);
+  }
+
+  closed(ws) { this.viewers.delete(ws); }
 }
 
 /**
@@ -2037,26 +2079,32 @@ function openSocket(db, path) {
   };
   if (!db.signedIn) { fatal('unauthenticated', 'Sign in first.'); return ws; }
   let m;
-  if (path === '/api/events') {
+  // Terminal sockets may carry the viewer's size (`?cols=&rows=`), applied on hello here.
+  const route_ = path.split('?')[0];
+  if (route_ === '/api/events') {
     ws.server = {
       open: () => db.eventSockets.add(ws),
       closed: () => db.eventSockets.delete(ws),
     };
     startAmbient(db);
-  } else if ((m = path.match(/^\/api\/tasks\/([^/]+)\/terminal$/))) {
+  } else if ((m = route_.match(/^\/api\/tasks\/([^/]+)\/terminal$/))) {
     const task = db.tasks.find((t) => t.id === decodeURIComponent(m[1]));
     if (!task) { fatal('not_found', 'No such task.'); return ws; }
     let session = db.sessions.get(task.id);
     if (!session) { session = new TermSession(db, task); db.sessions.set(task.id, session); }
     ws.server = session;
-  } else if ((m = path.match(/^\/api\/shells\/([^/]+)\/terminal$/))) {
-    const id = decodeURIComponent(m[1]);
-    if (!db.liveShells.has(id)) { fatal('not_found', 'not found'); return ws; }
-    const slug = (db.sandboxes.find((s) => id.includes(s.id)) || { slug: 'sandbox' }).slug;
-    ws.server = new ShellSession(db, id, slug);
-  } else if ((m = path.match(/^\/api\/admin\/accounts\/login\/([^/]+)\/terminal$/))) {
+  } else if ((m = route_.match(/^\/api\/shells\/([^/]+)\/terminal$/))) {
+    const shell = db.shells.get(decodeURIComponent(m[1]));
+    if (!shell) { fatal('not_found', 'not found'); return ws; }
+    // One session per terminal: a reload or a second tab reattaches to the same screen.
+    if (!shell.session) {
+      const slug = (db.sandboxes.find((s) => s.id === shell.sandbox_id) || { slug: 'sandbox' }).slug;
+      shell.session = new ShellSession(db, shell, slug);
+    }
+    ws.server = shell.session;
+  } else if ((m = route_.match(/^\/api\/admin\/accounts\/login\/([^/]+)\/terminal$/))) {
     ws.server = new LoginSession(db, decodeURIComponent(m[1]));
-  } else if ((m = path.match(/^\/api\/sandboxes\/([^/]+)\/browser$/))) {
+  } else if ((m = route_.match(/^\/api\/sandboxes\/([^/]+)\/browser$/))) {
     const sandbox = db.sandboxes.find((s) => s.id === decodeURIComponent(m[1]));
     if (!sandbox) { fatal('not_found', 'No such sandbox.'); return ws; }
     let session = db.browsers.get(sandbox.id);

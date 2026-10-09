@@ -5,7 +5,7 @@
 // can be maximized over the center.
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, errorToast, placeholder, singleFlight, keepFocus } from './dom.js';
+import { h, icon, iconButton, setChildren, errorToast, placeholder, singleFlight, keepFocus, closableTabKeys } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { createBrowserPanel } from './browser.js';
 import { createEditorView } from './editorview.js';
@@ -272,29 +272,43 @@ function simpleView(el) {
 // ---------------------------------------------------------------- shell
 
 /**
- * General sandbox shell (UI-015): separate from the agent terminal, write access only.
- * `POST /api/sandboxes/{sid}/shells` with an empty body opens it in the sandbox repository,
- * `{"task_id"}` in that task's worktree; at most 4 live shells per sandbox (429).
+ * The user's own terminals in this sandbox (UI-015, UI-016, F 2026-10-09): a tab per terminal,
+ * private to the user and the sandbox. Opening the panel shows a working terminal at once — the
+ * one used last, or a new one when the user has none here; "+" opens another in the chosen
+ * folder (the sandbox repository or the current task's worktree). Tabs close with × or Delete
+ * and rename with a double-click or F2. Terminals keep running when the page reloads or the
+ * server restarts (`GET /api/sandboxes/{sid}/shells` lists them again); the views of opened
+ * tabs stay attached, so switching tabs is instant.
  */
 function createShellView(ctx, sandbox, getTask) {
   const el = h('div', { class: 'panel-view' });
   if (!allows(sandbox.access, 'write')) {
-    setChildren(el, h('div', { class: 'panel-msg' }, icon('lock', { size: 20 }), h('p', null, 'The sandbox shell requires write access on GitHub.')));
+    setChildren(el, h('div', { class: 'panel-msg' }, icon('lock', { size: 20 }), h('p', null, 'Terminals need write access to the repository on GitHub.')));
     return { el };
   }
-  let terminal = null;
-  let starting = false;
+  const activeKey = `yulius.shellActive.${sandbox.id}`;
+  const tablist = h('div', { class: 'term-tabs', role: 'tablist', 'aria-label': 'Terminals' });
+  const views = h('div', { class: 'term-views' });
+  setChildren(el, tablist, views);
+  /** Terminals in tab order: {id, name, task_id, created_at, view, slot, ended}. */
+  let shells = [];
+  let active = null;
+  let loaded = false;
+  let shown = false;
+  let destroyed = false;
   let where = '';
-  const startButton = h('button', { type: 'button', class: 'btn btn-primary' }, 'Open shell');
-  const idle = h('div', { class: 'panel-msg stack items-center' },
-    h('p', null, 'A login shell in this sandbox with the containment of task runs. It never changes tasks or replaces the agent terminal.'),
-    startButton);
-  setChildren(el, idle);
+  let renaming = null;
+
+  const folderLabel = (shell) => {
+    if (!shell.task_id) return 'Sandbox repository';
+    const task = ctx.store.findTask ? ctx.store.findTask(shell.task_id) : null;
+    return task ? `Task #${task.number} worktree` : 'Task worktree';
+  };
 
   function folderSelect() {
     const task = getTask();
     if (!task && where === 'task') where = '';
-    const select = h('select', { class: 'select select-sm', 'aria-label': 'Shell folder' },
+    const select = h('select', { class: 'select select-sm', 'aria-label': 'Folder for new terminals', title: 'Where new terminals start' },
       h('option', { value: '' }, 'Sandbox repository'),
       task ? h('option', { value: 'task' }, `Task #${task.number} worktree`) : null);
     select.value = where;
@@ -302,39 +316,223 @@ function createShellView(ctx, sandbox, getTask) {
     return select;
   }
 
-  async function open() {
-    if (starting) return;
-    starting = true;
-    startButton.classList.add('busy');
-    try {
-      const task = where === 'task' ? getTask() : null;
-      const shell = task
-        ? await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/shells`, { task_id: task.id })
-        : await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/shells`);
-      if (terminal) terminal.destroy();
-      terminal = createTerminalView({
+  function renderTabs() {
+    const focused = tablist.contains(document.activeElement) ? document.activeElement.dataset.id : null;
+    const items = shells.map((shell) => {
+      const selected = shell.id === active;
+      const name = renaming === shell.id
+        ? renameInput(shell)
+        : h('span', { class: 'term-tab-name' }, shell.name);
+      const tab = h('div', { class: ['term-tab', selected && 'active', shell.ended && 'term-tab-ended'], role: 'tab', id: `term-tab-${shell.id}`, tabindex: selected ? '0' : '-1', 'aria-selected': String(selected), 'aria-controls': shell.slot ? `term-panel-${shell.id}` : null, dataset: { id: shell.id }, title: `${shell.name} · ${folderLabel(shell)} — double-click or F2 to rename`, 'aria-keyshortcuts': 'F2 Delete Backspace' },
+        name,
+        // Not a button (see closableTabKeys): Delete or Backspace closes the focused tab.
+        h('span', { class: 'term-tab-close', 'aria-hidden': 'true', title: `Close ${shell.name}`, onClick: (event) => { event.stopPropagation(); closeShell(shell); } }, '×'));
+      tab.addEventListener('click', () => { if (renaming !== shell.id) activate(shell.id, { focus: true }); });
+      tab.addEventListener('dblclick', () => startRename(shell));
+      tab.addEventListener('auxclick', (event) => { if (event.button === 1) closeShell(shell); });
+      tab.addEventListener('keydown', (event) => {
+        if (renaming === shell.id) return;
+        if (event.key === 'F2') { event.preventDefault(); startRename(shell); return; }
+        closableTabKeys(event, { select: () => activate(shell.id, { focus: true }), close: () => closeShell(shell, { fromKeyboard: true }) });
+      });
+      return tab;
+    });
+    // The strip stays when it is empty: a terminal appearing in it never resizes the others.
+    setChildren(tablist, items);
+    if (focused && renaming === null) (items.find((item) => item.dataset.id === focused) || items.find((item) => item.tabIndex === 0))?.focus();
+  }
+
+  function renameInput(shell) {
+    const input = h('input', { class: 'term-tab-rename', type: 'text', value: shell.name, maxlength: 40, 'aria-label': `Rename ${shell.name}` });
+    let done = false;
+    const finish = async (save) => {
+      if (done) return;
+      done = true;
+      renaming = null;
+      const name = input.value.trim();
+      if (save && name && name !== shell.name) {
+        const previous = shell.name;
+        shell.name = name;
+        renderTabs();
+        try {
+          const updated = await ctx.api.patch(`/api/sandboxes/${enc(sandbox.id)}/shells/${enc(shell.id)}`, { name });
+          if (updated && updated.name) shell.name = updated.name;
+        } catch (error) {
+          shell.name = previous;
+          errorToast(error, 'Could not rename the terminal');
+        }
+      }
+      renderTabs();
+      document.getElementById(`term-tab-${shell.id}`)?.focus();
+    };
+    input.addEventListener('keydown', (event) => {
+      event.stopPropagation();
+      if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+      else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('click', (event) => event.stopPropagation());
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+    return input;
+  }
+
+  function startRename(shell) {
+    if (shell.ended) return;
+    renaming = shell.id;
+    renderTabs();
+  }
+
+  function renderEmpty() {
+    if (shells.length) return;
+    setChildren(views, h('div', { class: 'panel-msg stack items-center' },
+      h('p', null, 'No terminals open in this sandbox.'),
+      h('button', { type: 'button', class: 'btn btn-primary', onClick: () => create({ focus: true }) }, icon('plus', { size: 14 }), 'New terminal')));
+  }
+
+  /** Shows `id`'s terminal, attaching it the first time. */
+  function activate(id, { focus = false } = {}) {
+    const shell = shells.find((s) => s.id === id);
+    if (!shell) return;
+    active = id;
+    writeJson(activeKey, id);
+    if (!shell.view) {
+      shell.view = createTerminalView({
         transport: ctx.transport,
         path: `/api/shells/${enc(shell.id)}/terminal`,
         onLink: (uri, event) => ctx.openLink(uri, event),
         readOnlyLabel: () => 'Read-only',
-        exitActions: () => [{ label: 'New shell', run: open }],
+        exitMessage: (exit) => ({ tone: 'info', text: `This terminal ended${exit.code ? ` (exit ${exit.code})` : ''}.` }),
+        exitActions: () => [{ label: 'New terminal', run: () => create({ focus: true }) }, { label: 'Close tab', run: () => removeTab(shell) }],
+        // `exit` ends the shell: its tab goes, as in a local terminal (a failure stays to be read).
+        onExit: (exit) => {
+          shell.ended = true;
+          if (!exit.code) removeTab(shell);
+          else renderTabs();
+        },
+        onConnection: (status) => { if (status === 'reconnecting') syncList(); },
       });
-      setChildren(el, terminal.el);
-      terminal.start();
-      terminal.focus();
+      shell.slot = h('div', { class: 'term-slot', role: 'tabpanel', id: `term-panel-${shell.id}`, 'aria-labelledby': `term-tab-${shell.id}` }, shell.view.el);
+    }
+    if (!views.contains(shell.slot)) {
+      if (!views.querySelector('.term-slot')) setChildren(views, null);
+      views.append(shell.slot);
+    }
+    for (const other of shells) if (other.slot) other.slot.hidden = other.id !== id;
+    shell.view.start();
+    shell.view.refit();
+    if (focus) shell.view.focus();
+    renderTabs();
+  }
+
+  /** Drops a tab (its terminal ended or was closed); the neighbour is shown. */
+  function removeTab(shell, { focus = shown } = {}) {
+    const index = shells.indexOf(shell);
+    if (index < 0) return;
+    shells.splice(index, 1);
+    if (shell.view) shell.view.destroy();
+    if (shell.slot) shell.slot.remove();
+    if (active === shell.id) {
+      active = null;
+      const next = shells[Math.min(index, shells.length - 1)];
+      if (next) activate(next.id, { focus });
+    }
+    renderTabs();
+    renderEmpty();
+  }
+
+  /** Opens a new terminal in the chosen folder and shows it. */
+  const create = singleFlight(async ({ focus = true } = {}) => {
+    try {
+      const task = where === 'task' ? getTask() : null;
+      const shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/shells`, task ? { task_id: task.id } : undefined);
+      if (destroyed) return;
+      shells.push({ ...shell });
+      activate(shell.id, { focus });
     } catch (error) {
-      errorToast(error, error.status === 429 ? 'Too many shells' : 'Could not open a shell');
-    } finally {
-      starting = false;
-      startButton.classList.remove('busy');
+      errorToast(error, error.status === 429 ? 'Too many terminals' : 'Could not open a terminal');
+      renderEmpty();
+    }
+  });
+
+  async function closeShell(shell, { fromKeyboard = false } = {}) {
+    // Closed from the keyboard, focus stays on the tab strip (#81); otherwise it goes to the
+    // terminal now shown.
+    removeTab(shell, { focus: shown && !fromKeyboard });
+    if (fromKeyboard) tablist.querySelector('[role="tab"][tabindex="0"]')?.focus();
+    if (shell.ended) return;
+    try {
+      await ctx.api.del(`/api/sandboxes/${enc(sandbox.id)}/shells/${enc(shell.id)}`);
+    } catch (error) {
+      if (error.status !== 404) { errorToast(error, 'Could not close the terminal'); syncList(); }
     }
   }
-  startButton.addEventListener('click', open);
+
+  /** The server's list (UI-016: this user's terminals in this sandbox only). */
+  async function fetchList() {
+    const list = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/shells`);
+    return Array.isArray(list) ? list : [];
+  }
+
+  /** Opens the panel's terminals: the server's list, a new terminal when there is none. */
+  const load = singleFlight(async () => {
+    try {
+      const list = await fetchList();
+      if (destroyed) return;
+      loaded = true;
+      shells = list.map((shell) => ({ ...shell }));
+      if (!shells.length) {
+        renderTabs();
+        await create({ focus: shown });
+        return;
+      }
+      const remembered = readJson(activeKey, null);
+      const pick = shells.find((shell) => shell.id === remembered) || shells[shells.length - 1];
+      activate(pick.id, { focus: shown });
+    } catch (error) {
+      if (destroyed) return;
+      setChildren(views, h('div', { class: 'panel-msg stack items-center' },
+        h('p', null, `Couldn’t load your terminals: ${error.message}`),
+        h('button', { type: 'button', class: 'btn', onClick: () => load() }, 'Try again')));
+    }
+  });
+
+  /** Drops tabs whose terminal ended elsewhere (idle for a day, closed in another window). */
+  let syncTimer = 0;
+  function syncList() {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(async () => {
+      try {
+        const list = await fetchList();
+        if (destroyed) return;
+        const ids = new Set(list.map((shell) => shell.id));
+        for (const shell of [...shells]) if (!ids.has(shell.id) && !shell.ended) removeTab(shell);
+        for (const fresh of list) {
+          const known = shells.find((shell) => shell.id === fresh.id);
+          if (known) known.name = fresh.name;
+          else shells.push({ ...fresh });
+        }
+        renderTabs();
+      } catch { /* the next reconnect tries again */ }
+    }, 400);
+  }
+
   return {
     el,
-    headExtra: () => [folderSelect(), iconButton('plus', 'New shell', open)],
-    show() { if (terminal) setTimeout(() => terminal.refit(), 0); },
-    destroy() { if (terminal) terminal.destroy(); },
+    headExtra: () => [folderSelect(), iconButton('plus', 'New terminal', () => create({ focus: true }))],
+    show() {
+      shown = true;
+      if (!loaded) { load(); return; }
+      const shell = shells.find((s) => s.id === active);
+      if (shell && shell.view) setTimeout(() => { shell.view.refit(); shell.view.focus(); }, 0);
+      // Opened again after its last terminal was closed: a new one, as on the first opening.
+      else if (!shells.length) create({ focus: true });
+    },
+    hide() { shown = false; },
+    destroy() {
+      destroyed = true;
+      clearTimeout(syncTimer);
+      for (const shell of shells) if (shell.view) shell.view.destroy();
+    },
   };
 }
 

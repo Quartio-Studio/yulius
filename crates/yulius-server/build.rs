@@ -33,6 +33,14 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// FNV-1a (64 bit) of an asset's bytes: its ETag. Not a security hash; it only tells a changed
+/// file from an unchanged one between two builds.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let web = manifest.join("web");
@@ -40,7 +48,7 @@ fn main() {
     let mut files = Vec::new();
     walk(&web, &mut files);
     let mut code = String::from(
-        "/// Embedded web assets: (path, bytes, content type).\npub static ASSETS: &[(&str, &[u8], &str)] = &[\n",
+        "/// Embedded web assets: (path, bytes, content type, ETag).\npub static ASSETS: &[(&str, &[u8], &str, &str)] = &[\n",
     );
     for file in &files {
         println!("cargo:rerun-if-changed={}", file.display());
@@ -52,9 +60,10 @@ fn main() {
         if rel.ends_with(".md") {
             continue;
         }
+        let etag = std::fs::read(file).map_or(0, |bytes| fnv1a(&bytes));
         let _ = writeln!(
             code,
-            "    ({rel:?}, include_bytes!({:?}), {:?}),",
+            "    ({rel:?}, include_bytes!({:?}), {:?}, \"\\\"{etag:016x}\\\"\"),",
             file.display().to_string(),
             mime(file)
         );

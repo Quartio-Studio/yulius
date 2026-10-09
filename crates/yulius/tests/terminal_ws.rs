@@ -197,8 +197,23 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
 
     let served = serve(h.router.clone()).await?;
     let terminal = format!("/api/tasks/{tid}/terminal");
-    let mut w = ws_connect(served.addr, &terminal, &writer, ORIGIN).await?;
-    let mut r = ws_connect(served.addr, &terminal, &reader, ORIGIN).await?;
+    // The viewers' sizes travel with the connection (F 2026-10-09): the writer, whom nobody
+    // controls yet, gets its size applied before its first state and screen; a reader's size
+    // changes nothing.
+    let mut w = ws_connect(
+        served.addr,
+        &format!("{terminal}?cols=91&rows=27"),
+        &writer,
+        ORIGIN,
+    )
+    .await?;
+    let mut r = ws_connect(
+        served.addr,
+        &format!("{terminal}?cols=50&rows=10"),
+        &reader,
+        ORIGIN,
+    )
+    .await?;
     let (mut wv, mut rv) = (Viewer::default(), Viewer::default());
     for (socket, viewer, who) in [(&mut w, &mut wv, "writer"), (&mut r, &mut rv, "reader")] {
         read_until(socket, viewer, &format!("the {who} banner"), |v| {
@@ -207,8 +222,19 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
         .await?;
     }
     let state = |v: &Viewer| v.texts.iter().find(|t| t["type"] == "state").cloned();
-    assert_eq!(state(&wv).ok_or("writer state")?["can_write"], true);
-    assert_eq!(state(&rv).ok_or("reader state")?["can_write"], false);
+    let first = state(&wv).ok_or("writer state")?;
+    assert_eq!(first["can_write"], true);
+    assert_eq!(
+        (&first["cols"], &first["rows"], &first["controller"]),
+        (&json!(91), &json!(27), &json!(true)),
+        "the first state already has the writer's size: {first}"
+    );
+    let watcher = state(&rv).ok_or("reader state")?;
+    assert_eq!(watcher["can_write"], false);
+    assert_eq!(
+        (&watcher["cols"], &watcher["rows"]),
+        (&json!(91), &json!(27))
+    );
 
     // The read-only viewer's keystrokes never reach the agent.
     r.send(Message::Text(
