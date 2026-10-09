@@ -301,6 +301,7 @@ Claude's own keys. Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` a
 | New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json [--model m] [--effort e] [--dangerously-skip-permissions when contained] "<prompt>"` |
 | Resume | `claude --resume <uuid> … ["<continuation>"]` |
 | Credentials | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`); `CLAUDE_CONFIG_DIR=<sandbox>/home/.claude` |
+| Updates | `DISABLE_AUTOUPDATER=1` in every session and sign-in terminal: the operator updates the CLI on the host (docs/operations.md); a contained session could only fail to update itself (#45) |
 | Transcript | `<config>/projects/<cwd-slug>/<session>.jsonl` |
 | Usage | `message.usage` per assistant message (dedupe by message id + request id); limit errors from synthetic API error messages |
 | Hooks | `--settings` JSON `hooks` for SessionStart, UserPromptSubmit, Stop, Notification |

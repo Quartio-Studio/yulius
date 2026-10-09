@@ -24,6 +24,10 @@ pub const CLAUDE_PROGRAM: &str = "claude";
 pub const TASK_TOKEN_ENV: &str = "YULIUS_TASK_TOKEN";
 /// Environment variable holding the internal Yulius listener URL.
 pub const YULIUS_URL_ENV: &str = "YULIUS_URL";
+/// Turns off Claude Code's background self-update: the operator installs and updates the CLI
+/// on the host, and a contained session cannot write there, so the update could only fail
+/// (#45). Manual `claude update` is unaffected.
+pub const DISABLE_AUTOUPDATER_ENV: (&str, &str) = ("DISABLE_AUTOUPDATER", "1");
 /// Name of the always-attached Yulius MCP server.
 pub const YULIUS_MCP_NAME: &str = "yulius";
 /// Hook events registered for Claude Code.
@@ -472,6 +476,10 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
                 utf8(&config_dir, "sandbox_home")?.to_owned(),
             ),
             (YULIUS_URL_ENV.into(), base_url(request).to_owned()),
+            (
+                DISABLE_AUTOUPDATER_ENV.0.into(),
+                DISABLE_AUTOUPDATER_ENV.1.into(),
+            ),
         ],
         secret_env: vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())],
         files: vec![

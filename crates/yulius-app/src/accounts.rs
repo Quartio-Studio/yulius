@@ -951,6 +951,8 @@ impl App {
             ("COLORTERM".to_owned(), "truecolor".to_owned()),
             ("LANG".to_owned(), "C.UTF-8".to_owned()),
             ("COLUMNS".to_owned(), LOGIN_COLS.to_string()),
+            // The sign-in CLI must not try to update itself either (#45).
+            ("DISABLE_AUTOUPDATER".to_owned(), "1".to_owned()),
         ];
         match provider {
             Provider::Anthropic => env.push((
