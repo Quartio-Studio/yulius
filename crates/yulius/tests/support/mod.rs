@@ -402,7 +402,7 @@ pub async fn call(
 ) -> Result<Resp, Box<dyn std::error::Error>> {
     let mut req = Request::builder().method(method).uri(path);
     if let Some(cookie) = &creds.cookie {
-        req = req.header(header::COOKIE, format!("yulius_session={cookie}"));
+        req = req.header(header::COOKIE, cookie_header(cookie));
     }
     if let Some(csrf) = &creds.csrf {
         req = req.header("x-yulius-csrf", csrf);
@@ -438,11 +438,20 @@ pub async fn call(
     })
 }
 
-/// Extracts the session value from a Set-Cookie header.
+/// Extracts the session value from a Set-Cookie header (`__Host-yulius_session` over HTTPS,
+/// `yulius_session` over HTTP).
 pub fn session_from(set_cookie: &Option<String>) -> Option<String> {
     let raw = set_cookie.as_ref()?;
     let first = raw.split(';').next()?;
-    first.strip_prefix("yulius_session=").map(str::to_owned)
+    first
+        .strip_prefix("__Host-yulius_session=")
+        .or_else(|| first.strip_prefix("yulius_session="))
+        .map(str::to_owned)
+}
+
+/// A `Cookie` header carrying a session under both names (HTTPS and HTTP instances).
+pub fn cookie_header(session: &str) -> String {
+    format!("yulius_session={session}; __Host-yulius_session={session}")
 }
 
 /// Deterministic machine metrics for status tests (disk total unknown on purpose).

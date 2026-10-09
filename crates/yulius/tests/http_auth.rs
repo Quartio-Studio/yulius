@@ -733,8 +733,9 @@ async fn allowlisted_origins_get_cors_and_websockets() -> TestResult {
     Ok(())
 }
 
-/// #56: every public response carries the baseline security headers (no framing by other
-/// sites, no MIME sniffing, no referrer to other origins).
+/// #56: every public response carries the baseline security headers (no framing at all, not
+/// even by Yulius itself — BRW-008 —, no MIME sniffing, no referrer to other origins) and the
+/// server's tag, which the preview proxy uses to refuse showing Yulius inside itself.
 #[tokio::test]
 async fn public_responses_carry_security_headers() -> TestResult {
     use tower::ServiceExt;
@@ -757,14 +758,15 @@ async fn public_responses_carry_security_headers() -> TestResult {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
         };
+        assert_eq!(header("x-frame-options").as_deref(), Some("DENY"), "{path}");
         assert_eq!(
-            header("x-frame-options").as_deref(),
-            Some("SAMEORIGIN"),
+            header("content-security-policy").as_deref(),
+            Some("frame-ancestors 'none'"),
             "{path}"
         );
         assert_eq!(
-            header("content-security-policy").as_deref(),
-            Some("frame-ancestors 'self'"),
+            header("x-yulius").as_deref(),
+            Some(h.app.instance_tag.as_str()),
             "{path}"
         );
         assert_eq!(

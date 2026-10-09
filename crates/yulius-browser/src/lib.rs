@@ -49,4 +49,4 @@ pub use instance::{
 pub use manager::{BrowserConfig, BrowserManager, DEVTOOLS_PORT_FILE, IdleReaper};
 pub use mirror::DomBatch;
 pub use process::StopTimeouts;
-pub use url_policy::{UrlRefused, normalize_url};
+pub use url_policy::{UrlDenyList, UrlRefused, normalize_url};

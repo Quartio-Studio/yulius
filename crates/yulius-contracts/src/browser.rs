@@ -121,6 +121,30 @@ pub struct ActionRequest {
     pub task_id: Option<String>,
 }
 
+/// `GET /api/sandboxes/{sid}/previews`: where the sandbox's ports open live in the user's
+/// browser (SPEC-001 BRW-005, SPEC-002 ADR-14), and which of them listen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewInfo {
+    /// Whether live previews are configured on this server.
+    pub enabled: bool,
+    /// Why they are not, when they are not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// A port's preview origin with `{port}` in place of the port, e.g.
+    /// `https://{port}-0123456789ab.yulius.example.com`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_template: Option<String>,
+    /// First port of the sandbox's range.
+    pub first_port: u16,
+    /// Last port of the sandbox's range.
+    pub last_port: u16,
+    /// Ports of the range with a listening server, ascending (Yulius's own excluded).
+    pub listening: Vec<u16>,
+    /// Ports of the range that belong to Yulius and are never previewed.
+    #[serde(default)]
+    pub excluded: Vec<u16>,
+}
+
 /// One tab as shown to viewers and returned by tools.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabInfo {
@@ -288,6 +312,14 @@ pub enum ViewerClientMsg {
     },
     /// Ask for a fresh DOM snapshot of the active tab (after a replay error).
     DomResync,
+    /// Which tab this connection watches (DOM or pixels), independently of the shared active
+    /// tab; `null` watches none (the viewer shows one of its own live tabs). Until a viewer
+    /// sends it, it follows the active tab.
+    Watch {
+        /// The tab, or `null`.
+        #[serde(default)]
+        tab_id: Option<TabId>,
+    },
 }
 
 /// How a viewer sees pages (SPEC-001 BRW-005).

@@ -783,7 +783,7 @@ pub async fn call_raw(
         req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
     }
     if let Some(cookie) = &creds.cookie {
-        req = req.header(header::COOKIE, format!("yulius_session={cookie}"));
+        req = req.header(header::COOKIE, super::cookie_header(cookie));
     }
     if let Some(csrf) = &creds.csrf {
         req = req.header("x-yulius-csrf", csrf);

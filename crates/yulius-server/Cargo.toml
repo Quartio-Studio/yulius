@@ -27,3 +27,6 @@ tower-http = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tracing = { workspace = true }
+# Live preview reverse proxy (HTTP/1.1 client with upgrades to the sandbox's dev servers).
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }

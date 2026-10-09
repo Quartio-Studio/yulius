@@ -896,10 +896,7 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
          origin: &str|
          -> Result<tungstenite::handshake::client::Request, Box<dyn std::error::Error>> {
             let mut req = url.as_str().into_client_request()?;
-            let cookie = format!(
-                "yulius_session={}",
-                creds.cookie.as_deref().ok_or("cookie")?
-            );
+            let cookie = support::cookie_header(creds.cookie.as_deref().ok_or("cookie")?);
             req.headers_mut().insert("cookie", cookie.parse()?);
             req.headers_mut().insert("origin", origin.parse()?);
             Ok(req)

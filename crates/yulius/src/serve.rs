@@ -71,6 +71,11 @@ pub struct ServeArgs {
     /// Login shell for sandbox shells (default: $SHELL, /bin/bash, /bin/sh).
     #[arg(long, env = "YULIUS_SHELL")]
     pub shell: Option<PathBuf>,
+    /// Parent domain of the live preview origins `<port>-<key>.<domain>` (SPEC-002 ADR-14):
+    /// default the public URL's host; `off` disables live previews. Needs wildcard DNS and TLS
+    /// (docs/operations.md).
+    #[arg(long, env = "YULIUS_PREVIEW_DOMAIN")]
+    pub preview_domain: Option<String>,
 }
 
 /// Parses `first-last` into an inclusive port range.
@@ -103,11 +108,47 @@ fn browser_port(args: &ServeArgs) -> Arc<dyn yulius_app::ports::browser::Browser
     let mut config = yulius_browser::BrowserConfig::new(exe, args.data_dir.join("sandboxes"));
     config.no_sandbox = args.chromium_no_sandbox;
     // New and blank tabs show the welcome page from the internal listener (BRW-006).
-    config.new_tab_url = Some(format!(
-        "http://{}/browser/welcome?sandbox={{sandbox}}",
-        args.internal_bind
-    ));
+    let welcome = format!("http://{}/browser/welcome", args.internal_bind);
+    config.new_tab_url = Some(format!("{welcome}?sandbox={{sandbox}}"));
+    // Never Yulius itself (BRW-008): its public origin, preview origins and listeners; the
+    // welcome page stays reachable.
+    config.deny = yulius_browser::UrlDenyList::yulius(
+        &args.public_url,
+        &[args.bind, args.internal_bind],
+        vec![format!("{welcome}?"), format!("{welcome}/ports?")],
+    );
     Arc::new(ChromiumBrowsers::new(config))
+}
+
+/// Live preview origins: under the public host by default, under `domain` when given, none for
+/// `off` (SPEC-002 ADR-14).
+pub fn preview_config(
+    public_url: &str,
+    domain: Option<&str>,
+) -> Result<Option<yulius_app::preview::PreviewConfig>, String> {
+    use yulius_app::preview::PreviewConfig;
+    let derived = PreviewConfig::from_public_url(public_url);
+    match domain.map(str::trim) {
+        None | Some("") => Ok(derived),
+        Some(off) if off.eq_ignore_ascii_case("off") => Ok(None),
+        Some(domain) => {
+            let scheme = if public_url.starts_with("https://") {
+                "https"
+            } else {
+                "http"
+            };
+            // The previews are served by the same listener behind the same proxy: same port.
+            let port = public_url
+                .split_once("://")
+                .and_then(|(_, rest)| rest.split('/').next())
+                .and_then(|authority| authority.rsplit_once(':'))
+                .filter(|(host, _)| !host.ends_with('[') && !host.contains('['))
+                .and_then(|(_, port)| port.parse::<u16>().ok());
+            PreviewConfig::new(scheme, domain, port)
+                .map(Some)
+                .ok_or_else(|| format!("invalid preview domain {domain:?}: expected a DNS name"))
+        }
+    }
 }
 
 /// Prepares the data directory with owner-only permissions.
@@ -150,6 +191,8 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     let mut config = AppConfig::new(args.data_dir.clone(), &args.public_url, &internal_url, exe);
     config.max_live_sessions = args.max_live_sessions;
     config.contained = args.contained;
+    config.own_ports = vec![args.bind.port(), args.internal_bind.port()];
+    config.preview = preview_config(&args.public_url, args.preview_domain.as_deref())?;
     config
         .contained_readonly
         .clone_from(&args.contained_readonly);

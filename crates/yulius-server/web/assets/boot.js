@@ -2,6 +2,13 @@
 // tokens are readable): applies the stored theme so a light or system theme never flashes dark while
 // the app loads, and gives the browser chrome the theme's page colour. theme.js takes over
 // afterwards and keeps the same key and default (web/README.md "Theming and branding").
+// It also notes whether the page is framed: Yulius never runs inside a frame — not inside its
+// own browser panel either (BRW-008) — and app.js then shows only a notice.
+(function () {
+  var framed = true;
+  try { framed = window.top !== window.self; } catch (error) { /* a cross-origin parent: framed */ }
+  if (framed) window.__yuliusFramed = true;
+}());
 (function () {
   var choice = 'dark';
   try {

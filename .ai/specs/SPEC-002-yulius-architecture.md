@@ -78,11 +78,175 @@ Principles:
 | ADR-06 | Withdrawn (F 2026-10-08): no cross-provider switches. The provider-neutral transcript IR, the native transcript writers and the handoff fallback were removed; a task resumes its own session on another account. | Keep translation for a later second harness | Yulius runs Claude Code only; a returning harness gets its own decision. |
 | ADR-07 | Yulius MCP (Streamable HTTP, JSON-RPC) on a loopback listener with per-run bearer tokens; hooks call the same listener through `yulius hook`. | Per-harness plugins; injecting text into the TUI only | One protocol for every harness; least privilege (task tokens reach only task-scoped tools). |
 | ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. |
-| ADR-09 | Per-sandbox headless Chromium; the user's view is a live DOM mirror: the rrweb recorder is injected through CDP into the page's main world (it must see the page's CSSOM patches) and reports to a CDP binding; the UI replays the events in rrweb's script-free iframe (sandbox `allow-same-origin` only — never `UNSAFE_replayCanvas`, which would let any page run script as Yulius through the binding) and paints sampled canvas frames itself; page resources the user's browser cannot reach are fetched by the server browser through a same-origin-only endpoint served with a `sandbox` CSP. The CDP screencast is the labelled fallback; input is dispatched with CDP `Input.*`; viewers learn viewport changes at once. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer; recorder in an isolated world (misses CSS-in-JS rules) | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; plugins, internal pages and pages that send no DOM need the fallback. |
+| ADR-09 | Narrowed by ADR-14 (F 2026-10-09): the mirror is now only the remote view of the sandbox Chrome's tabs (agents' tabs and hand-offs); the user's own browsing of the sandbox's apps is live (ADR-14). Per-sandbox headless Chromium; the user's view is a live DOM mirror: the rrweb recorder is injected through CDP into the page's main world (it must see the page's CSSOM patches) and reports to a CDP binding; the UI replays the events in rrweb's script-free iframe (sandbox `allow-same-origin` only — never `UNSAFE_replayCanvas`, which would let any page run script as Yulius through the binding) and paints sampled canvas frames itself; page resources the user's browser cannot reach are fetched by the server browser through a same-origin-only endpoint served with a `sandbox` CSP. The CDP screencast is the labelled fallback; input is dispatched with CDP `Input.*`; viewers learn viewport changes at once. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer; recorder in an isolated world (misses CSS-in-JS rules) | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; plugins, internal pages and pages that send no DOM need the fallback. |
 | ADR-10 | Built-in editor: Monaco (VS Code's editor component, vendored AMD build without its translations) in the web UI over a small file API (`/api/sandboxes/{sid}/files…`) on the sandbox repository or a task worktree; per-user view state stays in the browser. | openvscode-server per sandbox (original: needed a token cookie fix, ran outside containment, too heavy); per-user contained openvscode-server (built, then dropped by the founder: "much simpler, without 90% of the features"); CodeMirror (needs a bundler) | No editor process or prerequisite on the VM; 14 MB of static assets (the TypeScript worker is 7 MB, loaded only for JS/TS); no extensions, debugging or integrated terminal (shells cover that). |
 | ADR-12 | Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
 | ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
+| ADR-14 | The user browses the sandbox's apps **live in their own browser**: each (sandbox, port) has a preview origin `<port>-<key>.<yulius host>` that Yulius reverse-proxies to `127.0.0.1:<port>`, removing the iframe obstacles; the agents keep the sandbox's headless Chrome (ADR-09), whose tabs share the panel's strip and are watched remotely with the agent's cursor; Yulius never opens inside itself. Analysis and contract: §2.1. | Keep the mirror (A); pixel or video streaming (B); hybrids (D) | Native page behaviour on desktop and phone; needs wildcard DNS and TLS for the preview hosts (on-demand TLS); the app runs in the user's browser, so its absolute `localhost` URLs in page code do not reach the VM. |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
+
+### 2.1 ADR-14: the browser panel renders the sandbox's apps live (F 2026-10-09)
+
+Status: accepted and implemented (issue #92). Narrows ADR-09.
+
+**Problem.** "Even if we have this mirror thingy, it works terribly when we need to do
+something real. It should be rendered fully on the user's side, and we can use the VM to get
+around iframe problems. Deny recursion. We still need the cursor." The ADR-09 view is a
+**replay**. The page runs in a Chrome on the server, and its DOM is recorded with rrweb and
+rebuilt in a script-free iframe. Every key, click and wheel turn makes a round trip, and nothing
+of the page runs in the user's browser: no native focus, scrolling inertia, IME, devtools or
+canvas/WebGL. Apps with WebSockets, hot reload or heavy JavaScript degrade to pixels.
+
+**Options compared.**
+
+| | A: keep the mirror | B: pixel or video streaming (screencast, WebRTC, noVNC) | C: live page in the user's browser through a Yulius proxy on the VM | D: hybrids |
+| --- | --- | --- | --- | --- |
+| Fidelity and feel | DOM without scripts; input round-trips; canvases sampled; breaks on CSS-in-JS edge cases and shadow DOM | Exact pixels, but every interaction round-trips; text is an image (no selection or copy, no find); blurry on phones | The real page: native scrolling, selection, inputs, IME, devtools, WebGL, media | C for the user plus A/B for the agent's Chrome |
+| Latency | One round trip per input | One round trip per input plus encoding | Local, like any site | Local for the user's tabs |
+| Phone | Scaled replay, awkward input | Bandwidth-heavy, no native keyboard | Native | Native for the user's tabs |
+| Server cost | Recorder in Chrome plus replay | Encoding per viewer | One proxy hop; no Chrome needed for the user | Chrome only for agents |
+| Shared state with agents | Same Chrome (shared logins) | Same Chrome | Separate browser (the user's own cookies) | Hand-offs (AWS sign-in for an agent) stay in the agent's Chrome |
+| Security surface | Hostile DOM replayed in Yulius's origin (mitigated: script-free iframe) | Small | A new origin per app; proxy must keep the Yulius session out of reach | C's plus A's |
+
+Decision: **D, built on C**. The user's tabs are live iframes on preview origins (C). The agent
+keeps the headless Chrome (ADR-09), and the user watches its tabs through the existing mirror
+or pixels with the agent's cursor (A, now only for the agent's tabs). Agent hand-offs happen
+there: an AWS sign-in the agent needs must live in the agent's Chrome.
+
+**Real-world issues and how C handles them.**
+
+- *X-Frame-Options and CSP `frame-ancestors`* (dev servers and frameworks send them):
+  - the proxy removes `X-Frame-Options` and every `frame-ancestors` directive;
+  - it then adds its own `Content-Security-Policy: frame-ancestors 'self' <Yulius origin>`;
+  - only Yulius (and the app itself, for its own nested frames) can frame a preview.
+- *Root-relative URLs* (`/assets/app.js`, `/api`): a path-prefix proxy (`/preview/20001/…`)
+  would break them, as well as service workers, cookies with `Path=/` and client routers. So
+  each app gets an **origin of its own**, `<port>-<key>.<host>`, and its paths are untouched.
+- *Redirects and URLs that name `localhost:<port>`*:
+  - the app is told it runs at `http://localhost:<port>` (`Host`, and `Origin`/`Referer` of its
+    own previews rewritten), which satisfies Vite's and webpack's host checks and same-origin
+    CSRF checks (SvelteKit, Next.js server actions, Django);
+  - the response headers that carry URLs map `http(s)/ws(s)://<loopback>:<sandbox port>` back
+    to the preview origins: `Location`, `Content-Location`, `Refresh`, `Link`,
+    `Access-Control-Allow-Origin` and CSP sources.
+  - Absolute `localhost` URLs inside page bodies or scripts are not rewritten (not done: body
+    rewriting is fragile). Apps should use relative URLs or their dev server's proxy, as on any
+    remote dev box.
+- *Cookies in iframes*:
+  - Preview origins are subdomains of the Yulius host, so they are **same-site** with Yulius.
+    The iframe is therefore not a third-party context, and its cookies work under third-party
+    cookie blocking (Safari ITP, Firefox TCP, Chrome).
+  - `sslip.io` is **not** on the Public Suffix List (checked 2026-10-09), so the site is
+    `sslip.io`. For the same reason a bare `localhost` does not work for local development
+    (`*.localhost` hosts are sites of their own); use `yulius.localhost`.
+  - The app's `Set-Cookie` loses `Domain` (it becomes host-only on the preview) and gains
+    `Secure` over HTTPS.
+- *WebSockets, HMR and streaming*:
+  - upgrades are spliced through (bounded, re-checked every 60 s);
+  - bodies stream both ways without buffering, so large uploads, server-sent events and
+    streamed HTML work;
+  - only HTML documents get one `<script>` tag appended (the bridge, below); they are requested
+    without compression.
+- *Service workers*: they are scoped to their preview origin, so they cannot touch Yulius.
+  Paths under `/__yulius/` are reserved on every preview origin.
+- *Auth*:
+  1. A preview is opened through a **handshake**. A signed-in user with write access navigates
+     to Yulius (`/api/previews/authorize`), which hands a single-use 60 s token to the preview
+     origin (`/__yulius/handshake`).
+  2. The token becomes a 12 h random **grant**, set as the `__Host-yulius_preview` cookie
+     (host-only, `HttpOnly`, `Secure`, `SameSite=Lax`) on that preview origin only.
+  3. Grants live in memory, at most 4096. Each request re-checks its grant against the user's
+     Yulius session and write access at least every 30 s, so sign-out, disabling and lost
+     access end it. After a restart, navigations pass through the handshake again.
+  4. A navigation without a grant goes through the handshake by itself, so a new window and
+     bookmarks work. If the browser drops the cookie, the landing step says so instead of
+     looping.
+  5. The grant cookie never reaches the app.
+- *Phones*: native.
+
+**Browser chrome (address bar, back, forward).** A cross-origin iframe hides its location and
+history from the parent. The proxy therefore appends a small bridge script to proxied
+documents. It posts the address, the title and `navigation.canGoBack/canGoForward` to the
+Yulius origin only, and takes back, forward (Navigation API, so traversal stays inside the
+frame) and reload, but only from the Yulius window that frames it. The panel shows addresses as
+`localhost:<port>/…`. "Open in a new window" opens the preview origin top-level.
+
+**Isolation between the preview origins and Yulius (security).** Every `*.sslip.io` host on the
+internet, and every preview, is same-site with Yulius, so `SameSite` never protects anything
+here:
+
+- **Yulius's session cannot be used from a preview origin.**
+  - The session cookie is `__Host-yulius_session` over HTTPS: host-only, so it never reaches a
+    preview, and no sibling host can plant or shadow it ("cookie tossing").
+  - A cookie-authenticated request that announces a foreign `Origin`, or that the browser marks
+    `Sec-Fetch-Site: same-site/cross-site`, is refused unless it is a plain GET navigation.
+  - WebSockets already required the Yulius origin.
+  - Yulius's pages refuse every frame (`X-Frame-Options: DENY`, `frame-ancestors 'none'`).
+- **A preview cannot be used from other sites.**
+  - Credentialed requests and WebSockets must come from the preview itself or the same
+    sandbox's other previews (`Origin`, fetch metadata).
+  - Navigations from anywhere are allowed, and the grant decides.
+  - The grant is per origin, so sandbox A's grant does not open sandbox B or another port.
+- **Only the sandbox's own port range is reachable**, never Yulius's listeners or a sandbox
+  browser's DevTools port. The upstream is always `127.0.0.1:<port>`.
+- Tests: `crates/yulius/tests/preview.rs`; the live hostile page in `live_ui_browser.rs`.
+
+**No recursion (BRW-008).**
+
+- The proxy refuses Yulius's own ports. It also refuses any upstream that answers with this
+  server's `X-Yulius` tag (a port forward to Yulius).
+- The sandbox Chrome refuses Yulius's public host, its subdomains and every loopback form of
+  its listeners:
+  - before navigating (tools, viewers), with a typed refusal;
+  - for page-initiated loads (links, redirects, frames, scripts), through a browser-wide CDP
+    `Fetch` interception that fails them as blocked. The welcome page is the one allowed prefix.
+  - A browser whose guard cannot be enabled is not used.
+- The welcome page and the previews API never list Yulius's ports.
+- The UI refuses to render in any frame: `boot.js` notes `window.top !== window.self`, and the
+  app shows only a notice.
+
+**Agents and the cursor.**
+
+- Agents keep the headless Chrome and the MCP tools.
+- Its tabs appear in the same strip, marked as the sandbox Chrome's. Each viewer watches the
+  tab it chose (`watch`, nothing while on a live tab), with the labelled cursor (BRW-007).
+- When an agent acts on the app shown in the user's live tab (same port), a notice over that
+  tab says so and offers "Watch".
+- "Open live" opens an agent tab's address live.
+- **Cookies are not shared** between the user's live view and the agent's Chrome, so each has
+  its own session, like two browsers. Sharing would mix users' and agents' identities across
+  every member of the sandbox. A hand-off the agent needs happens in the agent's tab.
+
+**Operations.**
+
+- Wildcard DNS for `*.<host>`: `sslip.io` resolves any subdomain to the IP it encodes.
+- TLS for the preview hosts:
+  - Caddy: on-demand TLS whose `ask` endpoint is `GET /internal/preview-tls?domain=` on the
+    loopback internal listener (200 only for preview hosts of existing sandbox ports);
+  - nginx: a wildcard certificate (DNS challenge) instead.
+- `YULIUS_PREVIEW_DOMAIN` (default: the public host; `off` disables previews).
+- Without DNS or TLS, the panel's reachability check says so and offers the sandbox Chrome
+  (docs/operations.md §4).
+
+**Code.**
+
+- `yulius-app::preview`: preview hosts, keys, the handshake, grants and the port policy.
+- `yulius-server::preview`: the proxy itself, in the interface layer like the former editor
+  proxy (HTTP to HTTP, no domain logic), plus `routes/previews.rs`.
+- `yulius-browser::UrlDenyList`: the sandbox Chrome's guard.
+- `web/assets/browser.js` (panel, live tabs) and `browserremote.js` (the sandbox Chrome view).
+
+**Consequences and limits.**
+
+- Absolute `localhost` URLs in page code do not reach the VM.
+- Sites outside the sandbox's ports open in the sandbox Chrome (proxying arbitrary sites would
+  be an open proxy, and their absolute URLs escape it).
+- Third-party sign-in pages (Google, GitHub) refuse frames and must be opened in a new window.
+- The sandbox Chrome tabs have no back or forward in the panel.
+- `sslip.io` is shared by its whole user base: its Let's Encrypt limits are shared, and its
+  hosts are all same-site. A production domain of one's own is better.
+- Certificate Transparency logs publish each preview host name, which carries an opaque key,
+  not the sandbox's name.
 
 ## 3. Code organization
 
@@ -405,7 +569,8 @@ browser action requests) filtered by permission. Bounded per-connection queue (2
 continue, switch, archive, restore, feedback, steps), `/api/sandboxes/{id}/git/*`,
 `/api/sandboxes/{id}/delivery/*`, `/api/sandboxes/{id}/{skills,workflows,automations,mcp}`,
 `/api/admin/{users,accounts,github,mcp,skills}`, `/api/analytics/*`, `/api/status`,
-`/api/import/*` (CLI), `/s/{sandbox}/editor/*` (proxy), `/api/sandboxes/{id}/browser` (WS).
+`/api/import/*` (CLI), `/api/sandboxes/{id}/browser` (WS), `/api/sandboxes/{id}/previews`,
+`/api/previews/authorize`; every `<port>-<key>.<host>` is a live preview (ADR-14).
 All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 
 ## 8. Security and trust model
@@ -413,12 +578,19 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 - Users with **write** permission can make agents run arbitrary code in that sandbox; that is the
   product's purpose. Containment (ADR-03) protects the host and other sandboxes from such code on
   Linux. Host mode provides no containment and is labelled in the UI and logs (SEC-001).
-- Public listener: HTTPS terminated by the reverse proxy; cookies HttpOnly, Secure, SameSite=Lax;
-  CSRF header on state-changing requests; WebSocket Origin must equal the public URL (or an
-  allowlisted desktop origin); login rate limits; Argon2id for the superadmin password. Every
-  response carries `X-Frame-Options: SAMEORIGIN`, `Content-Security-Policy: frame-ancestors
-  'self'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin` unless the route
-  sets a stricter policy (#56); HSTS is set by the TLS proxy.
+- Public listener: HTTPS terminated by the reverse proxy; cookies HttpOnly, Secure, SameSite=Lax,
+  the session cookie `__Host-` prefixed over HTTPS (ADR-14); CSRF header on state-changing
+  requests; a cookie session refuses requests that announce another `Origin` or come from
+  another site per fetch metadata (navigations excepted); WebSocket Origin must equal the public
+  URL (or an allowlisted desktop origin); login rate limits; Argon2id for the superadmin
+  password. Every response carries `X-Frame-Options: DENY`, `Content-Security-Policy:
+  frame-ancestors 'none'` (nothing frames Yulius, not even Yulius), `X-Content-Type-Options:
+  nosniff`, `Referrer-Policy: same-origin` and the process tag `X-Yulius` unless the route sets a
+  stricter policy (#56, ADR-14); HSTS is set by the TLS proxy.
+- Live previews (ADR-14): preview hosts are dispatched before the UI and API and only ever reach
+  `127.0.0.1:<port>` of the sandbox's range (never Yulius's listeners or DevTools ports); write
+  access through a single-use handshake and a per-origin grant re-checked every 30 s; credentialed
+  cross-site use refused; the grant and Yulius cookies never reach the app.
 - Sandbox access (ACC-007/008/012): one decision, `App::access_level`, serves every path — the
   sandbox list and REST routes, the event stream, terminal, shell and browser sockets and their
   re-checks, files, Git, tasks, Status and analytics. A disabled user has none; the superadmin
@@ -458,7 +630,8 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   Argon2; the failure counter and permanent lock are persisted before the response is sent.
 - Browser mirror (ADR-09): the recorder runs in an isolated world, so page scripts cannot tamper
   with it; the replay iframe runs no page scripts; resource fetches go through the server browser
-  with the same URL policy as navigation.
+  with the same URL policy as navigation. The sandbox Chrome refuses Yulius's origins and
+  listeners (ADR-14, BRW-008).
 
 ## 8a. Imported repository specifics (Product, Studio)
 
@@ -502,6 +675,8 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | Import total / chunk | 2 GiB / 8 MiB | reject |
 | GitHub retries | 3 attempts, ≤ 30 s total, honoring `Retry-After` | surface error |
 | Permission cache | 5 min | refetch |
+| Preview handshakes / grants | 1024 pending (60 s) / 4096 (12 h, re-checked every 30 s) | refuse with 429 / drop the oldest |
+| Preview requests awaiting a head / WebSockets | 512 / 256 (connect 5 s, head 120 s) | 503 |
 
 ## 10. Failure and recovery matrix
 
@@ -596,10 +771,14 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Real adapters | `tests/git_adapter.rs` (real git); GitHub adapter unit-tested against recorded HTTP (no real App configured). |
 | Areas | `accounts.rs`, `analytics.rs`, `automations.rs`, `skills_mcp.rs`, `delivery.rs`, `projects.rs`, `import_server.rs`, `browser.rs`, `editor.rs`, `shells.rs`, `http_auth.rs`, `mcp_coordination.rs`. |
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
+| Live previews and no recursion (ADR-14, 2026-10-09) | `tests/preview.rs` (handshake, rewriting, localhost view of the app, WebSocket passthrough, refusals of users, sandboxes, ports, cross-site callers and Yulius itself, the Yulius session unusable from a preview origin, TLS `ask`); `tests/browser.rs` (per-viewer `watch`); `yulius-browser` `tests/instance.rs` and `tests/manager.rs` (the sandbox Chrome's guard: refusal, `Fetch` interception, fail-closed start); opt-in `live_ui_browser.rs` with real Chrome (live iframe with root-relative assets, a redirect, a WebSocket, native typing, selection and scrolling, address bar and Back, agent notice and cursor, hostile preview page refused, framed UI refused, the sandbox Chrome refusing Yulius). Deployed DNS/TLS not exercised. |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
 
+- 2026-10-09 (F 2026-10-09): ADR-14 — the browser panel renders the sandbox's apps live through
+  per-port preview origins; ADR-09 narrowed to the agents' Chrome; no recursion; `__Host-`
+  session cookie, foreign-site refusal and `frame-ancestors 'none'` (§8); preview bounds (§9).
 - 2026-10-09 (F 2026-10-09, evening): user terminals — many shells per user and sandbox with names,
   list/rename/close, shells adopted after a restart from `shell.json` (§4, §7.2, §8); the terminal
   WebSocket takes the viewer's size with the connection and the snapshot waits for the redraw
