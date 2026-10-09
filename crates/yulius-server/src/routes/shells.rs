@@ -1,25 +1,27 @@
-//! Sandbox shells: `POST /api/sandboxes/{sid}/shells` and `WS /api/shells/{id}/terminal`
-//! (docs/api.md; SPEC-001 UI-015, AC-UI-7). The WebSocket speaks the task terminal protocol.
+//! Sandbox shells: `GET`/`POST /api/sandboxes/{sid}/shells`, `PATCH`/`DELETE
+//! /api/sandboxes/{sid}/shells/{id}` and `WS /api/shells/{id}/terminal` (docs/api.md; SPEC-001
+//! UI-015, UI-016, AC-UI-7). The WebSocket speaks the task terminal protocol.
 
 use std::time::Duration;
 
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use tokio::sync::broadcast::error::RecvError;
-use yulius_app::auth::AuthContext;
+use yulius_app::auth::{AuthContext, rfc3339};
 use yulius_app::error::AppError;
 use yulius_app::hub::HubFrame;
-use yulius_app::shells::ShellAttach;
-use yulius_contracts::api::shells::{CreateShell, ShellCreated};
+use yulius_app::shells::{ShellAttach, ShellInfo};
+use yulius_contracts::api::shells::{CreateShell, RenameShell, Shell};
 use yulius_contracts::terminal::{
     CLOSE_LAGGING, KIND_OUTPUT, KIND_SNAPSHOT, TerminalClientMsg, TerminalServerMsg, encode_binary,
 };
 
 use super::events::check_origin;
+use super::terminal::InitialSize;
 use crate::AppState;
 use crate::auth::Auth;
 use crate::error::ApiResult;
@@ -29,34 +31,82 @@ const RECHECK: Duration = Duration::from_secs(60);
 /// Close code: access revoked.
 const CLOSE_REVOKED: u16 = 4003;
 
+fn dto(info: ShellInfo) -> Shell {
+    Shell {
+        id: info.id,
+        name: info.name,
+        task_id: info.task_id,
+        created_at: rfc3339(info.created_at),
+    }
+}
+
+pub async fn list(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<Vec<Shell>>> {
+    let shells = app.shell_list(&ctx, &sid).await?;
+    Ok(Json(shells.into_iter().map(dto).collect()))
+}
+
 pub async fn create(
     State(app): State<AppState>,
     Auth(ctx): Auth,
     Path(sid): Path<String>,
     body: Bytes,
-) -> ApiResult<(StatusCode, Json<ShellCreated>)> {
-    // The web UI posts without a body; an empty body means "the sandbox repository".
+) -> ApiResult<(StatusCode, Json<Shell>)> {
+    // An empty body means "the sandbox repository" with a default name.
     let request: CreateShell = if body.iter().all(u8::is_ascii_whitespace) {
         CreateShell::default()
     } else {
         serde_json::from_slice(&body)
             .map_err(|err| AppError::Invalid(format!("invalid request body: {err}")))?
     };
-    let id = app
-        .shell_create(&ctx, &sid, request.task_id.as_deref())
+    let shell = app
+        .shell_create(
+            &ctx,
+            &sid,
+            request.task_id.as_deref(),
+            request.name.as_deref(),
+        )
         .await?;
-    Ok((StatusCode::CREATED, Json(ShellCreated { id })))
+    Ok((StatusCode::CREATED, Json(dto(shell))))
+}
+
+pub async fn rename(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((sid, id)): Path<(String, String)>,
+    body: Bytes,
+) -> ApiResult<Json<Shell>> {
+    let request: RenameShell = serde_json::from_slice(&body)
+        .map_err(|err| AppError::Invalid(format!("invalid request body: {err}")))?;
+    Ok(Json(dto(app
+        .shell_rename(&ctx, &sid, &id, &request.name)
+        .await?)))
+}
+
+pub async fn remove(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((sid, id)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    app.shell_close(&ctx, &sid, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn terminal(
     State(app): State<AppState>,
     Auth(ctx): Auth,
     Path(id): Path<String>,
+    Query(size): Query<InitialSize>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> ApiResult<Response> {
     check_origin(&app, &headers)?;
-    let attach = app.shell_open(&ctx, &id).await?;
+    // The viewer's size is applied before its snapshot is taken, so the first state and the
+    // snapshot already have it: nothing is redrawn at another size after the viewer appears.
+    let attach = app.shell_open(&ctx, &id, size.get()).await?;
     Ok(ws.on_upgrade(move |socket| pump(app, ctx, attach, socket)))
 }
 

@@ -265,7 +265,8 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         Err(err) => tracing::error!(error = %err, "cannot install the skill catalog"),
     }
     let scheduler = app.start_automation_scheduler();
-    let workspace_reaper = app.start_workspace_services();
+    // Shells left running by the previous server process are adopted before serving.
+    let workspace_reaper = app.start_workspace_services().await;
     let public_router = yulius_server::public_router(app.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
     let internal_router = yulius_server::internal_router(app.clone())
@@ -275,7 +276,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let internal_task = axum::serve(internal.tap_io(no_delay), internal_router)
         .with_graceful_shutdown(shutdown_signal());
     let (a, b) = tokio::join!(public_task, internal_task);
-    // Browsers and shells do not outlive the server (agent sessions do).
+    // Browsers do not outlive the server; shells and agent sessions keep running detached.
     drop(workspace_reaper);
     app.stop_workspace_services().await;
     a.map_err(|e| e.to_string())?;

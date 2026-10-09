@@ -3,9 +3,10 @@
 use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
+use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use yulius_app::auth::AuthContext;
 use yulius_app::hub::HubFrame;
@@ -19,15 +20,37 @@ use crate::AppState;
 use crate::auth::Auth;
 use crate::error::ApiResult;
 
+/// `?cols=&rows=` of a terminal WebSocket: the viewer's terminal size, applied before its
+/// first state and snapshot (docs/api.md). Both or neither; out-of-range values are clamped by
+/// the resize, unparsable ones refuse the request (400).
+#[derive(Debug, Default, Deserialize)]
+pub struct InitialSize {
+    #[serde(default)]
+    cols: Option<u16>,
+    #[serde(default)]
+    rows: Option<u16>,
+}
+
+impl InitialSize {
+    /// The size when both are given and non-zero.
+    pub fn get(&self) -> Option<(u16, u16)> {
+        match (self.cols, self.rows) {
+            (Some(cols), Some(rows)) if cols > 0 && rows > 0 => Some((cols, rows)),
+            _ => None,
+        }
+    }
+}
+
 pub async fn terminal(
     State(app): State<AppState>,
     Auth(ctx): Auth,
     Path(tid): Path<String>,
+    Query(size): Query<InitialSize>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> ApiResult<Response> {
     check_origin(&app, &headers)?;
-    let attach = app.terminal_open(&ctx, &tid).await?;
+    let attach = app.terminal_open(&ctx, &tid, size.get()).await?;
     Ok(ws.on_upgrade(move |socket| pump(app, ctx, attach, socket)))
 }
 

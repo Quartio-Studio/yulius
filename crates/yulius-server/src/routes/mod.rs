@@ -189,7 +189,14 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/sandboxes/{sid}/previews", get(previews::info))
         .route("/api/previews/authorize", get(previews::authorize))
-        .route("/api/sandboxes/{sid}/shells", post(shells::create))
+        .route(
+            "/api/sandboxes/{sid}/shells",
+            get(shells::list).post(shells::create),
+        )
+        .route(
+            "/api/sandboxes/{sid}/shells/{id}",
+            patch(shells::rename).delete(shells::remove),
+        )
         .route(
             "/api/sandboxes/{sid}/files",
             get(files::list).post(files::create).delete(files::delete),

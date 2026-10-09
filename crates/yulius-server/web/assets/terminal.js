@@ -1,12 +1,32 @@
 // Terminal views, loaded on demand (PERF-04): xterm is about 340 KB, 43 % of the app's start-up
 // JavaScript, and most pages (sign-in included) never show a terminal. createTerminalView()
-// returns at once with the same API as the core's view (terminal-core.js); the core and xterm's
-// stylesheet arrive with the first terminal, or earlier through preloadTerminal().
+// returns at once with the same API as the core's view (terminal-core.js); the core, xterm's
+// stylesheet and the terminal typeface arrive with the first terminal, or earlier through
+// preloadTerminal(). Until the view is ready it shows a calm placeholder of the terminal's
+// colour (never text at another size or font, F 2026-10-09).
 
 import { h, setChildren } from './dom.js';
+import { token, px, isPhone } from './theme.js';
 
 const XTERM_CSS = '/assets/vendor/xterm/xterm.css';
+/** Longest wait for the terminal typeface before the terminal opens with a fallback font. */
+const FONT_WAIT_MS = 1500;
 let core = null;
+
+/**
+ * Loads the code typeface (--font-mono, regular and bold) before the first terminal opens:
+ * xterm measures its cells once, so a web font that arrives later would change the glyphs and
+ * then the grid in front of the user. Bounded: after FONT_WAIT_MS the terminal opens anyway (and
+ * re-measures when the font arrives, terminal-core.js).
+ */
+export function loadTerminalFont() {
+  if (!document.fonts || !document.fonts.load) return Promise.resolve();
+  const family = token('--font-mono');
+  const size = px(isPhone() ? '--fs-sm' : '--fs-term') || 13;
+  if (!family) return Promise.resolve();
+  const loads = Promise.all(['400', '600'].map((weight) => document.fonts.load(`${weight} ${size}px ${family}`).catch(() => [])));
+  return Promise.race([loads, new Promise((resolve) => { setTimeout(resolve, FONT_WAIT_MS); })]);
+}
 
 function loadStylesheet(href) {
   const existing = document.querySelector(`link[rel="stylesheet"][href="${href}"]`);
@@ -20,7 +40,16 @@ function loadStylesheet(href) {
 /** Loads the terminal core and xterm's stylesheet once; a failed load can be tried again. */
 function loadCore() {
   if (!core) {
-    core = Promise.all([import('./terminal-core.js'), loadStylesheet(XTERM_CSS)]).then(([module]) => module);
+    core = Promise.all([
+      import('./terminal-core.js'),
+      // The core's own imports, fetched at the same time instead of after it (one round trip).
+      import('./mousefilter.js'),
+      import('./vendor/xterm/xterm.mjs'),
+      import('./vendor/xterm/addon-fit.mjs'),
+      import('./vendor/xterm/addon-web-links.mjs'),
+      loadStylesheet(XTERM_CSS),
+      loadTerminalFont(),
+    ]).then(([module]) => module);
     core.catch(() => { core = null; });
   }
   return core;
@@ -41,7 +70,8 @@ export function createTerminalView(options) {
   let focusWanted = false;
 
   function mount() {
-    setChildren(el, h('div', { class: 'term term-placeholder' }));
+    // The same calm placeholder the core shows until its first screen (terminal-core.js).
+    setChildren(el, h('div', { class: 'term term-placeholder' }, h('div', { class: 'term-skeleton', 'aria-hidden': 'true' }, h('span'), h('span'), h('span'))));
     loadCore().then((module) => {
       if (destroyed) return;
       view = module.createTerminalView(options);
@@ -81,6 +111,12 @@ export function createTerminalView(options) {
     },
     refit() {
       if (view) view.refit();
+    },
+    refreshEmpty() {
+      if (view) view.refreshEmpty();
+    },
+    get ready() {
+      return view ? view.ready : false;
     },
     destroy() {
       destroyed = true;

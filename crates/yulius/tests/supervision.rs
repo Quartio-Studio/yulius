@@ -523,6 +523,7 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             limit_after: Some(1),
+            ..FakeAgentOptions::default()
         };
         let app = build_full(&data, Some(&fake), agent, 8)?;
         let (sandbox, user) = seed_records(&app).await?;
@@ -633,6 +634,7 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
         let agent = FakeAgentOptions {
             transcript: true,
             limit_after: None,
+            ..FakeAgentOptions::default()
         };
         let app = build_full(&data, Some(&fake), agent, 8)?;
         let (sandbox, user) = seed_records(&app).await?;
@@ -875,6 +877,7 @@ fn live_runs_report_metrics_before_they_end() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             limit_after: None,
+            ..FakeAgentOptions::default()
         };
         let app = build_full(&data, Some(&fake), agent, 8)?;
         let (sandbox, user) = seed_records(&app).await?;
@@ -927,6 +930,7 @@ fn without_capacity_the_task_waits() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             limit_after: Some(1),
+            ..FakeAgentOptions::default()
         };
         let app = build_full(&data, Some(&fake), agent, 8)?;
         let (sandbox, user) = seed_records(&app).await?;
@@ -1111,6 +1115,7 @@ fn usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             limit_after: None,
+            ..FakeAgentOptions::default()
         };
         let app = build_custom(
             &data,
@@ -1193,6 +1198,7 @@ fn a_session_change_inside_claude_is_adopted_into_the_task_lineage() -> TestResu
         let agent = FakeAgentOptions {
             transcript: true,
             limit_after: None,
+            ..FakeAgentOptions::default()
         };
         let app = build_full(&data, Some(&fake), agent, 8)?;
         let (sandbox, user) = seed_records(&app).await?;

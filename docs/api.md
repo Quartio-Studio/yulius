@@ -196,6 +196,12 @@ Input makes its viewer the controller (the last viewer to type sets the size), e
 `"scroll":true`: a wheel turn forwarded to a full-screen app, which neither takes control nor
 resizes the terminal.
 
+The connection may carry the viewer's size: `WS /api/tasks/{tid}/terminal?cols=120&rows=40`. A
+writer whom no other viewer controls gets it applied before the first `state` and snapshot (and
+then controls the size); when that changed the size, the snapshot waits up to 400 ms for the
+program's redraw. Both or neither; unparsable values are 400. `hello` and `resize` with the size
+the terminal already has change nothing.
+
 Server → client:
 
 - Binary frame: `u8 kind` + `u64 big-endian seq` + bytes. `kind` 1 = output, 2 = snapshot (clear
@@ -462,13 +468,23 @@ Claude Code.
   → 201 entry (409 when it exists). `DELETE /api/sandboxes/{sid}/files?root&path` → 204 (files,
   links and directory trees; never the folder itself). 409 before the repository is cloned.
   The editor UI (Monaco) keeps each user's open files and unsaved text in their browser only.
-- `POST /api/sandboxes/{sid}/shells` (write) `{"task_id?"}` (or an empty body) → 201 `{"id"}`:
-  a login shell in the sandbox repository or that task's worktree, as the caller's sandbox
-  identity (their home; uid 0 with `sudo` when contained; UI-016). At most 4 live shells per
-  user and sandbox (429). `WS /api/shells/{id}/terminal` (only the shell's creator; 404 for
-  everybody else) speaks the terminal protocol
-  (`state` has `attempt_seq` and `harness` `null`); a shell ends when its process exits (the
-  server sends `exit` and closes) or after 30 min without viewers. Shells never change tasks.
+- Terminals (sandbox shells; UI-015, UI-016): each is private to the user who opened it and to its
+  sandbox. `Shell = {"id","name","task_id|null","created_at"}`.
+  - `GET /api/sandboxes/{sid}/shells` (write) → `[Shell]`: the caller's live shells in this
+    sandbox, oldest first (never another user's or another sandbox's).
+  - `POST /api/sandboxes/{sid}/shells` (write) `{"task_id?","name?"}` (or an empty body) → 201
+    `Shell`: a login shell in the sandbox repository or that task's worktree, as the caller's
+    sandbox identity (their home; uid 0 with `sudo` when contained). The name defaults to
+    "Terminal N", the lowest number free among the caller's shells there. At most 8 live shells
+    per user and sandbox (429); 409 before the repository is cloned.
+  - `PATCH /api/sandboxes/{sid}/shells/{id}` (write) `{"name"}` → `Shell`: 1–40 characters, no
+    control characters (422). `DELETE /api/sandboxes/{sid}/shells/{id}` (write) → 204: the shell
+    leaves the list at once and its process is ended (Ctrl-C, SIGTERM, SIGKILL). Both are 404 for
+    another user's shell and for a shell of another sandbox.
+  - `WS /api/shells/{id}/terminal[?cols=&rows=]` (only the shell's creator; 404 for everybody
+    else) speaks the terminal protocol (`state` has `attempt_seq` and `harness` `null`). A shell
+    ends when its process exits (the server sends `exit` and closes), when it is closed, or after
+    24 h without viewers; it keeps running across a server restart. Shells never change tasks.
 
 ## Administration, analytics, status
 

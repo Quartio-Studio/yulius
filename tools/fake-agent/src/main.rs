@@ -8,7 +8,7 @@
 //! fake-agent [--mode echo|flood|ignore-term|fork-child|exit-early|sleep]
 //!            [--bytes N] [--code N] [--seconds N] [--ignore-term]
 //!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
-//!            [--limit-after N] [--report-env NAME]...
+//!            [--limit-after N] [--report-env NAME]... [--tui]
 //! ```
 //!
 //! Modes:
@@ -32,13 +32,18 @@
 //! 2.1.292's (`apiError: "usage_limit_reached"`, `resetsAt` one hour ahead); later turns only repeat
 //! `LIMIT REACHED`. `--report-env NAME` prints `ENV NAME=set len=<n>` or `ENV NAME=unset` (never
 //! the value).
+//!
+//! `--tui` draws like a full-screen agent TUI (Claude Code 2.1.x): the alternate screen with a
+//! header box, the transcript and an input box between two rules along the bottom, all as wide
+//! as the terminal, redrawn in full whenever the terminal is resized (SIGWINCH). Printed lines
+//! go into the transcript. Used to measure how the web terminal settles (F 2026-10-09).
 
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -69,6 +74,7 @@ struct Options {
     transcript: Option<PathBuf>,
     limit_after: Option<u64>,
     report_env: Vec<String>,
+    tui: bool,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -89,6 +95,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         transcript: None,
         limit_after: None,
         report_env: Vec::new(),
+        tui: false,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -108,6 +115,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--seconds" => options.seconds = parse_number(&flag, args.next())?,
             "--limit-after" => options.limit_after = Some(parse_number(&flag, args.next())?),
             "--ignore-term" => options.ignore_term = true,
+            "--tui" => options.tui = true,
             "--session-id" => {
                 options.session_id = Some(args.next().ok_or("--session-id needs a value")?);
             }
@@ -138,10 +146,102 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
 }
 
 fn say(line: &str) -> io::Result<()> {
+    if let Some(tui) = TUI.get() {
+        return tui.say(line);
+    }
     let mut out = io::stdout().lock();
     out.write_all(line.as_bytes())?;
     out.write_all(b"\n")?;
     out.flush()
+}
+
+/// Most transcript lines kept by the TUI.
+const TUI_KEEP: usize = 500;
+
+/// The full-screen drawing of `--tui`: the transcript and the session id.
+struct Tui {
+    lines: Mutex<Vec<String>>,
+    session: String,
+}
+
+static TUI: OnceLock<Tui> = OnceLock::new();
+
+impl Tui {
+    fn say(&self, line: &str) -> io::Result<()> {
+        if let Ok(mut lines) = self.lines.lock() {
+            lines.push(line.to_owned());
+            let excess = lines.len().saturating_sub(TUI_KEEP);
+            lines.drain(..excess);
+        }
+        self.draw()
+    }
+
+    /// Redraws the whole screen at the terminal's current size.
+    fn draw(&self) -> io::Result<()> {
+        let (rows, cols) = terminal_rows_cols().unwrap_or((24, 80));
+        let rows = rows.max(8);
+        let cols = cols.max(20);
+        let fit = |text: &str| -> String { text.chars().take(cols).collect() };
+        let pad = |text: &str, width: usize| -> String {
+            let mut out: String = text.chars().take(width).collect();
+            let used = out.chars().count();
+            out.extend(std::iter::repeat_n(' ', width - used));
+            out
+        };
+        let rule = "─".repeat(cols);
+        let mut screen = String::from("\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J");
+        screen.push_str(&format!("╭{}╮\r\n", "─".repeat(cols - 2)));
+        screen.push_str(&format!(
+            "│{}│\r\n",
+            pad(
+                &format!(" ✻ Fake Claude Code · session {}", self.session),
+                cols - 2
+            )
+        ));
+        screen.push_str(&format!("╰{}╯", "─".repeat(cols - 2)));
+        let body = rows - 3 - 4;
+        if let Ok(lines) = self.lines.lock() {
+            let start = lines.len().saturating_sub(body);
+            for (i, line) in lines.iter().skip(start).enumerate() {
+                screen.push_str(&format!("\x1b[{};1H{}", 4 + i, fit(line)));
+            }
+        }
+        let status = format!(" → fixture git:(main) · {cols}×{rows}");
+        screen.push_str(&format!(
+            "\x1b[{};1H{rule}\x1b[{};1H❯ \x1b[{};1H{rule}\x1b[{};1H{}",
+            rows - 3,
+            rows - 2,
+            rows - 1,
+            rows,
+            fit(&status)
+        ));
+        screen.push_str(&format!("\x1b[{};3H\x1b[?25h", rows - 2));
+        let mut out = io::stdout().lock();
+        out.write_all(screen.as_bytes())?;
+        out.flush()
+    }
+}
+
+/// Starts the TUI and its redraw-on-resize thread.
+fn start_tui(session: &str) -> io::Result<()> {
+    let resized = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGWINCH, Arc::clone(&resized))?;
+    let tui = TUI.get_or_init(|| Tui {
+        lines: Mutex::new(Vec::new()),
+        session: session.to_owned(),
+    });
+    tui.draw()?;
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(20));
+            if resized.swap(false, Ordering::SeqCst)
+                && let Some(tui) = TUI.get()
+            {
+                let _ = tui.draw();
+            }
+        }
+    });
+    Ok(())
 }
 
 fn now_ms() -> i64 {
@@ -367,6 +467,16 @@ fn terminal_size() -> String {
     }
 }
 
+/// The terminal's size as (rows, cols), from `stty size`.
+fn terminal_rows_cols() -> Option<(usize, usize)> {
+    let size = terminal_size();
+    let mut parts = size.split_whitespace().map(str::parse::<usize>);
+    match (parts.next(), parts.next()) {
+        (Some(Ok(rows)), Some(Ok(cols))) => Some((rows, cols)),
+        _ => None,
+    }
+}
+
 fn read_line(input: &mut impl BufRead) -> io::Result<Option<String>> {
     let mut buf = Vec::new();
     let n = input.take(MAX_LINE).read_until(b'\n', &mut buf)?;
@@ -477,6 +587,9 @@ fn run(options: &Options) -> io::Result<i32> {
         }
         _ => {}
     }
+    if options.tui {
+        start_tui(&session_id)?;
+    }
     say(&format!("FAKE-AGENT READY session={session_id}"))?;
     report_env(&options.report_env)?;
     if options.mode == Mode::ForkChild {
@@ -525,6 +638,7 @@ mod tests {
         assert!(parse(&["--bytes", "x"]).is_err());
         assert!(parse(&["--unknown"]).is_err());
         assert!(parse(&["--mode", "ignore-term"]).is_ok_and(|o| o.ignore_term));
+        assert!(parse(&["--tui"]).is_ok_and(|o| o.tui));
         assert!(parse(&["--seconds", "999999"]).is_ok_and(|o| o.seconds == MAX_SLEEP_SECONDS));
     }
 }
