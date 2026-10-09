@@ -220,7 +220,7 @@ the real server. Options (combine with `&`): `setup=1` (setup required; token
 `contained=0` (shows "Not contained"), `github=0` (GitHub App not configured).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and
-documentation). It has sandboxes with admin, write and read access (`studio` with the Studio
+documentation; the [end-to-end tests](../../../e2e/README.md) run against it). It has sandboxes with admin, write and read access (`studio` with the Studio
 preset, `product` with a custom profile whose `dev-vm` environment has a command, read-only
 `sandbox-3` whose Git page shows a degraded-read note), tasks in every status, steps,
 messages, accounts with usage (some unknown), Git data and delivery stages, environment runs,
