@@ -202,6 +202,8 @@ The account-login terminal (`/api/admin/accounts/login/{lid}/terminal`) and sand
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview` |
 | GET | `/api/tasks/{tid}/delivery` | read | → `Delivery` |
+| GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the worktree is gone |
+| GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100) |
 | POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes) |
 | POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile) |
 | POST | `/api/sandboxes/{sid}/delivery/promote` | write | → `{"result":"promoted|pr_opened","sha"}` |
@@ -238,14 +240,12 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   and `blocked` to `GitOverview.tasks[]` lets it skip those reads (it uses them when present);
   a `release` summary (production and integration heads, what is waiting, the last release:
   who, when, which tasks) would let it say *when* and *by whom* production last changed.
-- **Task changes (proposed).** The Git page's review of a task (UI-031: Git → a task → Changes,
-  Commits, Branch, then "Go to task") reads two endpoints the server does not have yet; until it
-  does, they answer 404 and the review shows its Branch tab alone (the position and size from
-  `GET /api/sandboxes/{sid}/git`, and the comparison on GitHub). `GET /api/tasks/{tid}/changes` (read) → `TaskChanges`, the task
-  worktree (committed and uncommitted) against the merge base with `origin/<integration>`;
-  `GET /api/tasks/{tid}/commits` (read) → `[TaskCommit]`, the task branch's commits not on the
-  integration branch, newest first. Large diffs may be cut (`truncated: true`); binary files carry
-  no hunks.
+- **Task changes.** The Git page's review of a task (UI-031: Git → a task → Changes, Commits,
+  Branch, then "Go to task") reads `GET /api/tasks/{tid}/changes` and `GET /api/tasks/{tid}/commits`.
+  Changes are bounded: at most 300 files with hunks, 3 000 lines per file and 20 000 lines in all
+  (`truncated: true` when cut; counts stay exact); untracked files over 256 KiB, binary files and
+  symbolic links carry no hunks. A server without these routes answers 404 and the review shows
+  its Branch tab alone.
 
   ```json
   TaskChanges = {"base":"<integration>","head":"<task branch>","base_sha","head_sha",

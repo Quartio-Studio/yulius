@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
-use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort};
-use yulius_git::{Author, Git, GitError, ImportRef, WorktreeRemoval};
+use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, ReviewChanges};
+use yulius_contracts::api::git::{ChangedFile, DiffHunk, DiffLine, TaskCommit};
+use yulius_git::{
+    Author, FileDiff, FileStatus, Git, GitError, ImportRef, LineKind, WorktreeRemoval,
+};
 
 /// Git adapter.
 #[derive(Clone)]
@@ -202,6 +205,47 @@ impl GitPort for GitAdapter {
         blocking(move || git.set_local_identity(&wt, &name, &email)).await
     }
 
+    async fn review_changes(&self, worktree: &Path, base: &str) -> AppResult<ReviewChanges> {
+        let (git, worktree, base) = (self.git(), worktree.to_path_buf(), base.to_owned());
+        let diff = blocking(move || git.worktree_diff(&worktree, &base)).await?;
+        Ok(ReviewChanges {
+            base_sha: diff.base_sha,
+            head_sha: diff.head_sha,
+            files: diff.files.into_iter().map(changed_file).collect(),
+            uncommitted: u32::try_from(diff.uncommitted).unwrap_or(u32::MAX),
+            truncated: diff.truncated,
+        })
+    }
+
+    async fn review_commits(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+        limit: u32,
+    ) -> AppResult<Vec<TaskCommit>> {
+        let (git, repo, base, head) = (
+            self.git(),
+            repo.to_path_buf(),
+            base.to_owned(),
+            head.to_owned(),
+        );
+        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+        let commits = blocking(move || git.branch_commits(&repo, &base, &head, limit)).await?;
+        Ok(commits
+            .into_iter()
+            .map(|c| TaskCommit {
+                sha: c.sha,
+                subject: c.subject,
+                author: c.author,
+                at: yulius_app::auth::rfc3339(c.at),
+                files: c.files,
+                insertions: c.insertions,
+                deletions: c.deletions,
+            })
+            .collect())
+    }
+
     async fn diff_stat(&self, repo: &Path, base: &str, head: &str) -> AppResult<DiffStat> {
         let (git, repo, base, head) = (
             self.git(),
@@ -312,6 +356,46 @@ impl GitPort for GitAdapter {
                 .collect())
         })
         .await
+    }
+}
+
+/// A reviewed file in the API's form (`added|modified|deleted|renamed`, lines `ctx|add|del`).
+fn changed_file(file: FileDiff) -> ChangedFile {
+    let status = match file.status {
+        FileStatus::Added => "added",
+        FileStatus::Modified => "modified",
+        FileStatus::Deleted => "deleted",
+        FileStatus::Renamed => "renamed",
+    };
+    ChangedFile {
+        path: file.path,
+        old_path: file.old_path,
+        status: status.to_owned(),
+        insertions: file.insertions,
+        deletions: file.deletions,
+        binary: file.binary,
+        hunks: file
+            .hunks
+            .into_iter()
+            .map(|hunk| DiffHunk {
+                header: hunk.header,
+                lines: hunk
+                    .lines
+                    .into_iter()
+                    .map(|line| DiffLine {
+                        kind: match line.kind {
+                            LineKind::Context => "ctx",
+                            LineKind::Added => "add",
+                            LineKind::Deleted => "del",
+                        }
+                        .to_owned(),
+                        old: line.old,
+                        new: line.new,
+                        text: line.text,
+                    })
+                    .collect(),
+            })
+            .collect(),
     }
 }
 

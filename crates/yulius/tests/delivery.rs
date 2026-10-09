@@ -183,6 +183,29 @@ impl GitPort for RealGit {
             .await
             .map(drop)
     }
+    /// The production adapter: the review reads real Git output.
+    async fn review_changes(
+        &self,
+        worktree: &Path,
+        base: &str,
+    ) -> AppResult<yulius_app::ports::git::ReviewChanges> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .review_changes(worktree, base)
+            .await
+    }
+
+    async fn review_commits(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+        limit: u32,
+    ) -> AppResult<Vec<yulius_contracts::api::git::TaskCommit>> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .review_commits(repo, base, head, limit)
+            .await
+    }
+
     async fn diff_stat(&self, repo: &Path, base: &str, head: &str) -> AppResult<DiffStat> {
         let text = self
             .run(repo, &["diff", "--shortstat", &format!("{base}...{head}")])
@@ -1817,5 +1840,82 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
     f.h.app.reconcile_deliveries().await;
     let record = f.h.store.delivery(&t1).await?.ok_or("delivery row")?;
     assert_eq!(record.stage, DeliveryStage::MergedIntegration);
+    Ok(())
+}
+
+/// #28 (UI-031): the task review reads the worktree's committed, uncommitted and untracked
+/// changes against the merge base with `origin/dev`, and the branch's commits, with read access;
+/// a symbolic link is listed but never followed.
+#[tokio::test]
+async fn task_review_shows_changes_and_commits() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello\nworld\n", "Add feature")?;
+    std::fs::write(wt.join("feature.txt"), "hello\nthere\nworld\n")?;
+    std::fs::write(wt.join("notes.md"), "draft\n")?;
+    std::os::unix::fs::symlink("/etc/passwd", wt.join("outside"))?;
+
+    let changes = f
+        .req(Method::GET, "/api/tasks/t1/changes", None, &f.rita)
+        .await?;
+    assert_eq!(changes.status, StatusCode::OK, "{}", changes.body);
+    let c = &changes.body;
+    assert_eq!(c["base"], "dev");
+    assert_eq!(c["head"], "feat/1-checkout-api");
+    assert_eq!(c["ahead"], 1);
+    assert_eq!(c["behind"], 0);
+    assert_eq!(c["uncommitted"], 3, "{c}");
+    assert_eq!(c["truncated"], false);
+    let files = c["files"].as_array().ok_or("files")?;
+    let file = |path: &str| files.iter().find(|f| f["path"] == path).cloned();
+    let feature = file("feature.txt").ok_or("feature.txt")?;
+    assert_eq!(feature["status"], "added", "new since the merge base");
+    let added: Vec<&str> = feature["hunks"][0]["lines"]
+        .as_array()
+        .ok_or("lines")?
+        .iter()
+        .filter(|l| l["kind"] == "add")
+        .filter_map(|l| l["text"].as_str())
+        .collect();
+    assert_eq!(
+        added,
+        ["hello", "there", "world"],
+        "uncommitted work included"
+    );
+    let notes = file("notes.md").ok_or("notes.md")?;
+    assert_eq!(notes["status"], "added");
+    assert_eq!(notes["hunks"][0]["lines"][0]["text"], "draft");
+    let link = file("outside").ok_or("outside")?;
+    assert!(
+        link["hunks"].as_array().is_some_and(Vec::is_empty),
+        "a symlink is not followed"
+    );
+    assert!(
+        !changes.body.to_string().contains("root:"),
+        "nothing outside the worktree"
+    );
+
+    let commits = f
+        .req(Method::GET, "/api/tasks/t1/commits", None, &f.rita)
+        .await?;
+    assert_eq!(commits.status, StatusCode::OK, "{}", commits.body);
+    let list = commits.body.as_array().ok_or("commits")?;
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["subject"], "Add feature");
+    assert_eq!(list[0]["files"], 1);
+    assert_eq!(list[0]["insertions"], 2);
+    assert!(list[0]["at"].as_str().is_some_and(|t| t.ends_with('Z')));
+
+    let anonymous = f
+        .req(
+            Method::GET,
+            "/api/tasks/t1/changes",
+            None,
+            &Creds::default(),
+        )
+        .await?;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
     Ok(())
 }

@@ -39,7 +39,7 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 use yulius_contracts::api::git::{
     BlockedAction, CommitView, Delivery, EnvironmentRun, GitOverview, OpenPr, PromoteResult,
-    PullView, RunEnvironment, TaskBranch,
+    PullView, RunEnvironment, TaskBranch, TaskChanges, TaskCommit,
 };
 use yulius_contracts::api::sandboxes::{
     Environment as EnvironmentView, Profile, Sandbox, UpdateSandbox,
@@ -1517,6 +1517,76 @@ impl App {
         .await;
         self.publish_task(&task.id).await;
         Ok(pull.number)
+    }
+
+    // ---------------------------------------------------------------- task review
+
+    /// Commits listed on a task's review.
+    const REVIEW_COMMITS: u32 = 100;
+
+    /// `GET /api/tasks/{tid}/changes` (read): the task's changes for review (UI-031) — its
+    /// worktree, committed and uncommitted work and untracked files, against the merge base with
+    /// `origin/<integration>`, bounded.
+    ///
+    /// # Errors
+    /// `NotFound` without access; `Conflict` when the task has no worktree (any more);
+    /// `Upstream` Git failures.
+    pub async fn task_changes(&self, ctx: &AuthContext, task_id: &str) -> AppResult<TaskChanges> {
+        let task = self.load_task(ctx, task_id, Action::View).await?;
+        let (worktree, base, integration) = self.review_target(&task).await?;
+        let changes = self.deps.git.review_changes(&worktree, &base).await?;
+        let (ahead, behind) = self
+            .deps
+            .git
+            .ahead_behind(&worktree, &base, "HEAD")
+            .await
+            .unwrap_or((0, 0));
+        Ok(TaskChanges {
+            base: integration,
+            head: task.branch.clone().unwrap_or_default(),
+            base_sha: changes.base_sha,
+            head_sha: changes.head_sha,
+            ahead,
+            behind,
+            uncommitted: changes.uncommitted,
+            truncated: changes.truncated,
+            files: changes.files,
+        })
+    }
+
+    /// `GET /api/tasks/{tid}/commits` (read): the task branch's commits not on the integration
+    /// branch, newest first, each with its size (UI-031).
+    ///
+    /// # Errors
+    /// As [`App::task_changes`].
+    pub async fn task_commits(
+        &self,
+        ctx: &AuthContext,
+        task_id: &str,
+    ) -> AppResult<Vec<TaskCommit>> {
+        let task = self.load_task(ctx, task_id, Action::View).await?;
+        let (worktree, base, _) = self.review_target(&task).await?;
+        self.deps
+            .git
+            .review_commits(&worktree, &base, "HEAD", Self::REVIEW_COMMITS)
+            .await
+    }
+
+    /// The task's worktree, `origin/<integration>` and the integration branch name.
+    async fn review_target(&self, task: &TaskRecord) -> AppResult<(PathBuf, String, String)> {
+        let sandbox = self.dlv_sandbox_of(task).await?;
+        let integration = delivery_profile(&sandbox).integration_branch;
+        let worktree = task
+            .worktree_path
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .ok_or_else(|| {
+                AppError::Conflict(
+                    "the task's worktree is gone; its branch and pull request are on GitHub".into(),
+                )
+            })?;
+        Ok((worktree, format!("origin/{integration}"), integration))
     }
 
     // ---------------------------------------------------------------- automatic delivery
