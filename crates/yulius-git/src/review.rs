@@ -19,6 +19,9 @@ pub const MAX_REVIEW_LINES: usize = 20_000;
 pub const MAX_FILE_LINES: usize = 3_000;
 /// Largest untracked file read for its lines; larger ones are listed without lines.
 pub const MAX_UNTRACKED_BYTES: u64 = 256 * 1024;
+/// Most untracked files read and listed; more set `truncated` (an un-ignored `node_modules/`
+/// must not make every review read tens of thousands of files, #68).
+pub const MAX_UNTRACKED_FILES: usize = 500;
 /// Most commits [`Git::branch_commits`] returns.
 pub const MAX_REVIEW_COMMITS: usize = 200;
 
@@ -140,7 +143,11 @@ impl Git {
         };
         let status = self.status_porcelain(worktree)?;
         let uncommitted = status.len() as u64;
-        for entry in status.iter().filter(|e| e.is_untracked()) {
+        for (n, entry) in status.iter().filter(|e| e.is_untracked()).enumerate() {
+            if n >= MAX_UNTRACKED_FILES {
+                budget.truncated = true;
+                break;
+            }
             files.push(untracked_file(worktree, &entry.path, &mut budget));
         }
         Ok(WorktreeDiff {
@@ -375,6 +382,9 @@ fn parse_unified(stdout: &[u8], budget: &mut Budget) -> Vec<FileDiff> {
     let text = String::from_utf8_lossy(stdout);
     let mut files: Vec<FileDiff> = Vec::new();
     let mut keep = false;
+    // Between a file's `diff --git` line and its first hunk. Tracked explicitly: a file past the
+    // budget keeps no hunks, yet its lines must still be counted, never read as headers (#68).
+    let mut in_header = false;
     let mut kept = 0usize;
     let (mut old_line, mut new_line) = (0u32, 0u32);
     for line in text.split('\n') {
@@ -395,13 +405,14 @@ fn parse_unified(stdout: &[u8], budget: &mut Budget) -> Vec<FileDiff> {
                 hunks: Vec::new(),
             });
             keep = budget.file_open();
+            in_header = true;
             kept = 0;
             continue;
         }
         let Some(file) = files.last_mut() else {
             continue;
         };
-        if file.hunks.is_empty() && !line.starts_with("@@") {
+        if in_header && !line.starts_with("@@") {
             if line.starts_with("new file mode") {
                 file.status = FileStatus::Added;
             } else if line.starts_with("deleted file mode") {
@@ -431,6 +442,7 @@ fn parse_unified(stdout: &[u8], budget: &mut Budget) -> Vec<FileDiff> {
                 continue;
             };
             (old_line, new_line) = (old, new);
+            in_header = false;
             if keep {
                 file.hunks.push(DiffHunk {
                     header: line.to_owned(),
@@ -663,6 +675,23 @@ mod tests {
         let files = parse_unified(diff.as_bytes(), &mut budget);
         assert_eq!(files[0].insertions, 5_000, "counts stay exact");
         assert_eq!(files[0].hunks[0].lines.len(), MAX_FILE_LINES);
+        assert!(budget.truncated);
+    }
+
+    #[test]
+    fn files_past_the_budget_keep_exact_counts_and_their_paths() {
+        // #68: a file the budget no longer keeps hunks for is still counted, and its content
+        // lines (even ones that look like headers) never change its path.
+        let diff = "diff --git a/late.txt b/late.txt\n--- a/late.txt\n+++ b/late.txt\n@@ -1,2 +1,3 @@\n keep\n-old\n+++ b/elsewhere\n+new\n";
+        let mut budget = Budget {
+            files_with_hunks: MAX_REVIEW_FILES,
+            ..Budget::default()
+        };
+        let files = parse_unified(diff.as_bytes(), &mut budget);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "late.txt");
+        assert_eq!((files[0].insertions, files[0].deletions), (2, 1));
+        assert!(files[0].hunks.is_empty());
         assert!(budget.truncated);
     }
 

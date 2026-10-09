@@ -393,7 +393,8 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          - Never push to {integration} or {production}; a pre-push guard rejects it.\n\
          - Delivery goes through a pull request into {integration}. When your spec is valid, \
          every step is done and your work is committed, Yulius pushes your branch and opens \
-         the pull request itself when your turn ends; do not ask anyone to open it. People \
+         the pull request itself when your turn ends, and pushes later commits to it the same \
+         way; do not ask anyone to open it. People \
          merge and promote in Yulius (or the profile does), never you. Run the tests before \
          you finish. {checks}\n\
          - Delivery path ({preset} profile): {path}.\n\n",

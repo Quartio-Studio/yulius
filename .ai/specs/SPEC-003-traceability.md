@@ -218,9 +218,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 45 | (2026-10-09, hardening; code review) The GitHub sign-in return path accepted backslash and control-character forms that browsers turn into another host: an open redirect right after sign-in. | ACC-003, AC-ACC-3 |
 | 46 | (2026-10-09, hardening; spec-to-test review) No test checked that creating a task installs the push guard, that supervisor status transitions reach the UI, or that feedback is read back per user. | AC-DSC-5, AC-UI-3, AC-ANL-2 |
 | 47 | (2026-10-09, hardening; code review) Open WebSockets outlived logout, disabling and revoked access: the event stream cached sandbox visibility for its lifetime and no socket re-checked the session. | ACC-008, AC-ACC-5, AC-ACC-3 |
+| 48 | (2026-10-09, hardening; self-review of #40/#41) A task waiting for approval showed Done; a merged PR fell back to "Your turn"; required checks not yet reported counted as tested; commits after the PR opened were never pushed and a failed push never retried; diff counts were wrong past the review budget; untracked files were unbounded; merged deliveries were re-read forever. | GIT-001, UI-024, UI-031, AC-UI-24 |
 
 ## Changelog
 
+- 2026-10-09: follow-ups to the automatic pull request and the task review (§6 item 48, hardening).
 - 2026-10-09: open sockets re-check the session and the event stream re-checks visibility (§6 item 47, hardening).
 - 2026-10-09: tests for the task push guard, status events and feedback readback (§6 item 46, hardening).
 - 2026-10-09: the sign-in return path stays on the site (§6 item 45, hardening).
