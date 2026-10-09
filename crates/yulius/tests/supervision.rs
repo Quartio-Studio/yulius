@@ -619,6 +619,58 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
     Ok(())
 }
 
+/// #31: a run's tokens, turns and active time are stored while it goes, not only when it ends,
+/// so the dashboard counts work in progress.
+#[test]
+fn live_runs_report_metrics_before_they_end() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: None,
+        };
+        let app = build_full(&data, Some(&fake), agent, 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_task(&app, &sandbox, &user, "Live metrics").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("live metrics", Duration::from_secs(30), || async {
+            app.deps.store.task_metrics(&id).await.is_ok_and(|m| {
+                m.iter()
+                    .any(|r| r.output_tokens.is_some_and(|t| t > 0) && r.turns == Some(1))
+            })
+        })
+        .await?;
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Running,
+            "saved while the run goes on"
+        );
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert!(
+            attempts.iter().all(|a| !a.state.is_terminal()),
+            "the run has not ended"
+        );
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        let finals = app.deps.store.task_metrics(&id).await?;
+        assert_eq!(finals.len(), 1, "one row per run: live saves are upserts");
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// AC-ROT-6: no capacity anywhere → the task waits for capacity instead of failing, and says
 /// when it resumes. The fake writes Claude Code 2.1.292's usage-limit record (F 2026-10-09).
 #[test]
