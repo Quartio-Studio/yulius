@@ -595,6 +595,93 @@ fn parse_commit_stats(stdout: &[u8]) -> Result<Vec<CommitStat>, GitError> {
 mod tests {
     use super::*;
 
+    /// Deterministic xorshift generator for randomized tests (no extra dependency).
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        fn below(&mut self, bound: usize) -> usize {
+            usize::try_from(self.next() % u64::try_from(bound.max(1)).unwrap_or(1)).unwrap_or(0)
+        }
+
+        /// Text made of `pieces`, random bytes (lossy UTF-8) and multi-byte characters.
+        fn text(&mut self, pieces: &[&str], max_parts: usize) -> String {
+            let mut out = String::new();
+            for _ in 0..self.below(max_parts + 1) {
+                match self.below(10) {
+                    0 => {
+                        let bytes: Vec<u8> = (0..self.below(8))
+                            .map(|_| (self.next() & 0xff) as u8)
+                            .collect();
+                        out.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                    1 => out
+                        .push_str(["é", "😀", "\u{0}", "\r", "\t", "ﬀ", "\u{200b}"][self.below(7)]),
+                    _ => out.push_str(pieces[self.below(pieces.len())]),
+                }
+            }
+            out
+        }
+    }
+
+    /// Randomized diffs (#76): the parser never panics, kept lines never exceed the limits,
+    /// and a file's kept added lines never exceed its counted insertions.
+    #[test]
+    fn random_diffs_never_panic_and_stay_consistent() {
+        let pieces = [
+            "diff --git a/x b/x\n",
+            "diff --git a/x\n",
+            "--- a/x\n",
+            "+++ b/x\n",
+            "--- /dev/null\n",
+            "+++ /dev/null\n",
+            "@@ -1,2 +1,3 @@\n",
+            "@@ -0,0 +1 @@ fn\n",
+            "@@ garbage\n",
+            "@@\n",
+            "+added\n",
+            "-removed\n",
+            " context\n",
+            "\\ No newline at end of file\n",
+            "new file mode 100644\n",
+            "deleted file mode 100644\n",
+            "rename from a b\n",
+            "rename to \"c\\303\\251\"\n",
+            "Binary files a/x and b/x differ\n",
+            "GIT binary patch\n",
+            "+++ \"b/caf\\303\\251\"\n",
+            "\n",
+            "+",
+            "-",
+            " ",
+        ];
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        for _ in 0..4_000 {
+            let diff = rng.text(&pieces, 40);
+            let mut budget = Budget::default();
+            let files = parse_unified(diff.as_bytes(), &mut budget);
+            for file in &files {
+                let kept_added = file
+                    .hunks
+                    .iter()
+                    .flat_map(|h| &h.lines)
+                    .filter(|l| l.kind == LineKind::Added)
+                    .count() as u64;
+                assert!(kept_added <= file.insertions, "{diff:?}");
+                let kept: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
+                assert!(kept <= MAX_FILE_LINES, "{diff:?}");
+            }
+        }
+    }
+
     #[test]
     fn parses_added_modified_deleted_renamed_and_binary_files() {
         let diff = "diff --git a/src/a.rs b/src/a.rs\nindex 1..2 100644\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,3 +1,4 @@ fn main\n keep\n-old\n+new\n+more\n keep2\ndiff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0..1\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hello\ndiff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\n--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n\\ No newline at end of file\ndiff --git a/old name.md b/new name.md\nsimilarity index 90%\nrename from old name.md\nrename to new name.md\ndiff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n";

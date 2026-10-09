@@ -352,6 +352,69 @@ fn tokens_compatible(a: Token, b: Token) -> bool {
 mod tests {
     use super::*;
 
+    /// Deterministic xorshift generator for randomized tests (no extra dependency).
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        fn below(&mut self, bound: usize) -> usize {
+            usize::try_from(self.next() % u64::try_from(bound.max(1)).unwrap_or(1)).unwrap_or(0)
+        }
+
+        /// Text made of `pieces`, random bytes (lossy UTF-8) and multi-byte characters.
+        fn text(&mut self, pieces: &[&str], max_parts: usize) -> String {
+            let mut out = String::new();
+            for _ in 0..self.below(max_parts + 1) {
+                match self.below(10) {
+                    0 => {
+                        let bytes: Vec<u8> = (0..self.below(8))
+                            .map(|_| (self.next() & 0xff) as u8)
+                            .collect();
+                        out.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                    1 => out
+                        .push_str(["é", "😀", "\u{0}", "\r", "\t", "ﬀ", "\u{200b}"][self.below(7)]),
+                    _ => out.push_str(pieces[self.below(pieces.len())]),
+                }
+            }
+            out
+        }
+    }
+
+    /// Randomized patterns (#76): parsing never panics, overlap is symmetric, and two patterns
+    /// that both match a concrete path are reported as overlapping.
+    #[test]
+    fn random_patterns_overlap_symmetrically_and_soundly() {
+        let pieces = [
+            "**", "*", "?", "/", "a", "b", "é", "[id]", ".", "..", "", "\\", "{x}", "a*", "*b",
+        ];
+        let paths = [
+            "a", "b", "a/b", "a/a/b", "é/[id]", "a/b/c", "{x}/a", "ab", "aab/b",
+        ];
+        let mut rng = Rng(0x1234_5678_9abc_def1);
+        for _ in 0..3_000 {
+            let (ta, tb) = (rng.text(&pieces, 6), rng.text(&pieces, 6));
+            let (Ok(a), Ok(b)) = (Pattern::parse(&ta), Pattern::parse(&tb)) else {
+                continue;
+            };
+            let ab = patterns_overlap(&a, &b);
+            assert_eq!(ab, patterns_overlap(&b, &a), "{ta:?} vs {tb:?}");
+            for path in paths {
+                if pattern_matches(&a, path) && pattern_matches(&b, path) {
+                    assert!(ab, "{ta:?} and {tb:?} both match {path:?}");
+                }
+            }
+        }
+    }
+
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn p(text: &str) -> Result<Pattern, ScopeError> {
