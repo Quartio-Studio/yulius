@@ -12,7 +12,8 @@
 //! - uncontained (development) user processes keep the server's identity and use the home's
 //!   host path;
 //! - Git in user processes authenticates through the credential helper with a workspace token
-//!   that the internal listener maps to the user's own GitHub token
+//!   that the internal listener maps to the user's own GitHub token (the superadmin, who has no
+//!   GitHub identity, gets the App's token for the sandbox's repository, as agents do, ACC-012)
 //!   ([`App::workspace_git_credential`]); a grant is checked against the user's current access
 //!   on every use.
 
@@ -339,7 +340,8 @@ impl App {
         token
     }
 
-    /// A GitHub credential for a user process: the user's own token, for the sandbox's
+    /// A GitHub credential for a user process: the user's own token (the superadmin without a
+    /// GitHub identity: the App's token for this repository, ACC-012), for the sandbox's
     /// repository only, while the user may still work in the sandbox.
     ///
     /// # Errors
@@ -384,7 +386,11 @@ impl App {
                 ));
             }
         }
-        let token = self.user_github_token(&user).await?;
+        let token = if user.is_superadmin && user.github_login.is_none() {
+            self.repository_installation_token(&sandbox).await?
+        } else {
+            self.user_github_token(&user).await?
+        };
         Ok(GitCredential { token })
     }
 }

@@ -1938,3 +1938,105 @@ async fn task_review_shows_changes_and_commits() -> TestResult {
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
     Ok(())
 }
+
+/// The password superadmin: no GitHub identity, admin on every sandbox (ACC-012).
+async fn superadmin(h: &support::Harness) -> BoxResult<Creds> {
+    let user = UserRecord {
+        id: UserId::parse("u-root")?,
+        github_login: None,
+        github_id: None,
+        display_name: "Superadmin".into(),
+        avatar_url: None,
+        is_superadmin: true,
+        is_instance_admin: true,
+        password_hash: Some("$argon2id$v=19$m=19456,t=2,p=1$synthetic$synthetic".into()),
+        created_at: Timestamp(1),
+        disabled_at: None,
+    };
+    h.store.insert_user(&user).await?;
+    let token = h.app.issue_api_token(&user, "test").await?;
+    Ok(Creds {
+        bearer: Some(token.expose().to_owned()),
+        ..Creds::default()
+    })
+}
+
+/// ACC-012 (F 2026-10-09): the superadmin without a GitHub identity reads a task's delivery and
+/// opens its pull request through the App, as Yulius does for a ready task; merging and
+/// releasing act as a person on GitHub, so those two actions are refused with a message saying
+/// so (403) — never as a signed-out session (401), and the rest of the page keeps working.
+#[tokio::test]
+async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let owner = superadmin(&f.h).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+
+    let d = f
+        .req(Method::GET, "/api/tasks/t1/delivery", None, &owner)
+        .await?;
+    assert_eq!(d.status, StatusCode::OK, "{}", d.body);
+    assert_eq!(actions(&d.body), ["open_pr"]);
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &owner)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    assert_eq!(opened.body["stage"], "pr_open");
+    assert_eq!(
+        f.h.github.pull_author(1).as_deref(),
+        Some("inst"),
+        "the App installation opened the pull request"
+    );
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, head);
+    f.h.github.set_checks(&head, ChecksState::Success);
+
+    let merge = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &owner)
+        .await?;
+    assert_eq!(merge.status, StatusCode::FORBIDDEN, "{}", merge.body);
+    assert!(
+        error_message(&merge).contains("Merging a pull request acts as a person on GitHub"),
+        "{}",
+        merge.body
+    );
+    let release = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            Some(json!({})),
+            &owner,
+        )
+        .await?;
+    assert_eq!(release.status, StatusCode::FORBIDDEN, "{}", release.body);
+    assert!(
+        error_message(&release).contains("Releasing to main acts as a person on GitHub"),
+        "{}",
+        release.body
+    );
+    assert!(
+        !f.h.github
+            .writes()
+            .iter()
+            .any(|w| w.starts_with("merge_pull")),
+        "nothing was merged"
+    );
+
+    // Still signed in, and the Git page answers.
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &owner)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert_eq!(page.body["tasks"][0]["pr"]["number"], 1);
+
+    // A GitHub user merges the App's pull request as before.
+    let merged = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+    assert_eq!(merged.body["stage"], "merged_integration");
+    Ok(())
+}

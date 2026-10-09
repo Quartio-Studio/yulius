@@ -4,15 +4,27 @@
 // words of the open files for other popular languages). Each user's view (open files, unsaved
 // text) lives only in this browser tab: nothing is stored on the server or shared. Saving
 // writes the file into the sandbox; a file changed on disk since it was opened (agents edit
-// the same files) is not overwritten silently.
+// the same files) is not overwritten silently. Word wrap (EDT-005) is one switch for every open
+// file — the toolbar button or ⌥Z / Alt+Z as in VS Code — off by default and kept per user in
+// this browser.
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field, closableTabKeys } from './dom.js';
 import { allows } from './status.js';
 import { token, activeTheme, onThemeChange, px, hexToken } from './theme.js';
+import { readJson, writeJson } from './store.js';
+import { SAVE_KEYS, WRAP_KEYS, WRAP_ARIA } from './shortcuts.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
 const LANGUAGE_SERVICES = new Set(['javascript', 'typescript', 'json', 'css', 'scss', 'less', 'html']);
+/** Word wrap preference per user in this browser: `true` wraps long lines (default off). */
+const WRAP_KEY = 'yulius.editorWordWrap';
+
+/** ⌥Z / Alt+Z, the VS Code word-wrap toggle (`code` for macOS, where ⌥Z types "Ω"). */
+function isWrapShortcut(event) {
+  if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+  return event.code === 'KeyZ' || (event.key || '').toLowerCase() === 'z';
+}
 
 // Keywords for popular languages without a language service in the browser.
 const KEYWORDS = {
@@ -195,7 +207,35 @@ export function createEditorView(ctx, sandbox, getTask) {
   const tree = h('div', { class: 'ed-tree', role: 'tree', 'aria-label': 'Files' });
   const tabbar = h('div', { class: 'ed-tabs', role: 'tablist', 'aria-label': 'Open files' });
   const host = h('div', { class: 'ed-host' });
-  const empty = h('div', { class: 'ed-empty' }, h('p', null, 'Open a file from the explorer.'), h('p', { class: 'muted xs' }, '⌘S / Ctrl+S saves. Your open files and unsaved changes stay in this browser tab only.'));
+  const empty = h('div', { class: 'ed-empty' }, h('p', null, 'Open a file from the explorer.'), h('p', { class: 'muted xs' }, `${SAVE_KEYS} saves, ${WRAP_KEYS} wraps long lines. Your open files and unsaved changes stay in this browser tab only.`));
+
+  // Word wrap: one editor option, so it applies to every open file at once.
+  const me = (ctx.store && ctx.store.state.me && ctx.store.state.me.user) || {};
+  const wrapKey = `${WRAP_KEY}.${me.id || me.login || 'anonymous'}`;
+  let wordWrap = readJson(wrapKey, false) === true;
+  const wrapButton = h('button', { type: 'button', class: 'btn-icon ed-wrap', 'aria-label': 'Word wrap', 'aria-keyshortcuts': WRAP_ARIA, onClick: () => setWordWrap(!wordWrap) }, icon('wrap', { size: 16 }));
+  function renderWrap() {
+    wrapButton.setAttribute('aria-pressed', String(wordWrap));
+    wrapButton.title = `Word wrap: ${wordWrap ? 'on' : 'off'} (${WRAP_KEYS})`;
+  }
+  function setWordWrap(on) {
+    wordWrap = on;
+    writeJson(wrapKey, on);
+    if (editor) editor.updateOptions({ wordWrap: on ? 'on' : 'off' });
+    renderWrap();
+  }
+  renderWrap();
+  // Anywhere in the editor (Monaco, explorer, tabs, its toolbar): captured before Monaco, which would
+  // otherwise type the character. Elsewhere ⌥Z / Alt+Z keeps its usual meaning (the terminal, fields).
+  const wrapKeys = (event) => {
+    if (!isWrapShortcut(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.repeat) setWordWrap(!wordWrap);
+  };
+  el.addEventListener('keydown', wrapKeys, true);
+  wrapButton.addEventListener('keydown', wrapKeys);
+  folder.addEventListener('keydown', wrapKeys);
   const status = h('div', { class: 'ed-status' });
   const treeHead = h('div', { class: 'ed-tree-head' },
     h('span', null, 'Explorer'),
@@ -352,6 +392,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       renderWhitespace: 'selection',
+      wordWrap: wordWrap ? 'on' : 'off',
       tabSize: 2,
       wordBasedSuggestions: 'allDocuments',
       quickSuggestions: { other: true, comments: false, strings: false },
@@ -524,7 +565,7 @@ export function createEditorView(ctx, sandbox, getTask) {
 
   return {
     el,
-    headExtra: () => [folder],
+    headExtra: () => [folder, wrapButton],
     show() {
       if (!started) { started = true; loadDir(''); }
       if (editor) editor.layout();

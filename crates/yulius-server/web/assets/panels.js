@@ -97,10 +97,14 @@ export function createPanelHost(ctx) {
     const fraction = saved > 0.15 && saved < 0.85 ? Math.max(saved, fallback) : fallback;
     return Math.round(room() * fraction);
   }
-  function applyWidth(px) {
+  // The width last chosen (opening, dragging, keys); a narrower window shows less of it, and the panel
+  // grows back to it when the window widens again.
+  let wanted = 0;
+  function applyWidth(px, { remember = true } = {}) {
     // The centre keeps at least 360 px next to the panel.
     const max = Math.max(320, room() - 360);
     const width = Math.max(300, Math.min(max, px));
+    if (remember) wanted = width;
     panel.style.width = `${width}px`;
     // The splitter says where it is (WCAG 4.1.2): the panel's share of the work area.
     const share = Math.round((width / room()) * 100);
@@ -137,6 +141,13 @@ export function createPanelHost(ctx) {
     const width = applyWidth(panel.getBoundingClientRect().width + (event.key === 'ArrowLeft' ? 40 : -40));
     writeJson(WIDTH_KEY, width / room());
   });
+  // A panel opened in a wide window kept its pixel width when the window narrowed (or the sidebar
+  // widened at a breakpoint), pushing the rail past the window's edge (F 2026-10-09): re-fit it.
+  function refit() {
+    if (panel.hidden || maximized || !wanted || window.matchMedia('(max-width: 767px)').matches) return;
+    applyWidth(wanted, { remember: false });
+  }
+  window.addEventListener('resize', refit);
 
   function viewKey(k) {
     if (k === 'messages') return task ? `messages:${task.id}` : 'messages:none';
@@ -213,7 +224,7 @@ export function createPanelHost(ctx) {
     const unread = task && task.unread_messages ? task.unread_messages : 0;
     const msgBadge = badges.get('messages');
     msgBadge.hidden = !unread;
-    msgBadge.textContent = unread ? String(unread) : '';
+    msgBadge.textContent = unread > 99 ? '99+' : unread ? String(unread) : '';
     const requests = sandbox ? ctx.store.state.actionRequests.get(sandbox.id) : null;
     badges.get('browser').hidden = !(requests && requests.size);
     if (ctx.onToolsAttention) ctx.onToolsAttention(Boolean(requests && requests.size) || Boolean(unread));
@@ -238,7 +249,7 @@ export function createPanelHost(ctx) {
     rail,
     panel,
     /** Sign-out: drop every tool view (terminals, browser, editor) and unsubscribe. */
-    destroy() { offs.forEach((off) => off()); destroyWhere(() => true); },
+    destroy() { offs.forEach((off) => off()); window.removeEventListener('resize', refit); destroyWhere(() => true); },
     get railVisible() { return railVisible; },
     setRailVisible,
     /** Applies the remembered rail visibility once the rail is in the document. */

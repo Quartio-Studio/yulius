@@ -582,7 +582,8 @@ function createApp(root, transport) {
     if (needsGithub && !user.is_superadmin) {
       notes.push(h('div', { class: 'banner banner-info' }, icon('globe'), h('span', { class: 'banner-text' }, 'This instance is not connected to GitHub yet. Ask a superadmin to connect it.')));
     }
-    if (user.github_linked === false) {
+    // The superadmin owns the instance and sees every sandbox without GitHub (ACC-012).
+    if (user.github_linked === false && !user.is_superadmin) {
       notes.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Sandbox content needs a GitHub-linked account. Sign in with GitHub to see the repositories you can access.'), h('a', { class: 'btn btn-sm', href: '/api/auth/github/start?next=/' }, 'Sign in with GitHub')));
     }
     return {

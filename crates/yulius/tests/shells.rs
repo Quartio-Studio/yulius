@@ -263,6 +263,77 @@ async fn shells_serve_write_users_in_the_selected_folder_without_touching_tasks(
     result
 }
 
+/// ACC-012 (F 2026-10-09): the superadmin, without a GitHub identity, opens a shell in a
+/// sandbox, and Git in the shell gets the App's token for that repository only.
+#[tokio::test]
+async fn the_superadmin_opens_shells_with_the_apps_git_credential() -> TestResult {
+    let f = fixture().await?;
+    let result = superadmin_scenario(&f).await;
+    f.h.app.stop_workspace_services().await;
+    result
+}
+
+async fn superadmin_scenario(f: &Fixture) -> TestResult {
+    use yulius_app::ports::store::{InstanceStore, SandboxStore, UserStore};
+    support::setup_superadmin_creds(&f.h).await?;
+    support::configure_github_app(&f.h).await?;
+    f.h.store.set_installation(Some(1)).await?;
+    let owner = support::superadmin_bearer(&f.h).await?;
+    let served = serve(f.h.router.clone()).await?;
+
+    let created = create(f, &owner, "s1", None).await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let mut socket = open_terminal(served.addr, &id, &owner).await?;
+    let mut screen = String::new();
+    input(&mut socket, "echo \"sum=$((6*7))\"\r").await?;
+    read_until(&mut socket, &mut screen, "sum=42").await?;
+
+    // The shell's workspace token (as the credential helper sends it) maps to the App's
+    // repository token, not to a GitHub account the superadmin does not have.
+    let superadmin = f.h.store.superadmin().await?.ok_or("superadmin")?;
+    let sandbox =
+        f.h.store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("s1")?;
+    let space = f.h.app.user_space(&superadmin, &sandbox)?;
+    let token = space
+        .env
+        .iter()
+        .find(|(name, _)| name == "YULIUS_TASK_TOKEN")
+        .map(|(_, value)| value.clone())
+        .ok_or("workspace token")?;
+    let workspace = Creds {
+        bearer: Some(token),
+        ..Creds::default()
+    };
+    let credential = call(
+        &f.h.internal,
+        Method::POST,
+        "/internal/git-credential",
+        Some(json!({"protocol": "https", "host": "github.com", "path": "acme/fixture.git"})),
+        &workspace,
+    )
+    .await?;
+    assert_eq!(credential.status, StatusCode::OK, "{:?}", credential.body);
+    assert_eq!(
+        credential.body["token"], "inst",
+        "the App installation's token"
+    );
+    let other = call(
+        &f.h.internal,
+        Method::POST,
+        "/internal/git-credential",
+        Some(json!({"protocol": "https", "host": "github.com", "path": "acme/other.git"})),
+        &workspace,
+    )
+    .await?;
+    assert_eq!(other.status, StatusCode::FORBIDDEN, "only this repository");
+    drop(socket);
+    Ok(())
+}
+
 async fn scenario(f: &Fixture) -> TestResult {
     let served = serve(f.h.router.clone()).await?;
     let task_before = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("t1")?;

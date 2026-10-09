@@ -142,7 +142,10 @@ once the domain is meant to stay on HTTPS.
    organization, then install it on the repositories Yulius may use. The App's callback URLs point
    at `YULIUS_PUBLIC_URL`.
 4. Administration → Users: admit GitHub logins; they sign in with GitHub. Repository access in
-   Yulius mirrors their GitHub permissions (read / write / admin).
+   Yulius mirrors their GitHub permissions (read / write / admin). The superadmin owns the
+   instance and sees every sandbox with admin access without GitHub (SPEC-001 ACC-012); pull
+   requests it opens are authored by the GitHub App, and merging or releasing, which act as a
+   person on GitHub, are done on GitHub or after signing in with GitHub as an admitted user.
 5. Administration → Accounts: add Claude accounts; each login runs Claude's own sign-in in a
    terminal in the browser. Yulius rotates between them automatically.
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and

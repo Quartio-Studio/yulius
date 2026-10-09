@@ -531,8 +531,9 @@ async fn summary_sums_known_usage_counts_unknown_runs_and_hides_invisible_sandbo
     .await?;
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
 
-    // The superadmin has no GitHub identity, hence no visible sandboxes and no figures.
-    let none = call(
+    // The superadmin owns the instance: every sandbox counts without a GitHub identity
+    // (ACC-012, F 2026-10-09), the product task t4 included.
+    let every = call(
         &h.router,
         Method::GET,
         "/api/analytics/summary",
@@ -540,8 +541,19 @@ async fn summary_sums_known_usage_counts_unknown_runs_and_hides_invisible_sandbo
         &admin,
     )
     .await?;
-    assert_eq!(none.body["tasks"]["total"], 0);
-    assert_eq!(none.body["tokens"]["input"], Value::Null);
+    assert_eq!(every.status, StatusCode::OK, "{}", every.body);
+    assert_eq!(every.body["tasks"]["total"], 5);
+    assert_eq!(every.body["tokens"]["input"], 100 + 999 + 7);
+    let product = call(
+        &h.router,
+        Method::GET,
+        "/api/analytics/summary?sandbox=s2",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(product.status, StatusCode::OK, "{}", product.body);
+    assert_eq!(product.body["tasks"]["total"], 1);
     Ok(())
 }
 
@@ -751,6 +763,23 @@ async fn status_shows_vm_capacity_visible_sandboxes_and_role_scoped_accounts() -
     let b = by(&s["accounts"], "label", "Claude B")?;
     assert!(b["usage"]["primary"].is_null(), "unknown usage stays null");
 
+    // The superadmin sees every sandbox (ACC-012); an instance administrator only what GitHub
+    // grants.
+    let owner_view = call(&h.router, Method::GET, "/api/status", None, &admin).await?;
+    let mut every = owner_view.body["sandboxes"]
+        .as_array()
+        .ok_or("sandboxes")?
+        .clone();
+    every.sort_by_key(|s| s["id"].as_str().unwrap_or_default().to_owned());
+    assert_eq!(
+        every,
+        [
+            json!({"id": "s1", "slug": "studio", "name": "studio", "live_sessions": 1}),
+            json!({"id": "s2", "slug": "product", "name": "product", "live_sessions": 1})
+        ],
+        "{}",
+        owner_view.body
+    );
     let admin_view = call(&h.router, Method::GET, "/api/status", None, &bob).await?;
     let s = &admin_view.body;
     assert_eq!(
