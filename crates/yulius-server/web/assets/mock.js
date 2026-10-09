@@ -1343,6 +1343,8 @@ class TermSession {
     this.task = task;
     this.seq = 0;
     this.lines = [];
+    // Lines scrolled up from the bottom (the full-screen TUI scrolls its own transcript).
+    this.scroll = 0;
     this.input = '';
     this.viewers = new Set();
     this.cols = 120;
@@ -1417,10 +1419,13 @@ class TermSession {
 
   snapshot() {
     const bottom = this.regionBottom();
-    const visible = this.lines.slice(-bottom);
+    const end = this.lines.length - this.scroll;
+    const visible = this.lines.slice(Math.max(0, end - bottom), end);
     while (visible.length < bottom) visible.unshift(''); // bottom-align like a scrolled TUI
     const f = this.footer();
-    let out = `${E}?25l${E}2J${E}r${E}H`;
+    // Like Claude Code 2.1.292: full screen (alternate buffer) with mouse reporting, so the wheel
+    // scrolls the transcript inside the app (#34).
+    let out = `${E}?1049h${E}?1000h${E}?1006h${E}?25l${E}2J${E}r${E}H`;
     out += visible.join('\r\n');
     out += `${E}1;${bottom}r`;
     out += `${E}${bottom + 1};1H${f.sep}${E}${bottom + 2};1H${E}2K${f.prompt}${E}${bottom + 3};1H${f.sep}${E}${bottom + 4};1H${E}2K${f.status}${E}${bottom + 5};1H${E}2K${f.mode}`;
@@ -1441,6 +1446,12 @@ class TermSession {
   appendLine(line) {
     this.lines.push(line);
     if (this.lines.length > 400) this.lines.splice(0, this.lines.length - 400);
+    if (this.scroll) {
+      // New output while scrolled up: back to the bottom, as the real TUI does.
+      this.scroll = 0;
+      this.broadcast(this.snapshot());
+      return;
+    }
     const bottom = this.regionBottom();
     this.broadcast(`${E}?25l${E}${bottom};1H\r\n${line}${E}${bottom + 2};${3 + this.input.length}H${E}?25h`);
   }
@@ -1497,8 +1508,19 @@ class TermSession {
     if (this.viewers.size === 0) this.stopTicking();
   }
 
+  /** A wheel turn (SGR button 64 up, 65 down) scrolls the transcript by three lines. */
+  wheel(button) {
+    const most = Math.max(0, this.lines.length - this.regionBottom());
+    const next = Math.min(most, Math.max(0, this.scroll + (button === 64 ? 3 : button === 65 ? -3 : 0)));
+    if (next === this.scroll) return;
+    this.scroll = next;
+    this.broadcast(this.snapshot());
+  }
+
   onInput(data) {
-    for (const ch of data.replace(/\x1b\[[AB]/g, '')) {
+    // Mouse reports (the viewer's wheel) are not typed text.
+    const typed = data.replace(/\x1b\[<(\d+);\d+;\d+[Mm]/g, (_, button) => { this.wheel(Number(button)); return ''; });
+    for (const ch of typed.replace(/\x1b\[[AB]/g, '')) {
       if (ch === '\r' || ch === '\n') this.submit();
       else if (ch === '\x7f' || ch === '\b') { this.input = this.input.slice(0, -1); this.redrawPrompt(); }
       else if (ch === '\x03') { this.input = ''; this.redrawPrompt(); this.appendLine(dim('Interrupted by user')); }
