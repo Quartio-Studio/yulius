@@ -14,6 +14,9 @@ import { h, icon, setChildren } from './dom.js';
 import { terminalColors, onThemeChange, token, isPhone, px } from './theme.js';
 import { readJson } from './store.js';
 
+/** Font sizes a view may take to fit a terminal whose size someone else sets (#30). */
+const FIT_MIN_FONT = 8;
+const FIT_MAX_SCALE = 1.6;
 /** Wheel travel (px) of one notch sent to an app that scrolls itself, and the most notches per event. */
 const WHEEL_NOTCH_PX = 40;
 const WHEEL_MAX_NOTCHES = 10;
@@ -190,18 +193,34 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       if (state.cols && state.rows && (term.cols !== state.cols || term.rows !== state.rows)) term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
       return;
     }
+    const following = !(state.controller || exited || !state.cols || !state.rows);
+    // Back to this screen's own font before measuring what fits it.
+    if (!following && term.options.fontSize !== termSize()) term.options.fontSize = termSize();
     const fitted = proposed();
     // An ended session has no PTY to follow: fit it to this screen (a desktop-sized screen would
     // otherwise overflow a phone).
-    if (state.controller || exited || !state.cols || !state.rows) {
+    if (!following) {
       if (!fitted) return;
       if (term.cols !== fitted.cols || term.rows !== fitted.rows) term.resize(fitted.cols, fitted.rows);
       if (state.controller && !exited && (!lastSent || lastSent.cols !== fitted.cols || lastSent.rows !== fitted.rows)) {
         if (socket.resize(fitted.cols, fitted.rows)) lastSent = fitted;
       }
-    } else if (term.cols !== state.cols || term.rows !== state.rows) {
-      term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
+    } else {
+      if (term.cols !== state.cols || term.rows !== state.rows) term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
+      fitFontToWidth();
     }
+  }
+
+  // Someone else sets the terminal's size (#30): show their columns across this view's whole
+  // width instead of a narrower block with an empty band — by font size, not a CSS transform, so
+  // text selection and links keep their positions.
+  function fitFontToWidth() {
+    // How many columns this view holds at the current font, as the fit addon measures them.
+    const room = proposed();
+    if (!room || !room.cols || !state.cols) return;
+    const current = term.options.fontSize;
+    const next = Math.min(termSize() * FIT_MAX_SCALE, Math.max(FIT_MIN_FONT, Math.floor(current * (room.cols / state.cols) * 4) / 4));
+    if (Math.abs(next - current) >= 0.25) term.options.fontSize = next;
   }
 
   function send(data) {
@@ -260,7 +279,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     } else if (conn === 'open' && !state.can_write) {
       rows.push(bannerRow('readonly', readOnlyLabel ? readOnlyLabel() : 'Read-only'));
     } else if (conn === 'open' && state.can_write && !state.controller && state.cols && !followServerSize) {
-      rows.push(bannerRow('info', 'Someone else controls this terminal; you see it at their size.', [{ label: 'Take control', run: () => { if (socket.takeControl()) { state = { ...state, controller: true }; lastSent = null; applySize(); render(); term.focus(); } } }]));
+      rows.push(bannerRow('info', 'Someone else controls this terminal’s size; it is fitted to your width.', [{ label: 'Take control', run: () => { if (socket.takeControl()) { state = { ...state, controller: true }; lastSent = null; applySize(); render(); term.focus(); } } }]));
     }
     setChildren(banner, rows);
     banner.hidden = rows.length === 0;

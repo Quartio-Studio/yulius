@@ -1425,6 +1425,11 @@ class TermSession {
     this.lines = [];
     // Lines scrolled up from the bottom (the full-screen TUI scrolls its own transcript).
     this.scroll = 0;
+    // ?othercols=N: another viewer controls the size at N columns (#30) until this one types or
+    // takes control, as on the server.
+    const otherCols = Number(new URLSearchParams(location.search).get('othercols'));
+    this.otherController = Number.isFinite(otherCols) && otherCols >= 20;
+    if (this.otherController) this.cols = Math.min(400, otherCols);
     this.input = '';
     this.viewers = new Set();
     this.cols = 120;
@@ -1545,10 +1550,10 @@ class TermSession {
     return (RANK[this.sandbox().access] || 0) >= RANK.write && LIVE.has(this.task.status);
   }
 
-  // Like the server: every viewer with write access controls the size (controller = can_write).
+  // Like the server: a viewer with write access controls the size unless another one does.
   state(_ws) {
     const write = this.canWrite();
-    return JSON.stringify({ type: 'state', attempt_seq: 1, harness: this.task.harness, cols: this.cols, rows: this.rows, can_write: write, controller: write, status: this.task.status });
+    return JSON.stringify({ type: 'state', attempt_seq: 1, harness: this.task.harness, cols: this.cols, rows: this.rows, can_write: write, controller: write && !this.otherController, status: this.task.status });
   }
 
   sendStates() {
@@ -1562,12 +1567,12 @@ class TermSession {
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
       this.viewers.add(ws);
-      if (this.canWrite() && msg.cols && msg.rows) { this.cols = Math.max(20, Math.min(400, msg.cols)); this.rows = Math.max(8, Math.min(200, msg.rows)); }
+      if (this.canWrite() && !this.otherController && msg.cols && msg.rows) { this.cols = Math.max(20, Math.min(400, msg.cols)); this.rows = Math.max(8, Math.min(200, msg.rows)); }
       ws.push(this.state(ws));
       this.sendSnapshot(ws);
       this.ensureTicking();
     } else if (msg.type === 'resize') {
-      if (!this.canWrite()) return;
+      if (!this.canWrite() || this.otherController) return;
       const cols = Math.max(20, Math.min(400, msg.cols));
       const rows = Math.max(8, Math.min(200, msg.rows));
       if (cols === this.cols && rows === this.rows) return;
@@ -1576,9 +1581,11 @@ class TermSession {
       this.seq += 1;
       for (const viewer of this.viewers) { viewer.push(this.state(viewer)); viewer.push(terminalFrame(2, this.seq, this.snapshot())); }
     } else if (msg.type === 'take_control') {
+      this.otherController = false;
       ws.push(this.state(ws));
     } else if (msg.type === 'input') {
       if (!this.canWrite()) { ws.push(JSON.stringify({ type: 'error', code: 'forbidden', message: 'Input requires write access to the repository.' })); return; }
+      if (this.otherController) { this.otherController = false; this.sendStates(); } // the typist controls
       this.onInput(String(msg.data || ''));
     }
   }
