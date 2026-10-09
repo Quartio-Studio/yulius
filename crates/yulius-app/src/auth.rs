@@ -87,6 +87,21 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// Longest return path kept across GitHub sign-in.
+const MAX_RETURN_PATH: usize = 2048;
+
+/// A same-site path to return to after sign-in: one leading `/`, no backslash and no control
+/// character. Browsers read `\\` as `/` and drop tabs and newlines, so `/\\host` and
+/// `/<tab>/host` would leave the site, and a newline cannot go into a `Location` header (#60).
+#[must_use]
+pub fn local_return_path(next: &str) -> Option<&str> {
+    let local = next.starts_with('/')
+        && !next.starts_with("//")
+        && next.len() <= MAX_RETURN_PATH
+        && !next.chars().any(|c| c == '\\' || c.is_control());
+    local.then_some(next)
+}
+
 impl App {
     /// Ensures the instance row exists and, while no superadmin exists, issues a fresh one-time
     /// setup token (returned in plain text for the operator; only its hash is stored).
@@ -385,11 +400,7 @@ impl App {
         let app = self.github_app().await?;
         let state = hex_token(&self.deps.crypto.random_bytes());
         let now = self.now();
-        let next = if next.starts_with('/') && !next.starts_with("//") {
-            next
-        } else {
-            "/"
-        };
+        let next = local_return_path(next).unwrap_or("/");
         self.deps
             .store
             .insert_oauth_state(

@@ -224,7 +224,8 @@ export function signInProblem(reason, login) {
 
 /** Sign-in: GitHub (all users) and a compact superadmin password form. */
 export function mountSignIn(ctx, { next, onDone, problem }) {
-  const nextPath = next && next.startsWith('/') && !next.startsWith('//') ? next : '/';
+  // Same rule as the server (#60): browsers read \\ as / and drop tabs and newlines.
+  const nextPath = next && next.startsWith('/') && !next.startsWith('//') && !/[\\\u0000-\u001f\u007f]/.test(next) ? next : '/';
   const githubHref = `/api/auth/github/start?next=${encodeURIComponent(nextPath)}`;
   // GitHub otherwise signs in whichever account this browser is signed in to on github.com;
   // its account picker lets the same window continue with another account.

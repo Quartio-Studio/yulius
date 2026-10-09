@@ -780,3 +780,36 @@ async fn public_responses_carry_security_headers() -> TestResult {
     }
     Ok(())
 }
+
+/// #60: after GitHub sign-in the server returns only to a path on this site.
+#[tokio::test]
+async fn github_sign_in_returns_only_to_local_paths() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin(&h).await?;
+    configure_github(&h).await?;
+    h.github.add_user("code-alice", 11, "alice");
+    let admit = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/users",
+        Some(json!({"github_login": "alice"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(admit.status, StatusCode::CREATED);
+    for (next, expected) in [
+        ("/s/studio/tasks", "/s/studio/tasks"),
+        ("/s/a%20b", "/s/a b"),
+        ("%2F%5Cexample.org", "/"),
+        ("%2F%09%2Fexample.org", "/"),
+        ("%2F%0Aexample", "/"),
+        ("%2F%2Fexample.org", "/"),
+        ("https%3A%2F%2Fexample.org", "/"),
+    ] {
+        let state = github_state(&h, &format!("next={next}")).await?;
+        let done = github_callback(&h, &format!("code=code-alice&state={state}")).await?;
+        assert_eq!(done.status, StatusCode::SEE_OTHER, "{next}");
+        assert_eq!(done.location.as_deref(), Some(expected), "{next}");
+    }
+    Ok(())
+}
