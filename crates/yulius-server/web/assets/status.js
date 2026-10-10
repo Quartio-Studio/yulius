@@ -106,7 +106,7 @@ export function statusInfo(task) {
   if (status === 'stopped_cancelled') return { glyph: '■', icon: 'st-stopped', tone: 'stopped', label: STOP_LABELS[status], group: 'ended' };
   if (status in STOP_LABELS) return { glyph: '▲', icon: 'st-crashed', tone: 'stopped-abnormal', label: STOP_LABELS[status], group: 'ended' };
   if (status in FAIL_LABELS) return { glyph: '✕', icon: 'st-failed', tone: 'failed', label: FAIL_LABELS[status], group: 'ended' };
-  return { glyph: '?', icon: 'st-stopped', tone: 'stopped', label: `Unknown (${status})`, group: 'ended' };
+  return { glyph: '?', icon: 'st-stopped', tone: 'stopped', label: 'Unknown state', group: 'ended', detail: status };
 }
 
 /** "resets ~14:20" (or "~Tuesday 14:20", "~Oct 12") from a reset time; '' when unknown. */

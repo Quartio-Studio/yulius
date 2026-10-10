@@ -170,7 +170,7 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
         : 'No recovery code is set for this instance. A signed-in superadmin can create one under Administration.';
       for (const input of [code, password, confirm]) input.disabled = true;
     }
-  }).catch(() => { status.textContent = 'Could not check recovery.'; });
+  }).catch(() => { status.textContent = 'Couldn’t check recovery.'; });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!validate()) return;

@@ -2,7 +2,7 @@
 // subscription pool with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, badge, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, emptyState } from '../dom.js';
+import { h, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState } from '../dom.js';
 import { createTerminalView } from '../terminal.js';
 import { accountUsage, capacityPanel } from '../layout.js';
 import { pageFrame, loader, dataTable } from './common.js';
@@ -30,7 +30,7 @@ export function mountUsersPage(ctx) {
       toast(message, { kind: 'ok' });
       return true;
     } catch (error) {
-      errorToast(error, 'Could not update user');
+      errorToast(error, 'Couldn’t update user');
       return false;
     }
   };
@@ -41,14 +41,14 @@ export function mountUsersPage(ctx) {
     { label: 'GitHub login', render: (u) => h('strong', null, `@${u.github_login || '?'}`) },
     { label: 'Name', render: (u) => u.display_name || '—', phoneHide: true },
     { label: 'Instance admin', render: (u) => toggle({ checked: Boolean(u.is_instance_admin), label: `Instance admin for ${u.github_login}`, onChange: async (checked, input) => {
-      if (!(await patch(u, { is_instance_admin: checked }, checked ? `@${u.github_login} is now an instance admin` : `@${u.github_login} is no longer an instance admin`))) input.checked = !checked;
+      if (!(await patch(u, { is_instance_admin: checked }, checked ? `@${u.github_login} is now an instance admin.` : `@${u.github_login} is no longer an instance admin.`))) input.checked = !checked;
     } }) },
     { label: 'Access', render: (u) => toggle({ checked: !u.disabled, label: `Access for ${u.github_login}`, onChange: async (checked, input) => {
       if (!checked && !(await confirmDialog({ title: `Disable @${u.github_login}?`, message: 'They are signed out everywhere and their live terminal connections close.', confirmLabel: 'Disable', danger: true }))) { input.checked = true; return; }
-      if (!(await patch(u, { disabled: !checked }, checked ? `@${u.github_login} enabled` : `@${u.github_login} disabled`))) input.checked = !checked;
+      if (!(await patch(u, { disabled: !checked }, checked ? `@${u.github_login} enabled.` : `@${u.github_login} disabled.`))) input.checked = !checked;
       else u.disabled = !checked;
     } }) },
-    { label: 'GitHub sign-in', render: (u) => (u.github_linked ? badge('signed in before', 'ok') : badge('never signed in')), phoneHide: true },
+    { label: 'GitHub sign-in', render: (u) => (u.github_linked ? badge('Signed in before', 'ok') : badge('Never signed in')), phoneHide: true },
   ], Array.isArray(list) ? list : [], { empty: 'No users yet. Admit teammates by their GitHub login.' }));
 
   function add() {
@@ -62,12 +62,12 @@ export function mountUsersPage(ctx) {
         { label: 'Cancel', value: false },
         { label: 'Admit', kind: 'primary', run: async () => {
           const value = login.value.trim().replace(/^@/, '');
-          if (!/^[A-Za-z0-9-]{1,39}$/.test(value)) { toast('Enter a valid GitHub login.', { kind: 'warn' }); return false; }
+          if (!/^[A-Za-z0-9-]{1,39}$/.test(value)) return invalid(login, 'Enter a valid GitHub login.');
           const body = { github_login: value };
           if (name.value.trim()) body.display_name = name.value.trim();
           if (admin.checked) body.is_instance_admin = true;
           await ctx.api.post('/api/admin/users', body);
-          toast(`@${value} admitted`, { kind: 'ok' });
+          toast(`@${value} admitted.`, { kind: 'ok' });
           reload();
           return true;
         } },
@@ -105,7 +105,7 @@ export function recoveryCard(ctx) {
         ? 'Recovery is disabled after three wrong codes. Generate a new code to enable it again.'
         : 'No recovery code yet: without one, a forgotten superadmin password cannot be reset. Generate one and keep it perfectly safe.';
     card.classList.toggle('card-warn', !s.available);
-  }).catch(() => { state.textContent = 'Could not load the recovery status.'; });
+  }).catch(() => { state.textContent = 'Couldn’t load the recovery status.'; });
   generate.addEventListener('click', async () => {
     const password = h('input', { class: 'input', type: 'password', autocomplete: 'current-password' });
     const modal = openModal({
@@ -121,7 +121,7 @@ export function recoveryCard(ctx) {
       shown.body.replaceChildren(recoveryCodeCard(result.recovery_code, { title: 'Your new recovery code', continueLabel: 'Done', onContinue: () => shown.close(true) }));
       refresh();
     } catch (error) {
-      errorToast(error, 'Could not generate a recovery code');
+      errorToast(error, 'Couldn’t generate a recovery code');
     }
   });
   refresh();
@@ -261,20 +261,16 @@ export function mountGithubPage(ctx) {
   const frame = pageFrame({ title: 'GitHub connection', sub: 'the instance is bound to one GitHub organization or personal account' });
   const host = h('div');
   frame.body.append(host);
-  // The manifest callback returns here with ?error=… when GitHub's conversion failed.
-  const callbackError = new URLSearchParams(window.location.search).get('error');
-  if (callbackError) frame.body.prepend(h('div', { class: 'card card-pad', role: 'alert' }, badge('setup failed', 'danger'), ' ', callbackError));
-  // An older server without the GitHub admin routes answers 404: then the page shows what
-  // /api/me knows about the connection instead of an error.
-  const fetchConfig = () => ctx.api.get('/api/admin/github').catch((error) => {
-    if (error.status === 404) return { unsupported: true };
-    throw error;
-  });
-  loader(host, fetchConfig, (config) => {
-    if (config && config.unsupported) return instanceSummary(ctx);
+  // The manifest callback returns here with ?error=… when GitHub's conversion failed. The text is
+  // fixed: a crafted link must not put its own words on this page (like the sign-in page).
+  if (new URLSearchParams(window.location.search).has('error')) {
+    frame.body.prepend(h('div', { class: 'banner banner-danger', role: 'alert' }, badge('Setup failed', 'danger'),
+      h('span', { class: 'banner-text' }, 'Creating the GitHub App did not finish. Start again below; the server log has the details.')));
+  }
+  loader(host, () => ctx.api.get('/api/admin/github'), (config) => {
     if (config && config.configured) {
       return h('div', { class: 'card card-pad stack narrow' },
-        h('div', { class: 'row' }, badge('connected', 'ok'), h('strong', null, config.owner_login || '?')),
+        h('div', { class: 'row' }, badge('Connected', 'ok'), h('strong', null, config.owner_login || '?')),
         h('dl', { class: 'kv' }, h('dt', null, 'GitHub App'), h('dd', null, config.app_slug || '—'), h('dt', null, 'Owner'), h('dd', null, config.owner_login || '—')),
         config.install_url ? h('div', null, h('a', { class: 'btn btn-primary', href: config.install_url, target: '_blank', rel: 'noopener noreferrer' }, 'Install / configure repositories')) : null,
         h('p', { class: 'muted small' }, 'Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and connect AI accounts.'));
@@ -284,25 +280,13 @@ export function mountGithubPage(ctx) {
   return { el: frame.el, key: 'admin:github' };
 }
 
-/** Connection facts from `/api/me` when the GitHub admin endpoints are not available. */
-function instanceSummary(ctx) {
-  const instance = (ctx.store.state.me && ctx.store.state.me.instance) || {};
-  const connected = instance.github_configured === true;
-  return h('div', { class: 'card card-pad stack narrow' },
-    h('div', { class: 'row' }, connected ? badge('connected', 'ok') : badge('not connected', 'warn'), instance.owner_login ? h('strong', null, instance.owner_login) : null, instance.owner_kind ? badge(instance.owner_kind) : null),
-    connected
-      ? h('p', { class: 'text-2' }, 'This instance has a GitHub App. Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and connect AI accounts.')
-      : h('p', { class: 'text-2' }, 'This instance has no GitHub App yet, so sandboxes cannot be imported or created.'),
-    h('p', { class: 'muted small' }, 'Setting up the GitHub App from here is not available in this server version yet.'));
-}
-
 function manifestForm(ctx) {
   const owner = h('input', { class: 'input', placeholder: 'Quartio-Studio', autocomplete: 'off' });
   const kindInputs = [['org', 'Organization'], ['user', 'Personal account']].map(([value, label]) => ({ input: h('input', { type: 'radio', name: 'owner-kind', value, checked: value === 'org' }), label }));
   const submit = h('button', { type: 'button', class: 'btn btn-primary' }, 'Create GitHub App on GitHub');
   submit.addEventListener('click', async () => {
     const ownerLogin = owner.value.trim();
-    if (!/^[A-Za-z0-9-]{1,39}$/.test(ownerLogin)) { toast('Enter the GitHub organization or user name.', { kind: 'warn' }); owner.focus(); return; }
+    if (!/^[A-Za-z0-9-]{1,39}$/.test(ownerLogin)) { invalid(owner, 'Enter the GitHub organization or user name.'); return; }
     submit.disabled = true;
     submit.classList.add('busy');
     try {
@@ -314,14 +298,14 @@ function manifestForm(ctx) {
       document.body.append(form);
       form.submit();
     } catch (error) {
-      errorToast(error, 'Could not prepare the GitHub App manifest');
+      errorToast(error, 'Couldn’t prepare the GitHub App manifest');
     } finally {
       submit.disabled = false;
       submit.classList.remove('busy');
     }
   });
   return h('div', { class: 'card card-pad stack narrow' },
-    h('div', { class: 'row' }, badge('not connected', 'warn')),
+    h('div', { class: 'row' }, badge('Not connected', 'warn')),
     h('p', { class: 'text-2' }, `${BRAND.name} creates a GitHub App for this instance using GitHub’s manifest flow. You confirm the app on GitHub, then install it on the repositories ${BRAND.name} may manage.`),
     field('Owner (organization or user)', owner),
     h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Owner kind' }, kindInputs.map((k) => h('label', null, k.input, k.label))),

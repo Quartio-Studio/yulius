@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
 import { taskInfo, activityLine, allows } from './status.js';
 import { href } from './router.js';
@@ -386,7 +386,7 @@ export function renderStatus(data) {
       h('div', { class: 'stat-tiles' },
         statTile('cpu', 'CPU', percentText(vm.cpu_percent), vm.cpu_percent, vm.cpu_count ? `${vm.cpu_count} cores` : null),
         statTile('memory', 'Memory', percentText(memPct), memPct, vm.memory_total_bytes ? `${bytes(vm.memory_used_bytes)} of ${bytes(vm.memory_total_bytes)}` : null),
-        statTile('disk', 'Disk', diskPct === null ? 'unknown' : percentText(diskPct), diskPct, vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null),
+        statTile('disk', 'Disk', diskPct === null ? '—' : percentText(diskPct), diskPct, vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null),
         statTile('terminal', 'Sessions', Number.isFinite(sessions.live) ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}` : '—', sessionsPct, sessions.queued ? `${sessions.queued} queued` : 'agent sessions running')),
       h('div', { class: 'status-facts' }, facts)),
     sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
@@ -585,12 +585,16 @@ export function createSidebar(ctx) {
     newTask.dataset.route = target ? `/s/${encodeURIComponent(target.slug)}` : '/';
     newTask.href = href(newTask.dataset.route);
     newTask.classList.toggle('disabled', !target);
+    // Read access: the composer only explains; say so here as Home and the Tasks page do.
+    const readOnly = Boolean(target && target.access && !allows(target.access, 'write'));
+    if (readOnly) newTask.setAttribute('aria-disabled', 'true'); else newTask.removeAttribute('aria-disabled');
+    newTask.title = readOnly ? 'Requires write access' : `New task (${shortcut})`;
     // Links are built once and updated in place, so a focused link keeps focus across routes.
     if (!nav.children.length) nav.append(...NAV.map(([, label, iconName]) => h('a', { class: 'nav-item' }, h('span', { class: 'nav-slot' }, icon(iconName, { size: 20 })), h('span', null, label))));
     NAV.forEach(([page], i) => {
       const link = nav.children[i];
       const path = slug ? `/s/${slug}/${page}` : '/';
-      const active = Boolean(route && ['page', 'gitTask', 'taskInfo', 'skill'].includes(route.name) && route.page === page);
+      const active = Boolean(route && ['page', 'gitTask', 'taskInfo', 'skill', 'workflow', 'automation', 'mcpServer'].includes(route.name) && route.page === page);
       link.href = href(path);
       link.dataset.route = path;
       link.classList.toggle('active', active);
@@ -762,7 +766,3 @@ export function createSidebar(ctx) {
   };
 }
 
-/** Surface API failures from layout-level loaders without breaking rendering. */
-export function reportLoadError(error, what) {
-  errorToast(error, `Could not load ${what}`);
-}

@@ -118,6 +118,7 @@ function seed(params) {
     sandboxes: [],
     tasks: [],
     messages: [],
+    recovery: { available: true, locked: false, attempts_left: 3 },
     eventSockets: new Set(),
     sessions: new Map(),
     browsers: new Map(),
@@ -487,6 +488,31 @@ route('POST', '/api/auth/password', ({ db, body }) => {
 route('POST', '/api/auth/mock-github', ({ db }) => { db.signedIn = true; return db.me; });
 route('POST', '/api/auth/logout', ({ db }) => { db.signedIn = false; for (const s of db.eventSockets) s.serverClose(1000); return json(204); });
 route('GET', '/api/me', ({ db }) => db.me);
+// Superadmin recovery (ACC-011): a code is set, three attempts left.
+route('GET', '/api/auth/recovery', ({ db }) => clone(db.recovery));
+route('POST', '/api/auth/recover', ({ db, body }) => {
+  if (db.recovery.locked) fail(403, 'forbidden', 'recovery is locked');
+  if (!body || body.code !== '123456') {
+    db.recovery.attempts_left = Math.max(0, db.recovery.attempts_left - 1);
+    if (db.recovery.attempts_left === 0) { db.recovery.locked = true; db.recovery.available = false; }
+    fail(422, 'invalid', `wrong code (${db.recovery.attempts_left} attempts left; mock code: 123456)`);
+  }
+  return { recovery_code: '654321' };
+});
+route('POST', '/api/admin/recovery-code', ({ db, body }) => {
+  if (!body || body.password !== 'correct horse battery') fail(403, 'forbidden', 'Wrong password. (Mock password: correct horse battery)');
+  db.recovery = { available: true, locked: false, attempts_left: 3 };
+  return { recovery_code: '482913' };
+});
+// The instance's GitHub App (ACC-006).
+route('GET', '/api/admin/github', ({ db }) => (db.me.instance.github_configured
+  ? { configured: true, app_slug: 'yulius-quartio-studio', owner_login: db.me.instance.owner_login, install_url: 'https://github.com/apps/yulius-quartio-studio/installations/new', installed: true }
+  : { configured: false, app_slug: null, owner_login: null, install_url: null, installed: false }));
+route('POST', '/api/admin/github/manifest', ({ db, body }) => {
+  if (db.me.instance.github_configured) fail(409, 'conflict', 'a GitHub App is already configured');
+  const owner = (body && body.owner_login) || 'Quartio-Studio';
+  return { post_url: `https://github.com/organizations/${owner}/settings/apps/new?state=mock`, manifest: { name: 'Yulius (mock)', url: ORIGIN } };
+});
 route('POST', '/api/device/approve', ({ body }) => {
   if (!/^[A-Z0-9]{4}-?[A-Z0-9]{4}$/.test(body.user_code || '')) fail(404, 'not_found', 'not found');
   return json(204);
@@ -738,6 +764,15 @@ route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
     if (session) session.notice(`↻ switched from ${from} to ${task.account_label}`);
   }, 2500);
   return summary(task);
+});
+route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (['starting', 'running', 'switching', 'stopping'].includes(task.status)) fail(409, 'conflict', 'stop the task before deleting it');
+  db.tasks = db.tasks.filter((t) => t.id !== task.id);
+  recount(db);
+  emit(db, { type: 'task.removed', task_id: task.id });
+  return json(204);
 });
 route('POST', `/api/tasks/${ID}/archive`, ({ db, p }) => {
   const task = taskOf(db, p[0]);

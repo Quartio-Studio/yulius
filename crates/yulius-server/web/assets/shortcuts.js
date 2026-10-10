@@ -27,11 +27,12 @@ function groups() {
   const singleKeys = readJson('yulius.singleKeyShortcuts', true) !== false;
   return [
     ['Everywhere', [
-      [[NEW_TASK_KEYS], 'New task'],
+      [IS_MAC ? [NEW_TASK_KEYS, '⌘N'] : [NEW_TASK_KEYS], IS_MAC ? 'New task (⌘N where the browser passes it on)' : 'New task'],
       [[HOME_KEYS], 'All sandboxes (home)'],
       [[SHEET_KEYS], 'Keyboard shortcuts (this list)'],
       [['F6', 'Shift+F6'], 'Next / previous area — also leaves the terminal and the browser view'],
-      [['Esc'], 'Close a menu, dialog, panel or the phone drawer'],
+      [['Esc'], 'Close a menu, dialog or the phone drawer'],
+      [['Enter'], 'In a dialog’s field: confirm the dialog'],
     ]],
     ['New task', [
       [['Enter'], 'Start the task'],
@@ -40,7 +41,13 @@ function groups() {
     [singleKeys ? 'Tasks page' : 'Tasks page (single-key shortcuts are off in Settings)', [
       [['/'], 'Search'],
       [['j', 'k'], 'Next / previous task'],
+      [['↓', '↑'], 'Next / previous task, once one is focused'],
       [['.'], 'The focused task’s menu'],
+    ]],
+    ['Search', [
+      [['↑', '↓'], 'Choose a result'],
+      [['Enter'], 'Open it'],
+      [[`${MOD}Enter`], 'Go to the task itself (not its overview)'],
     ]],
     ['Menus', [
       [['↑', '↓'], 'Move'],
@@ -52,11 +59,12 @@ function groups() {
       [[SAVE_KEYS], 'Save the file'],
       [[WRAP_KEYS], 'Word wrap on / off — every open file'],
     ]],
-    ['Browser and editor tabs', [
+    ['Browser, editor and shell tabs', [
       [['←', '→'], 'Move between tabs'],
       [['Home', 'End'], 'First / last tab'],
       [['Enter', 'Space'], 'Show the focused tab'],
       [['Delete', 'Backspace'], 'Close the focused tab'],
+      [['F2'], 'Rename the focused shell'],
     ]],
     ['Column edges (sidebar, explorer, panel)', [
       [['←', '→'], 'Narrower / wider — Shift for bigger steps'],

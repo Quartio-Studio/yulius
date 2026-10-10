@@ -146,7 +146,7 @@ function createApp(root, transport) {
     try {
       await store.loadSandboxes();
     } catch (error) {
-      errorToast(error, 'Could not load sandboxes');
+      errorToast(error, 'Couldn’t load sandboxes');
     }
     buildShell();
     store.startEvents();
@@ -307,7 +307,7 @@ function createApp(root, transport) {
           }
           if (currentSandbox) await store.loadTasks(currentSandbox.id);
         } catch (error) {
-          errorToast(error, 'Could not refresh');
+          errorToast(error, 'Couldn’t refresh');
         }
       }),
       store.on('browser-action', (event) => {
@@ -435,7 +435,7 @@ function createApp(root, transport) {
     try {
       await store.loadTasks(sandbox.id);
     } catch (error) {
-      errorToast(error, 'Could not load tasks');
+      errorToast(error, 'Couldn’t load tasks');
     }
   }
 
@@ -584,7 +584,7 @@ function createApp(root, transport) {
         setCenter(`admin:${route.page}`, () => ADMIN_PAGES[route.page](ctx, route));
         break;
       default:
-        message('notfound', 'Page not found.', h('div', { class: 'space-top' }, h('a', { href: href('/'), dataset: { route: '/' } }, 'Go to your workspace')));
+        message('notfound', 'Page not found.', h('div', { class: 'space-top' }, h('a', { href: href('/'), dataset: { route: '/' } }, 'Go to all sandboxes')));
     }
     currentTask = task;
     shell.panels.setContext(sandbox, task);
