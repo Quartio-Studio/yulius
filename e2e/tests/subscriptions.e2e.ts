@@ -25,7 +25,7 @@ test('the accounts page shows the pool capacity and nothing to manage but add an
 
 test('a task paused for capacity says so with the reset time, outside Needs you', async ({ app, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await expect(screen.getByRole('link', /Search indexing, Paused: waiting for subscription capacity \(resets ~[^)]+\)/)).toBeVisible();
+  await expect(screen.getByRole('link', /Search indexing\s*, Paused: waiting for subscription capacity \(resets ~[^)]+\)/)).toBeVisible();
 });
 
 test('the dashboard shows the subscriptions of the whole instance', async ({ app, browser, screen }) => {
