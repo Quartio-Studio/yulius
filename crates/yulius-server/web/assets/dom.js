@@ -124,6 +124,8 @@ const ICONS = {
   send: [['path', { d: 'M4 12l16-8-6 16-2.5-6.5z' }]],
   download: [['path', { d: 'M12 4v11M7 10l5 5 5-5M5 20h14' }]],
   grip: [[9, 6], [15, 6], [9, 12], [15, 12], [9, 18], [15, 18]].map(([cx, cy]) => ['circle', { cx, cy, r: 1.3, fill: 'currentColor', stroke: 'none' }]),
+  // All sandboxes (the home screen): four tiles.
+  grid: [[4, 4], [13.5, 4], [4, 13.5], [13.5, 13.5]].map(([x, y]) => ['rect', { x, y, width: 6.5, height: 6.5, rx: 1.6 }]),
 };
 
 /** Every icon name (the /design page shows them all). */
