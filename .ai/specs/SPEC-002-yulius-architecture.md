@@ -1041,6 +1041,20 @@ a folder-trust prompt whose default answer is "No, exit". Before each launch Yul
 `bypassPermissionsModeAccepted` for contained runs) into `<CLAUDE_CONFIG_DIR>/.claude.json`, keeping
 Claude's own keys. Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` at each launch.
 
+MCP servers (MCP-001/004) are part of every launch, not of an account: the supervisor passes the
+sandbox's effective servers (`App::mcp_attachments`: enabled instance servers, overridden by the
+sandbox's of the same name) in `HarnessLaunch.mcp` for each attempt — new, resumed, switched to
+another subscription by native resume or by hand — and the harness adapter renders them into the
+run's own `<run>/mcp.json` (`--mcp-config … --strict-mcp-config`, so nothing from a Claude home
+adds to or replaces them), with the Yulius tool server first. Secret values appear in the file
+only as `${VAR}` references (`env` of a stdio server; `Authorization: Bearer ${YULIUS_MCP_<NAME>_TOKEN}`
+for an HTTP server); the values travel in the run's secret environment. `CLAUDE_CONFIG_DIR` is
+per sandbox and the credential an environment variable, so no subscription has servers of its
+own. A harness added later receives the same harness-neutral list. A stored value
+`${secret:NAME}` is a reference to an agent secret: it is resolved for each run by
+`App::resolve_secret_ref`, the hook point of the agent-secrets vault, and left out (with a
+warning) while nothing answers to it.
+
 | Concern | Claude Code (verified 2.1.292 flags) |
 | --- | --- |
 | New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json [--model m] [--effort e] [--dangerously-skip-permissions when contained] "<prompt>"` |
@@ -1083,7 +1097,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003) |
 | `automation_create`, `automations_list`, `automation_update` | Prompt-created automations (AUT-002) |
-| `workflows_list` | Workflows available (AUT-004) |
+| `workflows_list` | Workflows available, the defaults first with `builtin` and `when_to_use` (AUT-004, AUT-006) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | PR/checks/profile status and next actions (GIT-001) |
 | `issue_create` | A GitHub issue meeting the Definition of Ready (one `type:`, one `priority:`, at least one `area:` label; an `## Acceptance criteria` checklist), as the task creator or the App; labels created when missing (DLV-008) |
@@ -1177,6 +1191,59 @@ per request, streamed to disk (`yulius_app::uploads`).
 All JSON bodies ≤ 1 MiB (imports use chunk endpoints ≤ 8 MiB per chunk; a dropped file is one
 raw body up to the upload limit, 25 MiB by default).
 
+### 7.10 Workflow catalog format (AUT-006)
+
+Default workflows ship with Yulius as one Markdown file per workflow, `catalog/workflows/<id>.md`.
+`crates/yulius-app/build.rs` embeds every `*.md` file of that directory except `README.md`, so
+adding a workflow needs no code change; `yulius_domain::workflow_format::parse_workflow` reads
+one, and a unit test (`workflows::catalog`) parses every shipped file and checks the embedded set
+against the directory, so a malformed file fails CI (at runtime one that does not parse is skipped
+with a warning). `<id>` is 1–40 lowercase ASCII letters, digits and `-`, not starting with `-`;
+the workflow's id is `wf-<id>`. Never rename a shipped file: tasks and automations refer to its id.
+
+```markdown
+---
+name: Feature
+description: New or changed behaviour, from a spec through review and tests to production.
+when_to_use: The task adds or changes behaviour that users or other code rely on.
+spec: required
+tests: required
+order: 10
+---
+
+## Steps
+
+1. Write the spec
+2. Implement
+
+## Instructions
+
+Markdown for the agent's briefing (### subsections allowed).
+```
+
+| Part | Rule |
+| --- | --- |
+| Frontmatter | Between `---` lines; one `key: value` per line, plain text, optionally in matching quotes, never multi-line; `#` lines are comments; an unknown or repeated key is an error |
+| `name` | Required, ≤ 80 characters |
+| `description` | Required, one line, ≤ 300 characters: what it is |
+| `when_to_use` | Required, one line, ≤ 300 characters: when to pick it (what intake reads when the workflow is chosen automatically) |
+| `spec`, `tests` | `required` or `optional` (default `optional`): the gates `require_spec`, `require_tests` |
+| `order` | 0–999 (default 100): list order, then name |
+| Body | Exactly `## Steps` then `## Instructions`; nothing before `## Steps`; no `#` title |
+| Steps | One list item (`1.`, `-`, `*`, `+`) per step, ≤ 200 characters, at most 100; no code blocks; may be empty |
+| Instructions | Everything below the heading, trimmed, ≤ 16 KiB; the briefing includes the first 3,000 characters |
+
+Defaults are never stored: `App::workflows_for` lists them first, then the stored instance and
+sandbox workflows, and lookups by id (`visible_workflow`, `task_workflow`) answer them from the
+catalog, so a release replaces their content. The API marks them `builtin: true` with
+`when_to_use`; `PUT`/`DELETE` on one answer 409 ("duplicate it to customise"), and a duplicate is
+an ordinary custom workflow. A stored row whose id a default answers to is never listed. At
+startup `App::retire_legacy_workflows` handles the two instance rows seeded before the catalog
+(`wf-feature` "Feature", `wf-quick-task` "Quick task"): one still equal to its seed is deleted
+(references to `wf-feature` stay and reach the default; those to `wf-quick-task` are cleared as by
+a delete); an edited `wf-feature` is kept as a new custom instance workflow "Feature (custom)"; an
+edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`workflow.retired`).
+
 ## 8. Security and trust model
 
 - Users with **write** permission can make agents run arbitrary code in that sandbox; that is the
@@ -1210,6 +1277,9 @@ raw body up to the upload limit, 25 MiB by default).
 - Secrets (provider credentials, GitHub App key, MCP env/headers) are encrypted at rest with the
   master key, never returned by the API, never logged (`Secret<T>` with redacted Debug), passed to
   children only via environment (SEC-002). Account login output is masked before reaching viewers.
+  An MCP value `${secret:NAME}` stores a reference, not a secret; it resolves only through the
+  vault's hook (`App::resolve_secret_ref`), never from the server's or the run's environment, so
+  it cannot pull Yulius's own credentials into an MCP server (§7.2).
 - GitHub tokens: installation tokens (1 h) fetched on demand; user tokens refreshed; git transport
   uses the credential helper over the internal listener; task worktrees get a `pre-push` hook that
   rejects pushes to the profile's integration/production branches; scaffolded repositories get
@@ -1434,6 +1504,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Dropped files (EDT-006, UI-048, 2026-10-10) | `tests/uploads.rs`: editor uploads (write users only, CSRF, folders created, byte-for-byte with SHA-256, 409 then overwrite with permissions kept, folders and links never replaced, traversal / absolute / control characters / `.git` / links out refused with nothing written outside, a repository folder linked into another sandbox refused, task worktree root, audit), bounds (declared and streamed size, an interrupted body, 8 concurrent then 429, no temporary file left), task attachments (safe unique names, read users refused, a planted link refused, removed with the task), shell attachments (owner only, removed when the shell closes or at start-up), the fake agent reading an attachment by path with a clean `git status` (uncontained; on Linux also inside bubblewrap, skipped where bubblewrap cannot run). Unit tests in `yulius_app::uploads`. `e2e/tests/filedrop.e2e.ts` (mock UI). Opt-in `live_ui_filedrop.rs` with real Chrome: real drags from disk to the explorer and to the task terminal, read by the fake agent. |
 | Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
 | Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
+| MCP, Git as presentation, skills, default workflows (MCP-004, GIT-002, SKL-006, AUT-006; #136, 2026-10-10) | The reported bug ("Add server does nothing"): on `dev` the empty MCP page's Add server threw `ReferenceError: edit is not defined` (headless Chrome, mock mode); `live_ui_mcp.rs` (opt-in Chrome, real server) fails on that page and passes with the fix: empty state → add page → pasted `claude mcp add` → Add (sealed, tested) → the attachments a run gets → edit → Remove. `pool_supervision.rs::mcp_servers_reach_every_run_on_every_subscription`: real processes on two subscriptions; each run's `mcp.json` and secret names, the values in the child environment, the same servers after a native-resume switch plus one added meanwhile. `skills_mcp.rs`: `${secret:NAME}` stays write-only and is left out of runs while unresolved. Workflows: `workflow_format` unit tests (every rule, line numbers), `workflows::catalog` (the shipped files parse and are all embedded), `automations.rs` (defaults first and read-only — 409 even for an administrator —, duplicate, task steps and instructions from the catalog, retirement of unchanged and edited seeded rows, `workflows_list`). UI (mock e2e): `mcp.e2e.ts`, `workflows.e2e.ts`, `skills.e2e.ts`, `git.e2e.ts`. |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
@@ -1441,6 +1512,10 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 - 2026-10-10 (F 2026-10-10, #139): §7.4 agent delivery tools `delivery_merge` (passed checks and
   an independent review of the exact head), `delivery_deploy` (command-verified environments) and
   `delivery_promote`, on the person paths with the task creator's authority, audited as the task.
+- 2026-10-10 (F 2026-10-10, final stage; #136): §7.2 MCP servers in every run's own configuration
+  whatever the subscription, `${secret:NAME}` references and the vault's hook; §7.10 the workflow
+  catalog format and read-only defaults with the retirement of the seeded rows; §7.4
+  `workflows_list`; §8 references; §14.
 - 2026-10-10 (F 2026-10-10, later; #122): ADR-15 over the user's link — flow control by
   acknowledged frames, VBV bitrate tiers following the slowest viewer, keyframes on demand from a
   replacement encoder (make before break), coalesced wheel and pointer moves, every frame decoded
