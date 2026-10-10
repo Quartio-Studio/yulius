@@ -838,6 +838,7 @@ mod tests {
             test: Some("cargo test".into()),
             lint: Some("cargo clippy".into()),
             build: None,
+            gate: None,
         };
         let text = render_om_config("quartio", &commands, "docs/specs");
         let value: serde_json::Value = serde_json::from_str(&text)?;

@@ -96,6 +96,10 @@ from its own cache without workflow changes. Without the Blacksmith app, switch
 end-to-end suite when the UI, the suite or the workflow changes; it is advisory, not a
 required check, and gets no model key (agent steps are skipped).
 
+Projects that Yulius manages run their CI on Yulius itself, with no GitHub Actions
+([SPEC-002 ADR-18](../../.ai/specs/SPEC-002-yulius-architecture.md)). This repository still uses
+the workflows above. ADR-18 lists the steps to move it.
+
 ## Troubleshooting
 
 - Wrong compiler: use `scripts/dev`, then `rustup run 1.99.0 rustc --version`.

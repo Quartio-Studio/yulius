@@ -6,7 +6,7 @@ const listeners = new Set();
 let hashMode = false;
 let lastKey = null;
 
-const SANDBOX_PAGES = new Set(['tasks', 'git', 'workflows', 'skills', 'automations', 'mcp', 'dashboard']);
+const SANDBOX_PAGES = new Set(['tasks', 'git', 'ci', 'workflows', 'skills', 'automations', 'mcp', 'dashboard']);
 const ADMIN_PAGES = new Set(['users', 'accounts', 'github']);
 
 /** Start listening to navigation. */

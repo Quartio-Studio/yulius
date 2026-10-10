@@ -393,6 +393,13 @@ impl FakeRemote for BareRemote {
         }
         git_sync(&self.origin, &args).map(drop)
     }
+    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
+        if self.branch_sha(branch).is_none() {
+            return Ok(false);
+        }
+        git_sync(&self.origin, &["update-ref", "-d", &format!("refs/heads/{branch}")])?;
+        Ok(true)
+    }
 }
 
 // ---------------------------------------------------------------- fixture
@@ -927,6 +934,15 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
             .contains(&"merge_pull #1 squash".to_owned())
     );
     assert_eq!(git(&f.origin, &["show", "dev:feature.txt"])?, "hello");
+    // Hygiene (DLV-007): the merged head branch is deleted on GitHub.
+    assert!(
+        f.h.github
+            .writes()
+            .contains(&"delete_branch feat/1-checkout-api".to_owned()),
+        "{:?}",
+        f.h.github.writes()
+    );
+    assert!(git(&f.origin, &["rev-parse", "--verify", "--quiet", "refs/heads/feat/1-checkout-api"]).is_err());
 
     // The dev checkpoint comes first and needs an explicit confirmation.
     let early = f

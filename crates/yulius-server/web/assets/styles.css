@@ -1875,3 +1875,23 @@ a.dl-task:hover { text-decoration: underline; }
 }
 button.task-group-head:hover { color: var(--text); }
 
+/* ---- CI page (pages/ci.js) */
+.ci-heading { font-weight: 600; font-size: var(--fs); line-height: var(--lh); margin: 8px 0 0; }
+.ci-config { margin: 0; }
+.ci-jobs, .ci-hygiene { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ci-jobs li { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
+.ci-job-name { flex: none; min-width: 96px; font-weight: 500; }
+.ci-job-command { min-width: 0; overflow-wrap: anywhere; color: var(--text-2); }
+.ci-hygiene li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.ci-hygiene code { overflow-wrap: anywhere; }
+.ci-state { display: inline-flex; color: var(--muted); }
+.ci-passed { color: var(--ok-fg); }
+.ci-failed, .ci-error { color: var(--danger-fg); }
+.ci-running { color: var(--warn-fg); }
+.ci-running .icon { animation: spin var(--duration-spin-slow) linear infinite; }
+.ci-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.ci-tab { display: inline-flex; align-items: center; gap: 6px; height: var(--control-sm); padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); cursor: pointer; }
+.ci-tab:hover { background: var(--surface-2); }
+.ci-tab.active { border-color: var(--border-strong); background: var(--surface-2); color: var(--text); }
+.ci-tab:focus-visible { box-shadow: var(--focus); outline: none; }
+

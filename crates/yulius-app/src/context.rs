@@ -60,6 +60,8 @@ pub struct AppConfig {
     pub own_ports: Vec<u16>,
     /// Largest file one upload may carry (SPEC-001 EDT-006, UI-048; `YULIUS_UPLOAD_MAX_MB`).
     pub upload_max_bytes: u64,
+    /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-18).
+    pub ci: crate::ci::CiSettings,
 }
 
 impl AppConfig {
@@ -101,6 +103,7 @@ impl AppConfig {
             permission_ttl_ms: 5 * 60 * 1000,
             permission_stale_ms: 30 * 60 * 1000,
             upload_max_bytes: crate::uploads::DEFAULT_UPLOAD_MAX_BYTES,
+            ci: crate::ci::CiSettings::default(),
         }
     }
 }
@@ -163,6 +166,8 @@ pub struct App {
     pub instance_tag: String,
     /// Task intake (Jev, split proposals); unset means nothing is checked (SPEC-002 ADR-16).
     pub(crate) intake: OnceLock<crate::intake::IntakeServices>,
+    /// Yulius-run CI and repository hygiene (SPEC-002 ADR-18).
+    pub(crate) ci: crate::ci::CiState,
 }
 
 impl App {
@@ -189,6 +194,7 @@ impl App {
             previews: crate::preview::PreviewState::default(),
             uploads: crate::uploads::UploadState::default(),
             intake: OnceLock::new(),
+            ci: crate::ci::CiState::default(),
         })
     }
 

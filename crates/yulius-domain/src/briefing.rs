@@ -41,7 +41,7 @@ const MAX_STEPS_LISTED: usize = 100;
 const MAX_ENVIRONMENTS_LISTED: usize = 8;
 
 /// Yulius MCP tools announced to every session (SPEC-002 §7.4), as `(name, purpose)`.
-pub const YULIUS_TOOLS: [(&str, &str); 25] = [
+pub const YULIUS_TOOLS: [(&str, &str); 30] = [
     (
         "project_context",
         "project summary, architecture and decision index, recent changes, delivery rules",
@@ -91,6 +91,17 @@ pub const YULIUS_TOOLS: [(&str, &str); 25] = [
         "delivery_status",
         "pull request, checks and delivery profile (read-only)",
     ),
+    (
+        "ci_status",
+        "this project's CI runs (Yulius is the only CI) and their output",
+    ),
+    ("ci_rerun", "run the CI again for a commit"),
+    (
+        "ci_setup",
+        "onboarding: move GitHub Actions into [[ci.jobs]] and delete them",
+    ),
+    ("repo_hygiene", "stale branches and worktrees"),
+    ("repo_cleanup", "remove stale branches and worktrees"),
 ];
 
 /// The task being briefed.

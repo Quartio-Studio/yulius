@@ -729,11 +729,18 @@ impl App {
             remove_tree(dir).await;
             return Err(err);
         }
+        // Rulesets on private repositories need a paid GitHub plan. They are a second line of
+        // defence only: Yulius's own merge gate enforces the delivery rules (SPEC-002 ADR-18),
+        // so a refusal leaves the project usable.
         for ruleset in rulesets_for(&profile) {
-            self.deps
+            if let Err(err) = self
+                .deps
                 .github
                 .create_ruleset(&admin_token, &repo_owner, &repo_name, &ruleset)
-                .await?;
+                .await
+            {
+                tracing::warn!(repo = %format!("{repo_owner}/{repo_name}"), ruleset = %ruleset.name, error = %err, "GitHub refused a branch ruleset; Yulius's merge gate enforces the rules");
+            }
         }
         let repo_dir = self.sandbox_repo(&id);
         if let Err(err) = self

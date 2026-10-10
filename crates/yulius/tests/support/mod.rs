@@ -20,7 +20,7 @@ use yulius_app::model::Secret;
 use yulius_app::ports::Clock;
 use yulius_app::ports::github::{
     ChecksReport, ChecksState, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort,
-    NewPull, RepoAccess, RulesetRequest,
+    NewCommitStatus, NewPull, RepoAccess, RulesetRequest, STATUS_PERMISSION_MISSING,
 };
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::time::Timestamp;
@@ -56,6 +56,10 @@ pub struct FakeGitHub {
     pub writes: Mutex<Vec<String>>,
     /// Who opened each pull request: the user login, or `inst` for the App installation.
     pub pull_authors: Mutex<HashMap<u64, String>>,
+    /// Commit statuses published, in order: (sha, status).
+    pub statuses: Mutex<Vec<(String, NewCommitStatus)>>,
+    /// When set, publishing a commit status fails as without the App permission.
+    pub statuses_forbidden: std::sync::atomic::AtomicBool,
 }
 
 impl FakeGitHub {
@@ -338,6 +342,49 @@ impl GitHubPort for FakeGitHub {
             .map_err(|_| AppError::Conflict("update is not a fast forward".into()))?;
         self.record(format!("fast_forward {branch} {sha}"));
         Ok(())
+    }
+    async fn create_commit_status(
+        &self,
+        _: &Secret,
+        _: &str,
+        _: &str,
+        sha: &str,
+        status: &NewCommitStatus,
+    ) -> AppResult<()> {
+        if self.statuses_forbidden.load(Ordering::SeqCst) {
+            return Err(AppError::Forbidden(STATUS_PERMISSION_MISSING.to_owned()));
+        }
+        self.statuses
+            .lock()
+            .map_err(AppError::internal)?
+            .push((sha.to_owned(), status.clone()));
+        Ok(())
+    }
+    async fn delete_branch(&self, _: &Secret, _: &str, _: &str, branch: &str) -> AppResult<bool> {
+        let remote = self
+            .remote()
+            .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        let deleted = remote.delete_branch(branch).map_err(AppError::Upstream)?;
+        self.record(format!("delete_branch {branch}"));
+        Ok(deleted)
+    }
+    async fn branch_pulls(
+        &self,
+        _: &Secret,
+        _: &str,
+        _: &str,
+        branch: &str,
+    ) -> AppResult<Vec<GhPull>> {
+        let mut pulls: Vec<GhPull> = self
+            .pulls
+            .lock()
+            .map_err(AppError::internal)?
+            .iter()
+            .filter(|p| p.head == branch)
+            .cloned()
+            .collect();
+        pulls.sort_by(|a, b| b.number.cmp(&a.number));
+        Ok(pulls)
     }
     async fn branch_sha(
         &self,
@@ -643,6 +690,11 @@ pub trait FakeRemote: Send + Sync {
     ) -> Result<String, String>;
     /// Moves `branch` to `sha` only as a fast-forward.
     fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String>;
+    /// Deletes `branch`; `false` when it did not exist.
+    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
+        let _ = branch;
+        Ok(false)
+    }
 }
 
 impl FakeGitHub {
@@ -678,6 +730,10 @@ impl FakeGitHub {
         if let Ok(mut m) = self.check_states.lock() {
             m.insert(sha.into(), report);
         }
+    }
+    /// Commit statuses published so far: (sha, status).
+    pub fn statuses(&self) -> Vec<(String, NewCommitStatus)> {
+        self.statuses.lock().map(|s| s.clone()).unwrap_or_default()
     }
     pub fn writes(&self) -> Vec<String> {
         self.writes.lock().map(|w| w.clone()).unwrap_or_default()

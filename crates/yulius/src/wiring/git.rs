@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
-use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, ReviewChanges};
+use yulius_app::ports::git::{
+    BranchInfo, CommitInfo, DiffStat, GitPort, ReviewChanges, WorktreeInfo,
+};
 use yulius_contracts::api::git::{ChangedFile, DiffHunk, DiffLine, TaskCommit};
 use yulius_git::{
     Author, FileDiff, FileStatus, Git, GitError, ImportRef, LineKind, WorktreeRemoval,
@@ -387,6 +389,113 @@ impl GitPort for GitAdapter {
         })
         .await
     }
+
+    async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
+        let (git, repo, rev) = (self.git(), repo.to_path_buf(), rev.to_owned());
+        blocking(move || git.resolve_commit(&repo, &rev)).await
+    }
+
+    async fn show_file(&self, repo: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {
+        let (git, repo, rev, path) = (
+            self.git(),
+            repo.to_path_buf(),
+            rev.to_owned(),
+            path.to_owned(),
+        );
+        blocking(move || git.show_file(&repo, &rev, &path)).await
+    }
+
+    async fn list_dir(&self, repo: &Path, rev: &str, dir: &str) -> AppResult<Vec<String>> {
+        let (git, repo, rev, dir) = (
+            self.git(),
+            repo.to_path_buf(),
+            rev.to_owned(),
+            dir.to_owned(),
+        );
+        blocking(move || git.list_dir(&repo, &rev, &dir)).await
+    }
+
+    async fn ci_checkout(
+        &self,
+        repo: &Path,
+        path: &Path,
+        sha: &str,
+        owned_root: &Path,
+    ) -> AppResult<()> {
+        let (git, repo, path, sha, root) = (
+            self.git(),
+            repo.to_path_buf(),
+            path.to_path_buf(),
+            sha.to_owned(),
+            owned_root.to_path_buf(),
+        );
+        blocking(move || git.ci_checkout(&repo, &path, &sha, &root)).await
+    }
+
+    async fn remote_branches(&self, repo: &Path) -> AppResult<Vec<BranchInfo>> {
+        let (git, repo) = (self.git(), repo.to_path_buf());
+        blocking(move || git.remote_branches(&repo))
+            .await
+            .map(branch_infos)
+    }
+
+    async fn local_branches(&self, repo: &Path) -> AppResult<Vec<BranchInfo>> {
+        let (git, repo) = (self.git(), repo.to_path_buf());
+        blocking(move || git.local_branches(&repo))
+            .await
+            .map(branch_infos)
+    }
+
+    async fn is_ancestor(&self, repo: &Path, ancestor: &str, descendant: &str) -> AppResult<bool> {
+        let (git, repo, a, d) = (
+            self.git(),
+            repo.to_path_buf(),
+            ancestor.to_owned(),
+            descendant.to_owned(),
+        );
+        blocking(move || git.is_ancestor(&repo, &a, &d)).await
+    }
+
+    async fn on_remote(&self, repo: &Path, sha: &str) -> AppResult<bool> {
+        let (git, repo, sha) = (self.git(), repo.to_path_buf(), sha.to_owned());
+        blocking(move || git.on_remote(&repo, &sha)).await
+    }
+
+    async fn worktrees(&self, repo: &Path) -> AppResult<Vec<WorktreeInfo>> {
+        let (git, repo) = (self.git(), repo.to_path_buf());
+        let list = blocking(move || git.worktree_list(&repo)).await?;
+        Ok(list
+            .into_iter()
+            .enumerate()
+            .filter(|(_, w)| !w.bare)
+            .map(|(index, w)| WorktreeInfo {
+                path: w.path,
+                branch: w.branch,
+                prunable: w.prunable,
+                main: index == 0,
+            })
+            .collect())
+    }
+
+    async fn delete_local_branch(&self, repo: &Path, name: &str) -> AppResult<()> {
+        let (git, repo, name) = (self.git(), repo.to_path_buf(), name.to_owned());
+        blocking(move || git.delete_local_branch(&repo, &name)).await
+    }
+
+    async fn prune_worktrees(&self, repo: &Path) -> AppResult<()> {
+        let (git, repo) = (self.git(), repo.to_path_buf());
+        blocking(move || git.worktree_prune(&repo)).await
+    }
+}
+
+fn branch_infos(tips: Vec<yulius_git::BranchTip>) -> Vec<BranchInfo> {
+    tips.into_iter()
+        .map(|tip| BranchInfo {
+            name: tip.name,
+            sha: tip.sha,
+            committed_ms: tip.committed_at.saturating_mul(1000),
+        })
+        .collect()
 }
 
 /// A reviewed file in the API's form (`added|modified|deleted|renamed`, lines `ctx|add|del`).

@@ -95,6 +95,9 @@ pub struct Commands {
     pub lint: Option<String>,
     /// Build command.
     pub build: Option<String>,
+    /// The gate Yulius runs as the project's CI (SPEC-001 DLV-006), read from the integration
+    /// branch.
+    pub gate: Option<String>,
 }
 
 /// The parsed `yulius.toml` project contract.
@@ -104,6 +107,8 @@ pub struct ProjectConfig {
     pub docs: DocsLayout,
     /// Verification commands.
     pub commands: Commands,
+    /// `[[ci.jobs]]` definitions (validated; see [`crate::ci::project_jobs`]).
+    pub ci: Vec<crate::ci::JobDef>,
     /// Delivery profile.
     pub delivery: DeliveryProfile,
 }
@@ -113,6 +118,7 @@ impl Default for ProjectConfig {
         Self {
             docs: DocsLayout::default(),
             commands: Commands::default(),
+            ci: Vec::new(),
             delivery: DeliveryProfile::standard(),
         }
     }

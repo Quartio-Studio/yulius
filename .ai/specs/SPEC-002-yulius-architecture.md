@@ -86,6 +86,7 @@ Principles:
 | ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Over the user's link (F 2026-10-10, later): the viewer acknowledges frames and the server keeps about a round trip on the way, the bitrate and frame rate follow the slowest viewer (VBV tiers), keyframes come on demand from a replacement encoder, wheel and pointer moves are coalesced. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
 | ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done. Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
 | ADR-17 | Claude subscriptions are **one self-managing pool** (F 2026-10-10): use-it-or-lose-it placement (weekly headroom ÷ hours to its reset ÷ tasks on the account + 1), a proactive switch at 98 % of any binding window at the turn boundary by native resume, and a **gentle, invisible pause** held by the harness — the Stop / `UserPromptSubmit` hook answers `202 Retry-After` and `yulius hook` keeps polling — persisted in `capacity_pauses`, resumed oldest first and staggered; a burn-rate forecast says when to buy more. Analysis and contract: §2.4. | Manual priorities (before); suspending the agent (SIGSTOP); letting the CLI hit the limit and typing a resume prompt; killing and resuming | No knobs; capacity that expires is spent first; switches only when forced; the agent is never told; a hold survives restarts; the CLI shows "running hook" while paused and a held agent keeps its session slot; relies on Claude Code honouring a long hook `timeout` (fallback: the reported-limit pause). |
+| ADR-18 | **Yulius is the projects' only CI** (F 2026-10-10: "100% local … zero paid github features … deleting GitHub Actions completely"). Each sandbox's `[[ci.jobs]]`, or `[commands] gate`, is read from the integration branch; the profile's `gate` overrides it. Yulius runs the jobs for every open pull request head and every new integration and production head, once per commit, in parallel. Each job goes through the process host inside the sandbox's containment, without secrets, in a persistent per-job checkout with persistent caches. Results go to the commit status `yulius/ci`. Once a sandbox has CI, the merge gate takes the run at the exact head alone. Hygiene deletes merged branches and cleans stale branches and worktrees. Analysis and contract: §2.5. | GitHub Actions on hosted or Blacksmith runners (paid per minute, Actions workflows); a self-hosted Actions runner (still Actions, still a workflow per repository); a separate CI server (Buildkite agent, Woodpecker: another service to run and secure); running the gate in the agent's worktree (stale caches mixed with the agent's work, no isolation from the task) | One CI, on infrastructure we control, with no GitHub plan dependency. Merges are enforced by Yulius, not by rulesets. The VM pays the CPU, disk and caches. Statuses need the App's "Commit statuses: write"; pushes that delete workflows need "Workflows: write". Agents can still read a token through the Git credential helper, so the gate binds agents that merge through Yulius, not a hostile agent (§8). |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 
 ### 2.1 ADR-14: the browser panel renders the sandbox's apps live (F 2026-10-09)
@@ -776,6 +777,157 @@ Code honours an 8-day hook `timeout`; if it ended the hook earlier, the hook fai
 continues on a subscription at 98 % or more, and a reported limit pauses it as `limit` — work is
 never lost.
 
+### 2.5 ADR-18: Yulius runs the projects' CI (F 2026-10-10)
+
+Status: accepted and implemented (issue #138).
+
+**Request.** "All tests and CI/CD should be 100% local, using local blacksmith instance. Zero paid
+github features. Keep github hygiene clean." Michał's clarification the same evening: "onboarding
+should contain deleting GitHub Actions completely and using only blacksmith". Blacksmith the
+service runs GitHub Actions workflows, so the intent is Yulius's own CI on our VM, with no GitHub
+Actions. Also: agents "create prs, merge them autonomously, then delete branches and worktrees …
+no stale branches".
+
+**Configuration.** `[[ci.jobs]]` entries (`name`, a one-line `command`, an optional `matrix` of
+space-separated values) or `[commands] gate` (one job named `gate`) in `yulius.toml`.
+
+- The configuration is read **from the integration branch head**, so a pull request cannot change
+  the CI it is tested with. Changing CI goes through a merged pull request.
+- An administrator's `gate` in the delivery profile (`PATCH /api/sandboxes/{sid}`) overrides it.
+- **Bootstrap:** while the integration branch has no CI and no configuration error, a pull request
+  that adds CI is tested with its own jobs (`source: pull_request`). The onboarding pull request
+  that replaces GitHub Actions is then tested by what it adds.
+- Matrix values reach the command as the environment variable `YULIUS_CI_MATRIX`, never by text
+  substitution.
+- Bounds: 16 definitions, 32 jobs after expansion, 16 values per matrix, 2,000 bytes per command.
+
+**Scheduling** (`yulius_app::ci`, pure plan in `yulius_domain::ci::plan`).
+
+- *Sync loop*, every 60 s (`YULIUS_CI_POLL_SECS`). For each sandbox:
+  - fetch the clone with the installation token;
+  - read the CI in force;
+  - list open pull requests into the integration branch (at most 30; heads not in the clone,
+    from forks, are not tested);
+  - resolve the integration and production heads.
+- *Plan:*
+  - a target is queued unless a run of the same commit is active or has a verdict (a commit is
+    tested once, whatever reference carries it);
+  - an active run whose reference moved to another commit, or disappeared, is cancelled with
+    "superseded by <sha>".
+- *Dispatcher* (woken on queue and on runner release, else every 15 s): starts the oldest queued
+  run of each sandbox with nothing executing. A sandbox runs one run at a time, because its jobs
+  use the sandbox's CI checkouts. A partial unique index makes a second running run impossible.
+- *Jobs* of a run run in parallel. Each holds one of `YULIUS_CI_MAX_JOBS` (default 4) instance-wide
+  slots, waiting for one cancellably.
+
+**Execution** (`ci/exec.rs`).
+
+- **Checkout:** a persistent detached worktree per job at `<sandbox>/ci/jobs/<job>`, with matrix
+  siblings at `<job>.<n>`. Each run does a forced checkout of the commit and `git clean -fd`, which
+  keeps ignored files: build outputs and dependency folders are the job's cache.
+- **Command:** `/bin/sh -c '<fixed wrapper>' yulius-ci <log> <command>`. The wrapper redirects
+  output to the job's log and runs the command as its own `sh -c` argument, so the configured text
+  is never spliced into Yulius's script.
+- **Process:** spawned through `SessionHost`, the same process and containment port as agents.
+  Contained instances use bubblewrap over the sandbox directory, with HOME = `<sandbox>/ci/home`.
+- **Environment:** `PATH`, `LANG`, `TERM=dumb`, `CI=true`, `NO_COLOR=1`, `HOME`,
+  `YULIUS_CI_CACHE=<sandbox>/ci/cache` and `YULIUS_CI_{RUN,JOB,SHA,REF,MATRIX}`. No task token,
+  provider credential or GitHub token.
+- **Output:** the log is read every 500 ms from the first byte, escape sequences are removed, the
+  last 512 KiB is kept and stored every 2 s while running.
+- **Ending:** a timeout (`YULIUS_CI_JOB_TIMEOUT_MIN`, default 30), a cancellation or a log over
+  256 MiB sends SIGKILL to the job's process group through the host. When no exit is seen within
+  10 s, the host is terminated, and it kills and reaps the group. The run directory and log are
+  removed afterwards.
+- **Run state:** running while any job is active, then failed > error > cancelled > passed.
+
+**Results.** On every state change Yulius publishes the commit status `yulius/ci`:
+
+- pending "Queued…" or "Running…";
+- success "Passed: N jobs in …";
+- failure "Failed: <job> (exit code n) in …";
+- error "Error: …" or "Cancelled: …".
+
+The status links to `<public>/s/<slug>/ci?run=<id>`. A refused publication is recorded on the run.
+A missing permission ("the GitHub App needs the Commit statuses: Read and write permission") is
+shown once to administrators. Publication is retried by the loop, at most 5 attempts within a day.
+
+**Merge gate.** `dlv_observe` asks for the CI's verdict at the pull request head.
+
+- If the sandbox has CI, or a run of that commit exists, that run alone decides:
+  - no run, queued or running → `pending`;
+  - passed → `success`;
+  - failed, error or cancelled → `failure`.
+- GitHub's checks are not read then, so leftover Actions or statuses from elsewhere do not count.
+- Without CI, or with `YULIUS_CI=off`, GitHub's checks decide as before (#111).
+- The verdict feeds the domain merge gate, the Done rule and agents' merges alike. They all go
+  through `dlv_observe` and `dlv::apply`.
+
+**Branch protection without paid rulesets.** Merges happen through Yulius (people on the Git page,
+agents through Yulius's tools), and the merge gate enforces the profile there. Creating a project
+still asks GitHub for rulesets, as a second line of defence, but a refusal (a free plan with a
+private repository) no longer fails the creation.
+
+**Hygiene** (`ci/hygiene.rs`, domain classification `yulius_domain::ci::classify_*`).
+
+- After a merge through Yulius, the head branch is deleted unless it is protected (integration,
+  production or default) or another open pull request uses it.
+- A scan runs every 6 h (first after 10 min) and on request. It is bounded to 300 remote branches,
+  oldest first, and 50 pull-request lookups.
+- It reports:
+  - remote branches whose newest pull request was merged or closed;
+  - branches contained in the integration or production branch;
+  - unmerged branches without a pull request and without commits for 14 days (`idle`, removed only
+    with `force`);
+  - local branches no worktree uses whose tip is on a remote-tracking branch;
+  - task worktrees of deleted, archived or merged tasks, and registered worktrees whose directory is
+    gone.
+- It never reports live tasks' worktrees, the CI checkouts, protected branches, or branches with an
+  open pull request.
+- Cleanup scans again first, removes worktrees only when clean (never forced), audits every removal
+  and returns what it kept and why.
+- GitHub keeps every pull request's commits, so deleting its branch loses nothing.
+
+**Onboarding off GitHub Actions.** The agent tool `ci_setup` summarizes the task worktree's
+`.github/workflows/*.yml` with a bounded line reader (`yulius_domain::ci::actions`): jobs,
+`runs-on`, the raw `strategy`, and `run:` and `uses:` steps. It returns them with the CI the
+worktree's `yulius.toml` configures and the steps:
+
+1. translate every check into `[[ci.jobs]]`;
+2. `git rm -r .github/workflows`;
+3. commit;
+4. the pull request is tested by bootstrap.
+
+The CI page names workflows still on the integration branch.
+
+**This repository (Quartio-Studio/yulius).** It keeps its Actions CI in this change. Taking it over
+needs the following, in order:
+
+1. Give the App "Commit statuses: Read and write" and "Workflows: Read and write", and accept them on
+   the installation.
+2. Add `[[ci.jobs]]` for the quality gate (`python3 scripts/bootstrap.py && scripts/dev ci`) and
+   e2e (`cd e2e && npm ci --ignore-scripts && npx e2e run`).
+   - The VM needs the Rust toolchain via rustup in the CI home, and Node ≥ 24.8 for e2e.
+   - The branch policy (`scripts/check_git_policy.py`) reads the pull request's title and base from
+     GitHub's event with a token. Jobs have neither, so the policy moves into Yulius's merge gate (a
+     follow-up) or stays a GitHub check until then.
+   - macOS becomes a manual check.
+3. Let Yulius run beside Actions until its results match for a few days.
+4. Switch the rulesets' required checks to `yulius/ci`, or drop the rulesets on a free plan.
+5. Delete `.github/workflows/`.
+
+**Consequences.**
+
+- The VM's CPU and disk carry the CI: per-job checkouts plus caches per sandbox (a Rust workspace's
+  `target/` per job). Size `YULIUS_CI_MAX_JOBS` to the machine.
+- Cache poisoning stays within a sandbox's trust domain. A pull request's job can write the caches a
+  later integration run reads, as with shared Actions caches. Agents of the sandbox can already
+  write there.
+- macOS and Windows targets are not covered (Linux VM only).
+- Forks' pull requests are not tested.
+- The gate binds merges made through Yulius. An agent that extracts a token from the credential
+  helper could still merge through GitHub's API (§8).
+
 ## 3. Code organization
 
 Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
@@ -867,6 +1019,8 @@ Schema version 1 (tables; columns abbreviated):
 | `audit_log` | id, at, actor, action, target, detail |
 | `task_chains` | task_id (PK), after_task_id (NULL once the predecessor is deleted), after_number, blocked_reason, created_at — ADR-16 |
 | `prompt_holds` | id, task_id, class, prompt, prompt_sha256, percent, typed_by, state (pending/sent/consumed/parallel/after/skipped_after/reverted/dismissed/superseded), created_at, resolved_by, resolved_at, new_task_id — ADR-16 |
+| `ci_runs` | id, sandbox_id, reference (`pr/<n>` / `branch/<name>`), sha, source (profile/yulius_toml/pull_request), state (queued/running/passed/failed/error/cancelled), reason, requested_by, status_for, status_note, status_attempts, queued_at, started_at, ended_at; partial unique index: one running run per sandbox — ADR-18 (migration `0014_local_ci.sql`) |
+| `ci_jobs` | id, run_id (cascade), ordinal, name, job_key, command, matrix, state, reason, exit_code, output (tail), started_at, ended_at — ADR-18 |
 
 Versioning: each migration is one transaction; startup refuses a database from a newer schema.
 Backup: `VACUUM INTO` plus copy of files excluding `runs/`.
@@ -973,6 +1127,20 @@ sandbox are rejected with an explanatory error while `pending/preparing`, unless
 `none → pr_open (#n) → merged_integration → env_<name>_done … → promoted → env_production_done`.
 Each transition is a user action (or profile auto-promotion) verified against GitHub state; stale
 heads are refused (GIT-002).
+
+### 6.8 CI run and job (ADR-18)
+
+`queued → running → passed | failed | error | cancelled`; `queued → cancelled`.
+
+- *queued*: owned by the dispatcher. It leaves when the sandbox has no executing run (→ running),
+  when it is cancelled or superseded, or when a person cancels it.
+- *running*: owned by the run's executor. It leaves when every job has ended. The run's state comes
+  from its jobs.
+- A restart puts running runs back to queued after terminating their hosts.
+
+A job goes `queued → running` once it holds a slot, or straight to cancelled when the run is
+cancelled first. It leaves running on exit, timeout, cancellation, the output limit or a lost host.
+Every end is recorded once (compare-and-set).
 
 ## 7. Runtime contracts
 
@@ -1086,6 +1254,9 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `workflows_list` | Workflows available (AUT-004) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
+| `ci_status`, `ci_rerun` | The CI in force and recent runs (this task's pull request first), one run's job outputs (tails of 16 KiB), run a commit again (DLV-006) |
+| `ci_setup` | Onboarding off GitHub Actions: the worktree's workflows summarized, its `[[ci.jobs]]`, the steps (DLV-006) |
+| `repo_hygiene`, `repo_cleanup` | Stale branches and worktrees; removal of safe items, `force` for unmerged branches without a pull request (DLV-007) |
 
 Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
 `scope_claim` takes one glob or up to 20, a task holds at most 50; claims of tasks that are no
@@ -1249,6 +1420,16 @@ raw body up to the upload limit, 25 MiB by default).
   write-access and Origin checks. The sandbox Chrome refuses Yulius's origins and listeners
   (ADR-14, BRW-008).
 
+- CI jobs (ADR-18): repository-defined shell text, run like the sandbox's agents: through the
+  process host inside the sandbox's containment, with no secret in their environment (no task
+  token, provider credential or GitHub token). The CI configuration comes from the integration
+  branch, so a pull request cannot weaken the CI it is judged by; it can still change the scripts
+  the CI calls, as in any CI. Server-side Git for checkouts runs outside containment with hooks and
+  fsmonitor disabled (#54). Commit statuses and branch deletion use the installation token, never
+  exposed to jobs. The merge gate binds merges through Yulius: an agent that obtains a token from
+  the credential helper could merge through GitHub's API, which on a free plan nothing on GitHub
+  prevents.
+
 ## 8a. Imported repository specifics (Product, Studio)
 
 - Sandboxes clone from GitHub; local machine state arrives only through `yulius import` uploads.
@@ -1316,6 +1497,15 @@ raw body up to the upload limit, 25 MiB by default).
 | Chained tasks per sandbox | 32 | refused at creation |
 | Held prompts per task | one pending (a newer one supersedes) | — |
 | Revert stop wait | 30 s | nothing reverted, conflict |
+| CI jobs at once (instance, ADR-18) | 4 (`YULIUS_CI_MAX_JOBS`) | jobs wait for a slot (cancellable) |
+| CI runs at once per sandbox | 1 | the next waits in the queue |
+| CI job time | 30 min (`YULIUS_CI_JOB_TIMEOUT_MIN`) | process group killed; job `error` "timed out" |
+| CI job output | 512 KiB kept, log ≤ 256 MiB | oldest discarded with a note / job ended "more than 256 MiB of output" |
+| CI configuration | 16 job definitions, 32 jobs, 16 matrix values, 2,000-byte commands | `yulius.toml` problem shown; no CI from it |
+| Pull requests tested per sandbox | 30 open | the rest wait for a later sync |
+| CI retention | 50 runs per sandbox, 14 days | oldest finished runs deleted hourly |
+| Commit status publication | 5 attempts within 24 h | the note stays on the run |
+| Hygiene scan | 300 remote branches, 50 pull-request lookups, every 6 h | note; the rest next scan |
 
 ## 10. Failure and recovery matrix
 
@@ -1348,6 +1538,11 @@ raw body up to the upload limit, 25 MiB by default).
 | Jev down, slow or answering off-contract | typed adapter failure | Nothing checked: new tasks are created as written, typed prompts pass (ADR-16). |
 | Split proposal fails (no account, Claude error, timeout, unusable) | proposer failure / domain check | The composer creates the one task as written. |
 | Predecessor of a chained task ends without being Done | chain re-evaluation | The chained task needs a person (reason shown); never started silently. |
+| CI job hangs or floods output | job deadline / log size | SIGKILL to its group through the host; host terminated when no exit within 10 s; job `error` with the reason; run directory and log removed. |
+| Restart with CI runs executing | active runs at start | Hosts of their jobs terminated; runs and jobs back to `queued` (outputs cleared with a note); run again. |
+| Commit status refused (permission, outage) | GitHub error | Recorded on the run (`status`), retried by the loop up to 5 times in a day; the run and the merge gate are unaffected. |
+| `yulius.toml` CI invalid on the integration branch | parse error | No CI from it (no runs), the problem shown on the CI page and to agents; a profile `gate` still applies. |
+| Head commit not in the clone (fork, force-push race) | `rev-parse` | Not queued; a queued run whose commit cannot be fetched errors with the reason. |
 
 ## 11. Testing and evidence plan
 
@@ -1432,10 +1627,13 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Dropped files (EDT-006, UI-048, 2026-10-10) | `tests/uploads.rs`: editor uploads (write users only, CSRF, folders created, byte-for-byte with SHA-256, 409 then overwrite with permissions kept, folders and links never replaced, traversal / absolute / control characters / `.git` / links out refused with nothing written outside, a repository folder linked into another sandbox refused, task worktree root, audit), bounds (declared and streamed size, an interrupted body, 8 concurrent then 429, no temporary file left), task attachments (safe unique names, read users refused, a planted link refused, removed with the task), shell attachments (owner only, removed when the shell closes or at start-up), the fake agent reading an attachment by path with a clean `git status` (uncontained; on Linux also inside bubblewrap, skipped where bubblewrap cannot run). Unit tests in `yulius_app::uploads`. `e2e/tests/filedrop.e2e.ts` (mock UI). Opt-in `live_ui_filedrop.rs` with real Chrome: real drags from disk to the explorer and to the task terminal, read by the fake agent. |
 | Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
 | Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
+| Yulius-run CI and hygiene (ADR-18, DLV-006/007, 2026-10-11) | Unit: `yulius_domain::ci` (gate validation and precedence, job definitions and matrix expansion and their errors, run state from jobs, the plan: once per commit, supersede, no automatic retry of a cancelled reference; status descriptions within 140 characters; the merge gate; branch and worktree classification), `ci::actions` (workflow reader: jobs, block scalars, folded scripts, bounds, garbage), the `yulius.toml` `[[ci.jobs]]` parser and render round trip, `ci/exec.rs` (escape stripping across chunks, matrix checkouts), store (`ci_runs`/`ci_jobs`: transitions, one running run per sandbox, requeue after restart, status bookkeeping, retention with cascade). `yulius-github` `tests/client.rs`: commit statuses against the fake GitHub (pending then success in the combined status, description clipped, invalid state refused, 403 without the permission), branch deletion (true, then false). `tests/local_ci.rs` (real git, real detached ptyhost, fake GitHub): jobs in parallel with a matrix, outputs without escape sequences, no secret in the environment, persistent checkouts, statuses and links, the merge gate pending → passed → failed, Run again (and its refusal while active), a superseded run killed at once, a timeout, nothing left in `runs/`; statuses refused → runs still gate; hygiene scan and cleanup over a real origin. `tests/delivery.rs`: the merged branch is deleted. `e2e/tests/ci.e2e.ts` (mock UI). |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
 
+- 2026-10-11 (F 2026-10-10, final stage; #138): ADR-18 Yulius-run CI and repository hygiene;
+  §5 `ci_runs`, `ci_jobs`; §6.8; §7.4 CI and hygiene tools; §8 CI trust; §9 bounds; §10; §14.
 - 2026-10-10 (F 2026-10-10, later; #122): ADR-15 over the user's link — flow control by
   acknowledged frames, VBV bitrate tiers following the slowest viewer, keyframes on demand from a
   replacement encoder (make before break), coalesced wheel and pointer moves, every frame decoded

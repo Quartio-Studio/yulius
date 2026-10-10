@@ -19,6 +19,7 @@ const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
 const NAV = [
   ['tasks', 'Tasks', 'tasks'],
   ['git', 'Git', 'branch'],
+  ['ci', 'CI', 'check'],
   ['workflows', 'Workflows', 'workflow'],
   ['skills', 'Skills', 'book'],
   ['automations', 'Automations', 'zap'],
@@ -107,9 +108,9 @@ export function createTabRow(ctx) {
         'aria-current': sandbox.slug === currentSlug ? 'page' : null,
       },
       h('span', { class: 'tab-name' }, sandbox.name),
-      h('span', { class: 'sr-only' }, [counts.running ? `, ${counts.running} running` : '', counts.needs_attention ? `, ${counts.needs_attention} need${counts.needs_attention === 1 ? 's' : ''} attention` : ''].join('')),
-      counts.running ? h('span', { class: 'tab-running', title: `${counts.running} running`, 'aria-hidden': 'true' }, String(counts.running)) : null,
-      counts.needs_attention ? h('span', { class: 'tab-dot', title: `${counts.needs_attention} need attention` }) : null);
+      h('span', { class: 'sr-only' }, [counts.running ? `, ${counts.running} working` : '', counts.needs_attention ? `, ${counts.needs_attention} need${counts.needs_attention === 1 ? 's' : ''} you` : ''].join('')),
+      counts.running ? h('span', { class: 'tab-running', title: `${counts.running} working`, 'aria-hidden': 'true' }, String(counts.running)) : null,
+      counts.needs_attention ? h('span', { class: 'tab-dot', title: `${counts.needs_attention} need${counts.needs_attention === 1 ? 's' : ''} you` }) : null);
       const index = sandboxes.indexOf(sandbox);
       const move = (step) => {
         const ids = sandboxes.map((sb) => sb.id);

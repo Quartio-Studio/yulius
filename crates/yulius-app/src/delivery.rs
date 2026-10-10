@@ -297,7 +297,17 @@ pub fn profile_to_contract(profile: &DeliveryProfile) -> Profile {
                 verify: env.verify.as_str().to_owned(),
             })
             .collect(),
+        gate: None,
     }
+}
+
+/// The CI gate stored on the sandbox's profile (DLV-006); `None` when absent or invalid.
+#[must_use]
+pub fn profile_gate(sandbox: &SandboxRecord) -> Option<String> {
+    serde_json::from_str::<Profile>(&sandbox.profile_json)
+        .ok()
+        .and_then(|profile| profile.gate)
+        .and_then(|gate| yulius_domain::ci::validate_gate(&gate).ok())
 }
 
 /// The sandbox's stored profile; an unreadable or invalid one falls back to `standard`.
@@ -790,7 +800,7 @@ impl App {
     }
 
     /// Short-lived installation token for Git transport (push, fetch).
-    async fn dlv_installation_token(&self, sandbox: &SandboxRecord) -> AppResult<Secret> {
+    pub(crate) async fn dlv_installation_token(&self, sandbox: &SandboxRecord) -> AppResult<Secret> {
         let app = self.github_app().await?;
         let installed = self
             .deps
@@ -845,7 +855,7 @@ impl App {
     }
 
     /// Fetches the sandbox's primary clone.
-    async fn dlv_refresh_clone(&self, sandbox: &SandboxRecord) -> AppResult<()> {
+    pub(crate) async fn dlv_refresh_clone(&self, sandbox: &SandboxRecord) -> AppResult<()> {
         let repo = self.sandbox_repo(&sandbox.id);
         if !repo.join(".git").exists() {
             return Err(AppError::Conflict(
@@ -860,7 +870,7 @@ impl App {
         self.deps.git.sync_clone(&url, &repo, &token).await
     }
 
-    async fn dlv_audit(&self, actor: &str, action: &str, target: &str, detail: &str) {
+    pub(crate) async fn dlv_audit(&self, actor: &str, action: &str, target: &str, detail: &str) {
         if let Err(err) = self
             .deps
             .store
@@ -871,7 +881,7 @@ impl App {
         }
     }
 
-    fn dlv_actor_login(user: &UserRecord) -> String {
+    pub(crate) fn dlv_actor_login(user: &UserRecord) -> String {
         user.github_login
             .clone()
             .unwrap_or_else(|| "superadmin".into())
@@ -1053,16 +1063,23 @@ impl App {
                 }
             }
             if let Some(pull) = pr.as_ref().filter(|p| is_open(p)) {
-                match github.checks(token, owner, repo, &pull.head_sha).await {
-                    Ok(report) => {
-                        checks = domain_checks(report.state);
-                        checks_unreadable = report.unreadable;
+                let gate = self.ci_gate_result(sandbox, &pull.head_sha).await;
+                if gate == yulius_domain::ci::GateResult::NotConfigured {
+                    match github.checks(token, owner, repo, &pull.head_sha).await {
+                        Ok(report) => {
+                            checks = domain_checks(report.state);
+                            checks_unreadable = report.unreadable;
+                        }
+                        Err(err) => {
+                            // Unknown checks never allow a merge that requires them.
+                            checks = ChecksState::Unknown;
+                            notes.push(format!("Checks can't be read: {}", github_reason(&err)));
+                        }
                     }
-                    Err(err) => {
-                        // Unknown checks never allow a merge that requires them.
-                        checks = ChecksState::Unknown;
-                        notes.push(format!("Checks can't be read: {}", github_reason(&err)));
-                    }
+                } else {
+                    // Yulius CI is the project's only CI: its run at this head alone decides
+                    // (DLV-006); checks GitHub reports from elsewhere do not count.
+                    checks = yulius_domain::ci::gate_checks(ChecksState::None, gate);
                 }
             }
         }
@@ -1525,17 +1542,28 @@ impl App {
         };
         let before = delivery_profile(&sandbox);
         let profile = profile_from_contract(requested)?;
-        let json =
-            serde_json::to_string(&profile_to_contract(&profile)).map_err(AppError::internal)?;
+        let gate = match requested.gate.as_deref() {
+            None => None,
+            Some(text) if text.trim().is_empty() => None,
+            Some(text) => Some(
+                yulius_domain::ci::validate_gate(text)
+                    .map_err(|err| invalid(format!("gate: {err}")))?,
+            ),
+        };
+        let mut stored = profile_to_contract(&profile);
+        stored.gate.clone_from(&gate);
+        let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
         self.deps.store.set_profile(&sid, &json).await?;
+        self.ci_forget_gate(&sid);
         self.dlv_audit(
             &Self::dlv_actor_login(&ctx.user),
             "delivery.profile.update",
             &sandbox.slug,
             &format!(
-                "from preset {}: {}",
+                "from preset {}: {}, gate {}",
                 before.preset.as_str(),
-                profile_summary(&profile)
+                profile_summary(&profile),
+                gate.as_deref().unwrap_or("(from yulius.toml)")
             ),
         )
         .await;
@@ -2107,6 +2135,10 @@ impl App {
             }
         };
         let mut notes = Vec::new();
+        // Hygiene (DLV-007): the merged branch goes, unless protected or still in use.
+        if let Some(note) = self.delete_merged_branch(&sandbox, &pull).await {
+            notes.push(note);
+        }
         if let Some(note) = self
             .dlv_auto_promote_if_enabled(&sandbox, &profile, &ctx.user, &token, fetched)
             .await

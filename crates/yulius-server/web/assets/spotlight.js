@@ -28,7 +28,7 @@ export function openSpotlight({ label, placeholder, search, more, initial = '' }
   const foot = h('div', { class: 'spot-foot', 'aria-hidden': 'true' },
     h('span', null, h('span', { class: 'kbd' }, '↑'), h('span', { class: 'kbd' }, '↓'), 'choose'),
     h('span', null, h('span', { class: 'kbd' }, '↵'), 'open'),
-    h('span', { class: 'spot-foot-alt' }, h('span', { class: 'kbd' }, `${alt} ↵`), 'go to session'),
+    h('span', { class: 'spot-foot-alt' }, h('span', { class: 'kbd' }, `${alt} ↵`), 'go to task'),
     h('span', null, h('span', { class: 'kbd' }, 'esc'), 'close'));
   const dialog = h('dialog', { class: 'spot', 'aria-label': label },
     h('div', { class: 'spot-field' }, icon('search', { size: 20 }), input),

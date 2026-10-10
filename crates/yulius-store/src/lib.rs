@@ -9,6 +9,7 @@ mod analytics;
 mod audit;
 mod automations;
 mod capacity;
+mod ci;
 mod coordination;
 pub mod crypto;
 mod delivery;
@@ -41,6 +42,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0003_claude_only.sql"),
     include_str!("migrations/0004_task_intake.sql"),
     include_str!("migrations/0005_subscription_pool.sql"),
+    include_str!("migrations/0014_local_ci.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;

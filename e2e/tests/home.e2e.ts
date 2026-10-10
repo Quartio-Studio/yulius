@@ -15,8 +15,8 @@ test('the home screen is the default view and lists every sandbox as a card', as
     const card = screen.getByRole('article', name);
     await expect(card).toBeVisible();
     await expect(card.getByText(repo)).toBeVisible();
-    // The sandbox's counters, in words: "2 need you 3 running 1 queued".
-    await expect(card.getByRole('list', `Tasks in ${name}`)).toHaveText(/^\d+ needs? you \d+ running \d+ queued$/);
+    // The sandbox's counters, in words: "2 need you 3 working 1 queued" (the sidebar's names).
+    await expect(card.getByRole('list', `Tasks in ${name}`)).toHaveText(/^\d+ needs? you \d+ working \d+ queued$/);
     await expect(card.getByText(/^Last activity /)).toBeVisible();
   }
   // Read access cannot start tasks.

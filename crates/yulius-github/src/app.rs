@@ -170,8 +170,9 @@ impl GitHubClient {
         .await
     }
 
-    /// The App manifest for the manifest flow: private App with contents, pull requests and
-    /// administration write, checks, commit statuses, metadata and members read (the full list
+    /// The App manifest for the manifest flow: private App with contents, pull requests, commit
+    /// statuses (Yulius CI), workflows (onboarding removes GitHub Actions) and administration
+    /// write, checks, metadata and members read (the full list
     /// and what each is for: `docs/operations.md`, "GitHub App permissions"); user-to-server
     /// OAuth whose callback is [`AUTH_CALLBACK_PATH`] and whose manifest redirect is
     /// [`MANIFEST_CALLBACK_PATH`] under `public_url`. No webhook is registered. New Apps use
@@ -219,7 +220,8 @@ impl GitHubClient {
                 "contents": "write",
                 "pull_requests": "write",
                 "checks": "read",
-                "statuses": "read",
+                "statuses": "write",
+                "workflows": "write",
                 "administration": "write",
                 "metadata": "read",
                 "members": "read"

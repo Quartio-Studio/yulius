@@ -18,6 +18,7 @@ import { mountTaskView, mountComposer } from './taskview.js';
 import { mountSetup, mountSignIn, signInProblem } from './pages/auth.js';
 import { mountTasksPage, mountArchivedPage, mountDevicePage } from './pages/tasks.js';
 import { mountGitPage } from './pages/git.js';
+import { mountCiPage } from './pages/ci.js';
 import { mountGitTaskView } from './pages/gittask.js';
 import { mountTaskInfoView } from './pages/taskinfo.js';
 import { mountSkillEditor } from './pages/skilledit.js';
@@ -48,6 +49,7 @@ const SANDBOX_PAGES = {
   skills: (ctx, sandbox, route) => mountSkillsPage(ctx, sandbox, route),
   automations: (ctx, sandbox) => mountAutomationsPage(ctx, sandbox),
   mcp: (ctx, sandbox, route) => mountMcpPage(ctx, sandbox, route),
+  ci: (ctx, sandbox, route) => mountCiPage(ctx, sandbox, route),
   dashboard: (ctx, sandbox) => mountDashboardPage(ctx, sandbox),
 };
 

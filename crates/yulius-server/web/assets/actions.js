@@ -14,7 +14,7 @@ export function openTaskMenu(ctx, anchor, task) {
   const sandbox = ctx.store.sandboxById(task.sandbox_id);
   const access = sandbox ? sandbox.access : 'read';
   const can = taskActions(task, access);
-  const why = allows(access, 'write') ? 'Not available in this state' : 'Requires write access on GitHub';
+  const why = allows(access, 'write') ? 'Not available in this state' : 'Requires write access';
   openMenu(anchor, [
     { header: `#${task.number} · ${statusInfo(task).label}` },
     task.status === 'chained' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
