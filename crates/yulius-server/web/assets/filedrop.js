@@ -386,6 +386,7 @@ export function attachEditorDrop({ ctx, sandboxId, tree, host, head, getRoot, ac
       if (choice === 'skip') jobs = jobs.filter((job) => !clashes.includes(job));
       else for (const job of clashes) job.overwrite = true;
     }
+    if (!jobs.length) { status.end('Nothing was added.'); return; }
     for (const job of jobs) {
       job.send = (file, options) => api.put(`/api/sandboxes/${enc(sandboxId)}/files/upload?root=${encodeURIComponent(root)}&path=${encodeURIComponent(job.path)}&overwrite=${job.overwrite}`, file, options);
     }
