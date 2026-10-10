@@ -20,7 +20,7 @@ pub mod events {
     /// The session ends (`/exit`, Ctrl+C twice, `/clear`, a signal); `reason` says why.
     pub const SESSION_END: &str = "SessionEnd";
     /// Not a hook: Claude Code's `statusLine` command, run by the same client. Its input is a
-    /// [`StatusLineInput`]; the answer is the status line's text.
+    /// [`super::StatusLineInput`]; the answer is the status line's text.
     pub const STATUS_LINE: &str = "StatusLine";
 }
 

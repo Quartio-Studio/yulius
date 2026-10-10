@@ -29,13 +29,12 @@ test('the accounts page shows the pool capacity and nothing to manage but add an
 
 test('tasks are subscription-agnostic: no account choice or account in the task view', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  const strip = browser.locator('.taskview .stepstrip-main');
-  await strip.locator('[aria-label="Task actions"]').click();
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   await expect(screen.getByRole('menuitem', /^Stop/)).toBeVisible();
   await expect(screen.getByRole('menuitem', /Switch account/)).toBeHidden();
   await browser.keyboard.press('Escape');
   // The subscription the task runs on shows only in Task details.
-  expect((await strip.innerText()).includes('Claude #2')).toBe(false);
+  await expect(browser.locator('.taskview .stepstrip-main')).not.toHaveText(/Claude #2/);
 });
 
 test('a task paused because no subscription has capacity left says so with the reset time, outside Needs you', async ({ app, screen }) => {
