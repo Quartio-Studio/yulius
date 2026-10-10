@@ -209,11 +209,12 @@ function seed(params) {
     { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', email: 'product@example.com', plan: 'Pro', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
     { id: 'acc_x3', provider: 'anthropic', label: 'Claude spare', email: null, plan: null, status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
-  // `wf-feature` and `wf-quick-task` are the built-in instance workflows the server seeds.
+  // The default workflows ship with the server (catalog/workflows/*.md, AUT-006): read-only, first.
   db.workflows = [
-    { id: 'wf-feature', sandbox: null, name: 'Feature', description: 'Default discipline: spec with plan, implementation, tests, PR.', steps: ['Write task spec', 'Implement', 'Test', 'Open PR'], instructions: 'Follow AGENTS.md. Keep the spec Plan checklist in sync.', gates: { require_spec: true, require_tests: true }, scope: 'instance' },
-    { id: 'wf-quick-task', sandbox: null, name: 'Quick task', description: 'Small change without a spec gate.', steps: ['Implement', 'Test'], instructions: '', gates: { require_spec: false, require_tests: true }, scope: 'instance' },
-    { id: 'wf_bugfix', sandbox: 'sb_studio', name: 'Bugfix', description: 'Reproduce with a failing test first.', steps: ['Reproduce with a failing test', 'Fix', 'Open PR'], instructions: '', gates: { require_spec: true, require_tests: true }, scope: 'sandbox' },
+    { id: 'wf-feature', sandbox: null, name: 'Feature', description: 'New or changed behaviour, from a spec through review and tests to production.', when_to_use: 'The task adds or changes behaviour that users or other code rely on.', steps: ['Write the spec', 'Implement', 'Review the change', 'Test', 'Deliver to the integration branch', 'Release to production'], instructions: 'Start with the task spec. Implement only what it describes, prove it with tests, review your own diff, then deliver through the delivery profile.', gates: { require_spec: true, require_tests: true }, scope: 'instance', builtin: true },
+    { id: 'wf-fix', sandbox: null, name: 'Fix', description: 'A bug fixed from a reproduction, with a regression test.', when_to_use: 'Something that used to work, or should work, behaves wrongly.', steps: ['Reproduce with a failing test', 'Fix the cause', 'Review the change', 'Deliver'], instructions: 'Reproduce the bug first, with a test that fails because of it.', gates: { require_spec: false, require_tests: true }, scope: 'instance', builtin: true },
+    { id: 'wf-research', sandbox: null, name: 'Research', description: 'Investigate a question and report findings, without changing the product.', when_to_use: 'The task is a question about the product, the code or an option to choose.', steps: ['Investigate', 'Report the findings'], instructions: 'Answer with evidence. Do not change the product’s code.', gates: { require_spec: false, require_tests: false }, scope: 'instance', builtin: true },
+    { id: 'wf_release', sandbox: 'sb_studio', name: 'Release notes', description: 'Collect what shipped and write the release notes.', when_to_use: '', steps: ['Collect merged pull requests', 'Write the notes'], instructions: '', gates: { require_spec: false, require_tests: false }, scope: 'sandbox', builtin: false },
   ];
   db.skills = [
     { name: 'yulius-rust-slice', description: 'Implement a vertical Rust slice with tests and docs.', source: 'repository', path: '.agents/skills/yulius-rust-slice/SKILL.md', enabled: true },
@@ -1256,19 +1257,25 @@ route('POST', `/api/sandboxes/${ID}/workflows`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (body.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance workflows are managed by instance administrators');
   db.nextId += 1;
-  const wf = { id: `wf_${db.nextId}`, sandbox: body.scope === 'instance' ? null : p[0], name: body.name, description: body.description || '', steps: body.steps || [], instructions: body.instructions || '', gates: { require_spec: Boolean(body.gates && body.gates.require_spec), require_tests: Boolean(body.gates && body.gates.require_tests) }, scope: body.scope === 'instance' ? 'instance' : 'sandbox' };
+  const wf = { id: `wf_${db.nextId}`, sandbox: body.scope === 'instance' ? null : p[0], name: body.name, description: body.description || '', when_to_use: '', steps: body.steps || [], instructions: body.instructions || '', gates: { require_spec: Boolean(body.gates && body.gates.require_spec), require_tests: Boolean(body.gates && body.gates.require_tests) }, scope: body.scope === 'instance' ? 'instance' : 'sandbox', builtin: false };
   db.workflows.push(wf);
   const { sandbox: _s, ...out } = wf;
   return json(201, out);
 });
-route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
-  const wf = db.workflows.find((w) => w.id === p[0]);
+// Default workflows are kept current by the server: duplicate one to customise it.
+function mutableWorkflow(db, id) {
+  const wf = db.workflows.find((w) => w.id === id);
   if (!wf) fail(404, 'not_found', 'not found');
+  if (wf.builtin) fail(409, 'conflict', `${wf.name} is a default workflow kept current by Yulius: duplicate it to customise`);
+  return wf;
+}
+route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
+  const wf = mutableWorkflow(db, p[0]);
   Object.assign(wf, { name: body.name, description: body.description, steps: body.steps, instructions: body.instructions, gates: body.gates });
   const { sandbox: _s, ...out } = wf;
   return out;
 });
-route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { db.workflows = db.workflows.filter((w) => w.id !== p[0]); return json(204); });
+route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { mutableWorkflow(db, p[0]); db.workflows = db.workflows.filter((w) => w.id !== p[0]); return json(204); });
 
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {

@@ -1450,6 +1450,10 @@ summary { cursor: pointer; }
 .dl-release { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
 .dl-section { display: flex; flex-direction: column; gap: 8px; }
 .dl-section-title { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; }
+/* A titled group on a list page (Workflows: Defaults and Custom; Skills: Included and Custom). */
+.page-section-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin: 8px 0 0; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; }
+.page-section-title .muted { font-weight: 400; }
+.page-section-note { margin: 0; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .dl-head-link { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-weight: 400; }
 .dl-needs, .dl-activity { margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
 .dl-need { display: flex; align-items: center; gap: 12px; padding: 8px 12px 8px 16px; }
