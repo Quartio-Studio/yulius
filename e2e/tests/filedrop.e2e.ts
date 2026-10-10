@@ -93,6 +93,10 @@ test('a text file dropped on the editor opens in a tab', async ({ app, browser, 
 /** The task terminal's text. */
 const taskTerminal = (browser: Browser) => browser.locator('.taskview-term .xterm-rows');
 
+/** What task #12's mock session has received as typed input so far (before Enter). */
+const typedIntoTask = (browser: Browser) =>
+  browser.evaluate(() => (window as unknown as { __yuliusMock: { sessions: Map<string, { input: string }> } }).__yuliusMock.sessions.get('tsk_studio_12')?.input ?? '');
+
 test('files dropped on the task terminal are typed into it by path', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(taskTerminal(browser)).toHaveText(/Welcome to Claude Code/);
@@ -101,8 +105,12 @@ test('files dropped on the task terminal are typed into it by path', async ({ ap
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.taskview-term .term', [['screen shot.png', 'png', 'image/png']], ['dragenter', 'dragover']));
   await expect(browser.locator('.taskview-term .drop-overlay')).toHaveText('Drop to send to Claude');
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.taskview-term .term', [['screen shot.png', 'png', 'image/png'], ['brief.pdf', '%PDF-1.4', 'application/pdf']], ['drop']));
-  // Both paths, space-separated, in names that need no quoting.
-  await expect(taskTerminal(browser)).toHaveText(/attachments\/tasks\/tsk_studio_12\/screen-shot\.png \/var\/lib\/yulius\/sandboxes\/sb_studio\/attachments\/tasks\/tsk_studio_12\/brief\.pdf/);
+  // Both paths, space-separated, in names that need no quoting: what the session received as
+  // input (the screen may wrap or redraw a long line).
+  await expect.poll(() => typedIntoTask(browser)).toBe(
+    '/var/lib/yulius/sandboxes/sb_studio/attachments/tasks/tsk_studio_12/screen-shot.png /var/lib/yulius/sandboxes/sb_studio/attachments/tasks/tsk_studio_12/brief.pdf ',
+  );
+  await expect(taskTerminal(browser)).toHaveText(/attachments\/tasks\/tsk_studio_12\/screen-shot\.png/);
 });
 
 test('an image pasted into the task terminal is uploaded and typed by path; text pastes stay text', async ({ app, browser }) => {
