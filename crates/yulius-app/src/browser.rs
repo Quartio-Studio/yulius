@@ -1,5 +1,5 @@
 //! The shared sandbox browser: viewer access for people and MCP tools for agents (SPEC-001
-//! BRW-001..004, AC-BRW-1..3; SPEC-002 ADR-09, §7.4).
+//! BRW-001..008, AC-BRW-1..3; SPEC-002 ADR-15, §7.4).
 //!
 //! One browser per sandbox ([`App::browser_profile_dir`] keeps its profile, so logins persist
 //! per sandbox). Viewers need write access; agents reach the browser of their task's sandbox
@@ -140,27 +140,6 @@ impl App {
     /// The label viewers see on the agent's cursor (BRW-007).
     fn agent_label(ctx: &AgentContext) -> String {
         format!("#{} {}", ctx.task.number, ctx.task.harness.display_name())
-    }
-
-    /// A page resource for a viewer's DOM mirror, fetched by the sandbox browser (BRW-005).
-    ///
-    /// # Errors
-    /// Access errors; browser failures (the browser must already run).
-    pub async fn browser_resource(
-        &self,
-        grant: &BrowserGrant,
-        tab: &str,
-        url: &str,
-    ) -> AppResult<crate::ports::browser::FetchedResource> {
-        let tab = yulius_contracts::browser::TabId::parse(tab)
-            .map_err(|_| AppError::Invalid("invalid tab id".into()))?;
-        let session = self
-            .deps
-            .browser
-            .running(&grant.sandbox_id)
-            .await
-            .ok_or(AppError::NotFound)?;
-        Ok(session.fetch_resource(&tab, url).await?)
     }
 
     /// The sandbox's listening dev-server ports (its assigned port range, probed on loopback).

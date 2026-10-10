@@ -16,7 +16,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Run the Yulius server.
-    Serve(yulius::serve::ServeArgs),
+    Serve(Box<yulius::serve::ServeArgs>),
     /// Write a consistent copy of the database to a file.
     Backup {
         /// Data directory.
@@ -138,7 +138,7 @@ fn main() -> ExitCode {
             println!("yulius {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Command::Serve(args) => run_async(yulius::serve::serve(args)),
+        Command::Serve(args) => run_async(yulius::serve::serve(*args)),
         Command::Backup { data_dir, dest } => run_async(yulius::serve::backup(data_dir, dest)),
     }
 }

@@ -1,10 +1,12 @@
-//! Browser viewer frames and tool parameters (SPEC-002 ADR-09, §7.4; SPEC-001 BRW-001..004).
+//! Browser viewer frames and tool parameters (SPEC-002 ADR-15, §7.4; SPEC-001 BRW-001..008).
 //!
 //! Three contracts live here:
 //!
 //! - the viewer WebSocket `WS /api/sandboxes/{sid}/browser` (docs/api.md "Browser, editor,
 //!   shell"): JSON text messages [`ViewerClientMsg`] and [`ViewerServerMsg`], plus binary
-//!   screencast frames built by [`encode_frame`] and parsed by [`decode_frame`];
+//!   frames: H.264 access units of the sandbox's display ([`encode_video_frame`],
+//!   [`decode_video_frame`]) and, in the labelled fallback, JPEG screencast frames
+//!   ([`encode_frame`], [`decode_frame`]);
 //! - the parameter and result payloads of the Yulius MCP browser tools (`browser_tabs`,
 //!   `browser_open`, …), with their JSON input schemas in [`tool_specs`];
 //! - the shared bounds ([`SNAPSHOT_MAX_BYTES`], [`SCREENSHOT_MAX_BASE64_BYTES`], …) that the
@@ -24,6 +26,14 @@ pub const FRAME_KIND_BROWSER: u8 = 3;
 pub const FRAME_TAB_ID_LEN: usize = 32;
 /// Bytes before the JPEG payload: kind byte plus padded tab id.
 pub const FRAME_HEADER_LEN: usize = 1 + FRAME_TAB_ID_LEN;
+/// Binary frame kind byte for one H.264 access unit of the sandbox's display (ADR-15).
+pub const FRAME_KIND_VIDEO: u8 = 4;
+/// Bytes before the access unit: kind byte, flags byte, timestamp in microseconds (u64,
+/// big-endian).
+pub const VIDEO_HEADER_LEN: usize = 10;
+/// Flag bit of a video frame that starts a group of pictures (an IDR picture: a decoder can
+/// start here).
+pub const VIDEO_FLAG_KEY: u8 = 1;
 
 /// Maximum UTF-8 bytes of a `browser_snapshot` outline; longer outlines are truncated.
 pub const SNAPSHOT_MAX_BYTES: usize = 64 * 1024;
@@ -259,7 +269,21 @@ pub enum ViewerClientMsg {
         /// Target tab.
         tab_id: TabId,
     },
-    /// Pointer input in CSS pixels of the tab viewport.
+    /// Go back (`delta` -1) or forward (1) in a tab's history; beyond its ends nothing happens.
+    History {
+        /// Target tab.
+        tab_id: TabId,
+        /// Entries to move (-1 back, 1 forward).
+        delta: i32,
+    },
+    /// Reload a tab.
+    Reload {
+        /// Target tab.
+        tab_id: TabId,
+    },
+    /// Pointer input in CSS pixels of the tab viewport. With a virtual display (ADR-15) moves,
+    /// presses and releases are real input on the display (wherever the pointer is) and the
+    /// wheel scrolls the shown tab by `dx`/`dy` CSS pixels.
     Mouse {
         /// Target tab.
         tab_id: TabId,
@@ -278,8 +302,14 @@ pub enum ViewerClientMsg {
         /// Vertical wheel delta.
         #[serde(default)]
         dy: Option<f64>,
+        /// Bit field of `MODIFIER_*` constants (headless browsers only; a display has the
+        /// modifier keys' real state).
+        #[serde(default)]
+        modifiers: Option<u8>,
     },
-    /// Keyboard input.
+    /// Keyboard input. With a virtual display, `down`/`up` are real key presses: printable ASCII
+    /// by `key` (a US layout key with Shift as needed), other keys by `code`; `char` inserts
+    /// text that has no key (IME, emoji, non-ASCII letters, paste).
     Key {
         /// Target tab.
         tab_id: TabId,
@@ -305,16 +335,20 @@ pub enum ViewerClientMsg {
         /// Height.
         height: u32,
     },
-    /// How this viewer sees the active tab: its live DOM (default) or screencast pixels.
+    /// How this viewer receives the page: H.264 video of the display (default) or JPEG
+    /// screencast frames (the labelled fallback when the viewer cannot decode video).
     View {
         /// The view.
         mode: ViewMode,
     },
-    /// Ask for a fresh DOM snapshot of the active tab (after a replay error).
-    DomResync,
-    /// Which tab this connection watches (DOM or pixels), independently of the shared active
-    /// tab; `null` watches none (the viewer shows one of its own live tabs). Until a viewer
-    /// sends it, it follows the active tab.
+    /// Copy the shown tab's selection: the server answers [`ViewerServerMsg::Clipboard`].
+    Copy {
+        /// The tab the user copied in.
+        tab_id: TabId,
+    },
+    /// Which tab this connection shows. With a virtual display the display shows one tab at a
+    /// time, so this brings the tab to the front for every viewer (one shared browser window);
+    /// `null` stops this connection's stream. Until a viewer sends it, it follows the active tab.
     Watch {
         /// The tab, or `null`.
         #[serde(default)]
@@ -322,14 +356,15 @@ pub enum ViewerClientMsg {
     },
 }
 
-/// How a viewer sees pages (SPEC-001 BRW-005).
+/// How a viewer receives pages (SPEC-001 BRW-005, SPEC-002 ADR-15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ViewMode {
-    /// The page's DOM mirrored into the viewer (rrweb events).
+    /// H.264 video of the sandbox's virtual display ([`FRAME_KIND_VIDEO`] frames after a
+    /// [`ViewerServerMsg::VideoConfig`]).
     #[default]
-    Dom,
-    /// Screencast frames (JPEG).
+    Video,
+    /// JPEG screencast frames of the shown tab ([`FRAME_KIND_BROWSER`]): the fallback.
     Pixels,
 }
 
@@ -351,8 +386,7 @@ pub enum ViewerErrorCode {
     Internal,
 }
 
-/// Server → viewer text message on the browser WebSocket. DOM batches are built with
-/// [`encode_dom_batch`] (their events are raw rrweb JSON).
+/// Server → viewer text message on the browser WebSocket.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ViewerServerMsg {
@@ -390,50 +424,105 @@ pub enum ViewerServerMsg {
         /// Who acted (e.g. `#12 Claude Code`).
         label: String,
     },
-    /// The viewport of all tabs (sent on connect and after every change): a DOM mirror lays the
-    /// page out at this size right away instead of waiting for the page's own resize event.
+    /// The viewport of all tabs in CSS pixels (sent on connect and after every change). It is
+    /// shared: the last viewer to report its panel size sets it.
     Viewport {
         /// Width in CSS pixels.
         width: u32,
         /// Height in CSS pixels.
         height: u32,
     },
-    /// The active tab cannot be mirrored (browser-internal page, recorder failure); the viewer
-    /// shows pixels.
-    DomUnavailable {
-        /// The tab.
-        tab_id: TabId,
-        /// Why.
-        reason: String,
+    /// What this connection receives (sent on connect and after every `view`): `video`, or
+    /// `pixels` with the reason when video was asked for but is not available.
+    Stream {
+        /// The stream.
+        mode: ViewMode,
+        /// Why video is not available, when it is not.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Decoder configuration for the following video frames (WebCodecs `VideoDecoderConfig`):
+    /// sent before the first frame and whenever the encoder restarts (a new size).
+    VideoConfig {
+        /// Codec string, e.g. `avc1.42c028`.
+        codec: String,
+        /// The AVCDecoderConfigurationRecord (`avcC`), base64; frames are length-prefixed NAL
+        /// units (AVC format).
+        description: String,
+        /// Coded width in device pixels.
+        width: u32,
+        /// Coded height in device pixels.
+        height: u32,
+    },
+    /// The text the user copied in the page (answer to [`ViewerClientMsg::Copy`]).
+    Clipboard {
+        /// The selection, at most [`CLIPBOARD_MAX_BYTES`].
+        text: String,
     },
 }
 
-/// The DOM batch message `{"type":"dom","tab_id","reset","events":[…]}`, whose events are
-/// rrweb event JSON texts inserted verbatim.
+/// Largest copied text sent to a viewer.
+pub const CLIPBOARD_MAX_BYTES: usize = 1 << 20;
+
+/// Builds a binary video frame: `4`, flags ([`VIDEO_FLAG_KEY`]), the timestamp in microseconds
+/// (u64, big-endian), the access unit.
+///
+/// ```
+/// use yulius_contracts::browser::{decode_video_frame, encode_video_frame};
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let frame = encode_video_frame(true, 16_667, &[0, 0, 0, 1, 0x65]);
+/// let decoded = decode_video_frame(&frame)?;
+/// assert!(decoded.keyframe);
+/// assert_eq!((decoded.timestamp_us, decoded.data), (16_667, &[0, 0, 0, 1, 0x65][..]));
+/// # Ok(())
+/// # }
+/// ```
 #[must_use]
-pub fn encode_dom_batch(tab_id: &TabId, reset: bool, events: &[std::sync::Arc<str>]) -> String {
-    let mut text = String::with_capacity(64 + events.iter().map(|e| e.len() + 1).sum::<usize>());
-    text.push_str(r#"{"type":"dom","tab_id":"#);
-    text.push_str(&serde_json::to_string(tab_id.as_str()).unwrap_or_else(|_| "\"\"".into()));
-    text.push_str(if reset {
-        r#","reset":true,"events":["#
-    } else {
-        r#","reset":false,"events":["#
-    });
-    for (index, event) in events.iter().enumerate() {
-        if index > 0 {
-            text.push(',');
-        }
-        text.push_str(event);
+pub fn encode_video_frame(keyframe: bool, timestamp_us: u64, data: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(VIDEO_HEADER_LEN + data.len());
+    frame.push(FRAME_KIND_VIDEO);
+    frame.push(if keyframe { VIDEO_FLAG_KEY } else { 0 });
+    frame.extend_from_slice(&timestamp_us.to_be_bytes());
+    frame.extend_from_slice(data);
+    frame
+}
+
+/// A parsed binary video frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoFrameRef<'a> {
+    /// The access unit starts a group of pictures.
+    pub keyframe: bool,
+    /// Presentation timestamp in microseconds.
+    pub timestamp_us: u64,
+    /// The access unit (length-prefixed NAL units).
+    pub data: &'a [u8],
+}
+
+/// Parses a binary video frame.
+///
+/// # Errors
+/// [`FrameError::Truncated`] below the 10-byte header, [`FrameError::WrongKind`] for another
+/// kind byte.
+pub fn decode_video_frame(frame: &[u8]) -> Result<VideoFrameRef<'_>, FrameError> {
+    let (header, data) = frame
+        .split_at_checked(VIDEO_HEADER_LEN)
+        .ok_or(FrameError::Truncated)?;
+    if header[0] != FRAME_KIND_VIDEO {
+        return Err(FrameError::WrongKind(header[0]));
     }
-    text.push_str("]}");
-    text
+    let mut stamp = [0_u8; 8];
+    stamp.copy_from_slice(&header[2..VIDEO_HEADER_LEN]);
+    Ok(VideoFrameRef {
+        keyframe: header[1] & VIDEO_FLAG_KEY != 0,
+        timestamp_us: u64::from_be_bytes(stamp),
+        data,
+    })
 }
 
 /// Malformed binary browser frame.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FrameError {
-    /// Shorter than the 33-byte header.
+    /// Shorter than its header (33 bytes for JPEG frames, 10 for video frames).
     #[error("browser frame shorter than its header")]
     Truncated,
     /// First byte is not [`FRAME_KIND_BROWSER`].
@@ -853,6 +942,7 @@ mod tests {
                     button: Some(MouseButton::Left),
                     dx: None,
                     dy: Some(0.0),
+                    modifiers: None,
                 },
             ),
             (
@@ -865,6 +955,7 @@ mod tests {
                     button: None,
                     dx: None,
                     dy: Some(-120.0),
+                    modifiers: None,
                 },
             ),
             (
@@ -896,6 +987,35 @@ mod tests {
                     height: 720,
                 },
             ),
+            (
+                r#"{"type":"view","mode":"pixels"}"#,
+                ViewerClientMsg::View {
+                    mode: ViewMode::Pixels,
+                },
+            ),
+            (
+                r#"{"type":"history","tab_id":"T1","delta":-1}"#,
+                ViewerClientMsg::History {
+                    tab_id: TabId::parse("T1")?,
+                    delta: -1,
+                },
+            ),
+            (
+                r#"{"type":"reload","tab_id":"T1"}"#,
+                ViewerClientMsg::Reload {
+                    tab_id: TabId::parse("T1")?,
+                },
+            ),
+            (
+                r#"{"type":"copy","tab_id":"T1"}"#,
+                ViewerClientMsg::Copy {
+                    tab_id: TabId::parse("T1")?,
+                },
+            ),
+            (
+                r#"{"type":"watch","tab_id":null}"#,
+                ViewerClientMsg::Watch { tab_id: None },
+            ),
         ];
         for (text, expected) in cases {
             assert_eq!(
@@ -910,6 +1030,11 @@ mod tests {
     #[test]
     fn viewer_client_rejects_unknown_types_and_bad_tab_ids() {
         assert!(serde_json::from_str::<ViewerClientMsg>(r#"{"type":"eval","code":"1"}"#).is_err());
+        // The DOM mirror is gone (ADR-15).
+        assert!(
+            serde_json::from_str::<ViewerClientMsg>(r#"{"type":"view","mode":"dom"}"#).is_err()
+        );
+        assert!(serde_json::from_str::<ViewerClientMsg>(r#"{"type":"dom_resync"}"#).is_err());
         assert!(
             serde_json::from_str::<ViewerClientMsg>(r#"{"type":"activate","tab_id":"a b"}"#)
                 .is_err()
@@ -968,6 +1093,56 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&error)?,
             json!({"type": "error", "code": "url_refused", "message": "m"})
+        );
+        let stream = ViewerServerMsg::Stream {
+            mode: ViewMode::Pixels,
+            reason: Some("no display".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&stream)?,
+            json!({"type": "stream", "mode": "pixels", "reason": "no display"})
+        );
+        let video = ViewerServerMsg::Stream {
+            mode: ViewMode::Video,
+            reason: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&video)?,
+            json!({"type": "stream", "mode": "video"})
+        );
+        let config = ViewerServerMsg::VideoConfig {
+            codec: "avc1.42c028".into(),
+            description: "AULAKP/h".into(),
+            width: 1280,
+            height: 800,
+        };
+        assert_eq!(
+            serde_json::to_value(&config)?,
+            json!({"type": "video_config", "codec": "avc1.42c028", "description": "AULAKP/h",
+                   "width": 1280, "height": 800})
+        );
+        let clipboard = ViewerServerMsg::Clipboard { text: "hi".into() };
+        assert_eq!(
+            serde_json::to_value(&clipboard)?,
+            json!({"type": "clipboard", "text": "hi"})
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn video_frames_round_trip_and_reject_garbage() -> TestResult {
+        let frame = encode_video_frame(false, u64::MAX - 1, b"au");
+        assert_eq!(frame.len(), VIDEO_HEADER_LEN + 2);
+        assert_eq!(&frame[..2], &[FRAME_KIND_VIDEO, 0]);
+        let decoded = decode_video_frame(&frame)?;
+        assert!(!decoded.keyframe);
+        assert_eq!(decoded.timestamp_us, u64::MAX - 1);
+        assert_eq!(decoded.data, b"au");
+        assert!(decode_video_frame(&encode_video_frame(true, 0, b""))?.keyframe);
+        assert_eq!(decode_video_frame(&[4; 9]), Err(FrameError::Truncated));
+        assert_eq!(
+            decode_video_frame(&encode_frame(&TabId::parse("T")?, b"jpeg")),
+            Err(FrameError::WrongKind(FRAME_KIND_BROWSER))
         );
         Ok(())
     }

@@ -34,7 +34,7 @@ flowchart LR
     subgraph SB2["Sandbox B"]
       PH2["yulius ptyhost"] --> AG2["claude TUI"]
     end
-    CR["Chromium per sandbox (CDP)"]
+    CR["Chrome per sandbox on its own Xvfb (CDP, XTest, H.264)"]
     VS["Built-in editor (Monaco) over the file API"]
   end
   GH["GitHub (App + OAuth + REST)"]
@@ -78,11 +78,12 @@ Principles:
 | ADR-06 | Withdrawn (F 2026-10-08): no cross-provider switches. The provider-neutral transcript IR, the native transcript writers and the handoff fallback were removed; a task resumes its own session on another account. | Keep translation for a later second harness | Yulius runs Claude Code only; a returning harness gets its own decision. |
 | ADR-07 | Yulius MCP (Streamable HTTP, JSON-RPC) on a loopback listener with per-run bearer tokens; hooks call the same listener through `yulius hook`. | Per-harness plugins; injecting text into the TUI only | One protocol for every harness; least privilege (task tokens reach only task-scoped tools). |
 | ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. |
-| ADR-09 | Narrowed by ADR-14 (F 2026-10-09): the mirror is now only the remote view of the sandbox Chrome's tabs (agents' tabs and hand-offs); the user's own browsing of the sandbox's apps is live (ADR-14). Per-sandbox headless Chromium; the user's view is a live DOM mirror: the rrweb recorder is injected through CDP into the page's main world (it must see the page's CSSOM patches) and reports to a CDP binding; the UI replays the events in rrweb's script-free iframe (sandbox `allow-same-origin` only — never `UNSAFE_replayCanvas`, which would let any page run script as Yulius through the binding) and paints sampled canvas frames itself; page resources the user's browser cannot reach are fetched by the server browser through a same-origin-only endpoint served with a `sandbox` CSP. The CDP screencast is the labelled fallback; input is dispatched with CDP `Input.*`; viewers learn viewport changes at once. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer; recorder in an isolated world (misses CSS-in-JS rules) | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; plugins, internal pages and pages that send no DOM need the fallback. |
+| ADR-09 | Superseded by ADR-15 (F 2026-10-10) for the user's view: the DOM mirror, its recorder, replayer and resource endpoint are removed; the per-sandbox Chromium, CDP for agents, the welcome page and the screencast (now the labelled JPEG fallback) remain. Earlier: narrowed by ADR-14 (F 2026-10-09): the mirror is now only the remote view of the sandbox Chrome's tabs (agents' tabs and hand-offs); the user's own browsing of the sandbox's apps is live (ADR-14). Per-sandbox headless Chromium; the user's view is a live DOM mirror: the rrweb recorder is injected through CDP into the page's main world (it must see the page's CSSOM patches) and reports to a CDP binding; the UI replays the events in rrweb's script-free iframe (sandbox `allow-same-origin` only — never `UNSAFE_replayCanvas`, which would let any page run script as Yulius through the binding) and paints sampled canvas frames itself; page resources the user's browser cannot reach are fetched by the server browser through a same-origin-only endpoint served with a `sandbox` CSP. The CDP screencast is the labelled fallback; input is dispatched with CDP `Input.*`; viewers learn viewport changes at once. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer; recorder in an isolated world (misses CSS-in-JS rules) | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; plugins, internal pages and pages that send no DOM need the fallback. |
 | ADR-10 | Built-in editor: Monaco (VS Code's editor component, vendored AMD build without its translations) in the web UI over a small file API (`/api/sandboxes/{sid}/files…`) on the sandbox repository or a task worktree; per-user view state stays in the browser. | openvscode-server per sandbox (original: needed a token cookie fix, ran outside containment, too heavy); per-user contained openvscode-server (built, then dropped by the founder: "much simpler, without 90% of the features"); CodeMirror (needs a bundler) | No editor process or prerequisite on the VM; 14 MB of static assets (the TypeScript worker is 7 MB, loaded only for JS/TS); no extensions, debugging or integrated terminal (shells cover that). |
 | ADR-12 | Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
 | ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
-| ADR-14 | The user browses the sandbox's apps **live in their own browser**: each (sandbox, port) has a preview origin `<port>-<key>.<yulius host>` that Yulius reverse-proxies to `127.0.0.1:<port>`, removing the iframe obstacles; the agents keep the sandbox's headless Chrome (ADR-09), whose tabs share the panel's strip and are watched remotely with the agent's cursor; Yulius never opens inside itself. Analysis and contract: §2.1. | Keep the mirror (A); pixel or video streaming (B); hybrids (D) | Native page behaviour on desktop and phone; needs wildcard DNS and TLS for the preview hosts (on-demand TLS); the app runs in the user's browser, so its absolute `localhost` URLs in page code do not reach the VM. |
+| ADR-14 | Narrowed by ADR-15 (F 2026-10-10): the panel's live iframe tabs are removed; the preview origins and their proxy remain for one action, "Open live in a new window" on a sandbox dev server, and the no-recursion rules stay. Originally: the user browses the sandbox's apps **live in their own browser**: each (sandbox, port) has a preview origin `<port>-<key>.<yulius host>` that Yulius reverse-proxies to `127.0.0.1:<port>`, removing the iframe obstacles; the agents keep the sandbox's headless Chrome (ADR-09), whose tabs share the panel's strip and are watched remotely with the agent's cursor; Yulius never opens inside itself. Analysis and contract: §2.1. | Keep the mirror (A); pixel or video streaming (B); hybrids (D) | Native page behaviour on desktop and phone; needs wildcard DNS and TLS for the preview hosts (on-demand TLS); the app runs in the user's browser, so its absolute `localhost` URLs in page code do not reach the VM. |
+| ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 
 ### 2.1 ADR-14: the browser panel renders the sandbox's apps live (F 2026-10-09)
@@ -248,6 +249,195 @@ here:
 - Certificate Transparency logs publish each preview host name, which carries an opaque key,
   not the sandbox's name.
 
+### 2.2 ADR-15: the browser panel streams the real sandbox Chrome (F 2026-10-10)
+
+Status: accepted and implemented (issue #107). Supersedes ADR-09's user view and narrows ADR-14.
+
+**Problem.** "The browser is slow as fuck on scrolling or typing, and clicking on a captcha does
+not work. The current approach seems wrong… the bugs seem to be in the foundations." On
+production (`main` dfe22eb) Michał used the sandbox's own Chrome: no preview certificate was ever
+requested, so #105's live iframes never ran, and the panel showed the rrweb mirror.
+
+- *Slow by construction.* Every wheel turn or key went viewer → WebSocket → CDP
+  `Input.dispatch*` → page → recorder (batched every 40 ms, scroll sampled every 100 ms) → JSON →
+  a DOM rebuilt in the user's browser. Large pages produced large batches.
+- *Captchas cannot work.* The Chrome ran `--headless=new` with `navigator.webdriver === true`,
+  which reCAPTCHA, Turnstile and hCaptcha read; their widgets are cross-origin iframes that the
+  mirror neither records nor clicks.
+- *The real need is the agent's browser.* The agent asks for help with a captcha or a sign-in
+  (`browser_request_user_action`), then the user watches it work: the user must drive **the same
+  Chrome the agent uses**, at full fidelity. ADR-14's live tabs are the user's own browser and
+  cannot help there.
+
+**Options compared.**
+
+| | A: fix the mirror (headful + rrweb) | B: CDP screencast (JPEG) + CDP input | C: VNC / noVNC | D: WebRTC | E: H.264 over the viewer WebSocket + XTest (chosen) |
+| --- | --- | --- | --- | --- | --- |
+| Captchas, cross-origin frames | No: frames not recorded, synthetic clicks | Input is CDP-synthesized (headful helps); one frame per ack round trip | Yes (real input) | Yes | Yes: real X input, headful, no automation flag |
+| Scrolling | Replay of mutations | ~10–25 fps, ack-paced | Tile updates, high bandwidth while scrolling | 60 fps | 60 fps, measured below |
+| Network | WS (443) | WS (443) | WS (443) via websockify | UDP or TURN on 443 (the firewall allows only 22/80/443) | WS (443) |
+| Server cost | Recorder per page | JPEG per frame in Chrome | Damage-based, cheap idle | Encoder per stream | One encoder per watched display (~1 core at 60 fps, 0 when nobody watches) |
+| Client | Same-origin replay iframe | `createImageBitmap` | noVNC canvas | `<video>` | WebCodecs `VideoDecoder` (Chrome, Edge, Safari 16.4+, Firefox 130+); JPEG fallback |
+| New code / prerequisites | — | Small | A VNC server + websockify | A WebRTC stack or a TURN server | `xvfb`, `ffmpeg` (libx264); x11rb (pure Rust) |
+
+Remote-browser products (Browserbase and Hyperbeam live views, neko, Kasm) use C, D or E.
+**Decision: E.** It keeps the existing WebSocket, its authorization and its Origin check, and
+needs no UDP. B remains as the labelled fallback for viewers without WebCodecs and for hosts
+without Xvfb or ffmpeg.
+
+**Display (`yulius-browser::display`, `xserver`).**
+
+- One `Xvfb :<n>` per running sandbox browser, started and reaped by Yulius as the service user:
+  `-nolisten tcp -nolisten local` (only the filesystem socket `/tmp/.X11-unix/X<n>`; an abstract
+  socket would be reachable from containment, which shares the network namespace), `-auth` with a
+  random 16-byte MIT-MAGIC-COOKIE-1 written by Yulius (no `xauth` needed) to
+  `<data>/displays/<sandbox>/Xauthority` (0600, directory 0700). That directory is outside every
+  sandbox directory: containment binds `<data>/sandboxes/<id>` writable, so a cookie in the
+  profile directory would be readable by agents. Numbers start at `YULIUS_BROWSER_DISPLAY_BASE`
+  (100) and skip numbers whose socket or lock exists; Xvfb refusing a number moves to the next.
+  The framebuffer is the maximum size; RandR sets the screen to the viewport, so pages and
+  Chrome's menus see the viewport as the screen.
+- Chrome runs headful on it: `--kiosk --window-position=0,0 --window-size=W,H` (no browser UI;
+  the panel draws tabs and the address bar from CDP), `--disable-blink-features=AutomationControlled`
+  (remote debugging alone makes `navigator.webdriver` true in Chrome 155), no
+  `--enable-automation`, the normal user agent, `--force-device-scale-factor` when the scale is
+  not 1. There is no window manager; one X thread per display plays its small part: every
+  top-level window that maps (the browser, a popup, an OAuth window, a dialog) is moved to 0,0 at
+  the viewport size and gets the keyboard focus, a press focuses the window under the pointer, a
+  closed window hands the focus to the topmost remaining one; menus (override-redirect) are left
+  alone. Resizing goes through X (`ConfigureWindow`), not `Browser.setWindowBounds`, because
+  leaving kiosk's fullscreen state brings Chrome's UI back.
+- One display shows one tab at a time: the active tab. Choosing a tab (`watch`) brings it to the
+  front for every viewer, as in one shared browser window; a page that opens a page (a link to a
+  new tab, `window.open`) comes to the front, and closing the shown tab brings the next one. An
+  agent opening a tab brings it to the front too. Agents' tools need no front tab (headful
+  screenshots of background tabs work).
+
+**Video (`video`, `encoder`, `flv`).**
+
+- While at least one viewer watches, `ffmpeg -f x11grab -draw_mouse 0 -framerate 60 -video_size
+  WxH -i :n.0+0,0 -vf format=bgr24,format=yuv420p -c:v libx264 -preset ultrafast -tune
+  zerolatency -bf 0 -g 120 -threads 2 -flush_packets 1 -f flv pipe:1` encodes the viewport
+  region. The `bgr24` step takes swscale's fast RGB path: measured on the VM it halves the
+  conversion cost (1280×800 at 60 fps, idle: 80 % of a core instead of 97–111 %).
+- **FLV instead of Annex-B parsing (a change from the brief's recommendation).** An Annex-B
+  access unit only ends when the next one starts, one frame interval (16.7 ms at 60 fps) later.
+  FLV frames each access unit with its size, so the server forwards a frame the moment its last
+  byte arrives; the payload is already AVC (length-prefixed NAL units) with the `avcC` record as
+  WebCodecs' `description`. The parser is bounded (8 MiB per tag) and unit-tested for every split
+  of a stream.
+- `VideoHub` per display: GOP cache (the last keyframe and the frames after it, at most 240
+  frames and 6 MiB) for instant start; a bounded queue per subscriber (256), and a subscriber that
+  falls behind misses frames until the next keyframe; the encoder starts on the first subscriber,
+  stops 5 s after the last one leaves, restarts at the new size when the viewport changes and gives
+  up after three failed starts (viewers then get JPEG frames with the reason). The process is
+  always terminated and reaped (SIGTERM, SIGKILL after 2 s, reap).
+- Per viewer connection (`yulius-server::routes::browser`): a media queue bounded to 300 frames
+  and 8 MiB; a live viewer more than 30 frames (0.5 s) behind skips to the next keyframe, and a
+  keyframe flushes what it supersedes, so latency stays bounded and a slow viewer never slows the
+  encoder or other viewers.
+- Wire: `{"type":"stream","mode":"video"|"pixels","reason"?}`, `{"type":"video_config",
+  "codec","description","width","height"}` (sent in the media queue, so it is ordered with the
+  frames) and binary frames `u8 4, u8 flags (keyframe), u64 µs, access unit`. JPEG frames keep
+  `u8 3 + tab id`.
+
+**Client (`browserstream.js`).** WebCodecs `VideoDecoder` (`optimizeForLatency`), each frame
+drawn on a canvas as it is decoded; a decoder queue beyond 6 frames skips to the next keyframe; a
+`NotSupportedError` or a browser without WebCodecs asks for JPEG frames, labelled "JPEG mode".
+The user's own cursor is the local CSS cursor (the video has none). The canvas shows the shared
+viewport scaled to the panel; when another viewer's panel sized it, a notice offers "Fit my
+panel". With scale 2 (`YULIUS_BROWSER_SCALE`) a HiDPI screen shows one video pixel per device
+pixel (crisp text) at about three times the encoding cost; the default is 1.
+
+**Input.**
+
+- Moves, presses, releases and keys are XTest events on the display (x11rb, pure Rust, one
+  connection per display; no process per event), bounded by a 512-command queue. Printable ASCII
+  is mapped by character to its US-layout keycode, pressing or lifting Shift around it as the
+  character needs (any user layout types the right character; with Ctrl, Alt or Meta down the
+  user's Shift is kept, so Ctrl+Shift+Z stays itself); other keys by `KeyboardEvent.code`
+  (evdev keycodes); characters no US key types (Polish letters, emoji, dead-key and IME results)
+  and short typed text (up to 64 characters) are real key presses too: the X thread types a
+  US-layout character with its own key and maps any other character's Unicode keysym onto one of
+  the keymap's spare keycodes (reused least recently first, never while the browser may still
+  look the old one up) and presses it. **A change from
+  the brief**, which suggested CDP `Input.insertText` for these: measured on the VM, text inserted
+  through CDP overtook key presses still queued in the X server ("Hello ą!" arrived as
+  "Helląo !"); keysyms keep everything on one ordered path and give pages real key events. Only
+  longer text (a paste) uses `Input.insertText`, after the display's queue has drained (an X
+  round trip and 50 ms). Lock keys and AltGraph are not forwarded.
+- The wheel and trackpad use CDP `mouseWheel` with pixel deltas on the shown tab (X wheel buttons
+  are 3-line steps), coalesced per animation frame in the client.
+- macOS: ⌘C/⌘V/⌘X/⌘A/⌘Z and other editing shortcuts are sent as Ctrl; ⌘ arrows as Home/End.
+  Paste sends the user's clipboard as text; copy (⌘C/Ctrl+C/X) also asks the server for the
+  selection (`copy` → `clipboard`), which goes to the user's clipboard (a pending
+  `ClipboardItem` claimed in the key's own event where Safari needs it).
+- Touch: a tap clicks, a drag scrolls; a Keyboard button opens the phone's keyboard.
+- Back, forward and reload go through CDP (`history`, `reload`).
+- Only write users reach the socket (unchanged); each connection may send 500 input events per
+  second (burst 1000): moves and wheel beyond are dropped, other input is refused with an error.
+  Every key and button a viewer held is released when it leaves.
+
+**Security (each tested in `live_display.rs` on Linux).**
+
+- Contained agents and users' contained shells reach no display: their `/tmp` is private (no X
+  socket), there is no abstract socket and no TCP listener, and the cookie lives outside the
+  directories containment binds. Inside bubblewrap `xdpyinfo -display :n` fails for every
+  display.
+- Each sandbox has its own display, cookie, profile and encoder; one sandbox's cookie does not
+  open another's display.
+- The video and input use the viewer WebSocket's authorization (write access, re-checked every
+  60 s) and Origin check, unchanged.
+- Unchanged and still open (R-07): the DevTools port is unauthenticated on loopback, which other
+  sandboxes share.
+
+**Recursion (BRW-008) unchanged:** the sandbox Chrome refuses Yulius's addresses (navigation
+refusal and browser-wide `Fetch` interception), the welcome page skips Yulius's ports, the UI
+refuses to be framed, and the preview proxy refuses Yulius's ports.
+
+**Configuration.** `YULIUS_BROWSER_DISPLAY=auto|xvfb|headless` (auto: a display on Linux when
+Xvfb and ffmpeg resolve), `YULIUS_XVFB`, `YULIUS_FFMPEG`, `YULIUS_BROWSER_FPS` (5–60, default 60),
+`YULIUS_BROWSER_MAX_SIZE` (default 1920x1200 CSS pixels), `YULIUS_BROWSER_SCALE` (1–3, default 1),
+`YULIUS_BROWSER_DISPLAY_BASE` (default 100). `yulius doctor` checks Xvfb, ffmpeg, libx264 and
+x11grab.
+
+**ADR-14 and the mirror.** The rrweb recorder, replayer and the resource endpoint
+(`GET /api/sandboxes/{sid}/browser/resource`) are removed. The panel's live iframe tabs are
+removed: the panel is the sandbox Chrome for every tab. The preview origins stay for one optional
+action, "Open live in a new window", on a tab showing a sandbox dev server (when the server has
+preview DNS and TLS): a developer can then use the app with their own browser's devtools. The
+no-recursion and session-isolation rules of ADR-14 stay.
+
+**Measured on the VM** (12 vCPU AMD EPYC 2.0 GHz under its production load, Chrome 155,
+ffmpeg 6.1.1; `live_display.rs` `measures_fps_latency_cpu_and_bandwidth`, 60 fps, the test viewer
+on the VM's loopback; ranges over the runs of the final design):
+
+| | 1280×800 | 1920×1080 |
+|---|---|---|
+| Video fps while scrolling, p50 / p5 | 59–60 / 43–47 | 56 / 42–45 |
+| Encoder CPU (x11grab + x264), scrolling / static page | 93–105% / 68–78% of a core | 145–149% / 129–146% |
+| Bandwidth, scrolling / static page | 1.5–1.7 / 0.22 Mbit/s | 2.1–2.2 / 0.21–0.33 Mbit/s |
+
+Server-side input to frame (a key over the viewer socket → XTest → Chrome repaints the whole page
+→ x11grab → x264 → the socket): p50 77–80 ms, p95 119–122 ms; a typed character to the frame
+showing it: p50 60–66 ms, p95 82–99 ms. An earlier build under heavier load showed p95 spikes of
+204–241 ms and a p5 of 35 fps. At 30 fps the encoder takes 57–99% of a core. Not measured: the
+DOM mirror (its cost was in the user's browser and per replayed mutation, not comparable on the
+server), the network to a real user.
+
+**Consequences and limits.**
+
+- The page is pixels: text is selected in the remote page and copied through `copy`; find in page
+  is Chrome's own (Ctrl+F).
+- About one core per watched browser at 60 fps at 1280×800 (encoder), three quarters of one even
+  on a static page (x11grab captures every frame), nothing when nobody watches; about 2 Mbit/s
+  while scrolling. Open: capturing only on X damage.
+- Without `xvfb`/`ffmpeg` (macOS development, CI) the browser runs headless with JPEG frames and
+  CDP input, as before.
+- No window manager: windows are fitted, not decorated; a page cannot move its popup.
+- One shown tab per sandbox: viewers looking at different tabs bring each other's tab forward.
+- The remote cursor's shape (pointer, text) is not mirrored; the user's own cursor is shown.
+
 ## 3. Code organization
 
 Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
@@ -262,7 +452,7 @@ Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
 | `crates/yulius-harness` | adapter | Claude Code launch specs, home layout, hook/MCP config rendering, transcript tailers and wire parsers, usage extraction, login flows. |
 | `crates/yulius-github` | adapter | GitHub REST, App JWT, OAuth, installation tokens. |
 | `crates/yulius-git` | adapter | Git CLI wrapper: clone/fetch, worktrees, branches, bundles, diff stats, hooks install. |
-| `crates/yulius-browser` | adapter | Chromium lifecycle, CDP client, screencast, browser tools. |
+| `crates/yulius-browser` | adapter | Chromium lifecycle, CDP client, virtual displays (Xvfb, XTest, RandR), the H.264 encoder and video hub, screencast fallback, browser tools. |
 | `crates/yulius-server` | interface | axum routes, auth middleware, WS endpoints, MCP and hook endpoints, embedded web UI (`web/`). |
 | `crates/yulius-cli` | interface | `import`, `login`, admin client commands (HTTP client, argument parsing). |
 | `crates/yulius` | composition | Configuration, wiring, subcommand dispatch, signal handling. |
@@ -628,10 +818,12 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
   writes with an optimistic SHA-256 check.
 - Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
   Argon2; the failure counter and permanent lock are persisted before the response is sent.
-- Browser mirror (ADR-09): the recorder runs in an isolated world, so page scripts cannot tamper
-  with it; the replay iframe runs no page scripts; resource fetches go through the server browser
-  with the same URL policy as navigation. The sandbox Chrome refuses Yulius's origins and
-  listeners (ADR-14, BRW-008).
+- Browser displays (ADR-15): one Xvfb per sandbox browser with `-nolisten tcp -nolisten local` and
+  a per-display cookie in `<data>/displays/<sandbox>/Xauthority` (0600, outside every directory
+  containment binds); contained processes have a private `/tmp`, so no X socket, cookie,
+  abstract socket or TCP listener reaches them; the video and input ride the viewer WebSocket's
+  write-access and Origin checks. The sandbox Chrome refuses Yulius's origins and listeners
+  (ADR-14, BRW-008).
 
 ## 8a. Imported repository specifics (Product, Studio)
 
@@ -677,12 +869,20 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | Permission cache | 5 min | refetch |
 | Preview handshakes / grants | 1024 pending (60 s) / 4096 (12 h, re-checked every 30 s) | refuse with 429 / drop the oldest |
 | Preview requests awaiting a head / WebSockets | 512 / 256 (connect 5 s, head 120 s) | 503 |
+| Browser video GOP cache (per display) | 240 frames / 6 MiB | not cached; new viewers start at the next keyframe |
+| Browser video queue per subscriber / per viewer socket | 256 packets / 300 frames, 8 MiB, 30 frames behind | skip to the next keyframe (a keyframe flushes what it supersedes) |
+| Display input queue | 512 commands; 500 events/s per viewer (burst 1000) | moves dropped; other input refused with an error |
+| Encoder start failures | 3 in a row (backoff 0.5–3 s) | video unavailable; viewers get JPEG frames |
+| Encoder tag (access unit) | 8 MiB | encoder restarted |
 
 ## 10. Failure and recovery matrix
 
 | Failure | Detection | Behavior |
 | --- | --- | --- |
 | Browser disconnect | WS close | Session continues; reconnect → snapshot (AC-NFR-1). |
+| Display encoder fails (ffmpeg missing, crash) | start error / output ends | Restart with backoff; after 3 failed starts viewers get JPEG frames with the reason (ADR-15). |
+| Xvfb missing or fails | resolve / exit before ready | `auto`: headless with JPEG frames; `xvfb`: the browser does not start, with the reason; a crashed display ends the browser, which restarts on next use. |
+| Slow browser viewer | media queue bound | Skips to the next keyframe; others and the encoder unaffected. |
 | Slow viewer | queue bound | Viewer dropped, others unaffected (AC-NFR-4). |
 | Server crash/restart/upgrade | startup reconciliation | Reattach live ptyhosts; record exits; no respawn (AC-NFR-2). |
 | ptyhost crash | socket EOF + no exit.json + pid gone | Child is in ptyhost's session → receives SIGHUP; contained runs die with bwrap; attempt `lost`, task `stopped`. |
@@ -709,6 +909,7 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | Linux-only | bubblewrap containment escape attempts | CI ubuntu job |
 | UI | end-to-end tests in `e2e/` (e2e by TesterArmy, Playwright) against the UI's mock mode: flows, keyboard, WCAG 2.x A/AA (axe-core), page errors, phone viewport; agent steps opt-in with a model key | Node test-only (ADR-01 unchanged); advisory CI job `Web UI e2e`. The real server, terminal rendering and panels against live agents: manual with recorded evidence |
 | Live (opt-in, never CI) | real Claude Code: launch, hooks, MCP, resume | uses local credentials; minimal prompts |
+| Live display (opt-in, Linux) | the streamed browser with Xvfb, ffmpeg and real Chrome: input, video content, popups, containment, recursion; performance figures; captcha clicks | `crates/yulius/tests/live_display.rs` (`YULIUS_LIVE_DISPLAY=1`); `live_ui_browser.rs` drives the real UI against it |
 | Deploy | VM install | **out of scope**; packaging reviewed only |
 
 ## 12. Risks
@@ -719,7 +920,7 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | R-02 | Closed (F 2026-10-08): Codex refresh-token rotation (Codex removed). | — |
 | R-03 | Closed (F 2026-10-08): Codex hook configuration semantics (Codex removed). | — |
 | R-04 | Claude usage percentage not available for setup tokens. | Reactive switching on limit errors; proactive switching (99 %) when an administrator's usage refresh (`/api/oauth/usage`) reports the windows. |
-| R-05 | Browser screencast performance on phones. | Adaptive frame rate/quality; snapshot mode. |
+| R-05 | Browser video on phones and slow links. | Skip-to-keyframe backpressure per viewer, client decode queue bound; fps and size configurable (ADR-15). Open: adaptive bitrate. |
 | R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
 | R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; sandboxes share the loopback network, so any local process (including other sandboxes' agents) can drive a sandbox browser and its logged-in sessions; in contained mode CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's containment/network namespace. |
 | R-08 | An unrestricted GitHub installation token works for every repository of the installation. | Mitigated: agents receive tokens restricted to their sandbox repository (`repositories` parameter), only for live task tokens and only for `github.com/<owner>/<repo>`; unrestricted tokens stay server-side (delivery pushes, repository creation). |
@@ -772,9 +973,15 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Areas | `accounts.rs`, `analytics.rs`, `automations.rs`, `skills_mcp.rs`, `delivery.rs`, `projects.rs`, `import_server.rs`, `browser.rs`, `editor.rs`, `shells.rs`, `http_auth.rs`, `mcp_coordination.rs`. |
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
 | Live previews and no recursion (ADR-14, 2026-10-09) | `tests/preview.rs` (handshake, rewriting, localhost view of the app, WebSocket passthrough, refusals of users, sandboxes, ports, cross-site callers and Yulius itself, the Yulius session unusable from a preview origin, TLS `ask`); `tests/browser.rs` (per-viewer `watch`); `yulius-browser` `tests/instance.rs` and `tests/manager.rs` (the sandbox Chrome's guard: refusal, `Fetch` interception, fail-closed start); opt-in `live_ui_browser.rs` with real Chrome (live iframe with root-relative assets, a redirect, a WebSocket, native typing, selection and scrolling, address bar and Back, agent notice and cursor, hostile preview page refused, framed UI refused, the sandbox Chrome refusing Yulius). Deployed DNS/TLS not exercised. |
+| Streamed browser (ADR-15, 2026-10-10) | Unit: FLV parsing for every split of a stream, codec strings, GOP cache, subscriber and viewer backpressure, encoder lifecycle (on demand, idle stop, resize restart, give-up), key mapping, cookie format and permissions, device sizes. `tests/browser.rs` with a fake display: video config then a keyframe, a late viewer's instant start, viewport → display resize and encoder restart, XTest-shaped input, wheel and text through CDP, copy, release on leave, pages opened by pages come to the front, history and reload, a broken encoder falls back to JPEG, the display stops with the browser. Opt-in `live_display.rs` on the VM (Xvfb, ffmpeg, Chrome 155, as the service user): streaming from a keyframe, real clicks (also in an OAuth-style popup), typing incl. Polish letters and emoji in order, scrolling, canvas and image pixels, `navigator.webdriver === false`, agent cursor, screenshots, recursion refused, no display, cookie, abstract or TCP socket reachable from containment (both identities); figures in ADR-15; reCAPTCHA v2 demo (checkbox → image challenge, a tile selected) and Cloudflare's challenge on nopecha.com (checkbox → passed) with XTest clicks. `live_ui_browser.rs` with a display: the panel decodes H.264 in Chrome and its input reaches the page. `e2e/tests/browser.e2e.ts` (mock UI, VP8 via WebCodecs). |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
+
+- 2026-10-10 (F 2026-10-10): ADR-15 — the panel streams the real, headful sandbox Chrome from a
+  per-sandbox Xvfb as H.264 over the viewer WebSocket with XTest input; the DOM mirror and its
+  resource endpoint removed (ADR-09 superseded for the user's view), the live iframe tabs removed
+  (ADR-14 narrowed to "Open live in a new window"); §3, §8, §9, §10, R-05, §14.
 
 - 2026-10-09 (F 2026-10-09): ADR-14 — the browser panel renders the sandbox's apps live through
   per-port preview origins; ADR-09 narrowed to the agents' Chrome; no recursion; `__Host-`

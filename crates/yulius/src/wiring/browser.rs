@@ -1,4 +1,5 @@
-//! [`BrowserPort`] over `yulius-browser`: one headless Chromium per sandbox (SPEC-002 ADR-09).
+//! [`BrowserPort`] over `yulius-browser`: one Chromium per sandbox, headful on its own virtual
+//! display when one is configured (SPEC-002 ADR-15).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -7,12 +8,12 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tokio::sync::{broadcast, watch};
 use yulius_app::ports::browser::{
-    BrowserDom, BrowserFailure, BrowserFailureKind, BrowserFrames, BrowserNotice, BrowserNotices,
-    BrowserPort, BrowserSession, DomUpdate, FetchedResource, Screenshot,
+    BrowserFailure, BrowserFailureKind, BrowserFrames, BrowserNotice, BrowserNotices, BrowserPort,
+    BrowserSession, BrowserVideo, Screenshot, VideoUpdate,
 };
 use yulius_browser::{
-    BrowserConfig, BrowserError, BrowserEvent, BrowserInstance, BrowserManager, DomEvent,
-    DomSubscription, FrameSubscription,
+    BrowserConfig, BrowserError, BrowserEvent, BrowserInstance, BrowserManager, FrameSubscription,
+    VideoPacket, VideoSubscription,
 };
 use yulius_contracts::browser::{
     ActionRequest, ClickParams, ClickResult, NavigateParams, NavigationResult, OpenParams,
@@ -39,7 +40,8 @@ fn failure(error: BrowserError) -> BrowserFailure {
         | BrowserError::StartupTimeout { .. }
         | BrowserError::ExitedEarly { .. }
         | BrowserError::Cdp(_)
-        | BrowserError::NavigationFailed(_) => BrowserFailureKind::Upstream,
+        | BrowserError::NavigationFailed(_)
+        | BrowserError::Display(_) => BrowserFailureKind::Upstream,
     };
     BrowserFailure::new(kind, error.to_string())
 }
@@ -111,22 +113,36 @@ impl BrowserFrames for Frames {
     }
 }
 
-struct Dom(DomSubscription);
+struct Video(VideoSubscription);
+
+fn video_update(packet: VideoPacket) -> VideoUpdate {
+    match packet {
+        VideoPacket::Config(config) => VideoUpdate::Config {
+            codec: config.codec.clone(),
+            description: std::sync::Arc::clone(&config.description),
+            width: config.width,
+            height: config.height,
+        },
+        VideoPacket::Frame(frame) => VideoUpdate::Frame {
+            keyframe: frame.keyframe,
+            timestamp_us: frame.timestamp_us,
+            data: frame.data,
+        },
+    }
+}
 
 #[async_trait]
-impl BrowserDom for Dom {
-    fn tab_id(&self) -> &TabId {
-        self.0.tab_id()
+impl BrowserVideo for Video {
+    fn take_backlog(&mut self) -> Vec<VideoUpdate> {
+        self.0
+            .take_backlog()
+            .into_iter()
+            .map(video_update)
+            .collect()
     }
 
-    async fn next(&mut self) -> Option<DomUpdate> {
-        Some(match self.0.recv().await? {
-            DomEvent::Batch(batch) => DomUpdate::Batch {
-                reset: batch.reset,
-                events: batch.events,
-            },
-            DomEvent::Lagged => DomUpdate::Lagged,
-        })
+    async fn next(&mut self) -> Option<VideoUpdate> {
+        self.0.recv().await.map(video_update)
     }
 }
 
@@ -216,22 +232,19 @@ impl BrowserSession for Session {
         Ok(Box::new(Frames(subscription)))
     }
 
-    async fn dom(&self, tab: &TabId) -> Result<Box<dyn BrowserDom>, BrowserFailure> {
-        let subscription = self.0.subscribe_dom(tab).await.map_err(failure)?;
-        Ok(Box::new(Dom(subscription)))
+    fn video(&self) -> Result<Box<dyn BrowserVideo>, String> {
+        self.0
+            .subscribe_video()
+            .map(|subscription| Box::new(Video(subscription)) as Box<dyn BrowserVideo>)
+            .map_err(|unavailable| unavailable.0)
     }
 
-    async fn fetch_resource(
-        &self,
-        tab: &TabId,
-        url: &str,
-    ) -> Result<FetchedResource, BrowserFailure> {
-        let resource = self.0.fetch_resource(tab, url).await.map_err(failure)?;
-        Ok(FetchedResource {
-            status: resource.status,
-            content_type: resource.content_type,
-            body: resource.body,
-        })
+    async fn copy_selection(&self, tab: &TabId) -> Result<String, BrowserFailure> {
+        self.0.copy_selection(tab).await.map_err(failure)
+    }
+
+    fn release_input(&self) {
+        self.0.release_input();
     }
 
     fn agent_activity(&self, tab: &TabId, position: Option<(f64, f64)>, action: &str, label: &str) {

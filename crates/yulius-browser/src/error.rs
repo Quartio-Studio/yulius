@@ -115,6 +115,9 @@ pub enum BrowserError {
     /// Invalid tool parameters.
     #[error(transparent)]
     ToolParams(#[from] ToolParamError),
+    /// The virtual display could not start or stopped (SPEC-002 ADR-15).
+    #[error("virtual display: {0}")]
+    Display(String),
     /// The process could not be reaped after SIGKILL; it may still be running.
     #[error("Chromium (pid {pid}) did not exit after SIGKILL")]
     NotReaped {
@@ -142,7 +145,8 @@ impl BrowserError {
             | Self::ExecutableNotFound { .. }
             | Self::Spawn(_)
             | Self::StartupTimeout { .. }
-            | Self::ExitedEarly { .. } => ViewerErrorCode::Upstream,
+            | Self::ExitedEarly { .. }
+            | Self::Display(_) => ViewerErrorCode::Upstream,
             Self::Profile(_) | Self::NotReaped { .. } => ViewerErrorCode::Internal,
         }
     }

@@ -22,12 +22,10 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 
   There are no inline scripts (`boot.js` is a file). Inline `style` attributes carry computed values
   only (bar widths, indentation). The editor (Monaco) needs `font-src data:` for its icon font and
-  `worker-src blob:` for its language workers. Images inside mirrored browser pages load only when
-  the browser's resource endpoint serves them (same origin); allowing `img-src https:` instead
-  would let mirrored pages load remote images. Live previews (SPEC-002 ADR-14) need the preview
-  origins (`https://*.<host>`) in `frame-src` and `connect-src` (the reachability ping); the mock's
-  stand-in pages are `data:` frames. The server sends only `frame-ancestors 'none'` so far, and
-  `boot.js` makes the app refuse to run inside any frame.
+  `worker-src blob:` for its language workers. The browser panel draws the sandbox Chrome's video
+  (WebCodecs) and JPEG frames (`blob:`) on a canvas and opens preview origins only in new windows,
+  so it needs nothing beyond the policy above. The server sends only `frame-ancestors 'none'` so
+  far, and `boot.js` makes the app refuse to run inside any frame.
 - `README.md` files are documentation and need not be embedded.
 
 ## Layout of the code
@@ -54,8 +52,8 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/models.js` | Models (grouped by provider, each naming its harness) and effort levels the composer offers. |
 | `assets/panels.js` | Right rail and resizable panel: Editor, Shell (the user's own terminals in this sandbox as tabs: opens one at once, "+" for more, rename with F2 or a double-click; new ones start in the sandbox repository or the task worktree), Messages; hosts the browser panel. One tool is open at a time (`aria-pressed`); the panel's width is remembered per browser and re-fitted when the window narrows, so it never pushes the rail out of the window. |
 | `assets/editorview.js` | The built-in editor (EDT-001..005): explorer, tabs and Monaco over the files API; ⌘S / Ctrl+S saves; word wrap is one toolbar toggle (or ⌥Z / Alt+Z, as in VS Code) for every open file, off by default and kept per user in this browser (`localStorage` `yulius.editorWordWrap.<user id>`). |
-| `assets/browser.js` | Browser panel (ADR-14): one tab strip for live tabs (the sandbox's ports in iframes on their preview origins, address/back/forward/reload through the preview's bridge script, kept per browser) and the sandbox Chrome's tabs; the start page with the listening ports; agent notices over live tabs. |
-| `assets/browserremote.js` | The sandbox Chrome watched remotely: its socket and tab list, the watched tab as DOM mirror or JPEG frames, mouse/keyboard forwarding and the agent's cursor. |
+| `assets/browser.js` | Browser panel (ADR-15): the sandbox Chrome's tabs in the strip, address bar, back/forward/reload, the action-request banner, notices for agents acting in another tab, "Open live in a new window" for a sandbox dev server (ADR-14 preview origins). |
+| `assets/browserstream.js` | The streamed sandbox Chrome: its socket and tab list, H.264 video decoded with WebCodecs onto a canvas (JPEG frames as the labelled fallback), the shared viewport and its notice, pointer, wheel, touch and keyboard input (a hidden textarea for IME, dead keys and phone keyboards; ⌘ as Ctrl on macOS; paste and copy), the agent's cursor. |
 | `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery (PR, merge, environment runs and confirmations, promotion), sandbox add/remove. |
 | `assets/status.js` | Status → glyph/tone/label mapping and permitted actions per access level. |
 | `assets/dom.js`, `assets/format.js` | DOM builder (text only, never `innerHTML` with data), icons, toasts, modals, menus; formatting helpers. |
@@ -235,7 +233,9 @@ workflows, skills, automations, MCP servers and analytics. Importing a repositor
 sandbox whose onboarding is `pending` with a resting preparation task (Start preparation /
 Skip). Task terminals print TUI-like ANSI output, echo input and answer on Enter; type
 `/exit` to close a task, `/lag` to force a 4008 reconnect, `/help` for the list. The
-browser panel renders fake pages as JPEG frames (click "Sign in" on the AWS tab).
+browser panel draws fake pages and sends them as video (VP8 through the browser's own
+WebCodecs encoder; the real server sends H.264) or as JPEG frames when the browser cannot encode
+or decode video; click "Sign in" on the AWS tab, type into its field.
 
 ## Contract with the server
 
@@ -272,8 +272,9 @@ The source of truth for paths and methods is the route table in
   presets come from `GET /api/delivery/presets`; command environments are run with
   `POST …/environments/{env}/runs {"confirm":true}` (polled via `GET …/delivery/runs/{id}`),
   manual verifications confirmed with `POST …/environments/{env}/confirm {"confirm":true}`.
-- **Browser input.** `button` is `left|middle|right|none`; `modifiers` is the CDP bitmask
-  (Alt 1, Ctrl 2, Meta 4, Shift 8); printable keys send `event: "down"` with `text`, paste sends
-  one `event: "char"` with the pasted `text`.
+- **Browser input.** `button` is `left|middle|right|back|forward|none`; `modifiers` is the CDP
+  bitmask (Alt 1, Ctrl 2, Meta 4, Shift 8); keys send `down`/`up` with `key` and `code`, composed
+  text and pastes one `event: "char"` with the `text`; ⌘C/Ctrl+C also sends `copy`, and the
+  `clipboard` answer goes to the user's clipboard.
 
 Syntax check without a browser: `node --check` on each file (Node 24 detects ES modules).
