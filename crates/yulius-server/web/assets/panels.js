@@ -549,33 +549,36 @@ function createShellView(ctx, sandbox, getTask) {
 
 // ---------------------------------------------------------------- messages
 
-/** Task messages (COM-005: users see messages) with a send box. */
+/**
+ * A task's messages (COM-002, COM-005, F 2026-10-10): what other tasks sent it, what it sent them,
+ * and its agent's messages to people. There is no composer: people talk to the agent in its
+ * terminal, so a message where the agent asks people something offers "Reply in the terminal".
+ */
 function createMessagesView(ctx, sandbox, task) {
   const list = h('div', { class: 'msg-list', role: 'log', 'aria-live': 'polite', 'aria-label': 'Messages' }, placeholder('Loading messages…', 'loading'));
-  const input = h('textarea', { class: 'textarea', rows: 3, placeholder: `Message #${task.number} — delivered to the agent like a task message`, 'aria-label': 'Message', maxlength: 20000 });
-  const send = h('button', { type: 'button', class: 'btn btn-primary btn-sm' }, icon('send', { size: 13 }), 'Send');
-  const write = allows(sandbox.access, 'write');
-  const compose = write
-    ? h('div', { class: 'msg-compose' }, input, h('div', { class: 'row' }, h('span', { class: 'muted xs' }, 'Ctrl/⌘ + Enter to send'), h('span', { class: 'spacer' }), send))
-    : h('div', { class: 'msg-compose muted small' }, 'Read-only (GitHub: read): you can read messages but not send them.');
-  const el = h('div', { class: 'panel-view' }, list, compose);
+  const el = h('div', { class: 'panel-view' }, list);
   const messages = new Map();
   const myLogin = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null;
+  // The agent asks people (message_send to="people", or a broadcast): the answer is typed in its
+  // terminal, like every other word to the agent.
+  const asksPeople = (m) => Boolean(m.from && m.from.task_id === task.id && !m.to_task_id && (m.kind === 'question' || m.kind === 'request'));
+  const replyable = allows(sandbox.access, 'write') && Boolean(ctx.replyInTerminal);
+  const view = (m) => messageView(ctx, m, myLogin, replyable && asksPeople(m) ? { onReply: () => ctx.replyInTerminal(task) } : {});
 
   // New messages are appended, not the whole list rebuilt: focus and reading position stay, and the
   // log announces only what is new.
   const rendered = new Map(); // message id → element
   function render() {
     const sorted = [...messages.values()].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-    if (sorted.length === 0) { rendered.clear(); setChildren(list, placeholder('No messages yet. Tasks message each other here; you can message the agent too.')); return; }
+    if (sorted.length === 0) { rendered.clear(); setChildren(list, placeholder('No messages yet. Messages between this task and other tasks show here, and so do its agent’s messages to people. To talk to the agent, type in its terminal.')); return; }
     const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 24;
     const fresh = sorted.filter((m) => !rendered.has(m.id));
     const last = sorted.filter((m) => rendered.has(m.id)).pop();
     if (rendered.size && fresh.every((m) => !last || String(m.created_at) >= String(last.created_at))) {
-      for (const m of fresh) { const el = messageView(ctx, m, myLogin); rendered.set(m.id, el); list.append(el); }
+      for (const m of fresh) { const el = view(m); rendered.set(m.id, el); list.append(el); }
     } else {
       rendered.clear();
-      keepFocus(list, () => setChildren(list, sorted.map((m) => { const el = messageView(ctx, m, myLogin); rendered.set(m.id, el); return el; })));
+      keepFocus(list, () => setChildren(list, sorted.map((m) => { const el = view(m); rendered.set(m.id, el); return el; })));
     }
     if (atBottom) list.scrollTop = list.scrollHeight;
   }
@@ -593,25 +596,6 @@ function createMessagesView(ctx, sandbox, task) {
     }
   }
 
-  const submit = singleFlight(async () => {
-    const text = input.value.trim();
-    if (!text) return;
-    send.disabled = true;
-    try {
-      const message = await ctx.api.post(`/api/tasks/${enc(task.id)}/messages`, { body: text });
-      if (message && message.id) messages.set(message.id, message);
-      input.value = '';
-      render();
-      list.scrollTop = list.scrollHeight;
-    } catch (error) {
-      errorToast(error, 'Message not sent');
-    } finally {
-      send.disabled = false;
-    }
-  });
-
-  send.addEventListener('click', submit);
-  input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(); } });
   const off = [
     ctx.store.on('message', ({ task_id: taskId, message }) => {
       const involved = taskId === task.id || (message && (message.to_task_id === task.id || (message.from && message.from.task_id === task.id)));
@@ -622,7 +606,6 @@ function createMessagesView(ctx, sandbox, task) {
   load();
   return {
     el,
-    show() { if (write) setTimeout(() => input.focus(), 0); },
     destroy() { off.forEach((fn) => fn()); },
   };
 }

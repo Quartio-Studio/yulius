@@ -38,8 +38,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 use yulius_contracts::api::git::{
-    BlockedAction, CommitView, Delivery, EnvironmentRun, GitOverview, OpenPr, PromoteResult,
-    PullView, RunEnvironment, TaskBranch, TaskChanges, TaskCommit,
+    BlockedAction, ChecksAccess, CommitView, Delivery, EnvironmentRun, GitOverview, OpenPr,
+    PromoteResult, PullView, RunEnvironment, TaskBranch, TaskChanges, TaskCommit,
 };
 use yulius_contracts::api::sandboxes::{
     Environment as EnvironmentView, Profile, Sandbox, UpdateSandbox,
@@ -365,7 +365,89 @@ fn domain_checks(state: gh::ChecksState) -> ChecksState {
         gh::ChecksState::Pending => ChecksState::Pending,
         gh::ChecksState::Success => ChecksState::Success,
         gh::ChecksState::Failure => ChecksState::Failure,
+        gh::ChecksState::Unknown => ChecksState::Unknown,
     }
+}
+
+/// An upstream failure as the reason in a note, without the adapter's `GitHub: ` prefix: the
+/// GitHub error already says it is GitHub ("GitHub refused the request (HTTP 403): …"), so the
+/// note does not repeat it (#111).
+fn github_reason(err: &AppError) -> String {
+    let message = err.public_message();
+    match message.strip_prefix("GitHub: ") {
+        Some(rest) => rest.to_owned(),
+        None => message,
+    }
+}
+
+/// `'Checks: read'`, `'Checks: read' and 'Commit statuses: read'`.
+fn quoted_permissions(missing: &[&str]) -> String {
+    missing
+        .iter()
+        .map(|p| format!("'{p}: read'"))
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
+/// What Yulius cannot read for `repo` and the permission the App needs (#111), or `None` when
+/// every source could be read. `settings_url` is the App's permission page, for administrators.
+fn checks_access(
+    repo: &str,
+    unreadable: &[gh::ChecksSource],
+    settings_url: Option<String>,
+) -> Option<ChecksAccess> {
+    use gh::ChecksSource::{CheckRuns, CommitStatuses, WorkflowRuns};
+    let missing_sources: Vec<gh::ChecksSource> = [CheckRuns, CommitStatuses]
+        .into_iter()
+        .filter(|s| unreadable.contains(s))
+        .collect();
+    if missing_sources.is_empty() {
+        return None;
+    }
+    let missing: Vec<&str> = missing_sources.iter().map(|s| s.permission()).collect();
+    // Actions runs are read only in place of check runs.
+    let attempted: &[gh::ChecksSource] = if unreadable.contains(&CheckRuns) {
+        &[CheckRuns, CommitStatuses, WorkflowRuns]
+    } else {
+        &[CheckRuns, CommitStatuses]
+    };
+    let read_from: Vec<&str> = attempted
+        .iter()
+        .filter(|s| !unreadable.contains(s))
+        .map(|s| s.noun())
+        .collect();
+    let what = if missing_sources.len() > 1 {
+        "check results"
+    } else {
+        missing_sources[0].noun()
+    };
+    let permission = if missing.len() > 1 {
+        "permissions"
+    } else {
+        "permission"
+    };
+    let tail = if read_from.is_empty() {
+        "Checks show as unknown, and merges that require them wait.".to_owned()
+    } else {
+        format!("Results come from {} only.", read_from.join(" and "))
+    };
+    Some(ChecksAccess {
+        repo: repo.to_owned(),
+        missing: missing.iter().map(|p| (*p).to_owned()).collect(),
+        read_from: read_from.iter().map(|s| (*s).to_owned()).collect(),
+        message: format!(
+            "Yulius can't read {what} for {repo}: the GitHub App needs the {} {permission}. {tail}",
+            quoted_permissions(&missing)
+        ),
+        settings_url,
+    })
+}
+
+/// Adds `more` to `into`, sorted and without repeats.
+fn merge_sources(into: &mut Vec<gh::ChecksSource>, more: &[gh::ChecksSource]) {
+    into.extend_from_slice(more);
+    into.sort();
+    into.dedup();
 }
 
 fn pr_wire_state(pull: &GhPull) -> &'static str {
@@ -654,6 +736,8 @@ struct Observed {
     steps_open: usize,
     pr: Option<GhPull>,
     checks: ChecksState,
+    /// Check sources the App may not read for the pull request head.
+    checks_unreadable: Vec<gh::ChecksSource>,
     worktree_head: Option<String>,
     dirty: bool,
     notes: Vec<String>,
@@ -757,7 +841,7 @@ impl App {
         }
         self.dlv_installation_token(sandbox)
             .await
-            .map_err(|err| format!("GitHub is not available: {}", err.public_message()))
+            .map_err(|err| format!("GitHub is not available: {}", github_reason(&err)))
     }
 
     /// Fetches the sandbox's primary clone.
@@ -937,6 +1021,7 @@ impl App {
         // Only an answer from GitHub may change the recorded stage; failures never do.
         let mut pr_known = false;
         let mut checks = ChecksState::None;
+        let mut checks_unreadable = Vec::new();
         if let Some(token) = token {
             let github = &self.deps.github;
             let (owner, repo) = (&sandbox.repo_owner, &sandbox.repo_name);
@@ -947,8 +1032,8 @@ impl App {
                         pr_known = true;
                     }
                     Err(err) => notes.push(format!(
-                        "GitHub: pull request #{number} cannot be read: {}",
-                        err.public_message()
+                        "Pull request #{number} can't be read: {}",
+                        github_reason(&err)
                     )),
                 }
             } else if let (Some(branch), DeliveryStage::None) = (&task.branch, &record.stage) {
@@ -962,21 +1047,21 @@ impl App {
                         });
                     }
                     Err(err) => notes.push(format!(
-                        "GitHub: pull requests cannot be listed: {}",
-                        err.public_message()
+                        "Pull requests can't be listed: {}",
+                        github_reason(&err)
                     )),
                 }
             }
             if let Some(pull) = pr.as_ref().filter(|p| is_open(p)) {
                 match github.checks(token, owner, repo, &pull.head_sha).await {
-                    Ok(state) => checks = domain_checks(state),
+                    Ok(report) => {
+                        checks = domain_checks(report.state);
+                        checks_unreadable = report.unreadable;
+                    }
                     Err(err) => {
                         // Unknown checks never allow a merge that requires them.
-                        checks = ChecksState::Pending;
-                        notes.push(format!(
-                            "GitHub: checks cannot be read: {}",
-                            err.public_message()
-                        ));
+                        checks = ChecksState::Unknown;
+                        notes.push(format!("Checks can't be read: {}", github_reason(&err)));
                     }
                 }
             }
@@ -988,6 +1073,7 @@ impl App {
             steps_open,
             pr,
             checks,
+            checks_unreadable,
             worktree_head,
             dirty,
             notes,
@@ -1039,6 +1125,7 @@ impl App {
         profile: &DeliveryProfile,
         observed: &Observed,
         mut notes: Vec<String>,
+        checks_access: Option<ChecksAccess>,
     ) -> Delivery {
         let facts = observed.facts();
         let stage = &observed.record.stage;
@@ -1076,7 +1163,53 @@ impl App {
             next_actions,
             blocked,
             notes,
+            checks_access,
         }
+    }
+
+    /// The GitHub App's permission settings page, for instance administrators (#111): where a
+    /// missing check permission is added. `None` for everyone else and when the App or its
+    /// owner is not known.
+    async fn dlv_app_settings_url(&self, user: Option<&UserRecord>) -> Option<String> {
+        if !user.is_some_and(|u| u.is_superadmin || u.is_instance_admin) {
+            return None;
+        }
+        let app = self.github_app().await.ok()?;
+        let instance = self.deps.store.instance().await.ok()??;
+        let owner = instance.owner_login?;
+        let slug = &app.slug;
+        let ok = |text: &str| {
+            !text.is_empty()
+                && text
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        };
+        if !ok(&owner) || !ok(slug) {
+            return None;
+        }
+        match instance.owner_kind.as_deref() {
+            Some("org") => Some(format!(
+                "https://github.com/organizations/{owner}/settings/apps/{slug}/permissions"
+            )),
+            Some("user") => Some(format!(
+                "https://github.com/settings/apps/{slug}/permissions"
+            )),
+            _ => None,
+        }
+    }
+
+    /// [`checks_access`] for the sandbox's repository, with the settings link for `user`.
+    async fn dlv_checks_access(
+        &self,
+        sandbox: &SandboxRecord,
+        unreadable: &[gh::ChecksSource],
+        user: Option<&UserRecord>,
+    ) -> Option<ChecksAccess> {
+        if unreadable.is_empty() {
+            return None;
+        }
+        let repo = format!("{}/{}", sandbox.repo_owner, sandbox.repo_name);
+        checks_access(&repo, unreadable, self.dlv_app_settings_url(user).await)
     }
 
     // ---------------------------------------------------------------- reads
@@ -1105,7 +1238,11 @@ impl App {
         let observed = self
             .dlv_observe(&sandbox, task, &profile, token.as_ref())
             .await?;
-        Ok(Self::dlv_delivery_of(&profile, &observed, notes))
+        // Checks are read only for an open pull request, so this is empty otherwise.
+        let access = self
+            .dlv_checks_access(&sandbox, &observed.checks_unreadable, user)
+            .await;
+        Ok(Self::dlv_delivery_of(&profile, &observed, notes, access))
     }
 
     /// The `TaskDetail.delivery` value: the full view, or the stored stage with a note when
@@ -1162,14 +1299,15 @@ impl App {
         };
         let mut open_pulls = Vec::new();
         let mut checks_by_pr = Vec::new();
+        let mut checks_unreadable = Vec::new();
         if let Some(token) = &token {
             match self.deps.github.list_pulls(token, owner, name, None).await {
                 Ok(pulls) => {
                     open_pulls = pulls.into_iter().filter(is_open).take(MAX_PULLS).collect()
                 }
                 Err(err) => notes.push(format!(
-                    "GitHub: pull requests cannot be listed: {}",
-                    err.public_message()
+                    "Pull requests can't be listed: {}",
+                    github_reason(&err)
                 )),
             }
             let mut checks_failed = false;
@@ -1180,14 +1318,15 @@ impl App {
                     .checks(token, owner, name, &pull.head_sha)
                     .await
                 {
-                    Ok(state) => state.as_str(),
+                    Ok(report) => {
+                        // A missing permission is said once for the repository, not per PR.
+                        merge_sources(&mut checks_unreadable, &report.unreadable);
+                        report.state.as_str()
+                    }
                     Err(err) => {
                         if !checks_failed {
                             checks_failed = true;
-                            notes.push(format!(
-                                "GitHub: checks cannot be read: {}",
-                                err.public_message()
-                            ));
+                            notes.push(format!("Checks can't be read: {}", github_reason(&err)));
                         }
                         "unknown"
                     }
@@ -1195,6 +1334,9 @@ impl App {
                 checks_by_pr.push((pull.number, state));
             }
         }
+        let checks_access = self
+            .dlv_checks_access(&sandbox, &checks_unreadable, Some(&ctx.user))
+            .await;
         // With required checks, a pull request whose checks have not reported yet is pending,
         // not "none": it is not tested until they pass (#68).
         let checks_of = |number: u64| {
@@ -1360,6 +1502,7 @@ impl App {
             recent_commits,
             pulls,
             notes,
+            checks_access,
         })
     }
 
@@ -2191,14 +2334,17 @@ impl App {
                     }
                     Some(pull) => {
                         if profile.require_checks {
-                            match domain_checks(
-                                github.checks(token, owner, name, &pull.head_sha).await?,
-                            ) {
+                            let report = github.checks(token, owner, name, &pull.head_sha).await?;
+                            match domain_checks(report.state) {
                                 ChecksState::Failure => {
                                     return Err(refusal(&DeliveryError::ChecksFailing));
                                 }
                                 ChecksState::Pending => {
                                     return Err(refusal(&DeliveryError::ChecksPending));
+                                }
+                                // Unreadable checks never count as passed (#111).
+                                ChecksState::Unknown => {
+                                    return Err(refusal(&DeliveryError::ChecksUnknown));
                                 }
                                 ChecksState::None | ChecksState::Success => {}
                             }
@@ -2984,6 +3130,7 @@ impl App {
             "next_actions_for_people": view.next_actions,
             "blocked": view.blocked,
             "notes": view.notes,
+            "checks_access": view.checks_access.as_ref().map(|a| &a.message),
             "profile": profile_to_contract(&profile),
             "policy": "People open, merge, deploy and promote in Yulius (or the profile auto-promotes after a merge); agents have no tool for it. Commit and push your task branch, keep the spec valid and the steps up to date.",
         }))

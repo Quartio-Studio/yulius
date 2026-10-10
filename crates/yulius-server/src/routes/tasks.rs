@@ -4,9 +4,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
-use yulius_contracts::api::tasks::{
-    FeedbackRequest, MessageView, PostMessage, TaskDetail, TaskSummary,
-};
+use yulius_contracts::api::tasks::{FeedbackRequest, MessageView, TaskDetail, TaskSummary};
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -84,15 +82,6 @@ pub async fn messages(
     Path(tid): Path<String>,
 ) -> ApiResult<Json<Vec<MessageView>>> {
     Ok(Json(app.task_messages(&ctx, &tid).await?))
-}
-
-pub async fn post_message(
-    State(app): State<AppState>,
-    Auth(ctx): Auth,
-    Path(tid): Path<String>,
-    Json(req): Json<PostMessage>,
-) -> ApiResult<Json<MessageView>> {
-    Ok(Json(app.post_user_message(&ctx, &tid, &req.body).await?))
 }
 
 pub async fn create(

@@ -81,10 +81,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/tasks/{tid}/archive", post(tasks::archive))
         .route("/api/tasks/{tid}/restore", post(tasks::restore))
         .route("/api/tasks/{tid}/feedback", post(tasks::feedback))
-        .route(
-            "/api/tasks/{tid}/messages",
-            get(tasks::messages).post(tasks::post_message),
-        )
+        .route("/api/tasks/{tid}/messages", get(tasks::messages))
         .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
         .route(

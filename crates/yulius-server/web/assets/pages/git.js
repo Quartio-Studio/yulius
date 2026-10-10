@@ -3,7 +3,8 @@
 // live (with the release button), what needs the user now, where every task is on the way to
 // production (a board with columns from the profile), and recent activity. Branch statistics and
 // the full stage track live in each task's Deliver panel. Reads degrade: Git/GitHub problems
-// arrive as `notes`, not errors. Environment runs, merges and releases happen only when someone
+// arrive as `notes`, not errors; check results the GitHub App may not read arrive as
+// `checks_access`, one quiet line for instance administrators (#111). Environment runs, merges and releases happen only when someone
 // clicks and confirms (GIT-002).
 
 import { enc } from '../api.js';
@@ -11,7 +12,7 @@ import { h, icon, setChildren, toast, iconButton, placeholder, statusMark, field
 import { relShort, dateTime, plural } from '../format.js';
 import { allows, taskInfo } from '../status.js';
 import { href } from '../router.js';
-import { openDeliveryDialog, runEnvironment, confirmEnvironment, promote, notesBanner, openRunViewer, mergeTask, openPrDialog } from '../actions.js';
+import { openDeliveryDialog, runEnvironment, confirmEnvironment, promote, notesBanner, checksAccessNote, openRunViewer, mergeTask, openPrDialog, UNKNOWN_CHECKS } from '../actions.js';
 import { pageFrame } from './common.js';
 import { BRAND } from '../brand.js';
 
@@ -58,7 +59,8 @@ function prChip(pr) {
   if (!pr) return null;
   const check = pr.state === 'open' ? CHECK_ICON[pr.checks] : null;
   const label = `Pull request #${pr.number} · ${pr.state}${pr.state === 'open' && CHECK_TEXT[pr.checks] ? ` · ${CHECK_TEXT[pr.checks]}` : ''}`;
-  return h('a', { class: ['tl-pr-chip', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], href: pr.url, target: '_blank', rel: 'noopener noreferrer', title: label, 'aria-label': label },
+  const title = pr.state === 'open' && pr.checks === 'unknown' ? `${label}. ${UNKNOWN_CHECKS}` : label;
+  return h('a', { class: ['tl-pr-chip', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], href: pr.url, target: '_blank', rel: 'noopener noreferrer', title, 'aria-label': label },
     icon('branch', { size: 12 }), `#${pr.number}`, check ? h('span', { class: `tone-${check[1]}` }, icon(check[0], { size: 12 })) : null);
 }
 
@@ -170,6 +172,7 @@ export function mountGitPage(ctx, sandbox) {
     // Live updates rebuild the page; keyboard focus stays on the same control (keepFocus).
     keepFocus(body, () => setChildren(body,
       notesBanner(model.git.notes),
+      checksAccessNote(ctx, model.git.checks_access),
       statusStrip(profile, envs, by('waiting'), by('live')),
       needsYou(items, profile),
       board(profile, items, by),

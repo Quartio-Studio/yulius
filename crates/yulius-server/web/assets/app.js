@@ -9,7 +9,7 @@
 import { createApi, realTransport, enc } from './api.js';
 import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
-import { applyTheme, PHONE } from './theme.js';
+import { applyTheme, PHONE, isPhone } from './theme.js';
 import { BRAND } from './brand.js';
 import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError, closeMenu } from './dom.js';
 import { createTabRow, createSidebar } from './layout.js';
@@ -232,6 +232,7 @@ function createApp(root, transport) {
     syncDrawer();
     ctx.openNewTask = () => openNewTask();
     ctx.openBrowserTab = (sandbox, tabId) => openBrowserTab(sandbox, tabId);
+    ctx.replyInTerminal = (task) => replyInTerminal(task);
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
     ctx.railVisible = () => panels.railVisible;
     ctx.setRailVisible = (visible) => panels.setRailVisible(visible);
@@ -368,6 +369,21 @@ function createApp(root, transport) {
     } else {
       navigate(`/s/${encodeURIComponent(sandbox.slug)}/browser?tab=${encodeURIComponent(tabId || '')}`);
     }
+  }
+
+  /**
+   * "Reply in the terminal" (F 2026-10-10): people answer an agent in its terminal, not through
+   * Messages. Shows the task's session and focuses its terminal (the quick input on phones).
+   */
+  function replyInTerminal(task) {
+    if (centerView && centerView.key === `task:${task.id}` && centerView.reply) {
+      // On a phone the tool panel covers the session.
+      if (isPhone() && shell) shell.panels.close();
+      centerView.reply();
+      return;
+    }
+    const sandbox = store.sandboxById(task.sandbox_id);
+    if (sandbox) navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
   }
 
   /** The viewed task closed because the user left the session: show the task list. */

@@ -23,7 +23,7 @@ use yulius_app::model::{
     TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort};
-use yulius_app::ports::github::ChecksState;
+use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
 use yulius_app::ports::store::{
     CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
 };
@@ -1015,6 +1015,28 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         )
         .await?;
     assert_eq!(waiting.status, StatusCode::CONFLICT);
+    // Checks that can't be read never count as passed for the release either (#111).
+    f.h.github.set_checks_report(
+        &promotion_head,
+        ChecksReport {
+            state: ChecksState::Unknown,
+            unreadable: vec![ChecksSource::CheckRuns, ChecksSource::CommitStatuses],
+        },
+    );
+    let unknown = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            None,
+            &f.bob,
+        )
+        .await?;
+    assert_eq!(unknown.status, StatusCode::CONFLICT);
+    assert!(
+        error_message(&unknown).contains("can't be read"),
+        "{}",
+        unknown.body
+    );
     f.h.github.set_checks(&promotion_head, ChecksState::Success);
     let promoted = f
         .req(
@@ -1936,6 +1958,147 @@ async fn task_review_shows_changes_and_commits() -> TestResult {
         )
         .await?;
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+/// #111 (`F 2026-10-10`): the GitHub App may not read every check source. What it can read
+/// counts; checks that can't be read never count as passed; the missing permission is said once,
+/// in plain words, with the App's permission page for instance administrators only; GitHub
+/// errors are not prefixed "GitHub:" twice.
+#[tokio::test]
+async fn unreadable_check_sources_are_said_once_and_never_count_as_passed() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let owner = superadmin(&f.h).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+
+    // The installation of #111: Checks but no Commit statuses. The check runs decide.
+    f.h.github.set_checks_report(
+        &head,
+        ChecksReport {
+            state: ChecksState::Success,
+            unreadable: vec![ChecksSource::CommitStatuses],
+        },
+    );
+    let expected = "Yulius can't read commit statuses for Quartio-Studio/shop: the GitHub App \
+                    needs the 'Commit statuses: read' permission. Results come from check runs only.";
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert_eq!(page.body["pulls"][0]["checks"], "success");
+    assert_eq!(page.body["notes"], json!([]), "no warning note");
+    let access = &page.body["checks_access"];
+    assert_eq!(access["repo"], "Quartio-Studio/shop");
+    assert_eq!(access["missing"], json!(["Commit statuses"]));
+    assert_eq!(access["read_from"], json!(["check runs"]));
+    assert_eq!(access["message"], expected);
+    assert_eq!(access["settings_url"], Value::Null, "not an administrator");
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &owner)
+        .await?;
+    assert_eq!(
+        page.body["checks_access"]["settings_url"],
+        "https://github.com/organizations/Quartio-Studio/settings/apps/yulius-test/permissions"
+    );
+    let d = f.delivery("t1").await?;
+    assert_eq!(d["pr"]["checks"], "success");
+    assert_eq!(d["checks_access"]["message"], expected);
+    assert_eq!(actions(&d), ["merge"]);
+
+    // Every source read: nothing to say.
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &owner)
+        .await?;
+    assert_eq!(page.body["checks_access"], Value::Null);
+
+    // Nothing readable: unknown, never green. The merge waits and says why.
+    f.h.github.set_checks_report(
+        &head,
+        ChecksReport {
+            state: ChecksState::Unknown,
+            unreadable: vec![
+                ChecksSource::CheckRuns,
+                ChecksSource::CommitStatuses,
+                ChecksSource::WorkflowRuns,
+            ],
+        },
+    );
+    let d = f.delivery("t1").await?;
+    assert_eq!(d["pr"]["checks"], "unknown");
+    assert!(actions(&d).is_empty(), "{d}");
+    assert_eq!(d["blocked"][0]["action"], "merge");
+    assert!(
+        d["blocked"][0]["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("can't be read") && r.contains("don't count as passed")),
+        "{d}"
+    );
+    assert_eq!(
+        d["checks_access"]["missing"],
+        json!(["Checks", "Commit statuses"])
+    );
+    assert_eq!(d["checks_access"]["read_from"], json!([]));
+    assert_eq!(
+        d["checks_access"]["message"],
+        "Yulius can't read check results for Quartio-Studio/shop: the GitHub App needs the \
+         'Checks: read' and 'Commit statuses: read' permissions. Checks show as unknown, and \
+         merges that require them wait."
+    );
+    let refused = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+    assert!(
+        error_message(&refused).contains("can't be read"),
+        "{}",
+        refused.body
+    );
+    assert!(
+        !f.h.github
+            .writes()
+            .iter()
+            .any(|w| w.starts_with("merge_pull")),
+        "nothing merged"
+    );
+
+    // Any other GitHub failure: unknown too (not "running"), one note naming GitHub once.
+    if let Ok(mut slot) = f.h.github.checks_error.lock() {
+        *slot = Some(AppError::Upstream(
+            "GitHub: GitHub refused the request (HTTP 403): Resource protected by organization \
+             SAML enforcement."
+                .into(),
+        ));
+    }
+    let d = f.delivery("t1").await?;
+    assert_eq!(d["pr"]["checks"], "unknown");
+    assert_eq!(
+        d["notes"],
+        json!([
+            "Checks can't be read: GitHub refused the request (HTTP 403): Resource protected by \
+             organization SAML enforcement."
+        ])
+    );
+    assert_eq!(d["checks_access"], Value::Null);
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(page.body["pulls"][0]["checks"], "unknown");
+    let notes = page.body["notes"].to_string();
+    assert!(
+        notes.contains("Checks can't be read: GitHub refused"),
+        "{notes}"
+    );
+    assert!(!notes.contains("GitHub: GitHub"), "{notes}");
     Ok(())
 }
 

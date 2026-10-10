@@ -139,8 +139,7 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
-| POST | `/api/tasks/{tid}/messages` | write | `{"body"}` → `Message` (user → agent, delivered like task messages) |
-| GET | `/api/tasks/{tid}/messages` | read | → `[Message]` |
+| GET | `/api/tasks/{tid}/messages` | read | → `[Message]`: messages between this task and other tasks (`message_send`) and its agent's messages to people (`to="people"`, `to_task_id` null). People talk to the agent in its terminal; there is no route that posts a person's message to it (removed 2026-10-10, `POST` is 405) |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
 | WS | `/api/tasks/{tid}/terminal` | read (input: write) | terminal protocol below |
 
@@ -233,14 +232,18 @@ The account-login terminal (`/api/admin/accounts/login/{lid}/terminal`) and sand
 ```json
 GitOverview = {"integration_branch","production_branch","default_branch",
   "tasks":[{"task_id","title","branch","ahead","behind","files_changed","insertions","deletions","pr":PR|null}],
-  "recent_commits":[{"sha","subject","author","at"}], "pulls":[PR], "notes":["…"]}
+  "recent_commits":[{"sha","subject","author","at"}], "pulls":[PR], "notes":["…"],
+  "checks_access":ChecksAccess|null}
 PR = {"number","url","title","state":"open|merged|closed","base","head",
       "checks":"none|pending|success|failure|unknown"}
+ChecksAccess = {"repo":"owner/name", "missing":["Checks","Commit statuses"],
+  "read_from":["check runs","commit statuses","Actions runs"], "message":"…",
+  "settings_url":"https://github.com/…/settings/apps/<slug>/permissions|null"}
 Delivery = {"stage":"none|pr_open|merged_integration|env_done|promoted|production_done",
   "environment":"dev-vm|null", "pr":PR|null, "spec_path":"docs/specs/…|null",
   "spec_valid":bool, "spec_problems":["…"], "steps_open":0,
   "next_actions":["open_pr|merge|run_env:<name>|confirm_env:<name>|promote"],
-  "blocked":[{"action","reason"}], "notes":["…"]}
+  "blocked":[{"action","reason"}], "notes":["…"], "checks_access":ChecksAccess|null}
 EnvironmentRun = {"run_id","environment","kind":"command|manual",
   "state":"running|succeeded|failed|error","command":"…|null","commit":"<sha>|null",
   "requested_by":"login","output":"…","exit_code":0|null,"started_at","ended_at":"…|null"}
@@ -250,7 +253,19 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 
 - **Reads degrade.** Git or GitHub failures add a line to `notes` and leave the affected lists
   empty or partial (`checks: "unknown"` when checks cannot be read) instead of failing. GitHub
-  reads use the caller's token, else the GitHub App installation token. Task branch statistics
+  reads use the caller's token, else the GitHub App installation token.
+- **Checks and App permissions (#111).** A pull request head's checks come from three sources,
+  each behind its own GitHub App permission: check runs (Checks: read), the combined commit
+  status (Commit statuses: read) and, only when check runs cannot be read, the head's GitHub
+  Actions workflow runs (Actions: read). A source answering 403 "Resource not accessible by
+  integration" is skipped and named in `checks_access` (once per repository, not as a note);
+  any other GitHub error still makes the checks `unknown` with a note. The readable sources
+  decide what they report (a failure, a run in progress, all passed), but nothing reported while
+  a source is unreadable, or no source readable, is `unknown`: never passed. `unknown` blocks a
+  merge or release that requires checks ("the pull request's checks can't be read, so they don't
+  count as passed"). `checks_access.settings_url` (the App's permission page) is set for
+  instance administrators only; the UI shows the message to them as one line they can dismiss
+  for the session. [Operations](operations.md#github-app-permissions) lists the App's permissions. Task branch statistics
   compare the local task branch with `origin/<integration>` of the sandbox clone (refreshed by
   merges, promotions and environment runs, not by reads).
 - **Overview stages (proposed).** The Git page (UI-025) reads `GET /api/tasks/{tid}/delivery`

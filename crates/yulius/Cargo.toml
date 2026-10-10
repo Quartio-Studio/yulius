@@ -48,6 +48,7 @@ sysinfo = { workspace = true }
 base64 = { workspace = true }
 yulius-ptyhost = { workspace = true, features = ["test-support"] }
 yulius-browser = { workspace = true, features = ["fake"] }
+yulius-github = { workspace = true, features = ["fake"] }
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 nix = { workspace = true }

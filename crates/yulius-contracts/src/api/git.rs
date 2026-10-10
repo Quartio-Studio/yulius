@@ -75,6 +75,29 @@ pub struct GitOverview {
     /// Problems reading Git or GitHub; the lists above may then be partial or empty.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Check sources of the open pull requests the GitHub App may not read; null when every
+    /// source could be read (or no checks were read).
+    #[serde(default)]
+    pub checks_access: Option<ChecksAccess>,
+}
+
+/// GitHub check sources Yulius may not read for a repository because the GitHub App lacks
+/// their permission (#111). Results come from the other sources; with none left, or nothing
+/// reported while a source is unreadable, the checks are `unknown`, which never counts as passed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChecksAccess {
+    /// `owner/name`.
+    pub repo: String,
+    /// App permissions to add, as GitHub's settings name them (`Checks`, `Commit statuses`).
+    pub missing: Vec<String>,
+    /// Sources the results still come from (`check runs`, `commit statuses`, `Actions runs`);
+    /// empty when none could be read.
+    pub read_from: Vec<String>,
+    /// One plain sentence: what cannot be read and the permission the App needs.
+    pub message: String,
+    /// The GitHub App's permission settings, for instance administrators only (null otherwise).
+    #[serde(default)]
+    pub settings_url: Option<String>,
 }
 
 /// Delivery state of a task.
@@ -106,6 +129,9 @@ pub struct Delivery {
     /// promotion).
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Check sources of the pull request the GitHub App may not read (see [`ChecksAccess`]).
+    #[serde(default)]
+    pub checks_access: Option<ChecksAccess>,
 }
 
 /// A delivery action that applies at the current stage but is refused now.
