@@ -10,8 +10,7 @@ use yulius_github::fake::{FakeCheckRun, FakeFault, FakeGitHub, FakeStatus};
 use yulius_github::{
     AccessLevel, CheckSource, ChecksSummary, Clock, CompareStatus, CreateRepo, GitHubClient,
     GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewIssue, NewPull, OwnerKind,
-    PullFilter,
-    PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock, Url,
+    PullFilter, PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock, Url,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -450,7 +449,11 @@ async fn issues_are_opened_with_their_labels() -> TestResult {
     let issue = NewIssue {
         title: "Flaky checkout test".into(),
         body: "Fails 1 in 20 runs under load.".into(),
-        labels: vec!["type: bug".into(), "priority: high".into(), "area: backend".into()],
+        labels: vec![
+            "type: bug".into(),
+            "priority: high".into(),
+            "area: backend".into(),
+        ],
     };
     let opened = client.create_issue(&token, "acme", "app", &issue).await?;
     assert_eq!(opened.number, 1);
@@ -458,7 +461,11 @@ async fn issues_are_opened_with_their_labels() -> TestResult {
     assert_eq!(fake.labels("acme", "app").len(), 3);
     let second = client.create_issue(&token, "acme", "app", &issue).await?;
     assert_eq!(second.number, 2);
-    assert_eq!(fake.count("POST", "/repos/acme/app/labels"), 3, "labels are created once");
+    assert_eq!(
+        fake.count("POST", "/repos/acme/app/labels"),
+        3,
+        "labels are created once"
+    );
     assert_eq!(fake.issues("acme", "app")[1]["labels"][2], "area: backend");
     let before = fake.requests().len();
     for bad in [

@@ -35,7 +35,9 @@ pub fn definition_of_ready_problem(labels: &[String], body: &str) -> Option<Stri
             .count()
     };
     if count("type:") != 1 {
-        return Some("give exactly one `type:` label (bug, enhancement, docs, chore, performance)".into());
+        return Some(
+            "give exactly one `type:` label (bug, enhancement, docs, chore, performance)".into(),
+        );
     }
     if count("priority:") != 1 {
         return Some("give exactly one `priority:` label (high, medium, low)".into());
@@ -59,9 +61,8 @@ pub fn definition_of_ready_problem(labels: &[String], body: &str) -> Option<Stri
             items += 1;
         }
     }
-    (items == 0).then(|| {
-        "add a `## Acceptance criteria` section with at least one `- [ ]` item".to_owned()
-    })
+    (items == 0)
+        .then(|| "add a `## Acceptance criteria` section with at least one `- [ ]` item".to_owned())
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
@@ -108,13 +109,7 @@ impl App {
         if let Err(err) = self
             .deps
             .store
-            .audit(
-                self.now(),
-                &ctx.actor(),
-                action,
-                Some(target),
-                Some(detail),
-            )
+            .audit(self.now(), &ctx.actor(), action, Some(target), Some(detail))
             .await
         {
             tracing::warn!(error = %err, task = %ctx.task.id, "agent delivery audit failed");
@@ -344,19 +339,29 @@ mod tests {
         let ready = labels(&["type: bug", "priority: high", "area: backend"]);
         let body = "Flaky.\n\n## Acceptance criteria\n- [ ] Passes 100 runs under load\n";
         assert_eq!(definition_of_ready_problem(&ready, body), None);
-        assert!(definition_of_ready_problem(&labels(&["priority: high", "area: x"]), body)
-            .is_some_and(|p| p.contains("`type:`")));
-        assert!(definition_of_ready_problem(
-            &labels(&["type: bug", "type: docs", "priority: low", "area: x"]),
-            body
-        )
-        .is_some());
-        assert!(definition_of_ready_problem(&labels(&["type: bug", "area: x"]), body)
-            .is_some_and(|p| p.contains("`priority:`")));
-        assert!(definition_of_ready_problem(&labels(&["type: bug", "priority: low"]), body)
-            .is_some_and(|p| p.contains("`area:`")));
-        assert!(definition_of_ready_problem(&ready, "No criteria here.\n- [ ] loose item")
-            .is_some_and(|p| p.contains("Acceptance criteria")));
+        assert!(
+            definition_of_ready_problem(&labels(&["priority: high", "area: x"]), body)
+                .is_some_and(|p| p.contains("`type:`"))
+        );
+        assert!(
+            definition_of_ready_problem(
+                &labels(&["type: bug", "type: docs", "priority: low", "area: x"]),
+                body
+            )
+            .is_some()
+        );
+        assert!(
+            definition_of_ready_problem(&labels(&["type: bug", "area: x"]), body)
+                .is_some_and(|p| p.contains("`priority:`"))
+        );
+        assert!(
+            definition_of_ready_problem(&labels(&["type: bug", "priority: low"]), body)
+                .is_some_and(|p| p.contains("`area:`"))
+        );
+        assert!(
+            definition_of_ready_problem(&ready, "No criteria here.\n- [ ] loose item")
+                .is_some_and(|p| p.contains("Acceptance criteria"))
+        );
         assert!(definition_of_ready_problem(&ready, "### Acceptance Criteria\n- [ ]\n").is_some());
     }
 

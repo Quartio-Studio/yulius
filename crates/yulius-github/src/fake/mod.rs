@@ -1263,17 +1263,27 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
         ("POST", ["labels"]) => {
             let name = body["name"].as_str().unwrap_or_default().to_owned();
             if name.is_empty() || !repo.labels.insert(name.clone()) {
-                return error(422, "Validation Failed: label already exists or has no name");
+                return error(
+                    422,
+                    "Validation Failed: label already exists or has no name",
+                );
             }
             reply(201, json!({"name": name, "color": body["color"]}))
         }
         ("POST", ["issues"]) => {
             let labels: Vec<String> = body["labels"]
                 .as_array()
-                .map(|l| l.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .map(|l| {
+                    l.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
                 .unwrap_or_default();
             if let Some(missing) = labels.iter().find(|l| !repo.labels.contains(*l)) {
-                return error(422, &format!("Validation Failed: label '{missing}' does not exist"));
+                return error(
+                    422,
+                    &format!("Validation Failed: label '{missing}' does not exist"),
+                );
             }
             // Issues and pull requests share one number sequence.
             let number = (repo.pulls.len() + repo.issues.len()) as u64 + 1;

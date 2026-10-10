@@ -49,7 +49,10 @@ fn check_issue(issue: &NewIssue) -> Result<(), GitHubError> {
             || label.len() > MAX_LABEL_BYTES
             || label.chars().any(char::is_control)
         {
-            return Err(invalid("issue label", "empty, too long or with control characters"));
+            return Err(invalid(
+                "issue label",
+                "empty, too long or with control characters",
+            ));
         }
     }
     Ok(())
@@ -113,9 +116,7 @@ impl GitHubClient {
             "body": issue.body,
             "labels": issue.labels,
         });
-        let wire: WireIssue = self
-            .send_json(Method::POST, url, Some(token), body)
-            .await?;
+        let wire: WireIssue = self.send_json(Method::POST, url, Some(token), body).await?;
         Ok(IssueRef {
             number: wire.number,
             url: wire.html_url,

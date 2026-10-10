@@ -1593,9 +1593,16 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     }
     let delivery_tools = names
         .iter()
-        .filter(|n| ["merge", "promote", "deploy", "environment"].iter().any(|w| n.contains(w)))
+        .filter(|n| {
+            ["merge", "promote", "deploy", "environment"]
+                .iter()
+                .any(|w| n.contains(w))
+        })
         .count();
-    assert_eq!(delivery_tools, 3, "no other way to merge, deploy or promote: {names:?}");
+    assert_eq!(
+        delivery_tools, 3,
+        "no other way to merge, deploy or promote: {names:?}"
+    );
     let status = rpc(
         "tools/call",
         json!({"name": "delivery_status", "arguments": {}}),
@@ -1622,21 +1629,33 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     )
     .await?;
     assert_eq!(attempt.body["result"]["isError"], true);
-    assert!(tool_text(&attempt).contains("reviewed_head"), "{}", attempt.body);
+    assert!(
+        tool_text(&attempt).contains("reviewed_head"),
+        "{}",
+        attempt.body
+    );
     let stale = rpc(
         "tools/call",
         json!({"name": "delivery_merge", "arguments": {"reviewed_head": "0000000"}}),
     )
     .await?;
     assert_eq!(stale.body["result"]["isError"], true);
-    assert!(tool_text(&stale).contains("review the new head"), "{}", stale.body);
+    assert!(
+        tool_text(&stale).contains("review the new head"),
+        "{}",
+        stale.body
+    );
     let pending = rpc(
         "tools/call",
         json!({"name": "delivery_merge", "arguments": {"reviewed_head": head}}),
     )
     .await?;
     assert_eq!(pending.body["result"]["isError"], true);
-    assert!(tool_text(&pending).contains("merge on green only"), "{}", pending.body);
+    assert!(
+        tool_text(&pending).contains("merge on green only"),
+        "{}",
+        pending.body
+    );
     // A person-verified or unknown environment is never run by an agent.
     let deploy = rpc(
         "tools/call",
