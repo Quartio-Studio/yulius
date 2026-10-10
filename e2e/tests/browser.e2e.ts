@@ -4,7 +4,7 @@ import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
-type MockBrowser = { typed: Map<string, string> };
+type MockBrowser = { typed: Map<string, string>; acked: number };
 type WithMock = Window & { __yuliusMock: { browsers: Map<string, MockBrowser> } };
 
 // The browser panel (SPEC-002 ADR-15): the sandbox Chrome — the agents' browser — streamed onto a
@@ -43,6 +43,13 @@ test('the sandbox Chrome streams into the panel and takes clicks and keys', asyn
     }), { timeout: 15000 })
     .toBe(true);
   expect(await axeViolations(browser)).toEqual([]);
+  // Video frames are acknowledged as they arrive (the server paces the stream by them).
+  const video = await browser.evaluate(() => (document.querySelector('.bp-viewchip') as HTMLElement | null)?.hidden ?? false);
+  if (video) {
+    await expect
+      .poll(() => browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.browsers.get('sb_studio')?.acked ?? 0))
+      .toBeGreaterThan(0);
+  }
 
   // Keys typed after a click in the page go to the page.
   await atPanelSize();

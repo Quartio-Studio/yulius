@@ -9,9 +9,14 @@
 //!
 //! Queues: JSON messages go through a bounded queue and a client that stops draining them is
 //! disconnected (4008). Media go through [`MediaQueue`], bounded in frames and bytes: JPEG frames
-//! keep the newest few; a video viewer that falls behind skips to the next keyframe instead of
-//! growing a backlog (a decoder cannot skip delta frames), so its latency stays bounded and it
-//! never slows the encoder or other viewers.
+//! keep the newest few; video is paced by the viewer's acknowledgements ([`flow`]: about a round
+//! trip of frames on the way, F 2026-10-10), and a viewer whose frames wait on the server longer
+//! than [`VIDEO_QUEUE_LIMIT`] skips to a fresh keyframe, which the connection asks the encoder
+//! for, instead of growing a backlog (a decoder cannot skip delta frames). Its latency stays
+//! bounded, it never slows the encoder or other viewers, and its reports steer the stream's
+//! bitrate tier.
+
+mod flow;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -27,7 +32,7 @@ use tokio::sync::{Notify, mpsc};
 use yulius_app::auth::AuthContext;
 use yulius_app::browser::BrowserGrant;
 use yulius_app::ports::browser::{
-    BrowserFrames, BrowserNotice, BrowserSession, BrowserVideo, VideoUpdate,
+    BrowserFrames, BrowserNotice, BrowserSession, BrowserVideo, VideoNetworkReport, VideoUpdate,
 };
 use yulius_contracts::browser::{
     MouseEventKind, TabId, TabInfo, ViewMode, ViewerClientMsg, ViewerErrorCode, ViewerServerMsg,
@@ -47,9 +52,11 @@ pub const FRAME_QUEUE: usize = 4;
 pub const VIDEO_QUEUE_FRAMES: usize = 300;
 /// Video bytes queued per connection at most.
 pub const VIDEO_QUEUE_BYTES: usize = 8 << 20;
-/// Live video frames a connection may lag behind before it skips to the next keyframe (half a
-/// second at 60 fps); a newly joined viewer's cached group is exempt.
-pub const VIDEO_LAG_FRAMES: usize = 30;
+/// How long video may wait on the server (the viewer's path is full or its socket blocks)
+/// before the viewer skips to a fresh keyframe.
+pub const VIDEO_QUEUE_LIMIT: Duration = Duration::from_millis(250);
+/// Shortest time between two keyframe requests of one connection.
+const KEYFRAME_REQUEST_SPACING: Duration = Duration::from_secs(1);
 /// JSON messages queued per connection.
 const CONTROL_QUEUE: usize = 64;
 /// How long a JSON message may wait for queue space before the viewer is disconnected.
@@ -60,6 +67,9 @@ const MAX_CLIENT_MESSAGE: usize = 64 * 1024;
 const INPUT_RATE: f64 = 500.0;
 /// Input events a connection may send in a burst.
 const INPUT_BURST: f64 = 1000.0;
+/// Budget moves and wheel turns leave for discrete input (a flood of moves never makes a click
+/// or a key refused).
+const INPUT_RESERVE: f64 = 100.0;
 /// Close code: access revoked.
 const CLOSE_REVOKED: u16 = 4003;
 /// Close code: the viewer did not drain its messages.
@@ -104,21 +114,39 @@ struct Media {
     message: Message,
     bytes: usize,
     kind: MediaKind,
+    /// When it was queued.
+    at: Instant,
 }
 
-/// The media queue's state and policy (pure, so it is unit-tested).
-#[derive(Debug, Default)]
+/// The media queue's state and policy (pure, so it is unit-tested; time is passed in).
+#[derive(Debug)]
 struct MediaState {
     items: VecDeque<Media>,
     video_frames: usize,
     video_bytes: usize,
     /// Video frames are dropped until the next keyframe.
     waiting_key: bool,
+    /// The connection should ask the encoder for a keyframe.
+    wants_keyframe: bool,
     dropped: u64,
     closed: bool,
+    flow: flow::Flow,
 }
 
 impl MediaState {
+    fn new(now: Instant) -> Self {
+        Self {
+            items: VecDeque::new(),
+            video_frames: 0,
+            video_bytes: 0,
+            waiting_key: false,
+            wants_keyframe: false,
+            dropped: 0,
+            closed: false,
+            flow: flow::Flow::new(now),
+        }
+    }
+
     fn push_back(&mut self, media: Media) {
         if media.kind.is_video_frame() {
             self.video_frames += 1;
@@ -152,30 +180,48 @@ impl MediaState {
         self.push_back(media);
     }
 
-    /// A video packet. `backlog` marks a newly joined viewer's cached group, which may exceed
-    /// the lag bound.
-    fn push_video(&mut self, media: Media, backlog: bool) {
+    /// Drops every queued video frame (configurations stay).
+    fn drop_video(&mut self) -> u64 {
+        let before = self.video_frames as u64;
+        self.items.retain(|m| !m.kind.is_video_frame());
+        self.video_frames = 0;
+        self.video_bytes = 0;
+        self.dropped += before;
+        before
+    }
+
+    /// Whether the oldest queued video frame has waited longer than [`VIDEO_QUEUE_LIMIT`].
+    fn lagging(&self, now: Instant) -> bool {
+        self.items
+            .iter()
+            .find(|m| m.kind.is_video_frame())
+            .is_some_and(|m| now.saturating_duration_since(m.at) > VIDEO_QUEUE_LIMIT)
+    }
+
+    /// A video packet at `now`.
+    fn push_video(&mut self, media: Media, now: Instant) {
         match media.kind {
             MediaKind::VideoConfig => self.push_back(media),
             MediaKind::VideoKey => {
                 self.waiting_key = false;
-                if !backlog && self.video_frames > VIDEO_LAG_FRAMES {
-                    // Everything queued is superseded by this keyframe: catch up.
-                    let before = self.video_frames;
-                    self.items.retain(|m| !m.kind.is_video_frame());
-                    self.video_frames = 0;
-                    self.video_bytes = 0;
-                    self.dropped += before as u64;
-                }
+                self.wants_keyframe = false;
+                // Everything still queued is superseded: the decoder can start here.
+                self.drop_video();
                 self.push_back(media);
             }
             MediaKind::VideoDelta => {
-                let lagging = !backlog && self.video_frames >= VIDEO_LAG_FRAMES;
                 let full = self.video_frames >= VIDEO_QUEUE_FRAMES
                     || self.video_bytes + media.bytes > VIDEO_QUEUE_BYTES;
-                if self.waiting_key || lagging || full {
+                if !self.waiting_key && (full || self.lagging(now)) {
+                    // Behind: catch up at a fresh keyframe instead of growing the delay.
                     self.waiting_key = true;
+                    self.wants_keyframe = true;
+                    let dropped = self.drop_video();
+                    self.flow.on_dropped(dropped);
+                }
+                if self.waiting_key {
                     self.dropped += 1;
+                    self.flow.on_dropped(1);
                 } else {
                     self.push_back(media);
                 }
@@ -184,19 +230,44 @@ impl MediaState {
         }
     }
 
+    /// The next message the writer may send at `now`: video waits while [`flow::Flow`] holds it.
+    fn pop_ready(&mut self, now: Instant) -> Option<Media> {
+        let front = self.items.front()?;
+        if front.kind.is_video_frame() {
+            if !self.flow.may_send(now) {
+                self.flow.on_held();
+                return None;
+            }
+            let media = self.pop_front()?;
+            self.flow.on_send(media.bytes, now);
+            return Some(media);
+        }
+        self.pop_front()
+    }
+
     fn clear(&mut self) {
         self.items.clear();
         self.video_frames = 0;
         self.video_bytes = 0;
         self.waiting_key = false;
+        self.wants_keyframe = false;
     }
 }
 
 /// The media queue between the pump and the socket writer (one consumer).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct MediaQueue {
     state: Mutex<MediaState>,
     ready: Notify,
+}
+
+impl Default for MediaQueue {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(MediaState::new(Instant::now())),
+            ready: Notify::new(),
+        }
+    }
 }
 
 impl MediaQueue {
@@ -206,12 +277,15 @@ impl MediaQueue {
             bytes: frame.len(),
             message: Message::Binary(frame.into()),
             kind: MediaKind::Jpeg,
+            at: Instant::now(),
         };
         lock(&self.state).push_jpeg(media);
         self.ready.notify_one();
     }
 
-    fn video(&self, update: VideoUpdate, backlog: bool) {
+    /// Queues a video update; returns whether the connection should ask for a keyframe now.
+    fn video(&self, update: VideoUpdate) -> bool {
+        let now = Instant::now();
         let media = match update {
             VideoUpdate::Config {
                 codec,
@@ -226,12 +300,13 @@ impl MediaQueue {
                     height,
                 };
                 let Ok(text) = serde_json::to_string(&message) else {
-                    return;
+                    return false;
                 };
                 Media {
                     bytes: text.len(),
                     message: Message::Text(text.into()),
                     kind: MediaKind::VideoConfig,
+                    at: now,
                 }
             }
             VideoUpdate::Frame {
@@ -248,11 +323,34 @@ impl MediaQueue {
                     } else {
                         MediaKind::VideoDelta
                     },
+                    at: now,
                 }
             }
         };
-        lock(&self.state).push_video(media, backlog);
+        let wants_keyframe = {
+            let mut state = lock(&self.state);
+            state.push_video(media, now);
+            std::mem::take(&mut state.wants_keyframe)
+        };
         self.ready.notify_one();
+        wants_keyframe
+    }
+
+    /// The viewer received `frames` video frames so far.
+    fn ack(&self, frames: u64) {
+        lock(&self.state).flow.on_ack(frames, Instant::now());
+        self.ready.notify_one();
+    }
+
+    /// Whether the path has room for video now (a keyframe asked for while it is full would
+    /// only wait, and restart the encoder for nothing).
+    fn can_send(&self) -> bool {
+        lock(&self.state).flow.may_send(Instant::now())
+    }
+
+    /// The viewer's network over the last period, when one has passed.
+    fn report(&self) -> Option<flow::FlowReport> {
+        lock(&self.state).flow.report(Instant::now())
     }
 
     fn clear(&self) {
@@ -272,14 +370,15 @@ impl MediaQueue {
         loop {
             {
                 let mut state = lock(&self.state);
-                if let Some(media) = state.pop_front() {
+                if let Some(media) = state.pop_ready(Instant::now()) {
                     return Some(media.message);
                 }
                 if state.closed {
                     return None;
                 }
             }
-            // `notify_one` stores a permit when nobody waits, so no push is missed.
+            // `notify_one` stores a permit when nobody waits, so no push or acknowledgement is
+            // missed; a closed flow gate opens only with an acknowledgement.
             self.ready.notified().await;
         }
     }
@@ -374,6 +473,9 @@ struct View {
     stream: Stream,
     /// The `stream` message last sent (mode and reason).
     announced: Option<(ViewMode, Option<String>)>,
+    /// A keyframe is wanted but was asked for too recently.
+    keyframe_due: bool,
+    keyframe_requested: Option<Instant>,
 }
 
 impl View {
@@ -382,6 +484,8 @@ impl View {
             mode: ViewMode::Video,
             stream: Stream::None,
             announced: None,
+            keyframe_due: false,
+            keyframe_requested: None,
         }
     }
 
@@ -408,7 +512,7 @@ impl View {
             match session.video() {
                 Ok(mut video) => {
                     for update in video.take_backlog() {
-                        out.media.video(update, true);
+                        out.media.video(update);
                     }
                     self.stream = Stream::Video(video);
                     return self.announce(ViewMode::Video, None, out).await;
@@ -431,6 +535,47 @@ impl View {
             Err(failure) => tracing::debug!(%failure, "screencast subscription failed"),
         }
         true
+    }
+
+    /// Asks the encoder for a keyframe when one is due and the path has room for it, at most
+    /// once per [`KEYFRAME_REQUEST_SPACING`] (a later call retries: on acknowledgements and every
+    /// report period).
+    fn request_keyframe(&mut self, due: bool, out: &Outbox) {
+        self.keyframe_due |= due;
+        if !self.keyframe_due || !out.media.can_send() {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .keyframe_requested
+            .is_some_and(|at| now.saturating_duration_since(at) < KEYFRAME_REQUEST_SPACING)
+        {
+            return;
+        }
+        if let Stream::Video(video) = &mut self.stream {
+            video.request_keyframe();
+            self.keyframe_requested = Some(now);
+        }
+        self.keyframe_due = false;
+    }
+
+    /// Passes the viewer's network report to the video stream.
+    fn report(&mut self, report: flow::FlowReport) {
+        if let Stream::Video(video) = &mut self.stream {
+            video.report(VideoNetworkReport {
+                delivered_bps: report.delivered_bps,
+                congested: report.congested,
+                limited: report.limited,
+            });
+        }
+        tracing::trace!(
+            delivered_kbps = report.delivered_bps / 1000,
+            congested = report.congested,
+            limited = report.limited,
+            rtt_ms = report.rtt.map(|d| d.as_millis()),
+            base_ms = report.base_rtt.map(|d| d.as_millis()),
+            "browser viewer network"
+        );
     }
 
     async fn announce(&mut self, mode: ViewMode, reason: Option<String>, out: &Outbox) -> bool {
@@ -457,11 +602,14 @@ impl InputBudget {
         }
     }
 
-    fn take(&mut self, now: Instant) -> bool {
+    /// Takes one event's budget; a droppable event (a move, a wheel turn) only beyond the
+    /// reserve kept for discrete input.
+    fn take(&mut self, now: Instant, droppable: bool) -> bool {
         let elapsed = now.saturating_duration_since(self.at).as_secs_f64();
         self.at = now;
         self.tokens = (self.tokens + elapsed * INPUT_RATE).min(INPUT_BURST);
-        if self.tokens >= 1.0 {
+        let floor = if droppable { INPUT_RESERVE } else { 0.0 };
+        if self.tokens >= 1.0 + floor {
             self.tokens -= 1.0;
             true
         } else {
@@ -546,6 +694,8 @@ async fn pump(
     let mut budget = InputBudget::new();
     let mut recheck = tokio::time::interval(RECHECK);
     recheck.tick().await;
+    let mut reports = tokio::time::interval(flow::REPORT_PERIOD);
+    reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             changed = tabs_rx.changed() => {
@@ -607,7 +757,10 @@ async fn pump(
             }
             event = next_media(&mut view.stream) => {
                 match event {
-                    StreamEvent::Video(Some(update)) => out.media.video(update, false),
+                    StreamEvent::Video(Some(update)) => {
+                        let behind = out.media.video(update);
+                        view.request_keyframe(behind, out);
+                    }
                     StreamEvent::Jpeg(tab, Some(jpeg)) => out.media.jpeg(&tab, &jpeg),
                     // The video ended (its encoder failed): fall back to pixels.
                     StreamEvent::Video(None) => {
@@ -636,6 +789,16 @@ async fn pump(
                     _ => continue,
                 };
                 let result = match serde_json::from_str::<ViewerClientMsg>(&text) {
+                    // Flow control and recovery of this connection's video.
+                    Ok(ViewerClientMsg::Ack { frames }) => {
+                        out.media.ack(frames);
+                        view.request_keyframe(false, out);
+                        Ok(())
+                    }
+                    Ok(ViewerClientMsg::Keyframe) => {
+                        view.request_keyframe(true, out);
+                        Ok(())
+                    }
                     // Per-connection choices.
                     Ok(ViewerClientMsg::View { mode }) => {
                         view.mode = mode;
@@ -676,11 +839,19 @@ async fn pump(
                         }
                     }
                     Ok(message @ (ViewerClientMsg::Mouse { .. } | ViewerClientMsg::Key { .. })) => {
-                        if budget.take(Instant::now()) {
-                            session.apply_viewer(message).await.map_err(|failure| {
-                                (failure.viewer_code(), failure.message)
-                            })
-                        } else if droppable(&message) {
+                        let silent = droppable(&message);
+                        if budget.take(Instant::now(), silent) {
+                            match session.apply_viewer(message).await {
+                                Ok(_) => Ok(()),
+                                // A move or wheel that did not apply is superseded by the
+                                // next one: never an error for the user (F 2026-10-10).
+                                Err(failure) if silent => {
+                                    tracing::debug!(%failure, "viewer move or wheel not applied");
+                                    Ok(())
+                                }
+                                Err(failure) => Err((failure.viewer_code(), failure.message)),
+                            }
+                        } else if silent {
                             Ok(())
                         } else {
                             Err((ViewerErrorCode::Invalid, "input arrives too fast; slow down".into()))
@@ -696,6 +867,12 @@ async fn pump(
                 {
                     return;
                 }
+            }
+            _ = reports.tick() => {
+                if let Some(report) = out.media.report() {
+                    view.report(report);
+                }
+                view.request_keyframe(false, out);
             }
             _ = recheck.tick() => {
                 if !app.still_signed_in(ctx).await {
@@ -715,11 +892,12 @@ async fn pump(
 mod tests {
     use super::*;
 
-    fn media(kind: MediaKind, bytes: usize) -> Media {
+    fn media_at(kind: MediaKind, bytes: usize, at: Instant) -> Media {
         Media {
             message: Message::Binary(vec![0_u8; bytes].into()),
             bytes,
             kind,
+            at,
         }
     }
 
@@ -727,70 +905,82 @@ mod tests {
         state.items.iter().map(|m| m.kind).collect()
     }
 
+    fn ms(millis: u64) -> Duration {
+        Duration::from_millis(millis)
+    }
+
     #[test]
     fn a_joining_viewer_gets_its_whole_cached_group() {
-        let mut state = MediaState::default();
-        state.push_video(media(MediaKind::VideoConfig, 10), true);
-        state.push_video(media(MediaKind::VideoKey, 1000), true);
+        let t0 = Instant::now();
+        let mut state = MediaState::new(t0);
+        state.push_video(media_at(MediaKind::VideoConfig, 10, t0), t0);
+        state.push_video(media_at(MediaKind::VideoKey, 1000, t0), t0);
         for _ in 0..119 {
-            state.push_video(media(MediaKind::VideoDelta, 50), true);
+            state.push_video(media_at(MediaKind::VideoDelta, 50, t0), t0);
         }
         assert_eq!(state.items.len(), 121);
         assert_eq!(state.dropped, 0);
     }
 
     #[test]
-    fn a_lagging_viewer_skips_to_the_next_keyframe() {
-        let mut state = MediaState::default();
-        state.push_video(media(MediaKind::VideoKey, 100), false);
-        for _ in 0..VIDEO_LAG_FRAMES - 1 {
-            state.push_video(media(MediaKind::VideoDelta, 10), false);
+    fn video_waiting_too_long_skips_to_a_fresh_keyframe_and_asks_for_one() {
+        let t0 = Instant::now();
+        let mut state = MediaState::new(t0);
+        state.push_video(media_at(MediaKind::VideoKey, 100, t0), t0);
+        // The writer cannot send (the path is full): frames wait on the server.
+        let mut now = t0;
+        while now.saturating_duration_since(t0) <= VIDEO_QUEUE_LIMIT {
+            now += ms(17);
+            state.push_video(media_at(MediaKind::VideoDelta, 10, now), now);
         }
-        assert_eq!(state.video_frames, VIDEO_LAG_FRAMES);
-        // Behind by the lag bound: deltas are dropped until a keyframe.
-        state.push_video(media(MediaKind::VideoDelta, 10), false);
+        // The oldest frame waited beyond the limit: everything queued goes, a keyframe is wanted.
         assert!(state.waiting_key);
-        // Draining does not resume deltas (they depend on the dropped one)…
-        while state.pop_front().is_some() {}
-        state.push_video(media(MediaKind::VideoDelta, 10), false);
+        assert!(state.wants_keyframe);
+        assert_eq!(state.video_frames, 0);
+        // Deltas keep being dropped until a keyframe arrives…
+        state.push_video(media_at(MediaKind::VideoDelta, 10, now), now);
         assert!(state.items.is_empty());
-        // …the keyframe does.
-        state.push_video(media(MediaKind::VideoKey, 100), false);
-        state.push_video(media(MediaKind::VideoDelta, 10), false);
+        // …which resumes the stream.
+        state.push_video(media_at(MediaKind::VideoKey, 100, now), now);
+        state.push_video(media_at(MediaKind::VideoDelta, 10, now), now);
         assert_eq!(kinds(&state), [MediaKind::VideoKey, MediaKind::VideoDelta]);
-        assert_eq!(state.dropped, 2);
+        assert!(!state.waiting_key && !state.wants_keyframe);
     }
 
     #[test]
-    fn a_keyframe_supersedes_a_long_backlog_but_keeps_configs() {
-        let mut state = MediaState::default();
-        state.push_video(media(MediaKind::VideoConfig, 10), true);
-        state.push_video(media(MediaKind::VideoKey, 100), true);
+    fn a_keyframe_supersedes_what_is_queued_but_keeps_configs() {
+        let t0 = Instant::now();
+        let mut state = MediaState::new(t0);
+        state.push_video(media_at(MediaKind::VideoConfig, 10, t0), t0);
+        state.push_video(media_at(MediaKind::VideoKey, 100, t0), t0);
         for _ in 0..100 {
-            state.push_video(media(MediaKind::VideoDelta, 10), true);
+            state.push_video(media_at(MediaKind::VideoDelta, 10, t0), t0);
         }
-        state.push_video(media(MediaKind::VideoKey, 100), false);
+        state.push_video(media_at(MediaKind::VideoKey, 100, t0), t0);
         assert_eq!(kinds(&state), [MediaKind::VideoConfig, MediaKind::VideoKey]);
         assert_eq!((state.video_frames, state.video_bytes), (1, 100));
     }
 
     #[test]
     fn the_queue_is_bounded_in_bytes() {
-        let mut state = MediaState::default();
-        state.push_video(media(MediaKind::VideoKey, VIDEO_QUEUE_BYTES - 10), true);
-        state.push_video(media(MediaKind::VideoDelta, 20), true);
-        assert!(
-            state.waiting_key,
-            "beyond the byte bound even for a backlog"
+        let t0 = Instant::now();
+        let mut state = MediaState::new(t0);
+        state.push_video(
+            media_at(MediaKind::VideoKey, VIDEO_QUEUE_BYTES - 10, t0),
+            t0,
         );
-        assert_eq!(state.video_frames, 1);
+        state.push_video(media_at(MediaKind::VideoDelta, 20, t0), t0);
+        assert!(state.waiting_key, "beyond the byte bound");
+        assert!(state.wants_keyframe);
+        assert_eq!(state.video_frames, 0);
     }
 
     #[test]
     fn jpeg_frames_keep_the_newest_few() {
-        let mut state = MediaState::default();
+        let t0 = Instant::now();
+        let mut state = MediaState::new(t0);
         for bytes in 1..=(FRAME_QUEUE + 3) {
-            state.push_jpeg(media(MediaKind::Jpeg, bytes));
+            state.push_jpeg(media_at(MediaKind::Jpeg, bytes, t0));
         }
         let sizes: Vec<usize> = state.items.iter().map(|m| m.bytes).collect();
         assert_eq!(sizes, (4..=FRAME_QUEUE + 3).collect::<Vec<_>>());
@@ -798,15 +988,64 @@ mod tests {
     }
 
     #[test]
+    fn an_acknowledging_viewer_gets_about_a_round_trip_of_video_and_configs_always() {
+        let t0 = Instant::now();
+        let mut state = MediaState::new(t0);
+        state.push_video(media_at(MediaKind::VideoConfig, 10, t0), t0);
+        state.push_video(media_at(MediaKind::VideoKey, 1000, t0), t0);
+        assert!(
+            state
+                .pop_ready(t0)
+                .is_some_and(|m| m.kind == MediaKind::VideoConfig)
+        );
+        assert!(
+            state
+                .pop_ready(t0)
+                .is_some_and(|m| m.kind == MediaKind::VideoKey)
+        );
+        state.flow.on_ack(1, t0 + ms(40)); // base round trip 40 ms
+        // Frames keep coming; the viewer stops acknowledging (its path is full).
+        let mut sent = 0;
+        for n in 1..=20_u64 {
+            let now = t0 + ms(40 + n * 17);
+            state.push_video(media_at(MediaKind::VideoDelta, 500, now), now);
+            while state.pop_ready(now).is_some() {
+                sent += 1;
+            }
+        }
+        assert!(
+            (8..=11).contains(&sent),
+            "about RTT + slack of frames went out: {sent}"
+        );
+        // A configuration is never held back by the gate.
+        let now = t0 + ms(400);
+        state
+            .items
+            .push_front(media_at(MediaKind::VideoConfig, 10, now));
+        assert!(
+            state
+                .pop_ready(now)
+                .is_some_and(|m| m.kind == MediaKind::VideoConfig)
+        );
+        assert!(state.pop_ready(now).is_none(), "video waits");
+        // The acknowledgement reopens the gate.
+        state.flow.on_ack(1 + sent, now);
+        assert!(state.pop_ready(now).is_some());
+    }
+
+    #[test]
     fn the_input_budget_allows_bursts_and_refills() {
         let start = Instant::now();
         let mut budget = InputBudget::new();
         budget.at = start;
-        let allowed = (0..2000).filter(|_| budget.take(start)).count();
-        assert_eq!(allowed, INPUT_BURST as usize);
-        assert!(!budget.take(start));
+        let moves = (0..2000).filter(|_| budget.take(start, true)).count();
+        assert_eq!(moves, (INPUT_BURST - INPUT_RESERVE) as usize);
+        // The reserve still lets discrete input through after a flood of moves.
+        let clicks = (0..2000).filter(|_| budget.take(start, false)).count();
+        assert_eq!(clicks, INPUT_RESERVE as usize);
+        assert!(!budget.take(start, false));
         assert!(
-            budget.take(start + Duration::from_millis(10)),
+            budget.take(start + Duration::from_millis(10), false),
             "5 tokens later"
         );
     }
@@ -828,14 +1067,11 @@ mod tests {
         if let Some(tab) = tab {
             queue.jpeg(&tab, b"jpeg");
         }
-        queue.video(
-            VideoUpdate::Frame {
-                keyframe: true,
-                timestamp_us: 1,
-                data: vec![1_u8].into(),
-            },
-            false,
-        );
+        let _ = queue.video(VideoUpdate::Frame {
+            keyframe: true,
+            timestamp_us: 1,
+            data: vec![1_u8].into(),
+        });
         tokio::time::sleep(Duration::from_millis(50)).await;
         queue.close();
         let count = tokio::time::timeout(Duration::from_secs(5), reader).await;

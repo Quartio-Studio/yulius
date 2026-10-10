@@ -118,6 +118,10 @@ pub enum BrowserError {
     /// The virtual display could not start or stopped (SPEC-002 ADR-15).
     #[error("virtual display: {0}")]
     Display(String),
+    /// Discrete input (a click, a key, text) backed up because the display's X server stopped
+    /// taking input; it was not delivered. Moves never do (they are coalesced).
+    #[error("the sandbox browser is not taking input right now; that input was not delivered")]
+    InputBacklog,
     /// The process could not be reaped after SIGKILL; it may still be running.
     #[error("Chromium (pid {pid}) did not exit after SIGKILL")]
     NotReaped {
@@ -133,7 +137,7 @@ impl BrowserError {
         match self {
             Self::UrlRefused(_) => ViewerErrorCode::UrlRefused,
             Self::TabNotFound(_) => ViewerErrorCode::NotFound,
-            Self::TooManyTabs(_) => ViewerErrorCode::Capacity,
+            Self::TooManyTabs(_) | Self::InputBacklog => ViewerErrorCode::Capacity,
             Self::InvalidInput(_)
             | Self::ToolParams(_)
             | Self::InvalidSelector(_)

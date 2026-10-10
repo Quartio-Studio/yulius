@@ -2176,6 +2176,7 @@ class BrowserSession {
     this.config = null; // the video_config message
     this.needKey = true;
     this.frameNo = 0;
+    this.acked = 0; // video frames the viewer acknowledged (flow control, F 2026-10-10)
     const port = sandbox.port_base || 20000;
     this.tabs = [
       { id: 'tab-app', title: `Checkout — localhost:${port + 3}`, url: `http://localhost:${port + 3}/`, active: true, action_requested: null },
@@ -2253,6 +2254,14 @@ class BrowserSession {
         break;
       case 'copy':
         ws.push(JSON.stringify({ type: 'clipboard', text: this.typed.get(msg.tab_id) || '' }));
+        break;
+      case 'ack':
+        // Flow control of the video: the mock streams too little to pace.
+        this.acked = Math.max(this.acked, Number(msg.frames) || 0);
+        break;
+      case 'keyframe':
+        this.needKey = true;
+        this.render();
         break;
       case 'mouse': {
         const shown = this.tabs.find((t) => t.active);

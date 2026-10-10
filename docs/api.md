@@ -471,7 +471,12 @@ Claude Code.
     "height"}` (the panel size in CSS pixels; shared by every viewer, clamped to the configured
     maximum), `{"type":"view","mode":"video|pixels"}` (default `video`), `{"type":"watch",
     "tab_id"|null}` (the tab the panel shows: the display shows one tab, so this brings it to the
-    front for every viewer; `null` stops this connection's stream).
+    front for every viewer; `null` stops this connection's stream), `{"type":"ack","frames"}`
+    (flow control: the number of binary video frames received on this connection so far, sent as
+    each arrives; once a viewer acknowledges, the server keeps only about a round trip of video
+    on the way to it and adapts the stream's bitrate to what it receives; a viewer that never
+    acknowledges is not paced), `{"type":"keyframe"}` (the viewer's decoder needs a keyframe:
+    it failed or fell far behind; rate-limited).
   - Server: `{"type":"tabs","tabs":[{"id","title","url","active","action_requested":{"reason",
     "task_id"}|null}]}` (on connect and after every change; `active` is the tab the display
     shows — a page opening a page brings it to the front), `{"type":"viewport","width","height"}`
@@ -488,10 +493,17 @@ Claude Code.
     agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested","tab_id",
     "reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|capacity|
     upstream|internal","message"}`.
-  - Bounds: a viewer that falls behind skips to the next keyframe (at most 300 queued frames,
-    8 MiB, 30 frames behind); JPEG frames keep the newest 4; a client that stops reading JSON
+  - Bounds: an acknowledging viewer has at most its base round trip plus 120 ms of video
+    unacknowledged; video that waited on the server 250 ms (or beyond 300 frames, 8 MiB) is
+    dropped and the viewer resumes at a fresh keyframe, which the server asks the encoder for
+    (keyframes come only on demand: at the start, for a viewer that joins, falls behind or asks,
+    and on a bitrate change); JPEG frames keep the newest 4; a client that stops reading JSON
     messages is closed with 4008. Input: 500 events per second (burst 1000); moves and wheel
-    beyond are dropped, other input gets an `invalid` error. Keys and buttons a viewer held are
+    beyond are dropped silently (they leave 100 of the burst to other input), other input gets an
+    `invalid` error. Pointer moves are coalesced (the newest position is applied; a press, release
+    or key lands after the position before it) and a move or wheel turn is never answered with an
+    error; wheel turns are summed while Chrome has two outstanding. Discrete input the display
+    cannot take (its X server stopped reading) gets `capacity`. Keys and buttons a viewer held are
     released when it leaves. Access is re-checked every 60 s (close 4003). When Chromium is
     missing or the browser stops, the server sends an `upstream` error with the reason and closes
     with 1011. Addresses of Yulius itself (its public origin and its subdomains, every loopback

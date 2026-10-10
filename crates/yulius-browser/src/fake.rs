@@ -35,7 +35,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::display::{DisplayConfig, DisplayInput, DisplayMode};
 use crate::video::{
-    ENCODER_EVENTS, EncoderEvent, EncoderStart, EncoderStop, RunningEncoder, VideoConfig,
+    ENCODER_EVENTS, EncoderEvent, EncoderStart, EncoderStop, RunningEncoder, Tier, VideoConfig,
     VideoFrame,
 };
 
@@ -869,6 +869,7 @@ struct FakeDisplayInner {
     inputs: Mutex<Vec<DisplayInput>>,
     inputs_seen: watch::Sender<u64>,
     encoders: Mutex<Vec<(u32, u32)>>,
+    tiers: Mutex<Vec<Tier>>,
     running: AtomicUsize,
     frame_interval_ms: AtomicU64,
     keyframe_every: AtomicU64,
@@ -915,6 +916,7 @@ impl FakeDisplay {
                 inputs: Mutex::new(Vec::new()),
                 inputs_seen: watch::channel(0).0,
                 encoders: Mutex::new(Vec::new()),
+                tiers: Mutex::new(Vec::new()),
                 running: AtomicUsize::new(0),
                 frame_interval_ms: AtomicU64::new(20),
                 keyframe_every: AtomicU64::new(10),
@@ -964,6 +966,12 @@ impl FakeDisplay {
     #[must_use]
     pub fn encoder_sizes(&self) -> Vec<(u32, u32)> {
         lock(&self.inner.encoders).clone()
+    }
+
+    /// Tiers the encoder was started at, in order.
+    #[must_use]
+    pub fn encoder_tiers(&self) -> Vec<Tier> {
+        lock(&self.inner.tiers).clone()
     }
 
     /// Encoders running now.
@@ -1051,9 +1059,10 @@ impl EncoderStop for FakeEncoderStop {
 }
 
 impl EncoderStart for FakeEncoderStart {
-    async fn start(&self, size: (u32, u32)) -> Result<RunningEncoder, String> {
+    async fn start(&self, size: (u32, u32), tier: Tier) -> Result<RunningEncoder, String> {
         let display = self.0.clone();
         lock(&display.inner.encoders).push(size);
+        lock(&display.inner.tiers).push(tier);
         if display.inner.fail_encoder.load(Ordering::Relaxed) {
             return Err("the fake encoder is broken".into());
         }

@@ -294,12 +294,13 @@ impl Viewer {
         }
     }
 
-    /// Reads until a keyframe produced after now arrived, then a little more: the decoded picture
-    /// is current even if this viewer lagged meanwhile (a lagging viewer skips to the next
-    /// keyframe, by design).
+    /// Asks for a keyframe (the stream has none on a timer, F 2026-10-10) and reads until one
+    /// produced after now arrived, then a little more: the decoded picture is current even if
+    /// this viewer lagged meanwhile (a lagging viewer skips to a fresh keyframe, by design).
     async fn settle(&mut self) -> TestResult {
         let start = Instant::now();
         let until = start + WAIT;
+        self.send(json!({"type": "keyframe"})).await?;
         while !self.arrivals.iter().any(|a| a.2 && a.0 > start) {
             if self.step(until).await?.is_none() {
                 return Err("no keyframe arrived".into());

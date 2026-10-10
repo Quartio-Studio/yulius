@@ -5,9 +5,14 @@
 // Agents drive the same Chrome; their cursor is drawn over the canvas (BRW-007).
 //
 // - Video: `video_config` configures a VideoDecoder (`optimizeForLatency`), binary frames
-//   (u8 4, flags, u64 µs, access unit) are decoded and drawn at once. A decoder that falls behind
-//   skips to the next keyframe. Without WebCodecs or H.264 (or a server without a display) the
-//   view asks for JPEG frames (u8 3 + tab id + JPEG): the labelled fallback.
+//   (u8 4, flags, u64 µs, access unit) are acknowledged as they arrive (`ack`: the server keeps
+//   only about a round trip of frames on the way and adapts the bitrate, F 2026-10-10), all
+//   decoded, and the newest decoded picture is drawn (at once when the decoder is idle, else on
+//   the next animation frame; older ones are dropped). Frames arrive in bursts after a keyframe
+//   or a network hiccup: decoding them all is cheap, skipping to a keyframe froze the view for
+//   seconds. A decoder that fails or falls far behind restarts and asks for a keyframe
+//   (`keyframe`). Without WebCodecs or H.264 (or a server without a display) the view asks for
+//   JPEG frames (u8 3 + tab id + JPEG): the labelled fallback.
 // - Cursor: the user's own pointer is the local one (no round trip); the video has none.
 // - Size: the panel reports its size (`viewport`); the server shares one viewport between
 //   viewers, so a panel sized by someone else shows the page scaled, with a notice.
@@ -27,8 +32,11 @@ import { ReconnectingSocket, parseBrowserFrame, CLOSE_REVOKED, CLOSE_SERVER_ERRO
 const FRAME_VIDEO = 4;
 const MOUSE_BUTTONS = ['left', 'middle', 'right', 'back', 'forward'];
 const AGENT_CURSOR_IDLE_MS = 6000;
-/** Decoder queue length beyond which delta frames are skipped until the next keyframe. */
-const MAX_DECODE_QUEUE = 6;
+/** Decoder queue length (about 1.5 s at 60 fps) beyond which the decoder restarts at a fresh
+ *  keyframe: this device cannot keep up. Short bursts are normal and decoded. */
+const MAX_DECODE_BACKLOG = 90;
+/** Shortest time between two keyframe requests. */
+const KEYFRAME_REQUEST_MS = 1000;
 /** A touch that moves farther than this (CSS px) scrolls instead of clicking. */
 const TAP_SLOP = 8;
 /** Editing shortcuts that ⌘ sends as Ctrl on macOS. */
@@ -72,6 +80,10 @@ export function createStreamView(ctx, sandbox, hooks) {
   let decoder = null;
   let decoderConfig = null;
   let waitingKey = true;
+  let framesReceived = 0; // video frames on this connection (acknowledged one by one)
+  let keyframeAsked = 0; // when a keyframe was last asked for
+  let pendingPicture = null; // the newest decoded picture not drawn yet
+  let pictureFrame = 0; // animation frame that draws it
   let jpegDecoding = false;
   let jpegQueued = null;
   let hasPicture = false;
@@ -84,6 +96,7 @@ export function createStreamView(ctx, sandbox, hooks) {
   let awaitingTimer = 0;
   let moveFrame = 0;
   let pendingMove = null;
+  let lastMove = null; // the position last sent
   let wheelFrame = 0;
   let wheel = { dx: 0, dy: 0, x: 0, y: 0 };
   let touch = null; // {id, x, y, lastX, lastY, scrolling}
@@ -147,6 +160,21 @@ export function createStreamView(ctx, sandbox, hooks) {
       try { decoder.close(); } catch { /* already closed */ }
     }
     decoder = null;
+    dropPicture();
+  }
+
+  function dropPicture() {
+    if (pendingPicture) { try { pendingPicture.close(); } catch { /* closed */ } }
+    pendingPicture = null;
+    if (pictureFrame) cancelAnimationFrame(pictureFrame);
+    pictureFrame = 0;
+  }
+
+  /** Asks the server for a keyframe (rate-limited): the stream has none on a timer. */
+  function askKeyframe() {
+    const now = performance.now();
+    if (now - keyframeAsked < KEYFRAME_REQUEST_MS) return;
+    if (send({ type: 'keyframe' })) keyframeAsked = now;
   }
 
   function configure(message) {
@@ -178,16 +206,18 @@ export function createStreamView(ctx, sandbox, hooks) {
       setMode('pixels', `this browser cannot decode ${decoderConfig ? decoderConfig.codec : 'the video'}`);
       return;
     }
-    console.warn('video decoding failed; waiting for the next keyframe', error);
+    console.warn('video decoding failed; asking for a keyframe', error);
     // A new decoder resumes at the next keyframe.
-    setTimeout(startDecoder, 0);
+    setTimeout(() => { startDecoder(); askKeyframe(); }, 0);
   }
 
   function decodeVideo(frame) {
     if (!decoder || decoder.state !== 'configured' || streamMode !== 'video') return;
-    if (waitingKey && !frame.keyframe) return;
-    if (!frame.keyframe && decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
-      waitingKey = true; // this device cannot keep up: skip to the next keyframe
+    if (waitingKey && !frame.keyframe) { askKeyframe(); return; }
+    if (!frame.keyframe && decoder.decodeQueueSize > MAX_DECODE_BACKLOG) {
+      // This device cannot keep up at all: start over at a fresh keyframe.
+      startDecoder();
+      askKeyframe();
       return;
     }
     waitingKey = false;
@@ -198,7 +228,24 @@ export function createStreamView(ctx, sandbox, hooks) {
     }
   }
 
+  /** A decoded picture: drawn at once when nothing else is being decoded (lowest latency),
+   *  else kept as the newest and drawn on the next animation frame, so a burst costs one draw. */
   function drawVideo(frame) {
+    if (pendingPicture) pendingPicture.close();
+    pendingPicture = frame;
+    if (decoder && decoder.decodeQueueSize > 0) {
+      if (!pictureFrame) pictureFrame = requestAnimationFrame(drawPicture);
+      return;
+    }
+    drawPicture();
+  }
+
+  function drawPicture() {
+    if (pictureFrame) cancelAnimationFrame(pictureFrame);
+    pictureFrame = 0;
+    const frame = pendingPicture;
+    pendingPicture = null;
+    if (!frame) return;
     try {
       if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) setCanvasSize(frame.displayWidth, frame.displayHeight);
       g.drawImage(frame, 0, 0);
@@ -305,11 +352,17 @@ export function createStreamView(ctx, sandbox, hooks) {
     send({ type: 'mouse', tab_id: watched, event: kind, x: p.x, y: p.y, button, ...extra });
   }
 
+  /** Sends the newest pointer position, at most once per animation frame and only when it
+   *  changed (the server keeps only the newest anyway). */
   function flushMove() {
     moveFrame = 0;
     const move = pendingMove;
     pendingMove = null;
-    if (move) mouse(move, 'move', point(move));
+    if (!move) return;
+    const p = point(move);
+    if (!p || (lastMove && lastMove.x === p.x && lastMove.y === p.y)) return;
+    lastMove = p;
+    mouse(move, 'move', p);
   }
 
   surface.addEventListener('pointerdown', (event) => {
@@ -318,6 +371,7 @@ export function createStreamView(ctx, sandbox, hooks) {
     keys.focus({ preventScroll: true });
     try { surface.setPointerCapture(event.pointerId); } catch { /* not capturable */ }
     if (pendingMove) { cancelAnimationFrame(moveFrame); flushMove(); }
+    lastMove = null;
     pressed |= 1 << event.button;
     mouse(event, 'down', point(event), MOUSE_BUTTONS[event.button] || 'left');
   });
@@ -581,7 +635,13 @@ export function createStreamView(ctx, sandbox, hooks) {
   function onMessage(data) {
     if (typeof data !== 'string') {
       const video = parseVideoFrame(data);
-      if (video) { decodeVideo(video); return; }
+      if (video) {
+        // Acknowledged on arrival: the server paces the stream by these (flow control).
+        framesReceived += 1;
+        send({ type: 'ack', frames: framesReceived });
+        decodeVideo(video);
+        return;
+      }
       const frame = parseBrowserFrame(data);
       if (frame) decodeJpeg(frame);
       return;
@@ -642,6 +702,9 @@ export function createStreamView(ctx, sandbox, hooks) {
         sentViewport = null;
         hasPicture = false;
         streamMode = null;
+        framesReceived = 0;
+        keyframeAsked = 0;
+        lastMove = null;
         if (mode === 'video' && !hasWebCodecs()) {
           mode = 'pixels';
           streamReason = 'this browser cannot decode video (no WebCodecs)';

@@ -447,6 +447,11 @@ async fn input_is_dispatched_in_order_with_cdp_shapes() -> TestResult {
         r#"{{"type":"mouse","tab_id":"{tab}","event":"wheel","x":5,"y":6,"dx":0,"dy":120}}"#
     ))?;
     instance.apply_viewer_msg(wheel).await?;
+    // The wheel is dispatched without making the caller wait (F 2026-10-10).
+    assert!(
+        fake.wait_for_calls("Input.dispatchMouseEvent", 6, Duration::from_secs(5))
+            .await
+    );
     let calls = fake.calls_for("Input.dispatchMouseEvent");
     assert_eq!(
         types_of(&fake, "Input.dispatchMouseEvent"),
