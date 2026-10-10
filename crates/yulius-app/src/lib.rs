@@ -17,6 +17,7 @@ pub mod delivery;
 pub mod error;
 pub mod events;
 pub mod files;
+pub mod finish;
 pub mod github_admin;
 pub mod hooks;
 pub mod hub;

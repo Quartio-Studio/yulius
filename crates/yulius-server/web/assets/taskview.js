@@ -4,7 +4,7 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, placeholder, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { createTerminalView } from './terminal.js';
-import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround } from './status.js';
+import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround, shellsLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, chainCandidates } from './intake.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
 import { attachTerminalDrop, taskAttachments } from './filedrop.js';
@@ -105,6 +105,13 @@ export function mountTaskView(ctx, sandbox, task) {
       }
       return actions;
     },
+    // Paths of files in the task's worktree open in the Editor (F 2026-10-10). The files API needs
+    // write access, as the editor does.
+    fileLinks: allows(sandbox.access, 'write') ? {
+      list: (dir) => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/files?root=${encodeURIComponent(`task:${task.id}`)}&path=${encodeURIComponent(dir)}`).then((listing) => listing.entries || []),
+      roots: () => (detail && detail.worktree ? [detail.worktree] : []),
+      open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: `task:${task.id}`, ...file }),
+    } : null,
   });
   // Files dropped (or an image pasted) here reach Claude by path, as in a local terminal (UI-048).
   attachTerminalDrop(ctx, terminal, { label: 'Drop to send to Claude', upload: taskAttachments(ctx, task.id) });
@@ -208,7 +215,8 @@ export function mountTaskView(ctx, sandbox, task) {
     statusEl.title = [info.label, reset, info.detail].filter(Boolean).join(' · ');
     setChildren(statusEl,
       statusMark(info),
-      h('span', { class: 'strip-state' }, info.label, reset ? h('span', { class: 'strip-reset' }, ` · ${reset}`) : null));
+      h('span', { class: 'strip-state' }, info.label, reset ? h('span', { class: 'strip-reset' }, ` · ${reset}`) : null,
+        info.shells ? h('span', { class: 'strip-reset' }, ` · ${shellsLine(info.shells)}`) : null));
     // The chain shows on both tasks (TSK-012): what this task runs after, what runs after it.
     const slug = encodeURIComponent((ctx.store.sandboxById(sandbox.id) || sandbox).slug);
     const chainLink = (link, text, title) => (link.task_id

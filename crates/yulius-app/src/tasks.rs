@@ -8,7 +8,7 @@ use yulius_contracts::api::tasks::{
 };
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::Action;
-use yulius_domain::task::TaskStatus;
+use yulius_domain::task::{Activity, TaskStatus};
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
@@ -147,6 +147,10 @@ impl App {
             after,
             next,
             held_prompt: self.held_prompt_view(&task.id).await,
+            background_shells: (task.status == TaskStatus::Running
+                && task.activity.is_some_and(Activity::is_idle))
+            .then(|| self.background_shells_of(&task.id))
+            .flatten(),
         })
     }
 

@@ -245,4 +245,10 @@ pub trait SessionHost: Send + Sync {
     fn inspect(&self, run_dir: &Path) -> RunInspection;
     /// Kills a recorded host and its agent (stale reconciliation).
     fn terminate(&self, run_dir: &Path) -> AppResult<()>;
+    /// Background shells the agent `child_pid` left running (TSK-014: Claude Code's Bash tool
+    /// shells still alive after the turn). Blocking and bounded; `None` when the process table
+    /// cannot be read.
+    fn background_shells(&self, _child_pid: u32) -> Option<u32> {
+        None
+    }
 }

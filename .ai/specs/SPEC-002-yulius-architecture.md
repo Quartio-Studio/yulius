@@ -776,7 +776,41 @@ For every nonterminal state: owner, exit trigger, timeout and behavior if the tr
 
 `activity` (when `running`): `working` (UserPromptSubmit / output after input), `waiting` (Stop hook /
 turn complete), `needs_attention` (permission request hook, browser action request, discipline gate
-exhausted, waiting for capacity). `archived_at` is allowed only in non-live states.
+exhausted, waiting for capacity), `done` (the goal is achieved and the turn ended, below).
+`archived_at` is allowed only in non-live states.
+
+**Finish rule (SPEC-001 TSK-014, F 2026-10-10).** Owner: supervisor (`yulius-app::finish`).
+Claude Code 2.1.292 records the goal (`/goal`, TSK-010) in the transcript as `goal_status`
+attachments (§7.2); `met: true` means achieved. Its evaluator is a Stop hook, so the record usually
+follows Yulius' own Stop hook. The supervisor keeps "goal achieved" per run: set by `met: true`,
+cleared by a typed prompt (UserPromptSubmit whose prompt does not start with `<` — Claude Code's own
+wake-ups do — or a user prompt record in the transcript), a new goal, a "not met" or a failed goal.
+
+- A clean Stop (no gate block) sets `done` when the goal is achieved, `waiting` otherwise; the
+  automatic pull request (GIT-001) is tried at that Stop as before. A `met: true` record seen while
+  the task is `waiting` makes it `done`; seen while `working` (Yulius' hook blocked or was slow), the
+  next clean Stop makes it `done`. Exit from `done`: any prompt → `working` (UserPromptSubmit or the
+  transcript); permission prompt or browser request → `needs_attention`; process exit → `closed` /
+  `stopped`. A prompt of a turn that already ended cleanly, read late from the transcript, does not
+  reopen it (its record time ≤ the last clean Stop).
+- **Background shells** are a live overlay, not a state: while the task is idle (`waiting`/`done`)
+  the supervisor probes the agent's process tree at the clean Stop, when the goal is achieved and
+  every 5 s, counting Bash-tool shells (command line with Claude Code's wrapper `… && pwd -P >| <cwd
+  file>`) with no such shell above them (`yulius-ptyhost::shells`). The count is published with the
+  task (`background_shells`); a `done` task with shells shows Working with "N background shell(s)
+  still running" and Done when the count drops to 0 — Claude Code also wakes the agent when a shell
+  ends, and that turn's clean Stop settles the task again. A probe that fails or exceeds 3 s reports
+  nothing (the task is not held back; logged). Shells ended by Claude Code's background timeout or
+  `/exit` disappear from the count by themselves.
+- Done also follows from a tested pull request on a `waiting` task (GIT-001); the UI combines both
+  with one rule (failing checks → Needs you, shells → Working, goal achieved or PR tested → Done,
+  checks still running → In review).
+- **Restart:** the transcript of a reattached run is read from its start again; until a poll reaches
+  its end the lines are folded into their final state (turn open or ended, goal achieved or not) and
+  applied once: a finished turn makes a `working` task `waiting`/`done` (its Stop hook went
+  unanswered while Yulius was down), an achieved goal makes a `waiting` task `done`, a replay never
+  sets `working`. A resumed attempt reads only new lines, so a goal achieved before the restart is
+  kept in the persisted `done` but not re-learned (a later prompt clears it anyway).
 
 ### 6.2 Attempt (one process run)
 
@@ -908,6 +942,13 @@ Claude's own keys. Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` a
 
 Transcript tailing: poll size every 1 s; parse only complete lines; max line 4 MiB (longer lines
 skipped with a diagnostic); unknown record types ignored; malformed lines counted, never fatal.
+Observed besides usage: user prompts (with their time), `end_turn`, usage limits, the goal's
+`goal_status` attachments (`sentinel` = a goal set — or cleared when `met: true` —, `met: false` = not
+met yet, `met: true` = achieved, `failed: true` = impossible; sidechain records ignored) and the
+`system` records `stop_hook_summary` / `turn_duration` that close a turn. After a restart, the
+transcript of a reattached run is caught up first: observations before the first poll that reaches
+the end are reduced to their final state (§6.1 Finish rule); usage limits keep their immediate
+effect. A run started by the current server is watched live from its first line.
 
 ### 7.3 Translation (withdrawn)
 
@@ -949,8 +990,10 @@ output) and is recorded. Responses:
 - `UserPromptSubmit` → first the scope check (ADR-16 rules): a held prompt returns
   `{"decision":"block","reason":…}` (shown to the person, never to the agent) and nothing else
   happens; otherwise additionalContext with unread message digests (marks delivered); activity
-  `working`. The Jev deadline (3 s) fits inside the hook client's 5 s; any failure passes.
-- `Stop` → activity `waiting`; discipline gate: if the worktree has changes and the task spec is
+  `working`; a typed prompt that passes clears an achieved goal (§6.1 Finish rule). The Jev
+  deadline (3 s) fits inside the hook client's 5 s; any failure passes.
+- `Stop` → activity `waiting`, or `done` when the goal is achieved (§6.1 Finish rule); discipline
+  gate: if the worktree has changes and the task spec is
   missing/invalid, or there are unread urgent messages, return `{"decision":"block","reason":…}`;
   at most 3 consecutive blocks per turn, then `needs_attention`. Also the turn boundary of the
   subscription pool (ADR-17): a switch at 98 %, or a hold when no subscription has capacity and the
@@ -963,7 +1006,7 @@ output) and is recorded. Responses:
 - `Notification` / `PermissionRequest` → `needs_attention`.
 
 Waking idle tasks (COM-005): when a direct message arrives for a `running` task with activity
-`waiting` for ≥ 30 s and no viewer typed in the last 30 s, the supervisor types a short notice and
+`waiting` or `done` for ≥ 30 s and no viewer typed in the last 30 s, the supervisor types a short notice and
 Enter into the PTY (configurable per task; never during `needs_attention`).
 
 ### 7.6 Briefing
@@ -977,10 +1020,18 @@ scope claims, unread messages count.
 ### 7.7 Terminal WebSocket (`/api/tasks/{id}/terminal`)
 
 Binary frames mirror §7.1 (Output/Snapshot/Exit) plus JSON text control frames: client `hello
-{last_seq}`, `input`, `resize`, `take_control`; server `state {attempt, harness, controller}`,
-`notice`. Joining viewers get a snapshot from the server's own vt100 copy, then live output. A
-viewer may give its size with the connection (`?cols=&rows=`): a writer whom nobody else controls
-gets it applied before its first state and snapshot, and when that changed the size the snapshot
+{last_seq}`, `input`, `resize`, `take_control`, `active`, `idle`; server `state {attempt, harness,
+controller}`, `notice`. Who sets the PTY size (TSK-006, UI-019, F 2026-10-10) is a pure policy in
+`yulius-app` (`hub::control`): every writer reports the size its own window fits (`hello`,
+`resize`) and its presence (`active`: visible, focused, used within a minute; `idle` otherwise);
+typing (not a forwarded wheel turn) or `take_control` (a click into the terminal) claims the size
+at once, an active viewer takes it from an idle controller, an idle or leaving controller hands it
+to the most recently active viewer, and a viewer alone keeps it while idle; each hand-over applies
+the new controller's last reported size to the PTY at once (live tasks only), and a run that
+attaches at another size takes the controller's (a viewer who opened the task while it started).
+Read-only viewers never control. Joining viewers get a snapshot from the server's own vt100 copy, then live output. A
+viewer may give its size with the connection (`?cols=&rows=`): a writer whom nobody controls, or
+whose controller is idle, gets it applied before its first state and snapshot, and when that changed the size the snapshot
 waits (≤ 400 ms, until 40 ms without output) for the agent's redraw, so the terminal is drawn once at
 the viewer's size (F 2026-10-09); the same size again (hello, reconnect) resizes nothing. Per
 viewer queue 512 frames / 8 MiB; overflow closes with code 4008; client reconnects with backoff
@@ -1125,6 +1176,7 @@ raw body up to the upload limit, 25 MiB by default).
 | Held prompt carried to another subscription | 100 KiB | longer prompts are not held (they run; a reported limit pauses them) |
 | Usage readings kept | 8 days | pruned on insert |
 | Discipline blocks per turn | 3 | `needs_attention` |
+| Background-shell probe (idle task) | every 5 s; ≤ 4096 processes, depth 64, 256 KiB per command line; `ps` (no `/proc`) 2 s, total 3 s | count not known: the task is not held back |
 | MCP request / result | 1 MiB / 256 KiB | error |
 | Transcript line | 4 MiB | skip + diagnostic |
 | Import total / chunk | 2 GiB / 8 MiB | reject |
@@ -1157,7 +1209,8 @@ raw body up to the upload limit, 25 MiB by default).
 | Xvfb missing or fails | resolve / exit before ready | `auto`: headless with JPEG frames; `xvfb`: the browser does not start, with the reason; a crashed display ends the browser, which restarts on next use. |
 | Slow browser viewer | media queue bound | Skips to the next keyframe; others and the encoder unaffected. |
 | Slow viewer | queue bound | Viewer dropped, others unaffected (AC-NFR-4). |
-| Server crash/restart/upgrade | startup reconciliation | Reattach live ptyhosts; record exits; no respawn (AC-NFR-2). |
+| Server crash/restart/upgrade | startup reconciliation | Reattach live ptyhosts; record exits; no respawn (AC-NFR-2). Replayed transcripts are reduced to their final state: finished tasks stay `done`/`waiting`, a turn or goal finished while Yulius was down is applied (§6.1, AC-TSK-13). |
+| Stop hook unanswered (Yulius down or slow) | the transcript's closing records on catch-up; the next clean Stop | The task settles at the restart's catch-up or the next Stop; while Yulius runs the Stop hook stays the turn boundary. |
 | ptyhost crash | socket EOF + no exit.json + pid gone | Child is in ptyhost's session → receives SIGHUP; contained runs die with bwrap; attempt `lost`, task `stopped`. |
 | Agent crash | exit frame non-zero | Task `stopped(crashed)`; Continue offered. |
 | VM reboot | boot id mismatch | All live attempts `lost`; tasks continuable; automations resume schedule. |
@@ -1241,8 +1294,9 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Process supervision (NFR-001..005, AC-TSK-3, AC-NFR-3) | `crates/yulius/tests/supervision.rs`: real detached ptyhost + fake agent + real git worktrees; a server runtime is dropped and a new one reconciles and reattaches the same child pid, snapshot restores the screen, crash exit code recorded, stop escalation, queueing at the session limit, normal exit closes the task; `crates/yulius-ptyhost/tests/*` (13 + orphan watchdog). |
 | Rotation (AC-ROT-2 reactive, AC-ROT-6) | `supervision.rs`: a provider usage limit at turn end moves the same session to the next account with a native resume and a recorded decision; usage refreshed at 99 % moves it at the next turn boundary; with no capacity the task waits. |
 | Superadmin access (AC-ACC-8) | `http_auth.rs`: every sandbox with admin access and its routes with GitHub down, no cached permission; only the superadmin (a password instance admin sees nothing, GitHub users mirrored); terminal and event stream survive re-checks. `shells.rs`: shell with the App's repository token. `projects.rs`: listing and import through the App. `delivery.rs`: pull request through the App, merge/release 403. `analytics.rs`: summary and Status cover every sandbox. `e2e/tests/access.e2e.ts` (mock UI). |
-| Terminal and permissions (AC-TSK-2, AC-TSK-6, AC-ACC-5) | `terminal_ws.rs`: task created via the public API, two WebSocket viewers, read-only input refused, writer input reaches the agent, a GitHub downgrade turns an open socket read-only and revocation closes it (4003); the writer's `?cols=&rows=` is in its first state (AC-UI-38). |
-| User terminals (UI-016, AC-UI-8, AC-UI-37) | `shells.rs`: many named shells per user and sandbox up to the bound, privacy between users and sandboxes (list, attach, rename, close), close ends the process, idle reaping; a shell keeps running when the server stops and the next server adopts it with its screen and process (unadoptable leftovers removed). `live_ui_terminal.rs` (opt-in Chrome): the Shell panel opens a working terminal without a click and "+" adds one. |
+| Terminal and permissions (AC-TSK-2, AC-TSK-6, AC-ACC-5) | `terminal_ws.rs`: task created via the public API, two WebSocket viewers, read-only input refused, writer input reaches the agent, a GitHub downgrade turns an open socket read-only and revocation closes it (4003); the writer's `?cols=&rows=` is in its first state (AC-UI-38); the size follows the active viewer (alone and idle it keeps it; a newcomer takes it from an idle one; typing and `take_control` apply the typist's size at once; an idle or leaving controller hands it to the active viewer; the agent's `stty size` agrees). `hub::control` unit tests cover the policy. |
+| Terminal size, clipboard and file links (UI-018, UI-019, AC-UI-10, AC-UI-11; F 2026-10-10) | `e2e/tests/terminal.e2e.ts` (mock): the key table per platform and the path forms (unit, in the page); Ctrl+C copies a selection and interrupts without one; paste types; the right-click menu; a read-only paste refused; another viewer's 90×30 grid fills the box, centred, never cut off, with a chip and no banner, and a click takes the size; file links in the task terminal (five forms linked, four kinds left plain, a web link kept) open the editor at file, line and column; a shell's `ls` output links. `live_ui_terminal.rs` (opt-in Chrome, real server and fake agent): copy with a selection keeps the agent running, the platform's paste key types the clipboard, two windows of different sizes (the active one sets the PTY, the other fills its box; a click moves the size; an idle window hands it back), and Ctrl+C without a selection interrupts the agent. |
+| User terminals (UI-016, AC-UI-8, AC-UI-37) | `shells.rs`: a shell's `folder` (where its paths resolve) and the OSC 7 working directory its `PROMPT_COMMAND` reports; many named shells per user and sandbox up to the bound, privacy between users and sandboxes (list, attach, rename, close), close ends the process, idle reaping; a shell keeps running when the server stops and the next server adopts it with its screen and process (unadoptable leftovers removed). `live_ui_terminal.rs` (opt-in Chrome): the Shell panel opens a working terminal without a click and "+" adds one. |
 | Task terminal appearance (UI-043, AC-UI-38) | `live_ui_terminal.rs` (opt-in Chrome, fake agent with `--tui`, 80 ms latency): zero visible font, grid or layout changes after the first frame, cold and on reload; before this change 2 (cold) and 1 (reload), plus a font-size change before the agent's text. |
 | Messages and steps (AC-COM-2, AC-STP-3) | `supervision.rs` wake test (notice typed into the idle recipient only); `agent_hooks.rs` plan-checklist → steps sync. No person → agent message route (2026-10-10, #110): `http_auth.rs` (`POST /api/tasks/{tid}/messages` is 405, the read routes still answer); `ui_contract.rs` (neither the UI nor the mock posts messages); `e2e/tests/messages.e2e.ts` (no composer, "Reply in the terminal" focuses the terminal). |
 | Unreadable GitHub checks (GIT-001, AC-GIT-1, #111) | `yulius-github`: `wire::tests::unreadable_sources_never_make_checks_green`; `tests/client.rs` against the fake GitHub: 403 on check runs and 200 on statuses (statuses and Actions runs decide, `head_sha` sent), Actions withheld too, nothing reported → unknown, nothing readable → unknown, 403 on statuses only (check runs decide, no Actions call), another 403 still fails. `tests/github_checks.rs`: the production adapter maps the report. `tests/delivery.rs`: one `checks_access` (settings link for the superadmin only), no note, unknown refuses the merge and the release with the reason, other GitHub errors become one note without a doubled prefix. Domain merge-gate tests with `ChecksState::Unknown`. Manifest test requests `statuses: read`. |
@@ -1254,6 +1308,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Areas | `accounts.rs`, `analytics.rs`, `automations.rs`, `skills_mcp.rs`, `delivery.rs`, `projects.rs`, `import_server.rs`, `browser.rs`, `editor.rs`, `shells.rs`, `http_auth.rs`, `mcp_coordination.rs`. |
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
 | Live previews and no recursion (ADR-14, 2026-10-09) | `tests/preview.rs` (handshake, rewriting, localhost view of the app, WebSocket passthrough, refusals of users, sandboxes, ports, cross-site callers and Yulius itself, the Yulius session unusable from a preview origin, TLS `ask`); `tests/browser.rs` (per-viewer `watch`); `yulius-browser` `tests/instance.rs` and `tests/manager.rs` (the sandbox Chrome's guard: refusal, `Fetch` interception, fail-closed start); opt-in `live_ui_browser.rs` with real Chrome (live iframe with root-relative assets, a redirect, a WebSocket, native typing, selection and scrolling, address bar and Back, agent notice and cursor, hostile preview page refused, framed UI refused, the sandbox Chrome refusing Yulius). Deployed DNS/TLS not exercised. |
+| Task finishing (TSK-014, 2026-10-10) | Unit: `goal_status` and turn-closing records (fixture `goal.jsonl`, structure of Claude Code 2.1.292 read from the installed bundle and a production transcript, read-only), the replay reduction, typed prompts vs wake-ups, `Activity::Done`, the tail's catch-up flag, the background-shell counter (synthetic tables, depth/size bounds, a real wrapper shell found until it exits). `tests/task_done.rs`: fake agent with Claude Code's hooks through `yulius hook` → Done with 0 shells; a goal turn leaving a Bash-tool shell → 1 shell until it ends, then Done; typing after Done → `working` → `waiting`; a restart keeps a done task done (no `working` event) and applies a goal achieved while the server was down. With the catch-up disabled the restart test fails. Mock UI e2e `task-done.e2e.ts`. |
 | Streamed browser (ADR-15, 2026-10-10) | Unit: FLV parsing for every split of a stream, codec strings, GOP cache, subscriber and viewer backpressure, encoder lifecycle (on demand, idle stop, resize restart, give-up), key mapping, cookie format and permissions, device sizes. `tests/browser.rs` with a fake display: video config then a keyframe, a late viewer's instant start, viewport → display resize and encoder restart, XTest-shaped input, wheel and text through CDP, copy, release on leave, pages opened by pages come to the front, history and reload, a broken encoder falls back to JPEG, the display stops with the browser. Opt-in `live_display.rs` on the VM (Xvfb, ffmpeg, Chrome 155, as the service user): streaming from a keyframe, real clicks (also in an OAuth-style popup), typing incl. Polish letters and emoji in order, scrolling, canvas and image pixels, `navigator.webdriver === false`, agent cursor, screenshots, recursion refused, no display, cookie, abstract or TCP socket reachable from containment (both identities); figures in ADR-15; reCAPTCHA v2 demo (checkbox → image challenge, a tile selected) and Cloudflare's challenge on nopecha.com (checkbox → passed) with XTest clicks. `live_ui_browser.rs` with a display: the panel decodes H.264 in Chrome and its input reaches the page. `e2e/tests/browser.e2e.ts` (mock UI, VP8 via WebCodecs). |
 | Dropped files (EDT-006, UI-048, 2026-10-10) | `tests/uploads.rs`: editor uploads (write users only, CSRF, folders created, byte-for-byte with SHA-256, 409 then overwrite with permissions kept, folders and links never replaced, traversal / absolute / control characters / `.git` / links out refused with nothing written outside, a repository folder linked into another sandbox refused, task worktree root, audit), bounds (declared and streamed size, an interrupted body, 8 concurrent then 429, no temporary file left), task attachments (safe unique names, read users refused, a planted link refused, removed with the task), shell attachments (owner only, removed when the shell closes or at start-up), the fake agent reading an attachment by path with a clean `git status` (uncontained; on Linux also inside bubblewrap, skipped where bubblewrap cannot run). Unit tests in `yulius_app::uploads`. `e2e/tests/filedrop.e2e.ts` (mock UI). Opt-in `live_ui_filedrop.rs` with real Chrome: real drags from disk to the explorer and to the task terminal, read by the fake agent. |
 | Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
@@ -1262,6 +1317,9 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-10 (F 2026-10-10): §6.1 activity `done` and the finish rule (goal achieved, clean turn
+  end, background shells as a live overlay, restart catch-up); §7.2 goal and turn-closing records;
+  §7.5 Stop/UserPromptSubmit; §9 probe bounds; §10 restart and unanswered Stop; §14.
 - 2026-10-10 (F 2026-10-10): dropped files — streamed uploads into the repository or a worktree and
   terminal attachments outside git that the contained agent reads by path (§4, §7.9, §8, §9, §14).
 - 2026-10-10 (F 2026-10-10, item 10b): ADR-17 — Claude subscriptions as one self-managing pool:

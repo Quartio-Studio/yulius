@@ -79,6 +79,7 @@ function createApp(root, transport) {
     currentSandbox: () => currentSandbox,
     currentTask: () => currentTask,
     openLink,
+    openFile,
     onTaskClosed,
     signOut,
     isSuperadmin: () => Boolean(store.state.me && store.state.me.user && store.state.me.user.is_superadmin),
@@ -393,6 +394,15 @@ function createApp(root, transport) {
     if (!sandbox || !currentSandbox || currentSandbox.id !== sandbox.id) return;
     navigate(`/s/${encodeURIComponent(sandbox.slug)}/tasks`);
     toast(`Task #${task.number} closed. Continue it any time from Tasks.`, { kind: 'info' });
+  }
+
+  /**
+   * File links from terminals (UI-018, F 2026-10-10): the Editor panel at the file and line.
+   * `file` is {root ('sandbox' or 'task:<id>'), path, line, col}.
+   */
+  function openFile(sandbox, file) {
+    if (!shell || !currentSandbox || currentSandbox.id !== sandbox.id) return;
+    shell.panels.open('editor', { file });
   }
 
   /** Links from the terminal, messages and pages (UI-011, BRW-004). */

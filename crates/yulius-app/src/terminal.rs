@@ -1,5 +1,5 @@
-//! Terminal viewers: attach, input, resize and permission re-checks (SPEC-002 §7.7, AC-TSK-6,
-//! ACC-008).
+//! Terminal viewers: attach, input, resize, who sets the size, and permission re-checks
+//! (SPEC-002 §7.7, AC-TSK-6, ACC-008; the size policy is [`crate::hub::control`]).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +10,7 @@ use yulius_domain::permission::Action;
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::hub::Subscription;
+use crate::hub::{Change, Subscription};
 use crate::supervisor::TaskRuntime;
 
 /// Maximum concurrent viewers per task.
@@ -32,7 +32,7 @@ pub struct TerminalAttach {
 }
 
 impl TerminalAttach {
-    /// Whether this viewer currently controls input focus and the PTY size (TSK-006).
+    /// Whether this viewer currently controls the PTY size (TSK-006).
     #[must_use]
     pub fn is_controller(&self) -> bool {
         self.runtime.hub.controller() == self.viewer_id
@@ -41,7 +41,9 @@ impl TerminalAttach {
 
 impl Drop for TerminalAttach {
     fn drop(&mut self) {
-        self.runtime.hub.release(self.viewer_id);
+        // Normally [`App::terminal_leave`] already handed control over (and resized the
+        // terminal); this covers a viewer dropped without it.
+        self.runtime.hub.leave(self.viewer_id);
         self.runtime.hub.unsubscribe();
     }
 }
@@ -62,10 +64,11 @@ pub struct TerminalState {
 impl App {
     /// Attaches a viewer to a task terminal (read access suffices to watch). `size` (cols,
     /// rows) is the viewer's terminal: a writer gets it applied before its snapshot is taken
-    /// when nobody else controls the terminal (it then controls it, TSK-006), and when that
-    /// changed the size, the snapshot waits for the agent's redraw ([`REDRAW_WAIT`] at most) —
-    /// so the first state and screen it receives are already at its size and layout, and
-    /// nothing reflows after the terminal appears (F 2026-10-09).
+    /// when nobody controls the terminal or its controller is idle (it then controls it,
+    /// TSK-006, F 2026-10-10), and when that changed the size, the snapshot waits for the
+    /// agent's redraw ([`REDRAW_WAIT`] at most) — so the first state and screen it receives
+    /// are already at its size and layout, and nothing reflows after the terminal appears
+    /// (F 2026-10-09).
     ///
     /// # Errors
     /// Access errors; `Capacity` beyond [`MAX_VIEWERS`].
@@ -93,20 +96,21 @@ impl App {
         }
         let can_write = level.allows(Action::Work) && ctx.user.disabled_at.is_none();
         let viewer_id = runtime.hub.new_viewer_id();
-        if let Some((cols, rows)) = size
-            && can_write
-            && task.status.is_live()
-            && runtime.hub.may_resize(viewer_id)
-        {
+        if can_write {
             let before = runtime.hub.size();
             let since = runtime.hub.output_seq();
             let watch = runtime.hub.watch();
-            if let Err(err) = self.resize_run(&task.id, cols, rows).await {
-                runtime.hub.release(viewer_id);
-                return Err(err);
-            }
-            if runtime.hub.size() != before && runtime.has_run().await {
-                runtime.hub.settle(watch, since, REDRAW_WAIT).await;
+            let joined = runtime.hub.join_writer(viewer_id, size);
+            if let Some((cols, rows)) = joined.resize
+                && task.status.is_live()
+            {
+                if let Err(err) = self.resize_run(&task.id, cols, rows).await {
+                    runtime.hub.leave(viewer_id);
+                    return Err(err);
+                }
+                if runtime.hub.size() != before && runtime.has_run().await {
+                    runtime.hub.settle(watch, since, REDRAW_WAIT).await;
+                }
             }
         }
         let subscription = runtime.hub.subscribe();
@@ -161,17 +165,23 @@ impl App {
         if data.len() > 64 * 1024 {
             return Err(AppError::Invalid("input frame too large".into()));
         }
-        // The last viewer to type controls the terminal (TSK-006). A forwarded wheel turn is not
-        // typing: it must not move control, and with it the size, to that viewer (#78).
+        // The viewer who types controls the terminal and its size, at once (TSK-006). A
+        // forwarded wheel turn is not typing: it must not move control, and with it the size, to
+        // that viewer (#78).
         if !scroll {
-            attach.runtime.hub.take_control(attach.viewer_id);
+            let change = attach.runtime.hub.claim(attach.viewer_id);
+            // The keystroke matters more than the size: a failed resize never drops it.
+            if let Err(err) = self.apply_control(&attach.task_id, change).await {
+                tracing::debug!(task = %attach.task_id, error = %err, "typist's size not applied");
+            }
             // A prompt submitted soon after is this person's (TSK-013).
             self.record_typing(&attach.task_id, &ctx.user.id);
         }
         self.send_input(&attach.task_id, data).await
     }
 
-    /// Viewer resize (write access; the last resizing viewer controls the size).
+    /// The size the viewer's window fits now (write access). The terminal takes it when this
+    /// viewer controls the size; otherwise it is kept for when it does.
     ///
     /// # Errors
     /// `Forbidden` for read-only viewers.
@@ -185,14 +195,14 @@ impl App {
         if !attach.can_write || !self.can_work(ctx, &attach.task_id).await {
             return Err(AppError::Forbidden("read-only access".into()));
         }
-        if !attach.runtime.hub.may_resize(attach.viewer_id) {
-            // Another viewer controls the size; this viewer keeps watching at that size.
-            return Ok(());
-        }
-        self.resize_run(&attach.task_id, cols, rows).await
+        let change = attach
+            .runtime
+            .hub
+            .report_size(attach.viewer_id, (cols, rows));
+        self.apply_control(&attach.task_id, change).await
     }
 
-    /// Explicit "take control" by a writer: input focus and size follow this viewer.
+    /// A writer clicked into the terminal (`take_control`): it controls the size now.
     ///
     /// # Errors
     /// `Forbidden` for read-only viewers.
@@ -204,7 +214,59 @@ impl App {
         if !attach.can_write || !self.can_work(ctx, &attach.task_id).await {
             return Err(AppError::Forbidden("read-only access".into()));
         }
-        attach.runtime.hub.take_control(attach.viewer_id);
+        let change = attach.runtime.hub.claim(attach.viewer_id);
+        self.apply_control(&attach.task_id, change).await
+    }
+
+    /// The viewer is active (`active`) or idle (`idle`): an active writer takes the size from
+    /// an idle controller; an idle controller hands it to the most recently active viewer.
+    /// Read-only viewers never control, so their presence changes nothing.
+    ///
+    /// # Errors
+    /// Store or PTY failures while applying a new size.
+    pub async fn terminal_presence(
+        &self,
+        ctx: &AuthContext,
+        attach: &TerminalAttach,
+        active: bool,
+    ) -> AppResult<()> {
+        if !attach.can_write {
+            return Ok(());
+        }
+        let change = if active {
+            if !self.can_work(ctx, &attach.task_id).await {
+                return Ok(());
+            }
+            attach.runtime.hub.viewer_active(attach.viewer_id)
+        } else {
+            attach.runtime.hub.viewer_idle(attach.viewer_id)
+        };
+        self.apply_control(&attach.task_id, change).await
+    }
+
+    /// The viewer left, or lost write access: control (and the size) passes on.
+    pub async fn terminal_leave(&self, attach: &TerminalAttach) {
+        let change = attach.runtime.hub.leave(attach.viewer_id);
+        if let Err(err) = self.apply_control(&attach.task_id, change).await {
+            tracing::debug!(task = %attach.task_id, error = %err, "terminal size hand-over failed");
+        }
+    }
+
+    /// Applies a size-control change: the new controller's size, while the task is live (an
+    /// ended task's final screen keeps its size).
+    async fn apply_control(&self, task_id: &TaskId, change: Change) -> AppResult<()> {
+        let Some((cols, rows)) = change.resize else {
+            return Ok(());
+        };
+        let live = self
+            .deps
+            .store
+            .task(task_id)
+            .await?
+            .is_some_and(|task| task.status.is_live());
+        if live {
+            self.resize_run(task_id, cols, rows).await?;
+        }
         Ok(())
     }
 

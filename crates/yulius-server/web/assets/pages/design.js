@@ -25,7 +25,7 @@ const RADII = ['--radius-sm', '--radius', '--radius-lg', '--radius-xl', '--radiu
 const CONTROLS = ['--control-sm', '--control-md', '--control-lg', '--control-xl'];
 const SHADOWS = [['None', 'L0 canvas · L1 cards (border only)', 'none'], ['--shadow-sm', 'L2 small: labels, chips', 'var(--shadow-sm)'], ['--shadow', 'L2/L3: menus, popovers, toasts, modals', 'var(--shadow)'], ['--shadow-raised', 'Raised inputs: the composer', 'var(--shadow-raised)']];
 const STATUSES = [
-  { status: 'running', activity: 'needs_attention' }, { status: 'running', activity: 'waiting' }, { status: 'running', activity: 'working' },
+  { status: 'running', activity: 'needs_attention' }, { status: 'running', activity: 'waiting' }, { status: 'running', activity: 'working' }, { status: 'running', activity: 'done' },
   { status: 'queued' }, { status: 'waiting_capacity' }, { status: 'switching' }, { status: 'stopping' },
   { status: 'closed' }, { status: 'stopped_cancelled' }, { status: 'stopped_crashed' }, { status: 'failed_spawn_error' },
 ];

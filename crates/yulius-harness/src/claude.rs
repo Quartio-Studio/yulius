@@ -1,17 +1,27 @@
 //! Claude Code JSONL transcripts (structure of Claude Code 2.1.292): observation of turns, usage
 //! and limits (SPEC-002 §7.2).
 //!
-//! Records are JSON objects with a `type`. `user`/`assistant`/`system` records carry
+//! Records are JSON objects with a `type`. `user`/`assistant`/`system`/`attachment` records carry
 //! `parentUuid`, `isSidechain`, `uuid`, `timestamp`, `userType`, `cwd`, `sessionId`, `version`
 //! and `gitBranch`. Claude writes one line per content block of an API message, each repeating
 //! `message.id` and `message.usage`.
+//!
+//! Goal mode (`/goal`, TSK-010/TSK-014) is recorded as `attachment` records whose
+//! `attachment.type` is `goal_status`: `{"met":false,"sentinel":true,"condition":…}` while a goal
+//! is active (a sentinel with `met:true` marks a goal cleared without being achieved),
+//! `{"met":false,"condition":…,"reason":…}` when the evaluator keeps the agent working,
+//! `{"met":true,…,"iterations":n,"durationMs":…,"tokens":…}` when it is achieved ("✓ Goal
+//! achieved") and `{"met":false,"failed":true,…}` when it cannot be. The evaluator is a Stop hook,
+//! so the record follows the Stop hooks of the turn, before the `system` records
+//! `stop_hook_summary` and `turn_duration` ("Brewed for 51s") that close it.
 
 use serde_json::{Map, Value};
+use yulius_domain::task::GoalOutcome;
 use yulius_domain::usage::TokenUsage;
 
 use crate::json::{bool_of, obj_of, owned_str, parse_object, shorten, str_of, u64_of};
 use crate::observe::Observed;
-use crate::time::from_epoch_seconds;
+use crate::time::{from_epoch_seconds, parse_rfc3339};
 
 /// Maximum bytes of provider limit text kept in [`Observed::LimitReached`].
 const LIMIT_MESSAGE_BYTES: usize = 512;
@@ -67,8 +77,46 @@ pub fn observe_line(line: &str) -> Vec<Observed> {
     match str_of(&record, "type") {
         Some("user") => observe_user(&record),
         Some("assistant") => observe_assistant(&record),
+        Some("attachment") => observe_attachment(&record),
+        Some("system") => observe_system(&record),
         Some(_) => Vec::new(),
         None => vec![Observed::Malformed],
+    }
+}
+
+/// The session goal's state from a `goal_status` attachment (see the module docs).
+fn observe_attachment(record: &Map<String, Value>) -> Vec<Observed> {
+    let Some(attachment) = obj_of(record, "attachment") else {
+        return Vec::new();
+    };
+    if bool_of(record, "isSidechain") || str_of(attachment, "type") != Some("goal_status") {
+        return Vec::new();
+    }
+    let met = bool_of(attachment, "met");
+    let outcome = if bool_of(attachment, "sentinel") {
+        if met {
+            GoalOutcome::Cleared
+        } else {
+            GoalOutcome::Set
+        }
+    } else if met {
+        GoalOutcome::Met
+    } else if bool_of(attachment, "failed") {
+        GoalOutcome::Failed
+    } else {
+        GoalOutcome::NotMet
+    };
+    vec![Observed::Goal { outcome }]
+}
+
+/// The records Claude Code writes when a turn closes after its Stop hooks.
+fn observe_system(record: &Map<String, Value>) -> Vec<Observed> {
+    if bool_of(record, "isSidechain") {
+        return Vec::new();
+    }
+    match str_of(record, "subtype") {
+        Some("stop_hook_summary" | "turn_duration") => vec![Observed::TurnEnded],
+        _ => Vec::new(),
     }
 }
 
@@ -79,8 +127,11 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
     if bool_of(record, "isSidechain") || bool_of(record, "isMeta") || !is_prompt(message) {
         return Vec::new();
     }
+    let turn = Observed::UserTurn {
+        at: str_of(record, "timestamp").and_then(parse_rfc3339),
+    };
     let Some(session_id) = owned_str(record, "sessionId") else {
-        return vec![Observed::UserTurn];
+        return vec![turn];
     };
     vec![
         Observed::SessionMeta {
@@ -89,7 +140,7 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
             model: None,
             version: owned_str(record, "version"),
         },
-        Observed::UserTurn,
+        turn,
     ]
 }
 
@@ -294,6 +345,15 @@ mod tests {
             "\"session limit · resets 3pm\"",
             "\"timestamp\"",
             "\"2026-10-09T10:00:00Z\"",
+            "\"attachment\"",
+            "\"goal_status\"",
+            "\"met\"",
+            "\"sentinel\"",
+            "\"failed\"",
+            "\"system\"",
+            "\"subtype\"",
+            "\"turn_duration\"",
+            "\"stop_hook_summary\"",
         ];
         let mut rng = Rng(0x0dd5_eed5_cafe_f00d);
         for _ in 0..6_000 {
@@ -338,6 +398,60 @@ mod tests {
                 message: "You've hit your weekly limit · resets Oct 12".into(),
                 window_minutes: Some(10080),
             })
+        );
+    }
+
+    /// TSK-014: `goal_status` attachments map to the goal's outcome whatever their wording;
+    /// other attachments, sidechain goals and attachments without a body are ignored.
+    #[test]
+    fn goal_status_attachments() {
+        let goal = |body: &str| {
+            observe_line(&format!(
+                r#"{{"type":"attachment","isSidechain":false,"attachment":{body}}}"#
+            ))
+        };
+        let outcome = |o| vec![Observed::Goal { outcome: o }];
+        assert_eq!(
+            goal(r#"{"type":"goal_status","met":false,"sentinel":true,"condition":"c"}"#),
+            outcome(GoalOutcome::Set)
+        );
+        assert_eq!(
+            goal(r#"{"type":"goal_status","met":true,"sentinel":true,"condition":"c"}"#),
+            outcome(GoalOutcome::Cleared)
+        );
+        assert_eq!(
+            goal(r#"{"type":"goal_status","met":false,"condition":"c","reason":"r"}"#),
+            outcome(GoalOutcome::NotMet)
+        );
+        assert_eq!(
+            goal(r#"{"type":"goal_status","met":true,"condition":"c","iterations":1}"#),
+            outcome(GoalOutcome::Met)
+        );
+        assert_eq!(
+            goal(r#"{"type":"goal_status","met":false,"failed":true,"condition":"c"}"#),
+            outcome(GoalOutcome::Failed)
+        );
+        assert!(goal(r#"{"type":"todo_reminder"}"#).is_empty());
+        assert!(goal(r#""goal_status""#).is_empty());
+        assert!(observe_line(r#"{"type":"attachment"}"#).is_empty());
+        assert!(
+            observe_line(
+                r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"goal_status","met":true}}"#
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            observe_line(r#"{"type":"system","subtype":"turn_duration","durationMs":5}"#),
+            vec![Observed::TurnEnded]
+        );
+        assert!(observe_line(r#"{"type":"system","subtype":"away_summary"}"#).is_empty());
+        assert_eq!(
+            observe_line(
+                r#"{"type":"user","timestamp":"2026-10-10T05:38:01.385Z","message":{"content":"go"}}"#
+            ),
+            vec![Observed::UserTurn {
+                at: Some(Timestamp(1_791_610_681_385))
+            }]
         );
     }
 

@@ -1912,16 +1912,21 @@ impl App {
         }
     }
 
-    /// Whether a task is Done (#35, the sidebar's rule; SPEC-001 TSK-012): its turn ended
-    /// (the agent waits for input, or the session was closed) and its pull request is merged,
-    /// or open with checks green or none required. Anything unknown (no pull request, GitHub
-    /// unreachable) is not Done.
+    /// Whether a task is Done (#35, the sidebar's rule; SPEC-001 TSK-012, TSK-014): its turn
+    /// ended (the agent is idle, or the session was closed), no background shell of the agent is
+    /// known to run, and either Claude Code recorded its goal as achieved (activity `done`) or
+    /// its pull request is merged, or open with checks green or none required. Anything unknown
+    /// (no pull request, GitHub unreachable) is not Done.
     pub(crate) async fn task_is_done(&self, task: &TaskRecord) -> bool {
-        let turn_ended = (task.status == yulius_domain::task::TaskStatus::Running
-            && task.activity == Some(yulius_domain::task::Activity::Waiting))
-            || task.status == yulius_domain::task::TaskStatus::Closed;
-        if !turn_ended {
+        use yulius_domain::task::{Activity, TaskStatus};
+        let running = task.status == TaskStatus::Running;
+        let turn_ended = (running && task.activity.is_some_and(Activity::is_idle))
+            || task.status == TaskStatus::Closed;
+        if !turn_ended || (running && self.background_shells_of(&task.id).unwrap_or(0) > 0) {
             return false;
+        }
+        if running && task.activity == Some(Activity::Done) {
+            return true;
         }
         let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
             return false;

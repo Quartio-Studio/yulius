@@ -961,7 +961,7 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .attention-bar { position: absolute; top: 8px; right: 16px; z-index: var(--z-float); display: flex; align-items: center; gap: 12px; max-width: min(560px, calc(100% - 32px)); padding: 8px 8px 8px 12px; border: 1px solid var(--border-strong); border-left: 3px solid var(--warn); border-radius: var(--radius); background: var(--warn-soft-solid); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }
 .attention-bar[hidden] { display: none; }
 /* Below the attention bar, the terminal's own notices. */
-.taskview-term:has(.attention-bar:not([hidden])) .term-notice, .taskview-term:has(.attention-bar:not([hidden])) .term-mouse-toggle { top: 64px; }
+.taskview-term:has(.attention-bar:not([hidden])) .term-corner { top: 64px; }
 .attention-bar.waiting { border-left-color: var(--info); background: var(--info-soft-solid); color: var(--info-fg-strong); }
 .attention-bar .icon { flex: none; }
 .attention-text { flex: 1; min-width: 0; }
@@ -1046,7 +1046,10 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .term-load-error { display: flex; align-items: center; gap: 12px; margin: auto; color: var(--text-2); }
 .term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .term-host { flex: 1; min-height: 0; padding: 4px 0 0 6px; overflow: hidden; }
+.term-fit { width: 100%; height: 100%; } /* xterm's box, without padding: the fit measures exactly this */
 .term-host .xterm { height: 100%; }
+/* Another viewer sets the size: its grid, scaled to fill this box, centred across the width left. */
+.term-host.term-mirror .xterm-screen { margin-inline: auto; }
 .term-host .xterm-viewport { background-color: var(--term-bg) !important; }
 /* Dim terminal text (ANSI faint) keeps 4.5:1: xterm's contrast floor does not apply to it. */
 .term-host .xterm-dim { color: var(--muted) !important; }
@@ -1078,7 +1081,13 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .term-conn.term-conn-error { background: var(--danger-soft); color: var(--danger-fg-strong); }
 .term-conn > .icon { flex: none; }
 .term-conn .spinner { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; }
-.term-notice { position: absolute; top: 8px; right: 14px; z-index: var(--z-float); max-width: 70%; padding: 6px 12px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--border-strong); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }
+/* The terminal's corner: notices, the size chip and the mouse hand-over, floating and opaque (they
+   never resize the terminal, #101/#103). Only its children take the pointer. */
+.term-corner { position: absolute; top: 6px; right: 16px; z-index: var(--z-float); display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 70%; pointer-events: none; }
+.term-corner > * { pointer-events: auto; }
+.term-corner > [hidden] { display: none; }
+.term-size-chip { padding: 2px 8px; border-radius: var(--radius-full); background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); box-shadow: var(--shadow-sm); white-space: nowrap; cursor: default; }
+.term-notice { max-width: 100%; padding: 6px 12px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--border-strong); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }
 
 /* phone quick input (UI-012, §6.4) */
 .quickbar { display: none; flex: none; flex-direction: column; gap: 6px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--border); }
@@ -1756,7 +1765,7 @@ a.dl-task:hover { text-decoration: underline; }
 }
 
 /* Terminal mouse hand-over (shown only when the program asked for the mouse). */
-.term-mouse-toggle { position: absolute; top: 6px; right: 16px; z-index: var(--z-float); background: var(--surface-2); box-shadow: var(--shadow-sm); font-size: var(--fs-xs); line-height: var(--lh-xs); opacity: 0; transition: opacity var(--duration-fast) var(--ease); }
+.term-mouse-toggle { background: var(--surface-2); box-shadow: var(--shadow-sm); font-size: var(--fs-xs); line-height: var(--lh-xs); opacity: 0; transition: opacity var(--duration-fast) var(--ease); }
 .term:hover .term-mouse-toggle, .term-mouse-toggle:focus-visible { opacity: 1; }
 
 /* Harness change waiting for approval (ROT-012). */

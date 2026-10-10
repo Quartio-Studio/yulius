@@ -150,10 +150,18 @@ function seed(params) {
       delivery: extra.delivery || null, // {stage, environment, pr} once delivery started
       // Paused for subscription capacity: when the earliest window resets (ROT-010).
       resumes_at: status === 'waiting_capacity' ? new Date(Date.now() + 38 * MIN).toISOString() : null,
+      ...(extra.mode ? { mode: extra.mode } : {}),
+      // Background shells the idle agent left running (TSK-014).
+      background_shells: extra.shells ?? null,
     };
   };
   const pr = (number, title, state, base, checks) => ({ number, url: `https://github.com/Quartio-Studio/${number > 400 ? 'product' : 'studio'}/pull/${number}`, title, state, base, head: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, checks });
   db.tasks = [
+    // Goal achieved after a clean turn, no shell left: Done with a green check although its pull
+    // request's checks still run (TSK-014, F 2026-10-10).
+    t('sb_studio', 13, 'Improve the code', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 6 * MIN, shells: 0, delivery: { stage: 'pr_open', environment: null, pr: pr(520, 'Improve the code', 'open', 'dev', 'pending') } }),
+    // Goal achieved, but a background shell (a dev server) still runs: Working, with the shell said.
+    t('sb_studio', 14, 'Start the preview server', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 2 * MIN, shells: 1 }),
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, unread: 2, updated: 20e3 }),
     // Finished its turn with a tested pull request (checks green): "Done" (#35).
     t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 2, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
@@ -262,6 +270,9 @@ function summary(task) {
     after: task.afterLink ? { ...task.afterLink } : null,
     next: (task.nextLinks || []).map((link) => ({ ...link })),
     held_prompt: task.heldPrompt ? { ...task.heldPrompt } : null,
+    ...(task.mode ? { mode: task.mode } : {}),
+    // Background shells an idle agent left running (TSK-014).
+    background_shells: task.status === 'running' ? task.background_shells ?? null : null,
   };
 }
 
@@ -965,6 +976,7 @@ function repoTree(db, sid, root = 'sandbox') {
     files.set('README.md', `# ${(sandboxOf(db, sid).repo || {}).name || sandboxOf(db, sid).slug}\n\nThe ${sandboxOf(db, sid).name} storefront.\n`);
     files.set('AGENTS.md', '# Agents\n\nRead the task spec first. Keep changes small; run the tests before you report.\n');
     files.set('src/api/checkout.rs', 'pub fn cart_total(cart: &Cart) -> Money {\n    cart.subtotal()\n}\n');
+    files.set('docs/specs/2026-10-10-improve-the-code.md', '# Improve the code\n\n## Goal\nSmaller handlers.\n\n## Plan\n- [ ] Split the checkout handler\n');
     db.repoTrees[key] = { files, dirs: new Set() };
   }
   return db.repoTrees[key];
@@ -1290,7 +1302,13 @@ route('POST', `/api/mcp/${ID}/test`, ({ db, p }) => {
 });
 
 // ---- Shells (UI-016): the user's terminals per sandbox; at most 8 live ones per user and sandbox.
-const shellDto = (shell) => ({ id: shell.id, name: shell.name, task_id: shell.task_id, created_at: shell.created_at });
+/** Where a shell started, as its processes see it (the sandbox repository or the task's worktree). */
+function shellFolder(db, shell) {
+  const slug = (db.sandboxes.find((s) => s.id === shell.sandbox_id) || { slug: 'sandbox' }).slug;
+  const task = shell.task_id ? db.tasks.find((t) => t.id === shell.task_id) : null;
+  return task ? `/srv/yulius/sandboxes/${slug}/worktrees/${task.number}` : `/srv/yulius/sandboxes/${slug}/repo`;
+}
+const shellDto = (shell) => ({ id: shell.id, name: shell.name, task_id: shell.task_id, folder: shell.folder, created_at: shell.created_at });
 route('GET', `/api/sandboxes/${ID}/shells`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   return [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0]).map(shellDto);
@@ -1307,6 +1325,7 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
     : `Terminal ${[1, 2, 3, 4, 5, 6, 7, 8, 9].find((n) => !own.some((shell) => shell.name === `Terminal ${n}`))}`;
   db.nextId += 1;
   const shell = { id: `sh_${p[0]}_${db.nextId}`, sandbox_id: p[0], name, task_id: body.task_id || null, created_at: new Date().toISOString(), session: null };
+  shell.folder = shellFolder(db, shell);
   db.shells.set(shell.id, shell);
   return json(201, shellDto(shell));
 });
@@ -1664,15 +1683,22 @@ class TermSession {
     this.lines = [];
     // Lines scrolled up from the bottom (the full-screen TUI scrolls its own transcript).
     this.scroll = 0;
-    // ?othercols=N: another viewer controls the size at N columns (#30) until this one types or
-    // takes control, as on the server.
-    const otherCols = Number(new URLSearchParams(location.search).get('othercols'));
-    this.otherController = Number.isFinite(otherCols) && otherCols >= 20;
-    if (this.otherController) this.cols = Math.min(400, otherCols);
     this.input = '';
     this.viewers = new Set();
     this.cols = 120;
     this.rows = 36;
+    // ?othercols=N[&otherrows=M]: another, active viewer sets the size (N×M) until this one types
+    // or clicks into the terminal, as on the server (F 2026-10-10); this viewer's own size is kept
+    // for then.
+    const params = new URLSearchParams(location.search);
+    const otherCols = Number(params.get('othercols'));
+    const otherRows = Number(params.get('otherrows'));
+    this.otherController = Number.isFinite(otherCols) && otherCols >= 20;
+    if (this.otherController) {
+      this.cols = Math.min(400, otherCols);
+      if (Number.isFinite(otherRows) && otherRows >= 8) this.rows = Math.min(200, otherRows);
+    }
+    this.viewerSize = null;
     this.script = SCRIPT_CLAUDE;
     this.scriptIndex = 0;
     this.timer = null;
@@ -1712,6 +1738,16 @@ class TermSession {
     } else {
       for (const line of this.script.slice(0, 6)) this.lines.push(line);
       this.scriptIndex = 6;
+      // File references in every form the terminal links to the editor (F 2026-10-10) — a bare
+      // path, `path:line:col` in backticks, a name in parentheses, an absolute path with #L, an OSC 8
+      // file:// hyperlink — and some it must not: a missing file, a path above the worktree, .git,
+      // a URL (a web link) and an OSC 8 link outside the worktree.
+      const osc8 = (uri, label) => `\x1b]8;;${uri}\x1b\\${label}\x1b]8;;\x1b\\`;
+      this.lines.push(
+        `${c(255, '⏺')} Spec: docs/specs/2026-10-10-improve-the-code.md`,
+        `  ${dim('⎿')}  See \`src/api/checkout.rs:2:5\`, (AGENTS.md), ${cwd}/README.md#L3 and ${osc8(`file://${cwd}/src/api/checkout.rs#L1`, 'the checkout source')}`,
+        `  ${dim('⎿')}  ${dim('Not links:')} docs/missing.md, ../outside.md, .git/config, https://example.com/docs/guide.md, ${osc8('file:///etc/hosts', 'hosts')}`,
+      );
     }
     if (this.exited) this.lines.push('', dim(`Session ended (${this.task.status}).`));
   }
@@ -1806,32 +1842,47 @@ class TermSession {
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
       this.viewers.add(ws);
+      if (this.canWrite() && msg.cols && msg.rows) this.viewerSize = [msg.cols, msg.rows];
       if (this.canWrite() && !this.otherController && msg.cols && msg.rows) { this.cols = Math.max(20, Math.min(400, msg.cols)); this.rows = Math.max(8, Math.min(200, msg.rows)); }
       ws.push(this.state(ws));
       this.sendSnapshot(ws);
       this.ensureTicking();
     } else if (msg.type === 'resize') {
-      if (!this.canWrite() || this.otherController) return;
-      const cols = Math.max(20, Math.min(400, msg.cols));
-      const rows = Math.max(8, Math.min(200, msg.rows));
-      if (cols === this.cols && rows === this.rows) return;
-      this.cols = cols;
-      this.rows = rows;
-      this.seq += 1;
-      for (const viewer of this.viewers) { viewer.push(this.state(viewer)); viewer.push(terminalFrame(2, this.seq, this.snapshot())); }
+      if (!this.canWrite()) return;
+      this.viewerSize = [msg.cols, msg.rows];
+      if (!this.otherController) this.applySize(msg.cols, msg.rows);
     } else if (msg.type === 'take_control') {
-      this.otherController = false;
-      ws.push(this.state(ws));
+      this.takeControl();
     } else if (msg.type === 'input') {
       if (!this.canWrite()) { ws.push(JSON.stringify({ type: 'error', code: 'forbidden', message: 'Input requires write access to the repository.' })); return; }
-      if (this.otherController) { this.otherController = false; this.sendStates(); } // the typist controls
+      if (this.otherController && !msg.scroll) this.takeControl(); // the typist controls
       this.onInput(String(msg.data || ''));
     }
+    // `active` / `idle`: the other mock viewer is always active, so presence alone moves nothing.
   }
 
   closed(ws) {
     this.viewers.delete(ws);
     if (this.viewers.size === 0) this.stopTicking();
+  }
+
+  /** The PTY takes a new size: every viewer gets the state and a redraw. */
+  applySize(cols, rows) {
+    const c2 = Math.max(20, Math.min(400, cols));
+    const r2 = Math.max(8, Math.min(200, rows));
+    if (c2 === this.cols && r2 === this.rows) { this.sendStates(); return; }
+    this.cols = c2;
+    this.rows = r2;
+    this.seq += 1;
+    for (const viewer of this.viewers) { viewer.push(this.state(viewer)); viewer.push(terminalFrame(2, this.seq, this.snapshot())); }
+  }
+
+  /** This viewer takes the size from the other one: the PTY takes its window's size at once. */
+  takeControl() {
+    if (!this.otherController) return;
+    this.otherController = false;
+    if (this.viewerSize) this.applySize(this.viewerSize[0], this.viewerSize[1]);
+    else this.sendStates();
   }
 
   /** A wheel turn (SGR button 64 up, 65 down) scrolls the transcript by three lines. */
@@ -1974,7 +2025,8 @@ class ShellSession {
     this.cols = 100;
     this.rows = 30;
     const cwd = shell.task_id ? `~/sandbox/worktrees/${shell.task_id}` : '~/sandbox';
-    this.prompt = `${c(114, `you@${slug}`)}:${c(39, cwd)}$ `;
+    // Like bash with Yulius's PROMPT_COMMAND: the working directory as OSC 7 before each prompt.
+    this.prompt = `\x1b]7;file://sandbox${shell.folder || ''}\x1b\\${c(114, `you@${slug}`)}:${c(39, cwd)}$ `;
     this.screen = `${dim('Contained sandbox shell (mock). Try: ls, pwd, git status, exit')}\r\n${this.prompt}`;
   }
 
@@ -2011,7 +2063,7 @@ class ShellSession {
     this.input = '';
     const outputs = {
       ls: 'AGENTS.md  Cargo.toml  README.md  docs  src  tests',
-      pwd: `/srv/yulius/sandboxes/${this.slug}/main`,
+      pwd: this.shell.folder || `/srv/yulius/sandboxes/${this.slug}/repo`,
       'git status': 'On branch main\r\nYour branch is up to date with \'origin/main\'.\r\n\r\nnothing to commit, working tree clean',
       whoami: 'you',
     };

@@ -127,6 +127,8 @@ async fn serve(
                             | TerminalClientMsg::TakeControl) => {
                             send_json(socket, &terminal.state()).await?;
                         }
+                        // Nobody shares the size of a login terminal.
+                        Ok(TerminalClientMsg::Active | TerminalClientMsg::Idle) => {}
                         Err(_) => {
                             send_json(socket, &TerminalServerMsg::Error {
                                 code: "invalid".into(),

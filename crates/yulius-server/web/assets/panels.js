@@ -397,6 +397,9 @@ function createShellView(ctx, sandbox, getTask) {
       h('button', { type: 'button', class: 'btn btn-primary', onClick: () => create({ focus: true }) }, icon('plus', { size: 14 }), 'New terminal')));
   }
 
+  /** The editor folder of a shell: its task's worktree or the sandbox repository. */
+  const shellRoot = (shell) => (shell.task_id ? `task:${shell.task_id}` : 'sandbox');
+
   /** Shows `id`'s terminal, attaching it the first time. */
   function activate(id, { focus = false } = {}) {
     const shell = shells.find((s) => s.id === id);
@@ -418,6 +421,13 @@ function createShellView(ctx, sandbox, getTask) {
           else renderTabs();
         },
         onConnection: (status) => { if (status === 'reconnecting') syncList(); },
+        // Paths of files in the terminal's folder (and below the directory bash reports) open in the
+        // Editor (F 2026-10-10).
+        fileLinks: {
+          list: (dir) => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/files?root=${encodeURIComponent(shellRoot(shell))}&path=${encodeURIComponent(dir)}`).then((listing) => listing.entries || []),
+          roots: () => (shell.folder ? [shell.folder] : []),
+          open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: shellRoot(shell), ...file }),
+        },
       });
       attachTerminalDrop(ctx, shell.view, { label: 'Drop to add to this terminal', upload: shellAttachments(ctx, sandbox.id, shell.id) });
       shell.slot = h('div', { class: 'term-slot', role: 'tabpanel', id: `term-panel-${shell.id}`, 'aria-labelledby': `term-tab-${shell.id}` }, shell.view.el);
