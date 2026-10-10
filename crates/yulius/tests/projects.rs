@@ -457,7 +457,13 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
     let prep = w.h.store.task(&task_id).await?.ok_or("prep")?;
     assert!(
         w.h.store
-            .transition_task(&task_id, Some(prep.status), TaskStatus::Closed, None, Timestamp(5))
+            .transition_task(
+                &task_id,
+                Some(prep.status),
+                TaskStatus::Closed,
+                None,
+                Timestamp(5)
+            )
             .await?
     );
     assert_eq!(

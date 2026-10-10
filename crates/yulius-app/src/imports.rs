@@ -28,10 +28,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use yulius_contracts::import::{
     CreateImportRequest, CreateImportResponse, FileProgress, FileRef, ImportHarness,
-    ImportManifest, ImportResult, MAX_IMPORT_TOTAL_BYTES, MAX_SESSIONS_PER_IMPORT,
-    OnboardPlan, OnboardPlanRequest, OnboardSandbox, SNAPSHOT_DELETED_ENTRY,
-    SNAPSHOT_FILES_PREFIX, SessionPlan, SessionRef, is_safe_session_id, is_sha256_hex,
-    is_valid_chunk_len,
+    ImportManifest, ImportResult, MAX_IMPORT_TOTAL_BYTES, MAX_SESSIONS_PER_IMPORT, OnboardPlan,
+    OnboardPlanRequest, OnboardSandbox, SNAPSHOT_DELETED_ENTRY, SNAPSHOT_FILES_PREFIX, SessionPlan,
+    SessionRef, is_safe_session_id, is_sha256_hex, is_valid_chunk_len,
 };
 use yulius_domain::cron::CivilDate;
 use yulius_domain::harness::Harness;
@@ -43,10 +42,10 @@ use crate::auth::{AuthContext, hex_token};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, TaskRecord, UserRecord};
-use crate::session_docs::StoreOutcome;
 use crate::ports::store::TaskFieldUpdate;
 use crate::ports::store_ext::ImportJobRecord;
 use crate::projects::{blocking, clone_url, identity};
+use crate::session_docs::StoreOutcome;
 use crate::supervisor::branch_for;
 
 /// Earlier jobs of a sandbox examined for content reuse, job reuse and applied state.
@@ -356,9 +355,11 @@ impl App {
                 "at most {MAX_SESSIONS_PER_IMPORT} sessions per request"
             )));
         }
-        if let Some(bad) = req.sessions.iter().find(|s| {
-            !is_safe_session_id(&s.session_id) || !is_sha256_hex(&s.sha256)
-        }) {
+        if let Some(bad) = req
+            .sessions
+            .iter()
+            .find(|s| !is_safe_session_id(&s.session_id) || !is_sha256_hex(&s.sha256))
+        {
             return Err(AppError::Invalid(format!(
                 "invalid session fingerprint {:?}",
                 bad.session_id

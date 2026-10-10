@@ -114,8 +114,11 @@ impl SessionDocStore for SqliteStore {
         let d = doc.clone();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            tx.execute("DELETE FROM session_chunks WHERE doc_id = ?1", [d.id.as_str()])
-                .map_err(db)?;
+            tx.execute(
+                "DELETE FROM session_chunks WHERE doc_id = ?1",
+                [d.id.as_str()],
+            )
+            .map_err(db)?;
             let changed = tx
                 .execute(
                     "UPDATE session_docs SET title = ?1, author_id = ?2, git_branch = ?3, \
@@ -240,8 +243,11 @@ impl SessionDocStore for SqliteStore {
         let id = id.to_owned();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            tx.execute("DELETE FROM session_chunks WHERE doc_id = ?1", [id.as_str()])
-                .map_err(db)?;
+            tx.execute(
+                "DELETE FROM session_chunks WHERE doc_id = ?1",
+                [id.as_str()],
+            )
+            .map_err(db)?;
             let deleted = tx
                 .execute("DELETE FROM session_docs WHERE id = ?1", [id.as_str()])
                 .map_err(db)?;
@@ -255,8 +261,11 @@ impl SessionDocStore for SqliteStore {
         let (id, path) = (id.to_owned(), path.to_owned());
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            tx.execute("DELETE FROM session_chunks WHERE doc_id = ?1", [id.as_str()])
-                .map_err(db)?;
+            tx.execute(
+                "DELETE FROM session_chunks WHERE doc_id = ?1",
+                [id.as_str()],
+            )
+            .map_err(db)?;
             tx.execute(
                 "UPDATE session_docs SET transcript_path = ?1, indexed_bytes = 0, \
                  indexed_lines = 0, index_full = 0 WHERE id = ?2",
@@ -333,8 +342,11 @@ impl SessionDocStore for SqliteStore {
         let doc = doc_id.to_owned();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            tx.execute("DELETE FROM session_chunks WHERE doc_id = ?1", [doc.as_str()])
-                .map_err(db)?;
+            tx.execute(
+                "DELETE FROM session_chunks WHERE doc_id = ?1",
+                [doc.as_str()],
+            )
+            .map_err(db)?;
             tx.execute(
                 "UPDATE session_docs SET indexed_bytes = 0, indexed_lines = 0, index_full = 0 \
                  WHERE id = ?1",
@@ -509,7 +521,10 @@ mod tests {
             store
                 .append_session_chunks(
                     "d1",
-                    &[chunk(0, "We migrate the checkout to Stripe"), chunk(3, "unrelated")],
+                    &[
+                        chunk(0, "We migrate the checkout to Stripe"),
+                        chunk(3, "unrelated")
+                    ],
                     advance(0, 100),
                 )
                 .await?
@@ -521,13 +536,23 @@ mod tests {
             "a stale position writes nothing"
         );
         store
-            .append_session_chunks("d2", &[chunk(0, "checkout in the other sandbox")], advance(0, 50))
+            .append_session_chunks(
+                "d2",
+                &[chunk(0, "checkout in the other sandbox")],
+                advance(0, 50),
+            )
             .await?;
-        let hits = store.search_session_chunks(&s1, "\"checkout\"*", 10).await?;
+        let hits = store
+            .search_session_chunks(&s1, "\"checkout\"*", 10)
+            .await?;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].doc_id, "d1");
         assert_eq!(hits[0].line, 0);
-        assert!(hits[0].snippet.contains("\u{2}checkout\u{3}"), "{}", hits[0].snippet);
+        assert!(
+            hits[0].snippet.contains("\u{2}checkout\u{3}"),
+            "{}",
+            hits[0].snippet
+        );
         let reloaded = store.session_doc("d1").await?.ok_or("doc")?;
         assert_eq!((reloaded.indexed_bytes, reloaded.indexed_lines), (100, 2));
         assert_eq!(store.imported_session_usage(&s1).await?, (1, 100));
@@ -536,19 +561,34 @@ mod tests {
         let mut newer = doc("d1", "s1", SessionKind::Imported, "sess-1")?;
         newer.sha256 = Some("b".repeat(64));
         assert!(store.replace_session_doc(&newer).await?);
-        assert!(store.search_session_chunks(&s1, "\"checkout\"*", 10).await?.is_empty());
+        assert!(
+            store
+                .search_session_chunks(&s1, "\"checkout\"*", 10)
+                .await?
+                .is_empty()
+        );
         store
             .append_session_chunks("d1", &[chunk(0, "checkout again")], advance(0, 10))
             .await?;
         assert!(store.delete_session_doc("d1").await?);
-        assert!(store.search_session_chunks(&s1, "\"checkout\"*", 10).await?.is_empty());
-        assert_eq!(store.search_session_chunks(&s2, "\"checkout\"*", 10).await?.len(), 1);
+        assert!(
+            store
+                .search_session_chunks(&s1, "\"checkout\"*", 10)
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .search_session_chunks(&s2, "\"checkout\"*", 10)
+                .await?
+                .len(),
+            1
+        );
         Ok(())
     }
 
     #[tokio::test]
-    async fn deleting_a_task_removes_its_session_documents_and_frees_continuations() -> TestResult
-    {
+    async fn deleting_a_task_removes_its_session_documents_and_frees_continuations() -> TestResult {
         let store = seeded().await?;
         let s1 = SandboxId::parse("s1")?;
         let task = TaskId::parse("t1")?;
@@ -563,16 +603,29 @@ mod tests {
             .await?;
         store.set_session_continued("di", &task).await?;
         assert_eq!(
-            store.session_doc("di").await?.ok_or("doc")?.continued_task_id,
+            store
+                .session_doc("di")
+                .await?
+                .ok_or("doc")?
+                .continued_task_id,
             Some(task.clone())
         );
         assert!(store.user(&UserId::parse("u1")?).await?.is_some());
         assert!(store.sandbox(&s1).await?.is_some());
         assert!(store.delete_task(&task).await?);
         assert!(store.session_doc("dt").await?.is_none());
-        assert!(store.search_session_chunks(&s1, "\"kafka\"*", 10).await?.is_empty());
+        assert!(
+            store
+                .search_session_chunks(&s1, "\"kafka\"*", 10)
+                .await?
+                .is_empty()
+        );
         assert_eq!(
-            store.session_doc("di").await?.ok_or("doc")?.continued_task_id,
+            store
+                .session_doc("di")
+                .await?
+                .ok_or("doc")?
+                .continued_task_id,
             None
         );
         Ok(())

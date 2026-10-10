@@ -141,7 +141,11 @@ pub fn snippet_parts(snippet: &str) -> Vec<SnippetPart> {
                 }
                 hit = next;
             }
-            None => current.push(if ch.is_control() && ch != '\n' { ' ' } else { ch }),
+            None => current.push(if ch.is_control() && ch != '\n' {
+                ' '
+            } else {
+                ch
+            }),
         }
     }
     if !current.is_empty() {
@@ -290,11 +294,14 @@ impl App {
     async fn follow_resumed_copies(&self, docs: &mut [SessionDocRecord]) -> AppResult<()> {
         let stored_root = self.config.data_dir.join("transcripts");
         for doc in docs.iter_mut() {
-            if doc.kind != SessionKind::Task || !Path::new(&doc.transcript_path).starts_with(&stored_root)
+            if doc.kind != SessionKind::Task
+                || !Path::new(&doc.transcript_path).starts_with(&stored_root)
             {
                 continue;
             }
-            let Some(task_id) = &doc.task_id else { continue };
+            let Some(task_id) = &doc.task_id else {
+                continue;
+            };
             let Some(task) = self.deps.store.task(task_id).await? else {
                 continue;
             };
@@ -485,9 +492,10 @@ impl App {
             None => (false, false),
         };
         let ended = match task {
-            Some(task) if doc.kind == SessionKind::Task => {
-                Some(doc.ended_at.map_or(task.updated_at, |t| t.max(task.updated_at)))
-            }
+            Some(task) if doc.kind == SessionKind::Task => Some(
+                doc.ended_at
+                    .map_or(task.updated_at, |t| t.max(task.updated_at)),
+            ),
             _ => doc.ended_at,
         };
         SessionDoc {
@@ -643,13 +651,16 @@ impl App {
             .doc_view(&doc, &tasks, &mut HashMap::new(), Some((&ctx.user, level)))
             .await;
         let path = PathBuf::from(&doc.transcript_path);
-        let page = blocking(move || match transcripts::read_page(&path, from, limit, MAX_PAGE_CHARS) {
-            Ok(page) => Ok(Some(page)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(AppError::internal(err)),
-        })
-        .await?
-        .unwrap_or_default();
+        let page =
+            blocking(
+                move || match transcripts::read_page(&path, from, limit, MAX_PAGE_CHARS) {
+                    Ok(page) => Ok(Some(page)),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(err) => Err(AppError::internal(err)),
+                },
+            )
+            .await?
+            .unwrap_or_default();
         Ok(TranscriptPage {
             session,
             entries: page.entries,
@@ -893,7 +904,8 @@ impl App {
             }
         } else {
             let (count, bytes) = store.imported_session_usage(&sandbox.id).await?;
-            if count >= MAX_IMPORTED_SESSIONS || bytes.saturating_add(main.size) > MAX_IMPORTED_BYTES
+            if count >= MAX_IMPORTED_SESSIONS
+                || bytes.saturating_add(main.size) > MAX_IMPORTED_BYTES
             {
                 return Err(AppError::Capacity(format!(
                     "this sandbox already holds {count} imported sessions ({} MiB); delete old ones on the Sessions page",
@@ -1102,9 +1114,7 @@ impl App {
                 .into_iter()
                 .filter(|doc| doc.task_id.as_ref() == Some(&task.id))
                 .max_by_key(|doc| (doc.started_at, doc.created_at))
-                .ok_or_else(|| {
-                    AppError::Invalid(format!("task #{number} has no session yet"))
-                })?
+                .ok_or_else(|| AppError::Invalid(format!("task #{number} has no session yet")))?
         } else {
             return Err(AppError::Invalid(
                 "give the session `id` from sessions_search or a `task_number`".into(),
@@ -1136,9 +1146,7 @@ impl App {
         .await?;
         let (text, cut_at) = transcripts::render_text(&page.entries, max_chars);
         let tasks = self.sandbox_tasks(sandbox).await?;
-        let view = self
-            .doc_view(&doc, &tasks, &mut HashMap::new(), None)
-            .await;
+        let view = self.doc_view(&doc, &tasks, &mut HashMap::new(), None).await;
         Ok(json!({
             "id": view.id,
             "kind": view.kind,
@@ -1199,7 +1207,10 @@ mod tests {
             Some("\"create import\"* OR \"or\"* OR \"x\"*")
         );
         assert_eq!(fts_query("  ()* -- ", false), None);
-        let many = (0..30).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ");
+        let many = (0..30)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         assert_eq!(
             fts_query(&many, false).map(|q| q.matches(" AND ").count()),
             Some(MAX_QUERY_TERMS - 1)

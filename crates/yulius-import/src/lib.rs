@@ -38,13 +38,12 @@ pub use git::{
 };
 pub use http::{ApiError, RetryPolicy};
 pub use process::GitError;
-pub use reqwest::Url;
 pub use redact::{IMAGE_PLACEHOLDER, MAX_STAGED_LINE_BYTES, RedactionReport, stage_redacted};
+pub use reqwest::Url;
 pub use run::{
-    ImportError, ImportIo, ImportOptions, OnboardOutcome, SessionChoice,
-    SessionSources, TerminalIo, UploadTuning, run_import,
+    ImportError, ImportIo, ImportOptions, OnboardOutcome, SessionChoice, SessionSources,
+    TerminalIo, UploadTuning, run_import,
 };
-pub use ui::{PlainUi, TerminalUi, Tone, Ui, Unit, human_bytes, parse_selection, set_colors};
 pub use secret::Secret;
 pub use sessions::{DiscoveredSession, SessionFile, discover_claude_sessions};
 pub use since::{DEFAULT_SINCE, MAX_SINCE_DAYS, SinceError, parse_since, prompt_since};
@@ -53,4 +52,5 @@ pub use snapshot::{
 };
 pub use time::format_rfc3339;
 pub use token_store::{TokenStore, TokenStoreError};
+pub use ui::{PlainUi, TerminalUi, Tone, Ui, Unit, human_bytes, parse_selection, set_colors};
 pub use upload::{UploadError, Uploader};

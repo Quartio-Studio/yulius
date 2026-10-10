@@ -1548,6 +1548,160 @@ route('GET', '/api/capacity', ({ db }) => {
   };
 });
 
+// ------------------------------------------------------------------ sessions (SES-001..005)
+
+// Session documents: task sessions and Claude Code sessions people uploaded with `yulius onboard`,
+// seeded on first use. Transcripts are normalized entries as the server returns them (redacted).
+function sessionDocs(db) {
+  if (db.sessionDocs) return db.sessionDocs;
+  const text = (t) => ({ type: 'text', text: t, truncated: false });
+  const call = (id, name, summary, input, diff = null) => ({ type: 'tool_call', id, name, summary, input: JSON.stringify(input, null, 2), diff });
+  const result = (id, t, isError = false) => ({ type: 'tool_result', tool_use_id: id, text: t, is_error: isError, truncated: false });
+  const entry = (line, role, blocks, extra = {}) => ({ line, role, at: extra.at || null, sidechain: Boolean(extra.sidechain), blocks });
+  const checkout = [
+    entry(0, 'user', [text('Add Stripe checkout to the cart page. Use the test keys from .env.')], { at: iso(3 * DAY) }),
+    entry(1, 'assistant', [{ type: 'thinking', text: 'I should read the env file and the cart component first.', truncated: false }, text('I’ll look at the cart and the environment first.'), call('t1', 'Read', '/repo/.env', { file_path: '/repo/.env' })], { at: iso(3 * DAY - MIN) }),
+    entry(2, 'user', [result('t1', '     1→STRIPE_SECRET_KEY=[REDACTED:env-value]\n     2→PORT=3000')]),
+    entry(3, 'assistant', [text('Adding the checkout session endpoint with an idempotency key, so a double click never charges twice.'), call('t2', 'Edit', 'src/api/checkout.ts', { file_path: 'src/api/checkout.ts' }, { path: 'src/api/checkout.ts', hunks: [{ old: 'export async function checkout(cart) {\n  return null;\n}', new: 'export async function checkout(cart, key) {\n  return stripe.checkout.sessions.create(toSession(cart), { idempotencyKey: key });\n}' }] })]),
+    entry(4, 'user', [result('t2', 'The file src/api/checkout.ts has been updated.')]),
+    entry(5, 'assistant', [call('t3', 'Bash', 'npm test -- checkout', { command: 'npm test -- checkout', description: 'Run the checkout tests' })]),
+    entry(6, 'user', [result('t3', 'PASS src/api/checkout.test.ts (4 tests)')]),
+    entry(7, 'assistant', [text('Checkout works with Stripe test mode; the webhook verifies signatures before fulfilling orders.')], { at: iso(3 * DAY - 20 * MIN) }),
+  ];
+  const flaky = [
+    entry(0, 'user', [text('Why is the e2e login test flaky on CI?')], { at: iso(5 * DAY) }),
+    entry(1, 'assistant', [call('g1', 'Grep', 'waitForTimeout in e2e', { pattern: 'waitForTimeout', path: 'e2e' })]),
+    entry(2, 'user', [result('g1', 'e2e/login.spec.ts:14:  await page.waitForTimeout(500);')]),
+    entry(3, 'assistant', [text('The test sleeps 500 ms instead of waiting for the session cookie; on a slow runner the redirect is not done yet. Waiting for the dashboard heading fixes it.')]),
+  ];
+  const webhook = [
+    entry(0, 'user', [text('Payment webhook: verify Stripe signatures and retry fulfilment with backoff.')], { at: iso(9 * HOUR) }),
+    entry(1, 'assistant', [text('I’ll verify the signature with the webhook secret and queue fulfilment with three retries and exponential backoff.')]),
+  ];
+  const task = (id, number) => db.tasks.find((t) => t.id === id && t.number === number);
+  const docs = [];
+  const add = (doc) => docs.push({ bytes: 4096, redactions: 0, git_branch: 'main', continued_in: null, ...doc });
+  const t12 = task('tsk_studio_12', 12);
+  const t4 = task('tsk_studio_4', 4);
+  if (t12) add({ id: 'ses_task_12', sandbox_id: 'sb_studio', kind: 'task', task_id: t12.id, session_id: 'b1f0-12', title: t12.title, author: t12.created_by, git_branch: t12.branch, started_at: iso(2 * HOUR), ended_at: iso(MIN), imported_at: null, transcript: checkout.slice(0, 4) });
+  if (t4) add({ id: 'ses_task_4', sandbox_id: 'sb_studio', kind: 'task', task_id: t4.id, session_id: 'b1f0-04', title: t4.title, author: t4.created_by, git_branch: t4.branch, started_at: iso(10 * HOUR), ended_at: iso(9 * HOUR), imported_at: null, transcript: webhook });
+  add({ id: 'ses_imp_checkout', sandbox_id: 'sb_studio', kind: 'imported', task_id: null, session_id: '5d2c-checkout', title: 'Add Stripe checkout to the cart page', author: { login: 'mkarp' }, started_at: iso(3 * DAY), ended_at: iso(3 * DAY - 20 * MIN), imported_at: iso(2 * DAY), redactions: 3, bytes: 182000, transcript: checkout });
+  add({ id: 'ses_imp_flaky', sandbox_id: 'sb_studio', kind: 'imported', task_id: null, session_id: '7a1e-flaky', title: 'Why is the e2e login test flaky on CI?', author: { login: 'anna-q' }, git_branch: 'fix/e2e', started_at: iso(5 * DAY), ended_at: iso(5 * DAY - 30 * MIN), imported_at: iso(4 * DAY), bytes: 64000, transcript: flaky });
+  db.sessionDocs = docs;
+  return docs;
+}
+
+function sessionView(db, doc) {
+  const sandbox = sandboxOf(db, doc.sandbox_id);
+  const write = (RANK[sandbox.access] || 0) >= RANK.write;
+  const admin = sandbox.access === 'admin';
+  const taskRef = (id) => {
+    const t = id ? db.tasks.find((x) => x.id === id) : null;
+    return t ? { id: t.id, number: t.number, title: t.title, status: t.status } : null;
+  };
+  const imported = doc.kind === 'imported';
+  return {
+    id: doc.id, sandbox_id: doc.sandbox_id, kind: doc.kind, title: doc.kind === 'task' && taskRef(doc.task_id) ? taskRef(doc.task_id).title : doc.title,
+    harness: 'claude', session_id: doc.session_id, author: doc.author, task: taskRef(doc.task_id), continued_in: taskRef(doc.continued_in),
+    git_branch: doc.git_branch, started_at: doc.started_at, ended_at: doc.ended_at, imported_at: doc.imported_at, bytes: doc.bytes, redactions: doc.redactions,
+    can_continue: imported && write, can_delete: imported && (admin || (write && doc.author && doc.author.login === db.me.user.login)), hits: [],
+  };
+}
+
+function sessionDocOf(db, id) {
+  const doc = sessionDocs(db).find((d) => d.id === id);
+  if (!doc || !db.sandboxes.some((s) => s.id === doc.sandbox_id)) fail(404, 'not_found', 'No such session');
+  return doc;
+}
+
+/** The searchable text of an entry, like the server's index passage. */
+function entryText(entry) {
+  return entry.blocks.map((b) => [b.text, b.name && `${b.name} ${b.summary}`, b.diff && b.diff.hunks.map((x) => x.new).join('\n')].filter(Boolean).join('\n')).join('\n');
+}
+
+function snippetOf(text, words) {
+  const lower = text.toLowerCase();
+  const at = Math.max(0, Math.min(...words.map((w) => { const i = lower.indexOf(w); return i < 0 ? Infinity : i; })) - 40);
+  const window = text.slice(at, at + 160);
+  const parts = [];
+  let rest = window;
+  while (rest) {
+    const lowerRest = rest.toLowerCase();
+    let best = null;
+    for (const w of words) { const i = lowerRest.indexOf(w); if (i >= 0 && (best === null || i < best[0])) best = [i, w.length]; }
+    if (!best) { parts.push({ text: rest, hit: false }); break; }
+    if (best[0] > 0) parts.push({ text: rest.slice(0, best[0]), hit: false });
+    parts.push({ text: rest.slice(best[0], best[0] + best[1]), hit: true });
+    rest = rest.slice(best[0] + best[1]);
+  }
+  return [...(at > 0 ? [{ text: '…', hit: false }] : []), ...parts];
+}
+
+route('GET', `/api/sandboxes/${ID}/sessions`, ({ db, p, query }) => {
+  sandboxOf(db, p[0]);
+  const kind = query.get('kind') || '';
+  if (kind && !['all', 'task', 'imported'].includes(kind)) fail(422, 'invalid', 'kind must be all, task or imported');
+  const author = (query.get('author') || '').toLowerCase();
+  const q = (query.get('q') || '').trim();
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const docs = sessionDocs(db).filter((d) => d.sandbox_id === p[0]);
+  const authors = [...new Set(docs.map((d) => d.author && d.author.login).filter(Boolean))].sort();
+  let views = docs
+    .filter((d) => (!kind || kind === 'all' || d.kind === kind) && (!author || (d.author && d.author.login.toLowerCase() === author)))
+    .sort((a, b) => Date.parse(b.ended_at || 0) - Date.parse(a.ended_at || 0))
+    .map((d) => ({ doc: d, view: sessionView(db, d) }));
+  if (words.length) {
+    views = views.map(({ doc, view }) => {
+      const hits = doc.transcript
+        .map((e) => ({ e, text: entryText(e) }))
+        .filter(({ text }) => words.every((w) => text.toLowerCase().includes(w)))
+        .slice(0, 3)
+        .map(({ e, text }) => ({ line: e.line, role: e.role === 'user' && e.blocks.every((b) => b.type === 'tool_result') ? 'tool' : e.role, snippet: snippetOf(text, words) }));
+      return { doc, view: { ...view, hits } };
+    }).filter(({ view }) => view.hits.length);
+  }
+  return { sessions: views.map(({ view }) => view), authors, total: views.length, query: q || null };
+});
+route('GET', `/api/sessions/${ID}`, ({ db, p }) => sessionView(db, sessionDocOf(db, p[0])));
+route('GET', `/api/sessions/${ID}/transcript`, ({ db, p, query }) => {
+  const doc = sessionDocOf(db, p[0]);
+  const from = Number(query.get('from') || 0);
+  const limit = Math.min(500, Math.max(1, Number(query.get('limit') || 200)));
+  const entries = doc.transcript.filter((e) => e.line >= from).slice(0, limit);
+  const last = entries.length ? entries[entries.length - 1].line : from;
+  const more = doc.transcript.some((e) => e.line > last) && entries.length === limit;
+  return { session: sessionView(db, doc), entries, next: more ? last + 1 : null, skipped_lines: 0 };
+});
+route('POST', `/api/sessions/${ID}/continue`, ({ db, p }) => {
+  const doc = sessionDocOf(db, p[0]);
+  const sandbox = sandboxOf(db, doc.sandbox_id);
+  need(sandbox, 'write');
+  if (doc.kind !== 'imported') fail(422, 'invalid', 'a task’s session is continued from its task');
+  if (sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing') fail(409, 'conflict', 'this project is being prepared; tasks can start once the preparation task has made it ready (or an admin skips it)');
+  const existing = doc.continued_in ? db.tasks.find((t) => t.id === doc.continued_in) : null;
+  if (existing) return summary(existing);
+  const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
+  const id = `tsk_${sandbox.id.slice(3)}_${number}`;
+  const task = {
+    id, sandbox_id: sandbox.id, number, title: doc.title, harness: 'claude', status: 'starting', activity: null,
+    branch: `feat/${doc.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
+    origin: 'import', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    unread_messages: 0, archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: doc.title, delivery: null,
+  };
+  db.tasks.push(task);
+  doc.continued_in = id;
+  recount(db);
+  later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 900);
+  return summary(task);
+});
+route('DELETE', `/api/sessions/${ID}`, ({ db, p }) => {
+  const doc = sessionDocOf(db, p[0]);
+  if (doc.kind !== 'imported') fail(422, 'invalid', 'a task’s session is deleted with its task');
+  if (!sessionView(db, doc).can_delete) fail(403, 'forbidden', 'only the person who uploaded a session or an admin can delete it');
+  db.sessionDocs = db.sessionDocs.filter((d) => d.id !== doc.id);
+  return json(204);
+});
+
 // ------------------------------------------------------------------ fetch
 
 const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/auth/mock-github'];

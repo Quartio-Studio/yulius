@@ -71,7 +71,7 @@ CLI device approval: `POST /api/device/start` → `{"device_code","user_code","v
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`) |
-| POST | `/api/sandboxes/{sid}/onboarding/approve` | write | → `Sandbox`; starts the preparation task (`pending` → `preparing`); 409 when nothing awaits approval or the task cannot start |
+| POST | `/api/sandboxes/{sid}/onboarding/approve` | write | → `Sandbox`; starts the preparation task now (`pending` → `preparing`; it normally starts by itself; a missing one is created); idempotent while `preparing`; 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
 
 `GET /api/github/repositories` lists the App installation's repositories of the instance owner
@@ -79,8 +79,10 @@ that the caller can at least read (needs a GitHub-linked account). Import mode r
 repository of the instance owner (`invalid` otherwise) and `admin` or `maintain` on GitHub; it
 clones the repository, picks the profile (`yulius.toml` `[delivery]`, else `product`/`studio` for
 `Quartio-Studio/product`/`studio`, else `standard`) and validates the documentation format: a
-failing project gets `onboarding: "pending"` and a resting preparation task (`origin:
-"onboarding"`). While `pending`/`preparing`, creating other tasks is a 409 (U-08). Create mode
+failing project gets a preparation task (`origin: "onboarding"`) that starts at once (`onboarding:
+"preparing"`; through `yulius onboard` it starts once the upload is applied). While
+`pending`/`preparing` no other task starts: creating, chaining or continuing a task, an automation
+run and continuing an imported session are 409 (U-08, IMP-010). Create mode
 (instance admins) creates a private repository, pushes the template scaffold to `main` and `dev`,
 and adds rulesets requiring pull requests on both.
 
@@ -102,21 +104,42 @@ Profile = {"preset": "standard|product|studio|custom", "integration_branch": "de
                              "command": "…|null", "verify": "manual|command"}]}
 ```
 
-## Import (`yulius import`)
+## Import (`yulius onboard` / `yulius import`)
 
 Bearer CLI token or cookie session. The full protocol, bounds and snapshot layout are documented
 in `crates/yulius-contracts/src/import.rs`.
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| POST | `/api/import` | `{"manifest": ImportManifest}` → `{"job_id", "missing": [{"name", "received_bytes"}]}`. Links the repository as a sandbox when needed (admin/maintain; owner repositories only); an unfinished job with the same manifest is reused; files already stored for the sandbox (same `sha256`) are not listed. |
+| POST | `/api/onboard/plan` | `{"owner","name","sessions":[{"harness":"claude","session_id","sha256","size"}]}` (≤ 2000) → `OnboardPlan`. Changes nothing. |
+| POST | `/api/import` | `{"manifest": ImportManifest}` → `{"job_id", "missing": [{"name", "received_bytes"}]}`. Links the repository as a sandbox when needed (admin/maintain; owner repositories only; write for an existing sandbox); an unfinished job with the same manifest is reused; files already stored for the sandbox (same `sha256`) are not listed. A session file is at most 128 MiB; at most 2000 sessions, each once. |
 | PUT | `/api/import/{job}/files/{name}?offset=N` | raw chunk (≤ 8 MiB) with `X-Chunk-Sha256` → `{"name", "received_bytes"}`. `name` is one percent-encoded segment. Repeats are acknowledged; an offset beyond the received length is 409; a wrong digest is 422 (a wrong whole-file digest resets the file to 0). |
-| POST | `/api/import/{job}/complete` | → `{"sandbox_id", "sandbox_url", "tasks_created", "sessions_skipped_existing", "onboarding"}`; 409 while files are incomplete. Idempotent. |
+| POST | `/api/import/{job}/complete` | → `ImportResult`; 409 while files are incomplete. Idempotent. |
 
-Applying: bundle branches become `import/<login>/<branch>`; the snapshot is committed on
-`import/<login>/snapshot-<YYYY-MM-DD>[-n]` created from the client's `HEAD`; each new session
-becomes an archived task (`origin: "import"`) whose transcript is kept immutably and resumed
-natively on Continue. Only Claude Code sessions are imported.
+```json
+OnboardPlan = {"login": "alice",
+  "sandbox": {"id", "slug", "url", "sessions_url", "onboarding": OnboardingStatus} | null,
+  "can_create": false,              // no sandbox yet: whether the caller may add it
+  "refusal": "…" | null,            // why the caller cannot upload here
+  "sessions": [{"session_id", "state": "new|changed|unchanged|taken"}]}
+OnboardingStatus = {"state": "not_needed|pending|preparing|ready|skipped", "ready": false,
+  "summary": "Preparing: task #1 is adapting the repository (step 2 of 5).",
+  "pending": ["task #1 finishes", "the repository passes the Yulius format check"],
+  "task": {"number", "title", "status", "steps_done", "steps_total", "url"} | null}
+ImportResult = {"sandbox_id", "sandbox_url", "sessions_url", "onboarding", "onboarding_status": OnboardingStatus,
+  "sessions_imported", "sessions_updated", "sessions_unchanged",
+  "sessions_skipped_existing",      // = sessions_unchanged (older CLIs)
+  "tasks_created": 0}               // sessions are documents, not tasks
+```
+
+`state` of a session: `unchanged` = the server holds this exact (redacted) transcript, `changed` =
+it holds the caller's earlier copy, `taken` = another person uploaded a session with this id (kept),
+`new` otherwise. `SessionRef` carries `redactions` (secrets the CLI redacted). Applying: bundle
+branches become `import/<login>/<branch>`; the snapshot is committed on
+`import/<login>/snapshot-<YYYY-MM-DD>[-n]` created from the client's `HEAD`; each session is
+stored as a read-only session document of the sandbox attributed to the caller (a changed one
+replaces the caller's copy); then the sandbox's preparation task starts when it waits. Only Claude
+Code sessions are imported.
 
 `PATCH /api/sandboxes/{sid}` validates the profile (branch names, distinct branches, environment
 names, single-line commands ≤ 2000 bytes, `verify: command` needs a command, ≤ 8 environments) and
@@ -126,6 +149,38 @@ defaults, otherwise it becomes `custom` (so switching Studio's `auto_promote` of
 responses always carry it; blank commands mean "no command". The sandbox profile is the only
 source of environment commands (never the repository). `GET /api/delivery/presets` (signed in)
 returns the three presets `standard`, `product` and `studio` as `[Profile]`.
+
+## Sessions
+
+Task sessions and imported Claude Code sessions as read-only documents (SES-001..005). Every text
+returned is redacted by the server.
+
+| Method | Path | Level | Body → Response |
+| --- | --- | --- | --- |
+| GET | `/api/sandboxes/{sid}/sessions?kind=all\|task\|imported&author=<login>&q=<text>&limit=N` | read | → `{"sessions": [SessionDoc], "authors": ["login"], "total", "query"}`; newest first, or best match first with `q` (`hits` filled); `limit` ≤ 500; 422 for another `kind` |
+| GET | `/api/sessions/{id}` | read | → `SessionDoc` |
+| GET | `/api/sessions/{id}/transcript?from=<line>&limit=N` | read | → `{"session": SessionDoc, "entries": [TranscriptEntry], "next": line \| null, "skipped_lines"}`; `limit` ≤ 500 (default 200), about 2 MiB of text per page |
+| POST | `/api/sessions/{id}/continue` | write | imported only → `TaskSummary` of a new task (origin `import`) resuming the session natively; a continued session returns its task; 409 while the sandbox is being prepared; 422 for task sessions |
+| DELETE | `/api/sessions/{id}` | its uploader (write) or admin | imported only → 204; files and index removed; audited `session.deleted` |
+
+```json
+SessionDoc = {"id", "sandbox_id", "kind": "task|imported", "title", "harness": "claude", "session_id",
+  "author": {"login"} | null, "task": SessionTask | null, "continued_in": SessionTask | null,
+  "git_branch", "started_at", "ended_at", "imported_at", "bytes", "redactions",
+  "can_continue", "can_delete",
+  "hits": [{"line", "role": "user|assistant|tool|summary", "snippet": [{"text", "hit"}]}]}
+SessionTask = {"id", "number", "title", "status"}
+TranscriptEntry = {"line", "role": "user|assistant|system|summary", "at", "sidechain", "blocks": [
+  {"type": "text", "text", "truncated"} | {"type": "thinking", "text", "truncated"} |
+  {"type": "tool_call", "id", "name", "summary", "input", "diff": {"path", "hunks": [{"old", "new"}]} | null} |
+  {"type": "tool_result", "tool_use_id", "text", "is_error", "truncated"} |
+  {"type": "image", "media_type"} | {"type": "meta", "text"}]}
+```
+
+Agents use the same library through the internal MCP: `sessions_search {query, kind?, limit?}`
+(≤ 20 sessions, ≤ 3 passages each, the asking task's own sessions excluded) and `session_read {id |
+task_number, from?, limit?, max_chars?}` (≤ 200 entries, ≤ 100 000 characters, `next_from`), both
+limited to the agent's sandbox.
 
 ## Tasks
 

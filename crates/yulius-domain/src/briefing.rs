@@ -1095,5 +1095,10 @@ mod tests {
             !rendered.contains("merge"),
             "no merge tool is announced (GIT-002)"
         );
+        // SES-005: one line makes sessions the place to look first.
+        assert!(rendered.contains(
+            "Sessions are docs: when you do not know how or why something was implemented, \
+             `sessions_search`"
+        ));
     }
 }

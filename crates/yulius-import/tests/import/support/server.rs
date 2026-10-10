@@ -374,7 +374,10 @@ async fn complete(
     let (mut imported, mut updated, mut unchanged) = (0, 0, 0);
     for session in &manifest.sessions {
         let digest = session.files[0].sha256.clone();
-        match state.held_sessions.insert(session.session_id.clone(), digest.clone()) {
+        match state
+            .held_sessions
+            .insert(session.session_id.clone(), digest.clone())
+        {
             None => imported += 1,
             Some(previous) if previous == digest => unchanged += 1,
             Some(_) => updated += 1,

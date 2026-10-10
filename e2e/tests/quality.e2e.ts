@@ -10,6 +10,8 @@ const pages = [
   ['task', '/s/studio/t/12', '#12 Checkout API'],
   ['new task', '/s/studio', 'New task'],
   ['tasks', '/s/studio/tasks', 'Tasks'],
+  ['sessions', '/s/studio/sessions', 'Sessions'],
+  ['session', '/s/studio/sessions/ses_imp_checkout', 'Add Stripe checkout to the cart page'],
   ['git', '/s/studio/git', 'Git'],
   ['workflows', '/s/studio/workflows', 'Workflows'],
   ['skills', '/s/studio/skills', 'Skills'],

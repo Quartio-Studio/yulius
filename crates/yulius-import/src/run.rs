@@ -20,10 +20,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use reqwest::Url;
 use yulius_contracts::import::{
-    FileRef, IMPORT_MANIFEST_VERSION, ImportManifest, ImportResult,
-    MAX_CHUNK_BYTES, MAX_IMPORT_TOTAL_BYTES, MAX_SESSION_FILE_BYTES, MAX_SESSIONS_PER_IMPORT,
-    ManifestError, OnboardPlan, OnboardPlanRequest, OnboardingStatus, SessionFingerprint,
-    SessionRef,
+    FileRef, IMPORT_MANIFEST_VERSION, ImportManifest, ImportResult, MAX_CHUNK_BYTES,
+    MAX_IMPORT_TOTAL_BYTES, MAX_SESSION_FILE_BYTES, MAX_SESSIONS_PER_IMPORT, ManifestError,
+    OnboardPlan, OnboardPlanRequest, OnboardingStatus, SessionFingerprint, SessionRef,
 };
 use yulius_domain::redact::RedactionTally;
 
@@ -458,7 +457,11 @@ pub fn run_import(
             count("unchanged")
         );
         if count("taken") > 0 {
-            let _ = write!(line, " · {} uploaded by someone else (kept)", count("taken"));
+            let _ = write!(
+                line,
+                " · {} uploaded by someone else (kept)",
+                count("taken")
+            );
         }
         io.ui().fact("On Yulius", &line, Tone::Plain)?;
         to_send.retain(|s| {
@@ -610,7 +613,9 @@ pub fn run_import(
     let result = match uploader.complete(&job.job_id) {
         Ok(result) => result,
         Err(err) => {
-            let _ = io.ui().progress_finish("Not applied; run the command again to retry");
+            let _ = io
+                .ui()
+                .progress_finish("Not applied; run the command again to retry");
             return Err(err.into());
         }
     };
@@ -634,7 +639,8 @@ fn plural(count: usize, noun: &str) -> String {
 }
 
 fn host_of(url: &Url) -> String {
-    url.host_str().map_or_else(|| url.to_string(), str::to_owned)
+    url.host_str()
+        .map_or_else(|| url.to_string(), str::to_owned)
 }
 
 fn describe_upload(sessions: usize, bundle: bool, snapshot: bool) -> String {
@@ -750,10 +756,7 @@ fn show_summary(
     login: &str,
     redactions: &RedactionTally,
 ) -> io::Result<()> {
-    ui.done(
-        &format!("{}/{} is on Yulius", repo.owner, repo.name),
-        true,
-    )?;
+    ui.done(&format!("{}/{} is on Yulius", repo.owner, repo.name), true)?;
     ui.fact(
         "Sessions",
         &format!(
@@ -798,7 +801,18 @@ fn discover_sessions(
         );
     }
     // Newest first: the order people choose from.
-    sessions.sort_by(|a, b| b.ended_at.cmp(&a.ended_at));
+    sessions.sort_by(|a, b| {
+        (
+            b.ended_at.as_str(),
+            b.started_at.as_str(),
+            b.session_id.as_str(),
+        )
+            .cmp(&(
+                a.ended_at.as_str(),
+                a.started_at.as_str(),
+                a.session_id.as_str(),
+            ))
+    });
     Ok(sessions)
 }
 
@@ -862,7 +876,10 @@ fn choose_sessions(
         ),
         Tone::Plain,
     )?;
-    let default_window = options.since.clone().unwrap_or_else(|| DEFAULT_SINCE.to_owned());
+    let default_window = options
+        .since
+        .clone()
+        .unwrap_or_else(|| DEFAULT_SINCE.to_owned());
     let recent_of = |window: &str, now: SystemTime| -> Result<Vec<usize>, ImportError> {
         let start = millis(now.checked_sub(parse_since(window)?).unwrap_or(UNIX_EPOCH));
         Ok(found
@@ -882,7 +899,11 @@ fn choose_sessions(
                     "Recent: the last {default_window} ({})",
                     plural(default_recent.len(), "session")
                 ),
-                format!("All {} ({})", plural(found.len(), "session"), human_bytes(total)),
+                format!(
+                    "All {} ({})",
+                    plural(found.len(), "session"),
+                    human_bytes(total)
+                ),
                 "Pick sessions…".to_owned(),
                 "None: only the repository".to_owned(),
             ];
@@ -904,7 +925,9 @@ fn choose_sessions(
         SessionChoice::None => Vec::new(),
         SessionChoice::Recent => {
             if interactive && options.since.is_none() && options.sessions.is_none() {
-                let window = io.ui().ask("Window (for example 14d, 36h, 2w)", &default_window)?;
+                let window = io
+                    .ui()
+                    .ask("Window (for example 14d, 36h, 2w)", &default_window)?;
                 recent_of(&window, now)?
             } else {
                 default_recent
@@ -932,7 +955,11 @@ fn choose_sessions(
     let bytes: u64 = chosen.iter().map(|i| found[*i].total_size()).sum();
     io.ui().fact(
         "Chosen",
-        &format!("{} ({})", plural(chosen.len(), "session"), human_bytes(bytes)),
+        &format!(
+            "{} ({})",
+            plural(chosen.len(), "session"),
+            human_bytes(bytes)
+        ),
         Tone::Plain,
     )?;
     Ok(chosen)
@@ -1028,7 +1055,10 @@ fn show_redactions(
             "Redacted",
             &format!(
                 "{} in {} (replaced by [REDACTED:<rule>])",
-                plural(usize::try_from(total.tally.total()).unwrap_or(usize::MAX), "secret"),
+                plural(
+                    usize::try_from(total.tally.total()).unwrap_or(usize::MAX),
+                    "secret"
+                ),
                 plural(sessions, "session")
             ),
             Tone::Warn,
@@ -1041,14 +1071,30 @@ fn show_redactions(
                 .filter(|(r, _)| r == rule)
                 .map(|(_, label)| label.as_str())
                 .collect();
-            let shown = if all { labels.len() } else { MAX_LABELS_PER_RULE };
-            let mut line = format!("{rule} ×{count}: {}", labels.iter().take(shown).copied().collect::<Vec<_>>().join(", "));
+            let shown = if all {
+                labels.len()
+            } else {
+                MAX_LABELS_PER_RULE
+            };
+            let mut line = format!(
+                "{rule} ×{count}: {}",
+                labels
+                    .iter()
+                    .take(shown)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             if labels.len() > shown {
                 let _ = write!(line, ", … {} more", labels.len() - shown);
             }
             ui.detail(&line)?;
         }
-        let listed = if all { staged.len() } else { MAX_REDACTED_SESSIONS };
+        let listed = if all {
+            staged.len()
+        } else {
+            MAX_REDACTED_SESSIONS
+        };
         let concerned: Vec<&StagedSession> = staged
             .iter()
             .filter(|s| !s.report.tally.is_empty())
@@ -1080,7 +1126,10 @@ fn show_redactions(
     if total.long_lines > 0 {
         ui.detail(&format!(
             "{} over 16 MiB left out",
-            plural(usize::try_from(total.long_lines).unwrap_or(usize::MAX), "line")
+            plural(
+                usize::try_from(total.long_lines).unwrap_or(usize::MAX),
+                "line"
+            )
         ))?;
     }
     Ok(())
@@ -1130,7 +1179,10 @@ impl ImportIo for TerminalIo {
         }
         self.ui.fact(
             "Sign in",
-            &format!("not signed in to {}; approve this computer in the browser", host_of(server)),
+            &format!(
+                "not signed in to {}; approve this computer in the browser",
+                host_of(server)
+            ),
             Tone::Warn,
         )?;
         let ui = self.ui.as_mut();
@@ -1179,7 +1231,10 @@ mod tests {
         assert_eq!(SessionChoice::parse("ALL"), Some(SessionChoice::All));
         assert_eq!(SessionChoice::parse("pick"), Some(SessionChoice::Pick));
         assert_eq!(SessionChoice::parse("x"), None);
-        assert_eq!(describe_upload(2, true, false), "2 sessions, unpublished branches");
+        assert_eq!(
+            describe_upload(2, true, false),
+            "2 sessions, unpublished branches"
+        );
         assert_eq!(describe_upload(0, false, false), "the repository link");
         assert_eq!(plural(1, "file"), "1 file");
     }

@@ -814,12 +814,15 @@ users/<user>/home/                  user's home in their shells (bound at /home/
 users/<user>/identity/              generated passwd/group files of the user's sandbox identity
 runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
+sandboxes/<sandbox>/sessions/<doc>/ imported sessions (SES-001): `<session>.jsonl` and `<session>/subagents/`,
+                                    read-only copies (0444), replaced as a whole when re-uploaded
 runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files
 shells/<shell>/                     ptyhost run directories of sandbox shells (UI-015); shell.json (owner,
                                     sandbox, folder, name, sealed host token) to adopt them after a restart
 logins/<login>/                     temporary provider login (config dir + run dir); zero-filled and removed after the login
 exports/sandbox-<slug>-<ms>.json    task export written when a sandbox is removed (PRJ-009), 0600
-transcripts/<task>/                 archived/imported provider transcripts (immutable copies)
+transcripts/<task>/                 imported provider transcripts of tasks (immutable copies; a continued
+                                    imported session is copied here when its task is created)
 skills/open-mercato/                instance skill catalog extracted from the binary (vendored Open Mercato pack)
 ```
 
@@ -867,6 +870,8 @@ Schema version 1 (tables; columns abbreviated):
 | `audit_log` | id, at, actor, action, target, detail |
 | `task_chains` | task_id (PK), after_task_id (NULL once the predecessor is deleted), after_number, blocked_reason, created_at — ADR-16 |
 | `prompt_holds` | id, task_id, class, prompt, prompt_sha256, percent, typed_by, state (pending/sent/consumed/parallel/after/skipped_after/reverted/dismissed/superseded), created_at, resolved_by, resolved_at, new_task_id — ADR-16 |
+| `session_docs` | id, sandbox_id, kind (task/imported), task_id (task sessions; cascade on task deletion), harness, session_id, title, author_id, git_branch, cwd_relative, base (imported: the revision a continuation starts from), transcript_path, sha256, bytes, redactions, started_at, ended_at, continued_task_id (set null on task deletion), indexed_bytes, indexed_lines, index_full, created_at, updated_at; unique (sandbox, harness, session) for imported, (task, harness, session) for task sessions — SES-001 |
+| `session_chunks` + `session_fts` | one redacted passage per transcript line (doc_id cascade, line, role, text ≤ 8 KiB) and its FTS5 index (external content, `unicode61 remove_diacritics 2`, kept in sync by triggers) — SES-005 |
 
 Versioning: each migration is one transaction; startup refuses a database from a newer schema.
 Backup: `VACUUM INTO` plus copy of files excluding `runs/`.
@@ -959,14 +964,46 @@ than one interval.
 ### 6.5 Import job
 
 `created → receiving → received → applying → completed | failed`. Chunks are idempotent by
-(job, file, offset, sha256). `applying` creates sandbox (if needed), local import branches,
-snapshot worktree and archived tasks inside one store transaction per session; reapplying skips
-sessions already recorded (`provider_sessions` unique on harness+session_id+sandbox).
+(job, file, offset, sha256). Job creation adds the sandbox when needed; `applying` creates local
+import branches and the snapshot worktree, then stores each session as a session document
+(§6.8): new, replaced (same uploader, other digest), unchanged (same digest) or kept as another
+person's; finally it starts the preparation task of a `pending` sandbox (§6.6). Reapplying is
+idempotent (same digests). Before the job, `POST /api/onboard/plan` tells the CLI the sandbox,
+its onboarding status and which fingerprints (`sha256` of the redacted transcript) the server
+already holds, so unchanged sessions are never offered. Sessions arrive redacted (IMP-008,
+`yulius_domain::redact` applied by `yulius_import::stage_redacted`).
 
 ### 6.6 Sandbox onboarding
 
-`not_needed | pending → preparing (task id) → ready | skipped(by admin)`. New tasks in an imported
-sandbox are rejected with an explanatory error while `pending/preparing`, unless skipped (U-08).
+`not_needed | pending → preparing (task id) → ready | skipped(by admin)`. Owner: the server. Exit
+triggers: `pending → preparing` when the preparation task starts — by itself, at once for a
+repository added in the UI and when the import is applied for `yulius onboard` (also
+`POST …/onboarding/approve`, kept for a pending sandbox whose start failed; a missing preparation
+task is created then); `preparing → ready` when the task rests after running and the project
+validates in its worktree or the clone (re-evaluated on reads, task closes and the gate);
+`→ skipped` by an admin. Failure: a start failure leaves `pending` (shown with what is pending);
+no subscription with capacity leaves the task paused and the sandbox `preparing` (ADR-17). While
+`pending/preparing`, `App::ensure_tasks_may_start` refuses every task start other than the
+preparation task's — create, chain, automation run, continue, continuing an imported session —
+with a 409 (U-08, IMP-010). `App::onboarding_status` gives the state, a summary and the pending
+items (the CLI and the plan show them).
+
+### 6.8 Session documents (SES-001..005)
+
+Task sessions get a document lazily (on list, search or read) for each `provider_sessions` entry;
+their transcript is the harness file under the sandbox home for the task worktree (an imported
+lineage entry's stored copy until the task resumed it natively). Imported sessions get theirs when
+an import is applied. Indexing is incremental and lazy: each list or search reads complete lines
+from `indexed_bytes` of documents whose transcript grew (compare-and-set on the position, so
+concurrent refreshes never duplicate passages), at most 32 MiB per refresh and 64 MiB per session
+(`index_full` after that); a shrunk transcript is re-indexed. Passages, pages and agent reads are
+normalized from Claude Code JSONL by `yulius_app::transcripts` and redacted with
+`yulius_domain::redact` (dotenv content when a tool call's path or command names a dotenv file).
+Search: every word becomes a quoted prefix term (FTS5 syntax never reaches the index), all terms
+must match, else any; results are grouped per document (≤ 3 passages each). Continuing an imported
+session creates a task (origin `import`), copies the transcript to `transcripts/<task>/`, records
+an `imported` lineage entry and the document's `continued_task_id`, and resumes it natively from
+the document's `base` (IMP-004).
 
 ### 6.7 Delivery (per task)
 
@@ -1086,6 +1123,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `workflows_list` | Workflows available (AUT-004) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
+| `sessions_search`, `session_read` | Sessions as docs (SES-005): full-text search over the task and imported sessions of the agent's sandbox (its own sessions excluded; ≤ 20 sessions, ≤ 3 passages each) and a bounded read of one session by id or task number (≤ 200 entries, ≤ 100 000 characters, `next_from`); never another sandbox's |
 
 Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
 `scope_claim` takes one glob or up to 20, a task holds at most 50; claims of tasks that are no
@@ -1129,7 +1167,8 @@ Assembled in domain from store data and repository files, in this order, truncat
 its budget: role and discipline rules (format, branch/profile rules, Yulius tools), task (goal,
 spec path, steps), project summary (`docs/product.md` head), architecture pointer, decision index
 (titles), recent changes (last 10 delivered tasks + `docs/changes.md` head), parallel tasks and
-scope claims, unread messages count.
+scope claims, unread messages count. The tools part ends with one line: sessions are docs — search
+earlier sessions with `sessions_search` when unsure how something was implemented (SES-005).
 
 ### 7.7 Terminal WebSocket (`/api/tasks/{id}/terminal`)
 
@@ -1167,7 +1206,8 @@ browser action requests) filtered by permission. Bounded per-connection queue (2
 continue, switch, archive, restore, feedback, steps, `start-now`, `held-prompts/{hid}`), `/api/sandboxes/{id}/git/*`,
 `/api/sandboxes/{id}/delivery/*`, `/api/sandboxes/{id}/{skills,workflows,automations,mcp}`,
 `/api/admin/{users,accounts,github,mcp,skills}`, `/api/analytics/*`, `/api/status`,
-`/api/import/*` (CLI), `/api/sandboxes/{id}/browser` (WS), `/api/sandboxes/{id}/previews`,
+`/api/import/*` and `/api/onboard/plan` (CLI), `/api/sandboxes/{id}/sessions`, `/api/sessions/{id}`
+(get, delete, `transcript`, `continue`; SES-002/003), `/api/sandboxes/{id}/browser` (WS), `/api/sandboxes/{id}/previews`,
 `/api/previews/authorize`; every `<port>-<key>.<host>` is a live preview (ADR-14).
 Dropped files (EDT-006, UI-048): `PUT /api/sandboxes/{id}/files/upload`, `POST
 /api/tasks/{id}/attachments`, `POST /api/sandboxes/{id}/shells/{id}/attachments`, one raw file
@@ -1294,6 +1334,11 @@ raw body up to the upload limit, 25 MiB by default).
 | MCP request / result | 1 MiB / 256 KiB | error |
 | Transcript line | 4 MiB | skip + diagnostic |
 | Import total / chunk | 2 GiB / 8 MiB | reject |
+| Imported session transcript / sessions per import | 128 MiB (after redaction, images left out) / 2 000 | left out with a warning / the newest 2 000 go, run again |
+| Imported sessions per sandbox | 10 000 sessions, 8 GiB | `capacity` with the advice to delete old ones |
+| Session index | 64 MiB of transcript per session, 32 MiB read per refresh, 8 KiB per passage | the rest is readable, not searchable / indexed on the next refresh |
+| Session page / agent read | 500 entries, ~2 MiB; text 32 KiB, results 16 KiB, diffs 16 KiB × 20 / 200 entries, 100 000 characters | `next` / `next_from` |
+| Session search | 200 characters, 12 terms; 20 sessions × 3 passages | cut |
 | GitHub retries | 3 attempts, ≤ 30 s total, honoring `Retry-After` | surface error |
 | Permission cache | 5 min | refetch |
 | Preview handshakes / grants | 1024 pending (60 s) / 4096 (12 h, re-checked every 30 s) | refuse with 429 / drop the oldest |
@@ -1342,6 +1387,8 @@ raw body up to the upload limit, 25 MiB by default).
 | Disk full | write errors | Refuse new tasks/imports; live sessions continue; status panel warns. |
 | DB busy/corrupt | busy timeout / integrity check at start | Retry busy; refuse start on integrity failure with restore guidance. |
 | Partial import upload | missing chunks | Resume by checksum (AC-IMP-1). |
+| Import applied, preparation start fails | start error | The sandbox stays `pending` with what is pending; approve (write) or skip (admin) on the sandbox page; a re-run of `yulius onboard` tries again. |
+| Session transcript missing or unreadable | open/read error | Listed with its metadata; the page shows nothing to read; not indexed; agents get a clear error. |
 | Concurrent Continue/Switch/Cancel | CAS on task status, unique live attempt | One wins; others get conflict errors. |
 | Automation during downtime | scheduler startup | ≤ 1 catch-up run; unique run key prevents duplicates. |
 | Worktree conflicts / dirty cleanup | git status before removal | Never delete dirty or foreign worktrees; surface for review (GIT-002). |
@@ -1432,10 +1479,15 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Dropped files (EDT-006, UI-048, 2026-10-10) | `tests/uploads.rs`: editor uploads (write users only, CSRF, folders created, byte-for-byte with SHA-256, 409 then overwrite with permissions kept, folders and links never replaced, traversal / absolute / control characters / `.git` / links out refused with nothing written outside, a repository folder linked into another sandbox refused, task worktree root, audit), bounds (declared and streamed size, an interrupted body, 8 concurrent then 429, no temporary file left), task attachments (safe unique names, read users refused, a planted link refused, removed with the task), shell attachments (owner only, removed when the shell closes or at start-up), the fake agent reading an attachment by path with a clean `git status` (uncontained; on Linux also inside bubblewrap, skipped where bubblewrap cannot run). Unit tests in `yulius_app::uploads`. `e2e/tests/filedrop.e2e.ts` (mock UI). Opt-in `live_ui_filedrop.rs` with real Chrome: real drags from disk to the explorer and to the task terminal, read by the fake agent. |
 | Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
 | Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
-| Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
+| Onboarding and sessions (IMP-007..010, SES-001..005, 2026-10-10) | Unit: `yulius-domain::redact` (provider tokens, near misses, assignments, URLs, headers, JWTs, keys, dotenv files and pasted blocks, determinism and idempotence, Unicode); `yulius-import::redact` (JSONL stays valid, same bytes twice, dotenv tool results, named keys, images left out, budget); `yulius-app::transcripts` (entries, diffs, paging with dotenv tracking, index batches at byte offsets, agent rendering, long lines); store `session_docs` (uniqueness, CAS on the index position, FTS search per sandbox, cascade on task deletion). CLI against the fake server (`tests/import/end_to_end.rs`): four steps, all/recent/pick, redaction listed and applied, only new or changed sessions, resume, dry run, status, refusal. Server (`tests/import_server.rs`, `tests/sessions.rs`): sessions stored as attributed documents, replaced or kept, continued natively by another member; list, search, read, delete by access level; MCP search and read scoped and bounded; the gate on create, chain and continue; the plan. UI: `e2e/tests/sessions.e2e.ts` (mock; runs in CI), checked locally with headless Chrome (layout at 1440, 768 and 390 px). |
+| Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. `yulius onboard` against a deployed instance with real `~/.claude` stores. |
 
 ## 15. Changelog
 
+- 2026-10-10 (F 2026-10-10, item 3b; #137): sessions as documents — §4 `sessions/<doc>/`, §5
+  `session_docs`/`session_chunks`/`session_fts` (migration 0007), §6.5 imports store sessions as
+  documents and the onboarding plan, §6.6 the gate and the self-starting preparation task, §6.8
+  new, §7.4 `sessions_search`/`session_read`, §7.6 the one-line practice, §7.9, §9 bounds, §10, §14.
 - 2026-10-10 (F 2026-10-10, later; #122): ADR-15 over the user's link — flow control by
   acknowledged frames, VBV bitrate tiers following the slowest viewer, keyframes on demand from a
   replacement encoder (make before break), coalesced wheel and pointer moves, every frame decoded

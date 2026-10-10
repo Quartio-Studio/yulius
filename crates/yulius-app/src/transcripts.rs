@@ -14,7 +14,9 @@ use std::path::Path;
 
 use serde_json::Value;
 use yulius_contracts::api::sessions::{DiffHunk, TranscriptBlock, TranscriptDiff, TranscriptEntry};
-use yulius_domain::redact::{is_env_file, mentions_env_file, redact, redact_env, redact_named};
+use yulius_domain::redact::{
+    is_env_file, is_secret_name, mentions_env_file, redact, redact_env, redact_named,
+};
 
 use crate::ports::session_docs::SessionChunk;
 
@@ -73,7 +75,11 @@ fn clean(text: &str, env: bool) -> String {
 fn one_line(text: &str) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let (short, cut_off) = cut(&collapsed, MAX_SUMMARY_CHARS);
-    if cut_off { format!("{short}…") } else { short }
+    if cut_off {
+        format!("{short}…")
+    } else {
+        short
+    }
 }
 
 /// Redacts every string of a JSON value; secret-named keys lose their literal values.
@@ -84,6 +90,7 @@ fn redact_value(value: &mut Value, env: bool) {
         Value::Object(map) => {
             for (key, item) in map.iter_mut() {
                 if let Value::String(text) = item
+                    && is_secret_name(key)
                     && let Some(redacted) = redact_named(key, text)
                 {
                     *text = redacted.text;
@@ -198,7 +205,9 @@ fn result_text(content: Option<&Value>) -> String {
 
 fn is_meta_text(text: &str) -> bool {
     let trimmed = text.trim_start();
-    META_PREFIXES.iter().any(|prefix| trimmed.starts_with(prefix))
+    META_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
 }
 
 /// Normalizes one parsed transcript line; `None` for bookkeeping lines (snapshots, queue
@@ -780,7 +789,11 @@ mod tests {
         let roles: Vec<&str> = rest.chunks.iter().map(|c| c.role.as_str()).collect();
         assert_eq!(roles, vec!["user", "assistant", "tool", "tool", "summary"]);
         assert!(rest.chunks[3].text.contains("Edit src/cart.ts"));
-        assert!(rest.chunks.iter().all(|c| !c.text.contains("sk_live_abc123")));
+        assert!(
+            rest.chunks
+                .iter()
+                .all(|c| !c.text.contains("sk_live_abc123"))
+        );
         Ok(())
     }
 

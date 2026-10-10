@@ -28,6 +28,7 @@ import { mountAutomationEditor } from './pages/automationedit.js';
 import { mountWorkflowsPage } from './pages/workflows.js';
 import { mountSkillsPage } from './pages/skills.js';
 import { mountAutomationsPage } from './pages/automations.js';
+import { mountSessionsPage, mountSessionView } from './pages/sessions.js';
 import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
@@ -43,6 +44,7 @@ const LAST_SANDBOX_KEY = 'yulius.lastSandbox';
 
 const SANDBOX_PAGES = {
   tasks: (ctx, sandbox) => mountTasksPage(ctx, sandbox),
+  sessions: (ctx, sandbox) => mountSessionsPage(ctx, sandbox),
   git: (ctx, sandbox) => mountGitPage(ctx, sandbox),
   workflows: (ctx, sandbox) => mountWorkflowsPage(ctx, sandbox),
   skills: (ctx, sandbox, route) => mountSkillsPage(ctx, sandbox, route),
@@ -530,6 +532,9 @@ function createApp(root, transport) {
         break;
       case 'automation':
         setCenter(`automation:${sandbox.id}:${route.automation}`, () => mountAutomationEditor(ctx, sandbox, route.automation));
+        break;
+      case 'session':
+        setCenter(`session:${sandbox.id}:${route.session}:${route.query.toString()}`, () => mountSessionView(ctx, sandbox, route.session, route));
         break;
       case 'taskInfo': {
         await ensureTasks(sandbox);

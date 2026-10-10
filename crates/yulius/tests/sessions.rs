@@ -260,7 +260,10 @@ async fn people_list_search_and_read_sessions_by_sandbox_access() -> TestResult 
     assert_eq!(task_doc["task"]["number"], task.number);
     assert_eq!(task_doc["title"], "Stripe webhooks");
     assert_eq!(task_doc["author"]["login"], "alice");
-    assert_eq!(task_doc["can_continue"], false, "a task continues from its task");
+    assert_eq!(
+        task_doc["can_continue"], false,
+        "a task continues from its task"
+    );
     let imported = sessions
         .iter()
         .find(|s| s["kind"] == "imported")
@@ -297,7 +300,12 @@ async fn people_list_search_and_read_sessions_by_sandbox_access() -> TestResult 
             .iter()
             .any(|part| part["hit"] == true && text(&part["text"]).eq_ignore_ascii_case("webhook"))
     );
-    let queue = get(&w, &alice, &format!("/api/sandboxes/{sid}/sessions?q=backoff")).await?;
+    let queue = get(
+        &w,
+        &alice,
+        &format!("/api/sandboxes/{sid}/sessions?q=backoff"),
+    )
+    .await?;
     assert_eq!(queue.body["sessions"][0]["id"], "doc-queue");
     let secret = get(
         &w,
@@ -305,14 +313,29 @@ async fn people_list_search_and_read_sessions_by_sandbox_access() -> TestResult 
         &format!("/api/sandboxes/{sid}/sessions?q={}", fake_token()),
     )
     .await?;
-    assert_eq!(secret.body["sessions"], json!([]), "redacted before indexing");
+    assert_eq!(
+        secret.body["sessions"],
+        json!([]),
+        "redacted before indexing"
+    );
 
     // The read-only transcript: messages, tool calls with diffs, results; secrets redacted.
-    let page = get(&w, &carol, &format!("/api/sessions/{task_doc_id}/transcript")).await?;
+    let page = get(
+        &w,
+        &carol,
+        &format!("/api/sessions/{task_doc_id}/transcript"),
+    )
+    .await?;
     assert_eq!(page.status, StatusCode::OK, "{:?}", page.body);
     let body = page.body.to_string();
-    assert!(!body.contains(&fake_token()), "the pasted token is redacted");
-    assert!(!body.contains("whsec_plain"), "a .env file read is redacted");
+    assert!(
+        !body.contains(&fake_token()),
+        "the pasted token is redacted"
+    );
+    assert!(
+        !body.contains("whsec_plain"),
+        "a .env file read is redacted"
+    );
     assert!(body.contains("[REDACTED:github-token]"));
     let entries = page.body["entries"].as_array().ok_or("entries")?;
     assert_eq!(entries.len(), 5);
@@ -391,7 +414,12 @@ async fn people_list_search_and_read_sessions_by_sandbox_access() -> TestResult 
             .join("sessions/doc-queue")
             .exists()
     );
-    let gone = get(&w, &alice, &format!("/api/sandboxes/{sid}/sessions?q=backoff")).await?;
+    let gone = get(
+        &w,
+        &alice,
+        &format!("/api/sandboxes/{sid}/sessions?q=backoff"),
+    )
+    .await?;
     assert_eq!(gone.body["sessions"], json!([]));
     Ok(())
 }
@@ -428,7 +456,12 @@ async fn no_task_starts_before_onboarding_is_ready_and_the_plan_says_why() -> Te
         &carol,
     )
     .await?;
-    assert_eq!(continued.status, StatusCode::CONFLICT, "{:?}", continued.body);
+    assert_eq!(
+        continued.status,
+        StatusCode::CONFLICT,
+        "{:?}",
+        continued.body
+    );
     assert!(text(&continued.body["error"]["message"]).contains("being prepared"));
     let created = call(
         &w.h.router,
@@ -439,14 +472,13 @@ async fn no_task_starts_before_onboarding_is_ready_and_the_plan_says_why() -> Te
     )
     .await?;
     assert_eq!(created.status, StatusCode::CONFLICT);
-    let prep = w
-        .h
-        .store
-        .sandbox(&sid)
-        .await?
-        .ok_or("sandbox")?
-        .onboarding_task_id
-        .ok_or("prep")?;
+    let prep =
+        w.h.store
+            .sandbox(&sid)
+            .await?
+            .ok_or("sandbox")?
+            .onboarding_task_id
+            .ok_or("prep")?;
     let chained = call(
         &w.h.router,
         Method::POST,
@@ -476,7 +508,10 @@ async fn no_task_starts_before_onboarding_is_ready_and_the_plan_says_why() -> Te
     assert_eq!(onboarding["ready"], false);
     assert_eq!(onboarding["task"]["number"], 1);
     assert!(
-        !onboarding["pending"].as_array().ok_or("pending")?.is_empty(),
+        !onboarding["pending"]
+            .as_array()
+            .ok_or("pending")?
+            .is_empty(),
         "{onboarding:?}"
     );
     assert_eq!(
@@ -693,14 +728,30 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
 
     // Search: task transcripts and imported sessions of this sandbox only, not the asker's own.
-    let (found, err) = mcp_tool(&internal, "tok-me", "sessions_search", json!({"query": "webhook"})).await?;
+    let (found, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "sessions_search",
+        json!({"query": "webhook"}),
+    )
+    .await?;
     assert!(!err, "{found}");
     let results = found["results"].as_array().ok_or("results")?;
     assert_eq!(results.len(), 1, "{found}");
     assert_eq!(results[0]["task_number"], other.number);
     assert_eq!(results[0]["kind"], "task");
-    assert!(text(&results[0]["matches"][0]["text"]).to_lowercase().contains("«webhook"));
-    let (found, _) = mcp_tool(&internal, "tok-me", "sessions_search", json!({"query": "queue backoff"})).await?;
+    assert!(
+        text(&results[0]["matches"][0]["text"])
+            .to_lowercase()
+            .contains("«webhook")
+    );
+    let (found, _) = mcp_tool(
+        &internal,
+        "tok-me",
+        "sessions_search",
+        json!({"query": "queue backoff"}),
+    )
+    .await?;
     let ids: Vec<&str> = found["results"]
         .as_array()
         .ok_or("results")?
@@ -720,7 +771,8 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
     assert!(err, "{missing}");
 
     // Read: by id or task number, bounded, redacted; another sandbox's document is not found.
-    let (read, err) = mcp_tool(&internal, "tok-me", "session_read", json!({"id": "doc-s1"})).await?;
+    let (read, err) =
+        mcp_tool(&internal, "tok-me", "session_read", json!({"id": "doc-s1"})).await?;
     assert!(!err, "{read}");
     assert!(text(&read["text"]).contains("The queue retries three times"));
     assert_eq!(read["next_from"], Value::Null);
@@ -745,7 +797,8 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
     )
     .await?;
     assert!(text(&bounded["text"]).len() <= 1100);
-    let (foreign, err) = mcp_tool(&internal, "tok-me", "session_read", json!({"id": "doc-s2"})).await?;
+    let (foreign, err) =
+        mcp_tool(&internal, "tok-me", "session_read", json!({"id": "doc-s2"})).await?;
     assert!(err, "{foreign}");
     let (nothing, err) = mcp_tool(&internal, "tok-me", "session_read", json!({})).await?;
     assert!(err, "{nothing}");

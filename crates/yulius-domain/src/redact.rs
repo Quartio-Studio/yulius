@@ -189,7 +189,9 @@ impl Charset {
             Self::Alnum => byte.is_ascii_alphanumeric(),
             Self::AlnumUnderscore => byte.is_ascii_alphanumeric() || byte == b'_',
             Self::Base64Url => byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'),
-            Self::Base64UrlDot => byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'),
+            Self::Base64UrlDot => {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+            }
             Self::Alpha => byte.is_ascii_alphabetic(),
             Self::Hex => byte.is_ascii_hexdigit(),
             Self::UpperBase32 => byte.is_ascii_uppercase() || (b'2'..=b'7').contains(&byte),
@@ -218,7 +220,12 @@ const fn token(rule: Rule, prefix: &'static str, charset: Charset, min: usize) -
 /// Prefix rules (gitleaks default rules where one exists). Longer prefixes first, so `sk-ant-`
 /// wins over `sk-` at the same position.
 const TOKEN_RULES: &[TokenRule] = &[
-    token(Rule::GithubToken, "github_pat_", Charset::AlnumUnderscore, 60),
+    token(
+        Rule::GithubToken,
+        "github_pat_",
+        Charset::AlnumUnderscore,
+        60,
+    ),
     token(Rule::GithubToken, "ghp_", Charset::Alnum, 36),
     token(Rule::GithubToken, "gho_", Charset::Alnum, 36),
     token(Rule::GithubToken, "ghu_", Charset::Alnum, 36),
@@ -245,7 +252,12 @@ const TOKEN_RULES: &[TokenRule] = &[
     token(Rule::GcpApiKey, "AIza", Charset::Base64Url, 35),
     token(Rule::GcpApiKey, "GOCSPX-", Charset::Base64Url, 24),
     token(Rule::RegistryToken, "npm_", Charset::Alnum, 36),
-    token(Rule::RegistryToken, "pypi-AgEIcHlwaS5vcmc", Charset::Base64Url, 40),
+    token(
+        Rule::RegistryToken,
+        "pypi-AgEIcHlwaS5vcmc",
+        Charset::Base64Url,
+        40,
+    ),
     token(Rule::ProviderToken, "hf_", Charset::Alpha, 30),
     token(Rule::ProviderToken, "SG.", Charset::Base64UrlDot, 60),
     token(Rule::ProviderToken, "dop_v1_", Charset::Hex, 64),
@@ -347,7 +359,7 @@ pub fn redact(text: &str) -> Option<Redacted> {
     detect_jwts(text, &mut spans);
     detect_private_keys(text, &mut spans);
     detect_url_credentials(text, &mut spans);
-        detect_assignments(text, &mut spans);
+    detect_assignments(text, &mut spans);
     detect_env_blocks(text, &mut spans);
     apply(text, spans)
 }
@@ -369,7 +381,7 @@ pub fn redact_env(text: &str) -> Option<Redacted> {
     detect_jwts(text, &mut spans);
     detect_private_keys(text, &mut spans);
     detect_url_credentials(text, &mut spans);
-        detect_assignments(text, &mut spans);
+    detect_assignments(text, &mut spans);
     apply(text, spans)
 }
 
@@ -425,9 +437,11 @@ pub fn is_secret_name(name: &str) -> bool {
     if lower.len() > 128 || lower.is_empty() {
         return false;
     }
-    let counter = ["tokens", "_count", "_limit", "_length", "_len", "_type", "_name", "_id"]
-        .iter()
-        .any(|suffix| lower.ends_with(suffix))
+    let counter = [
+        "tokens", "_count", "_limit", "_length", "_len", "_type", "_name", "_id",
+    ]
+    .iter()
+    .any(|suffix| lower.ends_with(suffix))
         || lower.starts_with("max_")
         || lower.starts_with("num_");
     if counter {
@@ -791,7 +805,10 @@ fn assignment_value(text: &str, after: usize, name: &str, flag: bool) -> Option<
                 .take(MAX_VALUE_CHARS + 1)
                 .take_while(|b| {
                     !b.is_ascii_whitespace()
-                        && !matches!(b, b',' | b';' | b'"' | b'\'' | b'`' | b')' | b'}' | b']' | b'\\')
+                        && !matches!(
+                            b,
+                            b',' | b';' | b'"' | b'\'' | b'`' | b')' | b'}' | b']' | b'\\'
+                        )
                 })
                 .count();
             if len > MAX_VALUE_CHARS {
@@ -800,7 +817,9 @@ fn assignment_value(text: &str, after: usize, name: &str, flag: bool) -> Option<
             let value = &text[cursor..cursor + len];
             // Bare words and dotted paths are code (`token = newToken`, `os.environ`).
             if !value.bytes().any(|b| b.is_ascii_digit())
-                && value.bytes().all(|b| b.is_ascii_alphabetic() || matches!(b, b'_' | b'.'))
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_alphabetic() || matches!(b, b'_' | b'.'))
             {
                 return None;
             }
@@ -885,7 +904,10 @@ fn env_line_value(line: &str, offset: usize) -> Option<Span> {
     let body = &line[..body_end];
     let mut cursor = body.len() - body.trim_start().len();
     // `cat -n` style prefix: digits then a tab or `→`.
-    let digits = body[cursor..].bytes().take_while(u8::is_ascii_digit).count();
+    let digits = body[cursor..]
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .count();
     if digits > 0 {
         let rest = &body[cursor + digits..];
         if let Some(stripped) = rest.strip_prefix('\t') {
@@ -1149,7 +1171,8 @@ mod tests {
             "     1→# Local settings\n     2→export DATABASE_URL=[REDACTED:env-value]\n     3→PORT=3000\n     4→DEBUG=true\n     5→SESSION_COOKIE=[REDACTED:env-value]\n     6→REF=${OTHER}\n     7→QUOTED=\"[REDACTED:env-value]\"\n"
         );
         // A pasted block of three or more dotenv lines counts as a dotenv file.
-        let pasted = "Here is my config:\nAPP_NAME=shop\nSMTP_HOST=mail.example.org\nSMTP_PASS=abc\nThanks";
+        let pasted =
+            "Here is my config:\nAPP_NAME=shop\nSMTP_HOST=mail.example.org\nSMTP_PASS=abc\nThanks";
         assert_eq!(
             redacted(pasted),
             "Here is my config:\nAPP_NAME=[REDACTED:env-value]\nSMTP_HOST=[REDACTED:env-value]\nSMTP_PASS=[REDACTED:env-value]\nThanks"

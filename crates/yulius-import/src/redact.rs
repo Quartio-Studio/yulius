@@ -16,7 +16,8 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use yulius_contracts::import::FileRef;
 use yulius_domain::redact::{
-    RedactionTally, is_env_file, mentions_env_file, redact, redact_env, redact_named,
+    RedactionTally, is_env_file, is_secret_name, mentions_env_file, redact, redact_env,
+    redact_named,
 };
 
 /// Longest transcript line kept; longer lines are left out and counted.
@@ -88,6 +89,7 @@ fn walk_object(map: &mut Map<String, Value>, env: bool, report: &mut RedactionRe
     let mut changed = false;
     for (key, item) in map.iter_mut() {
         if let Value::String(text) = item
+            && is_secret_name(key)
             && let Some(redacted) = redact_named(key, text)
         {
             report.tally.add(&redacted.findings);
@@ -305,11 +307,17 @@ mod tests {
         let out = std::fs::read_to_string(dir.path().join("a.jsonl"))?;
         assert!(!out.contains(&token()));
         assert!(!out.contains("s3cret-pass"));
-        assert!(!out.contains("api.internal"), "dotenv values from Read results go: {out}");
+        assert!(
+            !out.contains("api.internal"),
+            "dotenv values from Read results go: {out}"
+        );
         assert!(!out.contains("iVBORw0KGgo"), "images are left out");
         assert!(out.contains(IMAGE_PLACEHOLDER));
         assert!(out.contains("Nothing secret here."));
-        assert!(!out.contains("unfinished"), "the unfinished last line waits for the next run");
+        assert!(
+            !out.contains("unfinished"),
+            "the unfinished last line waits for the next run"
+        );
         for line in out.lines() {
             let _: Value = serde_json::from_str(line)?;
         }
@@ -335,7 +343,10 @@ mod tests {
         let clean = "{\"b\":1,  \"a\":\"plain\"}\n";
         std::fs::write(&source, clean.repeat(3))?;
         let (staged, report) = stage_redacted(&source, &dir.path().join("o.jsonl"), "x", u64::MAX)?;
-        assert_eq!(std::fs::read_to_string(dir.path().join("o.jsonl"))?, clean.repeat(3));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("o.jsonl"))?,
+            clean.repeat(3)
+        );
         assert!(report.tally.is_empty());
         assert_eq!(staged.size, (clean.len() * 3) as u64);
         let refused = stage_redacted(&source, &dir.path().join("p.jsonl"), "x", 30);

@@ -423,7 +423,10 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     upload_missing(&w, &alice, &offer, &resumed.body).await?;
     let result = complete(&w, &alice, &job).await?;
     assert_eq!(result.status, StatusCode::OK, "{:?}", result.body);
-    assert_eq!(result.body["tasks_created"], 0, "sessions are documents, not tasks");
+    assert_eq!(
+        result.body["tasks_created"], 0,
+        "sessions are documents, not tasks"
+    );
     assert_eq!(result.body["sessions_imported"], 2);
     assert_eq!(result.body["sessions_skipped_existing"], 0);
     assert_eq!(
@@ -432,7 +435,8 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     );
     assert_eq!(result.body["onboarding_status"]["ready"], false);
     assert!(
-        text(&result.body["onboarding_status"]["summary"]).contains("waits for a Claude subscription"),
+        text(&result.body["onboarding_status"]["summary"])
+            .contains("waits for a Claude subscription"),
         "{:?}",
         result.body["onboarding_status"]
     );
@@ -637,9 +641,10 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         .iter()
         .position(|s| s.session_id == MAIN_SESSION)
         .ok_or("main session")?;
-    grown.manifest.sessions[main_index].files =
-        vec![file_ref(&w, &main_name, longer.as_bytes())];
-    grown.contents.insert(main_name.clone(), longer.into_bytes());
+    grown.manifest.sessions[main_index].files = vec![file_ref(&w, &main_name, longer.as_bytes())];
+    grown
+        .contents
+        .insert(main_name.clone(), longer.into_bytes());
     let created = create_job(&w, &alice, grown.body()?).await?;
     assert_eq!(
         missing_names(&created.body),
@@ -681,7 +686,9 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     }];
     let carol_offer = Offer {
         manifest: theirs,
-        contents: [(main_name.clone(), changed.into_bytes())].into_iter().collect(),
+        contents: [(main_name.clone(), changed.into_bytes())]
+            .into_iter()
+            .collect(),
     };
     let created = create_job(&w, &carol, carol_offer.body()?).await?;
     assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
@@ -690,7 +697,10 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     assert_eq!(taken.body["sessions_updated"], 0);
     assert_eq!(taken.body["sessions_unchanged"], 1);
     let docs = sessions_of(&w, &alice, &sandbox.id).await?;
-    let main = docs.iter().find(|d| d["id"] == main_doc.as_str()).ok_or("main")?;
+    let main = docs
+        .iter()
+        .find(|d| d["id"] == main_doc.as_str())
+        .ok_or("main")?;
     assert_eq!(main["author"]["login"], "alice");
 
     // AC-IMP-5: once the sandbox is ready, another member continues imported sessions natively.

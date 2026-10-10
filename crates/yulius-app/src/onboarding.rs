@@ -486,9 +486,15 @@ impl App {
                     .user(&record.created_by)
                     .await?
                     .ok_or(AppError::NotFound)?;
-                let task = self.create_onboarding_task(&record, &creator, &report).await?;
+                let task = self
+                    .create_onboarding_task(&record, &creator, &report)
+                    .await?;
                 store
-                    .set_onboarding(&record.id, OnboardingState::Pending.as_str(), Some(&task.id))
+                    .set_onboarding(
+                        &record.id,
+                        OnboardingState::Pending.as_str(),
+                        Some(&task.id),
+                    )
                     .await?;
                 task
             }
@@ -530,9 +536,10 @@ impl App {
                 ),
             });
         }
-        let label = task
-            .as_ref()
-            .map_or_else(|| "the preparation task".to_owned(), |t| format!("task #{}", t.number));
+        let label = task.as_ref().map_or_else(
+            || "the preparation task".to_owned(),
+            |t| format!("task #{}", t.number),
+        );
         let (summary, pending): (String, Vec<String>) = match state {
             Some(OnboardingState::NotNeeded) => (
                 "Ready: the repository already follows the Yulius format.".into(),
@@ -549,7 +556,9 @@ impl App {
             Some(OnboardingState::Pending) => (
                 format!("Not ready yet: {label} has not started."),
                 vec![
-                    format!("{label} starts when the upload finishes, or when someone starts it on the sandbox page"),
+                    format!(
+                        "{label} starts when the upload finishes, or when someone starts it on the sandbox page"
+                    ),
                     "the repository passes the Yulius format check".to_owned(),
                 ],
             ),
@@ -565,7 +574,9 @@ impl App {
                 };
                 if task.status == yulius_domain::task::TaskStatus::WaitingCapacity {
                     (
-                        format!("Preparing: {label} waits for a Claude subscription with capacity."),
+                        format!(
+                            "Preparing: {label} waits for a Claude subscription with capacity."
+                        ),
                         vec![
                             "a Claude subscription has capacity (Admin → Accounts)".to_owned(),
                             format!("{label} adapts the repository"),
@@ -599,14 +610,22 @@ impl App {
                     )];
                     pending.extend(problems.into_iter().map(|p| format!("fix: {p}")));
                     (
-                        format!("Preparing: {label} stopped before the repository passed the Yulius format check."),
+                        format!(
+                            "Preparing: {label} stopped before the repository passed the Yulius format check."
+                        ),
                         pending,
                     )
                 } else {
                     let steps = view
                         .as_ref()
                         .filter(|v| v.steps_total > 0)
-                        .map(|v| format!(" (step {} of {})", (v.steps_done + 1).min(v.steps_total), v.steps_total))
+                        .map(|v| {
+                            format!(
+                                " (step {} of {})",
+                                (v.steps_done + 1).min(v.steps_total),
+                                v.steps_total
+                            )
+                        })
                         .unwrap_or_default();
                     (
                         format!("Preparing: {label} is adapting the repository{steps}."),

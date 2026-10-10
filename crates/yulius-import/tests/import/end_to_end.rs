@@ -20,8 +20,8 @@ use yulius_import::{
 
 use crate::support::server::{FakeServer, TOKEN};
 use crate::support::{
-    RECENT, RECENT_LATER, RepoFixture, TestResult, claude_line, git, simple_claude_session,
-    since, write, write_claude_session,
+    RECENT, RECENT_LATER, RepoFixture, TestResult, claude_line, git, simple_claude_session, since,
+    write, write_claude_session,
 };
 
 const CHUNK: u64 = 512;
@@ -144,7 +144,11 @@ fn scenario() -> TestResult<Scenario> {
     })
 }
 
-fn options(scenario: &Scenario, server: &FakeServer, sessions: Option<SessionChoice>) -> ImportOptions {
+fn options(
+    scenario: &Scenario,
+    server: &FakeServer,
+    sessions: Option<SessionChoice>,
+) -> ImportOptions {
     ImportOptions {
         sessions,
         assume_yes: true,
@@ -188,7 +192,10 @@ fn onboards_everything_then_sends_nothing_new_on_rerun() -> TestResult {
         "· task #1 finishes",
         "Tasks can start in this sandbox once onboarding is ready.",
     ] {
-        assert!(output.contains(expected), "missing {expected:?} in:\n{output}");
+        assert!(
+            output.contains(expected),
+            "missing {expected:?} in:\n{output}"
+        );
     }
     assert_eq!(io.token_calls, 1);
 
@@ -254,7 +261,10 @@ fn onboards_everything_then_sends_nothing_new_on_rerun() -> TestResult {
     assert!(output.contains("2 files already on the server"), "{output}");
     assert_eq!(server.with(|state| state.puts.len())?, puts_after_first);
     let second = server.with(|state| state.manifests[1].clone())?;
-    assert!(second.sessions.is_empty(), "unchanged sessions are not offered");
+    assert!(
+        second.sessions.is_empty(),
+        "unchanged sessions are not offered"
+    );
 
     // Only local sessions: with --sessions-only and nothing new there is nothing to send.
     let mut quiet = TestIo::unattended(scenario.sources.clone());
@@ -317,10 +327,16 @@ fn secrets_are_redacted_before_upload_and_listed() -> TestResult {
     )?;
     assert_eq!(outcome.redactions, 2);
     let output = io.output();
-    assert!(output.contains("Redacted     2 secrets in 1 session"), "{output}");
+    assert!(
+        output.contains("Redacted     2 secrets in 1 session"),
+        "{output}"
+    );
     assert!(output.contains("github-token ×1: ghp_"), "{output}");
     assert!(output.contains("env-value ×1: DATABASE_URL"), "{output}");
-    assert!(!output.contains(&fake_token()), "the secret is never printed");
+    assert!(
+        !output.contains(&fake_token()),
+        "the secret is never printed"
+    );
     let manifest = server.with(|state| state.manifests[0].clone())?;
     assert!(manifest.bundle.is_none() && manifest.snapshot.is_none());
     let secret = manifest
@@ -359,7 +375,12 @@ fn secrets_are_redacted_before_upload_and_listed() -> TestResult {
         .find(|path| path.exists())
         .ok_or("build transcript")?;
     let mut text = fs::read_to_string(&transcript)?;
-    text.push_str(&claude_line("user", &root, RECENT_LATER, json!("one more thing")));
+    text.push_str(&claude_line(
+        "user",
+        &root,
+        RECENT_LATER,
+        json!("one more thing"),
+    ));
     text.push('\n');
     fs::write(&transcript, text)?;
     let mut grown = TestIo::unattended(scenario.sources.clone());
@@ -377,7 +398,11 @@ fn secrets_are_redacted_before_upload_and_listed() -> TestResult {
         "{}",
         grown.output()
     );
-    assert!(grown.output().contains("0 new · 1 changed · 2 already there"));
+    assert!(
+        grown
+            .output()
+            .contains("0 new · 1 changed · 2 already there")
+    );
     Ok(())
 }
 
@@ -385,6 +410,7 @@ fn secrets_are_redacted_before_upload_and_listed() -> TestResult {
 fn people_choose_recent_sessions_or_pick_them() -> TestResult {
     let scenario = scenario()?;
     let server = FakeServer::start()?;
+    server.with(|state| state.sandbox_exists = true)?;
     // Recent with a window asked interactively: "1d" before now (2026-10-05T14:13:20Z) keeps
     // nothing; the default window would keep both.
     let mut recent = TestIo::new("1\n1d\n\n", scenario.sources.clone());
@@ -401,10 +427,17 @@ fn people_choose_recent_sessions_or_pick_them() -> TestResult {
         output.contains("Which Claude Code sessions should go to Yulius?"),
         "{output}"
     );
-    assert!(output.contains("Recent: the last 14d (2 sessions)"), "{output}");
+    assert!(
+        output.contains("Recent: the last 14d (2 sessions)"),
+        "{output}"
+    );
     assert!(output.contains("Chosen       0 sessions"), "{output}");
     assert!(none.is_ok(), "{none:?}");
-    assert_eq!(server.with(|state| state.manifests.len())?, 0, "nothing to send");
+    assert_eq!(
+        server.with(|state| state.manifests.len())?,
+        0,
+        "nothing to send"
+    );
 
     // Pick: the list is newest first; "2" is the older session.
     let mut pick = TestIo::new("3\n2\ny\n", scenario.sources.clone());
@@ -417,11 +450,21 @@ fn people_choose_recent_sessions_or_pick_them() -> TestResult {
         &mut pick,
     )?;
     let output = pick.output();
-    assert!(output.contains("[x]   1. 2026-10-02  Speed up the build"), "{output}");
-    assert!(output.contains("Upload 1 session to 127.0.0.1?"), "{output}");
+    assert!(
+        output.contains("[x]   1. 2026-10-02  Speed up the build"),
+        "{output}"
+    );
+    assert!(
+        output.contains("Upload 1 session to 127.0.0.1?"),
+        "{output}"
+    );
     assert_eq!(picked.sessions_sent, 1);
     let manifest = server.with(|state| state.manifests[0].clone())?;
-    let ids: Vec<&str> = manifest.sessions.iter().map(|s| s.session_id.as_str()).collect();
+    let ids: Vec<&str> = manifest
+        .sessions
+        .iter()
+        .map(|s| s.session_id.as_str())
+        .collect();
     assert_eq!(ids, vec!["aaaaaaaa-claude"]);
     Ok(())
 }
@@ -433,7 +476,10 @@ fn interrupted_upload_resumes_on_the_next_run() -> TestResult {
     server.with(|state| state.down_after_chunks = Some(3))?;
 
     let mut io = TestIo::unattended(scenario.sources.clone());
-    let first = run_import(&options(&scenario, &server, Some(SessionChoice::All)), &mut io);
+    let first = run_import(
+        &options(&scenario, &server, Some(SessionChoice::All)),
+        &mut io,
+    );
     assert!(
         matches!(
             first,
@@ -454,7 +500,11 @@ fn interrupted_upload_resumes_on_the_next_run() -> TestResult {
         &mut rerun,
     )?;
     assert_eq!(outcome.result.map(|r| r.sessions_imported), Some(2));
-    assert!(rerun.output().contains("resuming after"), "{}", rerun.output());
+    assert!(
+        rerun.output().contains("resuming after"),
+        "{}",
+        rerun.output()
+    );
 
     server.with(|state| {
         let manifest = &state.manifests[1];
@@ -477,6 +527,7 @@ fn interrupted_upload_resumes_on_the_next_run() -> TestResult {
 fn dry_runs_status_and_declined_confirmations_upload_nothing() -> TestResult {
     let scenario = scenario()?;
     let server = FakeServer::start()?;
+    server.with(|state| state.sandbox_exists = true)?;
 
     let mut dry = TestIo::unattended(scenario.sources.clone());
     let planned = run_import(
@@ -501,7 +552,10 @@ fn dry_runs_status_and_declined_confirmations_upload_nothing() -> TestResult {
     assert!(output.contains("[2/2] Yulius"), "{output}");
     assert!(output.contains("Onboarding   ● preparing"), "{output}");
     assert!(output.contains("Not ready yet: tasks start once onboarding is done."));
-    assert!(!output.contains("Claude Code sessions"), "status reads no sessions");
+    assert!(
+        !output.contains("Claude Code sessions"),
+        "status reads no sessions"
+    );
 
     let mut declined = TestIo::new("2\nn\n", scenario.sources.clone());
     let result = run_import(
@@ -519,7 +573,10 @@ fn dry_runs_status_and_declined_confirmations_upload_nothing() -> TestResult {
         state.refusal = Some("uploading needs write access to Quartio-Studio/demo".into());
     })?;
     let mut refused = TestIo::unattended(scenario.sources.clone());
-    let result = run_import(&options(&scenario, &server, Some(SessionChoice::All)), &mut refused);
+    let result = run_import(
+        &options(&scenario, &server, Some(SessionChoice::All)),
+        &mut refused,
+    );
     assert!(
         matches!(&result, Err(ImportError::Refused(message)) if message.contains("write access")),
         "{result:?}"
@@ -542,7 +599,10 @@ fn non_github_repositories_are_refused_before_authentication() -> TestResult {
     )?;
     let server = FakeServer::start()?;
     let mut io = TestIo::unattended(scenario.sources.clone());
-    let result = run_import(&options(&scenario, &server, Some(SessionChoice::All)), &mut io);
+    let result = run_import(
+        &options(&scenario, &server, Some(SessionChoice::All)),
+        &mut io,
+    );
     assert!(
         matches!(result, Err(ImportError::Repo(RepoError::NotGitHub { .. }))),
         "{result:?}"

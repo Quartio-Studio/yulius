@@ -55,7 +55,8 @@ pub trait Ui {
     /// One of `options`; `default` is preselected.
     fn choose(&mut self, prompt: &str, options: &[String], default: usize) -> io::Result<usize>;
     /// Any subset of `items`; `selected` marks the preselected ones.
-    fn pick(&mut self, prompt: &str, items: &[String], selected: &[bool]) -> io::Result<Vec<usize>>;
+    fn pick(&mut self, prompt: &str, items: &[String], selected: &[bool])
+    -> io::Result<Vec<usize>>;
     /// Free text with a default.
     fn ask(&mut self, prompt: &str, default: &str) -> io::Result<String>;
     /// Yes or no.
@@ -165,7 +166,12 @@ impl<R: BufRead, W: Write> Ui for PlainUi<R, W> {
             let mark = if index == default { "*" } else { " " };
             writeln!(self.output, "   {mark}{}) {option}", index + 1)?;
         }
-        write!(self.output, "  Choose 1-{} [{}]: ", options.len(), default + 1)?;
+        write!(
+            self.output,
+            "  Choose 1-{} [{}]: ",
+            options.len(),
+            default + 1
+        )?;
         self.output.flush()?;
         let Some(answer) = self.read_answer()? else {
             return Ok(default);
@@ -185,10 +191,19 @@ impl<R: BufRead, W: Write> Ui for PlainUi<R, W> {
             .unwrap_or(default))
     }
 
-    fn pick(&mut self, prompt: &str, items: &[String], selected: &[bool]) -> io::Result<Vec<usize>> {
+    fn pick(
+        &mut self,
+        prompt: &str,
+        items: &[String],
+        selected: &[bool],
+    ) -> io::Result<Vec<usize>> {
         writeln!(self.output, "  {prompt}")?;
         for (index, item) in items.iter().enumerate() {
-            let mark = if selected.get(index) == Some(&true) { "x" } else { " " };
+            let mark = if selected.get(index) == Some(&true) {
+                "x"
+            } else {
+                " "
+            };
             writeln!(self.output, "   [{mark}] {:>3}. {item}", index + 1)?;
         }
         write!(
@@ -252,7 +267,10 @@ pub fn parse_selection(answer: &str, len: usize) -> Option<Vec<usize>> {
     let mut chosen = Vec::new();
     for part in answer.split([',', ' ']).filter(|p| !p.is_empty()) {
         let (from, to) = match part.split_once('-') {
-            Some((a, b)) => (a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?),
+            Some((a, b)) => (
+                a.trim().parse::<usize>().ok()?,
+                b.trim().parse::<usize>().ok()?,
+            ),
             None => {
                 let n = part.parse::<usize>().ok()?;
                 (n, n)
@@ -297,7 +315,9 @@ impl TerminalUi {
     /// Whether this process talks to a person (stdin and stderr are terminals).
     #[must_use]
     pub fn attended() -> bool {
-        Term::stderr().is_term() && console::user_attended() && std::io::IsTerminal::is_terminal(&io::stdin())
+        Term::stderr().is_term()
+            && console::user_attended()
+            && std::io::IsTerminal::is_terminal(&io::stdin())
     }
 
     fn tone(tone: Tone) -> Style {
@@ -350,8 +370,11 @@ impl Ui for TerminalUi {
     }
 
     fn warn(&mut self, text: &str) -> io::Result<()> {
-        self.out
-            .write_line(&format!("  {} {}", style("!").yellow().bold(), style(text).yellow()))
+        self.out.write_line(&format!(
+            "  {} {}",
+            style("!").yellow().bold(),
+            style(text).yellow()
+        ))
     }
 
     fn progress_start(&mut self, label: &str, total: u64, unit: Unit) {
@@ -407,9 +430,16 @@ impl Ui for TerminalUi {
             .map_err(Self::prompt_error)
     }
 
-    fn pick(&mut self, prompt: &str, items: &[String], selected: &[bool]) -> io::Result<Vec<usize>> {
+    fn pick(
+        &mut self,
+        prompt: &str,
+        items: &[String],
+        selected: &[bool],
+    ) -> io::Result<Vec<usize>> {
         MultiSelect::with_theme(&self.theme)
-            .with_prompt(format!("{prompt} (space toggles, a toggles all, enter confirms)"))
+            .with_prompt(format!(
+                "{prompt} (space toggles, a toggles all, enter confirms)"
+            ))
             .items(items)
             .defaults(selected)
             .max_length(14)
@@ -469,7 +499,11 @@ mod tests {
         assert_eq!(ui.choose("Which?", &options, 1)?, 2);
         assert_eq!(ui.choose("Which?", &options, 1)?, 1);
         assert_eq!(ui.choose("Which?", &options, 0)?, 1);
-        assert_eq!(ui.choose("Which?", &options, 0)?, 0, "end of input keeps the default");
+        assert_eq!(
+            ui.choose("Which?", &options, 0)?,
+            0,
+            "end of input keeps the default"
+        );
         let items = vec!["a".to_owned(), "b".to_owned()];
         let mut ui = PlainUi::new(io::Cursor::new(b"2\n\n".to_vec()), Vec::new());
         assert_eq!(ui.pick("Pick", &items, &[true, false])?, vec![1]);
