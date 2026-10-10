@@ -66,6 +66,9 @@ pub enum DisplayInput {
         /// Pressed (or released).
         press: bool,
     },
+    /// Type a character as a real key press and release (a spare keycode mapped to its
+    /// keysym; Return and Tab by their keys).
+    Type(char),
     /// Release every pressed key and button.
     ReleaseAll,
     /// Resize the screen and the browser's windows.
@@ -544,6 +547,28 @@ impl VirtualDisplay {
     /// When the input queue is full or the display stopped.
     pub fn key(&self, keycode: u8, press: bool) -> Result<(), BrowserError> {
         self.send(DisplayInput::Key { keycode, press })
+    }
+
+    /// Types a character as a real key press and release, in order with other keys.
+    ///
+    /// # Errors
+    /// When the input queue is full or the display stopped.
+    pub fn type_char(&self, c: char) -> Result<(), BrowserError> {
+        self.send(DisplayInput::Type(c))
+    }
+
+    /// Waits (at most a second) until the display has taken every input sent before, so input
+    /// that takes another path (CDP) does not overtake it.
+    pub async fn settle(&self) {
+        match &self.backend {
+            Backend::Xvfb { x, .. } => {
+                let _ = tokio::time::timeout(Duration::from_secs(1), x.sync()).await;
+                // The browser reads the events the server delivered on its next turn.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            #[cfg(feature = "fake")]
+            Backend::Fake(_) => {}
+        }
     }
 
     /// Releases every key and button the display holds (a viewer left).

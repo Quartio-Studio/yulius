@@ -17,10 +17,11 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 use yulius_contracts::browser::{
     ACTION_REASON_MAX_BYTES, ActionRequest, CLIPBOARD_MAX_BYTES, ClickParams, ClickResult,
-    ClickTarget, KeyEventKind, MouseButton, MouseEventKind, NavigateParams, NavigationResult,
-    OpenParams, SCREENSHOT_MAX_BASE64_BYTES, SNAPSHOT_MAX_BYTES, ScreenshotParams,
-    ScreenshotResult, SnapshotParams, SnapshotResult, TabId, TabInfo, TabsResult, TypeParams,
-    TypeResult, ViewerClientMsg,
+    ClickTarget, KeyEventKind, MODIFIER_ALT, MODIFIER_CTRL, MODIFIER_META, MODIFIER_SHIFT,
+    MouseButton, MouseEventKind, NavigateParams, NavigationResult, OpenParams,
+    SCREENSHOT_MAX_BASE64_BYTES, SNAPSHOT_MAX_BYTES, ScreenshotParams, ScreenshotResult,
+    SnapshotParams, SnapshotResult, TabId, TabInfo, TabsResult, TypeParams, TypeResult,
+    ViewerClientMsg,
 };
 use yulius_domain::ids::{SandboxId, TaskId};
 
@@ -43,6 +44,9 @@ const COORDINATE_LIMIT: f64 = 1.0e6;
 const KEY_FIELD_MAX_BYTES: usize = 64;
 /// Largest accepted text of one key event (a paste).
 const KEY_TEXT_MAX_BYTES: usize = 32 * 1024;
+/// Text up to this many characters is typed as real key presses on a display (in order with
+/// other keys); longer text (a paste) is inserted through CDP once the display settled.
+const TYPED_TEXT_MAX_CHARS: usize = 64;
 /// Presses closer than this in time and space count as a multi-click.
 const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(500);
 const MULTI_CLICK_DISTANCE: f64 = 5.0;
@@ -459,6 +463,9 @@ impl State {
 struct Keyboard {
     pressed: HashMap<String, u8>,
     shift: Vec<u8>,
+    /// Headless: modifier bits of the modifier keys a viewer holds (CDP needs them on every key
+    /// event; a viewer mapping ⌘C to Ctrl+C sends the Control key and then a plain C).
+    modifiers: u8,
 }
 
 impl Keyboard {
@@ -1618,7 +1625,14 @@ impl BrowserInstance {
             .unwrap_or_default();
         match input.event {
             KeyEventKind::Char => match input.text.as_deref().filter(|t| !t.is_empty()) {
-                Some(text) => self.insert_text(text).await,
+                Some(text) if text.chars().count() <= TYPED_TEXT_MAX_CHARS => text
+                    .chars()
+                    .filter(|c| *c != '\r')
+                    .try_for_each(|c| display.type_char(c)),
+                Some(text) => {
+                    display.settle().await;
+                    self.insert_text(text).await
+                }
                 None => Err(BrowserError::InvalidInput("a char event needs text".into())),
             },
             KeyEventKind::Down => {
@@ -1664,7 +1678,7 @@ impl BrowserInstance {
                         }
                         display.key(keycode, true)
                     }
-                    DisplayKey::Text(text) => self.insert_text(&text).await,
+                    DisplayKey::Text(text) => text.chars().try_for_each(|c| display.type_char(c)),
                     DisplayKey::Ignore => Ok(()),
                 }
             }
@@ -1693,10 +1707,10 @@ impl BrowserInstance {
         }
     }
 
-    /// Releases every key and button held on the display (a viewer left or reconnected).
+    /// Releases every key and button a viewer held (it left or reconnected).
     pub fn release_input(&self) {
+        *lock(&self.keyboard) = Keyboard::default();
         if let Some(display) = &self.display {
-            *lock(&self.keyboard) = Keyboard::default();
             display.release_all();
         }
     }
@@ -1758,13 +1772,52 @@ impl BrowserInstance {
         if let Some(display) = &self.display {
             return self.display_key(display, input).await;
         }
+        let bit = match input.key.as_deref() {
+            Some("Control") => MODIFIER_CTRL,
+            Some("Shift") => MODIFIER_SHIFT,
+            Some("Alt") => MODIFIER_ALT,
+            Some("Meta") => MODIFIER_META,
+            _ => 0,
+        };
+        let held = {
+            let mut keyboard = lock(&self.keyboard);
+            match input.event {
+                KeyEventKind::Down => keyboard.modifiers |= bit,
+                KeyEventKind::Up => keyboard.modifiers &= !bit,
+                KeyEventKind::Char => {}
+            }
+            keyboard.modifiers
+        };
+        let input = KeyInput {
+            modifiers: input.modifiers | held | bit,
+            ..input
+        };
+        // Text without a key (IME, paste): a key event carries at most four characters.
+        if input.event == KeyEventKind::Char
+            && let Some(text) = input.text.as_deref().filter(|t| t.chars().count() > 1)
+        {
+            let session = self.session(tab).await?;
+            let _input = self.input_lock.lock().await;
+            self.cdp
+                .call_session(&session, "Input.insertText", json!({"text": text}))
+                .await?;
+            return Ok(());
+        }
         let text = match input.event {
             KeyEventKind::Up => None,
             KeyEventKind::Down | KeyEventKind::Char => input
                 .text
                 .clone()
                 .filter(|text| !text.is_empty())
-                .or_else(|| keys::implied_text(input.key.as_deref()).map(str::to_owned)),
+                .or_else(|| keys::implied_text(input.key.as_deref()).map(str::to_owned))
+                // A printable key without Ctrl/Meta types its character (viewers send no text).
+                .or_else(|| {
+                    let printable = input.key.as_deref().filter(|key| {
+                        key.chars().count() == 1 && !key.chars().any(char::is_control)
+                    });
+                    let shortcut = input.modifiers & (MODIFIER_CTRL | MODIFIER_META) != 0;
+                    printable.filter(|_| !shortcut).map(str::to_owned)
+                }),
         };
         let kind = match (input.event, &text) {
             (KeyEventKind::Down, Some(_)) => "keyDown",

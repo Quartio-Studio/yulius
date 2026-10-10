@@ -13,7 +13,10 @@ been performed or verified** as part of the implementation work.
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
-| Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. |
+| Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
+| `xvfb` | the sandbox browser's virtual display (SPEC-002 ADR-15) | `apt install xvfb`. Without it (or ffmpeg) the browser runs headless: JPEG frames, no real input, captchas fail. `xauth` is not needed (Yulius writes the cookie itself); `x11-utils` (`xdpyinfo`) only for diagnostics. |
+| `ffmpeg` with libx264 and x11grab | the browser video | `apt install ffmpeg` (Ubuntu's build has both; `yulius doctor` checks). |
+| Fonts | pages in the sandbox browser | at least `fonts-noto-core fonts-noto-color-emoji fonts-liberation2`; add `fonts-noto-cjk` for CJK pages. |
 
 Inside containment an agent sees only `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/opt`, its own
 sandbox directory and the `yulius` binary. Install Claude Code system-wide under `/usr/local` or
@@ -62,6 +65,9 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 Environment=YULIUS_MAX_SESSIONS=8
 Environment=YULIUS_CONTAINED=true
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# The sandbox browser: a headful Chrome on a virtual display when xvfb and ffmpeg are installed
+# (auto, the default). See "Sandbox browser" below for the other settings.
+Environment=YULIUS_BROWSER_DISPLAY=auto
 ExecStart=/usr/local/bin/yulius serve
 KillMode=process
 Restart=on-failure
@@ -134,10 +140,13 @@ Yulius itself sends `X-Frame-Options: DENY`, `Content-Security-Policy: frame-anc
 policies are kept). HSTS is the TLS proxy's job, as in the examples above; add it once the
 domain is meant to stay on HTTPS.
 
-### Live previews: wildcard DNS and TLS
+### Optional: live previews (wildcard DNS and TLS)
 
-The browser panel shows the sandbox's dev servers live in the user's own browser (SPEC-002
-ADR-14). Every sandbox port gets its own **preview origin**: a subdomain of the Yulius host,
+The browser panel is the sandbox's Chrome streamed from the VM (§ "Sandbox browser" below) and
+needs nothing here. Previews add one action to it: **Open live in a new window** on a tab that
+shows a sandbox dev server, which opens the app in the user's own browser (with their devtools)
+through a per-port **preview origin** (SPEC-002 ADR-14). Every sandbox port gets its own preview
+origin: a subdomain of the Yulius host,
 `<port>-<key>.<yulius host>` (for example `20001-0123456789ab.yulius.example.com`). The public
 listener serves them too. The proxy in front only has to:
 
@@ -211,8 +220,41 @@ server {
 }
 ```
 
-Without DNS or TLS for the previews everything else keeps working: the panel reports that a live
-page cannot be reached and opens the address in the sandbox Chrome instead.
+Without DNS or TLS for the previews everything else keeps working; only "Open live in a new
+window" fails to load.
+
+### Sandbox browser (virtual displays)
+
+Each sandbox has one Chrome, shared by its users and agents (SPEC-002 ADR-15). With `xvfb` and
+`ffmpeg` installed it runs **headful on its own virtual display**: Yulius starts one `Xvfb` per
+running sandbox browser (as the service user, numbers from `:100`), shows it to viewers as H.264
+video over the browser WebSocket (nothing to open in the firewall: it is the same HTTPS
+connection) and passes their mouse and keys as real input, so captchas and sign-in popups work.
+Encoding runs only while someone watches.
+
+| Setting (flag / environment) | Default | Meaning |
+| --- | --- | --- |
+| `--browser-display` / `YULIUS_BROWSER_DISPLAY` | `auto` | `xvfb`: always a virtual display (the browser does not start without Xvfb); `headless`: never (JPEG frames, CDP input); `auto`: `xvfb` on Linux when Xvfb and ffmpeg are found, else `headless`. |
+| `--xvfb` / `YULIUS_XVFB`, `--ffmpeg` / `YULIUS_FFMPEG` | `Xvfb`, `ffmpeg` | The executables (a path or a name on `PATH`). |
+| `--browser-fps` / `YULIUS_BROWSER_FPS` | 60 | Video frames per second (5–60). 30 halves the encoder's CPU. |
+| `--browser-max-size` / `YULIUS_BROWSER_MAX_SIZE` | `1920x1200` | Largest viewport in CSS pixels; larger panels show the page scaled down. |
+| `--browser-scale` / `YULIUS_BROWSER_SCALE` | 1 | Device pixels per CSS pixel (1–3). 2 gives crisp text on HiDPI screens at about three times the CPU and bandwidth. |
+| `--browser-display-base` / `YULIUS_BROWSER_DISPLAY_BASE` | 100 | First X display number; numbers in use are skipped. |
+
+Resources (measured on a 12-vCPU VM, Chrome 155, ffmpeg 6.1; details in the PR of #107): the
+encoder takes about one core per watched browser at 1280×800 and 60 fps, about 1.4 cores at
+1920×1080, and nothing when nobody watches; video is a few hundred kbit/s idle and 1–2 Mbit/s
+while scrolling text pages. Each display is a framebuffer of the maximum size (about 9 MB at
+1920×1200).
+
+Isolation: the display listens on neither TCP nor an abstract socket (`-nolisten tcp -nolisten
+local`), only on `/tmp/.X11-unix/X<n>`, which contained agents and users' shells do not see (their
+`/tmp` is private), and it requires a per-display cookie stored in
+`<data>/displays/<sandbox>/Xauthority` (0600), outside every directory containment binds.
+Xvfb, Chrome and ffmpeg are children of the service and share its `/tmp`, so `PrivateTmp=yes` in
+the unit works too.
+
+Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
 
 ## 5. First run
 
@@ -258,6 +300,10 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
 
 ## 8. Upgrades
 
+- Upgrading to the streamed browser (ADR-15, 2026-10-10): install `xvfb`, `ffmpeg` and the fonts
+  (§1) before restarting; `yulius doctor` must show them. No data migration: logins in the
+  sandbox Chrome profiles stay; displays and cookies live in `<data>/displays/`. Running
+  browsers restart headful on next use. The preview DNS and TLS are now optional (§4).
 - Upgrading to the live browser panel (ADR-14, 2026-10-09): over HTTPS the session cookie is
   now `__Host-yulius_session`, so everyone signs in once more after the upgrade. Add the preview
   DNS and TLS configuration (§4) for live pages.

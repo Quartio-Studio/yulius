@@ -119,8 +119,9 @@ export function createBrowserPanel(ctx, sandbox) {
 
   function select(tabId, { byUser = true } = {}) {
     if (byUser) selectedAt = Date.now();
+    if (!byUser && selected === tabId) return;
     selected = tabId;
-    stream.watch(tabId);
+    stream.watch(tabId, { activate: byUser });
     agentMarks.delete(tabId);
     notice.hidden = true;
     render();

@@ -105,7 +105,7 @@ setInterval(() => { c.fillStyle = n++ % 2 ? 'rgb(0, 200, 0)' : 'rgb(200, 0, 200)
 const FLIP: &str = r#"<!doctype html><html><head><title>flip</title><style>
 html, body { margin: 0; background: #fff; font: 16px/1.5 sans-serif; }
 .row { height: 120px; border-bottom: 1px solid #ccc; padding: 8px; }
-</style></head><body><div id="rows"></div><script>
+</style></head><body><input id="big" style="position:fixed;left:20px;top:20px;width:900px;font-size:160px;caret-color:transparent;border:0;outline:0;background:#fff" autocomplete="off"><div id="rows"></div><script>
 const rows = document.getElementById('rows');
 for (let i = 0; i < 400; i += 1) {
   const d = document.createElement('div');
@@ -114,7 +114,16 @@ for (let i = 0; i < 400; i += 1) {
   d.style.background = 'hsl(' + (i * 37 % 360) + ', 60%, 85%)';
   rows.append(d);
 }
-addEventListener('keydown', () => {
+window.keys = 0;
+window.scrollFrames = 0;
+let lastY = -1;
+(function frame() {
+  if (scrollY !== lastY) { lastY = scrollY; window.scrollFrames += 1; }
+  requestAnimationFrame(frame);
+})();
+addEventListener('keydown', (e) => {
+  window.keys += 1;
+  if (document.activeElement && document.activeElement.id === 'big') return;
   const black = document.body.dataset.black === '1';
   document.body.dataset.black = black ? '0' : '1';
   document.documentElement.style.filter = black ? '' : 'invert(1)';
@@ -283,6 +292,41 @@ impl Viewer {
             .map(str::to_owned)
     }
 
+    /// The current group as an Annex-B file.
+    fn annexb(&self) -> Result<tempfile::NamedTempFile, Box<dyn std::error::Error>> {
+        let (avcc, _, _) = self.config.as_ref().ok_or("no video configuration")?;
+        let mut annexb = parameter_sets(avcc)?;
+        for frame in &self.gop {
+            annexb.extend(avcc_to_annexb(frame)?);
+        }
+        let file = tempfile::NamedTempFile::new()?;
+        std::fs::write(file.path(), &annexb)?;
+        Ok(file)
+    }
+
+    /// Saves the newest frame, decoded by ffmpeg, as a PNG.
+    fn save_png(&self, path: &Path) -> TestResult {
+        let file = self.annexb()?;
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "h264",
+                "-i",
+            ])
+            .arg(file.path())
+            .args(["-update", "1"])
+            .arg(path)
+            .status()?;
+        if !status.success() {
+            return Err("ffmpeg could not save the frame".into());
+        }
+        Ok(())
+    }
+
     /// The RGB pixel at `(x, y)` of the newest frame, decoded by ffmpeg from the current group.
     fn pixel(&self, x: u32, y: u32) -> Result<[u8; 3], Box<dyn std::error::Error>> {
         let (avcc, _, _) = self.config.as_ref().ok_or("no video configuration")?;
@@ -297,7 +341,7 @@ impl Viewer {
             .arg(file.path())
             .args([
                 "-vf",
-                &format!("crop=1:1:{x}:{y}"),
+                &format!("format=rgb24,crop=1:1:{x}:{y}"),
                 "-f",
                 "rawvideo",
                 "-pix_fmt",
@@ -456,10 +500,14 @@ async fn until(cdp: &CdpClient, url: &str, what: &str, expression: &str) -> Test
             return Ok(());
         }
         if Instant::now() > deadline {
-            let events = eval(cdp, url, "JSON.stringify(window.events || null)")
-                .await
-                .unwrap_or(Value::Null);
-            return Err(format!("timed out waiting for {what}; events {events}").into());
+            let page = eval(
+                cdp,
+                url,
+                "JSON.stringify({events: window.events || null, field: document.activeElement && document.activeElement.value})",
+            )
+            .await
+            .unwrap_or(Value::Null);
+            return Err(format!("timed out waiting for {what}; page {page}").into());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -824,11 +872,13 @@ async fn measure(live: &Live) -> TestResult {
         viewer
             .send(json!({"type": "viewport", "width": width, "height": height}))
             .await?;
-        viewer
-            .wait_json("the new size", |m| {
-                m["type"] == "video_config" && m["width"] == width
-            })
-            .await?;
+        if viewer.config.as_ref().map(|c| c.1) != Some(width) {
+            viewer
+                .wait_json("the new size", |m| {
+                    m["type"] == "video_config" && m["width"] == width
+                })
+                .await?;
+        }
         viewer.pump(Duration::from_secs(2)).await?;
         let encoder = pids_with(&format!(":{n}.0+0,0"))
             .first()
@@ -847,6 +897,10 @@ async fn measure(live: &Live) -> TestResult {
 
         // Scrolling: wheel turns at 60 Hz through the viewer, as a trackpad sends them.
         eval(&cdp, &url, "scrollTo(0, 0); true").await?;
+        let painted_before = eval(&cdp, &url, "window.scrollFrames")
+            .await?
+            .as_f64()
+            .unwrap_or(0.0);
         viewer.arrivals.clear();
         let cpu = cpu_seconds(encoder);
         let scroll_start = Instant::now();
@@ -860,6 +914,12 @@ async fn measure(live: &Live) -> TestResult {
             viewer.pump(Duration::from_millis(16)).await?;
         }
         let secs = scroll_start.elapsed().as_secs_f64();
+        let painted = (eval(&cdp, &url, "window.scrollFrames")
+            .await?
+            .as_f64()
+            .unwrap_or(0.0)
+            - painted_before)
+            / secs;
         let scroll_cpu = (cpu_seconds(encoder) - cpu) / secs * 100.0;
         let bytes: usize = viewer.arrivals.iter().map(|a| a.1).sum();
         // Frames per second over 1 s windows: all frames, and frames carrying a change.
@@ -885,12 +945,10 @@ async fn measure(live: &Live) -> TestResult {
             .map(|w| w[1].0.duration_since(w[0].0).as_secs_f64() * 1000.0)
             .collect();
         eprintln!(
-            "{width}x{height}: idle {idle_fps:.0} fps {:.2} Mbit/s encoder {idle_cpu:.0}% | scrolling fps p50 {:.0} p5 {:.0}, changed frames/s p50 {:.0} p5 {:.0}, frame gap p50 {:.1} ms p95 {:.1} ms, {:.2} Mbit/s, encoder {scroll_cpu:.0}% of a core",
+            "{width}x{height}: idle {idle_fps:.0} fps {:.2} Mbit/s encoder {idle_cpu:.0}% | scrolling: video fps p50 {:.0} p5 {:.0}, page frames with a new scroll position {painted:.0}/s, frame gap p50 {:.1} ms p95 {:.1} ms, {:.2} Mbit/s, encoder {scroll_cpu:.0}% of a core",
             idle_bytes as f64 * 8.0 / idle_secs / 1e6,
             percentile(&mut per_second.clone(), 0.5),
             percentile(&mut per_second.clone(), 0.05),
-            percentile(&mut changed.clone(), 0.5),
-            percentile(&mut changed.clone(), 0.05),
             percentile(&mut gaps.clone(), 0.5),
             percentile(&mut gaps, 0.95),
             bytes as f64 * 8.0 / secs / 1e6,
@@ -902,13 +960,23 @@ async fn measure(live: &Live) -> TestResult {
     viewer
         .send(json!({"type": "viewport", "width": 1280, "height": 800}))
         .await?;
-    viewer
-        .wait_json("1280x800", |m| {
-            m["type"] == "video_config" && m["width"] == 1280
-        })
-        .await?;
+    if viewer.config.as_ref().map(|c| c.1) != Some(1280) {
+        viewer
+            .wait_json("1280x800", |m| {
+                m["type"] == "video_config" && m["width"] == 1280
+            })
+            .await?;
+    }
     viewer.pump(Duration::from_secs(2)).await?;
+    // Keys go to the page once it has the focus.
+    click(&mut viewer, &tab, 600.0, 400.0).await?;
+    viewer.pump(Duration::from_millis(300)).await?;
+    let keys_before = eval(&cdp, &url, "window.keys")
+        .await?
+        .as_f64()
+        .unwrap_or(0.0);
     let mut delays = Vec::new();
+    let mut misses = Vec::new();
     for _ in 0..40 {
         viewer.pump(Duration::from_millis(300)).await?;
         viewer.arrivals.clear();
@@ -926,8 +994,16 @@ async fn measure(live: &Live) -> TestResult {
         }
         if let Some(at) = seen {
             delays.push(at.duration_since(sent).as_secs_f64() * 1000.0);
+        } else {
+            misses.push(viewer.arrivals.iter().map(|a| a.1).max().unwrap_or(0));
         }
     }
+    let keys = eval(&cdp, &url, "window.keys")
+        .await?
+        .as_f64()
+        .unwrap_or(0.0)
+        - keys_before;
+    eprintln!("the page saw {keys} key presses; misses (largest frame after the key): {misses:?}");
     eprintln!(
         "input to frame (key over the viewer socket → XTest → Chrome → x11grab → x264 → socket): n {} p50 {:.1} ms p95 {:.1} ms",
         delays.len(),
@@ -935,5 +1011,209 @@ async fn measure(live: &Live) -> TestResult {
         percentile(&mut delays, 0.95)
     );
     assert!(delays.len() >= 30, "most key presses showed in the video");
+
+    // Typing: a character appearing in a large field (a typical edit, not a full repaint).
+    eval(
+        &cdp,
+        &url,
+        "document.documentElement.style.filter = ''; document.body.dataset.black = '0'; true",
+    )
+    .await?;
+    click(&mut viewer, &tab, 400.0, 100.0).await?;
+    until(
+        &cdp,
+        &url,
+        "the big field focused",
+        "document.activeElement && document.activeElement.id === 'big'",
+    )
+    .await?;
+    let mut typing = Vec::new();
+    for n in 0..40 {
+        viewer.pump(Duration::from_millis(250)).await?;
+        if n % 8 == 7 {
+            eval(
+                &cdp,
+                &url,
+                "document.getElementById('big').value = ''; true",
+            )
+            .await?;
+            viewer.pump(Duration::from_millis(250)).await?;
+        }
+        viewer.arrivals.clear();
+        let sent = Instant::now();
+        press(&mut viewer, &tab, "m", "KeyM").await?;
+        let until_at = sent + Duration::from_secs(2);
+        let mut seen = None;
+        while seen.is_none() && Instant::now() < until_at {
+            viewer.step(until_at).await?;
+            seen = viewer
+                .arrivals
+                .iter()
+                .find(|a| a.1 > 1_000 && !a.2)
+                .map(|a| a.0);
+        }
+        if let Some(at) = seen {
+            typing.push(at.duration_since(sent).as_secs_f64() * 1000.0);
+        }
+    }
+    eprintln!(
+        "typing a character to the frame showing it: n {} p50 {:.1} ms p95 {:.1} ms",
+        typing.len(),
+        percentile(&mut typing.clone(), 0.5),
+        percentile(&mut typing, 0.95)
+    );
+    Ok(())
+}
+
+/// Opens a captcha page in the sandbox Chrome and clicks its checkbox through the viewer (real
+/// XTest input), saving the frames before and after under `$YULIUS_LIVE_SHOTS` (default
+/// `/tmp/yulius-live-shots`). Needs the internet; prints what happened.
+#[tokio::test]
+#[ignore = "needs Linux with Xvfb, ffmpeg, Chrome and the internet (YULIUS_LIVE_DISPLAY=1)"]
+async fn captchas_take_real_clicks() -> TestResult {
+    let Some(chrome) = live_chrome() else {
+        return Ok(());
+    };
+    let live = live(&chrome).await?;
+    let result = captchas(&live).await;
+    live.h.app.stop_workspace_services().await;
+    result
+}
+
+/// Top-left corner (CSS pixels) of the first frame whose `src` contains `needle`, searched
+/// through shadow roots.
+async fn frame_corner(
+    cdp: &CdpClient,
+    session: &str,
+    needle: &str,
+) -> Result<Option<(f64, f64)>, Box<dyn std::error::Error>> {
+    let flat = cdp
+        .call_session(
+            session,
+            "DOM.getFlattenedDocument",
+            json!({"depth": -1, "pierce": true}),
+        )
+        .await?;
+    let node = flat["nodes"].as_array().and_then(|nodes| {
+        nodes.iter().find(|n| {
+            n["nodeName"] == "IFRAME"
+                && n["attributes"].as_array().is_some_and(|a| {
+                    a.iter()
+                        .any(|v| v.as_str().is_some_and(|v| v.contains(needle)))
+                })
+        })
+    });
+    let Some(id) = node.and_then(|n| n["nodeId"].as_i64()) else {
+        return Ok(None);
+    };
+    let model = cdp
+        .call_session(session, "DOM.getBoxModel", json!({"nodeId": id}))
+        .await?;
+    let quad = &model["model"]["content"];
+    Ok(Some((
+        quad[0].as_f64().unwrap_or(0.0),
+        quad[1].as_f64().unwrap_or(0.0),
+    )))
+}
+
+async fn captchas(live: &Live) -> TestResult {
+    let shots = PathBuf::from(
+        std::env::var("YULIUS_LIVE_SHOTS").unwrap_or_else(|_| "/tmp/yulius-live-shots".into()),
+    );
+    std::fs::create_dir_all(&shots)?;
+    let mut viewer = Viewer::connect(live, "s1").await?;
+    viewer
+        .wait_json("video config", |m| m["type"] == "video_config")
+        .await?;
+    viewer
+        .send(json!({"type": "viewport", "width": 1280, "height": 800}))
+        .await?;
+    let tab = viewer.active_tab().ok_or("no active tab")?;
+    let session = live.h.app.browser_session(&SandboxId::parse("s1")?).await?;
+    let cdp = CdpClient::connect(&session.cdp_endpoint(), CdpConfig::default()).await?;
+    let pages = [
+        (
+            "recaptcha",
+            "https://www.google.com/recaptcha/api2/demo",
+            "google.com/recaptcha/api2/anchor",
+            (27.0, 38.0),
+        ),
+        (
+            "turnstile",
+            "https://nopecha.com/demo/cloudflare",
+            "challenges.cloudflare.com",
+            (22.0, 33.0),
+        ),
+    ];
+    for (name, url, frame, offset) in pages {
+        viewer
+            .send(json!({"type": "navigate", "tab_id": tab, "url": url}))
+            .await?;
+        viewer.pump(Duration::from_secs(8)).await?;
+        viewer.save_png(&shots.join(format!("{name}-before.png")))?;
+        let targets = cdp.call("Target.getTargets", json!({})).await?;
+        let target = targets["targetInfos"]
+            .as_array()
+            .and_then(|infos| infos.iter().find(|t| t["targetId"] == tab.as_str()))
+            .ok_or("tab target")?
+            .clone();
+        let attached = cdp
+            .call(
+                "Target.attachToTarget",
+                json!({"targetId": target["targetId"], "flatten": true}),
+            )
+            .await?;
+        let page = attached["sessionId"].as_str().ok_or("session")?.to_owned();
+        let webdriver = cdp
+            .call_session(
+                &page,
+                "Runtime.evaluate",
+                json!({"expression": "navigator.webdriver", "returnByValue": true}),
+            )
+            .await?;
+        let corner = frame_corner(&cdp, &page, frame).await?;
+        eprintln!(
+            "{name}: {url} navigator.webdriver = {}, widget frame at {corner:?}",
+            webdriver["result"]["value"]
+        );
+        let Some((left, top)) = corner else {
+            eprintln!("{name}: no widget frame found (see {name}-before.png)");
+            continue;
+        };
+        let (x, y) = (left + offset.0, top + offset.1);
+        // A human-like approach, then the click: all real pointer input on the display.
+        for step in 0..8 {
+            let t = f64::from(step) / 7.0;
+            mouse(
+                &mut viewer,
+                &tab,
+                "move",
+                700.0 + (x - 700.0) * t,
+                500.0 + (y - 500.0) * t,
+            )
+            .await?;
+            viewer.pump(Duration::from_millis(40)).await?;
+        }
+        mouse(&mut viewer, &tab, "down", x, y).await?;
+        viewer.pump(Duration::from_millis(90)).await?;
+        mouse(&mut viewer, &tab, "up", x, y).await?;
+        viewer.pump(Duration::from_secs(8)).await?;
+        viewer.save_png(&shots.join(format!("{name}-after.png")))?;
+        let title = cdp
+            .call_session(
+                &page,
+                "Runtime.evaluate",
+                json!({"expression": "document.title", "returnByValue": true}),
+            )
+            .await?;
+        eprintln!(
+            "{name}: clicked at ({x:.0}, {y:.0}); page title now {}; frames saved in {}",
+            title["result"]["value"],
+            shots.display()
+        );
+        let _ = cdp
+            .call("Target.detachFromTarget", json!({"sessionId": page}))
+            .await;
+    }
     Ok(())
 }

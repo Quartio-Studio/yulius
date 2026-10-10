@@ -7,6 +7,13 @@
 //! dropped or the server goes away. It tracks the keys and buttons it pressed so a viewer that
 //! leaves never leaves one held ([`DisplayInput::ReleaseAll`]).
 //!
+//! Characters a US layout cannot type (`ą`, `€`, emoji) and typed text are real key presses too:
+//! the thread maps a Unicode keysym onto one of the keymap's spare keycodes and presses it, so
+//! they stay in order with the other keys (text inserted through CDP would overtake key presses
+//! still queued in the X server) and pages see real key events. Spare keycodes are reused in
+//! least-recently-used order, so a remapped keycode is never reassigned while the browser may
+//! still be looking up its previous character.
+//!
 //! There is no window manager. The thread plays the small part of one the browser needs: every
 //! top-level window that maps (the browser's window, a popup, a dialog) is moved to the top
 //! left at the viewport size and receives the keyboard focus, a press focuses the window under
@@ -25,6 +32,31 @@ use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 use crate::display::DisplayInput;
+
+/// What the X thread is asked to do.
+#[derive(Debug)]
+enum XCommand {
+    Input(DisplayInput),
+    /// Answer once the server has processed every earlier request (a round trip).
+    Sync(tokio::sync::oneshot::Sender<()>),
+}
+
+/// Spare keycodes used for typed characters at most.
+const SCRATCH_KEYCODES: usize = 32;
+/// The Return and Tab keycodes (evdev).
+const RETURN_KEYCODE: u8 = 36;
+const TAB_KEYCODE: u8 = 23;
+
+/// The X keysym of a character: Latin-1 keysyms equal the code point, every other character
+/// uses the Unicode keysym range.
+pub(crate) fn keysym_of(c: char) -> u32 {
+    let code = u32::from(c);
+    if (0x20..=0x7E).contains(&code) || (0xA0..=0xFF).contains(&code) {
+        code
+    } else {
+        0x0100_0000 | code
+    }
+}
 use x11rb::connection::{Connection as _, RequestConnection as _};
 use x11rb::protocol::Event;
 use x11rb::protocol::randr::{ConnectionExt as _, ModeFlag, ModeInfo, Rotation};
@@ -34,6 +66,7 @@ use x11rb::protocol::xproto::{
 };
 use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::rust_connection::{DefaultStream, RustConnection};
+use x11rb::wrapper::ConnectionExt as _;
 
 /// Directory of the X servers' filesystem sockets.
 pub(crate) const X11_SOCKET_DIR: &str = "/tmp/.X11-unix";
@@ -70,7 +103,7 @@ pub(crate) fn connect(number: u32, cookie: &[u8]) -> Result<RustConnection, Stri
 /// The X thread's handle. Dropping it ends the thread (after releasing held input).
 #[derive(Debug)]
 pub(crate) struct XController {
-    tx: SyncSender<DisplayInput>,
+    tx: SyncSender<XCommand>,
     alive: Arc<AtomicBool>,
 }
 
@@ -115,7 +148,11 @@ impl XController {
         let screen = conn.setup().roots.first().map_or(size, |screen| {
             (screen.width_in_pixels, screen.height_in_pixels)
         });
+        let (keysyms_per_keycode, scratch) = spare_keycodes(&conn);
         let mut state = XState {
+            keysyms_per_keycode,
+            scratch,
+            typed: HashMap::new(),
             conn,
             root,
             screen,
@@ -142,6 +179,20 @@ impl XController {
     /// # Errors
     /// [`XSendError::Busy`] when the queue is full, [`XSendError::Gone`] when the thread ended.
     pub(crate) fn send(&self, command: DisplayInput) -> Result<(), XSendError> {
+        self.queue(XCommand::Input(command))
+    }
+
+    /// Resolves once the X server has processed everything queued before (bounded by the
+    /// caller); `false` when the thread is gone or the queue is full.
+    pub(crate) async fn sync(&self) -> bool {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.queue(XCommand::Sync(tx)).is_err() {
+            return false;
+        }
+        rx.await.is_ok()
+    }
+
+    fn queue(&self, command: XCommand) -> Result<(), XSendError> {
         if !self.alive.load(Ordering::Relaxed) {
             return Err(XSendError::Gone);
         }
@@ -171,16 +222,49 @@ struct XState {
     refits: HashMap<Window, (Instant, u32)>,
     /// The RandR mode this thread created and uses.
     mode: Option<u32>,
+    keysyms_per_keycode: u8,
+    /// Spare keycodes for typed characters, least recently used first.
+    scratch: Vec<u8>,
+    /// Keysym each spare keycode types now.
+    typed: HashMap<u8, u32>,
+}
+
+/// The keymap's width and its keycodes without any keysym (at most [`SCRATCH_KEYCODES`]).
+fn spare_keycodes(conn: &RustConnection) -> (u8, Vec<u8>) {
+    let setup = conn.setup();
+    let (min, max) = (setup.min_keycode, setup.max_keycode);
+    let Some(reply) = conn
+        .get_keyboard_mapping(min, max - min + 1)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+    else {
+        return (0, Vec::new());
+    };
+    let width = usize::from(reply.keysyms_per_keycode);
+    if width == 0 {
+        return (0, Vec::new());
+    }
+    let spare = reply
+        .keysyms
+        .chunks(width)
+        .enumerate()
+        .filter(|(_, syms)| syms.iter().all(|sym| *sym == 0))
+        .filter_map(|(index, _)| u8::try_from(usize::from(min) + index).ok())
+        // Keep clear of the low keycodes some clients treat specially.
+        .filter(|keycode| *keycode > 100)
+        .take(SCRATCH_KEYCODES)
+        .collect();
+    (reply.keysyms_per_keycode, spare)
 }
 
 impl XState {
-    fn run(&mut self, rx: &Receiver<DisplayInput>) {
+    fn run(&mut self, rx: &Receiver<XCommand>) {
         loop {
             match rx.recv_timeout(EVENT_POLL) {
                 Ok(command) => {
-                    self.apply(command);
+                    self.command(command);
                     while let Ok(command) = rx.try_recv() {
-                        self.apply(command);
+                        self.command(command);
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -215,8 +299,69 @@ impl XState {
         }
     }
 
+    fn command(&mut self, command: XCommand) {
+        match command {
+            XCommand::Input(input) => self.apply(input),
+            XCommand::Sync(done) => {
+                if self.conn.sync().is_ok() {
+                    let _ = done.send(());
+                }
+            }
+        }
+    }
+
+    /// Types `c` as a real key press: Return and Tab by their keys, every other character
+    /// through a spare keycode mapped to its keysym.
+    fn type_char(&mut self, c: char) {
+        let keycode = match c {
+            '\n' => Some(RETURN_KEYCODE),
+            '\t' => Some(TAB_KEYCODE),
+            c if c.is_control() => None,
+            c => self.scratch_for(keysym_of(c)),
+        };
+        if let Some(keycode) = keycode {
+            self.fake(xproto::KEY_PRESS_EVENT, keycode, 0, 0);
+            self.fake(xproto::KEY_RELEASE_EVENT, keycode, 0, 0);
+        }
+    }
+
+    /// A spare keycode typing `keysym`: one already mapped to it, else the least recently used
+    /// one remapped.
+    fn scratch_for(&mut self, keysym: u32) -> Option<u8> {
+        let index = match self
+            .scratch
+            .iter()
+            .position(|k| self.typed.get(k) == Some(&keysym))
+        {
+            Some(index) => index,
+            None => {
+                let keycode = *self.scratch.first()?;
+                let width = usize::from(self.keysyms_per_keycode).max(2);
+                let mut keysyms = vec![0_u32; width];
+                // The same character with and without Shift.
+                keysyms[0] = keysym;
+                keysyms[1] = keysym;
+                if let Err(error) = self.conn.change_keyboard_mapping(
+                    1,
+                    keycode,
+                    self.keysyms_per_keycode,
+                    &keysyms,
+                ) {
+                    debug!(%error, "mapping a typed character failed");
+                    return None;
+                }
+                self.typed.insert(keycode, keysym);
+                0
+            }
+        };
+        let keycode = self.scratch.remove(index);
+        self.scratch.push(keycode);
+        Some(keycode)
+    }
+
     fn apply(&mut self, command: DisplayInput) {
         match command {
+            DisplayInput::Type(c) => self.type_char(c),
             DisplayInput::Motion { x, y } => {
                 let x = x.clamp(0, signed(self.size.0) - 1);
                 let y = y.clamp(0, signed(self.size.1) - 1);
@@ -456,4 +601,20 @@ impl XState {
 
 fn signed(value: u16) -> i16 {
     i16::try_from(value).unwrap_or(i16::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn characters_map_to_latin1_or_unicode_keysyms() {
+        assert_eq!(keysym_of('a'), 0x61);
+        assert_eq!(keysym_of('~'), 0x7E);
+        assert_eq!(keysym_of('é'), 0xE9);
+        assert_eq!(keysym_of('ą'), 0x0100_0105);
+        assert_eq!(keysym_of('€'), 0x0100_20AC);
+        assert_eq!(keysym_of('😀'), 0x0101_F600);
+        assert_eq!(socket_path(91), Path::new("/tmp/.X11-unix/X91"));
+    }
 }

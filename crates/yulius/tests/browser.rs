@@ -745,16 +745,29 @@ async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> 
         assert!(f.fake.calls_for("Input.dispatchMouseEvent").is_empty(), "clicks are not CDP");
         assert!(f.fake.calls_for("Input.dispatchKeyEvent").is_empty(), "keys are not CDP");
 
-        // The wheel scrolls the shown tab by CSS pixels; Polish letters and pastes are text.
+        // The wheel scrolls the shown tab by CSS pixels. A Polish letter and short text are
+        // typed as real key presses (in order with the other keys); a long paste is inserted.
         send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "wheel", "x": 5, "y": 6, "dx": 0, "dy": 37.5})).await?;
         send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "down", "key": "ą", "code": "KeyA"})).await?;
-        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "char", "text": "zażółć 🙂"})).await?;
-        assert!(f.fake.wait_for_calls("Input.insertText", 2, WAIT).await);
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "char", "text": "zażółć 🙂\n"})).await?;
+        let paste = "x".repeat(100);
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "char", "text": paste})).await?;
+        assert!(f.fake.wait_for_calls("Input.insertText", 1, WAIT).await);
         let wheel = f.fake.calls_for("Input.dispatchMouseEvent");
         assert_eq!(wheel[0].params["type"], "mouseWheel");
         assert_eq!(wheel[0].params["deltaY"], 37.5);
-        let texts: Vec<Value> = f.fake.calls_for("Input.insertText").iter().map(|c| c.params["text"].clone()).collect();
-        assert_eq!(texts, [json!("ą"), json!("zażółć 🙂")]);
+        let typed: String = display
+            .inputs()
+            .into_iter()
+            .filter_map(|i| match i {
+                DisplayInput::Type(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(typed, "ązażółć 🙂\n");
+        let inserted = f.fake.calls_for("Input.insertText");
+        assert_eq!(inserted.len(), 1);
+        assert_eq!(inserted[0].params["text"], paste.as_str());
 
         // Copy answers this viewer with the page's selection.
         f.fake.set_selection("copied text");

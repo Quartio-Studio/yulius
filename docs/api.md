@@ -371,47 +371,56 @@ Claude Code.
 
 ## Browser, editor, shell
 
-- `WS /api/sandboxes/{sid}/browser` (write): client `{"type":"open","url"}` (`""` opens the
-  welcome page), `{"type":"navigate","tab_id","url"}`, `{"type":"activate","tab_id"}`,
-  `{"type":"close","tab_id"}`,
-  `{"type":"mouse","tab_id","event":"down|up|move|wheel","x","y","button","dx","dy"}`,
-  `{"type":"key","tab_id","event":"down|up|char","key","code","text","modifiers"}`,
-  `{"type":"viewport","width","height"}`, `{"type":"view","mode":"dom|pixels"}` (this
-  connection's view, default `dom`), `{"type":"dom_resync"}` (a fresh snapshot),
-  `{"type":"watch","tab_id"|null}` (the tab this connection watches, independently of the
-  shared active tab; `null` watches none and nothing streams; until a viewer sends it, it
-  follows the active tab); server
-  `{"type":"tabs","tabs":[{"id","title","url","active","action_requested":{"reason","task_id"}|
-  null}]}`, `{"type":"viewport","width","height"}` (on connect and after every change; lay the
-  mirror out at this size), `{"type":"dom","tab_id","reset","events":[…]}` ([rrweb 2.1.7
-  events](https://github.com/rrweb-io/rrweb); `reset` starts a new stream from a `Meta` and a
-  full snapshot — on connect, navigation, resync or after lost events), `{"type":
-  "dom_unavailable","tab_id","reason"}` (this tab is sent as pixels), binary JPEG frames
-  (pixel view) prefixed by `u8 3` + 32-byte tab id (ASCII, space padded) + image,
-  `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
-  agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested",
-  "tab_id","reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|
-  capacity|upstream|internal","message"}`. One browser per sandbox (the agents' sandbox Chrome),
-  started on first use; the view is of the watched tab. Addresses of Yulius itself (its public
-  origin and its subdomains, every loopback form of its listeners) are refused with
-  `url_refused`, and pages' own requests to them fail as blocked (SPEC-001 BRW-008). A slow client loses frames (never the browser) and DOM batches are
-  never dropped: a client that stops reading JSON messages is closed with 4008. Access is
-  re-checked every 60 s (close 4003). When Chromium is missing or the browser stops, the server
-  sends an `upstream` error with the reason and closes with 1011.
-  Replay DOM events only in a script-free iframe (rrweb's default sandbox `allow-same-origin`):
-  pages can send crafted events.
-- `GET /api/sandboxes/{sid}/browser/resource?tab&url` (write): a page resource (image,
-  stylesheet, font) fetched by the sandbox browser with its cookies — for mirrored pages whose
-  resources only the VM can reach (localhost, private networks, plain http). Answers with the
-  resource's status and `Content-Type`, `X-Content-Type-Options: nosniff`,
-  `Content-Security-Policy: sandbox; default-src 'none'` and `Cache-Control: private,
-  max-age=300`; at most 20 MiB. Browser requests must be same-origin subresources: a
-  `Sec-Fetch-Site` other than `same-origin` or `Sec-Fetch-Mode: navigate` is 403. 404 while the
-  sandbox browser is not running.
+- `WS /api/sandboxes/{sid}/browser` (write): the sandbox's Chrome — the browser agents drive —
+  streamed (SPEC-002 ADR-15). One browser per sandbox, started on first use; with a virtual
+  display it runs headful on its own Xvfb and the connection receives its video and sends real
+  input, without one (headless hosts) JPEG frames and CDP input.
+  - Client: `{"type":"open","url"}` (`""` opens the welcome page), `{"type":"navigate","tab_id",
+    "url"}`, `{"type":"activate","tab_id"}`, `{"type":"close","tab_id"}`, `{"type":"history",
+    "tab_id","delta":-1|1}` (back, forward; nothing beyond the ends), `{"type":"reload","tab_id"}`,
+    `{"type":"mouse","tab_id","event":"down|up|move|wheel","x","y","button":"left|middle|right|
+    back|forward|none","dx","dy"}` (CSS pixels of the viewport; on a display moves, presses and
+    releases are XTest input wherever the pointer is and the wheel scrolls the shown tab by
+    `dx`/`dy` pixels), `{"type":"key","tab_id","event":"down|up|char","key","code","text",
+    "modifiers"}` (on a display: printable ASCII by `key` as a US-layout key with Shift as needed,
+    with Ctrl/Alt/Meta held the user's Shift is kept; other keys by `code`; a `key` no US key types
+    and `char` text up to 64 characters are typed as real key presses in order; longer `char` text,
+    a paste, is inserted with CDP `Input.insertText`; lock keys and AltGraph are ignored),
+    `{"type":"copy","tab_id"}` (answered with `clipboard`), `{"type":"viewport","width",
+    "height"}` (the panel size in CSS pixels; shared by every viewer, clamped to the configured
+    maximum), `{"type":"view","mode":"video|pixels"}` (default `video`), `{"type":"watch",
+    "tab_id"|null}` (the tab the panel shows: the display shows one tab, so this brings it to the
+    front for every viewer; `null` stops this connection's stream).
+  - Server: `{"type":"tabs","tabs":[{"id","title","url","active","action_requested":{"reason",
+    "task_id"}|null}]}` (on connect and after every change; `active` is the tab the display
+    shows — a page opening a page brings it to the front), `{"type":"viewport","width","height"}`
+    (CSS pixels, on connect and after every change), `{"type":"stream","mode":"video|pixels",
+    "reason"?}` (what this connection receives and, for `pixels` after asking for video, why),
+    `{"type":"video_config","codec","description","width","height"}` (a WebCodecs
+    `VideoDecoderConfig`: codec string such as `avc1.42c028`, the `avcC` record base64, the coded
+    size in device pixels; before the first frame and after every encoder restart, ordered with the
+    frames), binary video frames `u8 4`, `u8` flags (bit 0: keyframe), `u64` big-endian
+    timestamp in µs, then one H.264 access unit as length-prefixed NAL units (the first frame after
+    a configuration is a keyframe), binary JPEG frames (pixels) `u8 3` + 32-byte tab id (ASCII,
+    space padded) + image, `{"type":"clipboard","text"}` (the selection, at most 1 MiB),
+    `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
+    agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested","tab_id",
+    "reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|capacity|
+    upstream|internal","message"}`.
+  - Bounds: a viewer that falls behind skips to the next keyframe (at most 300 queued frames,
+    8 MiB, 30 frames behind); JPEG frames keep the newest 4; a client that stops reading JSON
+    messages is closed with 4008. Input: 500 events per second (burst 1000); moves and wheel
+    beyond are dropped, other input gets an `invalid` error. Keys and buttons a viewer held are
+    released when it leaves. Access is re-checked every 60 s (close 4003). When Chromium is
+    missing or the browser stops, the server sends an `upstream` error with the reason and closes
+    with 1011. Addresses of Yulius itself (its public origin and its subdomains, every loopback
+    form of its listeners) are refused with `url_refused`, and pages' own requests to them fail as
+    blocked (SPEC-001 BRW-008).
 - New tabs of the sandbox Chrome open `GET /browser/welcome?sandbox=<id>` on the internal
   (loopback) listener: the sandbox name and links to its listening dev-server ports (probed on
   127.0.0.1 every 5 s via `/browser/welcome/ports`; Yulius's own ports are never listed).
-- Live previews (SPEC-002 ADR-14). Every port of a sandbox's range has a **preview origin**
+- Live previews (SPEC-002 ADR-14; since ADR-15 used by the panel's "Open live in a new window"
+  for a sandbox dev server). Every port of a sandbox's range has a **preview origin**
   `<scheme>://<port>-<key>.<preview domain>[:<port>]` (`key`: 12 lowercase hex characters,
   stable per sandbox; preview domain: the public URL's host unless `--preview-domain` says
   otherwise). The public listener sends every request whose `Host` is a preview host to the

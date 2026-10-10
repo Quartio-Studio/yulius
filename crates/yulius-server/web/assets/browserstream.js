@@ -633,7 +633,7 @@ export function createStreamView(ctx, sandbox, hooks) {
           streamReason = 'this browser cannot decode video (no WebCodecs)';
         }
         if (mode === 'pixels') send({ type: 'view', mode: 'pixels' });
-        send({ type: 'watch', tab_id: watched });
+        // The server streams the shown (active) tab; nothing is brought forward on (re)connect.
         sendViewport(true);
         updateOverlay();
         if (hooks.onConnected) hooks.onConnected();
@@ -663,14 +663,17 @@ export function createStreamView(ctx, sandbox, hooks) {
     get watched() { return watched; },
     get isOpen() { return Boolean(socket && socket.isOpen); },
     get streamMode() { return streamMode; },
-    /** Show `tabId` (null: none). The display shows one tab: this brings it to the front. */
-    watch(tabId) {
-      if (watched === tabId) return;
+    /** Show `tabId`. The display shows one tab: with `activate` (the user chose it) it is brought
+     *  to the front for every viewer; without, the panel follows the tab the server shows. */
+    watch(tabId, { activate = true } = {}) {
+      const changed = watched !== tabId;
       watched = tabId || null;
-      agentCursor.hidden = true;
-      agentPill.hidden = true;
-      lastAgent = null;
-      send({ type: 'watch', tab_id: watched });
+      if (changed) {
+        agentCursor.hidden = true;
+        agentPill.hidden = true;
+        lastAgent = null;
+      }
+      if (activate && watched) send({ type: 'watch', tab_id: watched });
       updateOverlay();
       updateBadge();
     },
