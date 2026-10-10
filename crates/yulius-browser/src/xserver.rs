@@ -7,12 +7,12 @@
 //! dropped or the server goes away. It tracks the keys and buttons it pressed so a viewer that
 //! leaves never leaves one held ([`DisplayInput::ReleaseAll`]).
 //!
-//! Characters a US layout cannot type (`ą`, `€`, emoji) and typed text are real key presses too:
-//! the thread maps a Unicode keysym onto one of the keymap's spare keycodes and presses it, so
-//! they stay in order with the other keys (text inserted through CDP would overtake key presses
-//! still queued in the X server) and pages see real key events. Spare keycodes are reused in
-//! least-recently-used order, so a remapped keycode is never reassigned while the browser may
-//! still be looking up its previous character.
+//! Typed text is real key presses too: the characters of a US layout by their own keys, every
+//! other one (`ą`, `€`, emoji) through a Unicode keysym the thread maps onto one of the keymap's
+//! spare keycodes. They stay in order with the other keys (text inserted through CDP would
+//! overtake key presses still queued in the X server) and pages see real key events. Spare
+//! keycodes are reused in least-recently-used order, so a remapped keycode is never reassigned
+//! while the browser may still be looking up its previous character.
 //!
 //! There is no window manager. The thread plays the small part of one the browser needs: every
 //! top-level window that maps (the browser's window, a popup, a dialog) is moved to the top
@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 use crate::display::DisplayInput;
+use crate::keys::{SHIFT_KEYCODES, us_char};
 
 /// What the X thread is asked to do.
 #[derive(Debug)]
@@ -310,19 +311,51 @@ impl XState {
         }
     }
 
-    /// Types `c` as a real key press: Return and Tab by their keys, every other character
-    /// through a spare keycode mapped to its keysym.
+    /// Types `c` as a real key press: Return, Tab and the characters of a US layout by their
+    /// own keys (with Shift as the character needs, whatever Shift the viewer holds), every
+    /// other character through a spare keycode mapped to its keysym.
     fn type_char(&mut self, c: char) {
-        let keycode = match c {
-            '\n' => Some(RETURN_KEYCODE),
-            '\t' => Some(TAB_KEYCODE),
-            c if c.is_control() => None,
-            c => self.scratch_for(keysym_of(c)),
+        let (keycode, shift) = match c {
+            '\n' => (RETURN_KEYCODE, None),
+            '\t' => (TAB_KEYCODE, None),
+            c if c.is_control() => return,
+            c => match us_char(c) {
+                Some((keycode, shift)) => (keycode, Some(shift)),
+                None => match self.scratch_for(keysym_of(c)) {
+                    Some(keycode) => (keycode, None),
+                    None => return,
+                },
+            },
         };
-        if let Some(keycode) = keycode {
-            self.fake(xproto::KEY_PRESS_EVENT, keycode, 0, 0);
-            self.fake(xproto::KEY_RELEASE_EVENT, keycode, 0, 0);
+        let held: Vec<u8> = self
+            .keys
+            .iter()
+            .copied()
+            .filter(|keycode| SHIFT_KEYCODES.contains(keycode))
+            .collect();
+        match (shift, held.is_empty()) {
+            (Some(true), true) => {
+                self.fake(xproto::KEY_PRESS_EVENT, SHIFT_KEYCODES[0], 0, 0);
+                self.tap(keycode);
+                self.fake(xproto::KEY_RELEASE_EVENT, SHIFT_KEYCODES[0], 0, 0);
+            }
+            (Some(false), false) => {
+                for shift in &held {
+                    self.fake(xproto::KEY_RELEASE_EVENT, *shift, 0, 0);
+                }
+                self.tap(keycode);
+                for shift in &held {
+                    self.fake(xproto::KEY_PRESS_EVENT, *shift, 0, 0);
+                }
+            }
+            _ => self.tap(keycode),
         }
+    }
+
+    /// Presses and releases `keycode`.
+    fn tap(&self, keycode: u8) {
+        self.fake(xproto::KEY_PRESS_EVENT, keycode, 0, 0);
+        self.fake(xproto::KEY_RELEASE_EVENT, keycode, 0, 0);
     }
 
     /// A spare keycode typing `keysym`: one already mapped to it, else the least recently used

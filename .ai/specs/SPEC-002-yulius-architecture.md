@@ -356,8 +356,16 @@ pixel (crisp text) at about three times the encoding cost; the default is 1.
   is mapped by character to its US-layout keycode, pressing or lifting Shift around it as the
   character needs (any user layout types the right character; with Ctrl, Alt or Meta down the
   user's Shift is kept, so Ctrl+Shift+Z stays itself); other keys by `KeyboardEvent.code`
-  (evdev keycodes); characters no US key types (IME, emoji, Polish letters, dead-key results) are
-  inserted with CDP `Input.insertText`. Lock keys and AltGraph are not forwarded.
+  (evdev keycodes); characters no US key types (Polish letters, emoji, dead-key and IME results)
+  and short typed text (up to 64 characters) are real key presses too: the X thread types a
+  US-layout character with its own key and maps any other character's Unicode keysym onto one of
+  the keymap's spare keycodes (reused least recently first, never while the browser may still
+  look the old one up) and presses it. **A change from
+  the brief**, which suggested CDP `Input.insertText` for these: measured on the VM, text inserted
+  through CDP overtook key presses still queued in the X server ("Hello ą!" arrived as
+  "Helląo !"); keysyms keep everything on one ordered path and give pages real key events. Only
+  longer text (a paste) uses `Input.insertText`, after the display's queue has drained (an X
+  round trip and 50 ms). Lock keys and AltGraph are not forwarded.
 - The wheel and trackpad use CDP `mouseWheel` with pixel deltas on the shown tab (X wheel buttons
   are 3-line steps), coalesced per animation frame in the client.
 - macOS: ⌘C/⌘V/⌘X/⌘A/⌘Z and other editing shortcuts are sent as Ctrl; ⌘ arrows as Home/End.
@@ -400,15 +408,30 @@ action, "Open live in a new window", on a tab showing a sandbox dev server (when
 preview DNS and TLS): a developer can then use the app with their own browser's devtools. The
 no-recursion and session-isolation rules of ADR-14 stay.
 
-**Measured on the VM** (12 vCPU AMD EPYC, Chrome 155, ffmpeg 6.1; `live_display.rs`
-`measures_fps_latency_cpu_and_bandwidth`): see §14.
+**Measured on the VM** (12 vCPU AMD EPYC 2.0 GHz under its production load, Chrome 155,
+ffmpeg 6.1.1; `live_display.rs` `measures_fps_latency_cpu_and_bandwidth`, 60 fps, the test viewer
+on the VM's loopback; ranges over the runs of the final design):
+
+| | 1280×800 | 1920×1080 |
+|---|---|---|
+| Video fps while scrolling, p50 / p5 | 59–60 / 43–47 | 56 / 42–45 |
+| Encoder CPU (x11grab + x264), scrolling / static page | 93–105% / 68–78% of a core | 145–149% / 129–146% |
+| Bandwidth, scrolling / static page | 1.5–1.7 / 0.22 Mbit/s | 2.1–2.2 / 0.21–0.33 Mbit/s |
+
+Server-side input to frame (a key over the viewer socket → XTest → Chrome repaints the whole page
+→ x11grab → x264 → the socket): p50 77–80 ms, p95 119–122 ms; a typed character to the frame
+showing it: p50 60–66 ms, p95 82–99 ms. An earlier build under heavier load showed p95 spikes of
+204–241 ms and a p5 of 35 fps. At 30 fps the encoder takes 57–99% of a core. Not measured: the
+DOM mirror (its cost was in the user's browser and per replayed mutation, not comparable on the
+server), the network to a real user.
 
 **Consequences and limits.**
 
 - The page is pixels: text is selected in the remote page and copied through `copy`; find in page
   is Chrome's own (Ctrl+F).
-- About one core per watched browser at 60 fps at 1280×800 (encoder), nothing when nobody watches;
-  bandwidth while scrolling a few Mbit/s, idle mostly keyframes.
+- About one core per watched browser at 60 fps at 1280×800 (encoder), three quarters of one even
+  on a static page (x11grab captures every frame), nothing when nobody watches; about 2 Mbit/s
+  while scrolling. Open: capturing only on X damage.
 - Without `xvfb`/`ffmpeg` (macOS development, CI) the browser runs headless with JPEG frames and
   CDP input, as before.
 - No window manager: windows are fitted, not decorated; a page cannot move its popup.
@@ -886,6 +909,7 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | Linux-only | bubblewrap containment escape attempts | CI ubuntu job |
 | UI | end-to-end tests in `e2e/` (e2e by TesterArmy, Playwright) against the UI's mock mode: flows, keyboard, WCAG 2.x A/AA (axe-core), page errors, phone viewport; agent steps opt-in with a model key | Node test-only (ADR-01 unchanged); advisory CI job `Web UI e2e`. The real server, terminal rendering and panels against live agents: manual with recorded evidence |
 | Live (opt-in, never CI) | real Claude Code: launch, hooks, MCP, resume | uses local credentials; minimal prompts |
+| Live display (opt-in, Linux) | the streamed browser with Xvfb, ffmpeg and real Chrome: input, video content, popups, containment, recursion; performance figures; captcha clicks | `crates/yulius/tests/live_display.rs` (`YULIUS_LIVE_DISPLAY=1`); `live_ui_browser.rs` drives the real UI against it |
 | Deploy | VM install | **out of scope**; packaging reviewed only |
 
 ## 12. Risks
@@ -949,7 +973,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Areas | `accounts.rs`, `analytics.rs`, `automations.rs`, `skills_mcp.rs`, `delivery.rs`, `projects.rs`, `import_server.rs`, `browser.rs`, `editor.rs`, `shells.rs`, `http_auth.rs`, `mcp_coordination.rs`. |
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
 | Live previews and no recursion (ADR-14, 2026-10-09) | `tests/preview.rs` (handshake, rewriting, localhost view of the app, WebSocket passthrough, refusals of users, sandboxes, ports, cross-site callers and Yulius itself, the Yulius session unusable from a preview origin, TLS `ask`); `tests/browser.rs` (per-viewer `watch`); `yulius-browser` `tests/instance.rs` and `tests/manager.rs` (the sandbox Chrome's guard: refusal, `Fetch` interception, fail-closed start); opt-in `live_ui_browser.rs` with real Chrome (live iframe with root-relative assets, a redirect, a WebSocket, native typing, selection and scrolling, address bar and Back, agent notice and cursor, hostile preview page refused, framed UI refused, the sandbox Chrome refusing Yulius). Deployed DNS/TLS not exercised. |
-| Streamed browser (ADR-15, 2026-10-10) | Unit: FLV parsing for every split of a stream, codec strings, GOP cache, subscriber and viewer backpressure, encoder lifecycle (on demand, idle stop, resize restart, give-up), key mapping, cookie format and permissions, device sizes. `tests/browser.rs` with a fake display: video config then a keyframe, a late viewer's instant start, viewport → display resize and encoder restart, XTest-shaped input, wheel and text through CDP, copy, release on leave, pages opened by pages come to the front, history and reload, a broken encoder falls back to JPEG, the display stops with the browser. Opt-in `live_display.rs` on the VM (Xvfb, ffmpeg, Chrome 155, as the service user): see the PR for the run and figures. `e2e/tests/browser.e2e.ts` (mock UI, VP8 via WebCodecs). |
+| Streamed browser (ADR-15, 2026-10-10) | Unit: FLV parsing for every split of a stream, codec strings, GOP cache, subscriber and viewer backpressure, encoder lifecycle (on demand, idle stop, resize restart, give-up), key mapping, cookie format and permissions, device sizes. `tests/browser.rs` with a fake display: video config then a keyframe, a late viewer's instant start, viewport → display resize and encoder restart, XTest-shaped input, wheel and text through CDP, copy, release on leave, pages opened by pages come to the front, history and reload, a broken encoder falls back to JPEG, the display stops with the browser. Opt-in `live_display.rs` on the VM (Xvfb, ffmpeg, Chrome 155, as the service user): streaming from a keyframe, real clicks (also in an OAuth-style popup), typing incl. Polish letters and emoji in order, scrolling, canvas and image pixels, `navigator.webdriver === false`, agent cursor, screenshots, recursion refused, no display, cookie, abstract or TCP socket reachable from containment (both identities); figures in ADR-15; reCAPTCHA v2 demo (checkbox → image challenge, a tile selected) and Cloudflare's challenge on nopecha.com (checkbox → passed) with XTest clicks. `live_ui_browser.rs` with a display: the panel decodes H.264 in Chrome and its input reaches the page. `e2e/tests/browser.e2e.ts` (mock UI, VP8 via WebCodecs). |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog

@@ -19,7 +19,8 @@
 //! YULIUS_LIVE_DISPLAY=1 YULIUS_LIVE_CHROME=/usr/bin/google-chrome \
 //!   cargo test -p yulius --test live_display -- --ignored --nocapture --test-threads 1
 //! ```
-//! `YULIUS_LIVE_DISPLAY_BASE` (default 90) is the first display number used.
+//! `YULIUS_LIVE_DISPLAY_BASE` (default 90) is the first display number used; `YULIUS_BROWSER_FPS`
+//! sets the video frame rate (default 60).
 
 mod support;
 
@@ -83,10 +84,12 @@ html, body { margin: 0; background: #fff; font: 20px sans-serif; }
 #field { position: absolute; left: 300px; top: 150px; width: 300px; font-size: 24px; }
 #canvas { position: absolute; left: 300px; top: 220px; }
 #img { position: absolute; left: 620px; top: 40px; }
+#open { position: absolute; left: 520px; top: 220px; width: 160px; height: 40px; }
 #tall { height: 6000px; }
 </style></head><body>
 <div id="box"></div><button id="btn">Click me</button><input id="field" autocomplete="off">
 <canvas id="canvas" width="200" height="100"></canvas><img id="img" src="/img.svg" width="100" height="100">
+<button id="open" onclick="window.open('/popup', 'oauth', 'popup,width=400,height=300,left=900,top=600')">Sign in</button>
 <div id="tall"></div>
 <script>
 window.events = [];
@@ -95,9 +98,9 @@ document.getElementById('btn').addEventListener('click', (e) => {
   document.getElementById('box').style.background = 'rgb(255, 0, 0)';
 });
 addEventListener('keydown', (e) => events.push({ type: 'keydown', key: e.key, trusted: e.isTrusted }));
-let n = 0;
 const c = document.getElementById('canvas').getContext('2d');
-setInterval(() => { c.fillStyle = n++ % 2 ? 'rgb(0, 200, 0)' : 'rgb(200, 0, 200)'; c.fillRect(0, 0, 200, 100); }, 250);
+window.paint = (color) => { c.fillStyle = color; c.fillRect(0, 0, 200, 100); return true; };
+paint('rgb(0, 200, 0)');
 </script></body></html>"#;
 
 /// A page whose whole background flips between black and white on every key press (the input
@@ -130,12 +133,21 @@ addEventListener('keydown', (e) => {
 });
 </script></body></html>"#;
 
+/// The "OAuth" popup: green, and it records clicks.
+const POPUP: &str = r#"<!doctype html><html><head><title>popup</title><style>
+html, body { margin: 0; height: 100%; background: rgb(0, 160, 0); }
+</style></head><body><script>
+window.clicks = [];
+addEventListener('click', (e) => clicks.push({ trusted: e.isTrusted, x: e.clientX, y: e.clientY }));
+</script></body></html>"#;
+
 const IMAGE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="rgb(255,200,0)"/></svg>"#;
 
 fn fixture_site() -> Router {
     Router::new()
         .route("/", get(|| async { axum::response::Html(FIXTURE) }))
         .route("/flip", get(|| async { axum::response::Html(FLIP) }))
+        .route("/popup", get(|| async { axum::response::Html(POPUP) }))
         .route(
             "/img.svg",
             get(|| async { ([("content-type", "image/svg+xml")], IMAGE) }),
@@ -158,6 +170,12 @@ async fn live(chrome: &Path) -> Result<Live, Box<dyn std::error::Error>> {
     let runtime = data.join("displays");
     let mut display = DisplayConfig::new(runtime.clone());
     display.first_display = display_base();
+    if let Some(fps) = std::env::var("YULIUS_BROWSER_FPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        display.fps = fps;
+    }
     let mut config = BrowserConfig::new(chrome.to_path_buf(), data.join("unused"));
     config.display = DisplayMode::Virtual(display);
     config.startup_timeout = Duration::from_secs(60);
@@ -274,6 +292,20 @@ impl Viewer {
                 None => return Err(format!("timed out waiting for {what}").into()),
             }
         }
+    }
+
+    /// Reads until a keyframe produced after now arrived, then a little more: the decoded picture
+    /// is current even if this viewer lagged meanwhile (a lagging viewer skips to the next
+    /// keyframe, by design).
+    async fn settle(&mut self) -> TestResult {
+        let start = Instant::now();
+        let until = start + WAIT;
+        while !self.arrivals.iter().any(|a| a.2 && a.0 > start) {
+            if self.step(until).await?.is_none() {
+                return Err("no keyframe arrived".into());
+            }
+        }
+        self.pump(Duration::from_millis(400)).await
     }
 
     /// Reads messages for `duration` (keeps the video current).
@@ -595,7 +627,7 @@ async fn functional(live: &Live) -> TestResult {
     click(&mut viewer, &tab, 400.0, 80.0).await?;
     until(&cdp, &url, "a trusted click", "events.some(e => e.type === 'click' && e.trusted && Math.abs(e.x - 400) < 2 && Math.abs(e.y - 80) < 2)").await?;
     // …and the video shows its effect (the blue box turns red).
-    viewer.pump(Duration::from_millis(600)).await?;
+    viewer.settle().await?;
     let [r, g, b] = viewer.pixel(50, 50)?;
     assert!(
         r > 200 && g < 60 && b < 60,
@@ -611,15 +643,73 @@ async fn functional(live: &Live) -> TestResult {
         ir > 200 && ig > 150 && ib < 80,
         "image pixel {ir},{ig},{ib} should be yellow"
     );
-    let mut canvas = std::collections::HashSet::new();
-    for _ in 0..4 {
-        viewer.pump(Duration::from_millis(300)).await?;
-        let [cr, cg, _] = viewer.pixel(350, 250)?;
-        canvas.insert(cr > cg);
+    // A canvas the page repaints shows in the video each time.
+    for (color, magenta) in [
+        ("rgb(200, 0, 200)", true),
+        ("rgb(0, 200, 0)", false),
+        ("rgb(200, 0, 200)", true),
+    ] {
+        eval(&cdp, &url, &format!("paint('{color}')")).await?;
+        viewer.settle().await?;
+        let [cr, cg, cb] = viewer.pixel(350, 250)?;
+        assert_eq!(
+            cr > 150 && cb > 150 && cg < 60,
+            magenta,
+            "canvas pixel {cr},{cg},{cb} after {color}"
+        );
     }
-    assert_eq!(canvas.len(), 2, "the canvas changes in the video");
 
-    // Typing: ASCII, a shifted character and a Polish letter (inserted as text).
+    // A popup (an OAuth window) opened by a click comes to the front, fitted to the view (it
+    // asked for a spot outside it), and takes clicks; closing it shows the page again.
+    click(&mut viewer, &tab, 600.0, 240.0).await?;
+    let popup = viewer
+        .wait_json("the popup in front", |m| {
+            m["type"] == "tabs"
+                && m["tabs"].as_array().is_some_and(|tabs| {
+                    tabs.iter().any(|t| {
+                        t["active"] == true
+                            && t["url"].as_str().is_some_and(|u| u.ends_with("/popup"))
+                    })
+                })
+        })
+        .await?;
+    let popup_url = format!("http://{}/popup", live.site);
+    until(
+        &cdp,
+        &popup_url,
+        "the popup loaded",
+        "document.readyState === 'complete'",
+    )
+    .await?;
+    viewer.settle().await?;
+    for (x, y) in [(60, 60), (1200, 700)] {
+        let [pr, pg, pb] = viewer.pixel(x, y)?;
+        assert!(
+            pg > 120 && pr < 60 && pb < 60,
+            "popup pixel at {x},{y}: {pr},{pg},{pb} (the popup fills the view)"
+        );
+    }
+    click(&mut viewer, &tab, 640.0, 400.0).await?;
+    until(
+        &cdp,
+        &popup_url,
+        "a trusted click in the popup",
+        "clicks.some((c) => c.trusted)",
+    )
+    .await?;
+    eval(&cdp, &popup_url, "window.close(), true").await?;
+    viewer
+        .wait_json("the popup closed", |m| {
+            m["type"] == "tabs" && !m.to_string().contains("/popup")
+        })
+        .await?;
+    viewer.settle().await?;
+    let [r, g, b] = viewer.pixel(50, 50)?;
+    assert!(r > 200 && g < 60 && b < 60, "the page is back: {r},{g},{b}");
+    drop(popup);
+    let tab = viewer.active_tab().ok_or("no active tab")?;
+
+    // Typing: ASCII, a shifted character and a Polish letter (a keysym key press), in order.
     click(&mut viewer, &tab, 450.0, 165.0).await?;
     until(
         &cdp,
@@ -645,6 +735,17 @@ async fn functional(live: &Live) -> TestResult {
         &url,
         "the typed text",
         "document.getElementById('field').value === 'Hello ą!'",
+    )
+    .await?;
+    // Composed text and a short paste are typed as key presses, in order.
+    viewer
+        .send(json!({"type": "key", "tab_id": tab, "event": "char", "text": " Lovelace żółć 🙂"}))
+        .await?;
+    until(
+        &cdp,
+        &url,
+        "the typed text",
+        "document.getElementById('field').value === 'Hello ą! Lovelace żółć 🙂'",
     )
     .await?;
     until(
@@ -1087,6 +1188,13 @@ async fn frame_corner(
     session: &str,
     needle: &str,
 ) -> Result<Option<(f64, f64)>, Box<dyn std::error::Error>> {
+    cdp.call_session(session, "DOM.enable", json!({})).await?;
+    cdp.call_session(
+        session,
+        "DOM.getDocument",
+        json!({"depth": -1, "pierce": true}),
+    )
+    .await?;
     let flat = cdp
         .call_session(
             session,
@@ -1211,6 +1319,22 @@ async fn captchas(live: &Live) -> TestResult {
             title["result"]["value"],
             shots.display()
         );
+        // An image challenge: its first tile takes a real click too (it gets selected).
+        if name == "recaptcha"
+            && let Some((left, top)) = frame_corner(&cdp, &page, "recaptcha/api2/bframe").await?
+        {
+            let (tx, ty) = (left + 70.0, top + 190.0);
+            mouse(&mut viewer, &tab, "move", tx, ty).await?;
+            viewer.pump(Duration::from_millis(120)).await?;
+            mouse(&mut viewer, &tab, "down", tx, ty).await?;
+            viewer.pump(Duration::from_millis(90)).await?;
+            mouse(&mut viewer, &tab, "up", tx, ty).await?;
+            viewer.pump(Duration::from_secs(3)).await?;
+            viewer.save_png(&shots.join("recaptcha-tile.png"))?;
+            eprintln!(
+                "recaptcha: image challenge at ({left:.0}, {top:.0}); clicked its first tile at ({tx:.0}, {ty:.0})"
+            );
+        }
         let _ = cdp
             .call("Target.detachFromTarget", json!({"sessionId": page}))
             .await;

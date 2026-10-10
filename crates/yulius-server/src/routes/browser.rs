@@ -554,12 +554,11 @@ async fn pump(
                     return;
                 }
                 let tabs = tabs_rx.borrow_and_update().clone();
+                // The display shows the active tab (a watched tab was brought to the front; when
+                // it closes the next one is); `watch null` streams nothing.
                 let next = match &chosen {
-                    // The display shows the active tab; a chosen tab that closed is watched no
-                    // more until the viewer chooses again.
-                    Some(Some(tab)) if tabs.iter().any(|t| &t.id == tab) => active_tab(&tabs),
-                    Some(_) => None,
-                    None => active_tab(&tabs),
+                    Some(None) => None,
+                    _ => active_tab(&tabs),
                 };
                 if !out.json(&ViewerServerMsg::Tabs { tabs }).await {
                     out.close(CLOSE_LAGGING, "lagging; reconnect").await;

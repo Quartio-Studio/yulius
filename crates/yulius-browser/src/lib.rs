@@ -48,7 +48,8 @@ pub use discovery::{
     CHROMIUM_FIXED_PATHS, CHROMIUM_NAMES, discover_chromium, discover_in, resolve_executable,
 };
 pub use display::{
-    DisplayConfig, DisplayInput, DisplayMode, VirtualDisplay, XAUTHORITY_FILE, xauthority_entry,
+    DisplayConfig, DisplayInput, DisplayMode, VirtualDisplay, XAUTHORITY_FILE,
+    stop_orphaned_displays, xauthority_entry,
 };
 pub use error::{BrowserError, CdpError};
 pub use instance::{

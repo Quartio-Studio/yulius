@@ -159,6 +159,11 @@ pub fn browser_display_mode(args: &ServeArgs) -> yulius_browser::DisplayMode {
         return yulius_browser::DisplayMode::Headless;
     }
     let mut config = yulius_browser::DisplayConfig::new(args.data_dir.join("displays"));
+    // Displays a killed predecessor left running hold memory and display numbers.
+    let orphans = yulius_browser::stop_orphaned_displays(&config.runtime_root);
+    if orphans > 0 {
+        tracing::info!(orphans, "stopped virtual displays left by a previous run");
+    }
     config.xvfb.clone_from(&args.xvfb);
     config.ffmpeg.clone_from(&args.ffmpeg);
     config.fps = args.browser_fps;

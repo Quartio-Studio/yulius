@@ -21,6 +21,7 @@
 //! framebuffer is allocated at the configured maximum and RandR sets the screen to the viewport.
 
 use std::ffi::OsString;
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -66,8 +67,8 @@ pub enum DisplayInput {
         /// Pressed (or released).
         press: bool,
     },
-    /// Type a character as a real key press and release (a spare keycode mapped to its
-    /// keysym; Return and Tab by their keys).
+    /// Type a character as a real key press and release (a US-layout character, Return and Tab
+    /// by their keys, any other through a spare keycode mapped to its keysym).
     Type(char),
     /// Release every pressed key and button.
     ReleaseAll,
@@ -280,9 +281,72 @@ fn write_cookie(path: &Path, cookie: &[u8]) -> Result<(), BrowserError> {
         .map_err(|error| display_error(format!("cannot write the cookie: {error}")))
 }
 
-/// Whether display `number` looks taken (another server's socket or lock file).
+/// Whether display `number` is taken: its lock file names a live process, or (without a lock)
+/// something answers on its socket. A stale lock or socket left by a killed server is not taken:
+/// Xvfb removes them itself when it starts on that number.
 fn display_taken(number: u32) -> bool {
-    xserver::socket_path(number).exists() || Path::new(&format!("/tmp/.X{number}-lock")).exists()
+    match std::fs::read_to_string(format!("/tmp/.X{number}-lock")) {
+        Ok(text) => text.trim().parse::<i32>().ok().is_none_or(process_alive),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let socket = xserver::socket_path(number);
+            socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok()
+        }
+        Err(_) => true,
+    }
+}
+
+fn process_alive(pid: i32) -> bool {
+    use nix::errno::Errno;
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+        Ok(()) | Err(Errno::EPERM) => true,
+        Err(_) => false,
+    }
+}
+
+/// Stops X servers a previous Yulius process started and left behind (it was killed before it
+/// could stop them): every `Xvfb` whose `-auth` cookie lies under `runtime_root`. Their browser
+/// and encoder exit with them. Returns how many were stopped. Linux only (reads `/proc`).
+pub fn stop_orphaned_displays(runtime_root: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return 0;
+    };
+    let mut stopped = 0;
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+        let xvfb = args
+            .first()
+            .is_some_and(|program| program.ends_with(b"Xvfb"));
+        let ours = args.windows(2).any(|pair| {
+            pair[0] == b"-auth"
+                && Path::new(std::ffi::OsStr::from_bytes(pair[1])).starts_with(runtime_root)
+        });
+        if xvfb && ours {
+            let target = nix::unistd::Pid::from_raw(pid);
+            let _ = nix::sys::signal::kill(target, nix::sys::signal::Signal::SIGTERM);
+            for _ in 0..40 {
+                if !process_alive(pid) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            if process_alive(pid) {
+                let _ = nix::sys::signal::kill(target, nix::sys::signal::Signal::SIGKILL);
+            }
+            warn!(pid, "stopped a virtual display left by a previous run");
+            stopped += 1;
+        }
+    }
+    stopped
 }
 
 impl VirtualDisplay {
@@ -766,6 +830,24 @@ mod tests {
         assert_eq!(std::fs::metadata(&dir)?.permissions().mode() & 0o777, 0o700);
         assert_eq!(std::fs::read(&path)?, xauthority_entry(&[2; 16]));
         Ok(())
+    }
+
+    #[test]
+    fn dead_processes_are_told_from_live_ones() {
+        assert!(process_alive(
+            i32::try_from(std::process::id()).unwrap_or(1)
+        ));
+        // Pids are below 2^22 on Linux and 99999 on macOS.
+        assert!(!process_alive(i32::MAX - 7));
+    }
+
+    #[test]
+    fn orphan_sweeps_ignore_foreign_displays() {
+        // Nothing of ours runs under a fresh root.
+        assert_eq!(
+            stop_orphaned_displays(Path::new("/nonexistent/yulius-displays")),
+            0
+        );
     }
 
     #[test]

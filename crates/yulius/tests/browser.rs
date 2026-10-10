@@ -252,9 +252,14 @@ async fn viewers_need_write_access_and_drive_a_per_sandbox_browser() -> TestResu
         .await?;
         send(&mut socket, json!({"type": "mouse", "tab_id": new_tab, "event": "down", "x": 10, "y": 20, "button": "left"}))
             .await?;
-        send(&mut socket, json!({"type": "key", "tab_id": new_tab, "event": "char", "text": "hi"})).await?;
+        send(&mut socket, json!({"type": "key", "tab_id": new_tab, "event": "down", "key": "h", "code": "KeyH"})).await?;
+        // Text without a key (a paste) is inserted: a key event carries at most four characters.
+        send(&mut socket, json!({"type": "key", "tab_id": new_tab, "event": "char", "text": "hi there"})).await?;
         assert!(f.fake.wait_for_calls("Input.dispatchMouseEvent", 1, WAIT).await);
         assert!(f.fake.wait_for_calls("Input.dispatchKeyEvent", 1, WAIT).await);
+        assert!(f.fake.wait_for_calls("Input.insertText", 1, WAIT).await);
+        let key = &f.fake.calls_for("Input.dispatchKeyEvent")[0].params;
+        assert_eq!((key["type"].clone(), key["text"].clone()), (json!("keyDown"), json!("h")), "a printable key types its character");
 
         // Refused addresses and malformed messages are reported, not fatal.
         send(&mut socket, json!({"type": "open", "url": "file:///etc/passwd"})).await?;

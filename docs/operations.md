@@ -16,7 +16,7 @@ been performed or verified** as part of the implementation work.
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
 | `xvfb` | the sandbox browser's virtual display (SPEC-002 ADR-15) | `apt install xvfb`. Without it (or ffmpeg) the browser runs headless: JPEG frames, no real input, captchas fail. `xauth` is not needed (Yulius writes the cookie itself); `x11-utils` (`xdpyinfo`) only for diagnostics. |
 | `ffmpeg` with libx264 and x11grab | the browser video | `apt install ffmpeg` (Ubuntu's build has both; `yulius doctor` checks). |
-| Fonts | pages in the sandbox browser | at least `fonts-noto-core fonts-noto-color-emoji fonts-liberation2`; add `fonts-noto-cjk` for CJK pages. |
+| Fonts | pages in the sandbox browser | at least `fonts-noto-core fonts-noto-color-emoji fonts-liberation` (Ubuntu 24.04 names); add `fonts-noto-cjk` for CJK pages. |
 
 Inside containment an agent sees only `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/opt`, its own
 sandbox directory and the `yulius` binary. Install Claude Code system-wide under `/usr/local` or
@@ -241,11 +241,11 @@ Encoding runs only while someone watches.
 | `--browser-scale` / `YULIUS_BROWSER_SCALE` | 1 | Device pixels per CSS pixel (1–3). 2 gives crisp text on HiDPI screens at about three times the CPU and bandwidth. |
 | `--browser-display-base` / `YULIUS_BROWSER_DISPLAY_BASE` | 100 | First X display number; numbers in use are skipped. |
 
-Resources (measured on a 12-vCPU VM, Chrome 155, ffmpeg 6.1; details in the PR of #107): the
-encoder takes about one core per watched browser at 1280×800 and 60 fps, about 1.4 cores at
-1920×1080, and nothing when nobody watches; video is a few hundred kbit/s idle and 1–2 Mbit/s
-while scrolling text pages. Each display is a framebuffer of the maximum size (about 9 MB at
-1920×1200).
+Resources (measured on a 12-vCPU VM, Chrome 155, ffmpeg 6.1; SPEC-002 ADR-15): the encoder takes
+about one core per watched browser at 1280×800 and 60 fps (three quarters of one on a static page),
+about 1.5 cores at 1920×1080, and nothing when nobody watches; 30 fps saves a third to a half.
+Video is about 0.2–0.3 Mbit/s on a static page and 1.5–2.2 Mbit/s while scrolling. Each display is
+a framebuffer of the maximum size (about 9 MB at 1920×1200).
 
 Isolation: the display listens on neither TCP nor an abstract socket (`-nolisten tcp -nolisten
 local`), only on `/tmp/.X11-unix/X<n>`, which contained agents and users' shells do not see (their
