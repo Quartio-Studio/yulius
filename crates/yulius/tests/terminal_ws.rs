@@ -136,8 +136,6 @@ async fn fixture(options: FakeAgentOptions) -> Result<Fixture, Box<dyn std::erro
             provider: Provider::Anthropic,
             label: "Claude".into(),
             credential: Some(h.app.deps.crypto.seal(b"sk-ant-oat01-terminal-test")?),
-            priority: 0,
-            enabled: true,
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,

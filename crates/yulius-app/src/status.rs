@@ -79,10 +79,8 @@ impl App {
                 label: a.label.clone(),
                 provider: a.provider.as_str().to_owned(),
                 status: a.status.as_str().to_owned(),
-                enabled: a.enabled,
                 usage: usage_view(&account_usage(a)),
                 id: admin.then(|| a.id.to_string()),
-                priority: admin.then_some(a.priority),
                 last_error: if admin { a.last_error.clone() } else { None },
                 in_use_by: admin.then(|| in_use_count(&a.id, &live)),
             })

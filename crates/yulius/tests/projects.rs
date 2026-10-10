@@ -333,8 +333,8 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     assert_eq!(blocked.status, StatusCode::CONFLICT);
     assert!(text(&blocked.body["error"]["message"]).contains("being prepared"));
 
-    // Approving starts the preparation task; without a connected account it cannot start and
-    // the sandbox stays pending.
+    // Approving starts the preparation task; with no subscription connected yet it waits,
+    // paused, for the first one (ROT-010, F 2026-10-10) and the sandbox is preparing.
     let approve = call(
         &w.h.router,
         Method::POST,
@@ -343,9 +343,13 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
         &alice,
     )
     .await?;
-    assert_eq!(approve.status, StatusCode::CONFLICT, "{:?}", approve.body);
-    assert!(text(&approve.body["error"]["message"]).contains("account"));
-    assert_eq!(w.h.app.refresh_onboarding(&record.id).await?, "pending");
+    assert_eq!(approve.status, StatusCode::OK, "{:?}", approve.body);
+    assert_eq!(approve.body["onboarding"], "preparing");
+    assert_eq!(
+        w.h.store.task(&prep.id).await?.ok_or("task")?.status,
+        TaskStatus::WaitingCapacity,
+        "paused until a subscription is added"
+    );
 
     // Skipping needs admin; afterwards ordinary tasks are accepted.
     let skip = format!("/api/sandboxes/{shop_id}/onboarding/skip");

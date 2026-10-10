@@ -8,6 +8,7 @@ mod accounts;
 mod analytics;
 mod audit;
 mod automations;
+mod capacity;
 mod coordination;
 pub mod crypto;
 mod delivery;
@@ -39,6 +40,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0002_instance_feedback.sql"),
     include_str!("migrations/0003_claude_only.sql"),
     include_str!("migrations/0004_task_intake.sql"),
+    include_str!("migrations/0005_subscription_pool.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -253,6 +255,41 @@ mod tests {
             columns.iter().any(|c| c == "mode"),
             "version 2 columns that stay are kept"
         );
+        Ok(())
+    }
+
+    /// A version-3 database migrates through the task intake (4) to the subscription pool (5): it
+    /// keeps its accounts (without priority and enabled) and hands a task that was waiting for
+    /// capacity to the resume loop (F 2026-10-10).
+    #[tokio::test]
+    async fn version_three_databases_migrate_to_the_subscription_pool()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::ports::store::AccountStore as _;
+        use yulius_app::ports::store_ext::CapacityStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v3.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..3] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 3)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 1, 1, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO accounts (id, provider, label, priority, enabled, status, created_at, updated_at) VALUES ('a1', 'anthropic', 'Claude #1', 7, 0, 'ok', 1, 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at) VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'waiting_capacity', 'ui', 'u1', 1, 5);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let accounts = store.accounts().await?;
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].label, "Claude #1");
+        let pauses = store.open_pauses().await?;
+        assert_eq!(pauses.len(), 1);
+        assert_eq!(pauses[0].task_id.as_str(), "t1");
+        assert_eq!(pauses[0].kind, yulius_app::model::PauseKind::Start);
+        assert_eq!(pauses[0].started_at.0, 5);
         Ok(())
     }
 

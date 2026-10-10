@@ -150,8 +150,6 @@ async fn intake_with(h: Harness) -> Result<Intake, Box<dyn std::error::Error>> {
             provider: Provider::Anthropic,
             label: "acc-1".into(),
             credential: Some(h.app.deps.crypto.seal(b"oauth-token")?),
-            priority: 0,
-            enabled: true,
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,

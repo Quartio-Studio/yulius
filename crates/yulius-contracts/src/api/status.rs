@@ -61,16 +61,11 @@ pub struct StatusAccount {
     pub provider: String,
     /// `ok`, `relogin`, `error`, `limited` or `pending_login`.
     pub status: String,
-    /// Enabled for rotation.
-    pub enabled: bool,
     /// Usage snapshot (unknown windows are `null`).
     pub usage: AccountUsageView,
     /// Id (instance administrators only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Priority (instance administrators only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority: Option<i32>,
     /// Last error (instance administrators only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,

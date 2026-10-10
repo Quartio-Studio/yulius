@@ -1,7 +1,8 @@
 //! [`UsageProbe`] over HTTPS (SPEC-001 ROT-009): the endpoint Claude Code reads its plan usage
 //! from — `GET https://api.anthropic.com/api/oauth/usage` (OAuth token,
 //! `anthropic-beta: oauth-2025-04-20`; windows `five_hour` and `seven_day` with `utilization`
-//! in percent and `resets_at`). Read-only: tokens are never refreshed here. Errors carry the
+//! in percent and `resets_at`, plus the per-model weekly caps `seven_day_opus` and
+//! `seven_day_sonnet` when the plan has them). Read-only: tokens are never refreshed here. Errors carry the
 //! status, never the credential or the response body.
 
 use std::time::Duration;
@@ -99,7 +100,8 @@ fn throttled(retry_after: Option<&str>) -> UsageFailure {
     }
 }
 
-/// Claude's `{"five_hour": {"utilization", "resets_at"}, "seven_day": {...}}`.
+/// Claude's `{"five_hour": {"utilization", "resets_at"}, "seven_day": {...},
+/// "seven_day_opus": {...}|null, "seven_day_sonnet": {...}|null}`.
 pub fn parse_claude(body: &Value) -> Result<AccountUsage, String> {
     let window = |key: &str, minutes: u32| -> Option<UsageWindow> {
         let w = body.get(key).filter(|w| w.is_object())?;
@@ -115,6 +117,8 @@ pub fn parse_claude(body: &Value) -> Result<AccountUsage, String> {
     let usage = AccountUsage {
         primary: window("five_hour", 5 * 60),
         secondary: window("seven_day", 7 * 24 * 60),
+        weekly_opus: window("seven_day_opus", 7 * 24 * 60),
+        weekly_sonnet: window("seven_day_sonnet", 7 * 24 * 60),
         ..AccountUsage::default()
     };
     if usage.primary.is_none() && usage.secondary.is_none() {
@@ -155,13 +159,19 @@ mod tests {
         let usage = parse_claude(&json!({
             "five_hour": {"utilization": 37.0, "resets_at": "2026-10-07T20:00:00Z"},
             "seven_day": {"utilization": 12.5, "resets_at": "2026-10-10T08:00:00.000+00:00"},
-            "seven_day_opus": null
+            "seven_day_opus": null,
+            "seven_day_sonnet": {"utilization": 81.0, "resets_at": "2026-10-10T08:00:00Z"}
         }))?;
         let primary = usage.primary.ok_or("primary")?;
         assert_eq!(primary.used_percent, Some(37.0));
         assert_eq!(primary.window_minutes, Some(300));
         assert!(primary.resets_at.is_some());
         assert_eq!(usage.secondary.ok_or("secondary")?.used_percent, Some(12.5));
+        assert_eq!(usage.weekly_opus, None, "a null cap is unknown, not zero");
+        assert_eq!(
+            usage.weekly_sonnet.ok_or("sonnet cap")?.used_percent,
+            Some(81.0)
+        );
         assert!(parse_claude(&json!({})).is_err());
         Ok(())
     }

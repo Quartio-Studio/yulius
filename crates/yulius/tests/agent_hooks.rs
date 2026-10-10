@@ -151,6 +151,22 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
             TaskStatus::Running,
         )?)
         .await?;
+    // The run's subscription has capacity (its usage is not known yet), so turn boundaries are
+    // never held for capacity here (ADR-17; holds are covered by subscription_pool.rs).
+    let account = yulius_domain::ids::AccountId::parse("acc-1")?;
+    store
+        .insert_account(&yulius_app::model::AccountRecord {
+            id: account.clone(),
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Claude #1".into(),
+            credential: Some(h.app.deps.crypto.seal(b"sk-ant-oat01-hooks-test")?),
+            status: yulius_app::model::AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await?;
     let hash = h.app.deps.crypto.sha256_hex(TOKEN.as_bytes());
     store
         .insert_attempt(&AttemptRecord {
@@ -158,7 +174,7 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
             task_id: main.id.clone(),
             seq: 1,
             harness: Agent::ClaudeCode,
-            account_id: None,
+            account_id: Some(account),
             provider_session_id: None,
             launch_kind: LaunchKind::New,
             state: AttemptState::Live,
