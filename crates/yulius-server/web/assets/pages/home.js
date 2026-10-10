@@ -138,12 +138,14 @@ export function mountHomePage(ctx) {
 
   // Last activity comes from each sandbox's task list: load the ones not loaded yet, a few at a time
   // (the store keeps them current from the event stream afterwards).
+  const loading = new Set(); // sandbox ids whose list is on its way
   async function loadActivity() {
-    const queue = store.state.sandboxes.filter((s) => store.tasksOf(s.id) === null && !store.tasksError(s.id)).map((s) => s.id);
+    const queue = store.state.sandboxes.filter((s) => store.tasksOf(s.id) === null && !store.tasksError(s.id) && !loading.has(s.id)).map((s) => s.id);
+    queue.forEach((id) => loading.add(id));
     const worker = async () => {
-      while (alive && queue.length) {
+      while (queue.length) {
         const id = queue.shift();
-        try { await store.loadTasks(id); } catch { /* the card says "unknown" */ }
+        try { if (alive) await store.loadTasks(id); } catch { /* the card says "unknown" */ } finally { loading.delete(id); }
       }
     };
     await Promise.all(Array.from({ length: Math.min(LOAD_CONCURRENCY, queue.length) }, worker));
