@@ -758,6 +758,8 @@ async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> 
         let paste = "x".repeat(100);
         send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "char", "text": paste})).await?;
         assert!(f.fake.wait_for_calls("Input.insertText", 1, WAIT).await);
+        // The wheel is dispatched without making the viewer socket wait (F 2026-10-10).
+        assert!(f.fake.wait_for_calls("Input.dispatchMouseEvent", 1, WAIT).await);
         let wheel = f.fake.calls_for("Input.dispatchMouseEvent");
         assert_eq!(wheel[0].params["type"], "mouseWheel");
         assert_eq!(wheel[0].params["deltaY"], 37.5);
