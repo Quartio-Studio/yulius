@@ -173,9 +173,20 @@ function seed(params) {
     t('sb_product', 4, 'Invoice PDF export', 'claude', 'running', 'working', { done: 3, updated: 4 * MIN }),
     t('sb_product', 5, 'Onboarding emails', 'claude', 'closed', null, { done: 7, current: false, updated: 2 * DAY, delivery: { stage: 'production_done', environment: null, pr: pr(498, 'Onboarding emails', 'merged', 'quartio', 'none') } }),
     t('sb_product', 6, 'Team invites', 'claude', 'closed', null, { done: 7, current: false, updated: 26 * HOUR, author: 'anna-q', delivery: { stage: 'merged_integration', environment: null, pr: pr(505, 'Team invites', 'merged', 'quartio', 'none') } }),
+    // Waits for #4 to be Done (TSK-012).
+    t('sb_product', 7, 'Invoice emails', 'claude', 'chained', null, { noSteps: true, updated: 3 * MIN }),
     t('sb_three', 2, 'Write README', 'claude', 'closed', null, { done: 7, current: false }),
     t('sb_three', 1, 'Explore data model', 'claude', 'running', 'working', { done: 1, author: 'anna-q' }),
   ];
+  {
+    const invoices = db.tasks.find((x) => x.id === 'tsk_product_4');
+    const emails = db.tasks.find((x) => x.id === 'tsk_product_7');
+    if (invoices && emails) {
+      chainAfter(emails, invoices);
+      // A prompt typed into #4 that the scope check held (TSK-013).
+      invoices.heldPrompt = { id: 'hold_1', class: 'new_scope', excerpt: 'Also add a dark mode to the invoice settings page.', percent: 92, typed_by: 'mkarp', created_at: iso(2 * MIN) };
+    }
+  }
   db.messages = [
     { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_11', login: null, title: '#11 3D model viewer (claude)' }, to_task_id: 'tsk_studio_12', kind: 'scope', subject: 'Scope: src/viewer/**', body: 'I am working in src/viewer/** and public/models/**. Please avoid those paths; I will stay out of src/api/**.', created_at: iso(42 * MIN), read: true },
     { id: 'msg_2', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_10', login: null, title: '#10 AWS login for deploy (claude)' }, to_task_id: 'tsk_studio_12', kind: 'question', subject: 'Which port does the API use?', body: 'Is the checkout API served on http://localhost:20003 in this sandbox? I need it for the deploy smoke test.', created_at: iso(8 * MIN), read: false },
@@ -222,7 +233,9 @@ function seed(params) {
   const pastRun = (n, env, kind, by, ago) => ({ run_id: `run_seed_${n}`, sandbox_id: 'sb_product', environment: env, kind, state: 'succeeded', command: kind === 'manual' ? null : 'node scripts/deployer.mjs --target dev-vm', commit: 'b7e9f01c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a', requested_by: by, output: kind === 'manual' ? `${by} confirmed ${env}.` : 'deploying… done in 2m 14s', exit_code: kind === 'manual' ? null : 0, started_at: iso(ago), ended_at: iso(ago - 2 * MIN), startedMs: Date.now() - ago - 1e9 });
   db.runs.push(pastRun(1, 'dev-vm', 'command', 'mkarp', 2 * DAY + HOUR), pastRun(2, 'dev-vm', 'manual', 'mkarp', 2 * DAY + 30 * MIN), pastRun(3, 'rollout', 'manual', 'anna-q', 2 * DAY - HOUR), pastRun(4, 'dev-vm', 'command', 'mkarp', 3 * HOUR));
   db.promotionPr = new Map(); // sandbox id → open promotion PR URL (merge_commit promotion)
-  if (!linked && role !== 'superadmin') {
+  // `sandboxes=0`: a fresh instance with no sandbox yet; the home screen shows its first steps
+  // (import a repository, create one from a template).
+  if ((!linked && role !== 'superadmin') || params.get('sandboxes') === '0') {
     db.sandboxes = [];
     db.tasks = [];
   }
@@ -245,7 +258,17 @@ function summary(task) {
     branch: task.branch, origin: task.origin, created_by: task.created_by, created_at: task.created_at, updated_at: task.updated_at,
     steps: stepsSummary(task), unread_messages: task.unread_messages, archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
+    // Chained tasks (TSK-012) and a held prompt (TSK-013).
+    after: task.afterLink ? { ...task.afterLink } : null,
+    next: (task.nextLinks || []).map((link) => ({ ...link })),
+    held_prompt: task.heldPrompt ? { ...task.heldPrompt } : null,
   };
+}
+
+/** Links `task` to run after `before` (TSK-012); both summaries show the chain. */
+function chainAfter(task, before) {
+  task.afterLink = { task_id: before.id, number: before.number, title: before.title, status: before.status, blocked: null };
+  before.nextLinks = [...(before.nextLinks || []), { task_id: task.id, number: task.number, title: task.title, status: task.status, blocked: null }];
 }
 
 /** Where a stage sits in the profile: the next environment, promotion, or nothing (domain `position`). */
@@ -592,8 +615,10 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
   const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
   const wf = db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
+  const before = body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
+  if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
   const task = {
-    id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: 'queued', activity: null,
+    id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: before ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     unread_messages: 0, archived: false, account_label: null,
@@ -603,14 +628,76 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
   };
   db.tasks.push(task);
   recount(db);
+  if (before) {
+    chainAfter(task, before);
+    emit(db, { type: 'task.updated', task: summary(before) });
+    return json(201, summary(task));
+  }
   later(() => touch(db, task, { status: 'starting' }), 700);
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return json(201, summary(task));
+});
+// Task intake (TSK-011): requests of 40+ words mixing UI and backend work look like several
+// tasks; the proposal groups lines by area (UX first, backend second).
+const MOCK_BACKEND = /backend|api|server|database|pool|queue/i;
+route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const text = String(body.prompt || '');
+  const words = text.split(/\s+/).filter(Boolean).length;
+  if (words < 40) return { verdict: 'one', checked: false };
+  const lines = text.split('\n').filter((l) => /^\s*(\d+[.)]|[-*•])\s/.test(l));
+  const several = lines.some((l) => MOCK_BACKEND.test(l)) && lines.some((l) => !MOCK_BACKEND.test(l));
+  return { verdict: several ? 'several' : 'one', checked: true };
+});
+route('POST', `/api/sandboxes/${ID}/intake/proposal`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const lines = String(body.prompt || '').split('\n').filter((l) => /^\s*(\d+[.)]|[-*•])\s/.test(l)).map((l) => l.trim());
+  const backend = lines.filter((l) => MOCK_BACKEND.test(l));
+  const ux = lines.filter((l) => !MOCK_BACKEND.test(l));
+  if (!backend.length || !ux.length) return { tasks: [] };
+  return { tasks: [
+    { title: 'UX: interface fixes', prompt: ux.join('\n'), after_previous: false },
+    { title: 'Backend: server work', prompt: backend.join('\n'), after_previous: false },
+  ] };
+});
+route('POST', `/api/tasks/${ID}/start-now`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.status !== 'chained') fail(409, 'conflict', `the task is ${task.status}, not waiting in a chain`);
+  touch(db, task, { status: 'queued' });
+  later(() => touch(db, task, { status: 'starting' }), 700);
+  later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
+  return summary(task);
+});
+route('POST', `/api/tasks/${ID}/held-prompts/${ID}`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  const hold = task.heldPrompt;
+  if (!hold || hold.id !== p[1]) fail(404, 'not_found', 'not found');
+  const action = body.action;
+  if (action === 'revert' && !body.confirm) fail(422, 'invalid', 'reverting cancels this task and resets its branch; confirm it explicitly');
+  if (!['parallel', 'after', 'send', 'skip_after', 'revert', 'dismiss'].includes(action)) fail(422, 'invalid', 'unknown action');
+  task.heldPrompt = null;
+  let created = null;
+  if (['parallel', 'after', 'skip_after', 'revert'].includes(action)) {
+    const number = Math.max(0, ...db.tasks.filter((x) => x.sandbox_id === task.sandbox_id).map((x) => x.number)) + 1;
+    const id = `tsk_${task.sandbox_id.slice(3)}_${number}`;
+    const chained = action === 'after' || action === 'skip_after';
+    created = { ...clone(task), id, number, title: hold.excerpt.slice(0, 60), status: chained ? 'chained' : 'queued', activity: null, stepsList: [], heldPrompt: null, afterLink: null, nextLinks: [], delivery: null, created_at: new Date().toISOString() };
+    db.tasks.push(created);
+    if (chained) chainAfter(created, task);
+  }
+  if (action === 'revert') touch(db, task, { status: 'stopped_cancelled', archived: true, activity: null });
+  else touch(db, task, {});
+  const notes = { dismiss: 'Dismissed. The prompt is still in Claude Code’s input box.', send: 'Sent to the agent unchanged.', parallel: `Started #${created && created.number} in parallel.`, after: `#${created && created.number} runs after this task.`, skip_after: `Steps skipped; #${created && created.number} runs after this task.`, revert: `#${task.number} was cancelled and its changes reverted. Its work is kept on branch yulius/reverted/${task.number}-1; nothing was deleted.` };
+  recount(db);
+  return { task: summary(task), created: created ? summary(created) : null, note: notes[action] };
 });
 route('GET', `/api/tasks/${ID}`, ({ db, p }) => detail(db, taskOf(db, p[0])));
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
+  if (task.status === 'chained') { touch(db, task, { status: 'stopped_cancelled' }); return summary(task); }
   if (!LIVE.has(task.status)) fail(409, 'conflict', 'The task is not running.');
   touch(db, task, { status: 'stopping', activity: null });
   later(() => touch(db, task, { status: 'stopped_cancelled', account_label: null }), 1400);

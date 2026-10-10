@@ -17,7 +17,8 @@ export function openTaskMenu(ctx, anchor, task) {
   const why = allows(access, 'write') ? 'Not available in this state' : 'Requires write access on GitHub';
   openMenu(anchor, [
     { header: `#${task.number} · ${statusInfo(task).label}` },
-    { label: 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
+    task.status === 'chained' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
+    { label: task.status === 'chained' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
     { label: 'Switch account…', disabled: !can.switch, title: can.switch ? null : why, onSelect: () => openSwitchDialog(ctx, task) },
     { label: 'Deliver…', disabled: !can.deliver, title: can.deliver ? null : why, onSelect: () => openDeliveryDialog(ctx, task) },
@@ -51,8 +52,23 @@ async function taskPost(ctx, task, verb, request, okMessage) {
   }
 }
 
-/** Stop a live task (confirmation: stopping interrupts the agent). */
+/** A task waiting in a chain starts now, whatever its predecessor does (TSK-012). */
+export function startNow(ctx, task) {
+  return taskPost(ctx, task, 'start', () => ctx.api.post(`/api/tasks/${enc(task.id)}/start-now`), `Starting #${task.number}…`);
+}
+
+/** Stop a live task (confirmation: stopping interrupts the agent); cancel a chained one. */
 export async function stopTask(ctx, task) {
+  if (task.status === 'chained') {
+    const cancel = await confirmDialog({
+      title: `Cancel task #${task.number}?`,
+      message: `It is queued after #${task.after ? task.after.number : '?'} and will not start. You can continue it later.`,
+      confirmLabel: 'Cancel task',
+      danger: true,
+    });
+    if (cancel) await taskPost(ctx, task, 'stop', () => ctx.api.post(`/api/tasks/${enc(task.id)}/stop`), `Cancelled #${task.number}`);
+    return;
+  }
   const ok = await confirmDialog({
     title: `Stop task #${task.number}?`,
     message: 'The agent session is interrupted and its process tree is stopped. You can continue the task later.',

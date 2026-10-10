@@ -68,6 +68,8 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 # The sandbox browser: a headful Chrome on a virtual display when xvfb and ffmpeg are installed
 # (auto, the default). See "Sandbox browser" below for the other settings.
 Environment=YULIUS_BROWSER_DISPLAY=auto
+# Optional task intake (see "Task intake (Jev)" below).
+#Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
 ExecStart=/usr/local/bin/yulius serve
 KillMode=process
 Restart=on-failure
@@ -255,6 +257,37 @@ Xvfb, Chrome and ffmpeg are children of the service and share its `/tmp`, so `Pr
 the unit works too.
 
 Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
+
+### Task intake (Jev)
+
+Optional (SPEC-002 ADR-16). With a TypeSafe Jev key, Yulius offers to split new tasks that mix
+separate workstreams (the proposal comes from one headless `claude -p` run on a connected
+account), and it holds prompts typed into a running task that add, drop or replace its scope until
+someone decides in the task view. Without a key both are off and nothing changes.
+
+| Setting (flag / environment) | Default | Meaning |
+| --- | --- | --- |
+| `--jev-api-key-file` / `YULIUS_JEV_API_KEY_FILE` | unset (off) | File holding the Jev API key, owned by the service user, mode `0600` (a group- or world-readable file is refused, and intake stays off). Read at start; restart after changing it. The key is never logged. |
+| `--jev-split-threshold` / `YULIUS_JEV_SPLIT_THRESHOLD` | 0.9 | Probability of "several workstreams" Jev must give before a split is offered (0.5–1). |
+| `--jev-scope-threshold` / `YULIUS_JEV_SCOPE_THRESHOLD` | 0.8 | Probability Jev must give before a typed prompt is held (0.5–1). |
+
+```sh
+# The data directory is owner-only already; keep the key beside the master key.
+sudo install -o yulius -g yulius -m 0600 /dev/null /var/lib/yulius/jev.key
+sudo sh -c 'cat > /var/lib/yulius/jev.key'   # paste the key, then Ctrl-D
+# in the unit: Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
+```
+
+- The start log says `task intake is on (Jev jev-1.13.0)` or why it is off.
+- Requests go to `https://api.typesafe.ai/v1/systemone` (outbound HTTPS). Each request carries one
+  question: for a split check, the new task's prompt; for a typed prompt, the task's title, prompt
+  and step titles plus the typed text.
+- Split proposals run the `claude` on the service's `PATH` (the same CLI as sessions), outside
+  containment, with no tools, in a temporary directory under `<data>/runtime/intake/`. They use
+  the account's usage like a short task.
+- Claude Code needs no extra settings. Yulius already registers its `UserPromptSubmit` hook in
+  every run's `--settings` file (`yulius hook claude UserPromptSubmit`, timeout 15 s; the hook
+  client gives up after 5 s and lets the prompt through).
 
 ## 5. First run
 

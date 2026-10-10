@@ -5,7 +5,10 @@ use std::path::Path;
 use crate::Git;
 use crate::error::GitError;
 use crate::runner::{Invocation, failure};
-use crate::validate::{validate_identity_part, validate_push_refspec, validate_remote};
+use crate::validate::{
+    validate_branch_name, validate_identity_part, validate_push_refspec, validate_remote,
+    validate_revision,
+};
 
 /// Longest accepted commit message in bytes.
 pub const MAX_COMMIT_MESSAGE: usize = 64 * 1024;
@@ -81,6 +84,39 @@ impl Git {
                 .env("GIT_COMMITTER_EMAIL", author.email.as_str()),
         )?;
         self.rev_parse(worktree, "HEAD").map(Some)
+    }
+
+    /// Keeps a task worktree's work and reverts the worktree (SPEC-002 ADR-16, "redirect"):
+    /// commits any uncommitted work as `author`, creates the branch `keep` at the resulting
+    /// commit (refusing when it exists, so nothing is overwritten), then resets the worktree's
+    /// branch to its merge base with the first of `bases` that resolves. Returns the kept
+    /// commit. Nothing is deleted: the work stays reachable from `keep`.
+    pub fn keep_and_revert(
+        &self,
+        worktree: &Path,
+        keep: &str,
+        bases: &[String],
+        message: &str,
+        author: &Author,
+    ) -> Result<String, GitError> {
+        validate_branch_name(keep)?;
+        let base = bases
+            .iter()
+            .find(|base| validate_revision(base).is_ok() && self.rev_parse(worktree, base).is_ok())
+            .ok_or_else(|| GitError::InvalidInput {
+                what: "revert base",
+                reason: "none of the base revisions exists".to_owned(),
+            })?;
+        self.commit_all(worktree, message, author)?;
+        let head = self.rev_parse(worktree, "HEAD")?;
+        let fork = self.merge_base(worktree, base, &head)?;
+        self.create_branch(worktree, keep, &head)?;
+        self.run_ok(
+            Invocation::new(self, "reset", Some(worktree))
+                .args(["reset", "--hard", "--quiet"])
+                .arg(&fork),
+        )?;
+        Ok(head)
     }
 
     /// Pushes one explicit, non-forcing refspec (`refs/heads/A:refs/heads/B` or

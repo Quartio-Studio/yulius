@@ -310,6 +310,36 @@ impl GitPort for GitAdapter {
         .await
     }
 
+    async fn keep_and_revert(
+        &self,
+        worktree: &Path,
+        keep: &str,
+        base: &str,
+        name: &str,
+        email: &str,
+    ) -> AppResult<String> {
+        let (git, wt, keep, author) = (
+            self.git(),
+            worktree.to_path_buf(),
+            keep.to_owned(),
+            Author::new(name, email),
+        );
+        let bases = vec![
+            format!("refs/remotes/origin/{base}"),
+            format!("refs/heads/{base}"),
+        ];
+        blocking(move || {
+            git.keep_and_revert(
+                &wt,
+                &keep,
+                &bases,
+                &format!("yulius: keep this work before reverting the task (kept on {keep})"),
+                &author,
+            )
+        })
+        .await
+    }
+
     async fn push(
         &self,
         repo: &Path,

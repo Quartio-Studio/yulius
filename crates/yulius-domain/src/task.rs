@@ -53,6 +53,11 @@ pub enum TaskStatus {
     Stopped(StopReason),
     /// The run never started; continuable after fixing the cause.
     Failed(FailReason),
+    /// Waiting for another task to be Done before it starts (SPEC-001 TSK-012). Owner: the
+    /// chain controller. Exit: the predecessor is Done or a person starts it now → `queued`;
+    /// cancel → `stopped(cancelled)`. A predecessor that ends any other way leaves it here with
+    /// a reason ("needs you"); it never starts by itself after that.
+    Chained,
 }
 
 /// Fine-grained activity while [`TaskStatus::Running`] (derived from hooks and transcripts).
@@ -98,6 +103,8 @@ pub enum TaskEvent {
     ContinueRequested,
     /// A continue request had to wait for capacity.
     ContinueQueued,
+    /// A chained task's predecessor is Done, or a person started it now.
+    ChainReleased,
 }
 
 /// An event that is not valid in the current state.
@@ -147,7 +154,8 @@ impl TaskStatus {
         use TaskStatus as S;
         let next = match (self, event) {
             (S::Queued, E::CapacityGranted) => S::Starting,
-            (S::Queued, E::CancelRequested) => S::Stopped(StopReason::Cancelled),
+            (S::Queued | S::Chained, E::CancelRequested) => S::Stopped(StopReason::Cancelled),
+            (S::Chained, E::ChainReleased) => S::Queued,
             (S::Starting, E::Spawned) => S::Running,
             (S::Starting, E::StartFailed(reason)) => S::Failed(reason),
             (S::Starting | S::Running | S::Switching, E::CancelRequested) => S::Stopping,
@@ -193,6 +201,7 @@ impl TaskStatus {
             Self::Failed(FailReason::SpawnError) => "failed_spawn_error",
             Self::Failed(FailReason::StartTimeout) => "failed_start_timeout",
             Self::Failed(FailReason::Precondition) => "failed_precondition",
+            Self::Chained => "chained",
         }
     }
 
@@ -207,7 +216,7 @@ impl TaskStatus {
 }
 
 /// Every task status, for exhaustive mapping.
-pub const ALL_STATUSES: [TaskStatus; 16] = [
+pub const ALL_STATUSES: [TaskStatus; 17] = [
     TaskStatus::Queued,
     TaskStatus::Starting,
     TaskStatus::Running,
@@ -224,6 +233,7 @@ pub const ALL_STATUSES: [TaskStatus; 16] = [
     TaskStatus::Failed(FailReason::SpawnError),
     TaskStatus::Failed(FailReason::StartTimeout),
     TaskStatus::Failed(FailReason::Precondition),
+    TaskStatus::Chained,
 ];
 
 impl Activity {
@@ -357,6 +367,33 @@ mod tests {
         assert!(TaskStatus::Running.is_live());
         assert!(!TaskStatus::Queued.is_live());
         assert!(TaskStatus::Failed(FailReason::SpawnError).is_resting());
+    }
+
+    #[test]
+    fn chained_tasks_wait_until_released_or_cancelled() -> Result<(), TransitionError> {
+        assert_eq!(
+            TaskStatus::Chained.apply(TaskEvent::ChainReleased)?,
+            TaskStatus::Queued
+        );
+        assert_eq!(
+            TaskStatus::Chained.apply(TaskEvent::CancelRequested)?,
+            TaskStatus::Stopped(StopReason::Cancelled)
+        );
+        // Nothing else starts it: no capacity grant, no continue.
+        assert!(
+            TaskStatus::Chained
+                .apply(TaskEvent::CapacityGranted)
+                .is_err()
+        );
+        assert!(
+            TaskStatus::Chained
+                .apply(TaskEvent::ContinueRequested)
+                .is_err()
+        );
+        assert!(TaskStatus::Queued.apply(TaskEvent::ChainReleased).is_err());
+        assert!(!TaskStatus::Chained.is_live());
+        assert!(!TaskStatus::Chained.is_resting());
+        Ok(())
     }
 
     #[test]

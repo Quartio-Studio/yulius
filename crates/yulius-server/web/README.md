@@ -40,18 +40,20 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/termsocket.js` | WebSocket protocol code: binary frame parsing, `ReconnectingSocket` (backoff 0.5–10 s, bounded attempts, 4008 → immediate resync), `TerminalSocket`. |
 | `assets/terminal.js` | Terminal views on demand: returns the view at once and loads `terminal-core.js`, xterm, `xterm.css` and the terminal typeface together with the first terminal (or on idle after sign-in, `preloadTerminal()`). |
 | `assets/terminal-core.js` | xterm view: fit/resize, controller handover, read-only banner, floating reconnect notices, exit banners, web links and OSC 8 links. It appears once at its final size and font: fitted before connecting (`?cols=&rows=`), hidden under a placeholder until the first state and screen are drawn (F 2026-10-09). |
-| `assets/layout.js` | Sandbox tab row (+, Status panel, notifications, tools toggle) and the sidebar (wordmark, navigation, active task list, user menu at its foot). |
+| `assets/layout.js` | Sandbox tab row (All sandboxes, the sandboxes, +, Status panel, notifications, tools toggle) and the sidebar (wordmark, navigation, active task list, user menu at its foot); the sidebar's width is dragged on its edge, kept per user and clamped so the rail and a 360 px centre stay in the window (with a panel open it gives way first, down to 200 px). |
+| `assets/splitter.js` | Column splitters (UI-044) for the sidebar, the editor's explorer and the tool panel: a quiet grip that is a focusable separator (←/→, Shift for 64 px steps, Home/End; double-click resets), and the widths kept per user in `localStorage` (`yulius.layout.<user id>`: `sidebar` and `explorer` in px, `panel-<tool>` as a share of the work area). Phones have none. |
+| `assets/pages/home.js` | Home (UI-045), the default view at `/`: every sandbox as a card (repository, running / needs you / queued, last activity from its tasks, Open and New task), Import and Create; with no sandbox, the first steps and the GitHub notes. |
 | `assets/notifications.js` | Notification center (UI-020, UI-028): the bell, its panel with the All / Unread filter, and entries derived from the event stream; kept per user in `localStorage`, bounded to 100; optional OS notifications while the tab is hidden. |
 | `assets/pages/gittask.js` | Git → a task's review (UI-031): Changes (file tree, unified or split diff, wrap), Commits, Branch and Go to task; reads the proposed `/api/tasks/{tid}/changes` and `/commits`. |
 | `assets/pages/taskinfo.js` | Tasks → a task's overview (UI-032): state, times, plan, changes, usage, details and sessions, with Review changes and Go to task. |
 | `assets/mdeditor.js` | A Notion-like block editor for Markdown (UI-033): formatted blocks, frontmatter as properties, "/" menu, Markdown shortcuts, selection toolbar, source view; untrusted text, no HTML parsing. |
 | `assets/pages/skilledit.js` | A skill's page: its SKILL.md in the block editor with Save (⌘S), read-only where it may not be edited, and an unsaved-changes guard. |
-| `assets/shortcuts.js` | Keyboard shortcuts (UI-029): platform key names (`NEW_TASK_KEYS`, `SAVE_KEYS`, `WRAP_KEYS`, `IS_MAC`) and the ⌘/ sheet listing every shortcut — update it when a handler changes. |
+| `assets/shortcuts.js` | Keyboard shortcuts (UI-029): platform key names (`NEW_TASK_KEYS`, `HOME_KEYS`, `SAVE_KEYS`, `WRAP_KEYS`, `IS_MAC`) and the ⌘/ sheet listing every shortcut — update it when a handler changes. |
 | `assets/taskview.js` | Task view (step strip, terminal, phone quick-input bar) and the new-task composer (rounded prompt box with mode, workflow, model and effort pickers). |
 | `assets/quotes.js` | 40 quotes about building great things (well-documented authors only); one shows at random above the composer. |
 | `assets/models.js` | Models (grouped by provider, each naming its harness) and effort levels the composer offers. |
-| `assets/panels.js` | Right rail and resizable panel: Editor, Shell (the user's own terminals in this sandbox as tabs: opens one at once, "+" for more, rename with F2 or a double-click; new ones start in the sandbox repository or the task worktree), Messages (messages between tasks and the agent's messages to people, no composer: an agent's question offers "Reply in the terminal"); hosts the browser panel. One tool is open at a time (`aria-pressed`); the panel's width is remembered per browser and re-fitted when the window narrows, so it never pushes the rail out of the window. |
-| `assets/editorview.js` | The built-in editor (EDT-001..005): explorer, tabs and Monaco over the files API; ⌘S / Ctrl+S saves; word wrap is one toolbar toggle (or ⌥Z / Alt+Z, as in VS Code) for every open file, off by default and kept per user in this browser (`localStorage` `yulius.editorWordWrap.<user id>`). |
+| `assets/panels.js` | Right rail and resizable panel: Editor, Shell (the user's own terminals in this sandbox as tabs: opens one at once, "+" for more, rename with F2 or a double-click; new ones start in the sandbox repository or the task worktree), Messages (messages between tasks and the agent's messages to people, no composer: an agent's question offers "Reply in the terminal"); hosts the browser panel. One tool is open at a time (`aria-pressed`); each tool's width is remembered per user (`splitter.js`) and re-fitted when the window narrows or the sidebar widens, so it never pushes the rail out of the window. |
+| `assets/editorview.js` | The built-in editor (EDT-001..005): explorer (its width dragged on its edge and kept per user), tabs and Monaco over the files API; ⌘S / Ctrl+S saves; word wrap is one toolbar toggle (or ⌥Z / Alt+Z, as in VS Code) for every open file, off by default and kept per user in this browser (`localStorage` `yulius.editorWordWrap.<user id>`). |
 | `assets/browser.js` | Browser panel (ADR-15): the sandbox Chrome's tabs in the strip, address bar, back/forward/reload, the action-request banner, notices for agents acting in another tab, "Open live in a new window" for a sandbox dev server (ADR-14 preview origins). |
 | `assets/browserstream.js` | The streamed sandbox Chrome: its socket and tab list, H.264 video decoded with WebCodecs onto a canvas (JPEG frames as the labelled fallback), the shared viewport and its notice, pointer, wheel, touch and keyboard input (a hidden textarea for IME, dead keys and phone keyboards; ⌘ as Ctrl on macOS; paste and copy), the agent's cursor. |
 | `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery (PR, merge, environment runs and confirmations, promotion), sandbox add/remove. |
@@ -63,7 +65,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/boot.js` | The only classic script: runs in `<head>` after the stylesheets and before the first paint, applies the stored theme (no dark flash for light or system) and sets the browser's theme colour from the tokens; notes when the page is framed, and app.js then shows only a notice (Yulius never runs inside a frame). |
 | `assets/theme.js` | Theme choice (dark, light, system) per browser: sets `data-theme`, the colour-scheme and theme-color metas, and re-colours terminals and editors from the tokens. |
 | `assets/tokens.css` | Design tokens: brand and palette, colour roles per theme (dark, light), derived tints, and the type, control, radius, elevation and motion scales. |
-| `assets/styles.css` | Components and layout (including the phone layout < 768 px), using only roles and scales from `tokens.css`. |
+| `assets/styles.css` | Components and layout (including the phone layout < 768 px), using only roles and scales from `tokens.css`. A page is a size container (`container: page`), so its lists and cards follow the width the page has, an open tool panel included (UI-046); page content is centred up to its maximum width (UI-047). |
 | `assets/vendor/` | Vendored xterm.js; see [vendor/README.md](assets/vendor/README.md). |
 | `assets/logos/` | Logos of well-known services shown on the MCP page; sources in [logos/README.md](assets/logos/README.md). |
 
@@ -196,7 +198,7 @@ description, controls), `meter`, `openMenu` (icons, descriptions, check marks), 
 | --- | --- |
 | `/setup` | Setup wizard (token, password twice, two non-recoverable-password confirmations). |
 | `/signin?next=…&error=…` | Sign in with GitHub (`/api/auth/github/start?next=`) or the superadmin password. |
-| `/` | Redirects to the last used sandbox; empty state with Import/Create when there is none. |
+| `/` | Home: every sandbox as a card (the default view; ⌘⇧H / Ctrl+Shift+H, the logo or the All sandboxes tab return to it); empty state with Import/Create when there is none. |
 | `/s/<slug>` | New-task composer. |
 | `/s/<slug>/t/<number>` | Task: step strip + native terminal. |
 | `/s/<slug>/browser?tab=<id>` | Opens the browser panel on that tab (Yulius links, BRW-004). |
@@ -222,8 +224,9 @@ the real server. Options (combine with `&`): `setup=1` (setup required; token
 `YUL-SETUP-1234`), `signedout=1` (password `correct horse battery`), `role=member|admin`,
 `contained=0` (shows "Not contained"), `github=0` (GitHub App not configured), `github_linked=0`
 (the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
-the home page asks them to sign in with GitHub), `othercols=N&otherrows=M` (another, active viewer
-sets task terminals to N×M until this one types or clicks into the terminal).
+the home page asks them to sign in with GitHub), `sandboxes=0` (a fresh instance without sandboxes: the
+home screen's first steps), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
+N×M until this one types or clicks into the terminal).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and
 documentation; the [end-to-end tests](../../../e2e/README.md) run against it). It has sandboxes with admin, write and read access (`studio` with the Studio

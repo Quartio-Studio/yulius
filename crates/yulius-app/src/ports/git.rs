@@ -114,6 +114,23 @@ pub trait GitPort: Send + Sync {
         name: &str,
         email: &str,
     ) -> AppResult<bool>;
+    /// Keeps a task worktree's work and reverts it (SPEC-002 ADR-16, "redirect"): uncommitted
+    /// work is committed as `name <email>`, the new branch `keep` points at the result (an
+    /// existing branch is refused), and the worktree is reset to its merge base with
+    /// `origin/<base>` (or `<base>`). Returns the kept commit. Adapters without it refuse.
+    async fn keep_and_revert(
+        &self,
+        worktree: &Path,
+        keep: &str,
+        base: &str,
+        name: &str,
+        email: &str,
+    ) -> AppResult<String> {
+        let _ = (worktree, keep, base, name, email);
+        Err(crate::error::AppError::Conflict(
+            "reverting a task's changes is not available on this instance".into(),
+        ))
+    }
     /// Pushes `local_branch` to `remote_branch` on origin using `token`.
     async fn push(
         &self,

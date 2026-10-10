@@ -174,6 +174,8 @@ impl App {
             if let Err(err) = self.apply_control(&attach.task_id, change).await {
                 tracing::debug!(task = %attach.task_id, error = %err, "typist's size not applied");
             }
+            // A prompt submitted soon after is this person's (TSK-013).
+            self.record_typing(&attach.task_id, &ctx.user.id);
         }
         self.send_input(&attach.task_id, data).await
     }

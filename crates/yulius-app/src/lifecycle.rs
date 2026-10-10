@@ -63,7 +63,25 @@ impl App {
     /// # Errors
     /// `Invalid` input, `Conflict` while the sandbox is being prepared.
     pub async fn create_task_internal(self: &Arc<Self>, req: NewTask) -> AppResult<TaskRecord> {
+        self.create_task_with(req, None).await
+    }
+
+    /// [`App::create_task_internal`], optionally chained after `after` (SPEC-001 TSK-012): the
+    /// task then waits as `chained` instead of starting, and starts by itself once `after` is
+    /// Done (at once when it already is).
+    ///
+    /// # Errors
+    /// As [`App::create_task_internal`]; `Invalid`/`Capacity` for an unusable predecessor.
+    pub async fn create_task_with(
+        self: &Arc<Self>,
+        req: NewTask,
+        after: Option<&TaskRecord>,
+    ) -> AppResult<TaskRecord> {
         let store = &self.deps.store;
+        let after = match after {
+            Some(task) => Some(self.chain_predecessor(&req.sandbox, &task.id).await?),
+            None => None,
+        };
         let sandbox = store
             .sandbox(&req.sandbox)
             .await?
@@ -101,7 +119,9 @@ impl App {
             model: req.model.clone(),
             effort: req.effort.clone(),
             workflow_id: req.workflow_id.clone(),
-            status: if req.start {
+            status: if after.is_some() {
+                TaskStatus::Chained
+            } else if req.start {
                 TaskStatus::Queued
             } else {
                 TaskStatus::Closed
@@ -117,12 +137,15 @@ impl App {
             updated_at: now,
             closed_at: (!req.start).then_some(now),
             archived_at: (!req.start).then_some(now),
-            queued_at: req.start.then_some(now),
+            queued_at: (req.start && after.is_none()).then_some(now),
             gate_blocks: 0,
             wake_enabled: true,
             mode: req.mode,
         };
         let task = store.insert_task(&record).await?;
+        if let Some(before) = &after {
+            self.link_chain(&task, before).await?;
+        }
         let branch = branch_for(task.number, &task.title);
         store
             .update_task(
@@ -165,7 +188,11 @@ impl App {
             )
             .await?;
         self.publish_task(&task.id).await;
-        if req.start {
+        if let Some(before) = &after {
+            // The predecessor may already be Done: start at once then.
+            self.advance_chains(&before.id).await;
+            self.publish_task(&before.id).await;
+        } else if req.start {
             let app = self.clone();
             let id = task.id.clone();
             tokio::spawn(async move {
@@ -202,22 +229,34 @@ impl App {
         let steps = self
             .workflow_steps(&sid, req.workflow_id.as_deref())
             .await?;
+        let after = match req.after_task_id.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(id) => {
+                let id = TaskId::parse(id).map_err(|_| {
+                    AppError::Invalid("the task to run after does not exist".into())
+                })?;
+                Some(self.chain_predecessor(&sid, &id).await?)
+            }
+        };
         let task = self
-            .create_task_internal(NewTask {
-                sandbox: sid,
-                created_by: ctx.user.id.clone(),
-                prompt: req.prompt.clone(),
-                harness,
-                title: req.title.clone(),
-                workflow_id: req.workflow_id.clone(),
-                steps,
-                model: req.model.clone().filter(|m| !m.trim().is_empty()),
-                effort: req.effort.clone().filter(|e| !e.trim().is_empty()),
-                origin: TaskOrigin::Ui,
-                automation_run: None,
-                start: true,
-                mode,
-            })
+            .create_task_with(
+                NewTask {
+                    sandbox: sid,
+                    created_by: ctx.user.id.clone(),
+                    prompt: req.prompt.clone(),
+                    harness,
+                    title: req.title.clone(),
+                    workflow_id: req.workflow_id.clone(),
+                    steps,
+                    model: req.model.clone().filter(|m| !m.trim().is_empty()),
+                    effort: req.effort.clone().filter(|e| !e.trim().is_empty()),
+                    origin: TaskOrigin::Ui,
+                    automation_run: None,
+                    start: true,
+                    mode,
+                },
+                after.as_ref(),
+            )
             .await?;
         self.task_summary(&task).await
     }
@@ -292,6 +331,8 @@ impl App {
         }
         self.start_run(&task.id, RunStart::Resume { prompt: None }, account)
             .await?;
+        // Its waiting successors wait for it again (TSK-012).
+        self.unblock_successors(&task.id).await;
         let task = self
             .deps
             .store
