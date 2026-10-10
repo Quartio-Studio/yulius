@@ -68,6 +68,8 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 # The sandbox browser: a headful Chrome on a virtual display when xvfb and ffmpeg are installed
 # (auto, the default). See "Sandbox browser" below for the other settings.
 Environment=YULIUS_BROWSER_DISPLAY=auto
+# Optional task intake (see "Task intake (Jev)" below).
+#Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
 ExecStart=/usr/local/bin/yulius serve
 KillMode=process
 Restart=on-failure
@@ -256,6 +258,37 @@ the unit works too.
 
 Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
 
+### Task intake (Jev)
+
+Optional (SPEC-002 ADR-16). With a TypeSafe Jev key, Yulius offers to split new tasks that mix
+separate workstreams (the proposal comes from one headless `claude -p` run on a connected
+account), and it holds prompts typed into a running task that add, drop or replace its scope until
+someone decides in the task view. Without a key both are off and nothing changes.
+
+| Setting (flag / environment) | Default | Meaning |
+| --- | --- | --- |
+| `--jev-api-key-file` / `YULIUS_JEV_API_KEY_FILE` | unset (off) | File holding the Jev API key, owned by the service user, mode `0600` (a group- or world-readable file is refused, and intake stays off). Read at start; restart after changing it. The key is never logged. |
+| `--jev-split-threshold` / `YULIUS_JEV_SPLIT_THRESHOLD` | 0.9 | Probability of "several workstreams" Jev must give before a split is offered (0.5–1). |
+| `--jev-scope-threshold` / `YULIUS_JEV_SCOPE_THRESHOLD` | 0.8 | Probability Jev must give before a typed prompt is held (0.5–1). |
+
+```sh
+# The data directory is owner-only already; keep the key beside the master key.
+sudo install -o yulius -g yulius -m 0600 /dev/null /var/lib/yulius/jev.key
+sudo sh -c 'cat > /var/lib/yulius/jev.key'   # paste the key, then Ctrl-D
+# in the unit: Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
+```
+
+- The start log says `task intake is on (Jev jev-1.13.0)` or why it is off.
+- Requests go to `https://api.typesafe.ai/v1/systemone` (outbound HTTPS). Each request carries one
+  question: for a split check, the new task's prompt; for a typed prompt, the task's title, prompt
+  and step titles plus the typed text.
+- Split proposals run the `claude` on the service's `PATH` (the same CLI as sessions), outside
+  containment, with no tools, in a temporary directory under `<data>/runtime/intake/`. They use
+  the account's usage like a short task.
+- Claude Code needs no extra settings. Yulius already registers its `UserPromptSubmit` hook in
+  every run's `--settings` file (`yulius hook claude UserPromptSubmit`, timeout 15 s; the hook
+  client gives up after 5 s and lets the prompt through).
+
 ## 5. First run
 
 1. Start the service. On the first start it writes a one-time setup token to
@@ -264,7 +297,7 @@ Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
    warnings: **the password cannot be recovered** (SPEC-001 ACC-002).
 3. Administration → GitHub: create the GitHub App with the manifest flow for the owner account or
    organization, then install it on the repositories Yulius may use. The App's callback URLs point
-   at `YULIUS_PUBLIC_URL`.
+   at `YULIUS_PUBLIC_URL`. The manifest requests the permissions below.
 4. Administration → Users: admit GitHub logins; they sign in with GitHub. Repository access in
    Yulius mirrors their GitHub permissions (read / write / admin). The superadmin owns the
    instance and sees every sandbox with admin access without GitHub (SPEC-001 ACC-012); pull
@@ -274,6 +307,52 @@ Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
    terminal in the browser. Yulius rotates between them automatically.
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
    `studio` delivery presets.
+
+### GitHub App permissions
+
+Yulius uses one GitHub App (SPEC-002 ADR-08). The App's tokens can do only what its permissions
+allow: the server's installation tokens, the repository-restricted tokens agents get, and people's
+sign-in (user-to-server) tokens, which are also capped by the person's own repository access. The
+manifest flow requests these repository permissions:
+
+| Permission | Access | What Yulius does with it |
+| --- | --- | --- |
+| Contents | Read and write | Clone and fetch repositories; push task branches (the server, and agents through their repository-restricted token); merge pull requests; fast-forward promotions; compare branches. |
+| Pull requests | Read and write | Open, list and read pull requests. |
+| Checks | Read | Read check runs on pull request heads: GitHub Actions and every other Checks API app. |
+| Commit statuses | Read | Read commit statuses on pull request heads: CI and deploy previews that report statuses. Requested since 2026-10-10. |
+| Administration | Read and write | Create repositories in an organization (New sandbox) and add branch rulesets to them. |
+| Metadata | Read | Mandatory for every App: repository facts and the signed-in person's permission level, which Yulius mirrors. |
+| Members (organization) | Read | Requested by the manifest; no current Yulius call uses it. |
+
+Two more are worth knowing:
+
+- **Actions: read** is optional. It is a fallback only: when check runs can't be read, Yulius reads
+  the head's GitHub Actions workflow runs in their place. With Checks granted it is never needed.
+- **Workflows** is not requested. Without it, GitHub refuses pushes made with the App's tokens that
+  change files under `.github/workflows/`. So agents cannot change the repository's CI through
+  Yulius. Grant it only if tasks must edit workflows; the task's own token can then change CI,
+  which runs with the repository's secrets.
+
+**When a permission is missing.** A read GitHub refuses with 403 "Resource not accessible by
+integration" means the App lacks the permission. For checks, Yulius keeps working with the
+sources it can read. It names the missing permission on the Git page, as one line for instance
+administrators, with a link to the App's permission page. Checks it cannot read never count as
+passed, so merges and releases that require checks wait.
+
+**Adding a permission to an existing App** (for example Commit statuses on an App created before
+2026-10-10):
+
+1. Open the App's permission page. For an organization:
+   `https://github.com/organizations/<org>/settings/apps/<app-slug>/permissions`. For a personal
+   account: `https://github.com/settings/apps/<app-slug>/permissions`. The Git page links there.
+2. Set the permission (for example Repository permissions → Commit statuses → Read-only) and
+   save.
+3. Accept the change on the installation. GitHub asks the installation's owner to review the new
+   permissions under the organization's (or account's) Settings → GitHub Apps → the App →
+   Configure. Until someone accepts, the old permissions apply.
+4. New tokens carry the new permission. Installation tokens are cached for up to an hour; restart
+   Yulius (`systemctl restart yulius`) to use the new permission at once.
 
 ## 6. Importing local work (`yulius import`)
 
@@ -300,6 +379,10 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
 
 ## 8. Upgrades
 
+- Upgrading to check fallbacks (#111, 2026-10-10): new Apps request Commit statuses: read. An App
+  created earlier lacks it, so its pull requests' checks come from check runs only, and the Git page
+  says so to instance administrators. Add the permission as described in
+  [GitHub App permissions](#github-app-permissions). No data migration.
 - Upgrading to the streamed browser (ADR-15, 2026-10-10): install `xvfb`, `ffmpeg` and the fonts
   (§1) before restarting; `yulius doctor` must show them. No data migration: logins in the
   sandbox Chrome profiles stay; displays and cookies live in `<data>/displays/`. Running

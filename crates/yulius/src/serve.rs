@@ -102,6 +102,58 @@ pub struct ServeArgs {
     /// (docs/operations.md).
     #[arg(long, env = "YULIUS_PREVIEW_DOMAIN")]
     pub preview_domain: Option<String>,
+    /// File holding the TypeSafe Jev API key (owner-only, mode 0600) for task intake: split
+    /// checks of new tasks and scope checks of prompts typed into running tasks (SPEC-002
+    /// ADR-16). Unset or unreadable: intake checks nothing and blocks nothing.
+    #[arg(long, env = "YULIUS_JEV_API_KEY_FILE")]
+    pub jev_api_key_file: Option<PathBuf>,
+    /// Probability of "several workstreams" Jev must give before a split is proposed (0.5–1).
+    #[arg(long, env = "YULIUS_JEV_SPLIT_THRESHOLD", default_value_t = yulius_domain::intake::DEFAULT_SPLIT_THRESHOLD, value_parser = parse_threshold)]
+    pub jev_split_threshold: f64,
+    /// Probability Jev must give before a prompt typed into a running task is held (0.5–1).
+    #[arg(long, env = "YULIUS_JEV_SCOPE_THRESHOLD", default_value_t = yulius_domain::intake::DEFAULT_SCOPE_THRESHOLD, value_parser = parse_threshold)]
+    pub jev_scope_threshold: f64,
+}
+
+/// Parses a probability threshold (0.5–1).
+pub fn parse_threshold(text: &str) -> Result<f64, String> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|t| (0.5..=1.0).contains(t))
+        .ok_or_else(|| format!("invalid threshold {text:?}: expected a number from 0.5 to 1"))
+}
+
+/// The task-intake services (SPEC-002 ADR-16): Jev when its key file is usable, and then split
+/// proposals by headless Claude Code runs in `<data>/runtime/intake`.
+fn intake_services(args: &ServeArgs) -> yulius_app::intake::IntakeServices {
+    use yulius_app::ports::intake::{ChoiceEvaluator, SplitProposer};
+    let jev: Option<Arc<dyn ChoiceEvaluator>> = match &args.jev_api_key_file {
+        None => {
+            tracing::info!("task intake is off: no Jev key file (YULIUS_JEV_API_KEY_FILE)");
+            None
+        }
+        Some(path) => match crate::wiring::jev::read_key_file(path)
+            .and_then(crate::wiring::jev::JevClient::new)
+        {
+            Ok(client) => {
+                tracing::info!(key_file = %path.display(), "task intake is on (Jev jev-1.13.0)");
+                Some(Arc::new(client))
+            }
+            Err(err) => {
+                tracing::warn!("task intake is off: {err}");
+                None
+            }
+        },
+    };
+    let proposer: Option<Arc<dyn SplitProposer>> = jev.as_ref().map(|_| {
+        Arc::new(crate::wiring::split::ClaudeSplitProposer::new(
+            yulius_harness::launch::CLAUDE_PROGRAM,
+            args.data_dir.join("runtime").join("intake"),
+        )) as Arc<dyn SplitProposer>
+    });
+    yulius_app::intake::IntakeServices::new(jev, proposer)
+        .with_thresholds(args.jev_split_threshold, args.jev_scope_threshold)
 }
 
 /// Rendering of the sandbox browsers (SPEC-002 ADR-15).
@@ -310,6 +362,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
         usage: Arc::new(crate::wiring::usage::ProviderUsage::new()?),
     };
     let app = App::new(config, deps);
+    app.set_intake(intake_services(args));
     if let Some(shell) = &args.shell {
         app.set_shell_program(shell.clone());
     }

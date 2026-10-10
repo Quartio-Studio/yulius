@@ -60,6 +60,8 @@ impl App {
                 tick.tick().await;
                 n = n.wrapping_add(1);
                 app.drain_queue().await;
+                // Chained tasks start once their predecessor is Done (TSK-012).
+                app.advance_all_chains().await;
                 if n.is_multiple_of(CAPACITY_TICKS)
                     && let Ok(waiting) = app
                         .deps

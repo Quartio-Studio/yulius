@@ -335,6 +335,10 @@ impl TaskStore for SqliteStore {
                 "DELETE FROM delivery WHERE task_id = ?1",
                 "DELETE FROM provider_sessions WHERE task_id = ?1",
                 "DELETE FROM attempts WHERE task_id = ?1",
+                "DELETE FROM task_chains WHERE task_id = ?1",
+                "UPDATE task_chains SET after_task_id = NULL WHERE after_task_id = ?1",
+                "DELETE FROM prompt_holds WHERE task_id = ?1",
+                "UPDATE prompt_holds SET new_task_id = NULL WHERE new_task_id = ?1",
                 "UPDATE automation_runs SET task_id = NULL WHERE task_id = ?1",
                 "UPDATE sandboxes SET onboarding_task_id = NULL WHERE onboarding_task_id = ?1",
             ];

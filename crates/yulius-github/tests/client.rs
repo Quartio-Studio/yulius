@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use yulius_domain::time::Timestamp;
 use yulius_github::fake::{FakeCheckRun, FakeFault, FakeGitHub, FakeStatus};
 use yulius_github::{
-    AccessLevel, ChecksSummary, Clock, CompareStatus, CreateRepo, GitHubClient, GitHubConfig,
-    GitHubError, GitHubPermissions, MergeMethod, NewPull, OwnerKind, PullFilter, PullState,
-    RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock, Url,
+    AccessLevel, CheckSource, ChecksSummary, Clock, CompareStatus, CreateRepo, GitHubClient,
+    GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewPull, OwnerKind, PullFilter,
+    PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock, Url,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -258,6 +258,7 @@ async fn manifest_flow_builds_manifest_and_converts_code() -> TestResult {
         ("contents", "write"),
         ("pull_requests", "write"),
         ("checks", "read"),
+        ("statuses", "read"),
         ("administration", "write"),
         ("metadata", "read"),
         ("members", "read"),
@@ -628,7 +629,15 @@ async fn check_runs_and_statuses_aggregate() -> TestResult {
     let check = |sha: String| {
         let client = client.clone();
         let token = token.clone();
-        async move { client.check_status(&token, "acme", "app", &sha).await }
+        async move {
+            client
+                .check_status(&token, "acme", "app", &sha)
+                .await
+                .map(|report| {
+                    assert!(report.unreadable.is_empty(), "{report:?}");
+                    report.summary
+                })
+        }
     };
     assert_eq!(check(root.clone()).await?, ChecksSummary::None);
 
@@ -688,6 +697,129 @@ async fn check_runs_and_statuses_aggregate() -> TestResult {
     assert!(matches!(
         client.check_status(&token, "acme", "app", "main").await,
         Err(GitHubError::InvalidInput { .. })
+    ));
+    Ok(())
+}
+
+/// #111 (`F 2026-10-10`): an App without one of the check permissions still reads what it may.
+/// GitHub answers 403 "Resource not accessible by integration" for the missing one.
+#[tokio::test]
+async fn checks_fall_back_to_the_sources_the_app_may_read() -> TestResult {
+    let (fake, client) = setup().await?;
+    let root = fake.add_repo("acme", "app", true);
+    fake.add_user("dev", None);
+    fake.set_permission("acme", "app", "dev", writer());
+    let token = fake.issue_user_token("dev");
+    let head = fake.add_commit("acme", "app", &[&root]);
+    fake.set_check_runs(
+        "acme",
+        "app",
+        &head,
+        vec![FakeCheckRun::new("test", "completed", Some("success"))],
+    );
+    fake.set_statuses(
+        "acme",
+        "app",
+        &head,
+        vec![FakeStatus::new("deploy/preview", "success")],
+    );
+    fake.set_workflow_runs(
+        "acme",
+        "app",
+        &head,
+        vec![FakeCheckRun::new("CI", "in_progress", None)],
+    );
+    let check_runs = format!("/repos/acme/app/commits/{head}/check-runs");
+    let status = format!("/repos/acme/app/commits/{head}/status");
+
+    // 403 on check runs, 200 on statuses: statuses and the Actions runs decide (one is running).
+    fake.inject_fault(
+        FakeFault::new("GET", check_runs.clone(), 403, 1)
+            .message("Resource not accessible by integration"),
+    );
+    let report = client.check_status(&token, "acme", "app", &head).await?;
+    assert_eq!(report.summary, ChecksSummary::Pending);
+    assert_eq!(report.unreadable, vec![CheckSource::CheckRuns]);
+    assert_eq!(fake.count("GET", &status), 1);
+    assert_eq!(fake.count("GET", "/repos/acme/app/actions/runs"), 1);
+    let runs_request = fake
+        .requests()
+        .into_iter()
+        .find(|r| r.path == "/repos/acme/app/actions/runs")
+        .ok_or("no workflow runs request")?;
+    assert!(
+        runs_request
+            .query
+            .as_deref()
+            .is_some_and(|q| q.contains(&format!("head_sha={head}"))),
+        "{runs_request:?}"
+    );
+
+    // Without Actions either, the statuses alone count.
+    fake.withhold_permission("checks");
+    fake.withhold_permission("actions");
+    let report = client.check_status(&token, "acme", "app", &head).await?;
+    assert_eq!(report.summary, ChecksSummary::Success);
+    assert_eq!(
+        report.unreadable,
+        vec![CheckSource::CheckRuns, CheckSource::WorkflowRuns]
+    );
+
+    // Nothing reported while sources are unreadable is unknown, not "no checks".
+    let bare = fake.add_commit("acme", "app", &[&root]);
+    let report = client.check_status(&token, "acme", "app", &bare).await?;
+    assert_eq!(report.summary, ChecksSummary::Unknown);
+
+    // Nothing readable at all: unknown, never green.
+    fake.withhold_permission("statuses");
+    let report = client.check_status(&token, "acme", "app", &head).await?;
+    assert_eq!(report.summary, ChecksSummary::Unknown);
+    assert_eq!(
+        report.unreadable,
+        vec![
+            CheckSource::CheckRuns,
+            CheckSource::CommitStatuses,
+            CheckSource::WorkflowRuns
+        ]
+    );
+    Ok(())
+}
+
+/// The installation of #111: Checks but no Commit statuses. Check runs decide; Actions runs are
+/// not read (check runs include them); any other refusal still fails the read.
+#[tokio::test]
+async fn checks_without_commit_statuses_come_from_check_runs() -> TestResult {
+    let (fake, client) = setup().await?;
+    let root = fake.add_repo("acme", "app", true);
+    fake.add_user("dev", None);
+    fake.set_permission("acme", "app", "dev", writer());
+    let token = fake.issue_user_token("dev");
+    let head = fake.add_commit("acme", "app", &[&root]);
+    fake.set_check_runs(
+        "acme",
+        "app",
+        &head,
+        vec![FakeCheckRun::new("test", "completed", Some("failure"))],
+    );
+    fake.withhold_permission("statuses");
+    let report = client.check_status(&token, "acme", "app", &head).await?;
+    assert_eq!(report.summary, ChecksSummary::Failure);
+    assert_eq!(report.unreadable, vec![CheckSource::CommitStatuses]);
+    assert_eq!(fake.count("GET", "/repos/acme/app/actions/runs"), 0);
+
+    // A 403 for another reason (here: SAML enforcement) is not a missing permission.
+    fake.inject_fault(
+        FakeFault::new(
+            "GET",
+            format!("/repos/acme/app/commits/{head}/check-runs"),
+            403,
+            1,
+        )
+        .message("Resource protected by organization SAML enforcement."),
+    );
+    assert!(matches!(
+        client.check_status(&token, "acme", "app", &head).await,
+        Err(GitHubError::Forbidden { .. })
     ));
     Ok(())
 }

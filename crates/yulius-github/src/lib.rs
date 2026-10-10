@@ -45,8 +45,8 @@ pub use error::GitHubError;
 pub use reqwest::Url;
 pub use secret::Secret;
 pub use types::{
-    ChecksSummary, CompareStatus, Comparison, CreateRepo, GitHubUser, InstallationToken,
-    MergeMethod, MergeOutcome, NewPull, PullFilter, PullRequest, PullState, Repo, RepoAccess,
-    RulesetSpec, UserToken,
+    CheckSource, ChecksReport, ChecksSummary, CompareStatus, Comparison, CreateRepo, GitHubUser,
+    InstallationToken, MergeMethod, MergeOutcome, NewPull, PullFilter, PullRequest, PullState,
+    Repo, RepoAccess, RulesetSpec, UserToken,
 };
 pub use yulius_domain::permission::{AccessLevel, GitHubPermissions};

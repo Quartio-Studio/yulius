@@ -25,7 +25,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
     });
     let mut message_props = task_ref.clone();
     if let Some(obj) = message_props.as_object_mut() {
-        obj.insert("to".into(), json!({"type": "string", "enum": ["all", "people"], "description": "\"all\" broadcasts to the other tasks of the sandbox; \"people\" answers the people using Yulius (for example a reply to a message from a person): it shows in this task's Messages and in their notifications"}));
+        obj.insert("to".into(), json!({"type": "string", "enum": ["all", "people"], "description": "\"all\" broadcasts to the other tasks of the sandbox; \"people\" tells or asks the people using Yulius something: it shows in this task's Messages and in their notifications, and they reply in this session's terminal"}));
         obj.insert(
             "kind".into(),
             json!({"type": "string", "enum": ["info", "question", "request", "scope"]}),
@@ -51,12 +51,12 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "message_send".into(),
-            description: "Send a message to another task (by task_id or number), broadcast to the other tasks with to=\"all\", or answer the people using Yulius with to=\"people\" (use this to reply to a message from a person). Use kind=scope to agree who works on which files.".into(),
+            description: "Send a message to another task (by task_id or number), broadcast to the other tasks with to=\"all\", or tell or ask the people using Yulius something with to=\"people\" (they reply in this session's terminal, not by message). Use kind=scope to agree who works on which files.".into(),
             input_schema: schema(message_props, &["body"]),
         },
         ToolDescriptor {
             name: "messages_inbox".into(),
-            description: "Read messages sent to this task by other tasks or by people; marks them read. Answer a person with message_send to=\"people\".".into(),
+            description: "Read messages sent to this task by other tasks; marks them read.".into(),
             input_schema: schema(json!({"unread_only": {"type": "boolean"}}), &[]),
         },
         ToolDescriptor {

@@ -4,16 +4,18 @@ import { failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
-// The home page's notice for accounts without GitHub (crates/yulius-server/web/assets/app.js).
+// The home page's notice for accounts without GitHub (crates/yulius-server/web/assets/pages/home.js).
 const GITHUB_GATE = /Sandbox content needs a GitHub-linked account/;
 
 // SPEC-001 ACC-012 (F 2026-10-09): the superadmin owns the instance and sees every sandbox
 // without a GitHub link; everyone else still needs GitHub to see any.
-test('the superadmin without a GitHub link sees every sandbox and no GitHub gate', async ({ app, browser, screen }) => {
+test('the superadmin without a GitHub link sees every sandbox and no GitHub gate', async ({ app, screen }) => {
   await app.open(mock('/', '&github_linked=0'));
 
-  await expect(browser).toHaveURL(/#\/s\/studio$/);
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+  // The home screen (UI-045) lists them, as do the sandbox tabs.
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await expect(screen.getByRole('article', 'studio')).toBeVisible();
+  await expect(screen.getByRole('article', 'product')).toBeVisible();
   const sandboxes = screen.getByRole('navigation', 'Sandboxes');
   await expect(sandboxes.getByRole('link', /^studio\b/)).toBeVisible();
   await expect(sandboxes.getByRole('link', /^product\b/)).toBeVisible();

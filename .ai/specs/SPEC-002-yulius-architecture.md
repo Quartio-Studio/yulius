@@ -77,13 +77,14 @@ Principles:
 | ADR-05 | Accounts are org secrets in Yulius; provider homes are per sandbox. Claude uses long-lived OAuth tokens from `claude setup-token` passed by environment. | One global home per account; copying credentials per task | Prevents cross-sandbox transcript leakage via shared homes; an account switch needs no file copy. (Codex homes with `auth.json` write-back were removed with Codex, F 2026-10-08.) |
 | ADR-06 | Withdrawn (F 2026-10-08): no cross-provider switches. The provider-neutral transcript IR, the native transcript writers and the handoff fallback were removed; a task resumes its own session on another account. | Keep translation for a later second harness | Yulius runs Claude Code only; a returning harness gets its own decision. |
 | ADR-07 | Yulius MCP (Streamable HTTP, JSON-RPC) on a loopback listener with per-run bearer tokens; hooks call the same listener through `yulius hook`. | Per-harness plugins; injecting text into the TUI only | One protocol for every harness; least privilege (task tokens reach only task-scoped tools). |
-| ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. |
+| ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. The App's permissions and what each is for: `docs/operations.md`; a read the App lacks the permission for degrades instead of failing (checks: §10, #111). |
 | ADR-09 | Superseded by ADR-15 (F 2026-10-10) for the user's view: the DOM mirror, its recorder, replayer and resource endpoint are removed; the per-sandbox Chromium, CDP for agents, the welcome page and the screencast (now the labelled JPEG fallback) remain. Earlier: narrowed by ADR-14 (F 2026-10-09): the mirror is now only the remote view of the sandbox Chrome's tabs (agents' tabs and hand-offs); the user's own browsing of the sandbox's apps is live (ADR-14). Per-sandbox headless Chromium; the user's view is a live DOM mirror: the rrweb recorder is injected through CDP into the page's main world (it must see the page's CSSOM patches) and reports to a CDP binding; the UI replays the events in rrweb's script-free iframe (sandbox `allow-same-origin` only — never `UNSAFE_replayCanvas`, which would let any page run script as Yulius through the binding) and paints sampled canvas frames itself; page resources the user's browser cannot reach are fetched by the server browser through a same-origin-only endpoint served with a `sandbox` CSP. The CDP screencast is the labelled fallback; input is dispatched with CDP `Input.*`; viewers learn viewport changes at once. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer; recorder in an isolated world (misses CSS-in-JS rules) | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; plugins, internal pages and pages that send no DOM need the fallback. |
 | ADR-10 | Built-in editor: Monaco (VS Code's editor component, vendored AMD build without its translations) in the web UI over a small file API (`/api/sandboxes/{sid}/files…`) on the sandbox repository or a task worktree; per-user view state stays in the browser. | openvscode-server per sandbox (original: needed a token cookie fix, ran outside containment, too heavy); per-user contained openvscode-server (built, then dropped by the founder: "much simpler, without 90% of the features"); CodeMirror (needs a bundler) | No editor process or prerequisite on the VM; 14 MB of static assets (the TypeScript worker is 7 MB, loaded only for JS/TS); no extensions, debugging or integrated terminal (shells cover that). |
 | ADR-12 | Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
 | ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
 | ADR-14 | Narrowed by ADR-15 (F 2026-10-10): the panel's live iframe tabs are removed; the preview origins and their proxy remain for one action, "Open live in a new window" on a sandbox dev server, and the no-recursion rules stay. Originally: the user browses the sandbox's apps **live in their own browser**: each (sandbox, port) has a preview origin `<port>-<key>.<yulius host>` that Yulius reverse-proxies to `127.0.0.1:<port>`, removing the iframe obstacles; the agents keep the sandbox's headless Chrome (ADR-09), whose tabs share the panel's strip and are watched remotely with the agent's cursor; Yulius never opens inside itself. Analysis and contract: §2.1. | Keep the mirror (A); pixel or video streaming (B); hybrids (D) | Native page behaviour on desktop and phone; needs wildcard DNS and TLS for the preview hosts (on-demand TLS); the app runs in the user's browser, so its absolute `localhost` URLs in page code do not reach the VM. |
 | ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
+| ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done. Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 
 ### 2.1 ADR-14: the browser panel renders the sandbox's apps live (F 2026-10-09)
@@ -438,13 +439,123 @@ server), the network to a real user.
 - One shown tab per sandbox: viewers looking at different tabs bring each other's tab forward.
 - The remote cursor's shape (pointer, text) is not mirrored; the user's own cursor is shown.
 
+### 2.3 ADR-16: task intake and chained tasks (F 2026-10-10)
+
+Status: accepted and implemented (issues #114, #115). Source: item 10 (c) and (d) of the founder's
+"final state" list, and the same day's refinements: "if the thread is consistent, it should be one
+task … 'ux work' and 'backend work', not 10 different tasks", and "do not overcomplicate this jev
+thingy, it should be just consistent."
+
+**Problem.** A new task is always one task, even when the request mixes separate workstreams. While
+a task runs, everything a person types reaches the agent, so its scope drifts: new features get
+added mid-task, parts of the plan are dropped silently, and a different task replaces the current
+one in the same session and branch. There was no way to say "start this when #12 is done".
+
+**Decision.** The design is deterministic and the default always wins when unsure: one task,
+context.
+
+1. *Jev.* TypeSafe's `jev-1.13.0` Choice evaluator is the only classifier. One fixed question with a
+   fixed option set is asked per request: `split` (`one` | `several`) for a new task, `scope`
+   (`context` | `new_scope` | `drops_scope` | `redirect`) for a typed prompt. An answer counts only
+   when its typed choice is also the most probable option, at or above a fixed threshold
+   (`YULIUS_JEV_SPLIT_THRESHOLD`, default 0.9; `YULIUS_JEV_SCOPE_THRESHOLD`, default 0.8). A choice
+   that disagrees with its own distribution counts as uncertain. The adapter
+   (`crates/yulius/src/wiring/jev.rs`) works as follows:
+   - one endpoint, no redirects, one deadline over connect, request and the whole body (split
+     2.5 s, scope 3 s), no retries;
+   - requests ≤ 28 KiB, refused before sending when they contain the key; answers ≤ 256 KiB;
+   - strict contract: exact model, exactly the asked question, an option as the choice, a
+     confidence and probabilities in 0–1 over exactly the asked options summing to 1 (hundredth
+     rounding accepted, never renormalized), non-negative token usage;
+   - every failure is typed and means "no answer". The key comes from an owner-only file and never
+     reaches a log, an error or a request body.
+2. *Split (TSK-011).* Prompts under 40 words are one task without a Jev call. After Enter, the
+   composer waits for the check for at most 4 s; any failure creates the task. On a confident
+   `several`, the composer shows the card at once, with **Keep as one task** already usable, and
+   asks for a proposal:
+   - one headless `claude -p` run on an account picked by the same placement policy as task runs
+     (`--model haiku`, JSON output with a schema, no tools, no MCP servers, no slash commands, no
+     saved session, the request on stdin, an empty private config directory, 60 s, the run killed
+     and reaped on timeout);
+   - the prompt asks for the **smallest** split, normally 2 and at most 4 tasks, grouped by area,
+     titled "Area: what", each carrying its items word for word, never one task per item;
+   - the domain rejects more than 4 tasks, as many tasks as listed items (3 or more), a missing
+     listed item or an empty task. A single task means "keep one". With no usable proposal the task
+     is created as written.
+3. *Chains (TSK-012).* A new task may name a predecessor of its sandbox that has not ended. It waits
+   in the task status `chained` (§6.1) with a row in `task_chains`.
+   - *Starting.* The chain is re-evaluated when the predecessor's run ends, after its clean Stop
+     hook (after the automatic pull request), when it is cancelled or deleted, and every minute.
+     **Done** is the sidebar's rule (#35): a finished turn (`running`/`waiting`, or `closed`) and a
+     pull request recorded as merged, or open with checks green or none required (read from
+     GitHub). Released tasks go `chained → queued` (compare-and-set) and then start normally.
+   - *Needing a person.* A predecessor that ends otherwise sets a reason, and the task stays
+     `chained` and shows as Needs you until Start now, Cancel or a continued predecessor.
+   - *Branch.* A chained task starts from its predecessor's branch until that branch is merged.
+     Then it starts from the integration branch.
+4. *Scope discipline (TSK-013).* Claude Code's `UserPromptSubmit` hook (already registered for
+   every run) is the gate. A held prompt gets `{"decision":"block","reason":…}`. Claude Code 2.1.295
+   shows the reason to the person, keeps the text in its input box and never gives it to the agent
+   (verified with the CLI and a blocking hook, without credentials). The task's summary carries the
+   pending hold, and the task view shows the card.
+
+**Rules for a typed prompt, in order** (the first match decides):
+
+| # | Prompt | Outcome | Why it is predictable |
+| --- | --- | --- | --- |
+| 1 | No Jev key, Jev unavailable or slow, or task not running | passes | Intake never blocks work on a dependency. |
+| 2 | Empty, a slash command (`/goal`, `/clear`, `/compact`, `/model`…), ≤ 3 words ("yes", "continue", "use option 2") or Claude Code's own tagged turn (`<task-notification>`…) | passes, no Jev call | Fixed text rules; answers and commands are never interrupted. |
+| 3 | The identical text after "Send anyway" (once, within 10 min) | passes, override recorded | The person already decided. |
+| 4 | The task's own prompt, or nobody typed into the task's terminal in the last 60 s (goal continuations, background agents, Yulius's first prompt, continuations and wake notices) | passes | Only a person's own submission is checked. |
+| 5 | `context`, or any answer below the threshold | passes | Uncertain means context. |
+| 6 | `new_scope` | held: Start in parallel · Run after this task · Send anyway | New work becomes its own task. |
+| 7 | `drops_scope` | held: pick the steps it rules out → they become `skipped`, the agent gets a message, the new direction is chained · Send anyway | The plan stays true; nothing is dropped silently. |
+| 8 | `redirect` | held: Cancel, revert and start a new task (explicit confirmation) · Send anyway | A different task gets a clean worktree and branch. |
+
+**Edge cases.**
+
+- *A prompt while the agent is mid-turn.* Claude Code runs the hook whenever it submits the prompt,
+  queued or not, and the same rules apply then. A late submission (more than 60 s after the last
+  keystroke) passes, by rule 3.
+- *Several people at once.* Each prompt is judged alone. The hold records who typed last into that
+  terminal. A newer held prompt supersedes an unanswered one (one card per task). The first decision
+  wins (compare-and-set); a second gets a conflict.
+- *Goal mode.* `/goal` is a slash command. Goal continuations are not typed, so they pass. When
+  steps are skipped, the agent's message says so, and the goal evaluator sees that message in the
+  transcript; the goal is not rewritten.
+- *Send anyway.* Yulius presses Enter in the session, and Claude Code resubmits the text it kept.
+  When the person has edited that text meanwhile, the edited text is checked like any prompt.
+- *Revert.* It needs `confirm: true`. The task is stopped and reaped (at most 30 s; otherwise
+  nothing changes). Its work, committed or not, is committed to a new branch
+  `yulius/reverted/<number>-<ms>`, which never replaces an existing branch. Then the worktree is
+  reset to its fork point with the integration branch, the task is archived, and a new task starts.
+  Nothing is deleted, and the note names the branch. For a chained task, its predecessor's commits
+  are kept on that branch too.
+- *Server restart.* Holds and chains are rows in the database. The typing window is in memory, so
+  after a restart prompts pass until the next keystroke.
+- *Privacy.* With a Jev key, a task's title, prompt and step titles plus the typed prompt go to
+  TypeSafe; split requests go to TypeSafe and to Anthropic through the account's Claude Code. No
+  Jev key: nothing leaves the instance.
+
+**Alternatives.** An LLM in the hook instead of Jev was rejected: it is slower, gives free-text
+answers and needs prompt-injection handling inside a 5 s budget. Rewriting the prompt was rejected:
+the hook cannot replace prompt text. Classifying every prompt, including slash commands and short
+answers, was rejected: it is unpredictable and costly. A separate approval queue for chains was
+rejected; the existing queue and status machine are enough. Splitting one task per numbered item
+was rejected by the founder.
+
+**Consequences.** Without a Jev key everything behaves as before. A wrong `context` lets drift
+through, which is the chosen side of the trade-off; a wrong hold costs one click (Send anyway).
+Chained tasks need GitHub to see "tested" (a merged pull request needs no call). Stacked branches
+can repeat the predecessor's commits in the successor's pull request until it is merged.
+
 ## 3. Code organization
 
 Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
 
 | Crate | Layer | Responsibility |
 | --- | --- | --- |
-| `crates/yulius-domain` | domain | IDs, task/attempt/switch state machines, permission mapping, rotation policy, spec/format validator, cron evaluation, delivery profile model, briefing assembly. Only `thiserror`. |
+| `crates/yulius-domain` | domain | IDs, task/attempt/switch state machines, permission mapping, rotation policy, spec/format validator, cron evaluation, delivery profile model, briefing assembly, task-intake rules (ADR-16). Only `thiserror`. |
 | `crates/yulius-contracts` | contracts | Versioned DTOs: HTTP API, UI event stream, terminal WS frames, ptyhost wire protocol, MCP tool schemas, hook payloads, import manifest. |
 | `crates/yulius-app` | application | Use cases and ports: `Store`, `GitHubPort`, `GitPort`, `SessionHostPort`, `HarnessPort`, `BrowserPort`, `EditorPort`, `Clock`, `Ids`, `SecretBox`, event bus. Authorization decisions. |
 | `crates/yulius-store` | adapter | SQLite schema, migrations, repositories, backup. |
@@ -455,7 +566,7 @@ Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
 | `crates/yulius-browser` | adapter | Chromium lifecycle, CDP client, virtual displays (Xvfb, XTest, RandR), the H.264 encoder and video hub, screencast fallback, browser tools. |
 | `crates/yulius-server` | interface | axum routes, auth middleware, WS endpoints, MCP and hook endpoints, embedded web UI (`web/`). |
 | `crates/yulius-cli` | interface | `import`, `login`, admin client commands (HTTP client, argument parsing). |
-| `crates/yulius` | composition | Configuration, wiring, subcommand dispatch, signal handling. |
+| `crates/yulius` | composition | Configuration, wiring, subcommand dispatch, signal handling; the Jev client and the headless Claude split proposer (ADR-16). |
 | `tools/fake-agent` | tooling | Deterministic fake harness for failure tests (prints TUI-like output, writes fake transcripts, floods, ignores SIGTERM, forks descendants, simulates limits). |
 
 ## 4. Data directory and files
@@ -524,6 +635,8 @@ Schema version 1 (tables; columns abbreviated):
 | `feedback` | task_id, user_id, verdict, comment, at |
 | `import_jobs` | id, sandbox_id, user_id, state, manifest (json), received (json), created_at |
 | `audit_log` | id, at, actor, action, target, detail |
+| `task_chains` | task_id (PK), after_task_id (NULL once the predecessor is deleted), after_number, blocked_reason, created_at — ADR-16 |
+| `prompt_holds` | id, task_id, class, prompt, prompt_sha256, percent, typed_by, state (pending/sent/consumed/parallel/after/skipped_after/reverted/dismissed/superseded), created_at, resolved_by, resolved_at, new_task_id — ADR-16 |
 
 Versioning: each migration is one transaction; startup refuses a database from a newer schema.
 Backup: `VACUUM INTO` plus copy of files excluding `runs/`.
@@ -536,6 +649,7 @@ For every nonterminal state: owner, exit trigger, timeout and behavior if the tr
 
 | State | Owner | Exit trigger | Timeout / missing trigger |
 | --- | --- | --- | --- |
+| `chained` | chain controller (ADR-16) | predecessor Done, or a person's Start now → `queued`; cancel → `stopped(cancelled)` | Re-evaluated when the predecessor's run ends, after its clean Stop, on cancel/delete and every minute; a predecessor that ends otherwise sets a reason and the task waits for a person (no timeout); at most 32 per sandbox. |
 | `queued` | scheduler | capacity available → `starting`; cancel → `stopped` | Queue bound 32; position shown; no timeout. |
 | `starting` | supervisor | ptyhost Welcome + child running → `running`; spawn error → `failed` | 30 s → kill ptyhost tree, `failed(start_timeout)`. |
 | `running` | supervisor | child exit 0/normal → `closed`; abnormal exit → `stopped(crashed)`; cancel → `stopping`; switch decision → `switching`; limit with no capacity → `waiting_capacity` | Liveness ping every 10 s; 3 missed pings + no process → `stopped(lost)`. |
@@ -711,8 +825,10 @@ task token (timeout 5 s) and prints the response. Failure to reach Yulius is fai
 output) and is recorded. Responses:
 
 - `SessionStart` → `hookSpecificOutput.additionalContext` = briefing (≤ 12 KiB; §7.6).
-- `UserPromptSubmit` → additionalContext with unread message digests (marks delivered); activity
-  `working`.
+- `UserPromptSubmit` → first the scope check (ADR-16 rules): a held prompt returns
+  `{"decision":"block","reason":…}` (shown to the person, never to the agent) and nothing else
+  happens; otherwise additionalContext with unread message digests (marks delivered); activity
+  `working`. The Jev deadline (3 s) fits inside the hook client's 5 s; any failure passes.
 - `Stop` → activity `waiting`; discipline gate: if the worktree has changes and the task spec is
   missing/invalid, or there are unread urgent messages, return `{"decision":"block","reason":…}`;
   at most 3 consecutive blocks per turn, then `needs_attention`. Also the turn boundary for
@@ -755,8 +871,8 @@ browser action requests) filtered by permission. Bounded per-connection queue (2
 ### 7.9 Public HTTP API (selected)
 
 `/api/setup`, `/api/auth/*` (GitHub OAuth, device approval, logout), `/api/me`, `/api/sandboxes`
-(+ create/import/remove), `/api/sandboxes/{id}/tasks` (create, list), `/api/tasks/{id}` (get, stop,
-continue, switch, archive, restore, feedback, steps), `/api/sandboxes/{id}/git/*`,
+(+ create/import/remove), `/api/sandboxes/{id}/tasks` (create, list; `after_task_id` chains), `/api/sandboxes/{id}/intake/{check,proposal}` (ADR-16), `/api/tasks/{id}` (get, stop,
+continue, switch, archive, restore, feedback, steps, `start-now`, `held-prompts/{hid}`), `/api/sandboxes/{id}/git/*`,
 `/api/sandboxes/{id}/delivery/*`, `/api/sandboxes/{id}/{skills,workflows,automations,mcp}`,
 `/api/admin/{users,accounts,github,mcp,skills}`, `/api/analytics/*`, `/api/status`,
 `/api/import/*` (CLI), `/api/sandboxes/{id}/browser` (WS), `/api/sandboxes/{id}/previews`,
@@ -874,6 +990,11 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | Display input queue | 512 commands; 500 events/s per viewer (burst 1000) | moves dropped; other input refused with an error |
 | Encoder start failures | 3 in a row (backoff 0.5–3 s) | video unavailable; viewers get JPEG frames |
 | Encoder tag (access unit) | 8 MiB | encoder restarted |
+| Jev request / answer / deadline (ADR-16) | 28 KiB / 256 KiB / 2.5 s split, 3 s scope; one request, no retries | refused before sending / typed failure → no check |
+| Split proposals | 2 at once, 60 s each, 256 KiB output | `capacity` / failure → one task |
+| Chained tasks per sandbox | 32 | refused at creation |
+| Held prompts per task | one pending (a newer one supersedes) | — |
+| Revert stop wait | 30 s | nothing reverted, conflict |
 
 ## 10. Failure and recovery matrix
 
@@ -891,12 +1012,16 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | Usage limit | transcript/rate-limit events | Rotation (§6.3). |
 | Provider outage/auth failure | spawn exits early / auth error text | Account marked `error`; rotation excludes it; admin notified. |
 | GitHub outage | HTTP errors | Bounded retries; permission cache serves stale-but-recent (≤ 30 min) for read-only views; writes needing GitHub fail visibly. |
+| GitHub App lacks a check permission (#111) | 403 "Resource not accessible by integration" from check runs, the combined status or Actions runs | The other sources decide (Actions runs stand in for unreadable check runs); the source is named once per repository in `checks_access`, with the App's permission page for instance administrators; nothing reported while a source is unreadable, or nothing readable, is `unknown`, which blocks merges and releases that require checks. Other GitHub errors: `unknown` with a note. |
 | Disk full | write errors | Refuse new tasks/imports; live sessions continue; status panel warns. |
 | DB busy/corrupt | busy timeout / integrity check at start | Retry busy; refuse start on integrity failure with restore guidance. |
 | Partial import upload | missing chunks | Resume by checksum (AC-IMP-1). |
 | Concurrent Continue/Switch/Cancel | CAS on task status, unique live attempt | One wins; others get conflict errors. |
 | Automation during downtime | scheduler startup | ≤ 1 catch-up run; unique run key prevents duplicates. |
 | Worktree conflicts / dirty cleanup | git status before removal | Never delete dirty or foreign worktrees; surface for review (GIT-002). |
+| Jev down, slow or answering off-contract | typed adapter failure | Nothing checked: new tasks are created as written, typed prompts pass (ADR-16). |
+| Split proposal fails (no account, Claude error, timeout, unusable) | proposer failure / domain check | The composer creates the one task as written. |
+| Predecessor of a chained task ends without being Done | chain re-evaluation | The chained task needs a person (reason shown); never started silently. |
 
 ## 11. Testing and evidence plan
 
@@ -964,7 +1089,8 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Terminal and permissions (AC-TSK-2, AC-TSK-6, AC-ACC-5) | `terminal_ws.rs`: task created via the public API, two WebSocket viewers, read-only input refused, writer input reaches the agent, a GitHub downgrade turns an open socket read-only and revocation closes it (4003); the writer's `?cols=&rows=` is in its first state (AC-UI-38). |
 | User terminals (UI-016, AC-UI-8, AC-UI-37) | `shells.rs`: many named shells per user and sandbox up to the bound, privacy between users and sandboxes (list, attach, rename, close), close ends the process, idle reaping; a shell keeps running when the server stops and the next server adopts it with its screen and process (unadoptable leftovers removed). `live_ui_terminal.rs` (opt-in Chrome): the Shell panel opens a working terminal without a click and "+" adds one. |
 | Task terminal appearance (UI-043, AC-UI-38) | `live_ui_terminal.rs` (opt-in Chrome, fake agent with `--tui`, 80 ms latency): zero visible font, grid or layout changes after the first frame, cold and on reload; before this change 2 (cold) and 1 (reload), plus a font-size change before the agent's text. |
-| Messages and steps (AC-COM-2, AC-STP-3) | `supervision.rs` wake test (notice typed into the idle recipient only); `agent_hooks.rs` plan-checklist → steps sync. |
+| Messages and steps (AC-COM-2, AC-STP-3) | `supervision.rs` wake test (notice typed into the idle recipient only); `agent_hooks.rs` plan-checklist → steps sync. No person → agent message route (2026-10-10, #110): `http_auth.rs` (`POST /api/tasks/{tid}/messages` is 405, the read routes still answer); `ui_contract.rs` (neither the UI nor the mock posts messages); `e2e/tests/messages.e2e.ts` (no composer, "Reply in the terminal" focuses the terminal). |
+| Unreadable GitHub checks (GIT-001, AC-GIT-1, #111) | `yulius-github`: `wire::tests::unreadable_sources_never_make_checks_green`; `tests/client.rs` against the fake GitHub: 403 on check runs and 200 on statuses (statuses and Actions runs decide, `head_sha` sent), Actions withheld too, nothing reported → unknown, nothing readable → unknown, 403 on statuses only (check runs decide, no Actions call), another 403 still fails. `tests/github_checks.rs`: the production adapter maps the report. `tests/delivery.rs`: one `checks_access` (settings link for the superadmin only), no note, unknown refuses the merge and the release with the reason, other GitHub errors become one note without a doubled prefix. Domain merge-gate tests with `ChecksState::Unknown`. Manifest test requests `statuses: read`. |
 | Operator CLI (AC-OPS-3) | `cli.rs`: `yulius backup` consistent copy, refuses an existing destination; `yulius doctor` fails on a too-long data dir. |
 | Hooks, briefing, discipline (COM-004, DSC-003) | `crates/yulius/tests/agent_hooks.rs` over the internal HTTP listener. |
 | Live Claude Code 2.1.292 | `tests/live_claude.rs` (opt-in): hooks fire, Yulius MCP `steps_set` with the task bearer token, session id and transcript path as predicted. `supervision.rs::real_claude_tui_reaches_the_prompt_inside_ptyhost` (opt-in): the real TUI in the real ptyhost reaches its prompt without first-run screens. |
@@ -974,9 +1100,18 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
 | Live previews and no recursion (ADR-14, 2026-10-09) | `tests/preview.rs` (handshake, rewriting, localhost view of the app, WebSocket passthrough, refusals of users, sandboxes, ports, cross-site callers and Yulius itself, the Yulius session unusable from a preview origin, TLS `ask`); `tests/browser.rs` (per-viewer `watch`); `yulius-browser` `tests/instance.rs` and `tests/manager.rs` (the sandbox Chrome's guard: refusal, `Fetch` interception, fail-closed start); opt-in `live_ui_browser.rs` with real Chrome (live iframe with root-relative assets, a redirect, a WebSocket, native typing, selection and scrolling, address bar and Back, agent notice and cursor, hostile preview page refused, framed UI refused, the sandbox Chrome refusing Yulius). Deployed DNS/TLS not exercised. |
 | Streamed browser (ADR-15, 2026-10-10) | Unit: FLV parsing for every split of a stream, codec strings, GOP cache, subscriber and viewer backpressure, encoder lifecycle (on demand, idle stop, resize restart, give-up), key mapping, cookie format and permissions, device sizes. `tests/browser.rs` with a fake display: video config then a keyframe, a late viewer's instant start, viewport → display resize and encoder restart, XTest-shaped input, wheel and text through CDP, copy, release on leave, pages opened by pages come to the front, history and reload, a broken encoder falls back to JPEG, the display stops with the browser. Opt-in `live_display.rs` on the VM (Xvfb, ffmpeg, Chrome 155, as the service user): streaming from a keyframe, real clicks (also in an OAuth-style popup), typing incl. Polish letters and emoji in order, scrolling, canvas and image pixels, `navigator.webdriver === false`, agent cursor, screenshots, recursion refused, no display, cookie, abstract or TCP socket reachable from containment (both identities); figures in ADR-15; reCAPTCHA v2 demo (checkbox → image challenge, a tile selected) and Cloudflare's challenge on nopecha.com (checkbox → passed) with XTest clicks. `live_ui_browser.rs` with a display: the panel decodes H.264 in Chrome and its input reaches the page. `e2e/tests/browser.e2e.ts` (mock UI, VP8 via WebCodecs). |
+| Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
+
+- 2026-10-10 (F 2026-10-10, #110/#111): `POST /api/tasks/{tid}/messages` removed (people talk to
+  the agent in its terminal); `GitOverview`/`Delivery` gain `checks_access`; checks read each source
+  on its own with an Actions-runs fallback and a `ChecksState::Unknown` that never passes a gate;
+  the App manifest requests `statuses: read` (ADR-08, §10, §14).
+- 2026-10-10 (F 2026-10-10, item 10 c/d): ADR-16 — task intake with Jev (split check and Claude's
+  smallest split, the `UserPromptSubmit` scope check with held prompts) and chained tasks; §5
+  `task_chains`, `prompt_holds` (migration 0004), §6.1 `chained`, §7.5, §7.9, §9, §10, §14.
 
 - 2026-10-10 (F 2026-10-10): ADR-15 — the panel streams the real, headful sandbox Chrome from a
   per-sandbox Xvfb as H.264 over the viewer WebSocket with XTest input; the DOM mirror and its

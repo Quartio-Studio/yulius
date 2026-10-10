@@ -9,13 +9,12 @@
 import { createApi, realTransport, enc } from './api.js';
 import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
-import { applyTheme, PHONE } from './theme.js';
+import { applyTheme, PHONE, isPhone } from './theme.js';
 import { BRAND } from './brand.js';
 import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError, closeMenu } from './dom.js';
 import { createTabRow, createSidebar } from './layout.js';
 import { createPanelHost } from './panels.js';
 import { mountTaskView, mountComposer } from './taskview.js';
-import { openSandboxDialog } from './actions.js';
 import { mountSetup, mountSignIn, signInProblem } from './pages/auth.js';
 import { mountTasksPage, mountArchivedPage, mountDevicePage } from './pages/tasks.js';
 import { mountGitPage } from './pages/git.js';
@@ -34,6 +33,7 @@ import { mountDashboardPage } from './pages/dashboard.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
 import { mountDesignPage } from './pages/design.js';
+import { mountHomePage } from './pages/home.js';
 import { IS_MAC, showShortcuts } from './shortcuts.js';
 import { preloadTerminal } from './terminal.js';
 
@@ -230,8 +230,10 @@ function createApp(root, transport) {
     setChildren(root, skip, appEl, backdrop, connBanner);
     new MutationObserver(syncDrawer).observe(appEl, { attributes: true, attributeFilter: ['class'] });
     syncDrawer();
-    ctx.openNewTask = () => openNewTask();
+    ctx.openNewTask = (sandbox) => openNewTask(sandbox);
+    ctx.defaultSandbox = () => defaultSandbox();
     ctx.openBrowserTab = (sandbox, tabId) => openBrowserTab(sandbox, tabId);
+    ctx.replyInTerminal = (task) => replyInTerminal(task);
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
     ctx.railVisible = () => panels.railVisible;
     ctx.setRailVisible = (visible) => panels.setRailVisible(visible);
@@ -370,6 +372,21 @@ function createApp(root, transport) {
     }
   }
 
+  /**
+   * "Reply in the terminal" (F 2026-10-10): people answer an agent in its terminal, not through
+   * Messages. Shows the task's session and focuses its terminal (the quick input on phones).
+   */
+  function replyInTerminal(task) {
+    if (centerView && centerView.key === `task:${task.id}` && centerView.reply) {
+      // On a phone the tool panel covers the session.
+      if (isPhone() && shell) shell.panels.close();
+      centerView.reply();
+      return;
+    }
+    const sandbox = store.sandboxById(task.sandbox_id);
+    if (sandbox) navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
+  }
+
   /** The viewed task closed because the user left the session: show the task list. */
   function onTaskClosed(task) {
     const sandbox = store.sandboxById(task.sandbox_id);
@@ -427,22 +444,23 @@ function createApp(root, transport) {
     document.body.classList.remove('drawer-open');
     if (route.name === 'setup' || route.name === 'signin') { navigate('/', { replace: true }); return; }
 
+    // Home (UI-045): every sandbox at a glance is the default view; it no longer redirects into the
+    // last sandbox. Deep links below open their sandbox directly.
     if (route.name === 'home') {
-      const sandboxes = store.state.sandboxes;
-      const last = store.sandboxById(readJson(LAST_SANDBOX_KEY, null));
-      const target = last || sandboxes[0];
-      if (target) { navigate(`/s/${encodeURIComponent(target.slug)}`, { replace: true }); return; }
       currentSandbox = null;
       currentTask = null;
       shell.el.classList.add('no-sandbox');
-      shell.tabRow.update(null);
+      shell.tabRow.update(null, { home: true });
       shell.sidebar.update(route, null);
       shell.panels.setContext(null, null);
-      if (store.state.sandboxesError) sandboxesFailed('sandboxes-error'); else setCenter('home', () => homeView());
+      if (store.state.sandboxesError) sandboxesFailed('sandboxes-error'); else setCenter('home', () => mountHomePage(ctx));
+      if (ctx.fitSidebar) ctx.fitSidebar();
       updateTitle();
       return;
     }
+    const wasHome = shell.el.classList.contains('no-sandbox');
     shell.el.classList.remove('no-sandbox');
+    if (wasHome && ctx.fitSidebar) ctx.fitSidebar();
 
     let sandbox = currentSandbox;
     if (route.slug) {
@@ -572,33 +590,6 @@ function createApp(root, transport) {
       loadError(`Couldn’t load your sandboxes: ${error.message}`, () => store.loadSandboxes().then(() => refreshRoute(), () => {})))) }));
   }
 
-  function homeView() {
-    const me = store.state.me || {};
-    const user = me.user || {};
-    const instance = me.instance || {};
-    const notes = [];
-    // Without GitHub nothing can be imported or created: that step is the primary action (UX2-17).
-    const needsGithub = instance.github_configured === false;
-    if (needsGithub && !user.is_superadmin) {
-      notes.push(h('div', { class: 'banner banner-info' }, icon('globe'), h('span', { class: 'banner-text' }, 'This instance is not connected to GitHub yet. Ask a superadmin to connect it.')));
-    }
-    // The superadmin owns the instance and sees every sandbox without GitHub (ACC-012).
-    if (user.github_linked === false && !user.is_superadmin) {
-      notes.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Sandbox content needs a GitHub-linked account. Sign in with GitHub to see the repositories you can access.'), h('a', { class: 'btn btn-sm', href: '/api/auth/github/start?next=/' }, 'Sign in with GitHub')));
-    }
-    return {
-      el: h('div', { class: 'composer' }, h('div', { class: 'composer-card' },
-        h('h1', { class: 'composer-title' }, 'No sandboxes yet'),
-        h('p', { class: 'text-2' }, 'A sandbox is one GitHub repository with its own tasks, browser and editor. Import an existing repository or create a new one from a template.'),
-        notes,
-        h('div', { class: 'row-wrap' },
-          needsGithub && user.is_superadmin ? h('a', { class: 'btn btn-primary', href: href('/admin/github'), dataset: { route: '/admin/github' } }, 'Connect GitHub') : null,
-          h('button', { type: 'button', class: ['btn', !needsGithub && 'btn-primary'], disabled: needsGithub, title: needsGithub ? 'Connect GitHub first' : null, onClick: () => openSandboxDialog(ctx, 'import') }, 'Import repository'),
-          h('button', { type: 'button', class: 'btn', disabled: needsGithub, title: needsGithub ? 'Connect GitHub first' : null, onClick: () => openSandboxDialog(ctx, 'create') }, 'Create from template')),
-        needsGithub && user.is_superadmin ? h('p', { class: 'muted small' }, 'Connect this instance to a GitHub organization or account first; then import or create repositories.') : null)),
-    };
-  }
-
   onRoute((route) => {
     handleRoute(route).catch((error) => {
       console.error(error);
@@ -653,6 +644,18 @@ function createApp(root, transport) {
     openNewTask();
   }, true);
 
+  // All sandboxes (UI-045): ⌘⇧H / Ctrl+Shift+H anywhere, like the logo and the All sandboxes tab.
+  // Captured before the terminal and the editor, as the new-task shortcut is.
+  window.addEventListener('keydown', (event) => {
+    if (!shell || event.altKey || event.repeat || !event.shiftKey) return;
+    const mod = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+    if (!mod || (event.key || '').toLowerCase() !== 'h') return;
+    event.preventDefault();
+    event.stopPropagation();
+    document.body.classList.remove('drawer-open');
+    if (currentLocation().path !== '/') navigate('/');
+  }, true);
+
   // The shortcut sheet (UI-029): ⌘/ on macOS, Ctrl+/ elsewhere — except in the terminal, where
   // Ctrl+/ belongs to the shell (undo in readline and emacs).
   window.addEventListener('keydown', (event) => {
@@ -664,10 +667,15 @@ function createApp(root, transport) {
     showShortcuts();
   }, true);
 
-  /** Opens the current sandbox's composer and puts the cursor in the prompt. */
-  function openNewTask() {
+  /** The sandbox in view, else the one used last, else the first. */
+  function defaultSandbox() {
+    return currentSandbox || store.sandboxById(readJson(LAST_SANDBOX_KEY, null)) || store.state.sandboxes[0] || null;
+  }
+
+  /** Opens a sandbox's composer (the one in view, or used last) and puts the cursor in the prompt. */
+  function openNewTask(target) {
     document.body.classList.remove('drawer-open');
-    const sandbox = currentSandbox || store.state.sandboxes[0] || null;
+    const sandbox = target || defaultSandbox();
     const path = sandbox ? `/s/${encodeURIComponent(sandbox.slug)}` : '/';
     if (currentLocation().path !== path) navigate(path);
     setTimeout(() => {

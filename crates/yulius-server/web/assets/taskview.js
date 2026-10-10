@@ -4,8 +4,9 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, placeholder, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { createTerminalView } from './terminal.js';
-import { taskInfo, isLive, allows, taskActions, endedMessage } from './status.js';
-import { openTaskMenu, continueTask, deliveryStrip } from './actions.js';
+import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo } from './status.js';
+import { heldPromptCard, splitCard, looksSeveral, chainCandidates } from './intake.js';
+import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
 import { relLong, dateTime, resetLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -47,6 +48,11 @@ function emptyTerminalMessage(task) {
       return { title: 'Usage limit reached', text: `Every AI account is at its limit${reset ? ` · ${reset}` : ''}. The agent continues by itself.` };
     }
     case 'running': return { title: 'Claude Code is starting…', text: 'The session appears here in a moment.' };
+    case 'chained': {
+      const after = task.after;
+      if (after && after.blocked) return { title: 'Waiting for you', text: after.blocked };
+      return { title: after ? `Queued after #${after.number}` : 'Queued after another task', text: after ? `It starts by itself when #${after.number} is done.` : 'It starts by itself when that task is done.' };
+    }
     default: return null;
   }
 }
@@ -123,11 +129,24 @@ export function mountTaskView(ctx, sandbox, task) {
   // floats over the top of the terminal: coming and going with every turn, it must not resize
   // the terminal (each resize makes Claude Code redraw its whole screen, F 2026-10-09).
   const attention = h('div', { class: 'attention-bar', role: 'status', hidden: true });
+  // Where the user answers the agent: its terminal (the quick input on phones).
+  const reply = () => (isPhone() ? quickInput.focus() : terminal.focus());
   function renderAttention() {
     const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
-    const reply = () => (isPhone() ? quickInput.focus() : terminal.focus());
     let content = null;
-    if (info.request) {
+    const can = taskActions(current, (ctx.store.sandboxById(sandbox.id) || sandbox).access);
+    if (current.status === 'chained') {
+      // Waiting in a chain (TSK-012): the way out is always here.
+      const after = current.after;
+      const label = after && after.blocked
+        ? [h('strong', null, 'Waiting for you. '), after.blocked]
+        : [h('strong', null, after ? `Queued after #${after.number}. ` : 'Queued. '), after ? `It starts by itself when #${after.number} is done.` : ''];
+      content = [icon(after && after.blocked ? 'st-attention' : 'clock', { size: 16 }), h('span', { class: 'attention-text' }, label),
+        can.startNow ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => startNow(ctx, current) }, 'Start now') : null,
+        can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
+    } else if (info.held) {
+      content = null; // the held-prompt card says it
+    } else if (info.request) {
       content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab && ctx.openBrowserTab(sandbox, info.request.tab_id) }, 'Open browser tab')];
     } else if (current.status === 'running' && current.activity === 'needs_attention') {
@@ -146,10 +165,23 @@ export function mountTaskView(ctx, sandbox, task) {
 
   // The view's heading for screen readers and the page title (the strip shows it visually).
   const heading = h('h1', { class: 'sr-only' }, `#${task.number} ${task.title || ''}`);
-  const el = h('div', { class: 'taskview' }, heading, strip, h('div', { class: 'taskview-term' }, terminal.el, attention), quickbar);
+  // A prompt typed into the session that Yulius held before it reached the agent (TSK-013):
+  // the choices float over the terminal, which keeps its size.
+  const held = h('div', { class: 'held-slot', hidden: true });
+  let heldKey = '';
+  function renderHeld() {
+    const prompt = current.held_prompt;
+    const key = prompt ? `${prompt.id}:${current.status}:${detail ? (detail.steps_list || []).map((s) => s.status).join() : ''}` : '';
+    if (key === heldKey) return;
+    heldKey = key;
+    held.hidden = !prompt;
+    setChildren(held, prompt ? heldPromptCard(ctx, sandbox, current, prompt, detail) : null);
+  }
+  const el = h('div', { class: 'taskview' }, heading, strip, h('div', { class: 'taskview-term' }, terminal.el, attention, held), quickbar);
 
   function renderStrip() {
     renderAttention();
+    renderHeld();
     const steps = current.steps || { done: 0, total: 0, current: null };
     // The session's state as the sidebar says it (pull request, browser request, usage limit).
     const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
@@ -177,8 +209,17 @@ export function mountTaskView(ctx, sandbox, task) {
     setChildren(statusEl,
       statusMark(info),
       h('span', { class: 'strip-state' }, info.label, reset ? h('span', { class: 'strip-reset' }, ` · ${reset}`) : null));
+    // The chain shows on both tasks (TSK-012): what this task runs after, what runs after it.
+    const slug = encodeURIComponent((ctx.store.sandboxById(sandbox.id) || sandbox).slug);
+    const chainLink = (link, text, title) => (link.task_id
+      ? h('a', { class: 'chip strip-extra chain-chip', href: href(`/s/${slug}/t/${link.number}`), dataset: { route: `/s/${slug}/t/${link.number}` }, title }, icon('branch', { size: 12 }), text)
+      : h('span', { class: 'chip strip-extra chain-chip', title }, icon('branch', { size: 12 }), text));
+    const after = current.after ? chainLink(current.after, `After #${current.after.number}`, current.after.title ? `Runs after #${current.after.number} ${current.after.title}` : `#${current.after.number} was deleted`) : null;
+    const next = (current.next || []).map((link) => chainLink(link, `Then #${link.number}`, `#${link.number} ${link.title || ''} runs after this task`));
     setChildren(extrasEl,
       current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
+      after,
+      next,
       current.account_label ? h('span', { class: 'muted xs strip-extra' }, current.account_label) : null);
   }
 
@@ -208,6 +249,7 @@ export function mountTaskView(ctx, sandbox, task) {
       detail = fresh;
       if (detail && detail.id === current.id) {
         current = { ...current, ...pickSummary(detail) };
+        heldKey = '';
         renderStrip();
       }
     } catch (error) {
@@ -258,6 +300,8 @@ export function mountTaskView(ctx, sandbox, task) {
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
       if (wasLive && current.status === 'closed' && ctx.onTaskClosed) ctx.onTaskClosed(current);
     },
+    /** Focuses the terminal to answer the agent (the quick input on phones). */
+    reply,
     get task() { return current; },
     get detail() { return detail; },
     destroy() {
@@ -270,7 +314,7 @@ export function mountTaskView(ctx, sandbox, task) {
 }
 
 function pickSummary(detail) {
-  const keys = ['status', 'activity', 'title', 'steps', 'unread_messages', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode'];
+  const keys = ['status', 'activity', 'title', 'steps', 'unread_messages', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt'];
   const out = {};
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
@@ -296,6 +340,9 @@ export function mountComposer(ctx, sandbox) {
   let mode = 'goal';
   let workflowId = '';
   let workflows = [];
+  // Run after another task of this sandbox (TSK-012): the new task waits until it is Done.
+  let afterTaskId = '';
+  let split = null; // the split card while it shows (TSK-011)
   let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
   let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
 
@@ -307,6 +354,8 @@ export function mountComposer(ctx, sandbox) {
   };
   const modeChip = chip('Mode', openModeMenu);
   const workflowChip = chip('Workflow', openWorkflowMenu);
+  const afterChip = chip('Run after', openAfterMenu);
+  const splitSlot = h('div', { class: 'split-slot' });
   const modelChip = chip('Model', openModelMenu, { class: 'plain' });
   const effortChip = chip('Effort', openEffortMenu, { class: 'plain muted-chip' });
   const modeHint = h('span');
@@ -335,9 +384,10 @@ export function mountComposer(ctx, sandbox) {
       niche,
       h('figure', { class: 'composer-quote' }, h('blockquote', null, `“${quote.text}”`), h('figcaption', null, `— ${quote.author}`)),
       banner,
+      splitSlot,
       h('div', { class: 'composer-box' },
         prompt,
-        h('div', { class: 'composer-tools' }, modeChip, workflowChip, h('div', { class: 'composer-right' }, modelChip, effortChip, startButton))),
+        h('div', { class: 'composer-tools' }, modeChip, workflowChip, afterChip, h('div', { class: 'composer-right' }, modelChip, effortChip, startButton))),
       h('div', { class: 'composer-hint muted xs' }, modeHint, hint)));
 
   function renderChips() {
@@ -346,6 +396,10 @@ export function mountComposer(ctx, sandbox) {
     modeHint.textContent = m.description;
     const wf = workflows.find((w) => w.id === workflowId);
     setChildren(workflowChip, icon('workflow', { size: 14 }), h('span', { class: 'sr-only' }, 'Workflow: '), h('span', { class: 'chip-label' }, wf ? wf.name : 'No workflow'), icon('down', { size: 12 }));
+    const after = (ctx.store.tasksOf(sandbox.id) || []).find((t) => t.id === afterTaskId);
+    if (afterTaskId && !after) afterTaskId = '';
+    setChildren(afterChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
+    afterChip.title = after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
     modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: Claude Code’s default';
@@ -370,6 +424,15 @@ export function mountComposer(ctx, sandbox) {
     ]);
   }
 
+  function openAfterMenu(anchor) {
+    const candidates = chainCandidates(ctx, sandbox);
+    openMenu(anchor, [
+      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId, onSelect: () => { afterTaskId = ''; renderChips(); prompt.focus(); } },
+      candidates.length ? { separator: true } : null,
+      ...candidates.slice(0, 20).map((t) => ({ label: `After #${t.number} ${t.title}`, icon: 'branch', description: `Starts by itself when #${t.number} is done · ${statusInfo(t).label}`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; renderChips(); prompt.focus(); } })),
+    ]);
+  }
+
   function openModelMenu(anchor) {
     openMenu(anchor, modelMenuItems(modelId, (id) => { modelId = id; writeJson(MODEL_PREF_KEY, id); renderChips(); prompt.focus(); }));
   }
@@ -382,6 +445,8 @@ export function mountComposer(ctx, sandbox) {
   prompt.addEventListener('input', () => {
     prompt.style.height = 'auto';
     prompt.style.height = `${prompt.scrollHeight}px`;
+    // Editing the prompt withdraws a split proposal made for the old text.
+    if (split) clearSplit();
   });
 
   // The superadmin is reminded while no recovery code exists (ACC-011).
@@ -451,11 +516,10 @@ export function mountComposer(ctx, sandbox) {
     }
   }
 
-  // One task per press: Enter twice must not start two sessions (singleFlight).
-  const start = singleFlight(async () => {
-    const text = prompt.value.trim();
-    if (!text) { prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
+  /** The request body of a new task with the composer's choices. */
+  function bodyFor(text, title) {
     const body = { prompt: text, mode };
+    if (title) body.title = title;
     if (workflowId) body.workflow_id = workflowId;
     const found = findModel(modelId);
     if (found) {
@@ -463,13 +527,81 @@ export function mountComposer(ctx, sandbox) {
       if (found.provider.harness !== 'claude') body.harness = found.provider.harness;
     }
     if (effortId && !(found && found.model.effort === false)) body.effort = effortId;
+    return body;
+  }
+
+  async function createTask(body) {
+    const task = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/tasks`, body);
+    ctx.store.upsertTask(task);
+    return task;
+  }
+
+  function opened(task) {
+    prompt.value = '';
+    afterTaskId = '';
+    ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
+  }
+
+  function clearSplit() {
+    if (split) split.cancel();
+    split = null;
+    setChildren(splitSlot, null);
+  }
+
+  /** Runs a creation from the split card with the Start button busy. */
+  async function busyRun(work) {
+    clearSplit();
     startButton.disabled = true;
     startButton.classList.add('busy');
     try {
-      const task = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/tasks`, body);
-      ctx.store.upsertTask(task);
-      prompt.value = '';
-      ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
+      await work();
+    } catch (error) {
+      errorToast(error, 'Could not start the task');
+    } finally {
+      startButton.classList.remove('busy');
+      renderBanner();
+    }
+  }
+
+  /** The gentle split card (TSK-011): parallel tasks, a chain, or the one task asked for. */
+  function showSplit(text) {
+    split = splitCard(ctx, sandbox, text, {
+      create: (list, chain) => busyRun(async () => {
+        let first = null;
+        let previous = null;
+        for (const item of list) {
+          const body = bodyFor(item.prompt, item.title);
+          if (chain && previous) body.after_task_id = previous.id;
+          const task = await createTask(body);
+          first = first || task;
+          previous = task;
+        }
+        toast(chain ? `Created a chain of ${list.length} tasks: each starts when the one before is done.` : `Created ${list.length} tasks.`, { kind: 'ok' });
+        opened(first);
+      }),
+      keep: () => busyRun(async () => opened(await createTask(bodyFor(text)))),
+      close: () => clearSplit(),
+    });
+    setChildren(splitSlot, split.el);
+  }
+
+  // One task per press: Enter twice must not start two sessions (singleFlight).
+  const start = singleFlight(async () => {
+    const text = prompt.value.trim();
+    if (!text) { prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
+    if (split) return; // the card is open: its buttons decide
+    startButton.disabled = true;
+    startButton.classList.add('busy');
+    try {
+      // A request mixing separate workstreams gets the split card first; a chosen "Run after"
+      // already decided how the work is scheduled. The check never blocks for long (≤ 4 s).
+      if (!afterTaskId && await looksSeveral(ctx, sandbox, text)) {
+        showSplit(text);
+        return;
+      }
+      const body = bodyFor(text);
+      if (afterTaskId) body.after_task_id = afterTaskId;
+      opened(await createTask(body));
     } catch (error) {
       errorToast(error, 'Could not start the task');
     } finally {
@@ -507,6 +639,6 @@ export function mountComposer(ctx, sandbox) {
       if (!prompt.disabled && !isPhone()) prompt.focus();
       if (!stopSmoke) stopSmoke = brandSmoke(niche); // the brand's smoke, when its niche shows (brandfx.js)
     },
-    destroy() { destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); },
+    destroy() { destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearSplit(); },
   };
 }
