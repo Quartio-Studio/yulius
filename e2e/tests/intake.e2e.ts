@@ -36,7 +36,9 @@ test('a request mixing UI and backend work offers a split; a chain waits for its
   expect(await browser.evaluate(() => (document.querySelector('.split-run input[value="parallel"]') as HTMLInputElement).checked)).toBe(true);
   expect(await axeViolations(browser)).toEqual([]);
 
-  await card.getByRole('radio', 'As a chain').click();
+  // The segmented choice's radio is visually hidden: people click its label.
+  await screen.getByText('As a chain').click();
+  expect(await browser.evaluate(() => (document.querySelector('.split-run input[value="chain"]') as HTMLInputElement).checked)).toBe(true);
   await card.getByRole('button', 'Create 2 tasks').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#\d+ UX: interface fixes$/);
