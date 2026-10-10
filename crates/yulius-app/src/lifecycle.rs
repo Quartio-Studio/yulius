@@ -174,6 +174,7 @@ impl App {
                     note: None,
                     updated_by: Some("system".into()),
                     updated_at: Some(now),
+                    effort: 1,
                 });
             }
             store.replace_steps(&task.id, &steps, "system", now).await?;

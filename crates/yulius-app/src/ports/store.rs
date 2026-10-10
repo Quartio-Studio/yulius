@@ -389,6 +389,8 @@ pub trait CoordinationStore: Send + Sync {
     ) -> AppResult<()>;
     /// Steps of a task in order.
     async fn steps(&self, task: &TaskId) -> AppResult<Vec<StepRecord>>;
+    /// When each step of a task last started and finished, from `step_events`.
+    async fn step_timings(&self, task: &TaskId) -> AppResult<Vec<crate::model::StepTiming>>;
     /// Updates one step and records an event; `NotFound` if absent.
     async fn update_step(
         &self,

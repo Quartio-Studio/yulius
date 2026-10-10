@@ -205,10 +205,11 @@ export function mountTaskView(ctx, sandbox, task) {
       total
         ? [h('span', { class: 'step-count' }, `Step ${n || done}/${total}`), h('span', { class: 'step-current' }, steps.current ? `· ${steps.current}` : done === total ? '· All steps done' : '')]
         : h('span', { class: 'step-current muted' }, 'No plan steps yet'));
-    const pct = total ? Math.round((done / total) * 100) : 0;
+    // The server weighs steps by their declared effort (STP-006); older servers send no percent.
+    const pct = !total ? 0 : Number.isFinite(steps.percent) ? steps.percent : Math.floor((done / total) * 100);
     progressFill.style.width = `${pct}%`;
     progress.setAttribute('aria-valuenow', String(pct));
-    progress.setAttribute('aria-label', `${done} of ${total} steps done`);
+    progress.setAttribute('aria-label', `${done} of ${total} steps done, ${pct}% of the plan`);
     progress.hidden = !total;
     statusEl.dataset.tone = info.tone;
     const reset = current.status === 'waiting_capacity' ? resetAround(current.resumes_at) : '';

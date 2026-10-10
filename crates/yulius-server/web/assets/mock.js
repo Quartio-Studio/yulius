@@ -94,6 +94,8 @@ function makeSteps(taskId, done, current, total = PLAN.length) {
       note: status === 'in_progress' ? 'Handlers for /cart and /checkout; Stripe test keys only.' : status === 'done' && i === 0 ? 'Spec at docs/specs/2026-10-07-checkout-api.md' : '',
       updated_by: i < done ? (i % 2 ? 'task #12 (claude)' : 'mkarp') : status === 'in_progress' ? 'task #12 (claude)' : '',
       updated_at: status === 'pending' ? null : iso((total - i) * 11 * MIN),
+      // The one step that cannot be split declares a larger effort (STP-006).
+      effort: PLAN[i] === 'Implement checkout API' ? 3 : 1,
     });
   }
   return steps;
@@ -256,7 +258,12 @@ function seed(params) {
 function stepsSummary(task) {
   const list = task.stepsList;
   const current = list.find((s) => s.status === 'in_progress');
-  return { done: list.filter((s) => s.status === 'done').length, total: list.length, current: current ? current.title : null };
+  // Skipped steps count as finished (STP-005); progress is weighted by declared effort (STP-006).
+  const finished = list.filter((s) => s.status === 'done' || s.status === 'skipped');
+  const effort = (s) => Math.min(3, Math.max(1, s.effort || 1));
+  const total = list.reduce((sum, s) => sum + effort(s), 0);
+  const percent = total ? Math.floor((finished.reduce((sum, s) => sum + effort(s), 0) * 100) / total) : 0;
+  return { done: finished.length, total: list.length, current: current ? current.title : null, percent };
 }
 
 function summary(task) {

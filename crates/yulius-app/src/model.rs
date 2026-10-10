@@ -594,6 +594,19 @@ pub struct StepRecord {
     pub updated_by: Option<String>,
     /// Last update.
     pub updated_at: Option<Timestamp>,
+    /// Declared effort, 1 to [`yulius_domain::steps::MAX_EFFORT`] (STP-006).
+    pub effort: u8,
+}
+
+/// When a step last started and finished, from its event history (STP-007).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepTiming {
+    /// Step.
+    pub step_id: StepId,
+    /// Last move to `in_progress`.
+    pub started_at: Option<Timestamp>,
+    /// Last move to `done` or `skipped`.
+    pub finished_at: Option<Timestamp>,
 }
 
 /// An inter-task or user message.

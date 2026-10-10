@@ -8,12 +8,16 @@ use super::git::Delivery;
 /// Step progress summary.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct StepProgress {
-    /// Completed steps.
+    /// Finished steps (done or skipped).
     pub done: u32,
     /// All steps.
     pub total: u32,
     /// Current step title.
     pub current: Option<String>,
+    /// Finished share of the plan's effort, 0-100, rounded down (STP-006): 9 of 10 equal steps
+    /// is 90.
+    #[serde(default)]
+    pub percent: u8,
 }
 
 /// A task in lists and events.
@@ -194,6 +198,13 @@ pub struct StepView {
     pub updated_by: Option<String>,
     /// Last change time.
     pub updated_at: Option<String>,
+    /// Declared effort, 1-3 (STP-006).
+    #[serde(default = "one")]
+    pub effort: u8,
+}
+
+fn one() -> u8 {
+    1
 }
 
 /// Token and duration metrics; `None` means unknown, never zero.

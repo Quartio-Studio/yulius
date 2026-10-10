@@ -316,6 +316,7 @@ async fn messages_inbox_read_tracking_and_steps_history() -> R {
             note: None,
             updated_by: None,
             updated_at: None,
+            effort: if ord == 2 { 3 } else { 1 },
         })
     };
     store
@@ -340,6 +341,40 @@ async fn messages_inbox_read_tracking_and_steps_history() -> R {
         .await?;
     assert_eq!(updated.status, "done");
     assert_eq!(updated.updated_by.as_deref(), Some("task:1"));
+    // Effort is stored; start and finish times come from the step history (STP-006/007).
+    let stored = store.steps(&a.id).await?;
+    assert_eq!(
+        stored.iter().map(|s| s.effort).collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    store
+        .update_step(
+            &StepId::parse("s2")?,
+            "in_progress",
+            None,
+            "task:1",
+            Timestamp(73),
+        )
+        .await?;
+    store
+        .update_step(&StepId::parse("s2")?, "done", None, "task:1", Timestamp(79))
+        .await?;
+    let mut timings = store.step_timings(&a.id).await?;
+    timings.sort_by(|x, y| x.step_id.as_str().cmp(y.step_id.as_str()));
+    let summary: Vec<(&str, Option<i64>, Option<i64>)> = timings
+        .iter()
+        .map(|t| {
+            (
+                t.step_id.as_str(),
+                t.started_at.map(|x| x.0),
+                t.finished_at.map(|x| x.0),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        vec![("s1", None, Some(71)), ("s2", Some(73), Some(79))]
+    );
     assert!(matches!(
         store
             .update_step(&StepId::parse("nope")?, "done", None, "x", Timestamp(72))
