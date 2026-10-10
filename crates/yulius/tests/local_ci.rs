@@ -105,6 +105,11 @@ struct Fixture {
 }
 
 async fn fixture() -> BoxResult<Fixture> {
+    fixture_with(false, |_| YULIUS_TOML.to_owned()).await
+}
+
+/// [`fixture`] with containment on or off and `yulius.toml` made from the data directory.
+async fn fixture_with(contained: bool, toml: impl Fn(&Path) -> String) -> BoxResult<Fixture> {
     // A short base: job sockets live at <data>/runs/ci-<uuid>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("yci").tempdir_in("/tmp")?;
     let root = dir.path().canonicalize()?;
@@ -113,9 +118,10 @@ async fn fixture() -> BoxResult<Fixture> {
         session_host: Some(Arc::new(PtySessionHost::new(exe))),
         git: Some(Arc::new(GitAdapter::new("git"))),
         dir: Some(dir),
-        configure: Some(Box::new(|config| {
+        configure: Some(Box::new(move |config| {
             config.ci.job_timeout = Duration::from_secs(8);
             config.ci.max_jobs = 3;
+            config.contained = contained;
         })),
         ..HarnessOptions::default()
     })?;
@@ -136,7 +142,7 @@ async fn fixture() -> BoxResult<Fixture> {
         &["clone", "-q", origin.to_str().ok_or("path")?, "work"],
     )?;
     std::fs::write(work.join("README.md"), "# app\n")?;
-    std::fs::write(work.join("yulius.toml"), YULIUS_TOML)?;
+    std::fs::write(work.join("yulius.toml"), toml(&data))?;
     git(&work, &["add", "-A"])?;
     git(&work, &["commit", "-q", "-m", "init"])?;
     git(&work, &["push", "-q", "origin", "HEAD:main", "HEAD:dev"])?;
@@ -523,6 +529,59 @@ async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
             .is_some_and(|items| items.iter().all(|i| i["kind"] != "remote_branch")),
         "{}",
         cleaned.body["report"]
+    );
+    Ok(())
+}
+
+/// Jobs run inside the sandbox's containment (Linux, bubblewrap): what lies outside the sandbox
+/// directory, such as the data directory's run records, is not there, `/tmp` is private, and
+/// `HOME` is the sandbox's CI home.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn contained_jobs_see_only_their_sandbox() -> TestResult {
+    let probe = std::process::Command::new("bwrap")
+        .args([
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--",
+            "/bin/true",
+        ])
+        .output();
+    if !probe.is_ok_and(|out| out.status.success()) {
+        eprintln!("SKIPPED contained_jobs_see_only_their_sandbox: bubblewrap cannot run here");
+        return Ok(());
+    }
+    let f = fixture_with(true, |data| {
+        format!(
+            "[[ci.jobs]]\nname = \"iso\"\ncommand = 'touch /tmp/yulius-ci-probe; if [ -e \"{}\" ]; then echo leaked; exit 7; fi; echo \"isolated home=$HOME\"'\n",
+            data.join("runs").display()
+        )
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &pr_sha).await,
+        GateResult::Run(Some(RunState::Passed))
+    );
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let id = overview["runs"][0]["id"].as_str().ok_or("id")?.to_owned();
+    let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
+    let output = detail["jobs"][0]["output"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(output.contains("isolated home="), "{output}");
+    assert!(output.contains("/ci/home"), "{output}");
+    assert!(
+        !std::path::Path::new("/tmp/yulius-ci-probe").exists(),
+        "private /tmp"
     );
     Ok(())
 }
