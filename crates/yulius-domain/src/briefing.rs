@@ -41,7 +41,7 @@ const MAX_STEPS_LISTED: usize = 100;
 const MAX_ENVIRONMENTS_LISTED: usize = 8;
 
 /// Yulius MCP tools announced to every session (SPEC-002 §7.4), as `(name, purpose)`.
-pub const YULIUS_TOOLS: [(&str, &str); 25] = [
+pub const YULIUS_TOOLS: [(&str, &str); 27] = [
     (
         "project_context",
         "project summary, architecture and decision index, recent changes, delivery rules",
@@ -51,6 +51,14 @@ pub const YULIUS_TOOLS: [(&str, &str); 25] = [
         "previous and parallel tasks with status, branch, spec and steps",
     ),
     ("task_get", "one task in detail"),
+    (
+        "sessions_search",
+        "search earlier task sessions and imported Claude Code sessions (sessions are docs)",
+    ),
+    (
+        "session_read",
+        "read part of a session found by sessions_search, or another task's session",
+    ),
     (
         "message_send",
         "message another task (direct or broadcast), or people with to=\"people\" (they reply in your terminal)",
@@ -92,6 +100,11 @@ pub const YULIUS_TOOLS: [(&str, &str); 25] = [
         "pull request, checks and delivery profile (read-only)",
     ),
 ];
+
+/// The one-line practice for earlier sessions (SPEC-001 SES-005): sessions are docs.
+pub const SESSIONS_AS_DOCS: &str = "\nSessions are docs: when you do not know how or why something \
+    was implemented, `sessions_search` earlier task sessions and the team's imported Claude Code \
+    sessions first, then `session_read` the relevant part.\n";
 
 /// The task being briefed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -409,6 +422,7 @@ fn tools() -> String {
     for (name, purpose) in YULIUS_TOOLS {
         out.push_str(&format!("- `{name}`: {purpose}\n"));
     }
+    out.push_str(SESSIONS_AS_DOCS);
     out.push('\n');
     out
 }

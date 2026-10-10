@@ -39,6 +39,7 @@ yulius-ptyhost = { workspace = true }
 yulius-git = { workspace = true }
 yulius-github = { workspace = true }
 yulius-import = { workspace = true }
+console = { workspace = true }
 yulius-browser = { workspace = true }
 rustls = { workspace = true }
 reqwest = { workspace = true }

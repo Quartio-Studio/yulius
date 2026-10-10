@@ -65,6 +65,10 @@ chacha20poly1305 = "0.11.0"
 # HTTPS client for `yulius import`/`login` (shared TLS decision: rustls with the ring provider).
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "http2", "charset", "form"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+# Terminal UX of `yulius onboard`: progress bars, NO_COLOR-aware styles and prompts.
+indicatif = { version = "0.18.6", default-features = false, features = ["unicode-width"] }
+console = "0.16.6"
+dialoguer = { version = "0.12.0", default-features = false }
 # Uncommitted-state snapshot archive (tar.gz) for `yulius import`.
 tar = { version = "0.4.46", default-features = false }
 flate2 = "1.1.10"

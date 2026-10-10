@@ -1,4 +1,5 @@
-//! The `yulius` binary: server, process host, hooks, import and administration subcommands.
+//! The `yulius` binary: server, process host, hooks, onboarding (import) and administration
+//! subcommands.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -57,20 +58,40 @@ enum Command {
         #[arg(long, env = "YULIUS_SERVER")]
         server: String,
     },
-    /// Import a local repository and its recent Claude Code sessions into Yulius.
-    Import {
+    /// Onboard a local repository and your Claude Code sessions to Yulius: progress bars,
+    /// secrets redacted on this computer, only new or changed sessions sent, onboarding state.
+    #[command(visible_alias = "import")]
+    Onboard {
         /// Repository path (default: current directory).
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// Yulius URL.
+        /// Yulius URL (default: the only server you signed in to).
         #[arg(long, env = "YULIUS_SERVER")]
-        server: String,
-        /// Session window, e.g. 14d, 36h, 2w (prompted when omitted).
+        server: Option<String>,
+        /// Which sessions: all, recent, pick or none (asked when omitted; recent with --yes).
+        #[arg(long, value_name = "WHICH")]
+        sessions: Option<String>,
+        /// Window of recent sessions, e.g. 14d, 36h, 2w.
         #[arg(long)]
         since: Option<String>,
-        /// Do not ask for confirmation.
+        /// Upload sessions only, not unpublished branches or uncommitted changes.
+        #[arg(long)]
+        sessions_only: bool,
+        /// Show what would be uploaded and upload nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Only show the sandbox's onboarding state and what is pending.
+        #[arg(long)]
+        status: bool,
+        /// List every redacted secret's rule and key name.
+        #[arg(long)]
+        show_redactions: bool,
+        /// Do not ask anything.
         #[arg(long)]
         yes: bool,
+        /// No colours (also NO_COLOR=1).
+        #[arg(long)]
+        no_color: bool,
     },
     /// Check this host's prerequisites (git, agent CLIs, containment, browser, editor, data dir).
     Doctor {
@@ -123,12 +144,29 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::Login { server } => yulius::cli::login(&server),
-        Command::Import {
+        Command::Onboard {
             path,
             server,
+            sessions,
+            since,
+            sessions_only,
+            dry_run,
+            status,
+            show_redactions,
+            yes,
+            no_color,
+        } => yulius::cli::onboard(yulius::cli::OnboardArgs {
+            path,
+            server,
+            sessions,
             since,
             yes,
-        } => yulius::cli::import(path, &server, since, yes),
+            sessions_only,
+            dry_run,
+            status,
+            show_redactions,
+            no_color,
+        }),
         Command::Doctor {
             data,
             contained,

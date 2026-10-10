@@ -260,8 +260,8 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     assert_eq!(shop["port_count"], 20);
     assert_eq!(shop["profile"]["preset"], "standard");
     assert_eq!(
-        shop["onboarding"], "pending",
-        "the repository lacks the docs format"
+        shop["onboarding"], "preparing",
+        "the repository lacks the docs format; its preparation task starts by itself"
     );
     let shop_id = text(&shop["id"]).to_owned();
     let clone = w.data_dir().join("sandboxes").join(&shop_id).join("repo");
@@ -306,7 +306,10 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0]["origin"], "onboarding");
     assert_eq!(tasks[0]["title"], "Prepare this repository for Yulius");
-    assert_eq!(tasks[0]["status"], "closed");
+    assert_eq!(
+        tasks[0]["status"], "waiting_capacity",
+        "started without approval; with no subscription connected yet it waits for the first one (ROT-010)"
+    );
     assert_eq!(tasks[0]["archived"], false);
     let prep =
         w.h.store
@@ -333,8 +336,7 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     assert_eq!(blocked.status, StatusCode::CONFLICT);
     assert!(text(&blocked.body["error"]["message"]).contains("being prepared"));
 
-    // Approving starts the preparation task; with no subscription connected yet it waits,
-    // paused, for the first one (ROT-010, F 2026-10-10) and the sandbox is preparing.
+    // Approving is no longer needed: it changes nothing while the task is preparing.
     let approve = call(
         &w.h.router,
         Method::POST,
@@ -399,8 +401,8 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
     let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
     let task_id = record.onboarding_task_id.clone().ok_or("prep task")?;
 
-    // Not started yet: stays pending.
-    assert_eq!(w.h.app.refresh_onboarding(&sid).await?, "pending");
+    // Started by itself at import: preparing (it waits for a subscription here).
+    assert_eq!(w.h.app.refresh_onboarding(&sid).await?, "preparing");
 
     // The task ran (an attempt exists) and closed, but the docs are still missing.
     w.h.store
@@ -451,7 +453,18 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
         "still blocked while preparing"
     );
 
-    // The agent delivered the docs in its worktree: ready, tasks unblocked.
+    // The task closes; the agent delivered the docs in its worktree: ready, tasks unblocked.
+    let prep = w.h.store.task(&task_id).await?.ok_or("prep")?;
+    assert!(
+        w.h.store
+            .transition_task(&task_id, Some(prep.status), TaskStatus::Closed, None, Timestamp(5))
+            .await?
+    );
+    assert_eq!(
+        w.h.app.refresh_onboarding(&sid).await?,
+        "preparing",
+        "a closed task without the docs is not ready"
+    );
     for (path, contents) in scaffold("product") {
         let target = worktree.join(path);
         std::fs::create_dir_all(target.parent().ok_or("parent")?)?;

@@ -6,6 +6,7 @@ pub mod github;
 pub mod harness;
 pub mod intake;
 pub mod session;
+pub mod session_docs;
 pub mod store;
 pub mod store_ext;
 pub mod system;

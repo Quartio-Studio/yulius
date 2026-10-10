@@ -2,9 +2,15 @@
 //!
 //! # Upload protocol (version 1)
 //!
-//! The `yulius import` CLI authenticates with `Authorization: Bearer yul_…` (obtained through the
-//! device approval flow, [`DeviceStart`]/[`DevicePoll`]) and then:
+//! The `yulius onboard` CLI (alias `yulius import`) authenticates with `Authorization: Bearer
+//! yul_…` (obtained through the device approval flow, [`DeviceStart`]/[`DevicePoll`]) and then:
 //!
+//! 0. `POST` [`ONBOARD_PLAN_PATH`] with [`OnboardPlanRequest`] → [`OnboardPlan`]: the sandbox of
+//!    the repository (and its onboarding state, what is pending), whether the caller may create
+//!    it, and for every offered session fingerprint whether the server already holds it
+//!    (`unchanged`), holds an older version (`changed`) or not at all (`new`). The CLI then
+//!    offers only new and changed sessions (IMP-006). Sessions are redacted on the computer
+//!    before they are fingerprinted (IMP-008), so the fingerprint is the digest of what is sent.
 //! 1. `POST` [`CREATE_IMPORT_PATH`] with [`CreateImportRequest`] → [`CreateImportResponse`]. The
 //!    server verifies the repository and the caller's permission (IMP-002), creates the job and
 //!    lists every manifest file it still needs together with the bytes it already holds. Files
@@ -20,8 +26,9 @@
 //!    `409 conflict`. A chunk whose digest does not match is `422 invalid`. When the received
 //!    length reaches the manifest size, the server verifies the whole file's `sha256`.
 //! 3. `POST /api/import/{job}/complete` (see [`complete_path`]) → [`ImportResult`] once every
-//!    file is complete. Applying is idempotent: sessions already imported into the sandbox are
-//!    skipped and counted in [`ImportResult::sessions_skipped_existing`].
+//!    file is complete. Applying is idempotent: each session becomes (or replaces) a read-only
+//!    session document of the sandbox, attributed to the caller (SES-001); a session whose
+//!    transcript is unchanged is counted in [`ImportResult::sessions_unchanged`].
 //!
 //! # Snapshot archive layout
 //!
@@ -44,6 +51,12 @@ pub const IMPORT_MANIFEST_VERSION: u32 = 1;
 pub const MAX_IMPORT_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Upper bound on one uploaded chunk (SPEC-002 §9: chunk 8 MiB).
 pub const MAX_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
+/// Upper bound on one session transcript file (SPEC-002 §9; images are left out by the CLI).
+pub const MAX_SESSION_FILE_BYTES: u64 = 128 * 1024 * 1024;
+/// Upper bound on the sessions of one manifest or plan request.
+pub const MAX_SESSIONS_PER_IMPORT: usize = 2_000;
+/// Path of the onboarding plan endpoint (`POST` [`OnboardPlanRequest`]).
+pub const ONBOARD_PLAN_PATH: &str = "/api/onboard/plan";
 /// Upper bound on the byte length of a [`FileRef::name`].
 pub const MAX_FILE_NAME_BYTES: usize = 255;
 /// Upper bound on the byte length of a session identifier.
@@ -166,6 +179,9 @@ pub struct SessionRef {
     pub git_branch: Option<String>,
     /// The transcript file first, then auxiliary files (for example Claude subagent transcripts).
     pub files: Vec<FileRef>,
+    /// Secrets the CLI redacted from these files before upload (IMP-008).
+    #[serde(default)]
+    pub redactions: u32,
 }
 
 /// `POST /api/import` body.
@@ -200,12 +216,125 @@ pub struct ImportResult {
     pub sandbox_id: String,
     /// Browser URL of the sandbox.
     pub sandbox_url: String,
-    /// Organization tasks created from newly imported sessions.
+    /// Always 0: sessions become read-only session documents, not tasks (kept for older CLIs).
     pub tasks_created: u32,
-    /// Sessions that were already imported into this sandbox.
+    /// Sessions already held unchanged (same as [`ImportResult::sessions_unchanged`]).
     pub sessions_skipped_existing: u32,
     /// Sandbox onboarding state wire name (`not_needed|pending|preparing|ready|skipped`, U-08).
     pub onboarding: String,
+    /// Sessions stored for the first time.
+    #[serde(default)]
+    pub sessions_imported: u32,
+    /// Sessions whose earlier copy was replaced by a longer or changed transcript.
+    #[serde(default)]
+    pub sessions_updated: u32,
+    /// Sessions already held with the same transcript.
+    #[serde(default)]
+    pub sessions_unchanged: u32,
+    /// Browser URL of the sandbox's Sessions page.
+    #[serde(default)]
+    pub sessions_url: Option<String>,
+    /// Onboarding state with what is still pending.
+    #[serde(default)]
+    pub onboarding_status: Option<OnboardingStatus>,
+}
+
+/// `POST /api/onboard/plan` body: the repository and the fingerprints of the sessions the CLI
+/// offers (redacted transcripts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnboardPlanRequest {
+    /// GitHub owner.
+    pub owner: String,
+    /// GitHub repository name.
+    pub name: String,
+    /// Offered sessions (at most [`MAX_SESSIONS_PER_IMPORT`]).
+    #[serde(default)]
+    pub sessions: Vec<SessionFingerprint>,
+}
+
+/// What the CLI would send for one session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionFingerprint {
+    /// Recording harness.
+    pub harness: ImportHarness,
+    /// The harness's session id.
+    pub session_id: String,
+    /// Lowercase hex SHA-256 of the (redacted) main transcript.
+    pub sha256: String,
+    /// Its size in bytes.
+    pub size: u64,
+}
+
+/// `POST /api/onboard/plan` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnboardPlan {
+    /// The caller's login (sessions are attributed to them).
+    pub login: String,
+    /// The repository's sandbox, when it exists and the caller can see it.
+    pub sandbox: Option<OnboardSandbox>,
+    /// Without a sandbox: whether the caller may create one through the import.
+    pub can_create: bool,
+    /// Why the caller cannot import into this repository, when they cannot.
+    pub refusal: Option<String>,
+    /// One entry per offered session, in request order.
+    pub sessions: Vec<SessionPlan>,
+}
+
+/// A repository's sandbox as the CLI shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnboardSandbox {
+    /// Sandbox id.
+    pub id: String,
+    /// URL slug.
+    pub slug: String,
+    /// Browser URL of the sandbox.
+    pub url: String,
+    /// Browser URL of its Sessions page.
+    pub sessions_url: String,
+    /// Onboarding state and what is pending.
+    pub onboarding: OnboardingStatus,
+}
+
+/// Whether the server needs a session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPlan {
+    /// The harness's session id.
+    pub session_id: String,
+    /// `new`, `changed` (held with another transcript), `unchanged` (held with this exact
+    /// transcript) or `taken` (another person uploaded a session with this id).
+    pub state: String,
+}
+
+/// Sandbox onboarding with what is still pending (SPEC-001 IMP-005, U-08).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnboardingStatus {
+    /// `not_needed|pending|preparing|ready|skipped`.
+    pub state: String,
+    /// Whether tasks can start (`not_needed`, `ready`, `skipped`).
+    pub ready: bool,
+    /// One sentence for people.
+    pub summary: String,
+    /// What is still to happen, in order (empty when ready).
+    pub pending: Vec<String>,
+    /// The preparation task, when there is one.
+    pub task: Option<OnboardingTask>,
+}
+
+/// The preparation task of a sandbox.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnboardingTask {
+    /// Task number.
+    pub number: u32,
+    /// Title.
+    pub title: String,
+    /// Status wire name.
+    pub status: String,
+    /// Steps done.
+    pub steps_done: u32,
+    /// Steps in the plan.
+    pub steps_total: u32,
+    /// Browser URL of the task.
+    pub url: String,
 }
 
 /// `POST /api/device/start` response (docs/api.md, CLI device approval).
@@ -306,6 +435,15 @@ pub enum ManifestError {
     /// A title is longer than [`MAX_TITLE_CHARS`].
     #[error("title too long for session {0:?}")]
     TitleTooLong(String),
+    /// A session file exceeds [`MAX_SESSION_FILE_BYTES`].
+    #[error("session file {0:?} exceeds the per-session bound")]
+    SessionTooLarge(String),
+    /// More than [`MAX_SESSIONS_PER_IMPORT`] sessions.
+    #[error("too many sessions in one import; the limit is {0}")]
+    TooManySessions(usize),
+    /// The same session id appears twice.
+    #[error("duplicate session {0:?}")]
+    DuplicateSession(String),
 }
 
 impl ImportManifest {
@@ -340,7 +478,21 @@ impl ImportManifest {
                 return Err(ManifestError::DuplicateFileName(file.name.clone()));
             }
         }
+        if self.sessions.len() > MAX_SESSIONS_PER_IMPORT {
+            return Err(ManifestError::TooManySessions(MAX_SESSIONS_PER_IMPORT));
+        }
+        let mut ids = BTreeSet::new();
         for session in &self.sessions {
+            if !ids.insert((session.harness, session.session_id.as_str())) {
+                return Err(ManifestError::DuplicateSession(session.session_id.clone()));
+            }
+            if let Some(file) = session
+                .files
+                .iter()
+                .find(|file| file.size > MAX_SESSION_FILE_BYTES)
+            {
+                return Err(ManifestError::SessionTooLarge(file.name.clone()));
+            }
             if !is_safe_session_id(&session.session_id) {
                 return Err(ManifestError::InvalidSessionId(session.session_id.clone()));
             }
@@ -471,6 +623,7 @@ mod tests {
                     file("sessions/claude/0b6c-4f.jsonl", 30),
                     file("sessions/claude/0b6c-4f/subagents/agent-1.jsonl", 5),
                 ],
+                redactions: 2,
             }],
             since: "2026-09-23T10:00:00.000Z".to_owned(),
         }
@@ -487,6 +640,19 @@ mod tests {
         assert_eq!(json["manifest"]["repo"]["head_branch"], "main");
         let back: CreateImportRequest = serde_json::from_value(json)?;
         assert_eq!(back.manifest, manifest);
+        // Older clients send no redaction count; older servers send only the original fields.
+        let old: SessionRef = serde_json::from_value(serde_json::json!({
+            "harness": "claude", "session_id": "s", "title": "t", "cwd_relative": null,
+            "started_at": "2026-10-01T10:00:00.000Z", "ended_at": "2026-10-01T10:00:00.000Z",
+            "git_branch": null, "files": []
+        }))?;
+        assert_eq!(old.redactions, 0);
+        let result: ImportResult = serde_json::from_value(serde_json::json!({
+            "sandbox_id": "s", "sandbox_url": "u", "tasks_created": 0,
+            "sessions_skipped_existing": 1, "onboarding": "ready"
+        }))?;
+        assert_eq!(result.sessions_unchanged, 0);
+        assert!(result.onboarding_status.is_none());
         assert_eq!(manifest.total_bytes(), 65);
         assert_eq!(manifest.validate(), Ok(()));
         Ok(())
@@ -542,6 +708,24 @@ mod tests {
         assert!(matches!(
             bad.validate(),
             Err(ManifestError::SessionWithoutFiles(_))
+        ));
+
+        let mut bad = manifest();
+        bad.sessions[0].files[0].size = MAX_SESSION_FILE_BYTES + 1;
+        assert!(matches!(
+            bad.validate(),
+            Err(ManifestError::SessionTooLarge(_))
+        ));
+
+        let mut bad = manifest();
+        let twin = bad.sessions[0].clone();
+        bad.sessions.push(SessionRef {
+            files: vec![file("sessions/claude/twin.jsonl", 1)],
+            ..twin
+        });
+        assert!(matches!(
+            bad.validate(),
+            Err(ManifestError::DuplicateSession(_))
         ));
 
         let mut bad = manifest();

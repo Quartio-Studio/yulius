@@ -1,10 +1,13 @@
-//! `yulius login` and `yulius import` (client side of SPEC-001 IMP-001..006).
+//! `yulius login` and `yulius onboard` / `yulius import` (client side of SPEC-001
+//! IMP-001..009).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use console::style;
 use yulius_import::{
-    DeviceLoginOptions, ImportOptions, TerminalIo, TokenStore, Url, device_login, run_import,
+    DeviceLoginOptions, ImportError, ImportOptions, SessionChoice, TerminalIo, TokenStore, Url,
+    device_login, run_import, set_colors,
 };
 
 fn install_tls() {
@@ -13,6 +16,22 @@ fn install_tls() {
 
 fn parse_server(server: &str) -> Result<Url, String> {
     Url::parse(server.trim_end_matches('/')).map_err(|e| format!("invalid --server URL: {e}"))
+}
+
+/// The server to talk to: `--server`/`YULIUS_SERVER`, else the only one signed in to.
+fn resolve_server(server: Option<&str>, store: &TokenStore) -> Result<Url, String> {
+    if let Some(server) = server.filter(|s| !s.trim().is_empty()) {
+        return parse_server(server);
+    }
+    let known = store.servers().map_err(|e| e.to_string())?;
+    match known.as_slice() {
+        [only] => parse_server(only),
+        [] => Err("pass --server <url> (for example --server https://yulius.example.com)".into()),
+        many => Err(format!(
+            "signed in to several servers ({}); pass --server <url>",
+            many.join(", ")
+        )),
+    }
 }
 
 /// `yulius login --server <url>`.
@@ -45,33 +64,69 @@ pub fn login(server: &str) -> ExitCode {
     }
 }
 
-/// `yulius import [path] --server <url> [--since 14d] [--yes]`.
-pub fn import(path: PathBuf, server: &str, since: Option<String>, assume_yes: bool) -> ExitCode {
+/// Command-line options of `yulius onboard`.
+#[derive(Debug, Clone, Default)]
+pub struct OnboardArgs {
+    /// Repository path.
+    pub path: PathBuf,
+    /// Server URL (`None`: the only signed-in server).
+    pub server: Option<String>,
+    /// `all`, `recent`, `pick` or `none`.
+    pub sessions: Option<String>,
+    /// Window of `recent`.
+    pub since: Option<String>,
+    /// Ask nothing.
+    pub yes: bool,
+    /// Sessions only (no unpublished branches or uncommitted changes).
+    pub sessions_only: bool,
+    /// Show the plan, upload nothing.
+    pub dry_run: bool,
+    /// Only show the onboarding state.
+    pub status: bool,
+    /// List every redaction.
+    pub show_redactions: bool,
+    /// No colours.
+    pub no_color: bool,
+}
+
+/// `yulius onboard [path] [--server <url>] [--sessions all|recent|pick|none] [--since 14d]
+/// [--sessions-only] [--dry-run] [--status] [--show-redactions] [--yes] [--no-color]`.
+pub fn onboard(args: OnboardArgs) -> ExitCode {
     install_tls();
+    set_colors(args.no_color);
     let result = (|| -> Result<(), String> {
-        let url = parse_server(server)?;
         let store = TokenStore::default_location().map_err(|e| e.to_string())?;
+        let server = resolve_server(args.server.as_deref(), &store)?;
+        let sessions = match args.sessions.as_deref() {
+            Some(text) => Some(SessionChoice::parse(text).ok_or_else(|| {
+                format!("--sessions must be all, recent, pick or none, not {text:?}")
+            })?),
+            None => None,
+        };
+        let options = ImportOptions {
+            sessions,
+            since: args.since.clone(),
+            assume_yes: args.yes,
+            sessions_only: args.sessions_only,
+            dry_run: args.dry_run,
+            status_only: args.status,
+            show_redactions: args.show_redactions,
+            ..ImportOptions::new(args.path.clone(), server)
+        };
         let mut io = TerminalIo::new(store);
-        let outcome = run_import(
-            &ImportOptions {
-                path,
-                server: url,
-                since,
-                assume_yes,
-            },
-            &mut io,
-        )
-        .map_err(|e| e.to_string())?;
-        println!(
-            "Imported: {} tasks created, {} sessions already present. Open {}",
-            outcome.tasks_created, outcome.sessions_skipped_existing, outcome.sandbox_url
-        );
-        Ok(())
+        match run_import(&options, &mut io) {
+            Ok(_) => Ok(()),
+            Err(ImportError::Cancelled) => Err("cancelled; nothing was uploaded".into()),
+            Err(err @ (ImportError::Upload(_) | ImportError::Api(_))) => Err(format!(
+                "{err}\n  Run the same command again: finished files are kept and the upload resumes."
+            )),
+            Err(err) => Err(err.to_string()),
+        }
     })();
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("yulius import: {err}");
+            eprintln!("\n{} {err}", style("yulius onboard:").red().bold());
             ExitCode::FAILURE
         }
     }

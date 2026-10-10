@@ -87,13 +87,7 @@ impl App {
             .await?
             .filter(|s| s.removed_at.is_none())
             .ok_or(AppError::NotFound)?;
-        let onboarding = self.refresh_onboarding(&sandbox.id).await?;
-        if matches!(onboarding.as_str(), "pending" | "preparing")
-            && req.origin != TaskOrigin::Onboarding
-            && req.origin != TaskOrigin::Import
-        {
-            return Err(AppError::Conflict("this project is being prepared for Yulius; wait for the preparation task or ask an admin to skip it".into()));
-        }
+        self.ensure_tasks_may_start(&sandbox.id, req.origin).await?;
         let prompt = req.prompt.trim().to_owned();
         if prompt.is_empty() || prompt.len() > MAX_PROMPT_BYTES {
             return Err(AppError::Invalid(
@@ -314,6 +308,9 @@ impl App {
                 task.status.as_str()
             )));
         }
+        // Continuing is starting a task: refused while the sandbox is being prepared (U-08).
+        self.ensure_tasks_may_start(&task.sandbox_id, task.origin)
+            .await?;
         let account = parse_account(req)?;
         if task.archived_at.is_some() {
             let now = self.now();
