@@ -4,9 +4,10 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, placeholder, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { createTerminalView } from './terminal.js';
-import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround } from './status.js';
+import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround, shellsLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, chainCandidates } from './intake.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
+import { attachTerminalDrop, taskAttachments } from './filedrop.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -112,6 +113,8 @@ export function mountTaskView(ctx, sandbox, task) {
       open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: `task:${task.id}`, ...file }),
     } : null,
   });
+  // Files dropped (or an image pasted) here reach Claude by path, as in a local terminal (UI-048).
+  attachTerminalDrop(ctx, terminal, { label: 'Drop to send to Claude', upload: taskAttachments(ctx, task.id) });
 
   // ---- phone quick input
   const quickInput = h('input', { class: 'input', type: 'text', placeholder: 'Message the agent…', autocomplete: 'off', autocapitalize: 'off', enterkeyhint: 'send', 'aria-label': 'Quick input' });
@@ -212,7 +215,8 @@ export function mountTaskView(ctx, sandbox, task) {
     statusEl.title = [info.label, reset, info.detail].filter(Boolean).join(' · ');
     setChildren(statusEl,
       statusMark(info),
-      h('span', { class: 'strip-state' }, info.label, reset ? h('span', { class: 'strip-reset' }, ` · ${reset}`) : null));
+      h('span', { class: 'strip-state' }, info.label, reset ? h('span', { class: 'strip-reset' }, ` · ${reset}`) : null,
+        info.shells ? h('span', { class: 'strip-reset' }, ` · ${shellsLine(info.shells)}`) : null));
     // The chain shows on both tasks (TSK-012): what this task runs after, what runs after it.
     const slug = encodeURIComponent((ctx.store.sandboxById(sandbox.id) || sandbox).slug);
     const chainLink = (link, text, title) => (link.task_id

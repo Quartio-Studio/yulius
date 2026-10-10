@@ -7,6 +7,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
+use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::TokenUsage;
 
@@ -28,7 +29,10 @@ pub enum Observed {
         version: Option<String>,
     },
     /// A genuine user prompt started a turn (not tool results or injected context).
-    UserTurn,
+    UserTurn {
+        /// When the prompt was recorded (the record's `timestamp`), if parseable.
+        at: Option<Timestamp>,
+    },
     /// One Claude API message (repeated once per transcript line of that message).
     AssistantMessage {
         /// Provider message id (`message.id`), the de-duplication key.
@@ -54,6 +58,15 @@ pub enum Observed {
         /// Turn duration in milliseconds, if reported.
         duration_ms: Option<u64>,
     },
+    /// Claude Code recorded the session goal's state (`goal_status` attachment, TSK-014).
+    Goal {
+        /// What was recorded.
+        outcome: GoalOutcome,
+    },
+    /// Claude Code closed a turn after its Stop hooks (`stop_hook_summary` / `turn_duration`
+    /// system records). Not authoritative while Yulius runs (the Stop hook is); used to reduce a
+    /// replayed transcript to its final state.
+    TurnEnded,
     /// The line is not a JSON object or lacks a required field.
     Malformed,
 }

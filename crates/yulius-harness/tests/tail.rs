@@ -24,6 +24,7 @@ fn returns_only_complete_lines_appended_since_last_poll() -> TestResult {
         Vec::<String>::new(),
         "missing file yields nothing"
     );
+    assert!(tail.at_end(), "a missing file has nothing to catch up on");
 
     append(&path, b"{\"a\":1}\n{\"b\":")?;
     assert_eq!(tail.poll()?, vec!["{\"a\":1}"]);
@@ -117,10 +118,14 @@ fn large_appends_are_read_completely_over_polls() -> TestResult {
     }
     append(&path, data.as_bytes())?;
     let mut tail = TranscriptTail::open(&path, DEFAULT_MAX_LINE_BYTES)?;
-    let mut total = 0;
-    for _ in 0..4 {
+    assert!(!tail.at_end(), "nothing read before the first poll");
+    let mut total = tail.poll()?.len();
+    // 20 MB is more than one poll reads: the replay is not caught up yet (TSK-014).
+    assert!(!tail.at_end());
+    for _ in 0..3 {
         total += tail.poll()?.len();
     }
     assert_eq!(total, 20_000);
+    assert!(tail.at_end());
     Ok(())
 }

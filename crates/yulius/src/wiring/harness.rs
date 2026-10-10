@@ -244,8 +244,10 @@ impl TranscriptWatch for Watch {
                     Observed::SessionMeta {
                         session_id, cwd, ..
                     } => out.push(Observation::Session { session_id, cwd }),
-                    Observed::UserTurn => out.push(Observation::UserTurn),
+                    Observed::UserTurn { at } => out.push(Observation::UserTurn { at }),
                     Observed::TurnComplete { .. } => out.push(Observation::TurnComplete),
+                    Observed::Goal { outcome } => out.push(Observation::Goal(outcome)),
+                    Observed::TurnEnded => out.push(Observation::TurnEnded),
                     Observed::LimitReached {
                         resets_at,
                         message,
@@ -268,5 +270,9 @@ impl TranscriptWatch for Watch {
             model: self.acc.model().map(str::to_owned),
             turns: self.acc.turn_complete_signals(),
         }
+    }
+
+    fn caught_up(&self) -> bool {
+        self.tail.at_end()
     }
 }

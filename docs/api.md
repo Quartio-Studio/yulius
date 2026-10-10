@@ -6,7 +6,8 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
 
 ## Conventions
 
-- JSON bodies (`Content-Type: application/json`), ≤ 1 MiB. Timestamps are RFC 3339 UTC strings.
+- JSON bodies (`Content-Type: application/json`), ≤ 1 MiB; uploads (import chunks, dropped files)
+  are raw bodies with their own limits. Timestamps are RFC 3339 UTC strings.
 - Authentication: the session cookie (browser) or `Authorization: Bearer yul_…` (CLI
   tokens). The cookie is `__Host-yulius_session` when the public URL is HTTPS (host-only and
   `Secure`: no other host can plant or shadow it) and `yulius_session` over plain HTTP.
@@ -151,7 +152,7 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 TaskSummary = {
   "id": "…", "sandbox_id": "…", "number": 12, "title": "Checkout API",
   "harness": "claude", "status": "running|…(see domain wire names)",
-  "activity": "working|waiting|needs_attention|null",
+  "activity": "working|waiting|needs_attention|done|null",
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null"},
@@ -159,7 +160,8 @@ TaskSummary = {
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
-  "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null
+  "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
+  "background_shells": "0|1|…|null"
 }
 ChainLink = {"task_id|null","number","title|null","status|null","blocked":"reason|null"}
 ```
@@ -175,6 +177,13 @@ the agent, and the task continues by itself. `resumes_at` is set only then: the 
 time a subscription has capacity for it again. The UI shows "Paused: waiting for subscription
 capacity (resets ~14:20)" outside Needs you. A Continue with no capacity answers `200` with the
 task paused, not an error.
+
+`activity` is `done` when Claude Code recorded the task's goal as achieved and the turn ended
+cleanly (TSK-014); the session stays open, and any new prompt makes it `working` again.
+`background_shells` is set while the agent is idle (`waiting` or `done`): the Bash-tool shells it
+left running (Claude Code's "· 1 shell"), probed every 5 s; null when not known. The UI shows a
+`done` task as Done only when no shell is running ("Working · 1 background shell still running"
+otherwise), and applies the same shell condition to Done by a tested pull request.
 
 ```json
 TaskDetail = TaskSummary + {
@@ -549,6 +558,31 @@ Claude Code.
   → 201 entry (409 when it exists). `DELETE /api/sandboxes/{sid}/files?root&path` → 204 (files,
   links and directory trees; never the folder itself). 409 before the repository is cloned.
   The editor UI (Monaco) keeps each user's open files and unsaved text in their browser only.
+- Dropped files (EDT-006, UI-048). One file per request, the raw bytes as the body (`Content-Type`
+  is not interpreted), streamed to disk; at most the upload limit (`YULIUS_UPLOAD_MAX_MB`, 25 MiB by
+  default; `GET /api/me` → `instance.upload_max_bytes`): a larger `Content-Length` is 422 before
+  the body is read, a body that grows past it is 422 as it arrives. At most 8 uploads run at once
+  on the instance (429 `capacity`, retry); a body that sends nothing for 60 s fails (422). The
+  file is written to a temporary file next to its destination, synced, then linked or renamed
+  into place, so readers see the whole file or none; an unfinished upload leaves nothing.
+  `UploadedFile = {"path","name","size","sha256","replaced"}`. Every upload is audited
+  (`file.uploaded`, `attachment.uploaded`).
+  - `PUT /api/sandboxes/{sid}/files/upload?root&path&overwrite` (write) → 201 `UploadedFile`
+    (`path` relative to the root). `root` and `path` as in the editor API (403 for `.git` or a
+    path leading outside the folder, also through links; 422 for traversal, absolute paths,
+    control characters or a name over 255 bytes). Missing folders on the way are created. An
+    existing file is 409 unless `overwrite=true` (the UI asks first), which replaces it keeping
+    its permissions; a folder or a symbolic link at that name is always 409.
+  - `POST /api/tasks/{tid}/attachments?name` (write; whoever may type into the task's terminal)
+    and `POST /api/sandboxes/{sid}/shells/{id}/attachments?name` (the shell's owner; 404 for
+    everybody else) → 201 `UploadedFile` with the **absolute** path the agent or shell opens:
+    `<data>/sandboxes/<sid>/attachments/tasks/<tid>/<name>` or `…/shells/<id>/<name>`, inside the
+    sandbox directory (the same path inside containment) and
+    outside every worktree, so never in `git status` or a pull request. `name` is reduced to its
+    last component with letters, digits, `.`, `_`, `+` (other characters become `-`; no leading
+    dot or dash), so the path needs no quoting; an existing name gets `-2`, `-3`, … before its
+    extension. At most 500 per task or shell (409). Removed with the task (`DELETE
+    /api/tasks/{tid}`) or when the shell ends.
 - Terminals (sandbox shells; UI-015, UI-016): each is private to the user who opened it and to its
   sandbox. `Shell = {"id","name","task_id|null","folder","created_at"}`; `folder` is the absolute
   path it started in (the repository or the task's worktree) as its processes see it: the web

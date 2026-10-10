@@ -31,7 +31,8 @@ pub struct TaskSummary {
     pub harness: String,
     /// Status wire name (domain `TaskStatus::as_str`).
     pub status: String,
-    /// `working`, `waiting`, `needs_attention`, or null.
+    /// `working`, `waiting`, `needs_attention`, `done` (the goal is achieved and the turn ended,
+    /// TSK-014), or null.
     pub activity: Option<String>,
     /// Task branch.
     pub branch: Option<String>,
@@ -58,6 +59,10 @@ pub struct TaskSummary {
     /// resets and the task resumes, RFC 3339 (ROT-010). Null otherwise or when unknown.
     #[serde(default)]
     pub resumes_at: Option<String>,
+    /// While the agent is idle (`waiting` or `done`): background shells it left running, as last
+    /// probed (TSK-014). Null when not known or not idle.
+    #[serde(default)]
+    pub background_shells: Option<u32>,
     /// The task this one runs after (SPEC-001 TSK-012): while `chained` it waits for it; the
     /// link stays after the task started.
     #[serde(default)]

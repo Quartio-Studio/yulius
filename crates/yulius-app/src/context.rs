@@ -58,6 +58,8 @@ pub struct AppConfig {
     /// Loopback ports of Yulius's own listeners: never previewed, never opened by the sandbox
     /// browser and never listed on its welcome page (no recursion, BRW-008).
     pub own_ports: Vec<u16>,
+    /// Largest file one upload may carry (SPEC-001 EDT-006, UI-048; `YULIUS_UPLOAD_MAX_MB`).
+    pub upload_max_bytes: u64,
 }
 
 impl AppConfig {
@@ -98,6 +100,7 @@ impl AppConfig {
             session_ttl_ms: 30 * 24 * 3600 * 1000,
             permission_ttl_ms: 5 * 60 * 1000,
             permission_stale_ms: 30 * 60 * 1000,
+            upload_max_bytes: crate::uploads::DEFAULT_UPLOAD_MAX_BYTES,
         }
     }
 }
@@ -153,6 +156,8 @@ pub struct App {
     pub(crate) recovery_lock: tokio::sync::Mutex<()>,
     /// Live preview handshakes and grants (SPEC-002 ADR-14).
     pub(crate) previews: crate::preview::PreviewState,
+    /// Uploads in progress (SPEC-001 EDT-006, UI-048).
+    pub(crate) uploads: crate::uploads::UploadState,
     /// A random tag of this server process, sent with every response (`X-Yulius`): the preview
     /// proxy refuses an upstream that answers with it, i.e. Yulius itself (BRW-008).
     pub instance_tag: String,
@@ -182,6 +187,7 @@ impl App {
             workspace_grants: crate::identity::WorkspaceGrants::default(),
             recovery_lock: tokio::sync::Mutex::new(()),
             previews: crate::preview::PreviewState::default(),
+            uploads: crate::uploads::UploadState::default(),
             intake: OnceLock::new(),
         })
     }

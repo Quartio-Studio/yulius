@@ -15,6 +15,7 @@ CLI output is verified separately (SPEC-002 §11 "Live").
 | `claude/limit_epoch.jsonl` | Usage-limit API error (`isApiErrorMessage`) with an epoch reset after `\|`. |
 | `claude/limit_text.jsonl` | Usage-limit API error with an `error` field and no parseable reset time, plus model text that merely mentions a limit (not an error). |
 | `claude/absent_usage.jsonl` | An assistant message without `usage` (usage must stay unknown). |
+| `claude/goal.jsonl` | Goal mode (structure observed 2026-10-10 on Claude Code 2.1.292, read-only, field names and nesting only): `goal_status` attachments — the sentinel of a set goal, "not met" (the agent continues), "met" with iterations, duration and tokens, a sidechain one, "failed", and a sentinel marking a goal cleared — the `/goal` command's user records, the `stop_hook_summary` and `turn_duration` system records that close a turn, an `away_summary` recap and a `queued_command` task notification (a background shell that ended). |
 | `claude/malformed.jsonl` | Truncated JSON, non-object, missing `type`, unknown type, missing `message`, non-JSON. |
 
 Reset times are epoch seconds (`1791380000` = 2026-10-07T13:33:20Z). Session ids, uuids,

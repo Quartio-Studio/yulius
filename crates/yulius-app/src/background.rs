@@ -103,7 +103,7 @@ impl App {
             return;
         };
         if task.status != TaskStatus::Running
-            || task.activity != Some(Activity::Waiting)
+            || !task.activity.is_some_and(Activity::is_idle)
             || !task.wake_enabled
         {
             return;

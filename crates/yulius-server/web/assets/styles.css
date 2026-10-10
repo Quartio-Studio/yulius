@@ -1807,6 +1807,33 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-empty[hidden] { display: none; }
 .ed-status { display: flex; gap: 12px; align-items: center; height: 22px; padding: 0 12px; font-size: var(--fs-sm); line-height: var(--lh-sm); border-top: 1px solid var(--border); background: var(--surface); flex: none; overflow: hidden; white-space: nowrap; }
 .ed-status > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+/* Dropped files (EDT-006, UI-048): the drop overlay says where files go (or why they cannot),
+   the explorer marks the folder under the pointer, and a batch shows its progress and errors —
+   at the foot of the explorer, or floating over a terminal. */
+.drop-overlay { position: absolute; inset: 0; z-index: var(--z-float); display: flex; align-items: center; justify-content: center; padding: 16px; border: 2px dashed var(--accent); border-radius: var(--radius); background: var(--accent-soft); pointer-events: none; }
+.drop-overlay-label { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 8px 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-2); color: var(--text); font-size: var(--fs); line-height: var(--lh); font-weight: 500; box-shadow: var(--shadow-sm); }
+.drop-overlay-label > span { min-width: 0; overflow-wrap: anywhere; }
+.drop-overlay-label .icon { flex: none; }
+.drop-overlay-refused { border-color: var(--border-strong); background: var(--scrim); }
+.drop-overlay-refused .drop-overlay-label { color: var(--text-2); }
+.ed-row.ed-drop-target { background: var(--accent-soft); box-shadow: var(--focus-inset); }
+.upload-status { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 8px 4px 8px 12px; border-top: 1px solid var(--border); background: var(--surface); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.upload-status[hidden] { display: none; }
+.upload-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.upload-head > .icon { flex: none; color: var(--muted); }
+.upload-text { flex: 1; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.upload-close[hidden] { display: none; }
+.upload-bar { height: 4px; margin-right: 8px; border-radius: var(--radius-full); background: var(--accent-track); overflow: hidden; }
+.upload-bar[hidden] { display: none; }
+.upload-bar-fill { width: 0; height: 100%; border-radius: var(--radius-full); background: var(--series-1); transition: width var(--duration-fast) var(--ease); }
+.upload-errors { display: flex; flex-direction: column; gap: 4px; max-height: 120px; margin: 0; padding: 0 8px 0 0; overflow: auto; list-style: none; }
+.upload-errors:empty { display: none; }
+.upload-error { display: flex; align-items: baseline; gap: 6px; color: var(--danger-fg); overflow-wrap: anywhere; }
+.upload-error .icon { flex: none; }
+/* Over a terminal: top left, clear of its input line, the connection notice (centre) and the
+   attention bar and notices (right). */
+.upload-status-float { position: absolute; top: 8px; left: 12px; z-index: var(--z-float); width: min(420px, calc(100% - 24px)); border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2); box-shadow: var(--shadow); }
+.upload-conflicts { margin: 8px 0 0; padding-left: 20px; color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-sm); overflow-wrap: anywhere; }
 
 /* Recovery code (ACC-011). */
 .recovery-code { font: 600 var(--fs-2xl)/var(--lh-2xl) var(--font-mono); letter-spacing: .18em; text-align: center; padding: 16px 8px; border: 1px dashed var(--border); border-radius: var(--radius-lg); user-select: all; }

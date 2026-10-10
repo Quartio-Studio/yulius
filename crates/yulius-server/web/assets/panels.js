@@ -7,6 +7,7 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, errorToast, placeholder, singleFlight, keepFocus, closableTabKeys } from './dom.js';
 import { createTerminalView } from './terminal.js';
+import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { createBrowserPanel } from './browser.js';
 import { createEditorView } from './editorview.js';
 import { messageView } from './actions.js';
@@ -428,6 +429,7 @@ function createShellView(ctx, sandbox, getTask) {
           open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: shellRoot(shell), ...file }),
         },
       });
+      attachTerminalDrop(ctx, shell.view, { label: 'Drop to add to this terminal', upload: shellAttachments(ctx, sandbox.id, shell.id) });
       shell.slot = h('div', { class: 'term-slot', role: 'tabpanel', id: `term-panel-${shell.id}`, 'aria-labelledby': `term-tab-${shell.id}` }, shell.view.el);
     }
     if (!views.contains(shell.slot)) {

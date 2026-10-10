@@ -102,6 +102,11 @@ pub struct ServeArgs {
     /// (docs/operations.md).
     #[arg(long, env = "YULIUS_PREVIEW_DOMAIN")]
     pub preview_domain: Option<String>,
+    /// Largest file one upload may carry, in MiB (files dropped onto the editor or a terminal,
+    /// SPEC-001 EDT-006, UI-048). The reverse proxy's body limit must allow it.
+    #[arg(long, env = "YULIUS_UPLOAD_MAX_MB", default_value_t = 25,
+          value_parser = clap::value_parser!(u64).range(1..=1024))]
+    pub upload_max_mb: u64,
     /// File holding the TypeSafe Jev API key (owner-only, mode 0600) for task intake: split
     /// checks of new tasks and scope checks of prompts typed into running tasks (SPEC-002
     /// ADR-16). Unset or unreadable: intake checks nothing and blocks nothing.
@@ -339,6 +344,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     let mut config = AppConfig::new(args.data_dir.clone(), &args.public_url, &internal_url, exe);
     config.max_live_sessions = args.max_live_sessions;
     config.contained = args.contained;
+    config.upload_max_bytes = args.upload_max_mb * 1024 * 1024;
     config.own_ports = vec![args.bind.port(), args.internal_bind.port()];
     config.preview = preview_config(&args.public_url, args.preview_domain.as_deref())?;
     config

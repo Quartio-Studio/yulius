@@ -1,6 +1,7 @@
 //! Wire-parser contracts for Claude Code transcript lines (synthetic fixtures with the
 //! structure of Claude Code 2.1.292).
 
+use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::TokenUsage;
 use yulius_harness::claude;
@@ -11,6 +12,7 @@ const CLAUDE_LIMIT_EPOCH: &str = include_str!("fixtures/claude/limit_epoch.jsonl
 const CLAUDE_LIMIT_TEXT: &str = include_str!("fixtures/claude/limit_text.jsonl");
 const CLAUDE_ABSENT_USAGE: &str = include_str!("fixtures/claude/absent_usage.jsonl");
 const CLAUDE_MALFORMED: &str = include_str!("fixtures/claude/malformed.jsonl");
+const CLAUDE_GOAL: &str = include_str!("fixtures/claude/goal.jsonl");
 
 const CLAUDE_SESSION_ID: &str = "5b0d9c1e-2f4a-4c6b-9e7d-1a2b3c4d5e6f";
 
@@ -53,7 +55,7 @@ fn claude_session_turns_meta_and_ignored_records() {
     let all = flat(&per_line);
     let user_turns = all
         .iter()
-        .filter(|o| matches!(o, Observed::UserTurn))
+        .filter(|o| matches!(o, Observed::UserTurn { .. }))
         .count();
     assert_eq!(
         user_turns, 2,
@@ -171,4 +173,43 @@ fn claude_malformed_and_unknown_lines() {
         ]
     );
     assert_eq!(claude::observe_line(""), vec![Observed::Malformed]);
+}
+
+/// TSK-014: Claude Code 2.1.292 records the goal's state as `goal_status` attachments and closes a
+/// turn with `stop_hook_summary` and `turn_duration`; the `/goal` command is a user prompt with its
+/// time; recaps, task notifications and sidechain goals are not observations.
+#[test]
+fn claude_goal_mode_records() {
+    let per_line = observe_all(CLAUDE_GOAL, claude::observe_line);
+    let relevant: Vec<&Observed> = flat(&per_line)
+        .into_iter()
+        .filter(|o| {
+            !matches!(
+                o,
+                Observed::SessionMeta { .. } | Observed::AssistantMessage { .. }
+            )
+        })
+        .collect();
+    let goal = |outcome| Observed::Goal { outcome };
+    assert_eq!(
+        relevant,
+        vec![
+            &goal(GoalOutcome::Set),
+            &Observed::UserTurn {
+                at: Some(Timestamp(1_791_610_681_385))
+            },
+            &Observed::TurnComplete { duration_ms: None },
+            &goal(GoalOutcome::NotMet),
+            &Observed::TurnComplete { duration_ms: None },
+            &goal(GoalOutcome::Met),
+            &Observed::TurnEnded,
+            &Observed::TurnEnded,
+            &goal(GoalOutcome::Failed),
+            &goal(GoalOutcome::Cleared),
+        ]
+    );
+    assert_eq!(
+        accumulate(CLAUDE_GOAL, claude::observe_line).malformed_lines(),
+        0
+    );
 }

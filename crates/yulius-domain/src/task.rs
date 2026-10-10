@@ -72,6 +72,25 @@ pub enum Activity {
     Waiting,
     /// A person must act (permission prompt, browser hand-off, discipline gate, capacity).
     NeedsAttention,
+    /// The agent finished the task: its turn ended cleanly after Claude Code recorded the task's
+    /// goal as achieved (SPEC-001 TSK-014). The session stays attached and idle; any new prompt
+    /// makes the task [`Activity::Working`] again.
+    Done,
+}
+
+/// What Claude Code recorded about the session's goal (`/goal`, SPEC-001 TSK-010/TSK-014).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GoalOutcome {
+    /// A goal is set and active (Claude Code's sentinel record); not achieved yet.
+    Set,
+    /// An active goal was cleared without being achieved (a sentinel marking it inactive).
+    Cleared,
+    /// The goal evaluator found it not met yet; the agent keeps working.
+    NotMet,
+    /// The goal was achieved.
+    Met,
+    /// The goal could not be achieved (the evaluator judged it impossible).
+    Failed,
 }
 
 /// Inputs that move a task between states.
@@ -255,6 +274,7 @@ impl Activity {
             Self::Working => "working",
             Self::Waiting => "waiting",
             Self::NeedsAttention => "needs_attention",
+            Self::Done => "done",
         }
     }
 
@@ -265,7 +285,26 @@ impl Activity {
             "working" => Some(Self::Working),
             "waiting" => Some(Self::Waiting),
             "needs_attention" => Some(Self::NeedsAttention),
+            "done" => Some(Self::Done),
             _ => None,
+        }
+    }
+
+    /// The agent's turn has ended and nobody needs to act: it waits for input or is done.
+    #[must_use]
+    pub fn is_idle(self) -> bool {
+        matches!(self, Self::Waiting | Self::Done)
+    }
+
+    /// The activity after a clean turn end (TSK-014): done when Claude Code recorded the task's
+    /// goal as achieved and no prompt came since, waiting otherwise. Background shells do not
+    /// change it; they are a live overlay (the task shows Working while one runs).
+    #[must_use]
+    pub fn after_clean_turn(goal_achieved: bool) -> Self {
+        if goal_achieved {
+            Self::Done
+        } else {
+            Self::Waiting
         }
     }
 }
@@ -451,6 +490,23 @@ mod tests {
         assert!(!TaskStatus::Chained.is_live());
         assert!(!TaskStatus::Chained.is_resting());
         Ok(())
+    }
+
+    #[test]
+    fn activity_wire_names_and_clean_turn_end() {
+        for activity in [
+            Activity::Working,
+            Activity::Waiting,
+            Activity::NeedsAttention,
+            Activity::Done,
+        ] {
+            assert_eq!(Activity::parse(activity.as_str()), Some(activity));
+        }
+        assert_eq!(Activity::parse("finished"), None);
+        assert_eq!(Activity::after_clean_turn(true), Activity::Done);
+        assert_eq!(Activity::after_clean_turn(false), Activity::Waiting);
+        assert!(Activity::Done.is_idle() && Activity::Waiting.is_idle());
+        assert!(!Activity::Working.is_idle() && !Activity::NeedsAttention.is_idle());
     }
 
     #[test]
