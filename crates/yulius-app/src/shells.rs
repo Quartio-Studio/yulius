@@ -66,6 +66,9 @@ const EXIT_WAIT: Duration = Duration::from_secs(10);
 const REATTACH_ATTEMPTS: u32 = 3;
 /// Initial PTY size before the first viewer reports its size.
 const DEFAULT_SIZE: (u16, u16) = (120, 40);
+/// bash's `PROMPT_COMMAND` in sandbox shells: OSC 7 (`ESC ] 7 ; file://host/cwd ESC \`) at
+/// every prompt, the working directory the web terminal resolves printed paths against.
+pub const OSC7_PROMPT_COMMAND: &str = r#"printf '\033]7;file://%s%s\033\\' "${HOSTNAME:-}" "$PWD""#;
 /// Shell run directories inspected at startup.
 const MAX_ORPHANS: usize = 1024;
 /// The shell's record in its run directory.
@@ -91,6 +94,9 @@ pub struct ShellRuntime {
     sandbox: SandboxId,
     creator: UserId,
     task: Option<TaskId>,
+    /// The folder it started in (the sandbox repository or the task's worktree), as its
+    /// processes see it.
+    folder: PathBuf,
     name: Mutex<String>,
     created_at: Timestamp,
     /// Creation number, persisted with the shell (stable tab order).
@@ -118,6 +124,9 @@ pub struct ShellInfo {
     pub name: String,
     /// The task whose worktree it started in; `None` for the sandbox repository.
     pub task_id: Option<String>,
+    /// Absolute path of the folder it started in, as its processes see it (file links in its
+    /// output resolve against it, F 2026-10-10).
+    pub folder: String,
     /// Creation time.
     pub created_at: Timestamp,
 }
@@ -181,6 +190,7 @@ impl ShellRuntime {
             id: self.id.clone(),
             name: self.name(),
             task_id: self.task.as_ref().map(|t| t.as_str().to_owned()),
+            folder: self.folder.to_string_lossy().into_owned(),
             created_at: self.created_at,
         }
     }
@@ -394,6 +404,10 @@ impl App {
             ("YULIUS_PORT_COUNT".into(), sandbox.port_count.to_string()),
             ("PORT".into(), sandbox.port_base.to_string()),
             ("YULIUS_SANDBOX".into(), sandbox.slug.clone()),
+            // bash tells the terminal its working directory at every prompt (OSC 7), so paths
+            // printed after a `cd` still link to the right files (F 2026-10-10). Other shells
+            // ignore it; a user's own PROMPT_COMMAND replaces it.
+            ("PROMPT_COMMAND".into(), OSC7_PROMPT_COMMAND.into()),
         ]);
         env
     }
@@ -473,6 +487,7 @@ impl App {
                 sandbox: record.id.clone(),
                 creator: ctx.user.id.clone(),
                 task: task_id,
+                folder: std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone()),
                 name: Mutex::new(name),
                 created_at: self.now(),
                 seq: self.shells.next_seq.fetch_add(1, Ordering::SeqCst),
@@ -904,6 +919,24 @@ impl App {
         (adopted, removed)
     }
 
+    /// The folder an adopted shell started in: its task's worktree, else the repository.
+    async fn shell_folder(&self, sandbox: &SandboxId, task: Option<&TaskId>) -> PathBuf {
+        let worktree = match task {
+            Some(task) => self
+                .deps
+                .store
+                .task(task)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|t| t.worktree_path)
+                .map(PathBuf::from),
+            None => None,
+        };
+        let folder = worktree.unwrap_or_else(|| self.sandbox_repo(sandbox));
+        std::fs::canonicalize(&folder).unwrap_or(folder)
+    }
+
     async fn adopt_shell(self: &Arc<Self>, dir_name: &str, run_dir: &Path) -> AppResult<()> {
         let bytes = std::fs::read(run_dir.join(SHELL_FILE)).map_err(AppError::internal)?;
         let file: ShellFile = serde_json::from_slice(&bytes).map_err(AppError::internal)?;
@@ -924,16 +957,19 @@ impl App {
             .open(&Sealed(sealed))?
             .try_into()
             .map_err(|_| AppError::NotFound)?;
+        let task = file
+            .task
+            .as_deref()
+            .map(TaskId::parse)
+            .transpose()
+            .map_err(|_| AppError::NotFound)?;
+        let folder = self.shell_folder(&sandbox, task.as_ref()).await;
         let runtime = Arc::new(ShellRuntime {
             id: file.id.clone(),
             sandbox,
             creator: UserId::parse(&file.creator).map_err(|_| AppError::NotFound)?,
-            task: file
-                .task
-                .as_deref()
-                .map(TaskId::parse)
-                .transpose()
-                .map_err(|_| AppError::NotFound)?,
+            task,
+            folder,
             name: Mutex::new(clean_name(&file.name).unwrap_or_else(|_| "Terminal".into())),
             created_at: Timestamp(file.created_at),
             seq: file.seq,

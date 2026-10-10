@@ -96,19 +96,24 @@ async fn read_until(
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
+/// A harness with the fake agent, a cloned fixture repository, an account, and three users of
+/// sandbox `s1`: alice and carol (write) and bob (read).
+struct Fixture {
+    h: support::Harness,
+    writer: support::Creds,
+    reader: support::Creds,
+    second: support::Creds,
+    sandbox: String,
+}
+
+async fn fixture(options: FakeAgentOptions) -> Result<Fixture, Box<dyn std::error::Error>> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
     let h = harness_with(HarnessOptions {
         git: Some(Arc::new(GitAdapter::new("git"))),
         session_host: Some(Arc::new(PtySessionHost::new(exe.clone()))),
-        harness: Some(Arc::new(FakeAgentHarness::new(
-            exe,
-            fake,
-            FakeAgentOptions::default(),
-        ))),
+        harness: Some(Arc::new(FakeAgentHarness::new(exe, fake, options))),
         dir: Some(dir),
         configure: Some(Box::new(|c| {
             c.contained = false;
@@ -172,8 +177,27 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
         ],
     )?;
 
+    Ok(Fixture {
+        h,
+        writer,
+        reader,
+        second,
+        sandbox: sandbox.id.as_str().to_owned(),
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
+    let Fixture {
+        h,
+        writer,
+        reader,
+        second,
+        sandbox,
+    } = fixture(FakeAgentOptions::default()).await?;
+
     // Read users cannot create tasks; writers can.
-    let path = format!("/api/sandboxes/{}/tasks", sandbox.id.as_str());
+    let path = format!("/api/sandboxes/{sandbox}/tasks");
     let body = json!({"prompt": "Terminal sharing check", "harness": "claude"});
     let refused = call(
         &h.router,
@@ -408,5 +432,170 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    Ok(())
+}
+
+async fn send(socket: &mut Socket, message: Value) -> TestResult {
+    socket
+        .send(Message::Text(message.to_string().into()))
+        .await?;
+    Ok(())
+}
+
+fn last_state(viewer: &Viewer) -> Option<&Value> {
+    viewer.texts.iter().rev().find(|t| t["type"] == "state")
+}
+
+/// The viewer's latest state says it controls (or not) a terminal of `cols`×`rows`.
+fn sized(viewer: &Viewer, controller: bool, cols: u16, rows: u16) -> bool {
+    last_state(viewer).is_some_and(|s| {
+        s["controller"] == controller && s["cols"] == json!(cols) && s["rows"] == json!(rows)
+    })
+}
+
+/// F 2026-10-10 ("each user should be able to control it on their side"): the PTY takes the
+/// active viewer's window size, automatically. A viewer alone keeps it while idle; a viewer who
+/// opens the task takes it from an idle one; typing (or `take_control`, a click) takes it at once;
+/// a watcher's own size is kept for when it controls; an idle or leaving controller hands it to
+/// the active viewer, whose last reported size the PTY takes at once (TSK-006, UI-019).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_active_viewer_sets_the_size_and_an_idle_one_hands_it_over() -> TestResult {
+    let Fixture {
+        h,
+        writer,
+        second,
+        sandbox,
+        ..
+    } = fixture(FakeAgentOptions::default()).await?;
+    let created = call(
+        &h.router,
+        axum::http::Method::POST,
+        &format!("/api/sandboxes/{sandbox}/tasks"),
+        Some(json!({"prompt": "Size hand-over check", "harness": "claude"})),
+        &writer,
+    )
+    .await?;
+    assert_eq!(created.status, 201, "{:?}", created.body);
+    let tid = created.body["id"].as_str().ok_or("task id")?.to_owned();
+    let task_id = yulius_domain::ids::TaskId::parse(&tid)?;
+    let served = serve(h.router.clone()).await?;
+    let terminal = format!("/api/tasks/{tid}/terminal");
+    let pty = || h.app.runtime(&task_id).hub.size();
+
+    // Alice alone: her window's size, kept while she is idle (her window changes still apply).
+    let mut a = ws_connect(
+        served.addr,
+        &format!("{terminal}?cols=100&rows=30"),
+        &writer,
+        ORIGIN,
+    )
+    .await?;
+    let mut av = Viewer::default();
+    read_until(&mut a, &mut av, "alice's banner", |v| {
+        v.screen.contains("FAKE-AGENT READY") && sized(v, true, 100, 30)
+    })
+    .await?;
+    send(&mut a, json!({"type": "idle"})).await?;
+    send(&mut a, json!({"type": "resize", "cols": 104, "rows": 31})).await?;
+    read_until(&mut a, &mut av, "alice keeps the size while idle", |v| {
+        sized(v, true, 104, 31)
+    })
+    .await?;
+
+    // Carol opens the task while alice is idle: the terminal takes carol's size at once.
+    let mut c = ws_connect(
+        served.addr,
+        &format!("{terminal}?cols=140&rows=40"),
+        &second,
+        ORIGIN,
+    )
+    .await?;
+    let mut cv = Viewer::default();
+    let first = |v: &Viewer| v.texts.iter().find(|t| t["type"] == "state").cloned();
+    read_until(&mut c, &mut cv, "carol's first state", |v| {
+        first(v).is_some()
+    })
+    .await?;
+    let first = first(&cv).ok_or("carol's state")?;
+    assert_eq!(
+        (&first["controller"], &first["cols"], &first["rows"]),
+        (&json!(true), &json!(140), &json!(40)),
+        "carol's first state already has her size: {first}"
+    );
+    read_until(&mut a, &mut av, "alice watches carol's size", |v| {
+        sized(v, false, 140, 40)
+    })
+    .await?;
+
+    // Alice comes back while carol is active: nothing moves; her own size is kept for later.
+    send(&mut a, json!({"type": "active"})).await?;
+    send(&mut a, json!({"type": "resize", "cols": 100, "rows": 30})).await?;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(pty(), (140, 40), "an active viewer keeps the size");
+    // Alice types: her window's size, at once.
+    send(
+        &mut a,
+        json!({"type": "input", "data": "/size\r", "seq": 1}),
+    )
+    .await?;
+    read_until(&mut a, &mut av, "alice takes the size by typing", |v| {
+        sized(v, true, 100, 30) && v.screen.contains("SIZE 30 100")
+    })
+    .await?;
+    read_until(&mut c, &mut cv, "carol watches alice's size", |v| {
+        sized(v, false, 100, 30)
+    })
+    .await?;
+
+    // Carol's window changes while she watches: kept, not applied.
+    send(&mut c, json!({"type": "resize", "cols": 150, "rows": 45})).await?;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(pty(), (100, 30), "a watcher's size waits");
+    // Alice goes idle: carol, active, gets the size she reported last.
+    send(&mut a, json!({"type": "idle"})).await?;
+    read_until(
+        &mut c,
+        &mut cv,
+        "carol gets the size when alice idles",
+        |v| sized(v, true, 150, 45),
+    )
+    .await?;
+
+    // A click (`take_control`) takes it back; leaving hands it to carol again.
+    send(&mut a, json!({"type": "take_control"})).await?;
+    read_until(&mut a, &mut av, "alice clicks into the terminal", |v| {
+        sized(v, true, 100, 30)
+    })
+    .await?;
+    drop(a);
+    read_until(
+        &mut c,
+        &mut cv,
+        "carol gets the size when alice leaves",
+        |v| sized(v, true, 150, 45),
+    )
+    .await?;
+    send(
+        &mut c,
+        json!({"type": "input", "data": "/size\r", "seq": 1}),
+    )
+    .await?;
+    read_until(
+        &mut c,
+        &mut cv,
+        "the agent's terminal is carol's size",
+        |v| v.screen.contains("SIZE 45 150"),
+    )
+    .await?;
+
+    let stopped = call(
+        &h.router,
+        axum::http::Method::POST,
+        &format!("/api/tasks/{tid}/stop"),
+        None,
+        &writer,
+    )
+    .await?;
+    assert_eq!(stopped.status, 200, "{:?}", stopped.body);
     Ok(())
 }

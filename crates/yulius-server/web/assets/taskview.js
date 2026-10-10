@@ -101,6 +101,13 @@ export function mountTaskView(ctx, sandbox, task) {
       }
       return actions;
     },
+    // Paths of files in the task's worktree open in the Editor (F 2026-10-10). The files API needs
+    // write access, as the editor does.
+    fileLinks: allows(sandbox.access, 'write') ? {
+      list: (dir) => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/files?root=${encodeURIComponent(`task:${task.id}`)}&path=${encodeURIComponent(dir)}`).then((listing) => listing.entries || []),
+      roots: () => (detail && detail.worktree ? [detail.worktree] : []),
+      open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: `task:${task.id}`, ...file }),
+    } : null,
   });
 
   // ---- phone quick input

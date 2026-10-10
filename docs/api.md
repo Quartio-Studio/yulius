@@ -190,16 +190,25 @@ Client → server text frames:
 {"type":"input","data":"\u001b[<65;10;5M","seq":18,"scroll":true}
 {"type":"resize","cols":120,"rows":40}
 {"type":"take_control"}
+{"type":"active"}
+{"type":"idle"}
 ```
 
-Input makes its viewer the controller (the last viewer to type sets the size), except
-`"scroll":true`: a wheel turn forwarded to a full-screen app, which neither takes control nor
-resizes the terminal.
+The PTY has one size: the controlling viewer's (F 2026-10-10). Every writer sends the size its own
+window fits (`hello`, `resize`, whether or not it controls) and whether it is `active` (its page
+visible and focused, the terminal used within the last minute) or `idle`. Input (typing) and
+`take_control` (a click into the terminal) make that viewer the controller at once, except
+`"scroll":true` input: a wheel turn forwarded to a full-screen app, which neither takes control nor
+resizes the terminal. An `active` viewer takes control from an idle controller; when the
+controller sends `idle` or leaves, the most recently active viewer takes over (on leaving, else the
+most recently seen one). A viewer alone keeps control while idle. Whenever control moves, the
+terminal takes the new controller's last reported size at once and every viewer gets a `state`.
+Read-only viewers never control (their `resize`, `active` and `idle` change nothing).
 
 The connection may carry the viewer's size: `WS /api/tasks/{tid}/terminal?cols=120&rows=40`. A
-writer whom no other viewer controls gets it applied before the first `state` and snapshot (and
-then controls the size); when that changed the size, the snapshot waits up to 400 ms for the
-program's redraw. Both or neither; unparsable values are 400. `hello` and `resize` with the size
+writer whom no viewer controls, or whose controller is idle, gets it applied before the first
+`state` and snapshot (and then controls the size); when that changed the size, the snapshot waits
+up to 400 ms for the program's redraw. Both or neither; unparsable values are 400. `hello` and `resize` with the size
 the terminal already has change nothing.
 
 Server → client:
@@ -212,7 +221,9 @@ Server → client:
 - Close code 4008: viewer lagged; reconnect with `last_seq`.
 
 The account-login terminal (`/api/admin/accounts/login/{lid}/terminal`) and sandbox shells
-(`/api/shells/{id}/terminal`) use the same protocol.
+(`/api/shells/{id}/terminal`) use the same protocol; for them `active` and `idle` change nothing
+and `take_control` moves nothing (a login terminal's size is fixed; a shell follows the last
+`resize`).
 
 ## Git and delivery
 
@@ -478,7 +489,10 @@ Claude Code.
   links and directory trees; never the folder itself). 409 before the repository is cloned.
   The editor UI (Monaco) keeps each user's open files and unsaved text in their browser only.
 - Terminals (sandbox shells; UI-015, UI-016): each is private to the user who opened it and to its
-  sandbox. `Shell = {"id","name","task_id|null","created_at"}`.
+  sandbox. `Shell = {"id","name","task_id|null","folder","created_at"}`; `folder` is the absolute
+  path it started in (the repository or the task's worktree) as its processes see it: the web
+  terminal links printed paths inside it to the editor (UI-018). bash reports its working
+  directory at every prompt as OSC 7 (`PROMPT_COMMAND`; a user's own `PROMPT_COMMAND` replaces it).
   - `GET /api/sandboxes/{sid}/shells` (write) → `[Shell]`: the caller's live shells in this
     sandbox, oldest first (never another user's or another sandbox's).
   - `POST /api/sandboxes/{sid}/shells` (write) `{"task_id?","name?"}` (or an empty body) → 201

@@ -12,6 +12,11 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
+pub mod control;
+
+pub use control::Change;
+use control::SizeControl;
+
 /// Per-viewer buffered frames before a viewer is considered lagging.
 pub const VIEWER_QUEUE_FRAMES: usize = 512;
 /// Largest output chunk forwarded as one frame.
@@ -61,8 +66,8 @@ pub struct Hub {
     viewers: AtomicU64,
     /// Viewer ids handed out to attached viewers.
     next_viewer: AtomicU64,
-    /// The viewer that controls input focus and PTY size (0 = nobody yet; TSK-006).
-    controller: AtomicU64,
+    /// Writer viewers and the one that controls the PTY size (TSK-006, [`control`]).
+    control: Mutex<SizeControl>,
 }
 
 /// A viewer subscription with its starting snapshot.
@@ -90,7 +95,7 @@ impl Hub {
             }),
             viewers: AtomicU64::new(0),
             next_viewer: AtomicU64::new(1),
-            controller: AtomicU64::new(0),
+            control: Mutex::new(SizeControl::default()),
         }
     }
 
@@ -280,39 +285,56 @@ impl Hub {
     /// The controlling viewer (0 = nobody).
     #[must_use]
     pub fn controller(&self) -> u64 {
-        self.controller.load(Ordering::SeqCst)
+        self.control.lock().map(|c| c.controller()).unwrap_or(0)
     }
 
-    /// Makes `viewer` the controller; tells every viewer when control changed.
-    pub fn take_control(&self, viewer: u64) {
-        if self.controller.swap(viewer, Ordering::SeqCst) != viewer {
+    /// The size the controlling viewer's window fits, when it reported one.
+    #[must_use]
+    pub fn controller_size(&self) -> Option<(u16, u16)> {
+        self.control.lock().ok().and_then(|c| c.controller_size())
+    }
+
+    /// Runs one size-control operation; tells every viewer when control moved.
+    fn control(&self, operation: impl FnOnce(&mut SizeControl) -> Change) -> Change {
+        let change = self
+            .control
+            .lock()
+            .map(|mut control| operation(&mut control))
+            .unwrap_or_default();
+        if change.moved {
             self.state_changed();
         }
+        change
     }
 
-    /// Whether `viewer` may resize: it controls, or nobody does yet (it then takes control).
-    pub fn may_resize(&self, viewer: u64) -> bool {
-        match self
-            .controller
-            .compare_exchange(0, viewer, Ordering::SeqCst, Ordering::SeqCst)
-        {
-            Ok(_) => {
-                self.state_changed();
-                true
-            }
-            Err(current) => current == viewer,
-        }
+    /// A writer attached with the size its window fits ([`SizeControl::join`]).
+    pub fn join_writer(&self, viewer: u64, size: Option<(u16, u16)>) -> Change {
+        self.control(|c| c.join(viewer, size))
     }
 
-    /// Releases control when `viewer` leaves.
-    pub fn release(&self, viewer: u64) {
-        if self
-            .controller
-            .compare_exchange(viewer, 0, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            self.state_changed();
-        }
+    /// The size a writer's window fits now ([`SizeControl::report_size`]).
+    pub fn report_size(&self, viewer: u64, size: (u16, u16)) -> Change {
+        self.control(|c| c.report_size(viewer, size))
+    }
+
+    /// A writer is active ([`SizeControl::active`]).
+    pub fn viewer_active(&self, viewer: u64) -> Change {
+        self.control(|c| c.active(viewer))
+    }
+
+    /// A writer typed or clicked into the terminal ([`SizeControl::claim`]).
+    pub fn claim(&self, viewer: u64) -> Change {
+        self.control(|c| c.claim(viewer))
+    }
+
+    /// A writer went idle ([`SizeControl::idle`]).
+    pub fn viewer_idle(&self, viewer: u64) -> Change {
+        self.control(|c| c.idle(viewer))
+    }
+
+    /// A writer left or lost write access ([`SizeControl::leave`]); safe to call twice.
+    pub fn leave(&self, viewer: u64) -> Change {
+        self.control(|c| c.leave(viewer))
     }
 }
 
@@ -338,19 +360,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn control_follows_the_last_writer_and_is_released_on_leave() {
+    fn control_moves_tell_every_viewer() {
         let hub = Hub::new(20, 5);
+        let mut sub = hub.subscribe();
         let (a, b) = (hub.new_viewer_id(), hub.new_viewer_id());
         assert_ne!(a, b);
         assert_eq!(hub.controller(), 0);
-        assert!(hub.may_resize(a), "the first resizer takes control");
-        assert!(!hub.may_resize(b), "others keep watching at that size");
-        hub.take_control(b);
+        assert_eq!(hub.join_writer(a, Some((30, 6))).resize, Some((30, 6)));
+        assert!(
+            matches!(sub.rx.try_recv(), Ok(HubFrame::State)),
+            "a controls"
+        );
+        assert!(!hub.join_writer(b, Some((40, 8))).moved, "b watches");
+        assert!(sub.rx.try_recv().is_err(), "nothing moved, nothing sent");
+        assert_eq!(hub.claim(b).resize, Some((40, 8)));
         assert_eq!(hub.controller(), b);
-        assert!(!hub.may_resize(a));
-        hub.release(a);
-        assert_eq!(hub.controller(), b, "only the controller's leave releases");
-        hub.release(b);
+        assert!(matches!(sub.rx.try_recv(), Ok(HubFrame::State)));
+        assert!(!hub.leave(a).moved, "a watcher leaving moves nothing");
+        assert!(hub.leave(b).moved);
+        assert!(!hub.leave(b).moved, "leaving twice is harmless");
         assert_eq!(hub.controller(), 0);
     }
 

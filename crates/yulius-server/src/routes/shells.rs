@@ -36,6 +36,7 @@ fn dto(info: ShellInfo) -> Shell {
         id: info.id,
         name: info.name,
         task_id: info.task_id,
+        folder: info.folder,
         created_at: rfc3339(info.created_at),
     }
 }
@@ -210,7 +211,8 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: ShellAttach, mut sock
                     TerminalClientMsg::Hello { cols, rows, .. } | TerminalClientMsg::Resize { cols, rows } => {
                         app.shell_resize(&ctx, &attach, cols, rows).await
                     }
-                    TerminalClientMsg::TakeControl => Ok(()),
+                    // One user's own terminal: its size follows the last resize.
+                    TerminalClientMsg::TakeControl | TerminalClientMsg::Active | TerminalClientMsg::Idle => Ok(()),
                     TerminalClientMsg::Input { data, seq, .. } => {
                         if seq.is_some() && seq <= last_input_seq { Ok(()) } else {
                             if seq.is_some() { last_input_seq = seq; }

@@ -222,7 +222,8 @@ the real server. Options (combine with `&`): `setup=1` (setup required; token
 `YUL-SETUP-1234`), `signedout=1` (password `correct horse battery`), `role=member|admin`,
 `contained=0` (shows "Not contained"), `github=0` (GitHub App not configured), `github_linked=0`
 (the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
-the home page asks them to sign in with GitHub).
+the home page asks them to sign in with GitHub), `othercols=N&otherrows=M` (another, active viewer
+sets task terminals to N×M until this one types or clicks into the terminal).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and
 documentation; the [end-to-end tests](../../../e2e/README.md) run against it). It has sandboxes with admin, write and read access (`studio` with the Studio
@@ -231,7 +232,8 @@ preset, `product` with a custom profile whose `dev-vm` environment has a command
 messages, accounts with usage (some unknown), Git data and delivery stages, environment runs,
 workflows, skills, automations, MCP servers and analytics. Importing a repository creates a
 sandbox whose onboarding is `pending` with a resting preparation task (Start preparation /
-Skip). Task terminals print TUI-like ANSI output, echo input and answer on Enter; type
+Skip). Task terminals print TUI-like ANSI output (with file references in every form the terminal links
+to the editor, and some it must not), echo input and answer on Enter; type
 `/exit` to close a task, `/lag` to force a 4008 reconnect, `/help` for the list. The
 browser panel draws fake pages and sends them as video (VP8 through the browser's own
 WebCodecs encoder; the real server sends H.264) or as JPEG frames when the browser cannot encode

@@ -11,6 +11,11 @@
 //! user sees; the test requires none after the terminal first shows the agent, on a cold first
 //! open (nothing cached, the PTY at the size the task started with) and on a warm reload.
 //!
+//! F 2026-10-10: copy and paste in the real terminal (Ctrl+C copies a selection and interrupts
+//! without one; the platform's paste key types the clipboard), and two windows of different sizes
+//! on one task: the active one sets the PTY's size, the other shows that grid scaled to fill its
+//! box, a click moves the size, and an idle window hands it back.
+//!
 //! ```sh
 //! YULIUS_LIVE_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
 //!   cargo test -p yulius --test live_ui_terminal -- --ignored --nocapture
@@ -51,6 +56,7 @@ impl Drop for Chrome {
 async fn start_chrome(
     exe: &str,
     profile: &Path,
+    (width, height): (u32, u32),
 ) -> Result<(Chrome, String), Box<dyn std::error::Error>> {
     let child = Command::new(exe)
         .args([
@@ -59,8 +65,8 @@ async fn start_chrome(
             "--disable-gpu",
             "--no-first-run",
             "--remote-debugging-port=0",
-            "--window-size=1500,950",
         ])
+        .arg(format!("--window-size={width},{height}"))
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("about:blank")
         .stdin(Stdio::null())
@@ -287,6 +293,8 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
         dir: Some(dir),
         configure: Some(Box::new(move |c| {
             c.contained = false;
+            // Plain HTTP: the session cookie without the `__Host-` prefix (as live_ui_browser.rs).
+            c.secure_cookies = false;
             c.allowed_origins.push(format!("http://{addr}"));
         })),
         ..HarnessOptions::default()
@@ -371,7 +379,17 @@ async fn open_tab(
     chrome_exe: &str,
     profile: &Path,
 ) -> Result<(Chrome, CdpClient, String), Box<dyn std::error::Error>> {
-    let (chrome, ws_url) = start_chrome(chrome_exe, profile).await?;
+    open_tab_sized(f, chrome_exe, profile, (1500, 950)).await
+}
+
+/// [`open_tab`] in a window of `size` (CSS pixels).
+async fn open_tab_sized(
+    f: &Fixture,
+    chrome_exe: &str,
+    profile: &Path,
+    size: (u32, u32),
+) -> Result<(Chrome, CdpClient, String), Box<dyn std::error::Error>> {
+    let (chrome, ws_url) = start_chrome(chrome_exe, profile, size).await?;
     let cdp = CdpClient::connect(&ws_url, CdpConfig::default()).await?;
     let target = cdp
         .call("Target.createTarget", json!({ "url": "about:blank" }))
@@ -594,6 +612,245 @@ async fn the_shell_panel_opens_a_working_terminal_without_a_click() -> TestResul
     .await;
     f.h.app.end_all_shells().await;
     f.h.app.stop_workspace_services().await;
+    server.abort();
+    result
+}
+
+/// The task view's terminal, seen from one page: its grid (rows), whether it shows another
+/// viewer's size (mirror class, chip), how it fills its box, and the agent's own status line
+/// (`· <cols>×<rows>` of the PTY).
+const VIEW: &str = r#"(() => {
+  const rows = document.querySelector('.taskview .xterm-rows');
+  const box = document.querySelector('.taskview .term-fit');
+  const grid = document.querySelector('.taskview .xterm-screen');
+  const chip = document.querySelector('.taskview .term-size-chip');
+  if (!rows || !box || !grid || !chip) return null;
+  const b = box.getBoundingClientRect();
+  const g = grid.getBoundingClientRect();
+  const status = (rows.textContent.match(/fixture git:\(main\) · (\d+)×(\d+)/) || []).slice(1).map(Number);
+  return {
+    rows: rows.childElementCount,
+    mirror: document.querySelector('.taskview .term-host').classList.contains('term-mirror'),
+    chip: !chip.hidden,
+    fill: Math.max(g.width / b.width, g.height / b.height),
+    overflow: Math.max(g.right - b.right, g.bottom - b.bottom),
+    pty: status.length === 2 ? status : null,
+  };
+})()"#;
+
+/// Evaluates with a user gesture (the clipboard needs one).
+async fn eval_gesture(
+    cdp: &CdpClient,
+    session: &str,
+    expression: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let value = cdp
+        .call_session(
+            session,
+            "Runtime.evaluate",
+            json!({ "expression": expression, "returnByValue": true, "awaitPromise": true, "userGesture": true }),
+        )
+        .await?;
+    Ok(value["result"]["value"].clone())
+}
+
+/// One key press with modifiers (1 Alt, 2 Ctrl, 4 Meta, 8 Shift) and the editing commands the
+/// browser runs for it on this platform (Chrome sends `copy`/`paste` for the platform's keys).
+async fn press(
+    cdp: &CdpClient,
+    session: &str,
+    modifiers: u32,
+    key: &str,
+    commands: &[&str],
+) -> TestResult {
+    if key == "Enter" {
+        for kind in ["keyDown", "keyUp"] {
+            cdp.call_session(
+                session,
+                "Input.dispatchKeyEvent",
+                json!({ "type": kind, "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "text": if kind == "keyDown" { "\r" } else { "" } }),
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+    let upper = key.to_ascii_uppercase();
+    let vk = u32::from(upper.as_bytes().first().copied().unwrap_or(b'A'));
+    for kind in ["rawKeyDown", "keyUp"] {
+        let mut event = json!({ "type": kind, "modifiers": modifiers, "key": key, "code": format!("Key{upper}"), "windowsVirtualKeyCode": vk });
+        if kind == "rawKeyDown" {
+            event["commands"] = json!(commands);
+        }
+        cdp.call_session(session, "Input.dispatchKeyEvent", event)
+            .await?;
+    }
+    Ok(())
+}
+
+/// A mouse gesture: press at `from`, move to `to`, release (a click when they are equal).
+async fn drag(cdp: &CdpClient, session: &str, from: (f64, f64), to: (f64, f64)) -> TestResult {
+    cdp.call_session(
+        session,
+        "Input.dispatchMouseEvent",
+        json!({ "type": "mouseMoved", "x": from.0, "y": from.1 }),
+    )
+    .await?;
+    cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": "mousePressed", "x": from.0, "y": from.1, "button": "left", "clickCount": 1 })).await?;
+    cdp.call_session(
+        session,
+        "Input.dispatchMouseEvent",
+        json!({ "type": "mouseMoved", "x": to.0, "y": to.1, "button": "left" }),
+    )
+    .await?;
+    cdp.call_session(
+        session,
+        "Input.dispatchMouseEvent",
+        json!({ "type": "mouseReleased", "x": to.0, "y": to.1, "button": "left", "clickCount": 1 }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// The page position of the task terminal row containing `text`: (left + 8, middle) and its right end.
+async fn row_at(
+    cdp: &CdpClient,
+    session: &str,
+    text: &str,
+) -> Result<((f64, f64), f64), Box<dyn std::error::Error>> {
+    let found = eval(
+        cdp,
+        session,
+        &format!(
+            "(() => {{ const row = [...document.querySelectorAll('.taskview .xterm-rows > div')].find((d) => d.textContent.includes({})); if (!row) return null; const r = row.getBoundingClientRect(); return [r.left + 8, r.top + r.height / 2, r.left + Math.min(r.width - 8, 420)]; }})()",
+            serde_json::to_string(text)?
+        ),
+    )
+    .await?;
+    let list = found
+        .as_array()
+        .ok_or_else(|| format!("no row with {text:?}"))?;
+    let n = |i: usize| list.get(i).and_then(Value::as_f64).unwrap_or(0.0);
+    Ok(((n(0), n(1)), n(2)))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Chrome (YULIUS_LIVE_CHROME)"]
+async fn copy_paste_and_two_windows_of_different_sizes() -> TestResult {
+    let Ok(chrome_exe) = std::env::var("YULIUS_LIVE_CHROME") else {
+        eprintln!("skipped: set YULIUS_LIVE_CHROME");
+        return Ok(());
+    };
+    let mut f = fixture().await?;
+    let listener = f.listener.take().ok_or("listener")?;
+    let router = f.h.router.clone();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let mac = cfg!(target_os = "macos");
+    // The platform's paste key: ⌘V on macOS, Ctrl+V elsewhere (Chrome runs `paste` for both).
+    let paste_key = if mac { 4 } else { 2 };
+    let result = async {
+        let created = call(
+            &f.h.router,
+            axum::http::Method::POST,
+            "/api/sandboxes/s1/tasks",
+            Some(json!({"prompt": "Clipboard and sizes", "harness": "claude"})),
+            &f.writer,
+        )
+        .await?;
+        assert_eq!(created.status, 201, "{:?}", created.body);
+        let number = created.body["number"].as_u64().ok_or("number")?;
+        let tid = created.body["id"].as_str().ok_or("id")?.to_owned();
+        let task_id = yulius_domain::ids::TaskId::parse(&tid)?;
+        let pty = || {
+            let (cols, rows) = f.h.app.runtime(&task_id).hub.size();
+            json!([cols, rows])
+        };
+        let status = || async {
+            let detail = call(&f.h.router, axum::http::Method::GET, &format!("/api/tasks/{tid}"), None, &f.writer).await?;
+            Ok::<_, Box<dyn std::error::Error>>(detail.body["status"].as_str().unwrap_or_default().to_owned())
+        };
+        let url = format!("http://{}/s/fixture/t/{number}", f.addr);
+        let origin = format!("http://{}", f.addr);
+        let wait = Duration::from_secs(40);
+
+        // Window A, 1500×950, alone: the terminal is its own size.
+        let profile_a = tempfile::tempdir()?;
+        let (_chrome_a, cdp_a, a) = open_tab_sized(&f, &chrome_exe, profile_a.path(), (1500, 950)).await?;
+        cdp_a.call("Browser.grantPermissions", json!({ "origin": origin, "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"] })).await?;
+        cdp_a.call_session(&a, "Emulation.setFocusEmulationEnabled", json!({ "enabled": true })).await?;
+        cdp_a.call_session(&a, "Page.navigate", json!({ "url": url })).await?;
+        until(&cdp_a, &a, "the agent in window A", &format!("(() => {{ const v = {VIEW}; return v && v.pty && !v.mirror && v.rows === v.pty[1]; }})()"), wait).await?;
+        let view_a = eval(&cdp_a, &a, VIEW).await?;
+        assert_eq!(view_a["chip"], json!(false), "alone: no 'another viewer' chip: {view_a}");
+        assert_eq!(view_a["pty"], pty(), "the PTY is window A's grid: {view_a}");
+
+        // Ctrl+C with a selection copies it, and the agent keeps running.
+        let ((x, y), right) = row_at(&cdp_a, &a, "Fake Claude Code").await?;
+        drag(&cdp_a, &a, (x, y), (right, y)).await?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        eval_gesture(&cdp_a, &a, "navigator.clipboard.writeText('before copy').then(() => true)").await?;
+        press(&cdp_a, &a, 2, "c", if mac { &[] } else { &["copy"] }).await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let copied = eval_gesture(&cdp_a, &a, "navigator.clipboard.readText()").await?;
+        assert!(copied.as_str().is_some_and(|t| t.contains("Fake Claude Code")), "copied: {copied}");
+        assert_eq!(status().await?, "running", "Ctrl+C with a selection did not interrupt");
+
+        // The paste key types the clipboard.
+        eval_gesture(&cdp_a, &a, "navigator.clipboard.writeText('pasted from the clipboard').then(() => true)").await?;
+        press(&cdp_a, &a, paste_key, "v", &["paste"]).await?;
+        press(&cdp_a, &a, 0, "Enter", &[]).await?;
+        until(&cdp_a, &a, "the pasted line", "document.querySelector('.taskview .xterm-rows').textContent.includes('ECHO: pasted from the clipboard')", wait).await?;
+
+        // Window B, 1000×640, opens the task while A is active: B shows A's grid, filling its box.
+        let profile_b = tempfile::tempdir()?;
+        let (_chrome_b, cdp_b, b) = open_tab_sized(&f, &chrome_exe, profile_b.path(), (1000, 640)).await?;
+        cdp_b.call_session(&b, "Emulation.setFocusEmulationEnabled", json!({ "enabled": true })).await?;
+        cdp_b.call_session(&b, "Page.navigate", json!({ "url": url })).await?;
+        until(&cdp_b, &b, "window B mirrors A", &format!("(() => {{ const v = {VIEW}; return v && v.pty && v.mirror && v.chip; }})()"), wait).await?;
+        let view_b = eval(&cdp_b, &b, VIEW).await?;
+        eprintln!("[live_ui_terminal] A {view_a}; B mirroring {view_b}");
+        assert_eq!(view_b["pty"], view_a["pty"], "A keeps the size: {view_b}");
+        assert_eq!(view_b["rows"], view_a["pty"][1], "B shows A's whole grid: {view_b}");
+        assert!(view_b["fill"].as_f64().unwrap_or(0.0) > 0.85, "B's box is filled: {view_b}");
+        assert!(view_b["overflow"].as_f64().unwrap_or(1.0) <= 0.5, "nothing cut off: {view_b}");
+
+        // A click in window B takes the size: the PTY becomes B's own grid; A shows it scaled.
+        let ((bx, by), _) = row_at(&cdp_b, &b, "Fake Claude Code").await?;
+        drag(&cdp_b, &b, (bx + 120.0, by + 40.0), (bx + 120.0, by + 40.0)).await?;
+        until(&cdp_b, &b, "B controls", &format!("(() => {{ const v = {VIEW}; return v && v.pty && !v.mirror && !v.chip && v.rows === v.pty[1]; }})()"), wait).await?;
+        until(&cdp_a, &a, "A mirrors B", &format!("(() => {{ const v = {VIEW}; return v && v.mirror && v.chip; }})()"), wait).await?;
+        let view_b = eval(&cdp_b, &b, VIEW).await?;
+        let view_a = eval(&cdp_a, &a, VIEW).await?;
+        eprintln!("[live_ui_terminal] B controls {view_b}; A mirroring {view_a}");
+        assert_eq!(view_b["pty"], pty(), "the PTY is window B's grid");
+        assert_ne!(view_b["pty"], json!([0, 0]));
+        assert!(view_a["fill"].as_f64().unwrap_or(0.0) > 0.85, "A's box is filled: {view_a}");
+        assert!(view_a["overflow"].as_f64().unwrap_or(1.0) <= 0.5, "nothing cut off: {view_a}");
+
+        // B goes idle (its window loses focus): A, active, gets its own size back.
+        cdp_b.call_session(&b, "Emulation.setFocusEmulationEnabled", json!({ "enabled": false })).await?;
+        eval(&cdp_b, &b, "document.hasFocus = () => false; window.dispatchEvent(new Event('blur')); true").await?;
+        until(&cdp_a, &a, "A gets the size back", &format!("(() => {{ const v = {VIEW}; return v && v.pty && !v.mirror && !v.chip && v.rows === v.pty[1]; }})()"), wait).await?;
+        until(&cdp_b, &b, "B mirrors A again", &format!("(() => {{ const v = {VIEW}; return v && v.mirror && v.chip; }})()"), wait).await?;
+
+        // Ctrl+C without a selection interrupts the agent (it ends on SIGINT).
+        eval(&cdp_a, &a, "document.querySelector('.taskview .xterm-helper-textarea').focus(); true").await?;
+        press(&cdp_a, &a, 2, "c", if mac { &[] } else { &["copy"] }).await?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let now = status().await?;
+            if now != "running" {
+                break;
+            }
+            if Instant::now() > deadline {
+                return Err("Ctrl+C without a selection did not interrupt the agent".into());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
     server.abort();
     result
 }

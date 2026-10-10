@@ -44,6 +44,8 @@ function loadCore() {
       import('./terminal-core.js'),
       // The core's own imports, fetched at the same time instead of after it (one round trip).
       import('./mousefilter.js'),
+      import('./termkeys.js'),
+      import('./termlinks.js'),
       import('./vendor/xterm/xterm.mjs'),
       import('./vendor/xterm/addon-fit.mjs'),
       import('./vendor/xterm/addon-web-links.mjs'),
