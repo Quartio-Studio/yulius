@@ -9,7 +9,9 @@
 // keeps unknown usage `null`.
 //
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
-// role=member|admin|superadmin (default superadmin), contained=0 (host mode), github=0.
+// role=member|admin|superadmin (default superadmin), contained=0 (host mode), github=0,
+// update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
+// jev=config (a Jev key file is configured).
 
 const MIN = 60e3;
 const HOUR = 60 * MIN;
@@ -122,6 +124,17 @@ function seed(params) {
     sessions: new Map(),
     browsers: new Map(),
     shells: new Map(), // id → {id, sandbox_id, name, task_id, created_at, session}
+    // Instance updates and the Jev key (SPEC-002 ADR-18): `update=1` (main moved on), `update=fail`
+    // (main moved on and its install is rolled back), `helper=0` (no update helper), `jev=config`.
+    update: {
+      current: '68b4f5f2c1d0e9a8b7c6d5e4f3a2b1c0d9e8f7a6',
+      offer: ['1', 'fail'].includes(params.get('update')) ? '9c1e7d3b5a2f4e6d8c0b1a3f5e7d9c2b4a6f8e0d' : null,
+      fail: params.get('update') === 'fail',
+      helper: params.get('helper') !== '0',
+      checkedAt: ['1', 'fail'].includes(params.get('update')) ? iso(10 * MIN) : null,
+      run: null,
+    },
+    jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
 
     nextId: 100,
   };
@@ -1559,6 +1572,151 @@ route('GET', '/api/status', ({ db }) => {
     contained: db.me.instance.contained,
   };
 });
+// ------------------------------------------------------------------ instance updates (ADR-18)
+
+const UPDATE_COMMITS = [
+  { title: 'An update banner and update now', author: 'MrFishPL' },
+  { title: 'A solid wordmark beside the mark, with a quiet tagline', author: 'MrFishPL' },
+  { title: 'Keep the streamed browser live over a real link', author: 'BartlomiejNowak04' },
+  { title: 'Drag and drop files into the editor and Claude', author: 'MrFishPL' },
+];
+/** How long each phase of a mock update takes (ms). */
+const UPDATE_STEP_MS = 1500;
+const UPDATE_STATES = ['building', 'pausing', 'restarting', 'resuming'];
+const short7 = (sha) => (sha ? sha.slice(0, 7) : null);
+
+function updateView(db) {
+  const u = db.update;
+  const superadmin = Boolean(db.me.user.is_superadmin);
+  const running = u.run && UPDATE_STATES.includes(u.run.state);
+  const view = { current: { commit: u.current, short: short7(u.current) }, phase: running ? u.run.state : null, helper_installed: null, available: null, check: null, run: null };
+  if (!superadmin) return view;
+  view.helper_installed = u.helper;
+  view.check = u.checkedAt ? { checked_at: u.checkedAt, error: null, via: 'app', relation: u.offer ? 'behind' : 'up_to_date', head: u.offer || u.current } : { checked_at: null, error: null, via: null, relation: null, head: null };
+  if (u.offer && u.checkedAt) {
+    view.available = {
+      commit: u.offer, short: short7(u.offer), relation: 'behind', count: UPDATE_COMMITS.length,
+      summary: `${UPDATE_COMMITS.slice(0, 3).map((c) => c.title).join(' · ')} and ${UPDATE_COMMITS.length - 3} more`,
+      commits: UPDATE_COMMITS.map((c, i) => ({ sha: `${i}${u.offer.slice(1)}`, short: `${i}${u.offer.slice(1, 7)}`, title: c.title, author: c.author, date: iso(i * HOUR) })),
+    };
+  }
+  if (u.run) view.run = clone(u.run);
+  return view;
+}
+
+function moveUpdate(db, state, patch = {}) {
+  const run = db.update.run;
+  if (!run) return;
+  Object.assign(run, { state, state_since: new Date().toISOString(), progress: null, tasks: null, step: null }, patch);
+  run.can_cancel = state === 'building' || state === 'pausing';
+  run.can_proceed = state === 'pausing';
+  if (!UPDATE_STATES.includes(state)) run.finished_at = new Date().toISOString();
+  emit(db, { type: 'update.updated', phase: UPDATE_STATES.includes(state) ? state : null });
+}
+
+/** Walks a started update through its phases, like the server and helper do. */
+function runUpdate(db, id) {
+  const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
+  const steps = 4;
+  for (let i = 1; i <= steps; i += 1) {
+    later(() => {
+      if (!live() || db.update.run.state !== 'building') return;
+      db.update.run.progress = { done: Math.round((340 * i) / steps), total: 340 };
+      db.update.run.step = 'compiling';
+      db.update.run.message = 'Building the new version. Tasks keep working meanwhile.';
+      emit(db, { type: 'update.updated', phase: 'building' });
+    }, (UPDATE_STEP_MS * i) / steps);
+  }
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'pausing', { step: 'pausing', message: 'Pausing tasks at their next step: 2 of 3 paused.', tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() } });
+  }, UPDATE_STEP_MS + 100);
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'restarting', { step: 'installing', message: 'Installing the new version.' });
+  }, UPDATE_STEP_MS * 2);
+  later(() => {
+    if (!live()) return;
+    if (!db.update.fail) db.update.current = db.update.run.target.commit;
+    moveUpdate(db, 'resuming', { step: 'resuming', message: 'Resuming tasks: 1 of 3.', progress: { done: 1, total: 3 } });
+  }, UPDATE_STEP_MS * 3);
+  later(() => {
+    if (!live()) return;
+    if (db.update.fail) {
+      moveUpdate(db, 'rolled_back', { message: 'The update was rolled back; the previous version runs.', error: 'The new server did not become healthy within 120 s (HTTP 500). The previous version and its database were restored.', log_tail: ['yulius update-helper: checking', 'yulius update-helper: rolling_back'] });
+    } else {
+      db.update.offer = null;
+      moveUpdate(db, 'succeeded', { message: `Updated to ${short7(db.update.current)}.` });
+    }
+  }, UPDATE_STEP_MS * 4);
+}
+
+route('GET', '/api/update', ({ db }) => updateView(db));
+route('POST', '/api/admin/update/check', ({ db }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  db.update.checkedAt = new Date().toISOString();
+  return updateView(db);
+});
+route('POST', '/api/admin/update', ({ db, body }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  if (body.confirm !== true) fail(422, 'invalid', 'confirm the update: tasks pause while the server restarts');
+  const u = db.update;
+  if (!u.helper) fail(409, 'conflict', 'the update helper is not installed on this server (see the operations guide)');
+  if (u.run && UPDATE_STATES.includes(u.run.state)) fail(409, 'conflict', 'an update is already running');
+  if (!u.offer || body.commit !== u.offer) fail(409, 'conflict', `${short7(body.commit || '')} is not the update on offer; check for updates again`);
+  const now = new Date().toISOString();
+  db.nextId += 1;
+  u.run = {
+    id: `upd_${db.nextId}`, target: { commit: u.offer, short: short7(u.offer) }, from: { commit: u.current, short: short7(u.current) },
+    summary: updateView(db).available.summary, state: 'building', step: 'fetching', message: 'Fetching the new version from GitHub.',
+    progress: null, tasks: null, error: null, log_tail: [], requested_by: db.me.user.login, started_at: now, state_since: now, finished_at: null, can_cancel: true, can_proceed: false,
+  };
+  emit(db, { type: 'update.updated', phase: 'building' });
+  runUpdate(db, u.run.id);
+  return json(202, updateView(db));
+});
+route('POST', '/api/admin/update/cancel', ({ db }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  const run = db.update.run;
+  if (!run || !['building', 'pausing'].includes(run.state)) fail(409, 'conflict', 'no update can be cancelled now (it is restarting or done)');
+  moveUpdate(db, 'cancelled', { error: `Cancelled by ${db.me.user.login}; nothing was installed.`, message: 'Cancelled; nothing was installed.' });
+  return updateView(db);
+});
+route('POST', '/api/admin/update/proceed', ({ db }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  if (!db.update.run || db.update.run.state !== 'pausing') fail(409, 'conflict', 'the update is not pausing tasks');
+  return updateView(db);
+});
+
+function jevView(db) {
+  const j = db.jev;
+  const source = j.key ? 'settings' : j.config ? 'config' : null;
+  return { configured: Boolean(source), source, set_at: j.key ? j.setAt : null, set_by: j.key ? j.setBy : null, config_present: j.config, config_error: null };
+}
+const superadminOnly = (db) => { if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only'); };
+route('GET', '/api/admin/jev', ({ db }) => { superadminOnly(db); return jevView(db); });
+route('PUT', '/api/admin/jev', ({ db, body }) => {
+  superadminOnly(db);
+  const key = String(body.key || '').trim();
+  if (key.length < 8 || /\s/.test(key)) fail(422, 'invalid', 'the Jev key must be 8-4096 printable characters without spaces');
+  Object.assign(db.jev, { key, setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return jevView(db);
+});
+route('DELETE', '/api/admin/jev', ({ db }) => { superadminOnly(db); db.jev.key = null; return jevView(db); });
+route('POST', '/api/admin/jev/adopt', ({ db }) => {
+  superadminOnly(db);
+  if (!db.jev.config) fail(409, 'conflict', 'YULIUS_JEV_API_KEY_FILE holds no usable key');
+  Object.assign(db.jev, { key: 'from-config', setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return jevView(db);
+});
+route('POST', '/api/admin/jev/test', ({ db }) => {
+  superadminOnly(db);
+  const key = db.jev.key || (db.jev.config ? 'from-config' : null);
+  if (!key) return { ok: false, result: 'none', message: 'No Jev key is set.', latency_ms: null };
+  if (key.includes('bad')) return { ok: false, result: 'refused', message: 'Jev refused this key. Check it and save it again.', latency_ms: 210 };
+  return { ok: true, result: 'ok', message: 'Jev answered: the key works.', latency_ms: 240 };
+});
+
 // GET /api/capacity (`CapacityView`, ROT-013): the pool, burn rate and forecast. The mock's pool
 // burns faster than it refills and tasks waited this week, so it recommends one more subscription.
 route('GET', '/api/capacity', ({ db }) => {
