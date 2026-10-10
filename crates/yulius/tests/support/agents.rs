@@ -30,6 +30,9 @@ pub struct FakeAgentOptions {
     pub interrupts: bool,
     /// Run the status line command with the rate limits in this file (`--rate-limits-file`).
     pub rate_limits_file: Option<PathBuf>,
+    /// Also report these environment variables at start (`--report-env`: set and length, never
+    /// the value).
+    pub report_env: Vec<String>,
 }
 
 /// See the module docs.
@@ -114,6 +117,9 @@ impl HarnessPort for FakeAgentHarness {
                 "--rate-limits-file".into(),
                 file.to_string_lossy().into_owned(),
             ]);
+        }
+        for name in &self.options.report_env {
+            argv.extend(["--report-env".into(), name.clone()]);
         }
         plan.plan.argv = argv;
         Ok(plan)

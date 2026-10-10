@@ -1,6 +1,8 @@
-// Task actions (UI-013, §6.3) and shared dialogs: feedback, delivery, deploy runs, promotion,
-// sandbox create/import and removal. Tasks are subscription-agnostic (F 2026-10-10): the pool
-// picks and changes a task's Claude subscription by itself, so no action chooses one.
+// Task actions (UI-013, §6.3) and shared dialogs: feedback, delivery status, deploy output,
+// sandbox create/import and removal. Delivery is shown, not driven: agents merge, deploy and
+// release as part of their workflow (GIT-002), so no dialog here merges or releases. Tasks are
+// subscription-agnostic (F 2026-10-10): the pool picks and changes a task's Claude subscription by
+// itself, so no action chooses one.
 
 import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, iconButton, placeholder, linkify } from './dom.js';
@@ -21,7 +23,7 @@ export function openTaskMenu(ctx, anchor, task) {
     task.status === 'chained' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
     { label: task.status === 'chained' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
-    { label: 'Deliver…', disabled: !can.deliver, title: can.deliver ? null : why, onSelect: () => openDeliveryDialog(ctx, task) },
+    { label: 'Delivery…', onSelect: () => openDeliveryDialog(ctx, task) },
     { label: 'Feedback…', disabled: !can.feedback, onSelect: () => openFeedbackDialog(ctx, task) },
     { separator: true },
     task.archived
@@ -195,15 +197,13 @@ export function prLine(pr) {
 const CHECK_ICONS = { success: 'check', failure: 'x', pending: 'clock' };
 
 /**
- * The task view's delivery line (UX2-18): the pull request with its checks, opening Deliver…, and
- * the next step as a button when it is to open the pull request (once the task is closed) or to
- * merge. `canAct` hides the buttons from read-only members; `reload` reads the delivery again.
+ * The task view's delivery line (UX2-18): the pull request with its checks, opening the delivery
+ * details. Status only: the agent opens, merges and releases it (GIT-002). `reload` reads the
+ * delivery again after the details close.
  */
-export function deliveryStrip(ctx, task, delivery, { canAct = true, reload = () => {} } = {}) {
+export function deliveryStrip(ctx, task, delivery, { reload = () => {} } = {}) {
   if (!delivery) return [];
   const pr = delivery.pr;
-  const next = Array.isArray(delivery.next_actions) ? delivery.next_actions : [];
-  const done = task.status === 'closed'; // as the Git page: a pull request once the task is finished
   const out = [];
   if (pr) {
     const checks = pr.state === 'open' ? CHECKS[pr.checks] : null;
@@ -212,8 +212,6 @@ export function deliveryStrip(ctx, task, delivery, { canAct = true, reload = () 
     out.push(h('button', { type: 'button', class: ['tl-pr-chip', 'strip-pr', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], title: label, 'aria-label': label, onClick: () => openDeliveryDialog(ctx, task).result.then(reload) },
       icon('branch', { size: 12 }), `#${pr.number}`, glyph ? h('span', { class: `tone-${checks[1]}` }, icon(glyph, { size: 12 })) : null));
   }
-  if (canAct && next.includes('merge')) out.push(h('button', { type: 'button', class: 'btn btn-sm strip-extra', onClick: () => mergeTask(ctx, task, reload) }, 'Merge…'));
-  else if (canAct && done && next.includes('open_pr')) out.push(h('button', { type: 'button', class: 'btn btn-sm strip-extra', onClick: () => openPrDialog(ctx, task, reload) }, 'Open pull request…'));
   return out;
 }
 
@@ -248,20 +246,22 @@ export function notesBanner(notes) {
     h('div', { class: 'banner-text stack-sm' }, list.map((note) => h('span', null, note))));
 }
 
-/** Label for a delivery action wire name (`run_env:<name>`, `confirm_env:<name>`, …). */
+/** Label for a delivery step's wire name (`run_env:<name>`, `confirm_env:<name>`, …). */
 export function actionLabel(action) {
-  if (action === 'open_pr') return 'Open pull request';
+  if (action === 'open_pr') return 'Open the pull request';
   if (action === 'merge') return 'Merge';
   if (action === 'promote') return 'Release to production';
   if (action.startsWith('run_env:')) return `Deploy to ${action.slice('run_env:'.length)}`;
-  if (action.startsWith('confirm_env:')) return `Mark ${action.slice('confirm_env:'.length)} verified`;
+  if (action.startsWith('confirm_env:')) return `Verify ${action.slice('confirm_env:'.length)}`;
   return action;
 }
 
-/** Delivery panel for one task: stage, spec validity, PR, next and blocked actions (DLV, GIT-002). */
+/**
+ * Delivery details of one task (DLV, GIT-002): stage, pull request and checks, spec, what comes
+ * next and what blocks it. Read-only: the agent delivers the task through its workflow.
+ */
 export function openDeliveryDialog(ctx, task) {
-  const sandbox = ctx.store.sandboxById(task.sandbox_id);
-  const modal = openModal({ title: `Deliver #${task.number} ${task.title}`, body: placeholder('Loading delivery…', 'loading'), wide: true, actions: [{ label: 'Close' }] });
+  const modal = openModal({ title: `Delivery · #${task.number} ${task.title}`, body: placeholder('Loading delivery…', 'loading'), wide: true, actions: [{ label: 'Close' }] });
   const load = async () => {
     try {
       const delivery = await ctx.api.get(`/api/tasks/${enc(task.id)}/delivery`);
@@ -269,22 +269,6 @@ export function openDeliveryDialog(ctx, task) {
     } catch (error) {
       setChildren(modal.body, placeholder(error.message, 'error'));
     }
-  };
-  const actionButton = (action, primary) => {
-    const label = actionLabel(action);
-    const cls = ['btn', primary && 'btn-primary'];
-    if (action === 'open_pr') return h('button', { type: 'button', class: cls, onClick: () => openPrDialog(ctx, task, load) }, label);
-    if (action === 'merge') return h('button', { type: 'button', class: cls, onClick: () => mergeTask(ctx, task, load) }, label);
-    if (action === 'promote') return h('button', { type: 'button', class: cls, onClick: async () => { if (sandbox) { await promote(ctx, sandbox); load(); } } }, label);
-    if (action.startsWith('run_env:')) {
-      const env = action.slice('run_env:'.length);
-      return h('button', { type: 'button', class: cls, onClick: async () => { if (sandbox) { await runEnvironment(ctx, sandbox, env); load(); } } }, label);
-    }
-    if (action.startsWith('confirm_env:')) {
-      const env = action.slice('confirm_env:'.length);
-      return h('button', { type: 'button', class: cls, onClick: async () => { if (sandbox) { await confirmEnvironment(ctx, sandbox, env); load(); } } }, label);
-    }
-    return h('button', { type: 'button', class: 'btn', disabled: true, title: 'This version of the UI does not know this action' }, label);
   };
   const renderDelivery = (d) => {
     const stageIndex = STAGES.findIndex(([s]) => s === d.stage);
@@ -305,120 +289,18 @@ export function openDeliveryDialog(ctx, task) {
         d.spec_path ? h('div', { class: 'muted small' }, h('code', null, d.spec_path)) : h('div', { class: 'muted small' }, 'No spec registered for this task yet.'),
         d.spec_valid ? null : h('ul', { class: 'small list-plain' }, (d.spec_problems || []).map((p) => h('li', null, p))),
         d.steps_open ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), `${d.steps_open} step${d.steps_open === 1 ? '' : 's'} still open in the plan.`) : null),
-      h('div', { class: 'row-wrap' },
-        next.map((action, i) => actionButton(action, i === 0)),
-        blocked.map((b) => h('button', { type: 'button', class: 'btn', disabled: true, title: b.reason }, actionLabel(b.action))),
-        next.length || blocked.length ? null : h('span', { class: 'muted' }, 'No delivery action applies at this stage.')),
-      blocked.length ? h('ul', { class: 'small muted list-plain' },
-        blocked.map((b) => h('li', null, h('strong', null, `${actionLabel(b.action)}: `), b.reason))) : null,
-      h('p', { class: 'muted xs' }, 'Merges, deploys and promotions only happen on your explicit action (or an explicit profile policy such as automatic promotion).'),
+      h('div', { class: 'card card-pad stack-sm' },
+        h('div', { class: 'row' }, h('strong', null, 'Next')),
+        next.length || blocked.length
+          ? h('ul', { class: 'small list-plain' },
+            next.map((action) => h('li', { class: 'row-wrap' }, h('span', { class: 'tone-ok' }, icon('check', { size: 12 })), `${actionLabel(action)}: ready`)),
+            blocked.map((b) => h('li', { class: 'row-wrap' }, h('span', { class: 'tone-warn' }, icon('clock', { size: 12 })), h('span', null, h('strong', null, `${actionLabel(b.action)}: `), b.reason))))
+          : h('span', { class: 'muted small' }, 'Nothing is pending at this stage.')),
+      h('p', { class: 'muted xs' }, 'Agents open, merge, deploy and release as part of their workflow, following this sandbox’s delivery profile. This shows where the task is.'),
     );
   };
   load();
   return modal;
-}
-
-/** Merge a task's pull request into the integration branch after confirmation. */
-export async function mergeTask(ctx, task, onDone = () => {}) {
-  // Say where the change ends up: with automatic release, merging puts it live (UX2-04).
-  const profile = (ctx.store.sandboxById(task.sandbox_id) || {}).profile || {};
-  const int = profile.integration_branch || 'the integration branch';
-  const prod = profile.production_branch || 'production';
-  const live = Boolean(profile.auto_promote);
-  const ok = await confirmDialog({
-    title: live ? `Merge and release #${task.number} ${task.title}?` : `Merge #${task.number} ${task.title}?`,
-    message: live
-      ? `The pull request merges into ${int}, and ${prod} moves forward right away: this change goes live in production. To undo it, revert on GitHub.`
-      : `The pull request merges into ${int}. Nothing goes live until someone releases ${int} to ${prod}.`,
-    confirmLabel: live ? 'Merge and release' : 'Merge',
-  });
-  if (!ok) return;
-  try {
-    const delivery = await ctx.api.post(`/api/tasks/${enc(task.id)}/delivery/merge`);
-    const notes = delivery && Array.isArray(delivery.notes) && delivery.notes.length ? delivery.notes.join(' ') : null;
-    const released = delivery && (delivery.stage === 'promoted' || delivery.stage === 'production_done');
-    toast(released ? `Merged and released to ${prod}.` : `Merged into ${int}.`, { kind: 'ok', detail: notes });
-  } catch (error) {
-    errorToast(error, 'Merge refused');
-  }
-  onDone();
-}
-
-/** Open a pull request for a task (title and body optional). */
-export function openPrDialog(ctx, task, onDone = () => {}) {
-  const title = h('input', { class: 'input', placeholder: task.title, maxlength: 200 });
-  const body = h('textarea', { class: 'textarea', rows: 6, placeholder: 'Optional description (defaults to the spec’s goal, plan and steps, plus a link to the task)' });
-  openModal({
-    title: 'Open pull request',
-    body: h('div', { class: 'stack' }, field('Title', title), field('Body', body), h('p', { class: 'muted xs' }, 'Refused without a valid spec or with uncommitted changes in the task worktree.')),
-    actions: [
-      { label: 'Cancel', value: false },
-      { label: 'Open PR', kind: 'primary', run: async () => {
-        const payload = {};
-        if (title.value.trim()) payload.title = title.value.trim();
-        if (body.value.trim()) payload.body = body.value.trim();
-        const delivery = await ctx.api.post(`/api/tasks/${enc(task.id)}/delivery/pr`, payload);
-        toast(delivery && delivery.pr ? `Opened PR #${delivery.pr.number}` : 'Pull request opened', { kind: 'ok' });
-        onDone();
-      } },
-    ],
-  });
-}
-
-function environmentOf(sandbox, envName) {
-  return ((sandbox.profile && sandbox.profile.environments) || []).find((e) => e.name === envName) || null;
-}
-
-/**
- * Run an environment step after explicit confirmation (DLV-003). With a command, the run
- * starts in the background and a viewer polls it; without one, the same request records the
- * person's confirmation as a `manual` run.
- */
-export async function runEnvironment(ctx, sandbox, envName) {
-  const env = environmentOf(sandbox, envName);
-  const command = env && env.command;
-  const ok = await confirmDialog({
-    // One verb per action, from the button to the dialog to the toast: Deploy, Mark verified.
-    title: command ? `Deploy to ${envName}?` : `Mark ${envName} verified?`,
-    message: h('div', { class: 'stack-sm' },
-      command
-        ? h('p', null, `This runs ${envName}’s deploy command for ${sandbox.name} on the server now. It runs on the server itself, outside the sandbox’s isolation.`)
-        : h('p', null, `${envName} has no deploy command. This records that you checked it works.`),
-      command ? h('pre', { class: 'code-view' }, command) : null,
-      env && env.verify === 'manual' && command ? h('p', { class: 'muted small' }, `After it finishes, check ${envName} and mark it verified.`) : null),
-    checkbox: command ? `I want to deploy to ${envName} now.` : `I checked that ${envName} works.`,
-    confirmLabel: command ? `Deploy to ${envName}` : 'Mark verified',
-    danger: Boolean(command),
-  });
-  if (!ok) return null;
-  try {
-    const run = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/delivery/environments/${enc(envName)}/runs`, { confirm: true });
-    if (run && run.state === 'running') openRunViewer(ctx, sandbox, run.run_id, envName);
-    else toast(`${envName}: ${run ? run.state : 'recorded'}`, { kind: run && run.state === 'succeeded' ? 'ok' : 'warn' });
-    return run;
-  } catch (error) {
-    errorToast(error, `${envName} refused`);
-    return null;
-  }
-}
-
-/** Confirm a manual verification (`confirm_env:<name>`): POST …/environments/{env}/confirm. */
-export async function confirmEnvironment(ctx, sandbox, envName) {
-  const ok = await confirmDialog({
-    title: `Mark ${envName} verified?`,
-    message: `This records that you checked ${envName} works for ${sandbox.name}. The tasks waiting there move on.`,
-    checkbox: `I checked that ${envName} works.`,
-    confirmLabel: 'Mark verified',
-  });
-  if (!ok) return null;
-  try {
-    const run = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/delivery/environments/${enc(envName)}/confirm`, { confirm: true });
-    toast(`${envName} marked verified`, { kind: 'ok' });
-    return run;
-  } catch (error) {
-    errorToast(error, `Confirming ${envName} refused`);
-    return null;
-  }
 }
 
 const RUN_POLL_MS = 2000;
@@ -466,47 +348,6 @@ export function openRunViewer(ctx, sandbox, runId, envName) {
   };
   poll();
   return modal;
-}
-
-/**
- * Release integration → production after confirmation (promotion). `waiting` lists the tasks
- * that go live ({number, title, pr}), so the dialog says what changes, not only which branch.
- */
-export async function promote(ctx, sandbox, { waiting } = {}) {
-  const profile = sandbox.profile || {};
-  const production = profile.production_branch || 'production';
-  const integration = profile.integration_branch || 'integration';
-  const list = Array.isArray(waiting) ? waiting : null;
-  const compare = sandbox.repo && sandbox.repo.url ? `${sandbox.repo.url}/compare/${encodeURIComponent(production)}...${encodeURIComponent(integration)}` : null;
-  const ok = await confirmDialog({
-    title: `Release to production (${production})?`,
-    message: h('div', { class: 'stack-sm' },
-      h('p', null, profile.promote === 'merge_commit'
-        ? `This goes through a release pull request from ${integration} into ${production}: the first click opens it, the next merges it once its checks allow.`
-        : `${production} moves forward to match ${integration} exactly.`),
-      list ? h('div', { class: 'release-list' },
-        h('div', { class: 'release-head' }, list.length ? `What goes live · ${list.length} task${list.length === 1 ? '' : 's'}` : 'What goes live'),
-        list.length
-          ? h('ul', null, list.map((t) => h('li', null, h('span', { class: 'muted' }, `#${t.number}`), ` ${t.title}`, t.pr ? h('span', { class: 'muted' }, ` · PR #${t.pr.number}`) : null)))
-          : h('p', { class: 'muted small' }, 'No task is waiting; commits made outside tasks may still go live.'),
-        compare ? h('a', { href: compare, target: '_blank', rel: 'noopener noreferrer', class: 'small' }, `Compare ${production}…${integration} on GitHub`) : null) : null,
-      h('p', { class: 'muted small' }, `If something breaks, undo it with a revert on GitHub; ${BRAND.name} records who released what and when.`)),
-    confirmLabel: list && list.length ? `Release ${list.length} task${list.length === 1 ? '' : 's'}` : 'Release',
-  });
-  if (!ok) return null;
-  try {
-    const result = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/delivery/promote`);
-    if (result && result.result === 'pr_opened') {
-      const url = result.sha && /^https?:\/\//.test(result.sha) ? result.sha : null;
-      toast('Release pull request opened. Release again to merge it once its checks allow.', { kind: 'ok', timeout: 10000, action: url ? { label: 'Open PR', run: () => window.open(url, '_blank', 'noopener,noreferrer') } : undefined });
-    } else {
-      toast(`Released to ${production}${result && result.sha ? ` · ${String(result.sha).slice(0, 8)}` : ''}`, { kind: 'ok' });
-    }
-    return result;
-  } catch (error) {
-    errorToast(error, 'Release refused');
-    return null;
-  }
 }
 
 // ---------------------------------------------------------------- sandboxes

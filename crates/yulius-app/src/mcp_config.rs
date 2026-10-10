@@ -8,6 +8,13 @@
 //! case-insensitively with `-` and `_` treated alike (they become environment variable names);
 //! a sandbox server overrides an instance server of the same name, also when disabled, which
 //! turns the instance server off for that sandbox.
+//!
+//! The attachments are built for every run, whichever subscription it runs on (MCP-004): the
+//! harness port writes them into the run's own MCP configuration, never into a per-account
+//! Claude Code home. A secret value may instead be a reference, `${secret:NAME}` (for a header,
+//! also `Bearer ${secret:NAME}`): it is resolved when a run starts through
+//! [`App::resolve_secret_ref`], the hook of the agent-secrets vault, and left out of the run
+//! while nothing answers to it.
 
 pub mod probe;
 
@@ -43,6 +50,21 @@ pub const MAX_SECRETS: usize = 64;
 pub const MAX_SECRET_NAME: usize = 128;
 /// Largest secret value.
 pub const MAX_SECRET_BYTES: usize = 16 * 1024;
+/// Longest name in a secret reference (`${secret:NAME}`).
+pub const MAX_SECRET_REF_NAME: usize = 128;
+
+/// The `NAME` of a value that is exactly a secret reference, `${secret:NAME}` (NAME: 1–128
+/// ASCII letters, digits, `_`, `-` or `.`).
+#[must_use]
+pub fn secret_ref(value: &str) -> Option<&str> {
+    let name = value.strip_prefix("${secret:")?.strip_suffix('}')?;
+    let valid = !name.is_empty()
+        && name.len() <= MAX_SECRET_REF_NAME
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
+    valid.then_some(name)
+}
 
 /// Transport of a configured server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -267,6 +289,40 @@ fn bearer_of(headers: &BTreeMap<String, String>) -> (Option<String>, Vec<String>
 }
 
 impl App {
+    /// The value of the secret `name` for runs in `sandbox`, for `${secret:NAME}` references in
+    /// MCP configuration (MCP-003). This is the hook of the agent-secrets vault: until it
+    /// answers, no reference resolves and the referencing variable or header is left out of the
+    /// run (with a warning), never passed on as the literal reference.
+    ///
+    /// # Errors
+    /// Failures of the secret store (none yet).
+    pub async fn resolve_secret_ref(
+        &self,
+        sandbox: &SandboxRecord,
+        name: &str,
+    ) -> AppResult<Option<String>> {
+        let _ = (sandbox, name);
+        Ok(None)
+    }
+
+    /// A stored secret value for a run: itself, or what its reference resolves to.
+    async fn secret_value(
+        &self,
+        sandbox: &SandboxRecord,
+        server: &str,
+        key: &str,
+        value: String,
+    ) -> AppResult<Option<String>> {
+        let Some(name) = secret_ref(&value) else {
+            return Ok(Some(value));
+        };
+        let resolved = self.resolve_secret_ref(sandbox, name).await?;
+        if resolved.is_none() {
+            tracing::warn!(server = %server, key = %key, secret = %name, "an MCP secret reference does not resolve; the run gets the server without it");
+        }
+        Ok(resolved)
+    }
+
     fn seal_secrets(&self, map: &BTreeMap<String, String>) -> AppResult<Option<Sealed>> {
         if map.is_empty() {
             return Ok(None);
@@ -577,11 +633,13 @@ impl App {
 
     /// Configured MCP servers for runs in `sandbox`: enabled instance and sandbox servers with
     /// opened secrets, one per name (a sandbox server overrides an instance server of the same
-    /// name). HTTP servers forward an `Authorization: Bearer` header as the bearer token; other
-    /// headers cannot be passed to the harnesses yet and are skipped with a warning.
+    /// name). Every run gets them, whichever subscription it runs on (MCP-004). HTTP servers
+    /// forward an `Authorization: Bearer` header as the bearer token; other headers cannot be
+    /// passed to the harnesses yet and are skipped with a warning. `${secret:NAME}` values are
+    /// resolved through [`App::resolve_secret_ref`]; one that does not resolve is left out.
     ///
     /// # Errors
-    /// Store or crypto failures.
+    /// Store, crypto or secret-resolution failures.
     pub async fn mcp_attachments(&self, sandbox: &SandboxRecord) -> AppResult<Vec<McpAttachment>> {
         let servers = self.deps.store.mcp_servers(&sandbox.id).await?;
         let mut effective: BTreeMap<String, &McpServerRecord> = BTreeMap::new();
@@ -597,17 +655,32 @@ impl App {
                 continue;
             }
             match server.transport {
-                McpTransport::Stdio => out.push(McpAttachment::Stdio {
-                    name: server.name.clone(),
-                    command: server.command.clone().unwrap_or_default(),
-                    args: server.args.clone(),
-                    env: self
-                        .open_secrets(server.env.as_ref())?
-                        .into_iter()
-                        .collect(),
-                }),
+                McpTransport::Stdio => {
+                    let mut env = Vec::new();
+                    for (key, value) in self.open_secrets(server.env.as_ref())? {
+                        if let Some(value) = self
+                            .secret_value(sandbox, &server.name, &key, value)
+                            .await?
+                        {
+                            env.push((key, value));
+                        }
+                    }
+                    out.push(McpAttachment::Stdio {
+                        name: server.name.clone(),
+                        command: server.command.clone().unwrap_or_default(),
+                        args: server.args.clone(),
+                        env,
+                    });
+                }
                 McpTransport::Http => {
                     let (bearer, ignored) = bearer_of(&self.open_secrets(server.headers.as_ref())?);
+                    let bearer = match bearer {
+                        Some(token) => {
+                            self.secret_value(sandbox, &server.name, "Authorization", token)
+                                .await?
+                        }
+                        None => None,
+                    };
                     if !ignored.is_empty() {
                         tracing::warn!(server = %server.name, headers = ?ignored, "MCP headers other than Authorization: Bearer are not passed to agent runs");
                     }
@@ -676,6 +749,32 @@ mod tests {
         let mut ok = input("a", "http");
         ok.headers = Some(BTreeMap::from([("X-Api-Key".to_owned(), "k".to_owned())]));
         assert!(validate(&ok).is_ok());
+    }
+
+    #[test]
+    fn secret_references() {
+        assert_eq!(secret_ref("${secret:apify}"), Some("apify"));
+        assert_eq!(
+            secret_ref("${secret:team.APIFY_TOKEN-2}"),
+            Some("team.APIFY_TOKEN-2")
+        );
+        for literal in [
+            "apify",
+            "${secret:}",
+            "${secret:a b}",
+            "${APIFY}",
+            "x${secret:a}",
+            "${secret:a}x",
+        ] {
+            assert_eq!(secret_ref(literal), None, "{literal}");
+        }
+        let long = format!("${{secret:{}}}", "a".repeat(MAX_SECRET_REF_NAME + 1));
+        assert_eq!(secret_ref(&long), None);
+        let headers = BTreeMap::from([(
+            "Authorization".to_owned(),
+            "Bearer ${secret:quartio}".to_owned(),
+        )]);
+        assert_eq!(bearer_of(&headers).0.as_deref(), Some("${secret:quartio}"));
     }
 
     #[test]

@@ -31,6 +31,8 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<WorkflowRecord> {
         require_spec: gates["require_spec"].as_bool().unwrap_or(false),
         require_tests: gates["require_tests"].as_bool().unwrap_or(false),
         created_at: Timestamp(row.get("created_at")?),
+        builtin: false,
+        when_to_use: String::new(),
     })
 }
 
@@ -92,23 +94,36 @@ impl WorkflowStore for SqliteStore {
         .await
     }
 
-    async fn seed_instance_workflows(&self, workflows: &[WorkflowRecord]) -> AppResult<bool> {
-        let workflows = workflows.to_vec();
+    async fn retire_workflow(
+        &self,
+        id: &str,
+        copy: Option<&WorkflowRecord>,
+        keep_references: bool,
+    ) -> AppResult<bool> {
+        let id = id.to_owned();
+        let copy = copy.cloned();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            let existing: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM workflows WHERE sandbox_id IS NULL",
-                    [],
-                    |r| r.get(0),
-                )
+            let exists: i64 = tx
+                .query_row("SELECT COUNT(*) FROM workflows WHERE id = ?1", [&id], |r| {
+                    r.get(0)
+                })
                 .map_err(db)?;
-            if existing > 0 || workflows.is_empty() {
+            if exists == 0 {
                 return Ok(false);
             }
-            for w in &workflows {
-                insert(&tx, w)?;
+            if let Some(copy) = &copy {
+                insert(&tx, copy)?;
             }
+            if !keep_references {
+                tx.execute(
+                    "UPDATE automations SET workflow_id = NULL WHERE workflow_id = ?1",
+                    [&id],
+                )
+                .map_err(db)?;
+            }
+            tx.execute("DELETE FROM workflows WHERE id = ?1", [&id])
+                .map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(true)
         })
