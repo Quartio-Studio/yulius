@@ -306,12 +306,19 @@ export class TerminalSocket {
     return this.socket.send(scroll ? { type: 'input', data, seq: this.inputSeq, scroll: true } : { type: 'input', data, seq: this.inputSeq });
   }
 
+  /** The size this viewer's window fits (the terminal takes it while this viewer controls it). */
   resize(cols, rows) {
     return this.socket.send({ type: 'resize', cols, rows });
   }
 
+  /** The viewer clicked into the terminal: it controls the size now. */
   takeControl() {
     return this.socket.send({ type: 'take_control' });
+  }
+
+  /** The viewer is active (visible, focused, used recently) or idle (F 2026-10-10). */
+  presence(active) {
+    return this.socket.send({ type: active ? 'active' : 'idle' });
   }
 
   get status() {

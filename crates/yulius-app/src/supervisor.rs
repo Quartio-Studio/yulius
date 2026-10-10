@@ -953,6 +953,14 @@ impl App {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
         });
+        // A viewer who took the size while the run was starting (the PTY spawned at the size before
+        // it): the terminal takes that viewer's size now (TSK-006, F 2026-10-10).
+        if let Some((cols, rows)) = runtime.hub.controller_size()
+            && (cols, rows) != (welcome.cols, welcome.rows)
+            && let Err(err) = self.resize_run(task_id, cols, rows).await
+        {
+            tracing::debug!(task = %task_id, error = %err, "viewer size after attach failed");
+        }
         let app = self.clone();
         let tid = task_id.clone();
         let aid = attempt.id.clone();

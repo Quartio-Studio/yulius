@@ -361,6 +361,9 @@ async fn scenario(f: &Fixture) -> TestResult {
     assert_eq!(created.body["name"], "Terminal 1");
     assert_eq!(created.body["task_id"], Value::Null);
     assert!(created.body["created_at"].is_string());
+    // The folder it started in: paths printed in it link to the editor (F 2026-10-10).
+    let folder = created.body["folder"].as_str().ok_or("folder")?.to_owned();
+    assert!(folder.ends_with("sandboxes/s1/repo"), "{folder}");
     let repo_shell = created.body["id"].as_str().ok_or("id")?.to_owned();
     let mut socket = open_terminal(served.addr, &repo_shell, &f.writer).await?;
     let mut screen = String::new();
@@ -383,6 +386,11 @@ async fn scenario(f: &Fixture) -> TestResult {
         &format!("home={}", f.data.join("users/u-alice/home").display()),
     )
     .await?;
+    // bash reports the working directory at each prompt (OSC 7, from PROMPT_COMMAND), so paths
+    // printed after a `cd` link to the right files; `sh` here runs the command by hand.
+    input(&mut socket, "eval \"$PROMPT_COMMAND\"\r").await?;
+    read_until(&mut socket, &mut screen, "sandboxes/s1/repo\u{1b}\\").await?;
+    assert!(screen.contains("\u{1b}]7;file://"), "{screen:?}");
 
     // Shells are private: read users and other writers cannot see them (UI-016).
     let refused = ws_connect(
