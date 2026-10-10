@@ -4,12 +4,14 @@
 use std::sync::Arc;
 
 use yulius_contracts::api::tasks::{ContinueTask, CreateTask, TaskSummary};
+use yulius_domain::auto_choice::AUTO;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::task::TaskStatus;
 
 use crate::auth::AuthContext;
+use crate::auto_choice::WorkflowPick;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{StepRecord, TaskMode, TaskOrigin, TaskRecord};
@@ -220,15 +222,21 @@ impl App {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require(&ctx.user, &sid, Action::Work).await?;
         let harness = parse_harness(&req.harness)?;
-        // New tasks run in goal mode unless the user picks prompt mode (TSK-010).
+        // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
+        // choose (TSK-015).
         let mode = match req.mode.as_deref().map(str::trim) {
-            None | Some("") => TaskMode::Goal,
-            Some(text) => TaskMode::parse(text)
-                .ok_or_else(|| AppError::Invalid("mode must be goal or prompt".into()))?,
+            None | Some("") => Some(TaskMode::Goal),
+            Some(AUTO) => None,
+            Some(text) => Some(
+                TaskMode::parse(text)
+                    .ok_or_else(|| AppError::Invalid("mode must be goal, prompt or auto".into()))?,
+            ),
         };
-        let steps = self
-            .workflow_steps(&sid, req.workflow_id.as_deref())
-            .await?;
+        let workflow = match req.workflow_id.as_deref().map(str::trim) {
+            None | Some("") => WorkflowPick::None,
+            Some(AUTO) => WorkflowPick::Auto,
+            Some(id) => WorkflowPick::Given(Box::new(self.visible_workflow(&sid, id).await?)),
+        };
         let after = match req.after_task_id.as_deref().map(str::trim) {
             None | Some("") => None,
             Some(id) => {
@@ -238,6 +246,14 @@ impl App {
                 Some(self.chain_predecessor(&sid, &id).await?)
             }
         };
+        // Jev is asked only about a prompt the task accepts.
+        let prompt = req.prompt.trim();
+        if prompt.is_empty() || prompt.len() > MAX_PROMPT_BYTES {
+            return Err(AppError::Invalid(
+                "the prompt must be 1 byte to 64 KiB".into(),
+            ));
+        }
+        let choice = self.auto_choose(&sid, prompt, mode, workflow).await?;
         let task = self
             .create_task_with(
                 NewTask {
@@ -246,18 +262,30 @@ impl App {
                     prompt: req.prompt.clone(),
                     harness,
                     title: req.title.clone(),
-                    workflow_id: req.workflow_id.clone(),
-                    steps,
+                    workflow_id: choice.workflow.as_ref().map(|w| w.id.clone()),
+                    steps: choice
+                        .workflow
+                        .as_ref()
+                        .map(|w| w.steps.clone())
+                        .unwrap_or_default(),
                     model: req.model.clone().filter(|m| !m.trim().is_empty()),
                     effort: req.effort.clone().filter(|e| !e.trim().is_empty()),
                     origin: TaskOrigin::Ui,
                     automation_run: None,
                     start: true,
-                    mode,
+                    mode: choice.mode,
                 },
                 after.as_ref(),
             )
             .await?;
+        if choice.is_auto() {
+            // The task exists and runs: a failed record only loses the "Auto →" label.
+            let actor = self.login_of(&ctx.user.id).await;
+            if let Err(err) = self.record_auto_choice(&task.id, &actor, &choice).await {
+                tracing::warn!(error = %err, task = %task.id, "auto choice not recorded");
+            }
+            self.publish_task(&task.id).await;
+        }
         self.task_summary(&task).await
     }
 

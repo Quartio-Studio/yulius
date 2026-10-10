@@ -19,14 +19,25 @@ test('a request mixing UI and backend work offers a split; a chain waits for its
   await app.open(mock('/s/studio'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(MIXED);
-  await prompt.press('Enter');
+  await prompt.press('ControlOrMeta+Enter');
 
+  // While Claude prepares the proposal the card shimmers below the box; one task already works.
   const card = screen.getByRole('region', 'Split proposal');
-  await expect(card).toHaveText(/This looks like 2 separate tasks\./);
+  await expect(card).toHaveText(/Splitting your request…/);
+  await expect(card.getByRole('status')).toHaveText('Preparing a split proposal…');
+  await expect(card.getByRole('button', 'Keep as one task')).toBeVisible();
+
+  await expect(card).toHaveText(/Split into 2 tasks\?/);
   await expect(card.getByRole('textbox', 'Title of task 1')).toHaveValue('UX: interface fixes');
+  // Compact rows: a one-line preview, the prompt collapsed; one primary action.
+  await expect(browser.locator('.split-card .split-prompt-text').first()).toBeHidden();
+  await browser.locator('.split-card .split-more-closed').first().click();
+  await expect(browser.locator('.split-card .split-prompt-text').first()).toHaveText(/attention bar opaque/);
+  expect(await browser.evaluate(() => (document.querySelector('.split-run input[value="parallel"]') as HTMLInputElement).checked)).toBe(true);
   expect(await axeViolations(browser)).toEqual([]);
 
-  await card.getByRole('button', 'Create as a chain').click();
+  await card.getByRole('radio', 'As a chain').click();
+  await card.getByRole('button', 'Create 2 tasks').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#\d+ UX: interface fixes$/);
 
@@ -43,7 +54,7 @@ test('"Keep as one task" creates the task as written', async ({ app, browser, sc
   await app.open(mock('/s/studio'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(MIXED);
-  await prompt.press('Enter');
+  await prompt.press('ControlOrMeta+Enter');
   const card = screen.getByRole('region', 'Split proposal');
   await card.getByRole('button', 'Keep as one task').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
@@ -58,7 +69,7 @@ test('a short request starts at once and "Run after" chains it', async ({ app, b
   await screen.getByRole('menuitemradio', /^After #12 Checkout API/).click();
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('Write the checkout UI tests');
-  await prompt.press('Enter');
+  await screen.getByRole('button', 'Start task').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
   await expect(browser.locator('.strip-status')).toHaveText(/Queued after #12/);
 });
