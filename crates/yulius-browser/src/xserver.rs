@@ -2,10 +2,18 @@
 //! the screen size through RandR, and the browser's windows kept at the viewport.
 //!
 //! One OS thread per display owns the connection (x11rb's pure-Rust, blocking client). Callers
-//! hand it [`DisplayInput`]s through a bounded queue and never wait for the X server; the thread
-//! applies them in order, then the X events it watches, and ends when the queue's sender is
-//! dropped or the server goes away. It tracks the keys and buttons it pressed so a viewer that
-//! leaves never leaves one held ([`DisplayInput::ReleaseAll`]).
+//! hand it [`DisplayInput`]s through an [`InputLane`] and never wait for the X server; the thread
+//! applies them in order in batches (XTest requests need no reply; one flush per batch), then the
+//! X events it watches, and ends when the lane's sender is dropped or the server goes away. It
+//! tracks the keys and buttons it pressed so a viewer that leaves never leaves one held
+//! ([`DisplayInput::ReleaseAll`]).
+//!
+//! Pointer moves do not queue (F 2026-10-10: on production a stream of moves filled the bounded
+//! queue and the viewer was told "input arrives faster than the display takes it"): only the
+//! newest position matters, so moves overwrite one slot and the thread applies whatever is in it.
+//! Discrete input (buttons, keys, text) is never dropped and stays in order with the moves: it
+//! first seals the slot (the position before it is queued ahead of it), and a move after it starts
+//! a new slot that cannot overtake it.
 //!
 //! Typed text is real key presses too: the characters of a US layout by their own keys, every
 //! other one (`ą`, `€`, emoji) through a Unicode keysym the thread maps onto one of the keymap's
@@ -36,10 +44,124 @@ use crate::keys::{SHIFT_KEYCODES, us_char};
 
 /// What the X thread is asked to do.
 #[derive(Debug)]
-enum XCommand {
+pub(crate) enum XCommand {
     Input(DisplayInput),
+    /// Apply the move slot if it still belongs to this generation (a wake-up for moves).
+    Motion(u64),
     /// Answer once the server has processed every earlier request (a round trip).
     Sync(tokio::sync::oneshot::Sender<()>),
+}
+
+/// The newest pointer position not applied yet.
+#[derive(Debug, Default)]
+struct MotionSlot {
+    position: Option<(i16, i16)>,
+    /// Bumped by every discrete command: a wake-up of an older generation finds nothing.
+    generation: u64,
+    /// A wake-up for this generation is queued.
+    woken: bool,
+}
+
+/// The way into the X thread: a bounded queue for discrete commands and a coalescing slot for
+/// pointer moves (see the module documentation). Cloning shares it; the thread holds only the
+/// slot ([`MotionTaker`]), so dropping every lane ends it.
+#[derive(Debug, Clone)]
+pub(crate) struct InputLane {
+    tx: SyncSender<XCommand>,
+    motion: Arc<std::sync::Mutex<MotionSlot>>,
+}
+
+/// The thread's side of the move slot.
+#[derive(Debug)]
+pub(crate) struct MotionTaker {
+    motion: Arc<std::sync::Mutex<MotionSlot>>,
+}
+
+fn lock_slot(slot: &std::sync::Mutex<MotionSlot>) -> std::sync::MutexGuard<'_, MotionSlot> {
+    slot.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl InputLane {
+    /// A lane over a queue of `capacity` commands; the receiver and the slot's taker go to the
+    /// thread.
+    pub(crate) fn new(capacity: usize) -> (Self, Receiver<XCommand>, MotionTaker) {
+        let (tx, rx) = std::sync::mpsc::sync_channel(capacity);
+        let motion = Arc::new(std::sync::Mutex::new(MotionSlot::default()));
+        let taker = MotionTaker {
+            motion: Arc::clone(&motion),
+        };
+        (Self { tx, motion }, rx, taker)
+    }
+
+    /// Moves the pointer: overwrites the pending position and wakes the thread. Never refused
+    /// for load (a full queue only delays the wake-up; the thread also looks at the slot after
+    /// every batch).
+    ///
+    /// # Errors
+    /// [`XSendError::Gone`] when the thread ended.
+    pub(crate) fn motion(&self, x: i16, y: i16) -> Result<(), XSendError> {
+        let mut slot = lock_slot(&self.motion);
+        slot.position = Some((x, y));
+        if !slot.woken {
+            match self.tx.try_send(XCommand::Motion(slot.generation)) {
+                Ok(()) => slot.woken = true,
+                Err(TrySendError::Full(_)) => {}
+                Err(TrySendError::Disconnected(_)) => return Err(XSendError::Gone),
+            }
+        }
+        Ok(())
+    }
+
+    /// Queues a discrete command after the pending move, in order.
+    ///
+    /// # Errors
+    /// [`XSendError::Busy`] when the queue is full (the X server stopped taking input),
+    /// [`XSendError::Gone`] when the thread ended.
+    pub(crate) fn command(&self, command: XCommand) -> Result<(), XSendError> {
+        let mut slot = lock_slot(&self.motion);
+        if let Some((x, y)) = slot.position {
+            // The position before the command goes first (refused together when full: nothing
+            // is reordered).
+            self.tx
+                .try_send(XCommand::Input(DisplayInput::Motion { x, y }))
+                .map_err(send_error)?;
+            slot.position = None;
+        }
+        // Wake-ups queued before this command must not apply a later move ahead of it.
+        slot.generation += 1;
+        slot.woken = false;
+        self.tx.try_send(command).map_err(send_error)
+    }
+}
+
+impl MotionTaker {
+    /// The thread's side: the pending position if the wake-up of `generation` still owns it.
+    pub(crate) fn take_motion(&self, generation: u64) -> Option<(i16, i16)> {
+        let mut slot = lock_slot(&self.motion);
+        if slot.generation != generation {
+            return None;
+        }
+        slot.woken = false;
+        slot.position.take()
+    }
+
+    /// The thread's side after a batch (every earlier command applied): a position left without
+    /// a wake-up (the queue was full).
+    pub(crate) fn take_stranded(&self) -> Option<(i16, i16)> {
+        let mut slot = lock_slot(&self.motion);
+        if slot.woken {
+            return None;
+        }
+        slot.position.take()
+    }
+}
+
+fn send_error(error: TrySendError<XCommand>) -> XSendError {
+    match error {
+        TrySendError::Full(_) => XSendError::Busy,
+        TrySendError::Disconnected(_) => XSendError::Gone,
+    }
 }
 
 /// Spare keycodes used for typed characters at most.
@@ -71,7 +193,8 @@ use x11rb::wrapper::ConnectionExt as _;
 
 /// Directory of the X servers' filesystem sockets.
 pub(crate) const X11_SOCKET_DIR: &str = "/tmp/.X11-unix";
-/// Commands queued for the thread; input beyond it is refused, never buffered without bound.
+/// Discrete commands queued for the thread (moves are coalesced and take no room); input beyond
+/// it is refused, never buffered without bound.
 pub(crate) const COMMAND_QUEUE: usize = 512;
 /// How often the thread looks at X events when no command arrives.
 const EVENT_POLL: Duration = Duration::from_millis(15);
@@ -104,14 +227,14 @@ pub(crate) fn connect(number: u32, cookie: &[u8]) -> Result<RustConnection, Stri
 /// The X thread's handle. Dropping it ends the thread (after releasing held input).
 #[derive(Debug)]
 pub(crate) struct XController {
-    tx: SyncSender<XCommand>,
+    lane: InputLane,
     alive: Arc<AtomicBool>,
 }
 
 /// Why a command was not queued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum XSendError {
-    /// The queue is full (input arrives faster than the display takes it).
+    /// The queue of discrete input is full (the X server stopped taking input).
     Busy,
     /// The thread ended (the X server is gone).
     Gone,
@@ -143,7 +266,7 @@ impl XController {
         .map_err(|error| error.to_string())?
         .check()
         .map_err(|error| error.to_string())?;
-        let (tx, rx) = std::sync::mpsc::sync_channel(COMMAND_QUEUE);
+        let (lane, rx, motion) = InputLane::new(COMMAND_QUEUE);
         let alive = Arc::new(AtomicBool::new(true));
         let thread_alive = Arc::clone(&alive);
         let screen = conn.setup().roots.first().map_or(size, |screen| {
@@ -163,6 +286,8 @@ impl XController {
             buttons: BTreeSet::new(),
             refits: HashMap::new(),
             mode: None,
+            focused: None,
+            motion,
         };
         state.resize(size.0, size.1);
         std::thread::Builder::new()
@@ -172,15 +297,23 @@ impl XController {
                 thread_alive.store(false, Ordering::Relaxed);
             })
             .map_err(|error| error.to_string())?;
-        Ok(Self { tx, alive })
+        Ok(Self { lane, alive })
     }
 
-    /// Queues a command without waiting.
+    /// Hands input to the thread without waiting: moves overwrite the pending position, other
+    /// input queues in order behind it.
     ///
     /// # Errors
-    /// [`XSendError::Busy`] when the queue is full, [`XSendError::Gone`] when the thread ended.
+    /// [`XSendError::Busy`] when discrete input backs up, [`XSendError::Gone`] when the thread
+    /// ended.
     pub(crate) fn send(&self, command: DisplayInput) -> Result<(), XSendError> {
-        self.queue(XCommand::Input(command))
+        if !self.alive.load(Ordering::Relaxed) {
+            return Err(XSendError::Gone);
+        }
+        match command {
+            DisplayInput::Motion { x, y } => self.lane.motion(x, y),
+            other => self.queue(XCommand::Input(other)),
+        }
     }
 
     /// Resolves once the X server has processed everything queued before (bounded by the
@@ -197,10 +330,7 @@ impl XController {
         if !self.alive.load(Ordering::Relaxed) {
             return Err(XSendError::Gone);
         }
-        self.tx.try_send(command).map_err(|error| match error {
-            TrySendError::Full(_) => XSendError::Busy,
-            TrySendError::Disconnected(_) => XSendError::Gone,
-        })
+        self.lane.command(command)
     }
 
     /// Whether the thread still runs (the X server answers).
@@ -228,6 +358,10 @@ struct XState {
     scratch: Vec<u8>,
     /// Keysym each spare keycode types now.
     typed: HashMap<u8, u32>,
+    /// The window this thread last gave the keyboard focus.
+    focused: Option<Window>,
+    /// The thread's side of the move slot.
+    motion: MotionTaker,
 }
 
 /// The keymap's width and its keycodes without any keysym (at most [`SCRATCH_KEYCODES`]).
@@ -275,6 +409,10 @@ impl XState {
                     return;
                 }
             }
+            // A move whose wake-up did not fit the queue (every earlier command is applied).
+            if let Some((x, y)) = self.motion.take_stranded() {
+                self.apply(DisplayInput::Motion { x, y });
+            }
             loop {
                 match self.conn.poll_for_event() {
                     Ok(Some(event)) => self.on_event(&event),
@@ -303,6 +441,11 @@ impl XState {
     fn command(&mut self, command: XCommand) {
         match command {
             XCommand::Input(input) => self.apply(input),
+            XCommand::Motion(generation) => {
+                if let Some((x, y)) = self.motion.take_motion(generation) {
+                    self.apply(DisplayInput::Motion { x, y });
+                }
+            }
             XCommand::Sync(done) => {
                 if self.conn.sync().is_ok() {
                     let _ = done.send(());
@@ -431,8 +574,16 @@ impl XState {
         }
     }
 
-    /// Click to focus: the top-level window under the pointer gets the keyboard.
-    fn focus_under_pointer(&self) {
+    /// Click to focus: the top-level window under the pointer gets the keyboard. With one
+    /// window (the usual case) that is it, without asking the server; only with popups open
+    /// does it take a round trip to find the window under the pointer.
+    fn focus_under_pointer(&mut self) {
+        if let [only] = self.mapped[..] {
+            if self.focused != Some(only) {
+                self.focus(only);
+            }
+            return;
+        }
         let child = self
             .conn
             .query_pointer(self.root)
@@ -444,7 +595,8 @@ impl XState {
         }
     }
 
-    fn focus(&self, window: Window) {
+    fn focus(&mut self, window: Window) {
+        self.focused = Some(window);
         if let Err(error) =
             self.conn
                 .set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)
@@ -649,5 +801,120 @@ mod tests {
         assert_eq!(keysym_of('€'), 0x0100_20AC);
         assert_eq!(keysym_of('😀'), 0x0101_F600);
         assert_eq!(socket_path(91), Path::new("/tmp/.X11-unix/X91"));
+    }
+
+    /// The X thread's handling of the lane, without an X server: applied input is logged, each
+    /// command takes `cost` (a busy X server).
+    fn consume(
+        lane: &MotionTaker,
+        rx: &Receiver<XCommand>,
+        cost: Duration,
+        log: &std::sync::Mutex<Vec<DisplayInput>>,
+    ) {
+        let apply = |input: DisplayInput| {
+            std::thread::sleep(cost);
+            log.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(input);
+        };
+        loop {
+            match rx.recv_timeout(EVENT_POLL) {
+                Ok(first) => {
+                    let mut next = Some(first);
+                    while let Some(command) = next.take() {
+                        match command {
+                            XCommand::Input(input) => apply(input),
+                            XCommand::Motion(generation) => {
+                                if let Some((x, y)) = lane.take_motion(generation) {
+                                    apply(DisplayInput::Motion { x, y });
+                                }
+                            }
+                            XCommand::Sync(done) => {
+                                let _ = done.send(());
+                            }
+                        }
+                        next = rx.try_recv().ok();
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+            if let Some((x, y)) = lane.take_stranded() {
+                apply(DisplayInput::Motion { x, y });
+            }
+        }
+    }
+
+    #[test]
+    fn a_flood_of_moves_never_backs_up_and_a_click_lands_at_the_final_position() {
+        let (lane, rx, taker) = InputLane::new(8);
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let consumer = {
+            let log = Arc::clone(&log);
+            std::thread::spawn(move || consume(&taker, &rx, Duration::from_micros(200), &log))
+        };
+        let started = Instant::now();
+        // 1,000 moves far faster than the display applies them (each costs 0.2 ms), then a click.
+        for n in 0..1000_i16 {
+            assert_eq!(lane.motion(n, n / 2), Ok(()), "a move is never refused");
+        }
+        let press = DisplayInput::Button {
+            button: 1,
+            press: true,
+        };
+        let release = DisplayInput::Button {
+            button: 1,
+            press: false,
+        };
+        assert_eq!(lane.command(XCommand::Input(press)), Ok(()));
+        assert_eq!(lane.command(XCommand::Input(release)), Ok(()));
+        // A move after the click cannot overtake it.
+        assert_eq!(lane.motion(5, 5), Ok(()));
+        let (done, answered) = tokio::sync::oneshot::channel();
+        assert_eq!(lane.command(XCommand::Sync(done)), Ok(()));
+        assert!(answered.blocking_recv().is_ok());
+        let elapsed = started.elapsed();
+        drop(lane);
+        let _ = consumer.join();
+        let log = log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let press_at = log.iter().position(|i| *i == press).unwrap_or(usize::MAX);
+        assert!(
+            press_at > 0 && press_at < log.len(),
+            "the click arrived: {log:?}"
+        );
+        assert_eq!(
+            log[press_at - 1],
+            DisplayInput::Motion { x: 999, y: 499 },
+            "the click follows the final position"
+        );
+        assert_eq!(log[press_at + 1], release);
+        assert_eq!(log.last(), Some(&DisplayInput::Motion { x: 5, y: 5 }));
+        assert!(
+            log.len() < 100,
+            "moves were coalesced: {} applied",
+            log.len()
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "bounded time: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn discrete_input_is_refused_only_when_the_queue_is_full_and_nothing_is_reordered() {
+        // Nobody drains the queue: the X server stopped taking input.
+        let (lane, _rx, taker) = InputLane::new(2);
+        let key = |press| XCommand::Input(DisplayInput::Key { keycode: 38, press });
+        assert_eq!(lane.command(key(true)), Ok(()));
+        assert_eq!(lane.motion(10, 10), Ok(()), "queues the wake-up");
+        assert_eq!(lane.motion(11, 11), Ok(()), "coalesced into the slot");
+        assert_eq!(lane.command(key(false)), Err(XSendError::Busy));
+        // The pending move stays for its queued wake-up (generation 1, after the first key); it
+        // was not applied out of order.
+        assert_eq!(taker.take_motion(0), None, "a stale wake-up finds nothing");
+        assert_eq!(taker.take_motion(1), Some((11, 11)));
     }
 }

@@ -38,6 +38,7 @@ mod process;
 mod snapshot;
 mod url_policy;
 mod video;
+mod wheel;
 mod xserver;
 
 #[cfg(feature = "fake")]
@@ -61,6 +62,7 @@ pub use manager::{BrowserConfig, BrowserManager, DEVTOOLS_PORT_FILE, IdleReaper}
 pub use process::StopTimeouts;
 pub use url_policy::{UrlDenyList, UrlRefused, normalize_url};
 pub use video::{
-    GOP_MAX_BYTES, GOP_MAX_FRAMES, IDLE_GRACE, SUBSCRIBER_QUEUE, VideoConfig, VideoFrame, VideoHub,
+    GOP_MAX_BYTES, GOP_MAX_FRAMES, IDLE_GRACE, JOIN_REPLAY_BYTES, KEYFRAME_SPACING, NetworkReport,
+    RateControl, START_TIER, SUBSCRIBER_QUEUE, TIERS, Tier, VideoConfig, VideoFrame, VideoHub,
     VideoPacket, VideoSubscription, VideoUnavailable,
 };

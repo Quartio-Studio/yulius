@@ -241,7 +241,7 @@ Encoding runs only while someone watches.
 | --- | --- | --- |
 | `--browser-display` / `YULIUS_BROWSER_DISPLAY` | `auto` | `xvfb`: always a virtual display (the browser does not start without Xvfb); `headless`: never (JPEG frames, CDP input); `auto`: `xvfb` on Linux when Xvfb and ffmpeg are found, else `headless`. |
 | `--xvfb` / `YULIUS_XVFB`, `--ffmpeg` / `YULIUS_FFMPEG` | `Xvfb`, `ffmpeg` | The executables (a path or a name on `PATH`). |
-| `--browser-fps` / `YULIUS_BROWSER_FPS` | 60 | Video frames per second (5–60). 30 halves the encoder's CPU. |
+| `--browser-fps` / `YULIUS_BROWSER_FPS` | 60 | Highest video frames per second (5–60); the stream uses fewer on slow links. 30 halves the encoder's CPU. |
 | `--browser-max-size` / `YULIUS_BROWSER_MAX_SIZE` | `1920x1200` | Largest viewport in CSS pixels; larger panels show the page scaled down. |
 | `--browser-scale` / `YULIUS_BROWSER_SCALE` | 1 | Device pixels per CSS pixel (1–3). 2 gives crisp text on HiDPI screens at about three times the CPU and bandwidth. |
 | `--browser-display-base` / `YULIUS_BROWSER_DISPLAY_BASE` | 100 | First X display number; numbers in use are skipped. |
@@ -249,8 +249,15 @@ Encoding runs only while someone watches.
 Resources (measured on a 12-vCPU VM, Chrome 155, ffmpeg 6.1; SPEC-002 ADR-15): the encoder takes
 about one core per watched browser at 1280×800 and 60 fps (three quarters of one on a static page),
 about 1.5 cores at 1920×1080, and nothing when nobody watches; 30 fps saves a third to a half.
-Video is about 0.2–0.3 Mbit/s on a static page and 1.5–2.2 Mbit/s while scrolling. Each display is
-a framebuffer of the maximum size (about 9 MB at 1920×1200).
+Video is about 0.02 Mbit/s on a static page and at most the stream's cap while scrolling: the
+viewers acknowledge frames, and the bitrate (12 down to 0.8 Mbit/s) and frame rate (60 down to 30)
+follow the slowest viewer's link, so a slow link gets a softer picture rather than a growing delay
+(SPEC-002 ADR-15). A bitrate change or a keyframe a viewer needs briefly runs a second ffmpeg
+(about 0.2 s). Each display is a framebuffer of the maximum size (about 9 MB at 1920×1200).
+
+The reverse proxy needs nothing for the video: Caddy's `reverse_proxy` copies the WebSocket as it
+reads it (`encode` and `flush_interval` do not apply to it), and flow control keeps the proxy's
+socket buffers short.
 
 Isolation: the display listens on neither TCP nor an abstract socket (`-nolisten tcp -nolisten
 local`), only on `/tmp/.X11-unix/X<n>`, which contained agents and users' shells do not see (their

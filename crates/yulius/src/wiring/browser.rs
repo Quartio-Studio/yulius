@@ -9,11 +9,11 @@ use async_trait::async_trait;
 use tokio::sync::{broadcast, watch};
 use yulius_app::ports::browser::{
     BrowserFailure, BrowserFailureKind, BrowserFrames, BrowserNotice, BrowserNotices, BrowserPort,
-    BrowserSession, BrowserVideo, Screenshot, VideoUpdate,
+    BrowserSession, BrowserVideo, Screenshot, VideoNetworkReport, VideoUpdate,
 };
 use yulius_browser::{
     BrowserConfig, BrowserError, BrowserEvent, BrowserInstance, BrowserManager, FrameSubscription,
-    VideoPacket, VideoSubscription,
+    NetworkReport, VideoPacket, VideoSubscription,
 };
 use yulius_contracts::browser::{
     ActionRequest, ClickParams, ClickResult, NavigateParams, NavigationResult, OpenParams,
@@ -28,7 +28,7 @@ fn failure(error: BrowserError) -> BrowserFailure {
         BrowserError::ExecutableNotFound { .. } => BrowserFailureKind::NotInstalled,
         BrowserError::UrlRefused(_) => BrowserFailureKind::UrlRefused,
         BrowserError::TabNotFound(_) => BrowserFailureKind::NotFound,
-        BrowserError::TooManyTabs(_) => BrowserFailureKind::Capacity,
+        BrowserError::TooManyTabs(_) | BrowserError::InputBacklog => BrowserFailureKind::Capacity,
         BrowserError::InvalidInput(_)
         | BrowserError::ToolParams(_)
         | BrowserError::InvalidSelector(_)
@@ -143,6 +143,18 @@ impl BrowserVideo for Video {
 
     async fn next(&mut self) -> Option<VideoUpdate> {
         self.0.recv().await.map(video_update)
+    }
+
+    fn request_keyframe(&mut self) {
+        self.0.request_keyframe();
+    }
+
+    fn report(&mut self, report: VideoNetworkReport) {
+        self.0.report(NetworkReport {
+            delivered_bps: report.delivered_bps,
+            congested: report.congested,
+            limited: report.limited,
+        });
     }
 }
 

@@ -354,6 +354,18 @@ pub enum ViewerClientMsg {
         #[serde(default)]
         tab_id: Option<TabId>,
     },
+    /// Flow control of the video (SPEC-002 ADR-15, F 2026-10-10): the number of binary video
+    /// frames this connection has received so far, sent as each one arrives. Once a viewer
+    /// acknowledges, the server keeps only about a round trip of frames on the way to it and
+    /// adapts the stream to what it receives; a viewer that never acknowledges is streamed
+    /// without pacing.
+    Ack {
+        /// Video frames received on this connection (cumulative).
+        frames: u64,
+    },
+    /// The viewer's decoder needs a keyframe (it failed or fell too far behind). Rate-limited by
+    /// the server.
+    Keyframe,
 }
 
 /// How a viewer receives pages (SPEC-001 BRW-005, SPEC-002 ADR-15).
@@ -1016,6 +1028,11 @@ mod tests {
                 r#"{"type":"watch","tab_id":null}"#,
                 ViewerClientMsg::Watch { tab_id: None },
             ),
+            (
+                r#"{"type":"ack","frames":120}"#,
+                ViewerClientMsg::Ack { frames: 120 },
+            ),
+            (r#"{"type":"keyframe"}"#, ViewerClientMsg::Keyframe),
         ];
         for (text, expected) in cases {
             assert_eq!(

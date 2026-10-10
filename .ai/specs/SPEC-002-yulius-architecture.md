@@ -83,7 +83,7 @@ Principles:
 | ADR-12 | Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
 | ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
 | ADR-14 | Narrowed by ADR-15 (F 2026-10-10): the panel's live iframe tabs are removed; the preview origins and their proxy remain for one action, "Open live in a new window" on a sandbox dev server, and the no-recursion rules stay. Originally: the user browses the sandbox's apps **live in their own browser**: each (sandbox, port) has a preview origin `<port>-<key>.<yulius host>` that Yulius reverse-proxies to `127.0.0.1:<port>`, removing the iframe obstacles; the agents keep the sandbox's headless Chrome (ADR-09), whose tabs share the panel's strip and are watched remotely with the agent's cursor; Yulius never opens inside itself. Analysis and contract: §2.1. | Keep the mirror (A); pixel or video streaming (B); hybrids (D) | Native page behaviour on desktop and phone; needs wildcard DNS and TLS for the preview hosts (on-demand TLS); the app runs in the user's browser, so its absolute `localhost` URLs in page code do not reach the VM. |
-| ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
+| ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Over the user's link (F 2026-10-10, later): the viewer acknowledges frames and the server keeps about a round trip on the way, the bitrate and frame rate follow the slowest viewer (VBV tiers), keyframes come on demand from a replacement encoder, wheel and pointer moves are coalesced. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
 | ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done. Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
 | ADR-17 | Claude subscriptions are **one self-managing pool** (F 2026-10-10): use-it-or-lose-it placement (weekly headroom ÷ hours to its reset ÷ tasks on the account + 1), a proactive switch at 98 % of any binding window at the turn boundary by native resume, and a **gentle, invisible pause** held by the harness — the Stop / `UserPromptSubmit` hook answers `202 Retry-After` and `yulius hook` keeps polling — persisted in `capacity_pauses`, resumed oldest first and staggered; a burn-rate forecast says when to buy more. Analysis and contract: §2.4. | Manual priorities (before); suspending the agent (SIGSTOP); letting the CLI hit the limit and typing a resume prompt; killing and resuming | No knobs; capacity that expires is spent first; switches only when forced; the agent is never told; a hold survives restarts; the CLI shows "running hook" while paused and a held agent keeps its session slot; relies on Claude Code honouring a long hook `timeout` (fallback: the reported-limit pause). |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
@@ -317,10 +317,12 @@ without Xvfb or ffmpeg.
 
 **Video (`video`, `encoder`, `flv`).**
 
-- While at least one viewer watches, `ffmpeg -f x11grab -draw_mouse 0 -framerate 60 -video_size
-  WxH -i :n.0+0,0 -vf format=bgr24,format=yuv420p -c:v libx264 -preset ultrafast -tune
-  zerolatency -bf 0 -g 120 -threads 2 -flush_packets 1 -f flv pipe:1` encodes the viewport
-  region. The `bgr24` step takes swscale's fast RGB path: measured on the VM it halves the
+- While at least one viewer watches, `ffmpeg -f x11grab -draw_mouse 0 -framerate <tier fps>
+  -video_size WxH -i :n.0+0,0 -vf format=bgr24,format=yuv420p -c:v libx264 -preset ultrafast
+  -tune zerolatency -bf 0 -crf 23 -maxrate <tier> -bufsize <tier / 10> -x264-params
+  keyint=infinite -threads 2–4 -flush_packets 1 -f flv pipe:1` encodes the viewport region (the
+  rate cap, keyframes on demand and the slice threads by frame size: see "Over the user's link"
+  below). The `bgr24` step takes swscale's fast RGB path: measured on the VM it halves the
   conversion cost (1280×800 at 60 fps, idle: 80 % of a core instead of 97–111 %).
 - **FLV instead of Annex-B parsing (a change from the brief's recommendation).** An Annex-B
   access unit only ends when the next one starts, one frame interval (16.7 ms at 60 fps) later.
@@ -328,24 +330,27 @@ without Xvfb or ffmpeg.
   byte arrives; the payload is already AVC (length-prefixed NAL units) with the `avcC` record as
   WebCodecs' `description`. The parser is bounded (8 MiB per tag) and unit-tested for every split
   of a stream.
-- `VideoHub` per display: GOP cache (the last keyframe and the frames after it, at most 240
-  frames and 6 MiB) for instant start; a bounded queue per subscriber (256), and a subscriber that
+- `VideoHub` per display: GOP cache (the last keyframe and the frames after it, at most 600
+  frames and 6 MiB; replayed to a new viewer only up to 512 KiB, else it asks for a keyframe) for
+  instant start; a bounded queue per subscriber (256), and a subscriber that
   falls behind misses frames until the next keyframe; the encoder starts on the first subscriber,
   stops 5 s after the last one leaves, restarts at the new size when the viewport changes and gives
   up after three failed starts (viewers then get JPEG frames with the reason). The process is
   always terminated and reaped (SIGTERM, SIGKILL after 2 s, reap).
 - Per viewer connection (`yulius-server::routes::browser`): a media queue bounded to 300 frames
-  and 8 MiB; a live viewer more than 30 frames (0.5 s) behind skips to the next keyframe, and a
-  keyframe flushes what it supersedes, so latency stays bounded and a slow viewer never slows the
-  encoder or other viewers.
+  and 8 MiB, paced by the viewer's acknowledgements; video that waited on the server more than
+  250 ms is dropped for a fresh keyframe, and a keyframe flushes what it supersedes, so latency
+  stays bounded and a slow viewer never slows the encoder or other viewers.
 - Wire: `{"type":"stream","mode":"video"|"pixels","reason"?}`, `{"type":"video_config",
   "codec","description","width","height"}` (sent in the media queue, so it is ordered with the
   frames) and binary frames `u8 4, u8 flags (keyframe), u64 µs, access unit`. JPEG frames keep
   `u8 3 + tab id`.
 
-**Client (`browserstream.js`).** WebCodecs `VideoDecoder` (`optimizeForLatency`), each frame
-drawn on a canvas as it is decoded; a decoder queue beyond 6 frames skips to the next keyframe; a
-`NotSupportedError` or a browser without WebCodecs asks for JPEG frames, labelled "JPEG mode".
+**Client (`browserstream.js`).** WebCodecs `VideoDecoder` (`optimizeForLatency`); every frame is
+acknowledged on arrival (`ack`) and decoded, and the newest decoded picture is drawn (at once when
+the decoder is idle, else on the next animation frame); a decoder that fails or falls 90 frames
+behind restarts and asks for a keyframe (`keyframe`); a `NotSupportedError` or a browser without
+WebCodecs asks for JPEG frames, labelled "JPEG mode".
 The user's own cursor is the local CSS cursor (the video has none). The canvas shows the shared
 viewport scaled to the panel; when another viewer's panel sized it, a notice offers "Fit my
 panel". With scale 2 (`YULIUS_BROWSER_SCALE`) a HiDPI screen shows one video pixel per device
@@ -354,7 +359,11 @@ pixel (crisp text) at about three times the encoding cost; the default is 1.
 **Input.**
 
 - Moves, presses, releases and keys are XTest events on the display (x11rb, pure Rust, one
-  connection per display; no process per event), bounded by a 512-command queue. Printable ASCII
+  connection per display; no process per event, no reply waited for: one flush per batch; a press
+  asks the server for the window under the pointer only while a popup is open). Discrete input is
+  bounded by a 512-command queue; pointer moves are not queued but overwrite one "newest
+  position" slot, and a press, release or key first queues the position before it, so it lands
+  where the pointer was and a later move cannot overtake it. Printable ASCII
   is mapped by character to its US-layout keycode, pressing or lifting Shift around it as the
   character needs (any user layout types the right character; with Ctrl, Alt or Meta down the
   user's Shift is kept, so Ctrl+Shift+Z stays itself); other keys by `KeyboardEvent.code`
@@ -369,7 +378,9 @@ pixel (crisp text) at about three times the encoding cost; the default is 1.
   longer text (a paste) uses `Input.insertText`, after the display's queue has drained (an X
   round trip and 50 ms). Lock keys and AltGraph are not forwarded.
 - The wheel and trackpad use CDP `mouseWheel` with pixel deltas on the shown tab (X wheel buttons
-  are 3-line steps), coalesced per animation frame in the client.
+  are 3-line steps), coalesced per animation frame in the client and, on the server, dispatched
+  with at most two calls outstanding, the deltas arriving meanwhile summed (never waited for by
+  the viewer socket).
 - macOS: ⌘C/⌘V/⌘X/⌘A/⌘Z and other editing shortcuts are sent as Ctrl; ⌘ arrows as Home/End.
   Paste sends the user's clipboard as text; copy (⌘C/Ctrl+C/X) also asks the server for the
   selection (`copy` → `clipboard`), which goes to the user's clipboard (a pending
@@ -377,7 +388,9 @@ pixel (crisp text) at about three times the encoding cost; the default is 1.
 - Touch: a tap clicks, a drag scrolls; a Keyboard button opens the phone's keyboard.
 - Back, forward and reload go through CDP (`history`, `reload`).
 - Only write users reach the socket (unchanged); each connection may send 500 input events per
-  second (burst 1000): moves and wheel beyond are dropped, other input is refused with an error.
+  second (burst 1000): moves and wheel beyond are dropped silently, and they leave 100 events of
+  the burst to discrete input, which beyond is refused with an error. A move or wheel turn that
+  fails is never reported to the viewer.
   Every key and button a viewer held is released when it leaves.
 
 **Security (each tested in `live_display.rs` on Linux).**
@@ -427,13 +440,114 @@ showing it: p50 60–66 ms, p95 82–99 ms. An earlier build under heavier load 
 DOM mirror (its cost was in the user's browser and per replayed mutation, not comparable on the
 server), the network to a real user.
 
+**Over the user's link (F 2026-10-10, later; #122).** "Browser is slow as fuck. Especially when
+scrolling and moving. Improve this dramatically." The figures above were taken with the viewer on
+the VM. Measured again **at the client** (real Chrome on a Mac in Poland running the real UI
+through an SSH tunnel to a throwaway instance on the VM, 1138×766 panel; a probe page paints its
+scroll position, pointer position and an input counter as pixel rows that the client reads back
+from every frame it draws, so input → displayed frame is on the client's clock), #108's build
+showed four faults:
+
+1. *Wheel: one CDP round trip at a time.* Chrome answers a `mouseWheel` once the renderer handled
+   it, 33 ms on the VM: at most ~30 per second went through while a trackpad sends 60–120, so the
+   scroll queued up without bound (2.6–5.2 s behind the hand), and the viewer socket's video
+   waited behind every dispatch (bursty frames).
+2. *The client dropped everything after a burst.* The frames behind a keyframe (140–370 KB with
+   `ultrafast`) arrive together; the decoder queue passed 6 and the view skipped to the next
+   keyframe, 2 s later: a still page or typing showed at 2.7–8 fps.
+3. *No flow control.* Frames were written as fast as the socket took them; when the stream
+   outran the link they piled up in the next hop (the tunnel's or Caddy's socket: 0.25–4 MB,
+   seconds of video, 3.5–25 s of queueing measured), where "30 frames behind" never saw them.
+4. *Moves queued as discrete input.* Every pointer move took a slot of the X thread's queue; when
+   the display fell behind they filled it and the viewer got "input arrives faster than the
+   display takes it" (seen on production).
+
+The design over the same WebSocket (443 only):
+
+- **Flow control** (`routes/browser/flow.rs`). The viewer acknowledges every video frame on
+  arrival (`{"type":"ack","frames":n}`, the count so far). The writer lets the next frame go only
+  while the oldest unacknowledged one was sent less than the base round trip (the smallest
+  acknowledgement delay of the last 10 s) plus 120 ms ago; the rest waits on the server. Video
+  that waited 250 ms is dropped and the connection asks the encoder for a keyframe once the path
+  has room again (at most once a second). A viewer that never acknowledges (an older page) is not
+  paced. Every second it reports what was acknowledged and whether the path queued up (the
+  median delay 50 ms over the base after a 2 s warm-up, a stall, or drops) and whether the path,
+  not the stream, limited what was delivered.
+- **Rate control** (`video::RateControl`, `TIERS`). x264 runs CRF 23 capped by a VBV at a tier:
+  12, 8, 5 (start), 3.5 Mbit/s at 60 fps, 2.5 at 45, 1.5 and 0.8 at 30 (the configured fps caps
+  them), the buffer a tenth of a second of the cap (so a keyframe or a fast scroll is at most
+  ~100 ms of the cap: uncapped, a scroll made 80–180 KB frames at 36 fps on the VM; 6 Mbit/s kept
+  55 fps with readable text, 3 Mbit/s 50 fps blurred while moving). A congested viewer steps the
+  stream down at once (to 85 % of what its path delivered when the path set it, else one step;
+  1.5 s apart); after a quiet spell (6 s, doubled after a failed probe up to 60 s) with the stream
+  using at least half its cap, it probes one tier up. The slowest viewer sets the tier.
+- **Keyframes on demand, make before break.** No periodic keyframe (each was a burst and, capped,
+  a moment of blur). A viewer that joins without a small cached group, falls behind, or whose
+  decoder fails asks for one; a new tier needs one too. The hub then starts a replacement encoder
+  while the current one keeps streaming and switches every viewer at its first keyframe (about
+  0.2 s later, no gap); the old one is stopped and reaped in the background; at most one restart
+  per second. A resize still restarts (the screen changed under the old capture).
+- **Input**: the wheel dispatcher and the move slot above; the client sends a move only when the
+  position changed, at most once per animation frame.
+- **Client**: every frame decoded, the newest drawn, a keyframe asked for on decoder trouble.
+- Caddy needs no change: after the upgrade it copies the WebSocket byte stream as it reads it
+  (`encode` and `flush_interval` do not apply); measured through a Caddy with the production site
+  block in front of the test instance, the figures matched the direct path.
+- Rejected: WebRTC (UDP, a firewall port and a TURN fallback for what flow and rate control over
+  TCP now give within a round trip plus ~60 ms); per-frame JPEG; skipping frames without
+  keyframes (x264 has no non-reference frames to drop).
+
+Measured at the client (p50 / p95; "not shown": not within the scenario plus 1.5 s).
+
+*Real path*, back to back (Mac in Poland → the VM through an SSH tunnel; RTT 60–100 ms, the link
+then 1–2 Mbit/s with stalls; the shared link varied from 0.8 to 50 Mbit/s over the day):
+
+| | #108 | This design |
+|---|---|---|
+| Displayed fps: still page / scrolling / moving | 8 / 24 / 29 | 30 / 21–29 / 30 (the 0.8 Mbit/s tier) |
+| Scroll: input → frame | 5.2 s / 7.1 s; 358 of 480 not shown; 2.7 s → 7.1 s over the scroll | 0.28–0.36 s / 0.66–1.3 s; flat |
+| Pointer move, drag: input → frame | not shown (3.5–9.8 s of video queued) | 0.15 s / 0.20–0.21 s |
+| Key: input → frame | not shown (16 s queued) | 0.15 s / 0.18 s |
+| Bytes queued towards the client | tunnel 250–325 KB, server socket up to 4.1 MB | tunnel ≤ 54 KB, server ≤ 7 KB |
+| Keyframes | 130–250 KB every 2 s | 9–16 KB, on demand |
+
+Through a Caddy with the production site block (`encode zstd gzip`, no `flush_interval`) on the
+same path: keys 0.16 s / 0.20 s, scroll 0.25–0.31 s / 0.47–0.58 s, flat.
+
+*Emulated link* on the VM (`live_ui_stream.rs` with `YULIUS_LIVE_LINK`: 35 ms each way, the
+downlink behind a 1 MiB buffer; headless Chrome as the viewer; the same test binary built from
+#108 and from this design):
+
+| Downlink | Scroll fps, input → frame | Move fps, input → frame | Key input → frame |
+|---|---|---|---|
+| 20 Mbit/s, #108 | 41; 1.8 s / 3.7 s, 156 of 362 not shown, 0.6 → 3.0 s | 43; 2.0 s / 4.1 s | 0.22 s / 1.3 s |
+| 20 Mbit/s, now | 64; 0.24 s / 0.32 s, flat | 56; 0.16 s / 0.34 s | 0.14 s / 0.17 s |
+| 4 Mbit/s, #108 | 24; 2.7 s / 5.2 s, 191 of 349 not shown | 37; none shown | 1.5 s / 2.4 s |
+| 4 Mbit/s, now | 36; 0.25 s / 0.36 s, flat | 36; 0.16 s / 0.31 s | 0.13 s / 0.16 s |
+| 1.5 Mbit/s, #108 | 17; 3.8 s / 6.3 s, 305 of 371 not shown | 22; none shown | none shown |
+| 1.5 Mbit/s, now | 30; 0.27 s / 1.0 s, settling (0.72 → 0.25 s) | 37; 0.22 s / 0.40 s | 0.14 s / 0.18 s |
+
+Input → frame is the round trip plus about 60–90 ms for keys and moves (the server-side part,
+typing to frame, is 56 ms p50 on the VM) and plus 150–250 ms for scrolling (full-frame changes;
+the probe reads the scroll from the page's main thread, which trails the compositor). On the VM
+with the viewer on loopback: scrolling 55–61 fps p50 168–170 ms, moves 62–66 fps p50 63–107 ms,
+keys p50 48–66 ms, flat; `live_display.rs`: 59 fps p50 while scrolling at 1280×800 and 60 at
+1920×1080, 0.02 Mbit/s on a still page (0.22 with periodic keyframes), 2.2–2.7 Mbit/s scrolling,
+key to frame p50 71 ms. When the real link stalled for tens of seconds (one HTTP request took
+59 s during a run) the panel froze with it and caught up within about a second afterwards,
+without a backlog.
+
 **Consequences and limits.**
 
 - The page is pixels: text is selected in the remote page and copied through `copy`; find in page
   is Chrome's own (Ctrl+F).
 - About one core per watched browser at 60 fps at 1280×800 (encoder), three quarters of one even
-  on a static page (x11grab captures every frame), nothing when nobody watches; about 2 Mbit/s
-  while scrolling. Open: capturing only on X damage.
+  on a static page (x11grab captures every frame), nothing when nobody watches; at most the
+  tier's cap while scrolling (2–3 Mbit/s measured at 5 Mbit/s), 0.02 Mbit/s on a still page. A
+  keyframe request or a tier change runs a second encoder for ~0.2 s. Open: capturing only on X
+  damage; a frame rate the encoder adapts without a restart.
+- On a slow link the picture blurs while it moves (the VBV cap) and sharpens when it stops; the
+  slowest viewer sets the tier for everyone watching the sandbox.
 - Without `xvfb`/`ffmpeg` (macOS development, CI) the browser runs headless with JPEG frames and
   CDP input, as before.
 - No window manager: windows are fitted, not decorated; a page cannot move its popup.
@@ -1184,9 +1298,12 @@ raw body up to the upload limit, 25 MiB by default).
 | Permission cache | 5 min | refetch |
 | Preview handshakes / grants | 1024 pending (60 s) / 4096 (12 h, re-checked every 30 s) | refuse with 429 / drop the oldest |
 | Preview requests awaiting a head / WebSockets | 512 / 256 (connect 5 s, head 120 s) | 503 |
-| Browser video GOP cache (per display) | 240 frames / 6 MiB | not cached; new viewers start at the next keyframe |
-| Browser video queue per subscriber / per viewer socket | 256 packets / 300 frames, 8 MiB, 30 frames behind | skip to the next keyframe (a keyframe flushes what it supersedes) |
-| Display input queue | 512 commands; 500 events/s per viewer (burst 1000) | moves dropped; other input refused with an error |
+| Browser video GOP cache (per display) | 600 frames / 6 MiB; replayed to a joining viewer up to 512 KiB | not cached / not replayed; the viewer asks for a keyframe |
+| Browser video queue per subscriber / per viewer socket | 616 packets / 300 frames, 8 MiB, 250 ms waiting | skip to a fresh keyframe, asked of the encoder (a keyframe flushes what it supersedes) |
+| Browser video in flight per viewer (acknowledging) | base round trip + 120 ms (≤ 240 frames, 4 MiB; 30 frames before the first sample) | held on the server |
+| Keyframe restarts (replacement encoders) | 1 per second per display, one replacement at a time, 3 s to its first keyframe | requests coalesced; a late replacement is stopped |
+| Wheel dispatches per browser | 2 outstanding, 4 distinct pending | deltas summed |
+| Display input queue | 512 discrete commands (moves: one coalesced slot); 500 events/s per viewer (burst 1000, 100 kept for discrete input) | moves and wheel dropped silently; other input refused with an error |
 | Encoder start failures | 3 in a row (backoff 0.5–3 s) | video unavailable; viewers get JPEG frames |
 | Encoder tag (access unit) | 8 MiB | encoder restarted |
 | Upload (one file, EDT-006/UI-048) | 25 MiB (`YULIUS_UPLOAD_MAX_MB`, 1–1024) | 422 before or while reading |
@@ -1207,7 +1324,9 @@ raw body up to the upload limit, 25 MiB by default).
 | Browser disconnect | WS close | Session continues; reconnect → snapshot (AC-NFR-1). |
 | Display encoder fails (ffmpeg missing, crash) | start error / output ends | Restart with backoff; after 3 failed starts viewers get JPEG frames with the reason (ADR-15). |
 | Xvfb missing or fails | resolve / exit before ready | `auto`: headless with JPEG frames; `xvfb`: the browser does not start, with the reason; a crashed display ends the browser, which restarts on next use. |
-| Slow browser viewer | media queue bound | Skips to the next keyframe; others and the encoder unaffected. |
+| Slow browser viewer | acknowledgements late (flow control), video waiting 250 ms, media queue bound | Video held on the server, then dropped for a fresh keyframe asked of the encoder once the path has room; the stream steps down a tier; others unaffected except the shared tier (ADR-15). |
+| Replacement encoder fails or sends no keyframe in 3 s | start error / output ends / deadline | The current encoder keeps streaming; a failed start restarts the encoder (backoff as above). |
+| Discrete input backs up (X server not reading) | 512-command queue full | That input refused with `capacity`; moves keep coalescing; nothing reordered. |
 | Slow viewer | queue bound | Viewer dropped, others unaffected (AC-NFR-4). |
 | Server crash/restart/upgrade | startup reconciliation | Reattach live ptyhosts; record exits; no respawn (AC-NFR-2). Replayed transcripts are reduced to their final state: finished tasks stay `done`/`waiting`, a turn or goal finished while Yulius was down is applied (§6.1, AC-TSK-13). |
 | Stop hook unanswered (Yulius down or slow) | the transcript's closing records on catch-up; the next clean Stop | The task settles at the restart's catch-up or the next Stop; while Yulius runs the Stop hook stays the turn boundary. |
@@ -1253,7 +1372,7 @@ raw body up to the upload limit, 25 MiB by default).
 | R-03 | Closed (F 2026-10-08): Codex hook configuration semantics (Codex removed). | — |
 | R-04 | Claude usage percentage not available for setup tokens. | Reactive switching on limit errors; proactive switching (98 %) and placement when the background usage refresh (`/api/oauth/usage`) reports the windows; unknown usage ranks last. |
 | R-14 | Claude Code's handling of a hook held for days is not verified live (ADR-17). | The CLI timeout is written explicitly; the hook client fails open first; a reported limit still pauses the task as `limit`. Open: a live smoke of a held Stop hook. |
-| R-05 | Browser video on phones and slow links. | Skip-to-keyframe backpressure per viewer, client decode queue bound; fps and size configurable (ADR-15). Open: adaptive bitrate. |
+| R-05 | Browser video on phones and slow links. | Flow control by the viewer's acknowledgements, bitrate and frame-rate tiers following the slowest viewer, keyframes on demand, skip to a fresh keyframe per viewer (ADR-15, F 2026-10-10). Open: per-viewer tiers (the slowest viewer sets the shared stream). |
 | R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
 | R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; sandboxes share the loopback network, so any local process (including other sandboxes' agents) can drive a sandbox browser and its logged-in sessions; in contained mode CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's containment/network namespace. |
 | R-08 | An unrestricted GitHub installation token works for every repository of the installation. | Mitigated: agents receive tokens restricted to their sandbox repository (`repositories` parameter), only for live task tokens and only for `github.com/<owner>/<repo>`; unrestricted tokens stay server-side (delivery pushes, repository creation). |
@@ -1309,7 +1428,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
 | Live previews and no recursion (ADR-14, 2026-10-09) | `tests/preview.rs` (handshake, rewriting, localhost view of the app, WebSocket passthrough, refusals of users, sandboxes, ports, cross-site callers and Yulius itself, the Yulius session unusable from a preview origin, TLS `ask`); `tests/browser.rs` (per-viewer `watch`); `yulius-browser` `tests/instance.rs` and `tests/manager.rs` (the sandbox Chrome's guard: refusal, `Fetch` interception, fail-closed start); opt-in `live_ui_browser.rs` with real Chrome (live iframe with root-relative assets, a redirect, a WebSocket, native typing, selection and scrolling, address bar and Back, agent notice and cursor, hostile preview page refused, framed UI refused, the sandbox Chrome refusing Yulius). Deployed DNS/TLS not exercised. |
 | Task finishing (TSK-014, 2026-10-10) | Unit: `goal_status` and turn-closing records (fixture `goal.jsonl`, structure of Claude Code 2.1.292 read from the installed bundle and a production transcript, read-only), the replay reduction, typed prompts vs wake-ups, `Activity::Done`, the tail's catch-up flag, the background-shell counter (synthetic tables, depth/size bounds, a real wrapper shell found until it exits). `tests/task_done.rs`: fake agent with Claude Code's hooks through `yulius hook` → Done with 0 shells; a goal turn leaving a Bash-tool shell → 1 shell until it ends, then Done; typing after Done → `working` → `waiting`; a restart keeps a done task done (no `working` event) and applies a goal achieved while the server was down. With the catch-up disabled the restart test fails. Mock UI e2e `task-done.e2e.ts`. |
-| Streamed browser (ADR-15, 2026-10-10) | Unit: FLV parsing for every split of a stream, codec strings, GOP cache, subscriber and viewer backpressure, encoder lifecycle (on demand, idle stop, resize restart, give-up), key mapping, cookie format and permissions, device sizes. `tests/browser.rs` with a fake display: video config then a keyframe, a late viewer's instant start, viewport → display resize and encoder restart, XTest-shaped input, wheel and text through CDP, copy, release on leave, pages opened by pages come to the front, history and reload, a broken encoder falls back to JPEG, the display stops with the browser. Opt-in `live_display.rs` on the VM (Xvfb, ffmpeg, Chrome 155, as the service user): streaming from a keyframe, real clicks (also in an OAuth-style popup), typing incl. Polish letters and emoji in order, scrolling, canvas and image pixels, `navigator.webdriver === false`, agent cursor, screenshots, recursion refused, no display, cookie, abstract or TCP socket reachable from containment (both identities); figures in ADR-15; reCAPTCHA v2 demo (checkbox → image challenge, a tile selected) and Cloudflare's challenge on nopecha.com (checkbox → passed) with XTest clicks. `live_ui_browser.rs` with a display: the panel decodes H.264 in Chrome and its input reaches the page. `e2e/tests/browser.e2e.ts` (mock UI, VP8 via WebCodecs). |
+| Streamed browser (ADR-15, 2026-10-10) | Unit: FLV parsing for every split of a stream, codec strings, GOP cache, subscriber and viewer backpressure, encoder lifecycle (on demand, idle stop, resize restart, give-up), key mapping, cookie format and permissions, device sizes. `tests/browser.rs` with a fake display: video config then a keyframe, a late viewer's instant start, viewport → display resize and encoder restart, XTest-shaped input, wheel and text through CDP, copy, release on leave, pages opened by pages come to the front, history and reload, a broken encoder falls back to JPEG, the display stops with the browser. Opt-in `live_display.rs` on the VM (Xvfb, ffmpeg, Chrome 155, as the service user): streaming from a keyframe, real clicks (also in an OAuth-style popup), typing incl. Polish letters and emoji in order, scrolling, canvas and image pixels, `navigator.webdriver === false`, agent cursor, screenshots, recursion refused, no display, cookie, abstract or TCP socket reachable from containment (both identities); figures in ADR-15; reCAPTCHA v2 demo (checkbox → image challenge, a tile selected) and Cloudflare's challenge on nopecha.com (checkbox → passed) with XTest clicks. `live_ui_browser.rs` with a display: the panel decodes H.264 in Chrome and its input reaches the page. `e2e/tests/browser.e2e.ts` (mock UI, VP8 via WebCodecs; frames acknowledged). Over a real link (F 2026-10-10, later): unit tests of the wheel coalescing, the move slot (1,000 moves then a click, in order), flow control, the media-queue policy, the tier policy, the make-before-break switch and the encoder arguments; `tests/browser.rs`: a wheel flood with Chrome not answering, a move flood without errors, an acknowledging viewer paced and stepped down a tier; opt-in `live_ui_stream.rs` (client-side fps and input → frame on Linux); the client-side measurements over the real path in ADR-15 and the PR. |
 | Dropped files (EDT-006, UI-048, 2026-10-10) | `tests/uploads.rs`: editor uploads (write users only, CSRF, folders created, byte-for-byte with SHA-256, 409 then overwrite with permissions kept, folders and links never replaced, traversal / absolute / control characters / `.git` / links out refused with nothing written outside, a repository folder linked into another sandbox refused, task worktree root, audit), bounds (declared and streamed size, an interrupted body, 8 concurrent then 429, no temporary file left), task attachments (safe unique names, read users refused, a planted link refused, removed with the task), shell attachments (owner only, removed when the shell closes or at start-up), the fake agent reading an attachment by path with a clean `git status` (uncontained; on Linux also inside bubblewrap, skipped where bubblewrap cannot run). Unit tests in `yulius_app::uploads`. `e2e/tests/filedrop.e2e.ts` (mock UI). Opt-in `live_ui_filedrop.rs` with real Chrome: real drags from disk to the explorer and to the task terminal, read by the fake agent. |
 | Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
 | Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
@@ -1317,6 +1436,10 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-10 (F 2026-10-10, later; #122): ADR-15 over the user's link — flow control by
+  acknowledged frames, VBV bitrate tiers following the slowest viewer, keyframes on demand from a
+  replacement encoder (make before break), coalesced wheel and pointer moves, every frame decoded
+  and the newest drawn; client-side measurements; §9 bounds, §10, R-05, §14.
 - 2026-10-10 (F 2026-10-10): §6.1 activity `done` and the finish rule (goal achieved, clean turn
   end, background shells as a live overlay, restart catch-up); §7.2 goal and turn-closing records;
   §7.5 Stop/UserPromptSubmit; §9 probe bounds; §10 restart and unanswered Stop; §14.
