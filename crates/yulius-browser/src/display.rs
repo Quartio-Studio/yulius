@@ -99,17 +99,18 @@ pub struct DisplayConfig {
     /// Device pixels per CSS pixel (Chrome's `--force-device-scale-factor`): 2 makes text crisp
     /// on HiDPI screens at about three times the encoding cost.
     pub scale: f64,
-    /// Frames per second of the video.
+    /// Highest frames per second of the video (the stream's tier may use fewer).
     pub fps: u32,
-    /// Time between keyframes (also the longest a slow viewer stays frozen).
-    pub keyframe_interval: Duration,
+    /// Time between periodic keyframes; `None` (the default): keyframes only when the encoder
+    /// starts, which the video hub does when a viewer needs one (F 2026-10-10).
+    pub keyframe_interval: Option<Duration>,
     /// Maximum wait for the X server.
     pub startup_timeout: Duration,
 }
 
 impl DisplayConfig {
     /// Defaults: `Xvfb` and `ffmpeg` from `PATH`, displays from :100, at most 1920×1200 CSS
-    /// pixels, scale 1, 60 frames per second, a keyframe every 2 s, 10 s startup.
+    /// pixels, scale 1, up to 60 frames per second, keyframes on demand, 10 s startup.
     #[must_use]
     pub fn new(runtime_root: PathBuf) -> Self {
         Self {
@@ -121,7 +122,7 @@ impl DisplayConfig {
             max_size: (1920, 1200),
             scale: 1.0,
             fps: 60,
-            keyframe_interval: Duration::from_secs(2),
+            keyframe_interval: None,
             startup_timeout: Duration::from_secs(10),
         }
     }
@@ -446,7 +447,7 @@ impl VirtualDisplay {
                         display: format!(":{number}"),
                         xauthority: xauthority.clone(),
                         fps: config.fps.clamp(5, 60),
-                        keyframe_frames: keyframe_frames(config),
+                        keyframe_seconds: config.keyframe_interval.map(|i| i.as_secs_f64()),
                     };
                     return Ok(Self {
                         video: VideoHub::new(encoder, size),
@@ -534,9 +535,9 @@ impl VirtualDisplay {
     fn send(&self, input: DisplayInput) -> Result<(), BrowserError> {
         match &self.backend {
             Backend::Xvfb { x, .. } => x.send(input).map_err(|error| match error {
-                XSendError::Busy => BrowserError::InvalidInput(
-                    "input arrives faster than the display takes it".into(),
-                ),
+                // Only discrete input queues (moves are coalesced): the X server stopped
+                // taking input.
+                XSendError::Busy => BrowserError::InputBacklog,
                 XSendError::Gone => display_error("the display stopped"),
             }),
             #[cfg(feature = "fake")]
@@ -570,10 +571,11 @@ impl VirtualDisplay {
         Ok(self.config.css_size(size))
     }
 
-    /// Moves the pointer to `(x, y)` CSS pixels of the viewport.
+    /// Moves the pointer to `(x, y)` CSS pixels of the viewport. Moves are coalesced: only the
+    /// newest position not yet applied is kept, so this never fails for load.
     ///
     /// # Errors
-    /// When the input queue is full or the display stopped.
+    /// When the display stopped.
     pub fn pointer(&self, x: f64, y: f64) -> Result<(), BrowserError> {
         let scale = sane_scale(self.config.scale);
         let (width, height) = self.size();
@@ -679,12 +681,6 @@ impl VirtualDisplay {
         }
         outcome
     }
-}
-
-fn keyframe_frames(config: &DisplayConfig) -> u32 {
-    let fps = config.fps.clamp(5, 60);
-    let frames = (config.keyframe_interval.as_secs_f64() * f64::from(fps)).round() as u32;
-    frames.clamp(fps / 2, fps * 30)
 }
 
 fn quick_stop() -> StopTimeouts {
@@ -851,13 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn keyframes_follow_the_interval() {
-        let mut config = DisplayConfig::new("/run".into());
-        assert_eq!(keyframe_frames(&config), 120);
-        config.fps = 30;
-        config.keyframe_interval = Duration::from_secs(4);
-        assert_eq!(keyframe_frames(&config), 120);
-        config.keyframe_interval = Duration::ZERO;
-        assert_eq!(keyframe_frames(&config), 15, "at least half a second");
+    fn keyframes_are_on_demand_by_default() {
+        assert_eq!(DisplayConfig::new("/run".into()).keyframe_interval, None);
     }
 }

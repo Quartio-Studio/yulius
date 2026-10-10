@@ -758,6 +758,8 @@ async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> 
         let paste = "x".repeat(100);
         send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "char", "text": paste})).await?;
         assert!(f.fake.wait_for_calls("Input.insertText", 1, WAIT).await);
+        // The wheel is dispatched without making the viewer socket wait (F 2026-10-10).
+        assert!(f.fake.wait_for_calls("Input.dispatchMouseEvent", 1, WAIT).await);
         let wheel = f.fake.calls_for("Input.dispatchMouseEvent");
         assert_eq!(wheel[0].params["type"], "mouseWheel");
         assert_eq!(wheel[0].params["deltaY"], 37.5);
@@ -1019,6 +1021,159 @@ async fn a_viewer_watches_the_tab_it_chose_or_none() -> TestResult {
                 .calls_for("Target.activateTarget")
                 .iter()
                 .any(|call| call.params["targetId"] == first.as_str())
+        );
+        Ok(())
+    })
+    .await
+}
+
+/// Messages that arrive within `window`, without failing when none do.
+async fn drain_for(socket: &mut Socket, window: Duration) -> Vec<Message> {
+    let deadline = tokio::time::Instant::now() + window;
+    let mut messages = Vec::new();
+    while let Ok(Some(Ok(message))) = tokio::time::timeout_at(deadline, socket.next()).await {
+        messages.push(message);
+    }
+    messages
+}
+
+fn errors_in(messages: &[Message]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::Text(text) if text.as_str().contains("\"error\"") => Some(text.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// F 2026-10-10: Chrome answers a CDP wheel event only after the renderer handled it, so wheel
+/// input dispatched one by one queued up for seconds. With Chrome not answering at all, at most
+/// two wheel dispatches are outstanding, the rest is summed for later, and other input (a click)
+/// still goes through at once, without an error for the viewer.
+#[tokio::test]
+async fn a_wheel_flood_never_queues_up_behind_chrome_and_clicks_still_go_through() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        f.fake.mute("Input.dispatchMouseEvent");
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = wait_json(&mut socket, |m| m["type"] == "tabs").await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        for _ in 0..50 {
+            send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "wheel", "x": 5, "y": 6, "dx": 0, "dy": 10})).await?;
+        }
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 30, "y": 40, "button": "left"})).await?;
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "up", "x": 30, "y": 40, "button": "left"})).await?;
+        assert!(
+            display
+                .wait_for_input(|i| *i == DisplayInput::Button { button: 1, press: false }, Duration::from_secs(2))
+                .await,
+            "the click is not stuck behind the wheel"
+        );
+        assert!(f.fake.wait_for_calls("Input.dispatchMouseEvent", 2, WAIT).await);
+        let messages = drain_for(&mut socket, Duration::from_millis(300)).await;
+        let wheel = f.fake.calls_for("Input.dispatchMouseEvent");
+        assert_eq!(wheel.len(), 2, "two outstanding, the rest summed: {wheel:?}");
+        assert!(wheel.iter().all(|call| call.params["deltaY"] == 10.0));
+        assert_eq!(errors_in(&messages), Vec::<String>::new());
+        Ok(())
+    })
+    .await
+}
+
+/// F 2026-10-10: a flood of pointer moves is never an error for the viewer (moves beyond the
+/// input budget are dropped silently and the display coalesces the rest), and a click after it
+/// lands at the last position, after it.
+#[tokio::test]
+async fn a_flood_of_moves_is_silent_and_a_click_lands_at_the_last_position() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = wait_json(&mut socket, |m| m["type"] == "tabs").await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        for n in 0..1200 {
+            let x = 100 + n % 900;
+            send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "move", "x": x, "y": 300})).await?;
+        }
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "move", "x": 777, "y": 333})).await?;
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 777, "y": 333, "button": "left"})).await?;
+        assert!(
+            display
+                .wait_for_input(|i| *i == DisplayInput::Button { button: 1, press: true }, WAIT)
+                .await
+        );
+        let inputs = display.inputs();
+        let press = inputs
+            .iter()
+            .position(|i| *i == DisplayInput::Button { button: 1, press: true })
+            .ok_or("no press")?;
+        assert_eq!(inputs[press - 1], DisplayInput::Motion { x: 777, y: 333 });
+        let messages = drain_for(&mut socket, Duration::from_millis(300)).await;
+        assert_eq!(errors_in(&messages), Vec::<String>::new(), "moves are never an error");
+        Ok(())
+    })
+    .await
+}
+
+/// F 2026-10-10: a viewer that acknowledges its frames gets only about a round trip of video
+/// while it stops acknowledging (its path is full), falls back to a fresh keyframe the server
+/// asks the encoder for, and its congestion report moves the stream to a lower bitrate tier.
+#[tokio::test]
+async fn an_acknowledging_viewer_is_paced_and_its_congestion_lowers_the_tier() -> TestResult {
+    let display = FakeDisplay::new();
+    display.set_frame_interval(Duration::from_millis(5));
+    display.set_keyframe_every(u64::MAX);
+    with_display(display, |f| async move {
+        let display = display_of(&f)?;
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let _ = wait_json(&mut socket, |m| m["type"] == "video_config").await?;
+        assert!(next_video(&mut socket).await?.0, "starts at a keyframe");
+        let mut received = 1_u64;
+        send(&mut socket, json!({"type": "ack", "frames": received})).await?;
+        // The viewer reads but stops acknowledging for a second: 200 frames are produced, about
+        // the round trip plus the slack (120 ms, some 25 frames) reach it.
+        let messages = drain_for(&mut socket, Duration::from_secs(1)).await;
+        let unacked = messages
+            .iter()
+            .filter(|m| matches!(m, Message::Binary(b) if b.first() == Some(&4)))
+            .count() as u64;
+        received += unacked;
+        assert!(unacked < 60, "paced while unacknowledged: {unacked} frames");
+        // It fell behind: the server asked the encoder for a keyframe (a restart).
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while display.encoder_sizes().len() < 2 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            display.encoder_sizes().len() >= 2,
+            "a keyframe was asked for"
+        );
+        // Acknowledging again resumes the stream at a keyframe; the late acknowledgements are
+        // reported as congestion and the encoder restarts at a lower tier.
+        send(&mut socket, json!({"type": "ack", "frames": received})).await?;
+        let deadline = tokio::time::Instant::now() + WAIT;
+        let mut keyframe = false;
+        while tokio::time::Instant::now() < deadline {
+            let frame = next_binary(&mut socket).await?;
+            received += 1;
+            send(&mut socket, json!({"type": "ack", "frames": received})).await?;
+            keyframe |= decode_video_frame(&frame)?.keyframe;
+            let lower = display.encoder_tiers().iter().any(|t| t.max_kbps < 5_000);
+            if keyframe && lower {
+                break;
+            }
+        }
+        assert!(keyframe, "resumed at a keyframe");
+        let tiers: Vec<u32> = display.encoder_tiers().iter().map(|t| t.max_kbps).collect();
+        assert!(
+            tiers.iter().any(|kbps| *kbps < 5_000),
+            "a lower tier: {tiers:?}"
         );
         Ok(())
     })

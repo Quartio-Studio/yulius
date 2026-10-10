@@ -173,6 +173,20 @@ impl VideoUpdate {
     }
 }
 
+/// What a viewer connection measured about its network over the last period (about a second;
+/// SPEC-002 ADR-15, F 2026-10-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VideoNetworkReport {
+    /// Video the viewer acknowledged, in bits per second.
+    pub delivered_bps: u64,
+    /// Frames queued up on the way to the viewer (its round trip grew well beyond the base, or
+    /// frames were dropped because it fell behind).
+    pub congested: bool,
+    /// The path, not the stream, limited what was delivered (video waited for it), so
+    /// `delivered_bps` measures what the path carries.
+    pub limited: bool,
+}
+
 /// The video of the sandbox browser's display; dropping it unsubscribes. A subscriber that
 /// falls behind misses frames until the next keyframe; the producer never waits for it.
 #[async_trait]
@@ -182,6 +196,12 @@ pub trait BrowserVideo: Send {
     /// The next live update; `None` once the stream ended (the browser stopped or the encoder
     /// failed: the viewer falls back to JPEG frames).
     async fn next(&mut self) -> Option<VideoUpdate>;
+    /// Asks for a keyframe (this viewer fell behind or its decoder failed); the producer
+    /// rate-limits it. This subscription resumes at the next keyframe.
+    fn request_keyframe(&mut self) {}
+    /// Reports this viewer's network: the stream's bitrate and frame rate follow the slowest
+    /// viewer.
+    fn report(&mut self, _report: VideoNetworkReport) {}
 }
 
 /// A screenshot that fits the caller's byte budget.

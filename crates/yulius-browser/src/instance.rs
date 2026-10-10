@@ -33,6 +33,7 @@ use crate::process::{StopTimeouts, Supervised};
 use crate::snapshot;
 use crate::url_policy::{UrlDenyList, UrlRefused, normalize_url};
 use crate::video::{VideoSubscription, VideoUnavailable};
+use crate::wheel::{WheelDispatcher, WheelEvent};
 
 /// Smallest accepted viewport edge in CSS pixels.
 pub const VIEWPORT_MIN: u32 = 64;
@@ -482,6 +483,8 @@ impl Keyboard {
 pub struct BrowserInstance {
     sandbox: SandboxId,
     cdp: CdpClient,
+    /// Viewers' wheel input, coalesced so it never queues up behind Chrome (F 2026-10-10).
+    wheel: WheelDispatcher,
     http_url: Option<String>,
     config: InstanceConfig,
     state: Mutex<State>,
@@ -653,9 +656,11 @@ impl BrowserInstance {
         let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE);
         let (events_tx, _) = broadcast::channel(EVENT_QUEUE);
         let closed = cdp.close_signal();
+        let wheel = WheelDispatcher::new(cdp.clone());
         let instance = Arc::new(Self {
             sandbox,
             cdp,
+            wheel,
             http_url,
             config,
             state: Mutex::new(State {
@@ -1540,9 +1545,14 @@ impl BrowserInstance {
             return self.display_mouse(display, input).await;
         }
         let session = self.session(tab).await?;
+        if input.event == MouseEventKind::Wheel {
+            let buttons = lock(&self.state).pointer.apply(&input, Instant::now()).2;
+            self.push_wheel(session, &input, buttons);
+            return Ok(());
+        }
         let _input = self.input_lock.lock().await;
         let (kind, click_count, buttons) = lock(&self.state).pointer.apply(&input, Instant::now());
-        let mut params = json!({
+        let params = json!({
             "type": kind,
             "x": input.x,
             "y": input.y,
@@ -1551,11 +1561,6 @@ impl BrowserInstance {
             "clickCount": click_count,
             "modifiers": input.modifiers & 0x0F,
         });
-        if input.event == MouseEventKind::Wheel {
-            params["button"] = json!("none");
-            params["deltaX"] = json!(input.dx);
-            params["deltaY"] = json!(input.dy);
-        }
         self.cdp
             .call_session(&session, "Input.dispatchMouseEvent", params)
             .await?;
@@ -1581,19 +1586,30 @@ impl BrowserInstance {
                     return Ok(());
                 };
                 let session = self.session(&tab).await?;
-                let _input = self.input_lock.lock().await;
-                self.cdp
-                    .call_session(
-                        &session,
-                        "Input.dispatchMouseEvent",
-                        json!({"type": "mouseWheel", "x": input.x, "y": input.y,
-                               "deltaX": input.dx, "deltaY": input.dy, "button": "none",
-                               "modifiers": input.modifiers & 0x0F}),
-                    )
-                    .await?;
+                self.push_wheel(session, &input, 0);
                 Ok(())
             }
         }
+    }
+
+    /// Queues a wheel event without waiting for Chrome ([`WheelDispatcher`]): a fast trackpad
+    /// is summed while dispatches are outstanding instead of queueing up.
+    fn push_wheel(&self, session: String, input: &MouseInput, buttons: u32) {
+        self.wheel.push(WheelEvent {
+            session,
+            x: input.x,
+            y: input.y,
+            dx: input.dx,
+            dy: input.dy,
+            modifiers: input.modifiers & 0x0F,
+            buttons,
+        });
+    }
+
+    /// Wheel events summed into others because Chrome had not answered yet.
+    #[must_use]
+    pub fn wheel_coalesced(&self) -> u64 {
+        self.wheel.coalesced()
     }
 
     /// Inserts text in the shown tab's focused field (IME, emoji, non-ASCII letters, paste).
@@ -1914,7 +1930,9 @@ impl BrowserInstance {
             // Per-connection choices and answers, handled by the viewer connection.
             ViewerClientMsg::View { .. }
             | ViewerClientMsg::Copy { .. }
-            | ViewerClientMsg::Watch { .. } => Ok(None),
+            | ViewerClientMsg::Watch { .. }
+            | ViewerClientMsg::Ack { .. }
+            | ViewerClientMsg::Keyframe => Ok(None),
         }
     }
 
