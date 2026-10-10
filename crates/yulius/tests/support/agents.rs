@@ -20,6 +20,12 @@ pub struct FakeAgentOptions {
     pub limit_after: Option<u32>,
     /// Draw full screen like Claude Code (`--tui`), redrawing on every resize.
     pub tui: bool,
+    /// Run Claude Code's hooks through `yulius hook` like the real CLI (`--hooks`).
+    pub hooks: bool,
+    /// Leave a background shell of this many seconds from the goal turn (`--goal-background`).
+    pub goal_background: Option<u64>,
+    /// Delay the goal turn by this many milliseconds (`--goal-delay-ms`).
+    pub goal_delay_ms: Option<u64>,
 }
 
 /// See the module docs.
@@ -27,6 +33,7 @@ pub struct FakeAgentHarness {
     pub inner: HarnessAdapter,
     pub fake: PathBuf,
     pub options: FakeAgentOptions,
+    pub yulius_exe: PathBuf,
 }
 
 impl FakeAgentHarness {
@@ -34,9 +41,10 @@ impl FakeAgentHarness {
     #[must_use]
     pub fn new(yulius_exe: PathBuf, fake: PathBuf, options: FakeAgentOptions) -> Self {
         Self {
-            inner: HarnessAdapter::new(yulius_exe, "http://127.0.0.1:9"),
+            inner: HarnessAdapter::new(yulius_exe.clone(), "http://127.0.0.1:9"),
             fake,
             options,
+            yulius_exe,
         }
     }
 }
@@ -81,6 +89,18 @@ impl HarnessPort for FakeAgentHarness {
         }
         if self.options.tui {
             argv.push("--tui".into());
+        }
+        if self.options.hooks {
+            argv.extend([
+                "--hooks".into(),
+                self.yulius_exe.to_string_lossy().into_owned(),
+            ]);
+        }
+        if let Some(seconds) = self.options.goal_background {
+            argv.extend(["--goal-background".into(), seconds.to_string()]);
+        }
+        if let Some(ms) = self.options.goal_delay_ms {
+            argv.extend(["--goal-delay-ms".into(), ms.to_string()]);
         }
         plan.plan.argv = argv;
         Ok(plan)

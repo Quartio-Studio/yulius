@@ -150,6 +150,9 @@ function seed(params) {
       delivery: extra.delivery || null, // {stage, environment, pr} once delivery started
       // Paused for subscription capacity: when the earliest window resets (ROT-010).
       resumes_at: status === 'waiting_capacity' ? new Date(Date.now() + 38 * MIN).toISOString() : null,
+      ...(extra.mode ? { mode: extra.mode } : {}),
+      // Background shells the idle agent left running (TSK-014).
+      background_shells: extra.shells ?? null,
     };
   };
   const pr = (number, title, state, base, checks) => ({ number, url: `https://github.com/Quartio-Studio/${number > 400 ? 'product' : 'studio'}/pull/${number}`, title, state, base, head: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, checks });
@@ -175,6 +178,11 @@ function seed(params) {
     t('sb_product', 6, 'Team invites', 'claude', 'closed', null, { done: 7, current: false, updated: 26 * HOUR, author: 'anna-q', delivery: { stage: 'merged_integration', environment: null, pr: pr(505, 'Team invites', 'merged', 'quartio', 'none') } }),
     // Waits for #4 to be Done (TSK-012).
     t('sb_product', 7, 'Invoice emails', 'claude', 'chained', null, { noSteps: true, updated: 3 * MIN }),
+    // Goal achieved after a clean turn, no shell left: Done with a green check although its pull
+    // request's checks still run (TSK-014, F 2026-10-10).
+    t('sb_product', 8, 'Improve the code', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 6 * MIN, shells: 0, delivery: { stage: 'pr_open', environment: null, pr: pr(520, 'Improve the code', 'open', 'quartio', 'pending') } }),
+    // Goal achieved, but a background shell (a dev server) still runs: Working, with the shell said.
+    t('sb_product', 9, 'Start the preview server', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 2 * MIN, shells: 1 }),
     t('sb_three', 2, 'Write README', 'claude', 'closed', null, { done: 7, current: false }),
     t('sb_three', 1, 'Explore data model', 'claude', 'running', 'working', { done: 1, author: 'anna-q' }),
   ];

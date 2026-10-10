@@ -28,6 +28,7 @@ use yulius_domain::usage::{AccountUsage, UsageWindow};
 use crate::auth::hex_token;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
+use crate::finish::{SHELL_PROBE_MS, TranscriptFacts};
 use crate::hub::Hub;
 use crate::model::{
     AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MetricsRecord, PauseKind,
@@ -93,6 +94,15 @@ pub struct TaskRuntime {
     pub(crate) typed_at_ms: AtomicI64,
     /// Who typed last.
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
+    /// Claude Code recorded the session goal as achieved and no prompt came since (TSK-014).
+    pub(crate) goal_achieved: AtomicBool,
+    /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
+    /// transcript does not reopen it.
+    pub(crate) last_stop_ms: AtomicI64,
+    /// Background shells the agent left running, as last probed (-1 = not known).
+    pub(crate) background_shells: AtomicI64,
+    /// The run was reattached after a restart: the transcript it already wrote is history.
+    pub(crate) replay_transcript: AtomicBool,
 }
 
 impl TaskRuntime {
@@ -117,11 +127,22 @@ impl TaskRuntime {
             auto_pr_head: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
+            goal_achieved: AtomicBool::new(false),
+            last_stop_ms: AtomicI64::new(0),
+            background_shells: AtomicI64::new(-1),
+            replay_transcript: AtomicBool::new(false),
         }
     }
 
+    /// A turn started now unless one is already in progress (active agent time).
+    pub(crate) fn start_turn(&self, now: Timestamp) {
+        let _ = self
+            .turn_started_ms
+            .compare_exchange(0, now.0, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
     /// Ends the turn in progress, if any, adding its time to the attempt's active time.
-    fn end_turn(&self, now: Timestamp) {
+    pub(crate) fn end_turn(&self, now: Timestamp) {
         let started = self.turn_started_ms.swap(0, Ordering::SeqCst);
         if started > 0 {
             self.active_ms
@@ -290,7 +311,7 @@ impl App {
         }
     }
 
-    fn existing_runtime(&self, task: &TaskId) -> Option<Arc<TaskRuntime>> {
+    pub(crate) fn existing_runtime(&self, task: &TaskId) -> Option<Arc<TaskRuntime>> {
         self.supervisor
             .runtimes
             .lock()
@@ -1500,6 +1521,10 @@ impl App {
                 .open(&attempt.host_token)
                 .ok()
                 .and_then(|b| b.try_into().ok());
+            // The run's transcript so far is history: its watcher catches up on it (TSK-014).
+            self.runtime(&attempt.task_id)
+                .replay_transcript
+                .store(true, Ordering::SeqCst);
             let reattached = match host_token {
                 Some(token) => self
                     .attach_run(&attempt.task_id, &attempt, &token)
@@ -1507,6 +1532,11 @@ impl App {
                     .is_ok(),
                 None => false,
             };
+            if !reattached {
+                self.runtime(&attempt.task_id)
+                    .replay_transcript
+                    .store(false, Ordering::SeqCst);
+            }
             if reattached {
                 tracing::info!(task = %attempt.task_id, "reattached live run");
                 if let Ok(Some(task)) = store.task(&attempt.task_id).await
@@ -1611,6 +1641,9 @@ impl App {
         }
         runtime.turn_started_ms.store(0, Ordering::SeqCst);
         runtime.active_ms.store(0, Ordering::SeqCst);
+        // A new attempt (or the same one after a restart) learns the goal from its transcript.
+        runtime.goal_achieved.store(false, Ordering::SeqCst);
+        runtime.background_shells.store(-1, Ordering::SeqCst);
         let app = self.clone();
         let tid = task_id.clone();
         let attempt = attempt.clone();
@@ -1639,6 +1672,17 @@ impl App {
         let mut last_drift_check = Timestamp(0);
         let mut saved: Option<UsageSnapshot> = None;
         let mut saved_at = Timestamp(0);
+        // After a restart, the transcript the reattached run already wrote is history until the
+        // first poll reaches its end: it is reduced to its final state, not replayed event by
+        // event (TSK-014; a replayed prompt used to put a finished task back to Working after
+        // every restart). A run started by this server is watched live from its first line.
+        let mut replay = self
+            .runtime(&task_id)
+            .replay_transcript
+            .swap(false, Ordering::SeqCst);
+        let mut catching_up = false;
+        let mut facts = TranscriptFacts::default();
+        let mut probed_at = Timestamp(0);
         while alive.load(Ordering::SeqCst) {
             tokio::time::sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
             if !alive.load(Ordering::SeqCst) {
@@ -1678,6 +1722,14 @@ impl App {
                         attempt.launch_kind == LaunchKind::New,
                     )
                     .ok();
+                catching_up = replay && watch.is_some();
+                replay &= watch.is_none();
+                facts = TranscriptFacts::default();
+            }
+            // Background shells of an idle task, at most every SHELL_PROBE_MS (TSK-014).
+            if now.millis_since(probed_at) >= SHELL_PROBE_MS {
+                probed_at = now;
+                self.probe_idle_shells(&task_id).await;
             }
             let Some(w) = watch.as_mut() else { continue };
             let observations = match w.poll() {
@@ -1687,6 +1739,9 @@ impl App {
                     continue;
                 }
             };
+            for observation in &observations {
+                facts.fold(observation);
+            }
             let usage = w.usage();
             let runtime = self.runtime(&task_id);
             if let Ok(mut u) = runtime.usage.lock() {
@@ -1695,8 +1750,22 @@ impl App {
             let turn_ended = observations
                 .iter()
                 .any(|o| matches!(o, Observation::TurnComplete));
-            for observation in observations {
-                self.on_observation(&task_id, &attempt, observation).await;
+            if catching_up {
+                // Usage limits keep their immediate effect; turns and the goal are applied once,
+                // as the replay's final state.
+                for observation in observations {
+                    if matches!(observation, Observation::LimitReached { .. }) {
+                        self.on_observation(&task_id, &attempt, observation).await;
+                    }
+                }
+                if w.caught_up() {
+                    catching_up = false;
+                    self.apply_transcript_facts(&task_id, facts).await;
+                }
+            } else {
+                for observation in observations {
+                    self.on_observation(&task_id, &attempt, observation).await;
+                }
             }
             // Live metrics (#31): the dashboard counts a run while it goes, saved after each turn
             // and at most every 30 s while something changes.
@@ -1764,13 +1833,14 @@ impl App {
                 let account = attempt.account_id.clone();
                 tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
             }
-            Observation::UserTurn => {
-                let _ = runtime.turn_started_ms.compare_exchange(
-                    0,
-                    self.now().0,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                );
+            Observation::UserTurn { at } => {
+                // A new prompt: an achieved goal no longer makes the task done (TSK-014).
+                runtime.goal_achieved.store(false, Ordering::SeqCst);
+                // A prompt of a turn whose clean Stop already came is not a new turn.
+                if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
+                    return;
+                }
+                runtime.start_turn(self.now());
                 let _ = self
                     .deps
                     .store
@@ -1786,7 +1856,8 @@ impl App {
                     self.turn_ended(task_id, attempt.account_id.clone());
                 }
             }
-            Observation::Session { .. } => {}
+            Observation::Goal(outcome) => self.goal_observed(task_id, outcome).await,
+            Observation::Session { .. } | Observation::TurnEnded => {}
         }
     }
 
