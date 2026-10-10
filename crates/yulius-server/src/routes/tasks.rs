@@ -4,9 +4,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
-use yulius_contracts::api::tasks::{
-    FeedbackRequest, MessageView, PostMessage, TaskDetail, TaskSummary,
-};
+use yulius_contracts::api::tasks::{FeedbackRequest, MessageView, TaskDetail, TaskSummary};
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -86,15 +84,6 @@ pub async fn messages(
     Ok(Json(app.task_messages(&ctx, &tid).await?))
 }
 
-pub async fn post_message(
-    State(app): State<AppState>,
-    Auth(ctx): Auth,
-    Path(tid): Path<String>,
-    Json(req): Json<PostMessage>,
-) -> ApiResult<Json<MessageView>> {
-    Ok(Json(app.post_user_message(&ctx, &tid, &req.body).await?))
-}
-
 pub async fn create(
     State(app): State<AppState>,
     Auth(ctx): Auth,
@@ -133,4 +122,39 @@ pub async fn switch(
 ) -> ApiResult<Json<TaskSummary>> {
     let req = body.map(|Json(b)| b).unwrap_or_default();
     Ok(Json(app.switch_task(&ctx, &tid, &req).await?))
+}
+
+pub async fn intake_check(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(req): Json<yulius_contracts::api::intake::IntakeRequest>,
+) -> ApiResult<Json<yulius_contracts::api::intake::IntakeVerdict>> {
+    Ok(Json(app.intake_check(&ctx, &sid, &req).await?))
+}
+
+pub async fn intake_proposal(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(req): Json<yulius_contracts::api::intake::IntakeRequest>,
+) -> ApiResult<Json<yulius_contracts::api::intake::SplitProposal>> {
+    Ok(Json(app.intake_proposal(&ctx, &sid, &req).await?))
+}
+
+pub async fn start_now(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.start_chained_now(&ctx, &tid).await?))
+}
+
+pub async fn held_prompt(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((tid, hid)): Path<(String, String)>,
+    Json(req): Json<yulius_contracts::api::intake::ResolveHeldPrompt>,
+) -> ApiResult<Json<yulius_contracts::api::intake::HeldPromptOutcome>> {
+    Ok(Json(app.resolve_held_prompt(&ctx, &tid, &hid, &req).await?))
 }

@@ -58,6 +58,50 @@ pub struct TaskSummary {
     /// resets and the task resumes, RFC 3339 (ROT-010). Null otherwise or when unknown.
     #[serde(default)]
     pub resumes_at: Option<String>,
+    /// The task this one runs after (SPEC-001 TSK-012): while `chained` it waits for it; the
+    /// link stays after the task started.
+    #[serde(default)]
+    pub after: Option<Box<ChainLink>>,
+    /// Tasks chained to run after this one.
+    #[serde(default)]
+    pub next: Vec<ChainLink>,
+    /// A prompt typed into the session that Yulius held for a decision (TSK-013).
+    #[serde(default)]
+    pub held_prompt: Option<Box<HeldPrompt>>,
+}
+
+/// One end of a chain (SPEC-001 TSK-012).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChainLink {
+    /// Task id; null when the predecessor was deleted.
+    pub task_id: Option<String>,
+    /// Task number.
+    pub number: u32,
+    /// Title; null when deleted.
+    pub title: Option<String>,
+    /// Status wire name; null when deleted.
+    pub status: Option<String>,
+    /// On a waiting chained task: why it needs a person instead of starting by itself (its
+    /// predecessor stopped, failed, was cancelled, closed before it was done or was deleted).
+    #[serde(default)]
+    pub blocked: Option<String>,
+}
+
+/// A prompt held by the scope check (SPEC-001 TSK-013).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldPrompt {
+    /// Hold id.
+    pub id: String,
+    /// `new_scope`, `drops_scope` or `redirect`.
+    pub class: String,
+    /// The prompt (at most 2,000 characters; the full text stays on the server).
+    pub excerpt: String,
+    /// Jev's probability of the class, in percent.
+    pub percent: u32,
+    /// Login of the person who typed it, when known.
+    pub typed_by: Option<String>,
+    /// When it was held.
+    pub created_at: String,
 }
 
 fn default_mode() -> String {
@@ -91,6 +135,10 @@ pub struct CreateTask {
     /// `goal` (default) or `prompt` (TSK-010).
     #[serde(default)]
     pub mode: Option<String>,
+    /// Run after this task of the same sandbox (SPEC-001 TSK-012): the new task waits as
+    /// `chained` until that task is Done.
+    #[serde(default)]
+    pub after_task_id: Option<String>,
 }
 
 /// `POST /api/tasks/{tid}/continue` and `/switch`.
@@ -237,7 +285,9 @@ pub struct MessageFrom {
     pub title: String,
 }
 
-/// An inter-task or user message.
+/// A task's message: between tasks, an agent's message to people (`to="people"`, null
+/// `to_task_id`), or a person's message stored before 2026-10-10 (people now talk to the agent in
+/// its terminal).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageView {
     /// Message id.
@@ -256,11 +306,4 @@ pub struct MessageView {
     pub created_at: String,
     /// Read by the recipient.
     pub read: bool,
-}
-
-/// `POST /api/tasks/{tid}/messages`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PostMessage {
-    /// Body.
-    pub body: String,
 }

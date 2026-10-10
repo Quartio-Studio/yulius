@@ -1,4 +1,4 @@
-//! Opt-in browser check of dropped files (SPEC-001 EDT-006, UI-044, AC-EDT-6, AC-UI-39;
+//! Opt-in browser check of dropped files (SPEC-001 EDT-006, UI-048, AC-EDT-6, AC-UI-43;
 //! F 2026-10-10): the real UI in headless Chrome, a real server and the fake agent in a real
 //! detached ptyhost. A file from disk dragged with the browser's own drag and drop
 //! (`Input.dispatchDragEvent` with files) onto the explorer's `src` folder lands in the

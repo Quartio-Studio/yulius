@@ -1,4 +1,4 @@
-//! Dropped files (SPEC-001 EDT-006, UI-044, AC-EDT-5, AC-UI-39; F 2026-10-10): the upload API
+//! Dropped files (SPEC-001 EDT-006, UI-048, AC-EDT-5, AC-UI-43; F 2026-10-10): the upload API
 //! streams one file into the sandbox repository or a task worktree under the editor's rules
 //! (write access, no traversal, no `.git`, no link out of the folder, atomic, never replacing a
 //! file unless asked, bounded); terminal attachments get safe names in a folder outside every
@@ -907,7 +907,7 @@ async fn the_agent_reads_a_dropped_file_by_path_and_git_stays_clean() -> TestRes
     agent_reads_an_attachment(false).await
 }
 
-/// AC-UI-39 (Linux): the same inside bubblewrap. Skipped with a message where bubblewrap cannot
+/// AC-UI-43 (Linux): the same inside bubblewrap. Skipped with a message where bubblewrap cannot
 /// create namespaces.
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

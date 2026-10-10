@@ -1,7 +1,7 @@
 // Keyboard shortcuts (SPEC-001 UI-029): the platform's key names and one sheet that lists every
 // shortcut, opened with ⌘/ (Ctrl+/) or from Settings. Keep the sheet in step with the handlers in
-// app.js (new task, F6, this sheet), taskview.js (composer), pages/tasks.js (single keys), dom.js
-// (menus), editorview.js (save, word wrap) and panels.js (messages).
+// app.js (new task, home, F6, this sheet), taskview.js (composer), pages/tasks.js (single keys), dom.js
+// (menus), editorview.js (save, word wrap) and splitter.js (column edges).
 
 import { h, openModal } from './dom.js';
 import { readJson } from './store.js';
@@ -12,6 +12,9 @@ const MOD = IS_MAC ? '⌘' : 'Ctrl+';
 /** The new-task shortcut as shown ("⌘⇧O" / "Ctrl+Shift+O") and for aria-keyshortcuts. */
 export const NEW_TASK_KEYS = IS_MAC ? '⌘⇧O' : 'Ctrl+Shift+O';
 export const NEW_TASK_ARIA = IS_MAC ? 'Meta+Shift+O' : 'Control+Shift+O';
+/** All sandboxes, the home screen ("⌘⇧H" / "Ctrl+Shift+H"). */
+export const HOME_KEYS = IS_MAC ? '⌘⇧H' : 'Ctrl+Shift+H';
+export const HOME_ARIA = IS_MAC ? 'Meta+Shift+H' : 'Control+Shift+H';
 /** This sheet's own shortcut. */
 export const SHEET_KEYS = `${MOD}/`;
 /** Saving in the editor. */
@@ -25,6 +28,7 @@ function groups() {
   return [
     ['Everywhere', [
       [[NEW_TASK_KEYS], 'New task'],
+      [[HOME_KEYS], 'All sandboxes (home)'],
       [[SHEET_KEYS], 'Keyboard shortcuts (this list)'],
       [['F6', 'Shift+F6'], 'Next / previous area — also leaves the terminal and the browser view'],
       [['Esc'], 'Close a menu, dialog, panel or the phone drawer'],
@@ -54,8 +58,10 @@ function groups() {
       [['Enter', 'Space'], 'Show the focused tab'],
       [['Delete', 'Backspace'], 'Close the focused tab'],
     ]],
-    ['Messages', [
-      [[`${MOD}Enter`], 'Send'],
+    ['Column edges (sidebar, explorer, panel)', [
+      [['←', '→'], 'Narrower / wider — Shift for bigger steps'],
+      [['Home', 'End'], 'Narrowest / widest'],
+      [['Double-click'], 'Back to the default width'],
     ]],
   ];
 }

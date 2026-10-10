@@ -801,3 +801,64 @@ fn missing_executable_is_a_spawn_error() -> TestResult {
     ));
     Ok(())
 }
+
+/// SPEC-002 ADR-16 ("redirect"): the task's committed and uncommitted work is kept on a new
+/// branch, the worktree goes back to where it forked, and an existing branch is never replaced.
+#[test]
+fn keep_and_revert_keeps_all_work_and_resets_the_worktree() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let fork = fx.git.rev_parse(&repo, "main")?;
+    let worktree = fx.path("worktrees/t1");
+    fs::create_dir_all(fx.path("worktrees"))?;
+    fx.git
+        .worktree_add(&repo, &worktree, "feat/1-task", "main")?;
+    fs::write(worktree.join("a.txt"), "committed change\n")?;
+    fx.git.commit_all(&worktree, "work", &author())?;
+    fs::write(worktree.join("draft.txt"), "uncommitted\n")?;
+    let bases = vec!["origin/missing".to_owned(), "origin/main".to_owned()];
+    let kept = fx.git.keep_and_revert(
+        &worktree,
+        "yulius/reverted/1-100",
+        &bases,
+        "yulius: keep the work of #1 before reverting it",
+        &author(),
+    )?;
+    assert_eq!(fx.git.rev_parse(&repo, "yulius/reverted/1-100")?, kept);
+    assert_eq!(fx.git.rev_parse(&worktree, "HEAD")?, fork, "worktree reset");
+    assert!(!worktree.join("draft.txt").exists());
+    assert_eq!(
+        fs::read_to_string(worktree.join("a.txt"))?,
+        "one\ntwo\nthree\n"
+    );
+    let files = fx.raw(&repo, &["show", "--name-only", "--format=", &kept])?;
+    assert!(
+        files.contains("draft.txt"),
+        "uncommitted work kept: {files}"
+    );
+    let log = fx.git.log(&repo, "yulius/reverted/1-100", 5)?;
+    assert_eq!(log.len(), 3, "both commits kept on the branch");
+    // An existing branch is refused before anything is reset.
+    fs::write(worktree.join("more.txt"), "x\n")?;
+    assert!(matches!(
+        fx.git.keep_and_revert(
+            &worktree,
+            "yulius/reverted/1-100",
+            &bases,
+            "again",
+            &author()
+        ),
+        Err(GitError::BranchExists(_))
+    ));
+    assert_eq!(
+        fx.git.rev_parse(&repo, "yulius/reverted/1-100")?,
+        kept,
+        "kept branch untouched"
+    );
+    assert!(matches!(
+        fx.git
+            .keep_and_revert(&worktree, "x", &["nowhere".to_owned()], "m", &author()),
+        Err(GitError::InvalidInput { .. })
+    ));
+    Ok(())
+}

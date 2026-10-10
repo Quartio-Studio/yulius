@@ -1,4 +1,4 @@
-//! Uploads (SPEC-001 EDT-006, UI-044; docs/api.md "Browser, editor, shell"): files dropped onto
+//! Uploads (SPEC-001 EDT-006, UI-048; docs/api.md "Browser, editor, shell"): files dropped onto
 //! the editor go into the sandbox repository or a task worktree; files dropped or pasted onto a
 //! terminal become attachments that the agent (or the user's own shell) opens by path.
 //!

@@ -72,6 +72,13 @@ export function statusInfo(task) {
   // Needs you with the reset time and continues by itself; the user may switch or add an account.
   if (status === 'waiting_capacity') return { glyph: '⧗', icon: 'clock', tone: 'attention', label: 'Usage limit reached', group: 'needs' };
   if (status === 'stopping') return { glyph: '■', icon: 'st-stopped', tone: 'stopping', label: 'Stopping', group: 'working' };
+  // Waiting for another task to be Done (TSK-012); when that task ended otherwise, a person
+  // decides: Start now or Cancel. It never starts by itself then.
+  if (status === 'chained') {
+    const after = task.after;
+    if (after && after.blocked) return { glyph: '!', icon: 'st-attention', tone: 'attention', label: `Needs you · after #${after.number}`, group: 'needs', detail: after.blocked };
+    return { glyph: '⧗', icon: 'clock', tone: 'queued', label: after ? `Queued after #${after.number}` : 'Queued after another task', group: 'working' };
+  }
   if (status === 'closed') return { glyph: '✓', icon: 'st-closed', tone: 'closed', label: 'Closed', group: 'ended' };
   if (status === 'stopped_cancelled') return { glyph: '■', icon: 'st-stopped', tone: 'stopped', label: STOP_LABELS[status], group: 'ended' };
   if (status in STOP_LABELS) return { glyph: '▲', icon: 'st-crashed', tone: 'stopped-abnormal', label: STOP_LABELS[status], group: 'ended' };
@@ -85,6 +92,7 @@ export function statusInfo(task) {
  */
 export function activityLine(task, info = statusInfo(task)) {
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
+  if (info.held) return 'A prompt was held · choose what to do';
   if (info.pr) return info.label;
   const steps = task.steps || {};
   if (task.status === 'running') {
@@ -92,6 +100,11 @@ export function activityLine(task, info = statusInfo(task)) {
     if (task.activity === 'waiting') return steps.total && steps.done >= steps.total ? 'All steps done — review it' : 'Agent replied — your turn';
     if (steps.total) return `Step ${Math.min((steps.done || 0) + 1, steps.total)}/${steps.total}${steps.current ? ` · ${steps.current}` : ''}`;
     return 'Working';
+  }
+  if (task.status === 'chained') {
+    const after = task.after;
+    if (after && after.blocked) return after.blocked;
+    return after ? `Starts by itself when #${after.number} is done` : info.label;
   }
   if (task.status === 'waiting_capacity') {
     const reset = task.resumes_at ? resetLabel(task.resumes_at) : '';
@@ -112,6 +125,8 @@ export function activityLine(task, info = statusInfo(task)) {
  */
 export function taskInfo(task, actionRequests, pr) {
   const info = statusInfo(task);
+  // A prompt typed into the session was held before it reached the agent (TSK-013).
+  if (task.held_prompt && info.group !== 'ended') return { ...info, icon: 'st-attention', tone: 'attention', label: 'Prompt held · your choice', group: 'needs', held: task.held_prompt };
   const map = actionRequests && actionRequests.get(task.sandbox_id);
   if (map && info.group !== 'ended') {
     for (const [tabId, request] of map) {
@@ -141,15 +156,17 @@ export function allows(access, minimum) {
 export function taskActions(task, access) {
   const write = allows(access, 'write');
   const live = isLive(task.status);
-  const ended = !live;
+  const chained = task.status === 'chained';
+  const ended = !live && !chained;
   return {
-    stop: write && live && task.status !== 'stopping',
+    stop: write && (live || chained) && task.status !== 'stopping',
+    startNow: write && chained,
     continue: write && ended && !task.archived,
     switch: write && !task.archived && (task.status === 'running' || task.status === 'waiting_capacity' || ended),
     deliver: write && !task.archived,
     feedback: allows(access, 'read'),
     archive: write && ended && !task.archived,
     restore: write && task.archived,
-    delete: write && ended && task.status !== 'stopping',
+    delete: write && (ended || chained) && task.status !== 'stopping',
   };
 }

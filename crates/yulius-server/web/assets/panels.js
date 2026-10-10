@@ -1,8 +1,8 @@
-// Right rail (Browser, Editor, Shell, Messages) and its resizable panel. The whole rail is
-// hidden by default (F 2026-10-07) and shown with the top-bar Tools toggle, remembered per
-// browser; opening a panel from a link shows it. Sandbox-scoped panels stay alive while hidden
-// so the browser stream, VS Code and shell sessions are not torn down on every toggle. A panel
-// can be maximized over the center.
+// Right rail (Browser, Editor, Shell, Messages) and its resizable panel; each tool keeps the width
+// its user gave it (UI-044). The whole rail is hidden by default (F 2026-10-07) and shown with the
+// top-bar Tools toggle, remembered per browser; opening a panel from a link shows it.
+// Sandbox-scoped panels stay alive while hidden so the browser stream, editor and shell sessions
+// are not torn down on every toggle. A panel can be maximized over the center.
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, errorToast, placeholder, singleFlight, keepFocus, closableTabKeys } from './dom.js';
@@ -13,11 +13,16 @@ import { createEditorView } from './editorview.js';
 import { messageView } from './actions.js';
 import { allows } from './status.js';
 import { readJson, writeJson } from './store.js';
+import { createSplitter, layoutPrefs } from './splitter.js';
 
+/** The panel's width per browser before widths were kept per user (read once as a fallback). */
 const WIDTH_KEY = 'yulius.panelWidth';
 const RAIL_KEY = 'yulius.railVisible';
+/** The panel's narrowest width and the room it leaves the centre (UI-042, UI-044). */
+const PANEL_MIN = 300;
+const CENTER_MIN = 360;
 const MAX_KEY = 'yulius.panelMaximized';
-/** Default panel width per kind (fraction of the window); VS Code needs room. */
+/** Default panel width per kind (share of the work area); the editor needs room. */
 const DEFAULT_FRACTION = { editor: 0.62 };
 const KINDS = [
   ['browser', 'globe', 'Browser'],
@@ -44,7 +49,19 @@ export function createPanelHost(ctx) {
   const title = h('span', { class: 'panel-title' });
   const headExtra = h('div', { class: 'row' });
   const body = h('div', { class: 'panel-body' });
-  const handle = h('div', { class: 'panel-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize panel', 'aria-valuemin': '0', 'aria-valuemax': '100', tabindex: '0', title: 'Drag, use the arrow keys, or double-click to reset' });
+  const prefs = layoutPrefs(ctx);
+  // The splitter on the panel's left edge (UI-044): dragging left widens it.
+  const splitter = createSplitter({
+    label: 'Resize panel',
+    className: 'panel-resize',
+    grow: -1,
+    width: () => panel.getBoundingClientRect().width,
+    resize: (px) => applyWidth(px),
+    commit: () => { if (kind) prefs.set(`panel-${kind}`, panel.getBoundingClientRect().width / room()); },
+    reset: () => { if (kind) prefs.clear(`panel-${kind}`); applyWidth(defaultWidth(kind, { remembered: false })); },
+    range: () => ({ min: PANEL_MIN, max: maxWidth() }),
+  });
+  const handle = splitter.el;
   const maximizeButton = iconButton('maximize', 'Maximize panel', () => setMaximized(!maximized));
   const panel = h('section', { class: 'panel', hidden: true, 'aria-label': 'Tool panel' },
     handle,
@@ -62,6 +79,8 @@ export function createPanelHost(ctx) {
     if (!visible && !panel.hidden) close();
     if (persist) writeJson(RAIL_KEY, visible);
     if (ctx.onRailChange) ctx.onRailChange(visible);
+    // The rail's width changes the room the sidebar may take (UI-044).
+    if (ctx.fitSidebar) ctx.fitSidebar();
   }
 
   function setMaximized(value) {
@@ -84,71 +103,45 @@ export function createPanelHost(ctx) {
   let task = null;
   const views = new Map(); // key → view
 
-  // ---- width (default 45 % of the work area, resizable, remembered per browser). The work area is
-  // the room the centre and the panel share: the window less the rail and the sidebar, which stays
-  // on wider screens (on phones it is a drawer over the page).
+  // ---- width (default 45 % of the work area, resizable, remembered per user in this browser). The
+  // work area is the room the centre and the panel share: the window less the rail and the sidebar,
+  // which stays on wider screens (on phones it is a drawer over the page).
   function room() {
     const sidebar = rail.closest('.app')?.querySelector('.sidebar');
     const side = sidebar && !window.matchMedia('(max-width: 767px)').matches ? sidebar.getBoundingClientRect().width : 0;
     return Math.max(1, window.innerWidth - rail.getBoundingClientRect().width - side);
   }
-  function defaultWidth(k) {
-    const saved = Number(readJson(WIDTH_KEY, 0));
+  /** The centre keeps at least 360 px next to the panel (where the window has room for both). */
+  const maxWidth = () => Math.max(PANEL_MIN, room() - CENTER_MIN);
+  /** Each tool opens at the width this user gave it last, else its default share of the work area. */
+  function defaultWidth(k, { remembered = true } = {}) {
     const fallback = DEFAULT_FRACTION[k] || 0.45;
-    const fraction = saved > 0.15 && saved < 0.85 ? Math.max(saved, fallback) : fallback;
-    return Math.round(room() * fraction);
+    if (!remembered) return Math.round(room() * fallback);
+    const saved = prefs.get(`panel-${k}`);
+    if (saved > 0.15 && saved < 0.85) return Math.round(room() * saved);
+    // The width per browser kept before widths were per user and per tool: never below the default.
+    const legacy = Number(readJson(WIDTH_KEY, 0));
+    return Math.round(room() * (legacy > 0.15 && legacy < 0.85 ? Math.max(legacy, fallback) : fallback));
   }
   // The width last chosen (opening, dragging, keys); a narrower window shows less of it, and the panel
   // grows back to it when the window widens again.
   let wanted = 0;
   function applyWidth(px, { remember = true } = {}) {
-    // The centre keeps at least 360 px next to the panel.
-    const max = Math.max(320, room() - 360);
-    const width = Math.max(300, Math.min(max, px));
+    const width = Math.round(Math.max(PANEL_MIN, Math.min(maxWidth(), px)));
     if (remember) wanted = width;
     panel.style.width = `${width}px`;
-    // The splitter says where it is (WCAG 4.1.2): the panel's share of the work area.
-    const share = Math.round((width / room()) * 100);
-    handle.setAttribute('aria-valuenow', String(share));
-    handle.setAttribute('aria-valuetext', `Panel ${share}% of the work area`);
+    splitter.sync(); // the separator says how wide it is (WCAG 4.1.2)
     return width;
   }
-  handle.addEventListener('pointerdown', (event) => {
-    event.preventDefault();
-    handle.setPointerCapture(event.pointerId);
-    handle.classList.add('dragging');
-    document.body.classList.add('resizing');
-    const railLeft = rail.getBoundingClientRect().left;
-    const move = (e) => applyWidth(railLeft - e.clientX);
-    const up = (e) => {
-      handle.releasePointerCapture(e.pointerId);
-      handle.classList.remove('dragging');
-      document.body.classList.remove('resizing');
-      handle.removeEventListener('pointermove', move);
-      handle.removeEventListener('pointerup', up);
-      writeJson(WIDTH_KEY, panel.getBoundingClientRect().width / room());
-    };
-    handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', up);
-  });
-  // A double-click resets the width: a way to resize without dragging (WCAG 2.5.7).
-  handle.addEventListener('dblclick', () => {
-    const width = applyWidth(defaultWidth(kind));
-    writeJson(WIDTH_KEY, width / room());
-  });
-  handle.addEventListener('keydown', (event) => {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-    event.preventDefault();
-    const width = applyWidth(panel.getBoundingClientRect().width + (event.key === 'ArrowLeft' ? 40 : -40));
-    writeJson(WIDTH_KEY, width / room());
-  });
   // A panel opened in a wide window kept its pixel width when the window narrowed (or the sidebar
-  // widened at a breakpoint), pushing the rail past the window's edge (F 2026-10-09): re-fit it.
+  // widened), pushing the rail past the window's edge (F 2026-10-09): re-fit it. The sidebar calls
+  // this after it changed its own width (UI-044).
   function refit() {
     if (panel.hidden || maximized || !wanted || window.matchMedia('(max-width: 767px)').matches) return;
     applyWidth(wanted, { remember: false });
   }
   window.addEventListener('resize', refit);
+  ctx.refitPanel = refit;
 
   function viewKey(k) {
     if (k === 'messages') return task ? `messages:${task.id}` : 'messages:none';
@@ -181,7 +174,9 @@ export function createPanelHost(ctx) {
     if (!railVisible) setRailVisible(true);
     if (panel.hidden) {
       panel.hidden = false;
-      applyWidth(Math.max(defaultWidth(k), panel.getBoundingClientRect().width || 0));
+      // The panel's minimum comes out of the sidebar first, then the tool opens at its width.
+      if (ctx.fitSidebar) ctx.fitSidebar();
+      applyWidth(defaultWidth(k));
     }
     const savedMax = readJson(MAX_KEY, {}) || {};
     setMaximized(Boolean(savedMax[k]));
@@ -197,6 +192,7 @@ export function createPanelHost(ctx) {
     panel.hidden = true;
     const app = rail.closest('.app');
     if (app) app.classList.remove('panel-max');
+    if (ctx.fitSidebar) ctx.fitSidebar(); // the sidebar grows back to its width
     kind = null;
     for (const button of buttons.values()) {
       button.classList.remove('active');
@@ -250,7 +246,7 @@ export function createPanelHost(ctx) {
     rail,
     panel,
     /** Sign-out: drop every tool view (terminals, browser, editor) and unsubscribe. */
-    destroy() { offs.forEach((off) => off()); window.removeEventListener('resize', refit); destroyWhere(() => true); },
+    destroy() { offs.forEach((off) => off()); window.removeEventListener('resize', refit); if (ctx.refitPanel === refit) ctx.refitPanel = null; destroyWhere(() => true); },
     get railVisible() { return railVisible; },
     setRailVisible,
     /** Applies the remembered rail visibility once the rail is in the document. */
@@ -551,33 +547,36 @@ function createShellView(ctx, sandbox, getTask) {
 
 // ---------------------------------------------------------------- messages
 
-/** Task messages (COM-005: users see messages) with a send box. */
+/**
+ * A task's messages (COM-002, COM-005, F 2026-10-10): what other tasks sent it, what it sent them,
+ * and its agent's messages to people. There is no composer: people talk to the agent in its
+ * terminal, so a message where the agent asks people something offers "Reply in the terminal".
+ */
 function createMessagesView(ctx, sandbox, task) {
   const list = h('div', { class: 'msg-list', role: 'log', 'aria-live': 'polite', 'aria-label': 'Messages' }, placeholder('Loading messages…', 'loading'));
-  const input = h('textarea', { class: 'textarea', rows: 3, placeholder: `Message #${task.number} — delivered to the agent like a task message`, 'aria-label': 'Message', maxlength: 20000 });
-  const send = h('button', { type: 'button', class: 'btn btn-primary btn-sm' }, icon('send', { size: 13 }), 'Send');
-  const write = allows(sandbox.access, 'write');
-  const compose = write
-    ? h('div', { class: 'msg-compose' }, input, h('div', { class: 'row' }, h('span', { class: 'muted xs' }, 'Ctrl/⌘ + Enter to send'), h('span', { class: 'spacer' }), send))
-    : h('div', { class: 'msg-compose muted small' }, 'Read-only (GitHub: read): you can read messages but not send them.');
-  const el = h('div', { class: 'panel-view' }, list, compose);
+  const el = h('div', { class: 'panel-view' }, list);
   const messages = new Map();
   const myLogin = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null;
+  // The agent asks people (message_send to="people", or a broadcast): the answer is typed in its
+  // terminal, like every other word to the agent.
+  const asksPeople = (m) => Boolean(m.from && m.from.task_id === task.id && !m.to_task_id && (m.kind === 'question' || m.kind === 'request'));
+  const replyable = allows(sandbox.access, 'write') && Boolean(ctx.replyInTerminal);
+  const view = (m) => messageView(ctx, m, myLogin, replyable && asksPeople(m) ? { onReply: () => ctx.replyInTerminal(task) } : {});
 
   // New messages are appended, not the whole list rebuilt: focus and reading position stay, and the
   // log announces only what is new.
   const rendered = new Map(); // message id → element
   function render() {
     const sorted = [...messages.values()].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-    if (sorted.length === 0) { rendered.clear(); setChildren(list, placeholder('No messages yet. Tasks message each other here; you can message the agent too.')); return; }
+    if (sorted.length === 0) { rendered.clear(); setChildren(list, placeholder('No messages yet. Messages between this task and other tasks show here, and so do its agent’s messages to people. To talk to the agent, type in its terminal.')); return; }
     const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 24;
     const fresh = sorted.filter((m) => !rendered.has(m.id));
     const last = sorted.filter((m) => rendered.has(m.id)).pop();
     if (rendered.size && fresh.every((m) => !last || String(m.created_at) >= String(last.created_at))) {
-      for (const m of fresh) { const el = messageView(ctx, m, myLogin); rendered.set(m.id, el); list.append(el); }
+      for (const m of fresh) { const el = view(m); rendered.set(m.id, el); list.append(el); }
     } else {
       rendered.clear();
-      keepFocus(list, () => setChildren(list, sorted.map((m) => { const el = messageView(ctx, m, myLogin); rendered.set(m.id, el); return el; })));
+      keepFocus(list, () => setChildren(list, sorted.map((m) => { const el = view(m); rendered.set(m.id, el); return el; })));
     }
     if (atBottom) list.scrollTop = list.scrollHeight;
   }
@@ -595,25 +594,6 @@ function createMessagesView(ctx, sandbox, task) {
     }
   }
 
-  const submit = singleFlight(async () => {
-    const text = input.value.trim();
-    if (!text) return;
-    send.disabled = true;
-    try {
-      const message = await ctx.api.post(`/api/tasks/${enc(task.id)}/messages`, { body: text });
-      if (message && message.id) messages.set(message.id, message);
-      input.value = '';
-      render();
-      list.scrollTop = list.scrollHeight;
-    } catch (error) {
-      errorToast(error, 'Message not sent');
-    } finally {
-      send.disabled = false;
-    }
-  });
-
-  send.addEventListener('click', submit);
-  input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(); } });
   const off = [
     ctx.store.on('message', ({ task_id: taskId, message }) => {
       const involved = taskId === task.id || (message && (message.to_task_id === task.id || (message.from && message.from.task_id === task.id)));
@@ -624,7 +604,6 @@ function createMessagesView(ctx, sandbox, task) {
   load();
   return {
     el,
-    show() { if (write) setTimeout(() => input.focus(), 0); },
     destroy() { off.forEach((fn) => fn()); },
   };
 }

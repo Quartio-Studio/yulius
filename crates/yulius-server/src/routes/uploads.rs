@@ -1,5 +1,5 @@
 //! Uploads: files dropped onto the editor or a terminal (docs/api.md "Browser, editor, shell";
-//! SPEC-001 EDT-006, UI-044). The raw body is one file, streamed to disk by the application
+//! SPEC-001 EDT-006, UI-048). The raw body is one file, streamed to disk by the application
 //! (`yulius_app::uploads`): no JSON body limit applies, the size limit and the idle bound do.
 
 use axum::Json;

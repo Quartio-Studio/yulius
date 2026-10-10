@@ -4,7 +4,7 @@ import { failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
-// Dropped files (EDT-006, UI-044; F 2026-10-10): "also do drag and drop for files to both editor
+// Dropped files (EDT-006, UI-048; F 2026-10-10): "also do drag and drop for files to both editor
 // and claude (like images but also pdfs etc)". The tests dispatch the browser's own drag events
 // with a DataTransfer holding files, as a drag from the computer does.
 

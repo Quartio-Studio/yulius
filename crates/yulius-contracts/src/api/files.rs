@@ -85,7 +85,7 @@ pub struct CreateEntry {
     pub kind: String,
 }
 
-/// Result of an upload (SPEC-001 EDT-006, UI-044): `PUT /api/sandboxes/{sid}/files/upload`
+/// Result of an upload (SPEC-001 EDT-006, UI-048): `PUT /api/sandboxes/{sid}/files/upload`
 /// (into the repository or a task worktree) and the attachment endpoints
 /// (`POST /api/tasks/{tid}/attachments`, `POST /api/sandboxes/{sid}/shells/{id}/attachments`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

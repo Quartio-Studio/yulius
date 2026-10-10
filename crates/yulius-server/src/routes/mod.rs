@@ -75,6 +75,19 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             get(tasks::list).post(tasks::create),
         )
         .route("/api/tasks/{tid}/stop", post(tasks::stop))
+        .route("/api/tasks/{tid}/start-now", post(tasks::start_now))
+        .route(
+            "/api/tasks/{tid}/held-prompts/{hid}",
+            post(tasks::held_prompt),
+        )
+        .route(
+            "/api/sandboxes/{sid}/intake/check",
+            post(tasks::intake_check),
+        )
+        .route(
+            "/api/sandboxes/{sid}/intake/proposal",
+            post(tasks::intake_proposal),
+        )
         .route("/api/tasks/{tid}/continue", post(tasks::resume))
         .route("/api/tasks/{tid}/switch", post(tasks::switch))
         .route("/api/archived-tasks", get(tasks::archived))
@@ -82,10 +95,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/tasks/{tid}/archive", post(tasks::archive))
         .route("/api/tasks/{tid}/restore", post(tasks::restore))
         .route("/api/tasks/{tid}/feedback", post(tasks::feedback))
-        .route(
-            "/api/tasks/{tid}/messages",
-            get(tasks::messages).post(tasks::post_message),
-        )
+        .route("/api/tasks/{tid}/messages", get(tasks::messages))
         .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
         .route(
@@ -206,7 +216,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(6 << 20)),
         )
         .route("/api/shells/{id}/terminal", get(shells::terminal))
-        // Dropped files (EDT-006, UI-044): raw streamed bodies, bounded by the upload limit.
+        // Dropped files (EDT-006, UI-048): raw streamed bodies, bounded by the upload limit.
         .route("/api/sandboxes/{sid}/files/upload", put(uploads::file))
         .route(
             "/api/tasks/{tid}/attachments",

@@ -13,6 +13,7 @@ pub mod crypto;
 mod delivery;
 mod imports;
 mod instance;
+mod intake;
 mod mcp;
 mod sandboxes;
 mod sessions;
@@ -37,6 +38,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_initial.sql"),
     include_str!("migrations/0002_instance_feedback.sql"),
     include_str!("migrations/0003_claude_only.sql"),
+    include_str!("migrations/0004_task_intake.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -266,7 +268,7 @@ mod tests {
                         .map_err(db)
                 })
                 .await?;
-            assert_eq!(version, 3);
+            assert_eq!(version, i64::try_from(MIGRATIONS.len())?);
         }
         // Reopen applies nothing new and keeps the version.
         let store = SqliteStore::open(&path)?;
@@ -276,7 +278,7 @@ mod tests {
                     .map_err(db)
             })
             .await?;
-        assert_eq!(version, 3);
+        assert_eq!(version, i64::try_from(MIGRATIONS.len())?);
         let backup = dir.path().join("backup.db");
         store.backup_to(&backup).await?;
         assert!(backup.exists());

@@ -1,4 +1,4 @@
-// Dropped and pasted files (SPEC-001 EDT-006, UI-044; F 2026-10-10). Files or folders dropped on
+// Dropped and pasted files (SPEC-001 EDT-006, UI-048; F 2026-10-10). Files or folders dropped on
 // the editor's explorer go into the folder under the pointer, files dropped on the editor into
 // the open file's folder (text files then open); files dropped on a terminal — or an image
 // pasted into it — are uploaded as attachments and their paths typed into it as a paste, the way
@@ -460,7 +460,7 @@ function pastedFiles(data) {
 }
 
 /**
- * Drop files onto a terminal, or paste an image into it (UI-044): each file is uploaded with
+ * Drop files onto a terminal, or paste an image into it (UI-048): each file is uploaded with
  * `upload(file, options)` (taskAttachments, shellAttachments) and the stored paths are pasted into
  * the terminal's input (bracketed paste when the program asked for it), space-separated, quoted
  * as needed. Folders are refused; read-only viewers cannot drop. `view` is a terminal view
