@@ -125,7 +125,7 @@ export function mountSessionsPage(ctx, sandbox) {
     if (state.author) params.set('author', state.author);
     list.classList.add('ss-busy');
     try {
-      const data = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/sessions${params.toString() ? `?${params}` : ''}`);
+      const data = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/sessions?${params}`);
       if (!alive || mine !== generation) return;
       renderPeople(data.authors);
       const sessions = Array.isArray(data.sessions) ? data.sessions : [];
