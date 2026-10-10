@@ -1734,7 +1734,7 @@ a.dl-task:hover { text-decoration: underline; }
   .panel { position: fixed; z-index: var(--z-panel); inset: 0; width: auto !important; border-left: 0; }
   /* Phones keep the drawer and full-screen panels: no column splitters (UI-044). */
   .splitter { display: none; }
-  .ed-root { grid-template-columns: minmax(120px, max(160px, 22%)) minmax(0, 1fr); }
+  .ed .ed-root { grid-template-columns: minmax(120px, max(160px, 22%)) minmax(0, 1fr); }
   .panel-head { height: 44px; }
 
   .quickbar { display: flex; }
