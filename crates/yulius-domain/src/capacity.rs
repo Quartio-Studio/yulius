@@ -1,5 +1,5 @@
 //! Capacity monitoring for the subscription pool: burn rate, run-out forecast, hours paused and
-//! how many subscriptions to add (SPEC-001 ROT-013, SPEC-002 ADR-16 §2.3 "Forecast").
+//! how many subscriptions to add (SPEC-001 ROT-013, SPEC-002 ADR-17 §2.4 "Forecast").
 //!
 //! Units: a subscription's weekly window is 100 %; the pool's capacity and its burn are counted
 //! in percentage points of one subscription's weekly window ("points"), so a pool of three fresh
@@ -211,7 +211,7 @@ pub fn overlap_hours(spans: &[Span], from: Timestamp, to: Timestamp) -> f64 {
         .sum()
 }
 
-/// Subscriptions the demand needs (ADR-16 §2.3):
+/// Subscriptions the demand needs (ADR-17 §2.4):
 /// `ceil(max(burn_24h × 168 / threshold, N × (active + paused) / active))`, the second term
 /// only when tasks were paused (`N + 1` when they were paused without ever running).
 #[must_use]
@@ -236,7 +236,7 @@ pub fn needed_subscriptions(
     needed as u32
 }
 
-/// The whole capacity picture (ADR-16 §2.3).
+/// The whole capacity picture (ADR-17 §2.4).
 #[must_use]
 pub fn forecast(input: &ForecastInput<'_>) -> Forecast {
     let now = input.now;

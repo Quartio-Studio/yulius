@@ -137,7 +137,7 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
     }
 
     let settings = json_of(file(&plan, "claude-settings.json")?)?;
-    // The turn boundaries may be held while no subscription has capacity (ADR-16): their CLI
+    // The turn boundaries may be held while no subscription has capacity (ADR-17): their CLI
     // timeout outlasts the hook client's 8-day hold; the others keep 15 s.
     for (event, timeout) in [
         ("SessionStart", 15),

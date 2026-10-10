@@ -374,3 +374,118 @@ async fn oauth_state_single_use_and_expiry() -> R {
     );
     Ok(())
 }
+
+/// SPEC-001 TSK-012/013: chain links and held prompts survive a reopen; a newer held prompt
+/// supersedes the pending one; decisions are compare-and-set; "send anyway" is consumed once;
+/// deleting a predecessor keeps its successor's link with the number but no id.
+#[tokio::test]
+async fn chain_links_and_held_prompts_persist_and_resolve_once() -> R {
+    use yulius_app::intake::{ChainRecord, HoldRecord, hold_state};
+    use yulius_app::ports::store_ext::IntakeStore;
+    use yulius_domain::intake::PromptClass;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("y.db");
+    let hold = |id: &str, at: i64| -> Result<HoldRecord, Box<dyn std::error::Error>> {
+        Ok(HoldRecord {
+            id: id.into(),
+            task_id: TaskId::parse("t1")?,
+            class: PromptClass::NewScope,
+            prompt: "add a dark mode".into(),
+            prompt_sha256: "ab12".into(),
+            percent: 92,
+            typed_by: Some(UserId::parse("u1")?),
+            state: hold_state::PENDING.into(),
+            created_at: Timestamp(at),
+            resolved_by: None,
+            resolved_at: None,
+            new_task_id: None,
+        })
+    };
+    {
+        let store = SqliteStore::open(&path)?;
+        let (sid, uid) = seed(&store).await?;
+        for id in ["t1", "t2"] {
+            let mut record = task(id, &sid, &uid)?;
+            record.status = TaskStatus::Chained;
+            store.insert_task(&record).await?;
+        }
+        store
+            .insert_chain(&ChainRecord {
+                task_id: TaskId::parse("t2")?,
+                after_task_id: Some(TaskId::parse("t1")?),
+                after_number: 1,
+                blocked_reason: None,
+                created_at: Timestamp(5),
+            })
+            .await?;
+        store.insert_hold(&hold("h1", 6)?).await?;
+        store.insert_hold(&hold("h2", 7)?).await?;
+    }
+    let store = SqliteStore::open(&path)?;
+    let t1 = TaskId::parse("t1")?;
+    let t2 = TaskId::parse("t2")?;
+    assert_eq!(
+        store.task(&t2).await?.ok_or("t2")?.status,
+        TaskStatus::Chained
+    );
+    let chain = store.chain(&t2).await?.ok_or("chain")?;
+    assert_eq!(chain.after_task_id.as_ref(), Some(&t1));
+    assert_eq!(store.chain_successors(&t1).await?.len(), 1);
+    store.set_chain_blocked(&t2, Some("#1 failed")).await?;
+    assert_eq!(
+        store
+            .chain(&t2)
+            .await?
+            .ok_or("chain")?
+            .blocked_reason
+            .as_deref(),
+        Some("#1 failed")
+    );
+
+    assert_eq!(store.pending_hold(&t1).await?.ok_or("pending")?.id, "h2");
+    assert_eq!(
+        store.hold("h1").await?.ok_or("h1")?.state,
+        hold_state::SUPERSEDED
+    );
+    assert!(
+        store
+            .resolve_hold(
+                "h2",
+                hold_state::PENDING,
+                hold_state::SENT,
+                "user:alice",
+                Timestamp(8),
+                None
+            )
+            .await?
+    );
+    assert!(
+        !store
+            .resolve_hold(
+                "h2",
+                hold_state::PENDING,
+                hold_state::PARALLEL,
+                "user:bob",
+                Timestamp(9),
+                None
+            )
+            .await?
+    );
+    assert!(
+        !store.take_sent_hold(&t1, "ab12", Timestamp(9)).await?,
+        "too old"
+    );
+    assert!(store.take_sent_hold(&t1, "ab12", Timestamp(8)).await?);
+    assert!(
+        !store.take_sent_hold(&t1, "ab12", Timestamp(8)).await?,
+        "once"
+    );
+
+    assert!(store.delete_task(&t1).await?);
+    let chain = store.chain(&t2).await?.ok_or("chain kept")?;
+    assert_eq!(chain.after_task_id, None);
+    assert_eq!(chain.after_number, 1);
+    assert!(store.delete_task(&t2).await?);
+    assert!(store.chain(&t2).await?.is_none());
+    Ok(())
+}

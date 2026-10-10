@@ -88,6 +88,11 @@ pub struct TaskRuntime {
     /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
     /// not repeated every turn.
     pub(crate) auto_pr_head: Mutex<Option<String>>,
+    /// When a person last typed into the task's terminal (ms, 0 = never): a prompt submitted
+    /// soon after is theirs (TSK-013).
+    pub(crate) typed_at_ms: AtomicI64,
+    /// Who typed last.
+    pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
 }
 
 impl TaskRuntime {
@@ -110,6 +115,8 @@ impl TaskRuntime {
             turn_started_ms: AtomicI64::new(0),
             active_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
+            typed_at_ms: AtomicI64::new(0),
+            typed_by: Mutex::new(None),
         }
     }
 
@@ -349,7 +356,7 @@ impl App {
     /// The account a new attempt of `task` runs on (placement, ROT-004), or `None` when no
     /// subscription has capacity and the task must pause (ROT-010). A requested account is
     /// honoured when it is usable and refused otherwise (ROT-007).
-    async fn choose_account(
+    pub(crate) async fn choose_account(
         &self,
         task: &TaskRecord,
         requested: Option<&AccountId>,
@@ -402,7 +409,10 @@ impl App {
             return Err(AppError::Invalid(format!("invalid branch name {branch}")));
         }
         let profile = self.profile_of(sandbox);
-        let base = if self
+        // A chained task starts where its predecessor ended, until that is merged (TSK-012).
+        let base = if let Some(branch) = self.chain_base(task).await {
+            branch
+        } else if self
             .deps
             .git
             .branch_exists(&repo, &profile.integration_branch)
@@ -848,7 +858,7 @@ impl App {
         });
     }
 
-    fn open_credential(&self, account: &AccountRecord) -> AppResult<Secret> {
+    pub(crate) fn open_credential(&self, account: &AccountRecord) -> AppResult<Secret> {
         let sealed = account.credential.as_ref().ok_or_else(|| {
             AppError::Conflict(format!("account {} has no credential", account.label))
         })?;
@@ -1061,6 +1071,7 @@ impl App {
             rt.hub.exit(TaskStatus::Stopped(reason).as_str(), None);
         }
         self.publish_task(task_id).await;
+        self.advance_chains(task_id).await;
         self.drain_queue().await;
     }
 
@@ -1160,6 +1171,8 @@ impl App {
         {
             tracing::warn!(error = %err, task = %task_id, "onboarding refresh failed");
         }
+        // Tasks chained after this one start (it is Done) or need a person (it ended).
+        self.advance_chains(task_id).await;
         self.drain_queue().await;
     }
 
@@ -1235,6 +1248,7 @@ impl App {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         if task.status == TaskStatus::Queued
+            || task.status == TaskStatus::Chained
             || task.status == TaskStatus::WaitingCapacity
                 && store.live_attempt(task_id).await?.is_none()
         {
@@ -1249,6 +1263,7 @@ impl App {
                 .await?;
             self.end_pause(task_id, "cancelled").await;
             self.publish_task(task_id).await;
+            self.advance_chains(task_id).await;
             return Ok(());
         }
         let next = task

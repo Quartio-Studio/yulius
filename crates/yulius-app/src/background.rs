@@ -58,6 +58,8 @@ impl App {
             loop {
                 tick.tick().await;
                 app.drain_queue().await;
+                // Chained tasks start once their predecessor is Done (TSK-012).
+                app.advance_all_chains().await;
             }
         });
         // Deliveries in progress follow GitHub, so the Git board moves without anyone looking.

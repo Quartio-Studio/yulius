@@ -247,7 +247,7 @@ pub trait AnalyticsStore: Send + Sync {
     ) -> crate::error::AppResult<crate::analytics::AnalyticsData>;
 }
 
-/// Subscription pool persistence (SPEC-002 ADR-16): pauses for lack of capacity and provider
+/// Subscription pool persistence (SPEC-002 ADR-17): pauses for lack of capacity and provider
 /// usage readings for the burn rate.
 #[async_trait]
 pub trait CapacityStore: Send + Sync {
@@ -286,6 +286,44 @@ pub trait CapacityStore: Send + Sync {
     ) -> AppResult<Vec<(Timestamp, Option<Timestamp>)>>;
 }
 
+/// Chained tasks and held prompts (SPEC-001 TSK-012, TSK-013).
+#[async_trait]
+pub trait IntakeStore: Send + Sync {
+    /// Records that `chain.task_id` runs after `chain.after_task_id`.
+    async fn insert_chain(&self, chain: &crate::intake::ChainRecord) -> AppResult<()>;
+    /// The chain link of a task (whether it waits or already started).
+    async fn chain(&self, task: &TaskId) -> AppResult<Option<crate::intake::ChainRecord>>;
+    /// Tasks chained after `task`, oldest first.
+    async fn chain_successors(&self, task: &TaskId) -> AppResult<Vec<crate::intake::ChainRecord>>;
+    /// Sets or clears why a chained task needs a person.
+    async fn set_chain_blocked(&self, task: &TaskId, reason: Option<&str>) -> AppResult<()>;
+    /// Inserts a pending held prompt; earlier pending holds of the task become `superseded`.
+    async fn insert_hold(&self, hold: &crate::intake::HoldRecord) -> AppResult<()>;
+    /// A held prompt by id.
+    async fn hold(&self, id: &str) -> AppResult<Option<crate::intake::HoldRecord>>;
+    /// The task's pending held prompt, if any.
+    async fn pending_hold(&self, task: &TaskId) -> AppResult<Option<crate::intake::HoldRecord>>;
+    /// Moves a hold from `expected` to `state` (compare-and-set); `false` when it was not in
+    /// `expected` any more.
+    async fn resolve_hold(
+        &self,
+        id: &str,
+        expected: &str,
+        state: &str,
+        by: &str,
+        at: Timestamp,
+        new_task: Option<&TaskId>,
+    ) -> AppResult<bool>;
+    /// Consumes a "send anyway" of the task for this exact prompt (SHA-256 hex) resolved at or
+    /// after `since`; `true` once, when one existed.
+    async fn take_sent_hold(
+        &self,
+        task: &TaskId,
+        sha256: &str,
+        since: Timestamp,
+    ) -> AppResult<bool>;
+}
+
 /// All extension areas.
 pub trait ExtensionStores:
     WorkflowStore
@@ -296,6 +334,7 @@ pub trait ExtensionStores:
     + ImportStore
     + AnalyticsStore
     + CapacityStore
+    + IntakeStore
 {
 }
 
@@ -308,5 +347,6 @@ impl<T> ExtensionStores for T where
         + ImportStore
         + AnalyticsStore
         + CapacityStore
+        + IntakeStore
 {
 }

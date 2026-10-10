@@ -143,7 +143,7 @@ pub struct App {
     pub(crate) supervisor: crate::supervisor::SupervisorState,
     /// Account login terminals.
     pub(crate) logins: crate::accounts::LoginRegistry,
-    /// The subscription pool's resume loop (SPEC-002 ADR-16).
+    /// The subscription pool's resume loop (SPEC-002 ADR-17).
     pub(crate) capacity: crate::capacity::CapacityState,
     /// Sandbox shell sessions (SPEC-001 UI-015).
     pub(crate) shells: crate::shells::ShellState,
@@ -156,6 +156,8 @@ pub struct App {
     /// A random tag of this server process, sent with every response (`X-Yulius`): the preview
     /// proxy refuses an upstream that answers with it, i.e. Yulius itself (BRW-008).
     pub instance_tag: String,
+    /// Task intake (Jev, split proposals); unset means nothing is checked (SPEC-002 ADR-16).
+    pub(crate) intake: OnceLock<crate::intake::IntakeServices>,
 }
 
 impl App {
@@ -180,6 +182,7 @@ impl App {
             workspace_grants: crate::identity::WorkspaceGrants::default(),
             recovery_lock: tokio::sync::Mutex::new(()),
             previews: crate::preview::PreviewState::default(),
+            intake: OnceLock::new(),
         })
     }
 

@@ -7,7 +7,7 @@
 //! response. Every failure prints nothing and still exits 0 (fail-open), so a Yulius outage
 //! never blocks the agent.
 //!
-//! **Hold** (subscription pool pause, SPEC-002 ADR-16): a `202 Accepted` answer with
+//! **Hold** (subscription pool pause, SPEC-002 ADR-17): a `202 Accepted` answer with
 //! `Retry-After: <seconds>` means "keep the agent at this boundary". The client sleeps that long
 //! (1–60 s) and sends the same request again, until a `200` answers, the run is refused
 //! (4xx), or [`HoldPolicy::max`] passes. Once held, an unreachable or failing server (a Yulius

@@ -1,5 +1,5 @@
 //! The subscription pool at the hook and API level with a fake clock (SPEC-001 ROT-010,
-//! ROT-013; SPEC-002 ADR-16, §7.5): turn boundaries held while no subscription has capacity
+//! ROT-013; SPEC-002 ADR-17, §7.5): turn boundaries held while no subscription has capacity
 //! (the agent gets nothing), the hold surviving a server restart, release when capacity
 //! returns, and the capacity view with its forecast. Real processes: `pool_supervision.rs`.
 
@@ -296,7 +296,7 @@ async fn a_prompt_waits_at_submit_and_an_idle_turn_end_is_not_held() -> TestResu
 
 /// AC-ROT-12: `GET /api/capacity` reports the pool, the burn rate, the forecast and the
 /// recommendation from the readings, runs and pauses of the last week, by the formula of
-/// SPEC-002 ADR-16 §2.3; ids and task counts only for administrators.
+/// SPEC-002 ADR-17 §2.4; ids and task counts only for administrators.
 #[tokio::test]
 async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestResult {
     let h = harness()?;

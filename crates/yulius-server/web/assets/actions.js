@@ -2,7 +2,7 @@
 // runs, promotion, sandbox create/import and removal.
 
 import { enc } from './api.js';
-import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, placeholder, linkify } from './dom.js';
+import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, iconButton, placeholder, linkify } from './dom.js';
 import { taskActions, statusInfo, allows } from './status.js';
 import { relLong, dateTime } from './format.js';
 import { BRAND } from './brand.js';
@@ -17,7 +17,8 @@ export function openTaskMenu(ctx, anchor, task) {
   const why = allows(access, 'write') ? 'Not available in this state' : 'Requires write access on GitHub';
   openMenu(anchor, [
     { header: `#${task.number} · ${statusInfo(task).label}` },
-    { label: 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
+    task.status === 'chained' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
+    { label: task.status === 'chained' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
     { label: 'Switch account…', disabled: !can.switch, title: can.switch ? null : why, onSelect: () => openSwitchDialog(ctx, task) },
     { label: 'Deliver…', disabled: !can.deliver, title: can.deliver ? null : why, onSelect: () => openDeliveryDialog(ctx, task) },
@@ -51,8 +52,23 @@ async function taskPost(ctx, task, verb, request, okMessage) {
   }
 }
 
-/** Stop a live task (confirmation: stopping interrupts the agent). */
+/** A task waiting in a chain starts now, whatever its predecessor does (TSK-012). */
+export function startNow(ctx, task) {
+  return taskPost(ctx, task, 'start', () => ctx.api.post(`/api/tasks/${enc(task.id)}/start-now`), `Starting #${task.number}…`);
+}
+
+/** Stop a live task (confirmation: stopping interrupts the agent); cancel a chained one. */
 export async function stopTask(ctx, task) {
+  if (task.status === 'chained') {
+    const cancel = await confirmDialog({
+      title: `Cancel task #${task.number}?`,
+      message: `It is queued after #${task.after ? task.after.number : '?'} and will not start. You can continue it later.`,
+      confirmLabel: 'Cancel task',
+      danger: true,
+    });
+    if (cancel) await taskPost(ctx, task, 'stop', () => ctx.api.post(`/api/tasks/${enc(task.id)}/stop`), `Cancelled #${task.number}`);
+    return;
+  }
   const ok = await confirmDialog({
     title: `Stop task #${task.number}?`,
     message: 'The agent session is interrupted and its process tree is stopped. You can continue the task later.',
@@ -196,6 +212,9 @@ export function stageLabel(stage) {
   return (STAGES.find(([s]) => s === stage) || [null, stage || 'Unknown'])[1];
 }
 
+/** Why "checks unknown" (#111): unreadable checks never count as passed. */
+export const UNKNOWN_CHECKS = `${BRAND.name} can’t read this pull request’s checks, so they don’t count as passed: merges that require checks wait.`;
+
 const CHECKS = {
   success: ['checks passed', 'ok'],
   failure: ['checks failed', 'danger'],
@@ -213,7 +232,7 @@ export function prLine(pr) {
     h('a', { href: pr.url, target: '_blank', rel: 'noopener noreferrer' }, `#${pr.number}`),
     h('span', { class: 'ellipsis' }, pr.title),
     badge(pr.state, state),
-    badge(checks[0], checks[1], pr.checks === 'unknown' ? 'GitHub checks could not be read' : null),
+    badge(checks[0], checks[1], pr.checks === 'unknown' ? UNKNOWN_CHECKS : null),
     h('span', { class: 'muted small mono' }, `${pr.base} ← ${pr.head}`));
 }
 
@@ -240,6 +259,29 @@ export function deliveryStrip(ctx, task, delivery, { canAct = true, reload = () 
   if (canAct && next.includes('merge')) out.push(h('button', { type: 'button', class: 'btn btn-sm strip-extra', onClick: () => mergeTask(ctx, task, reload) }, 'Merge…'));
   else if (canAct && done && next.includes('open_pr')) out.push(h('button', { type: 'button', class: 'btn btn-sm strip-extra', onClick: () => openPrDialog(ctx, task, reload) }, 'Open pull request…'));
   return out;
+}
+
+const CHECKS_ACCESS_KEY = 'yulius.checks-access.dismissed';
+
+/**
+ * The GitHub check results the App can't read for a repository and the permission it needs
+ * (`checks_access`, #111): one quiet line for instance administrators, who can change the App,
+ * with a link to its permission page. Dismissed, it stays hidden for this browser session.
+ * Everyone else sees "checks unknown" on a pull request only when nothing could be read.
+ */
+export function checksAccessNote(ctx, access) {
+  if (!access || !access.message || !(ctx.isInstanceAdmin && ctx.isInstanceAdmin())) return null;
+  const key = `${CHECKS_ACCESS_KEY}:${access.repo}:${(access.missing || []).join(',')}`;
+  try { if (sessionStorage.getItem(key)) return null; } catch { /* storage off: show it */ }
+  const note = h('div', { class: 'checks-access small', role: 'note' },
+    icon('key', { size: 14 }),
+    h('span', { class: 'checks-access-text' }, access.message,
+      access.settings_url ? [' ', h('a', { href: access.settings_url, target: '_blank', rel: 'noopener noreferrer' }, 'Open the App’s permissions')] : null),
+    iconButton('x', 'Dismiss until the next session', () => {
+      try { sessionStorage.setItem(key, '1'); } catch { /* hidden for this page only */ }
+      note.remove();
+    }));
+  return note;
 }
 
 /** Notes from Git/GitHub reads and policy outcomes (reads degrade instead of failing). */
@@ -298,6 +340,7 @@ export function openDeliveryDialog(ctx, task) {
         stage === 'env_done' && d.stage === 'env_done' && d.environment ? `${label}: ${d.environment}` : label))),
       stageIndex < 0 ? h('div', { class: 'muted small' }, `Stage: ${d.stage || 'unknown'}`) : null,
       notesBanner(d.notes),
+      checksAccessNote(ctx, d.checks_access),
       h('div', { class: 'card card-pad stack-sm' },
         h('div', { class: 'row' }, h('strong', null, 'Pull request')),
         prLine(d.pr)),
@@ -651,8 +694,11 @@ export async function confirmRemoveSandbox(ctx, sandbox) {
   }
 }
 
-/** One message rendered with clickable links (UI-011). */
-export function messageView(ctx, message, myLogin) {
+/**
+ * One message rendered with clickable links (UI-011). With `onReply` (the agent asks people
+ * something), it offers "Reply in the terminal": people answer the agent there (F 2026-10-10).
+ */
+export function messageView(ctx, message, myLogin, { onReply } = {}) {
   const from = message.from || {};
   const mine = from.login && myLogin && from.login === myLogin && !from.task_id;
   const kindTone = { question: 'warn', request: 'accent', scope: 'violet', info: '' }[message.kind] || '';
@@ -663,5 +709,6 @@ export function messageView(ctx, message, myLogin) {
       h('span', { class: 'spacer' }),
       h('span', { class: 'xs muted', title: dateTime(message.created_at) }, relLong(message.created_at))),
     message.subject ? h('div', { class: 'msg-subject' }, message.subject) : null,
-    h('div', { class: 'msg-body' }, linkify(message.body || '', (url, event) => ctx.openLink(url, event))));
+    h('div', { class: 'msg-body' }, linkify(message.body || '', (url, event) => ctx.openLink(url, event))),
+    onReply ? h('div', { class: 'msg-actions' }, h('button', { type: 'button', class: 'btn btn-sm', onClick: onReply }, icon('terminal', { size: 14 }), 'Reply in the terminal')) : null);
 }

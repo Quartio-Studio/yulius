@@ -434,7 +434,7 @@ function capacityTile(iconName, name, value, detail, tone = 'ok') {
     h('div', { class: 'stat-detail' }, detail || ' '));
 }
 
-/** Subscriptions' weekly limits used per week at `burn` points per hour (ADR-16 §2.3). */
+/** Subscriptions' weekly limits used per week at `burn` points per hour (ADR-17 §2.4). */
 function perWeek(burn) {
   return Number.isFinite(burn) ? (burn * 168) / 100 : null;
 }

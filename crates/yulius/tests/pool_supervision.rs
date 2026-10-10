@@ -1,6 +1,6 @@
 //! The subscription pool with real processes: supervisor → detached `yulius ptyhost` → fake
 //! agent, a scripted usage probe and real git worktrees (SPEC-001 ROT-004/010, AC-ROT-9..11,
-//! AC-ROT-14; SPEC-002 ADR-16). The fake agent has no hooks, so its turn boundary is the end of
+//! AC-ROT-14; SPEC-002 ADR-17). The fake agent has no hooks, so its turn boundary is the end of
 //! a turn in its transcript; hook holds are covered by `subscription_pool.rs`.
 
 mod support;

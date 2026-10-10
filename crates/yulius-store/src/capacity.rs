@@ -1,4 +1,4 @@
-//! Subscription pool persistence (SPEC-002 ADR-16): pauses for lack of capacity
+//! Subscription pool persistence (SPEC-002 ADR-17): pauses for lack of capacity
 //! (`capacity_pauses`, at most one open per task) and provider usage readings
 //! (`usage_samples`, kept 8 days).
 

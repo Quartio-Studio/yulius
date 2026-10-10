@@ -1,6 +1,6 @@
 //! Agent hook events (SPEC-002 §7.5, §7.6): briefing, message digests, the Stop discipline gate,
 //! activity tracking, and the turn boundary where the subscription pool switches or pauses a
-//! task (SPEC-002 ADR-16). A pause holds the hook ([`HookReply::Hold`]): the agent waits at its
+//! task (SPEC-002 ADR-17). A pause holds the hook ([`HookReply::Hold`]): the agent waits at its
 //! boundary and is never told anything.
 
 use std::path::{Path, PathBuf};
@@ -321,10 +321,16 @@ impl App {
             let clipped: String = text.chars().take(3_000).collect();
             format!("\n\n## Workflow instructions\n\n{clipped}\n")
         });
-        let budget = DEFAULT_BUDGET_BYTES - workflow.as_ref().map_or(0, String::len);
+        let chain = self.chain_briefing(task).await;
+        let budget = DEFAULT_BUDGET_BYTES
+            .saturating_sub(workflow.as_ref().map_or(0, String::len))
+            .saturating_sub(chain.as_ref().map_or(0, String::len));
         let mut briefing = build_briefing(&input, budget);
         if let Some(workflow) = workflow {
             briefing.push_str(&workflow);
+        }
+        if let Some(chain) = chain {
+            briefing.push_str(&chain);
         }
         Ok(briefing)
     }
@@ -341,6 +347,11 @@ impl App {
             // A held turn the user interrupted to type something: the new prompt replaces it.
             Some(_) => self.end_pause(&ctx.task.id, "superseded").await,
             None => {}
+        }
+        // Scope discipline (TSK-013): a held prompt never reaches the agent, so nothing below
+        // (capacity, activity, message digests) happens for it.
+        if let Some(held) = self.screen_prompt(ctx, input).await? {
+            return Ok(HookReply::Output(held));
         }
         // The start of a turn: with no subscription below the threshold, the prompt waits here
         // until capacity returns (ROT-010). A prompt too long to carry to another account runs;
@@ -496,7 +507,11 @@ impl App {
             // A clean stop of a finished task opens its pull request (#35).
             let app = Arc::clone(self);
             let task_id = task.id.clone();
-            tokio::spawn(async move { app.auto_open_pr(&task_id).await });
+            tokio::spawn(async move {
+                app.auto_open_pr(&task_id).await;
+                // Tasks chained after this one start once it is Done (TSK-012).
+                app.advance_chains(&task_id).await;
+            });
             return Ok(HookReply::Output(HookOutput::default()));
         }
 

@@ -131,7 +131,11 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt","workflow_id?","model?","effort?","title?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010) |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt","workflow_id?","model?","effort?","title?","after_task_id?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012) |
+| POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool}`: whether a new task mixes separate workstreams (TSK-011). `checked` is false — and the verdict `one` — for prompts under 40 words, without a Jev key and when Jev fails or takes over 2.5 s |
+| POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
+| POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
+| POST | `/api/tasks/{tid}/held-prompts/{hid}` | write | `{"action":"parallel|after|send|skip_after|revert|dismiss","skip_step_ids?":[…],"confirm?":bool}` → `{"task":TaskSummary,"created":TaskSummary|null,"note"}`; one decision per held prompt (409 for a second). `send` needs a running task; `skip_after` marks the given open steps `skipped`; `revert` needs `"confirm":true` (422 otherwise) — see "Task intake" below |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary` |
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the given Claude account or the best one |
@@ -139,8 +143,7 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
-| POST | `/api/tasks/{tid}/messages` | write | `{"body"}` → `Message` (user → agent, delivered like task messages) |
-| GET | `/api/tasks/{tid}/messages` | read | → `[Message]` |
+| GET | `/api/tasks/{tid}/messages` | read | → `[Message]`: messages between this task and other tasks (`message_send`) and its agent's messages to people (`to="people"`, `to_task_id` null). People talk to the agent in its terminal; there is no route that posts a person's message to it (removed 2026-10-10, `POST` is 405) |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
 | WS | `/api/tasks/{tid}/terminal` | read (input: write) | terminal protocol below |
 
@@ -154,12 +157,19 @@ TaskSummary = {
   "steps": {"done": 3, "total": 7, "current": "Implement API|null"},
   "unread_messages": 0, "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
-  "resumes_at": "2026-10-09T08:20:00Z|null"
+  "resumes_at": "2026-10-09T08:20:00Z|null",
+  "after": ChainLink|null, "next": [ChainLink],
+  "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null
 }
+ChainLink = {"task_id|null","number","title|null","status|null","blocked":"reason|null"}
 ```
 
+`after` is the task this one runs after (`task_id` null once that task was deleted), `next` the
+tasks chained after it. On a `chained` task, `after.blocked` says why it waits for a person: its
+predecessor stopped, failed, closed before it was done or was deleted (TSK-012).
+
 `status` `waiting_capacity` means the task is **paused** for subscription capacity (ROT-010,
-SPEC-002 ADR-16): every Claude subscription is at 98 % or limited in a window binding the task, so
+SPEC-002 ADR-17): every Claude subscription is at 98 % or limited in a window binding the task, so
 the harness holds the agent at its turn boundary (or the task waits to start); nothing is sent to
 the agent, and the task continues by itself. `resumes_at` is set only then: the earliest known
 time a subscription has capacity for it again. The UI shows "Paused: waiting for subscription
@@ -182,7 +192,38 @@ Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","
 Status wire names (from `yulius-domain::task`): `queued`, `starting`, `running`, `switching`,
 `waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_lost`,
 `stopped_switch_failed`, `stopped_switch_timeout`, `stopped_server_lost`, `failed_spawn_error`,
-`failed_start_timeout`, `failed_precondition`.
+`failed_start_timeout`, `failed_precondition`, `chained`.
+
+### Task intake
+
+Optional (SPEC-002 ADR-16): without a Jev key (`YULIUS_JEV_API_KEY_FILE`, docs/operations.md)
+nothing is checked and nothing is held.
+
+- **New tasks (TSK-011).** The composer calls `/intake/check` after Enter. On `several` it shows
+  the split card and calls `/intake/proposal`, then creates the tasks with
+  `POST /api/sandboxes/{sid}/tasks`: in parallel, or as a chain (each with `after_task_id` of the
+  one before).
+- **Chains (TSK-012).** A `chained` task starts by itself (`chained → queued`) when its predecessor
+  is Done: a finished turn and a pull request merged, or open with checks green or none required.
+- **Typed prompts (TSK-013).** The `UserPromptSubmit` hook classifies a person's prompt. `context`
+  passes; `new_scope`, `drops_scope` and `redirect` are held. Claude Code shows the reason, and the
+  text stays in its input box. The task's `held_prompt` is set and the UI shows the choices:
+  - `parallel`: a new task with the prompt (same harness, model, effort and mode);
+  - `after`: a new task chained after this one;
+  - `skip_after`: the given steps become `skipped` (with the note "Ruled out by the user: …" by
+    `user:<login>`), the agent gets a "Scope changed by the user" message, and a chained task gets
+    the prompt;
+  - `revert`: stops the task (reaped within 30 s, else 409 and nothing changes), commits its work to
+    a new branch `yulius/reverted/<number>-<ms>`, resets its worktree to where it forked from the
+    integration branch, archives it, and starts a new task with the prompt; `note` names the
+    branch;
+  - `send`: the identical prompt passes once (within 10 minutes), and Yulius presses Enter in the
+    session to resubmit it;
+  - `dismiss`: closes the card.
+
+  Prompts that always pass: slash commands, at most 3 words, Claude Code's own tagged turns, the
+  task's own prompt, prompts nobody typed into the terminal in the last 60 s, and any uncertain
+  or failed check.
 
 ### Terminal WebSocket
 
@@ -237,14 +278,18 @@ The account-login terminal (`/api/admin/accounts/login/{lid}/terminal`) and sand
 ```json
 GitOverview = {"integration_branch","production_branch","default_branch",
   "tasks":[{"task_id","title","branch","ahead","behind","files_changed","insertions","deletions","pr":PR|null}],
-  "recent_commits":[{"sha","subject","author","at"}], "pulls":[PR], "notes":["…"]}
+  "recent_commits":[{"sha","subject","author","at"}], "pulls":[PR], "notes":["…"],
+  "checks_access":ChecksAccess|null}
 PR = {"number","url","title","state":"open|merged|closed","base","head",
       "checks":"none|pending|success|failure|unknown"}
+ChecksAccess = {"repo":"owner/name", "missing":["Checks","Commit statuses"],
+  "read_from":["check runs","commit statuses","Actions runs"], "message":"…",
+  "settings_url":"https://github.com/…/settings/apps/<slug>/permissions|null"}
 Delivery = {"stage":"none|pr_open|merged_integration|env_done|promoted|production_done",
   "environment":"dev-vm|null", "pr":PR|null, "spec_path":"docs/specs/…|null",
   "spec_valid":bool, "spec_problems":["…"], "steps_open":0,
   "next_actions":["open_pr|merge|run_env:<name>|confirm_env:<name>|promote"],
-  "blocked":[{"action","reason"}], "notes":["…"]}
+  "blocked":[{"action","reason"}], "notes":["…"], "checks_access":ChecksAccess|null}
 EnvironmentRun = {"run_id","environment","kind":"command|manual",
   "state":"running|succeeded|failed|error","command":"…|null","commit":"<sha>|null",
   "requested_by":"login","output":"…","exit_code":0|null,"started_at","ended_at":"…|null"}
@@ -254,7 +299,19 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 
 - **Reads degrade.** Git or GitHub failures add a line to `notes` and leave the affected lists
   empty or partial (`checks: "unknown"` when checks cannot be read) instead of failing. GitHub
-  reads use the caller's token, else the GitHub App installation token. Task branch statistics
+  reads use the caller's token, else the GitHub App installation token.
+- **Checks and App permissions (#111).** A pull request head's checks come from three sources,
+  each behind its own GitHub App permission: check runs (Checks: read), the combined commit
+  status (Commit statuses: read) and, only when check runs cannot be read, the head's GitHub
+  Actions workflow runs (Actions: read). A source answering 403 "Resource not accessible by
+  integration" is skipped and named in `checks_access` (once per repository, not as a note);
+  any other GitHub error still makes the checks `unknown` with a note. The readable sources
+  decide what they report (a failure, a run in progress, all passed), but nothing reported while
+  a source is unreadable, or no source readable, is `unknown`: never passed. `unknown` blocks a
+  merge or release that requires checks ("the pull request's checks can't be read, so they don't
+  count as passed"). `checks_access.settings_url` (the App's permission page) is set for
+  instance administrators only; the UI shows the message to them as one line they can dismiss
+  for the session. [Operations](operations.md#github-app-permissions) lists the App's permissions. Task branch statistics
   compare the local task branch with `origin/<integration>` of the sandbox clone (refreshed by
   merges, promotions and environment runs, not by reads).
 - **Overview stages (proposed).** The Git page (UI-025) reads `GET /api/tasks/{tid}/delivery`
@@ -511,8 +568,8 @@ Claude Code.
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
-| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-16); 502 with the reason (also kept as `last_error`) when the provider refuses or fails. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
-| GET | `/api/capacity` | signed in | → `CapacityView`: the subscription pool, burn rate, forecast and recommendation (ROT-013, formula in SPEC-002 ADR-16 §2.3) |
+| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-17); 502 with the reason (also kept as `last_error`) when the provider refuses or fails. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
+| GET | `/api/capacity` | signed in | → `CapacityView`: the subscription pool, burn rate, forecast and recommendation (ROT-013, formula in SPEC-002 ADR-17 §2.4) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
 | GET | `/api/admin/github/manifest/callback?code&state` | superadmin | converts the code, stores the sealed App credentials and owner, 303 to the App's installation page; failures 303 to `/admin/github?error=…` |
@@ -628,7 +685,7 @@ sum the headroom below 98 % over subscriptions with known use (`null` when none 
 hour of readings); `runs_out_at` is when the weekly headroom runs out at `burn_24h`, walking through
 each subscription's weekly reset, if within 7 days; `paused_hours_7d` / `active_hours_7d` are
 task-hours; `needed` = ⌈max(burn_24h × 168 ÷ 98, subscriptions × (active + paused) ÷ active)⌉ and
-`add` = needed − subscriptions (SPEC-002 ADR-16 §2.3). `resumes_at` is set while no subscription is
+`add` = needed − subscriptions (SPEC-002 ADR-17 §2.4). `resumes_at` is set while no subscription is
 available. `id` and `in_use_by` are for instance administrators only.
 
 ## UI event stream
@@ -649,7 +706,7 @@ not pushed: clients refetch them (the web UI does so once after a burst of `task
 `POST /hooks/claude/{event}` on the loopback listener (`YULIUS_URL`), called by `yulius hook` with
 the run's task token (SPEC-002 §7.5). `200` carries the hook output (an empty body is no
 decision). `Stop` and `UserPromptSubmit` may answer **`202 Accepted` with `Retry-After: 10`** and no
-body while no Claude subscription has capacity (ROT-010, SPEC-002 ADR-16): the agent waits at that
+body while no Claude subscription has capacity (ROT-010, SPEC-002 ADR-17): the agent waits at that
 boundary and the client sends the same request again after `Retry-After` seconds (1–60), until a
 `200`, a 4xx (it fails open) or 8 days. While held it retries a refused connection or a 5xx every
 2 s, so a server restart does not release the agent. `401` means the run is unknown or finished.

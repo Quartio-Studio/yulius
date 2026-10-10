@@ -14,6 +14,7 @@ pub mod crypto;
 mod delivery;
 mod imports;
 mod instance;
+mod intake;
 mod mcp;
 mod sandboxes;
 mod sessions;
@@ -38,7 +39,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_initial.sql"),
     include_str!("migrations/0002_instance_feedback.sql"),
     include_str!("migrations/0003_claude_only.sql"),
-    include_str!("migrations/0004_subscription_pool.sql"),
+    include_str!("migrations/0004_task_intake.sql"),
+    include_str!("migrations/0005_subscription_pool.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -256,8 +258,9 @@ mod tests {
         Ok(())
     }
 
-    /// A version-3 database keeps its accounts (without priority and enabled) and hands a task
-    /// that was waiting for capacity to the resume loop (F 2026-10-10).
+    /// A version-3 database migrates through the task intake (4) to the subscription pool (5): it
+    /// keeps its accounts (without priority and enabled) and hands a task that was waiting for
+    /// capacity to the resume loop (F 2026-10-10).
     #[tokio::test]
     async fn version_three_databases_migrate_to_the_subscription_pool()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -302,7 +305,7 @@ mod tests {
                         .map_err(db)
                 })
                 .await?;
-            assert_eq!(version, 4);
+            assert_eq!(version, i64::try_from(MIGRATIONS.len())?);
         }
         // Reopen applies nothing new and keeps the version.
         let store = SqliteStore::open(&path)?;
@@ -312,7 +315,7 @@ mod tests {
                     .map_err(db)
             })
             .await?;
-        assert_eq!(version, 4);
+        assert_eq!(version, i64::try_from(MIGRATIONS.len())?);
         let backup = dir.path().join("backup.db");
         store.backup_to(&backup).await?;
         assert!(backup.exists());

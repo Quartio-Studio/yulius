@@ -1,4 +1,4 @@
--- Yulius schema version 4 (SPEC-001 F 2026-10-10, SPEC-002 ADR-16): Claude subscriptions are one
+-- Yulius schema version 5 (SPEC-001 F 2026-10-10, SPEC-002 ADR-17): Claude subscriptions are one
 -- self-managing pool. Accounts lose their manual priority and enabled switch (every signed-in
 -- account is in the pool; an administrator removes one to take it out). Pauses for lack of
 -- capacity and the provider's usage readings are recorded for the resume loop and the forecast.

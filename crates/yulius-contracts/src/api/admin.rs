@@ -161,7 +161,7 @@ pub struct CapacityAccount {
 }
 
 /// `GET /api/capacity` (signed in): the subscription pool, its burn rate and forecast
-/// (SPEC-001 ROT-013, SPEC-002 ADR-16 §2.3). Points are percentage points of one
+/// (SPEC-001 ROT-013, SPEC-002 ADR-17 §2.4). Points are percentage points of one
 /// subscription's weekly window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CapacityView {

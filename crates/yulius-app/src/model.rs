@@ -472,7 +472,7 @@ pub struct AccountRecord {
     pub updated_at: Timestamp,
 }
 
-/// How a task paused for lack of subscription capacity (SPEC-002 §6.1, ADR-16).
+/// How a task paused for lack of subscription capacity (SPEC-002 §6.1, ADR-17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PauseKind {
     /// Held at a turn boundary (the Stop hook waits, or an agent without hooks is idle); the

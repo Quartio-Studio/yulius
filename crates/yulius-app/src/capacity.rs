@@ -1,4 +1,4 @@
-//! The subscription pool at run time (SPEC-001 ROT-003/004/010/013, SPEC-002 ADR-16): pausing
+//! The subscription pool at run time (SPEC-001 ROT-003/004/010/013, SPEC-002 ADR-17): pausing
 //! tasks gently when no subscription has capacity, resuming them oldest first and staggered,
 //! the provider readings behind the burn rate, and the capacity view with its forecast.
 //!
@@ -111,6 +111,42 @@ impl App {
             now: self.now(),
             threshold: rotation::THRESHOLD,
         })
+    }
+
+    /// The subscription a one-off request outside any task (a split proposal) runs on: the best
+    /// placement of the pool.
+    ///
+    /// # Errors
+    /// `Conflict` without any Claude subscription, `Capacity` while none has capacity.
+    pub(crate) async fn pool_account(
+        &self,
+        provider: yulius_domain::harness::Provider,
+    ) -> AppResult<crate::model::AccountRecord> {
+        let accounts = self.account_views().await?;
+        if !accounts.iter().any(|a| a.provider == provider) {
+            return Err(crate::error::AppError::Conflict(
+                "no Claude account is connected; an instance administrator can add one".into(),
+            ));
+        }
+        let input = RotationInput {
+            current: None,
+            task_provider: provider,
+            family: ModelFamily::Any,
+            accounts,
+            now: self.now(),
+            threshold: rotation::THRESHOLD,
+        };
+        match rotation::decide(&input, Trigger::Start).0 {
+            Decision::Switch { account } => self
+                .deps
+                .store
+                .account(&account)
+                .await?
+                .ok_or(crate::error::AppError::NotFound),
+            Decision::Stay | Decision::Wait { .. } => Err(crate::error::AppError::Capacity(
+                "no subscription has capacity right now".into(),
+            )),
+        }
     }
 
     /// Pauses a task for lack of capacity (ROT-010): records the pause, moves the task to

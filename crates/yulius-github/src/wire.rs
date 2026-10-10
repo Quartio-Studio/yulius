@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use yulius_domain::permission::GitHubPermissions;
 
-use crate::types::{ChecksSummary, PullRequest, PullState, Repo};
+use crate::types::{CheckSource, ChecksReport, ChecksSummary, PullRequest, PullState, Repo};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct WireOwner {
@@ -188,6 +188,15 @@ pub(crate) struct WireCheckRun {
     pub(crate) conclusion: Option<String>,
 }
 
+/// `GET …/actions/runs`: a workflow run has the same `status`/`conclusion` shape as a check run.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireWorkflowRuns {
+    #[serde(default)]
+    pub(crate) total_count: u64,
+    #[serde(default)]
+    pub(crate) workflow_runs: Vec<WireCheckRun>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct WireCombinedStatus {
     #[serde(default)]
@@ -246,6 +255,44 @@ pub(crate) fn aggregate_checks(runs: &[WireCheckRun], statuses: &[WireStatus]) -
     }
 }
 
+/// What the readable sources of one commit reported (`None`: the source was not read).
+#[derive(Debug, Default)]
+pub(crate) struct CheckReads {
+    pub(crate) check_runs: Option<Vec<WireCheckRun>>,
+    pub(crate) statuses: Option<Vec<WireStatus>>,
+    pub(crate) workflow_runs: Option<Vec<WireCheckRun>>,
+    pub(crate) unreadable: Vec<CheckSource>,
+}
+
+/// Aggregates the sources that could be read. A source that could not be read never makes the
+/// result green: with nothing readable, or nothing reported while a source is unreadable, the
+/// result is [`ChecksSummary::Unknown`]; a failure or a run in progress is reported as such.
+pub(crate) fn summarize(reads: CheckReads) -> ChecksReport {
+    let CheckReads {
+        check_runs,
+        statuses,
+        workflow_runs,
+        mut unreadable,
+    } = reads;
+    unreadable.sort();
+    unreadable.dedup();
+    let read_any = check_runs.is_some() || statuses.is_some() || workflow_runs.is_some();
+    let mut runs = check_runs.unwrap_or_default();
+    runs.extend(workflow_runs.unwrap_or_default());
+    let summary = if read_any {
+        match aggregate_checks(&runs, &statuses.unwrap_or_default()) {
+            ChecksSummary::None if !unreadable.is_empty() => ChecksSummary::Unknown,
+            other => other,
+        }
+    } else {
+        ChecksSummary::Unknown
+    };
+    ChecksReport {
+        summary,
+        unreadable,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +348,67 @@ mod tests {
         assert_eq!(
             aggregate_checks(&[run("completed", Some("action_required"))], &[]),
             ChecksSummary::Failure
+        );
+    }
+
+    #[test]
+    fn unreadable_sources_never_make_checks_green() {
+        let report = |reads: CheckReads| summarize(reads);
+        // Everything readable: as before.
+        let full = report(CheckReads {
+            check_runs: Some(vec![run("completed", Some("success"))]),
+            statuses: Some(vec![]),
+            ..CheckReads::default()
+        });
+        assert_eq!(full.summary, ChecksSummary::Success);
+        assert!(full.unreadable.is_empty());
+        // Statuses unreadable: the check runs decide what they report.
+        for (runs, expected) in [
+            (
+                vec![run("completed", Some("success"))],
+                ChecksSummary::Success,
+            ),
+            (vec![run("in_progress", None)], ChecksSummary::Pending),
+            (
+                vec![run("completed", Some("failure"))],
+                ChecksSummary::Failure,
+            ),
+            (vec![], ChecksSummary::Unknown),
+        ] {
+            let partial = report(CheckReads {
+                check_runs: Some(runs),
+                unreadable: vec![CheckSource::CommitStatuses],
+                ..CheckReads::default()
+            });
+            assert_eq!(partial.summary, expected);
+            assert_eq!(partial.unreadable, vec![CheckSource::CommitStatuses]);
+        }
+        // Check runs unreadable: statuses and Actions runs count together.
+        let fallback = report(CheckReads {
+            statuses: Some(vec![status("success")]),
+            workflow_runs: Some(vec![run("completed", Some("failure"))]),
+            unreadable: vec![CheckSource::CheckRuns],
+            ..CheckReads::default()
+        });
+        assert_eq!(fallback.summary, ChecksSummary::Failure);
+        // Nothing readable: unknown, each source named once.
+        let none = report(CheckReads {
+            unreadable: vec![
+                CheckSource::WorkflowRuns,
+                CheckSource::CheckRuns,
+                CheckSource::CommitStatuses,
+                CheckSource::CheckRuns,
+            ],
+            ..CheckReads::default()
+        });
+        assert_eq!(none.summary, ChecksSummary::Unknown);
+        assert_eq!(
+            none.unreadable,
+            vec![
+                CheckSource::CheckRuns,
+                CheckSource::CommitStatuses,
+                CheckSource::WorkflowRuns
+            ]
         );
     }
 }

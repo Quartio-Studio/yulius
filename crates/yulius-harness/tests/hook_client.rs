@@ -325,7 +325,7 @@ fn serve_sequence(
 
 const HOLD: &[u8] = b"HTTP/1.1 202 Accepted\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
 
-/// ADR-16: `202` + `Retry-After` holds the agent at its boundary: the same request is sent again
+/// ADR-17: `202` + `Retry-After` holds the agent at its boundary: the same request is sent again
 /// until a `200` answers, and only that answer is printed.
 #[test]
 fn a_held_hook_asks_again_and_prints_only_the_final_answer() -> TestResult {
@@ -362,7 +362,7 @@ fn a_held_hook_asks_again_and_prints_only_the_final_answer() -> TestResult {
     Ok(())
 }
 
-/// ADR-16: a hold survives a Yulius restart — while held, a refused connection and a 5xx are
+/// ADR-17: a hold survives a Yulius restart — while held, a refused connection and a 5xx are
 /// retried instead of failing open, and the restarted server's answer is printed.
 #[test]
 fn a_held_hook_survives_a_server_restart() -> TestResult {

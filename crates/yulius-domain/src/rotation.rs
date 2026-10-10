@@ -1,4 +1,4 @@
-//! Subscription pool policy (SPEC-001 ROT-003/004/010, SPEC-002 ADR-16 and §6.3).
+//! Subscription pool policy (SPEC-001 ROT-003/004/010, SPEC-002 ADR-17 and §6.3).
 //!
 //! [`decide`] is a pure function of a [`RotationInput`] snapshot and a [`Trigger`]. Callers
 //! persist the input together with the returned [`Decision`] and [`DecisionReason`] for audit

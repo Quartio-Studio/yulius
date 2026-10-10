@@ -209,11 +209,6 @@ fn scoped_routes() -> Vec<(Method, &'static str, Option<Value>)> {
         (Method::GET, "/api/tasks/{tid}", None),
         (Method::DELETE, "/api/tasks/{tid}", None),
         (Method::GET, "/api/tasks/{tid}/messages", None),
-        (
-            Method::POST,
-            "/api/tasks/{tid}/messages",
-            Some(json!({"body": "hi"})),
-        ),
         (Method::POST, "/api/tasks/{tid}/stop", empty()),
         (Method::POST, "/api/tasks/{tid}/continue", empty()),
         (Method::POST, "/api/tasks/{tid}/switch", empty()),
@@ -259,6 +254,16 @@ async fn invisible_sandboxes_answer_like_missing_ones_and_read_users_cannot_chan
         let seen = call(&h.router, Method::GET, path, None, &alice).await?;
         assert_eq!(seen.status, StatusCode::OK, "{path}");
     }
+    // People talk to the agent in its terminal: no route posts a person's message to it (#110).
+    let post = call(
+        &h.router,
+        Method::POST,
+        "/api/tasks/t1/messages",
+        Some(json!({"body": "hi"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(post.status, StatusCode::METHOD_NOT_ALLOWED, "{}", post.body);
 
     // The sandbox she cannot see (and its task) answers exactly like a missing one.
     for (method, path, body) in scoped_routes() {
@@ -287,11 +292,6 @@ async fn invisible_sandboxes_answer_like_missing_ones_and_read_users_cannot_chan
         (Method::POST, "/api/tasks/t1/switch", Some(json!({}))),
         (Method::POST, "/api/tasks/t1/stop", Some(json!({}))),
         (Method::POST, "/api/tasks/t1/archive", Some(json!({}))),
-        (
-            Method::POST,
-            "/api/tasks/t1/messages",
-            Some(json!({"body": "steer"})),
-        ),
         (Method::DELETE, "/api/tasks/t1", None),
         (Method::POST, "/api/tasks/t1/delivery/pr", Some(json!({}))),
         (
@@ -1011,20 +1011,20 @@ async fn the_superadmin_sees_and_opens_every_sandbox_without_github() -> TestRes
         "{}",
         content.body
     );
-    // Writes are admitted too: a message to the task.
-    let steer = call(
+    // Writes are admitted too: archiving the task.
+    let archived = call(
         &h.router,
         Method::POST,
-        "/api/tasks/t2/messages",
-        Some(json!({"body": "from the owner"})),
+        "/api/tasks/t2/archive",
+        Some(json!({})),
         &admin,
     )
     .await?;
     assert!(
-        steer.status.is_success(),
+        archived.status.is_success(),
         "{}: {}",
-        steer.status,
-        steer.body
+        archived.status,
+        archived.body
     );
 
     // Nothing was mirrored from GitHub for the superadmin.

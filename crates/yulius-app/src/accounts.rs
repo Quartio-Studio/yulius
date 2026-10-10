@@ -1,5 +1,5 @@
 //! Provider accounts (subscriptions): add, see usage, remove, and the native login flow
-//! (SPEC-001 ROT-001/002/009, ACC-009; SPEC-002 ADR-05, ADR-16, §7.2 "Login", §8). There are no
+//! (SPEC-001 ROT-001/002/009, ACC-009; SPEC-002 ADR-05, ADR-17, §7.2 "Login", §8). There are no
 //! priorities or switches to manage: the pool policy decides (F 2026-10-10).
 //!
 //! Each login runs the provider CLI's own sign-in (`claude setup-token`) in a server-owned PTY through the process host, with a temporary config

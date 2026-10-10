@@ -41,7 +41,7 @@ pub const CLAUDE_MCP_FILE: &str = "mcp.json";
 pub const PRIVATE_FILE_MODE: u32 = 0o600;
 /// Claude hook timeout in seconds; the hook client itself gives up after 5 s (fail-open).
 pub const CLAUDE_HOOK_TIMEOUT_SECONDS: u64 = 15;
-/// Hook events Yulius may hold while no subscription has capacity (SPEC-002 ADR-16): the turn
+/// Hook events Yulius may hold while no subscription has capacity (SPEC-002 ADR-17): the turn
 /// boundaries.
 pub const CLAUDE_HELD_HOOK_EVENTS: [&str; 2] = ["Stop", "UserPromptSubmit"];
 /// Claude's timeout for the held events: an hour longer than the hook client's own hold bound

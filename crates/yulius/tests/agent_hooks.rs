@@ -152,7 +152,7 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
         )?)
         .await?;
     // The run's subscription has capacity (its usage is not known yet), so turn boundaries are
-    // never held for capacity here (ADR-16; holds are covered by subscription_pool.rs).
+    // never held for capacity here (ADR-17; holds are covered by subscription_pool.rs).
     let account = yulius_domain::ids::AccountId::parse("acc-1")?;
     store
         .insert_account(&yulius_app::model::AccountRecord {

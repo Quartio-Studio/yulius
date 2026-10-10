@@ -6,12 +6,12 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::github::{
-    ChecksState, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort, NewPull,
-    RepoAccess, RulesetRequest,
+    ChecksReport, ChecksSource, ChecksState, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
+    GitHubPort, NewPull, RepoAccess, RulesetRequest,
 };
 use yulius_github::{
-    AppCredentials, ChecksSummary, CreateRepo, GitHubClient, GitHubConfig, GitHubError,
-    MergeMethod, OwnerKind, PullFilter, PullRequest, PullState, Repo, RulesetSpec,
+    AppCredentials, CheckSource, ChecksSummary, CreateRepo, GitHubClient, GitHubConfig,
+    GitHubError, MergeMethod, OwnerKind, PullFilter, PullRequest, PullState, Repo, RulesetSpec,
     Secret as GhSecret, Url,
 };
 
@@ -404,20 +404,30 @@ impl GitHubPort for GitHubAdapter {
         owner: &str,
         repo_name: &str,
         sha: &str,
-    ) -> AppResult<ChecksState> {
-        Ok(
-            match self
-                .plain
-                .check_status(&gh(token), owner, repo_name, sha)
-                .await
-                .map_err(map_err)?
-            {
+    ) -> AppResult<ChecksReport> {
+        let report = self
+            .plain
+            .check_status(&gh(token), owner, repo_name, sha)
+            .await
+            .map_err(map_err)?;
+        Ok(ChecksReport {
+            state: match report.summary {
                 ChecksSummary::None => ChecksState::None,
                 ChecksSummary::Pending => ChecksState::Pending,
                 ChecksSummary::Success => ChecksState::Success,
                 ChecksSummary::Failure => ChecksState::Failure,
+                ChecksSummary::Unknown => ChecksState::Unknown,
             },
-        )
+            unreadable: report
+                .unreadable
+                .into_iter()
+                .map(|source| match source {
+                    CheckSource::CheckRuns => ChecksSource::CheckRuns,
+                    CheckSource::CommitStatuses => ChecksSource::CommitStatuses,
+                    CheckSource::WorkflowRuns => ChecksSource::WorkflowRuns,
+                })
+                .collect(),
+        })
     }
 
     async fn merge_pull(

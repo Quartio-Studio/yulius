@@ -78,6 +78,8 @@ impl App {
             "branch": task.branch,
             "spec_path": task.spec_path,
             "steps": {"done": p.done, "total": p.total, "current": p.current},
+            // A chained task runs after this task number (TSK-012).
+            "runs_after": self.deps.store.chain(&task.id).await?.map(|c| c.after_number),
             "created_at": rfc3339(task.created_at),
             "updated_at": rfc3339(task.updated_at),
         }))
@@ -100,7 +102,14 @@ impl App {
         }
         tasks.retain(|t| t.id != ctx.task.id);
         tasks.retain(|t| match scope {
-            "active" => t.status.is_live() || t.status == yulius_domain::task::TaskStatus::Queued,
+            "active" => {
+                t.status.is_live()
+                    || matches!(
+                        t.status,
+                        yulius_domain::task::TaskStatus::Queued
+                            | yulius_domain::task::TaskStatus::Chained
+                    )
+            }
             "recent" => !t.status.is_live(),
             _ => true,
         });

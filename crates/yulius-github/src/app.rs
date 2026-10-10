@@ -171,8 +171,9 @@ impl GitHubClient {
     }
 
     /// The App manifest for the manifest flow: private App with contents, pull requests and
-    /// administration write, checks, metadata and members read; user-to-server OAuth whose
-    /// callback is [`AUTH_CALLBACK_PATH`] and whose manifest redirect is
+    /// administration write, checks, commit statuses, metadata and members read (the full list
+    /// and what each is for: `docs/operations.md`, "GitHub App permissions"); user-to-server
+    /// OAuth whose callback is [`AUTH_CALLBACK_PATH`] and whose manifest redirect is
     /// [`MANIFEST_CALLBACK_PATH`] under `public_url`. No webhook is registered. New Apps use
     /// expiring user tokens by default; [`GitHubClient::refresh_user_token`] handles them.
     ///
@@ -218,6 +219,7 @@ impl GitHubClient {
                 "contents": "write",
                 "pull_requests": "write",
                 "checks": "read",
+                "statuses": "read",
                 "administration": "write",
                 "metadata": "read",
                 "members": "read"
