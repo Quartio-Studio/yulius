@@ -9,6 +9,7 @@ pub mod cron;
 pub mod delivery;
 pub mod harness;
 pub mod ids;
+pub mod intake;
 pub mod permission;
 pub mod rotation;
 pub mod scope;

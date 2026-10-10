@@ -74,6 +74,19 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             get(tasks::list).post(tasks::create),
         )
         .route("/api/tasks/{tid}/stop", post(tasks::stop))
+        .route("/api/tasks/{tid}/start-now", post(tasks::start_now))
+        .route(
+            "/api/tasks/{tid}/held-prompts/{hid}",
+            post(tasks::held_prompt),
+        )
+        .route(
+            "/api/sandboxes/{sid}/intake/check",
+            post(tasks::intake_check),
+        )
+        .route(
+            "/api/sandboxes/{sid}/intake/proposal",
+            post(tasks::intake_proposal),
+        )
         .route("/api/tasks/{tid}/continue", post(tasks::resume))
         .route("/api/tasks/{tid}/switch", post(tasks::switch))
         .route("/api/archived-tasks", get(tasks::archived))

@@ -141,7 +141,7 @@ impl App {
         let ctx = self.agent_context(token).await?;
         match event {
             events::SESSION_START => self.hook_session_start(&ctx, input).await,
-            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(&ctx).await,
+            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(&ctx, input).await,
             events::STOP => self.hook_stop(&ctx, input).await,
             events::NOTIFICATION => {
                 self.set_task_activity(&ctx.task, Activity::NeedsAttention)
@@ -292,15 +292,30 @@ impl App {
             let clipped: String = text.chars().take(3_000).collect();
             format!("\n\n## Workflow instructions\n\n{clipped}\n")
         });
-        let budget = DEFAULT_BUDGET_BYTES - workflow.as_ref().map_or(0, String::len);
+        let chain = self.chain_briefing(task).await;
+        let budget = DEFAULT_BUDGET_BYTES
+            .saturating_sub(workflow.as_ref().map_or(0, String::len))
+            .saturating_sub(chain.as_ref().map_or(0, String::len));
         let mut briefing = build_briefing(&input, budget);
         if let Some(workflow) = workflow {
             briefing.push_str(&workflow);
         }
+        if let Some(chain) = chain {
+            briefing.push_str(&chain);
+        }
         Ok(briefing)
     }
 
-    async fn hook_prompt_submit(&self, ctx: &AgentContext) -> AppResult<HookOutput> {
+    async fn hook_prompt_submit(
+        &self,
+        ctx: &AgentContext,
+        input: &HookInput,
+    ) -> AppResult<HookOutput> {
+        // Scope discipline (TSK-013): a held prompt never reaches the agent, so nothing below
+        // (activity, message digests) happens for it.
+        if let Some(held) = self.screen_prompt(ctx, input).await? {
+            return Ok(held);
+        }
         let store = &self.deps.store;
         if ctx.task.gate_blocks != 0 {
             let update = TaskFieldUpdate {
@@ -364,7 +379,11 @@ impl App {
             // A clean stop of a finished task opens its pull request (#35).
             let app = Arc::clone(self);
             let task_id = task.id.clone();
-            tokio::spawn(async move { app.auto_open_pr(&task_id).await });
+            tokio::spawn(async move {
+                app.auto_open_pr(&task_id).await;
+                // Tasks chained after this one start once it is Done (TSK-012).
+                app.advance_chains(&task_id).await;
+            });
             return Ok(HookOutput::default());
         }
 
