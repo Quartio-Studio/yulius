@@ -1912,6 +1912,53 @@ impl App {
         }
     }
 
+    /// Whether a task is Done (#35, the sidebar's rule; SPEC-001 TSK-012): its turn ended
+    /// (the agent waits for input, or the session was closed) and its pull request is merged,
+    /// or open with checks green or none required. Anything unknown (no pull request, GitHub
+    /// unreachable) is not Done.
+    pub(crate) async fn task_is_done(&self, task: &TaskRecord) -> bool {
+        let turn_ended = (task.status == yulius_domain::task::TaskStatus::Running
+            && task.activity == Some(yulius_domain::task::Activity::Waiting))
+            || task.status == yulius_domain::task::TaskStatus::Closed;
+        if !turn_ended {
+            return false;
+        }
+        let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
+            return false;
+        };
+        if past_merge(&record.stage) {
+            return true;
+        }
+        if record.stage != DeliveryStage::PrOpen {
+            return false;
+        }
+        let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
+            return false;
+        };
+        let Ok(token) = self.dlv_installation_token(&sandbox).await else {
+            return false;
+        };
+        let profile = delivery_profile(&sandbox);
+        match self
+            .dlv_observe(&sandbox, task, &profile, Some(&token))
+            .await
+        {
+            Ok(observed) => match observed.pr_state() {
+                PrState::Merged => true,
+                PrState::Open => {
+                    matches!(observed.checks, ChecksState::Success | ChecksState::None)
+                }
+                PrState::Absent | PrState::Closed => false,
+            },
+            Err(_) => false,
+        }
+    }
+
+    /// Whether a task's pull request is recorded as merged.
+    pub(crate) async fn task_merged(&self, task: &TaskId) -> bool {
+        matches!(self.deps.store.delivery(task).await, Ok(Some(record)) if past_merge(&record.stage))
+    }
+
     /// Claims `head` for one automatic attempt, so two Stop hooks never push or open twice;
     /// `false` when this head was already handled.
     fn claim_auto_head(&self, task_id: &TaskId, head: &str) -> AppResult<bool> {

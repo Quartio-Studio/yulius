@@ -165,6 +165,8 @@ impl App {
         // typing: it must not move control, and with it the size, to that viewer (#78).
         if !scroll {
             attach.runtime.hub.take_control(attach.viewer_id);
+            // A prompt submitted soon after is this person's (TSK-013).
+            self.record_typing(&attach.task_id, &ctx.user.id);
         }
         self.send_input(&attach.task_id, data).await
     }

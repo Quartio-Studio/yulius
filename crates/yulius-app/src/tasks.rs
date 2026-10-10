@@ -122,6 +122,7 @@ impl App {
             },
             None => None,
         };
+        let (after, next) = self.chain_links(task).await;
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
@@ -143,6 +144,9 @@ impl App {
             account_label,
             mode: task.mode.as_str().to_owned(),
             resumes_at: self.capacity_returns_at(task).await.map(rfc3339),
+            after,
+            next,
+            held_prompt: self.held_prompt_view(&task.id).await,
         })
     }
 
@@ -342,6 +346,8 @@ impl App {
                 tracing::warn!(task = %task.id, error = %err, "could not discard the task worktree");
             }
         }
+        // Tasks waiting for this one need a person now (TSK-012).
+        self.block_successors_deleted(&task).await;
         if !self.deps.store.delete_task(&task.id).await? {
             return Err(AppError::NotFound);
         }

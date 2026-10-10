@@ -275,8 +275,9 @@ pub trait TaskStore: Send + Sync {
         at: Timestamp,
     ) -> AppResult<()>;
     /// Deletes a task and everything recorded for it (attempts, lineage, steps, messages to or
-    /// from it, metrics, feedback, delivery, switch decisions, claims); references from
-    /// automation runs and sandbox onboarding are cleared. Returns whether it existed.
+    /// from it, metrics, feedback, delivery, switch decisions, claims, its chain link and held
+    /// prompts); references from automation runs, sandbox onboarding, chained successors and
+    /// held prompts of other tasks are cleared. Returns whether it existed.
     async fn delete_task(&self, id: &TaskId) -> AppResult<bool>;
     /// Inserts an attempt (`Conflict` when another live attempt exists for the task).
     async fn insert_attempt(&self, attempt: &AttemptRecord) -> AppResult<()>;

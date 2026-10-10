@@ -131,7 +131,11 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt","workflow_id?","model?","effort?","title?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010) |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt","workflow_id?","model?","effort?","title?","after_task_id?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012) |
+| POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool}`: whether a new task mixes separate workstreams (TSK-011). `checked` is false — and the verdict `one` — for prompts under 40 words, without a Jev key and when Jev fails or takes over 2.5 s |
+| POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
+| POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
+| POST | `/api/tasks/{tid}/held-prompts/{hid}` | write | `{"action":"parallel|after|send|skip_after|revert|dismiss","skip_step_ids?":[…],"confirm?":bool}` → `{"task":TaskSummary,"created":TaskSummary|null,"note"}`; one decision per held prompt (409 for a second). `send` needs a running task; `skip_after` marks the given open steps `skipped`; `revert` needs `"confirm":true` (422 otherwise) — see "Task intake" below |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary` |
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the given Claude account or the best one |
@@ -153,9 +157,16 @@ TaskSummary = {
   "steps": {"done": 3, "total": 7, "current": "Implement API|null"},
   "unread_messages": 0, "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
-  "resumes_at": "2026-10-09T08:20:00Z|null"
+  "resumes_at": "2026-10-09T08:20:00Z|null",
+  "after": ChainLink|null, "next": [ChainLink],
+  "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null
 }
+ChainLink = {"task_id|null","number","title|null","status|null","blocked":"reason|null"}
 ```
+
+`after` is the task this one runs after (`task_id` null once that task was deleted), `next` the
+tasks chained after it. On a `chained` task, `after.blocked` says why it waits for a person: its
+predecessor stopped, failed, closed before it was done or was deleted (TSK-012).
 
 `resumes_at` is set only while `status` is `waiting_capacity` (every account of the task's provider
 at its usage limit, ROT-010): the earliest known reset, as the rotation policy would decide now. The
@@ -177,7 +188,38 @@ Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","
 Status wire names (from `yulius-domain::task`): `queued`, `starting`, `running`, `switching`,
 `waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_lost`,
 `stopped_switch_failed`, `stopped_switch_timeout`, `stopped_server_lost`, `failed_spawn_error`,
-`failed_start_timeout`, `failed_precondition`.
+`failed_start_timeout`, `failed_precondition`, `chained`.
+
+### Task intake
+
+Optional (SPEC-002 ADR-16): without a Jev key (`YULIUS_JEV_API_KEY_FILE`, docs/operations.md)
+nothing is checked and nothing is held.
+
+- **New tasks (TSK-011).** The composer calls `/intake/check` after Enter. On `several` it shows
+  the split card and calls `/intake/proposal`, then creates the tasks with
+  `POST /api/sandboxes/{sid}/tasks`: in parallel, or as a chain (each with `after_task_id` of the
+  one before).
+- **Chains (TSK-012).** A `chained` task starts by itself (`chained → queued`) when its predecessor
+  is Done: a finished turn and a pull request merged, or open with checks green or none required.
+- **Typed prompts (TSK-013).** The `UserPromptSubmit` hook classifies a person's prompt. `context`
+  passes; `new_scope`, `drops_scope` and `redirect` are held. Claude Code shows the reason, and the
+  text stays in its input box. The task's `held_prompt` is set and the UI shows the choices:
+  - `parallel`: a new task with the prompt (same harness, model, effort and mode);
+  - `after`: a new task chained after this one;
+  - `skip_after`: the given steps become `skipped` (with the note "Ruled out by the user: …" by
+    `user:<login>`), the agent gets a "Scope changed by the user" message, and a chained task gets
+    the prompt;
+  - `revert`: stops the task (reaped within 30 s, else 409 and nothing changes), commits its work to
+    a new branch `yulius/reverted/<number>-<ms>`, resets its worktree to where it forked from the
+    integration branch, archives it, and starts a new task with the prompt; `note` names the
+    branch;
+  - `send`: the identical prompt passes once (within 10 minutes), and Yulius presses Enter in the
+    session to resubmit it;
+  - `dismiss`: closes the card.
+
+  Prompts that always pass: slash commands, at most 3 words, Claude Code's own tagged turns, the
+  task's own prompt, prompts nobody typed into the terminal in the last 60 s, and any uncertain
+  or failed check.
 
 ### Terminal WebSocket
 
