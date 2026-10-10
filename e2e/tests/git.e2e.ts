@@ -59,7 +59,8 @@ test('the Git page shows delivery state without merge, release, deploy or verify
   const dialogLabels = await browser.evaluate(() => [...document.querySelectorAll('dialog[open] button')].map((b) => (b.textContent ?? '').trim()));
   expect(dialogLabels.filter((label) => ACTIONS.test(label))).toEqual([]);
   expect(await axeViolations(browser)).toEqual([]);
-  await dialog.getByRole('button', 'Close').click();
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
 
   // The task view's delivery line shows the pull request, not a Merge button.
   await app.open(mock('/s/studio/t/13'));
