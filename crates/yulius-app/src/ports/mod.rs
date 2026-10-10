@@ -9,6 +9,7 @@ pub mod session;
 pub mod store;
 pub mod store_ext;
 pub mod system;
+pub mod updates;
 pub mod usage;
 
 use yulius_domain::time::Timestamp;

@@ -1,0 +1,150 @@
+//! A fake `main` source and update helper (SPEC-002 ADR-18): what GitHub shows and what the root
+//! helper reports, set by the test.
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use yulius_app::model::Secret;
+use yulius_app::ports::updates::{
+    ReleaseSource, ReleaseState, RemoteCommit, SourceError, UpdateHelper,
+};
+use yulius_app::updates::UpdateServices;
+use yulius_contracts::update::{HelperRequest, HelperState, HelperStatus};
+use yulius_domain::update::Relation;
+
+/// The running build.
+pub const OLD: &str = "1111111111111111111111111111111111111111";
+/// A merge commit between.
+pub const MID: &str = "2222222222222222222222222222222222222222";
+/// The head of `main`.
+pub const NEW: &str = "3333333333333333333333333333333333333333";
+
+/// `main` as the fake GitHub shows it; records the credentials it was read with.
+pub struct FakeSource {
+    pub result: Mutex<Result<ReleaseState, SourceError>>,
+    pub tokens: Mutex<Vec<Option<String>>>,
+}
+
+impl FakeSource {
+    /// `main` one feature ahead of [`OLD`].
+    pub fn behind() -> Arc<Self> {
+        Arc::new(Self {
+            result: Mutex::new(Ok(ReleaseState {
+                head: NEW.into(),
+                relation: Relation::Behind,
+                commits: vec![
+                    RemoteCommit {
+                        sha: NEW.into(),
+                        message: "feat(ui): an update banner (#140)".into(),
+                        author: Some("octocat".into()),
+                        date: Some("2026-10-10T20:00:00Z".into()),
+                    },
+                    RemoteCommit {
+                        sha: MID.into(),
+                        message: "Merge pull request #139 from Quartio-Studio/dev".into(),
+                        author: None,
+                        date: None,
+                    },
+                ],
+            })),
+            tokens: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+#[async_trait]
+impl ReleaseSource for FakeSource {
+    async fn compare(
+        &self,
+        token: Option<&Secret>,
+        _build: Option<&str>,
+    ) -> Result<ReleaseState, SourceError> {
+        if let Ok(mut tokens) = self.tokens.lock() {
+            tokens.push(token.map(|t| t.expose().to_owned()));
+        }
+        self.result
+            .lock()
+            .map_err(|_| SourceError::Unavailable)?
+            .clone()
+    }
+}
+
+/// The root helper as the server sees it: requests written, a status to report.
+#[derive(Default)]
+pub struct FakeHelper {
+    pub installed: AtomicBool,
+    pub requests: Mutex<Vec<HelperRequest>>,
+    pub status: Mutex<Option<HelperStatus>>,
+    pub cleared: AtomicUsize,
+}
+
+impl FakeHelper {
+    /// An installed helper.
+    pub fn installed() -> Arc<Self> {
+        let helper = Self::default();
+        helper.installed.store(true, Ordering::SeqCst);
+        Arc::new(helper)
+    }
+
+    /// The last request written.
+    pub fn last(&self) -> Option<HelperRequest> {
+        self.requests.lock().ok()?.last().cloned()
+    }
+
+    /// Reports on `request`.
+    pub fn report(
+        &self,
+        request: &HelperRequest,
+        state: HelperState,
+        step: &str,
+        error: Option<&str>,
+    ) {
+        if let Ok(mut status) = self.status.lock() {
+            *status = Some(HelperStatus {
+                version: 1,
+                id: request.id.clone(),
+                action: request.action,
+                commit: request.commit.clone(),
+                state,
+                step: step.into(),
+                progress: None,
+                error: error.map(str::to_owned),
+                previous: None,
+                log_tail: vec!["error: example".into()],
+                updated_at: 0,
+            });
+        }
+    }
+}
+
+impl UpdateHelper for FakeHelper {
+    fn installed(&self) -> bool {
+        self.installed.load(Ordering::SeqCst)
+    }
+    fn request(&self, request: &HelperRequest) -> Result<(), String> {
+        self.requests
+            .lock()
+            .map_err(|_| "lock".to_owned())?
+            .push(request.clone());
+        Ok(())
+    }
+    fn status(&self) -> Option<HelperStatus> {
+        self.status.lock().ok()?.clone()
+    }
+    fn clear_request(&self) {
+        self.cleared.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Update services of a server built from `build`, without automatic checks, resuming tasks
+/// 20 ms apart.
+pub fn services(build: &str, source: &Arc<FakeSource>, helper: &Arc<FakeHelper>) -> UpdateServices {
+    let mut services = UpdateServices::new(Some(build.into()));
+    services.source = Some(source.clone() as Arc<dyn ReleaseSource>);
+    services.helper = Some(helper.clone() as Arc<dyn UpdateHelper>);
+    services.check_every = None;
+    services.resume_stagger = Duration::from_millis(20);
+    services
+}
