@@ -41,7 +41,7 @@ const MAX_STEPS_LISTED: usize = 100;
 const MAX_ENVIRONMENTS_LISTED: usize = 8;
 
 /// Yulius MCP tools announced to every session (SPEC-002 §7.4), as `(name, purpose)`.
-pub const YULIUS_TOOLS: [(&str, &str); 25] = [
+pub const YULIUS_TOOLS: [(&str, &str); 29] = [
     (
         "project_context",
         "project summary, architecture and decision index, recent changes, delivery rules",
@@ -89,7 +89,20 @@ pub const YULIUS_TOOLS: [(&str, &str); 25] = [
     ),
     (
         "delivery_status",
-        "pull request, checks and delivery profile (read-only)",
+        "pull request, checks, delivery profile and next actions",
+    ),
+    (
+        "delivery_merge",
+        "merge your pull request on green, after an independent review of its head",
+    ),
+    (
+        "delivery_deploy",
+        "run the next command-verified environment",
+    ),
+    ("delivery_promote", "promote the integration branch"),
+    (
+        "issue_create",
+        "log follow-up work, a bug or a flaky test as a ready GitHub issue",
     ),
 ];
 
@@ -1077,9 +1090,9 @@ mod tests {
                 "{name}"
             );
         }
-        assert!(
-            !rendered.contains("merge"),
-            "no merge tool is announced (GIT-002)"
-        );
+        // Agents deliver their own work (DLV-008, GIT-002): the gated delivery tools are announced.
+        for tool in ["delivery_merge", "delivery_deploy", "delivery_promote"] {
+            assert!(rendered.contains(&format!("- `{tool}`:")), "{tool}");
+        }
     }
 }

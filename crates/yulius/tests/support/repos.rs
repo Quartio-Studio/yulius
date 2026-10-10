@@ -19,8 +19,8 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{GitHubTokenRecord, Secret, UserRecord};
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort};
 use yulius_app::ports::github::{
-    ChecksReport, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort, NewPull,
-    RepoAccess, RulesetRequest,
+    ChecksReport, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort,
+    NewIssue, NewPull, RepoAccess, RulesetRequest,
 };
 use yulius_app::ports::store::{InstanceStore, UserStore};
 use yulius_domain::ids::UserId;
@@ -527,6 +527,9 @@ impl GitHubPort for RepoGitHub {
     }
     async fn create_pull(&self, t: &Secret, o: &str, r: &str, p: &NewPull) -> AppResult<GhPull> {
         self.base.create_pull(t, o, r, p).await
+    }
+    async fn create_issue(&self, t: &Secret, o: &str, r: &str, i: &NewIssue) -> AppResult<GhIssue> {
+        self.base.create_issue(t, o, r, i).await
     }
     async fn get_pull(&self, t: &Secret, o: &str, r: &str, n: u64) -> AppResult<GhPull> {
         self.base.get_pull(t, o, r, n).await

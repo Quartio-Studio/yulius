@@ -367,7 +367,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | GIT-002 | Merges and promotions are human actions (or an explicit project policy), never inferred from model text. | engineering rules SEC-003 | A | AC-GIT-2 |
 | DLV-001 | Each sandbox has a delivery profile: integration branch, production branch, merge and promotion method, environments with deploy and verification steps. | T 23:00–23:13, K | E + K | AC-DLV-1 |
 | DLV-002 | New projects default to "standard": feature → PR into `dev` → (dev environment) → promotion PR `dev` → `main`. | T 23:09–23:11 | E | AC-DLV-1 |
-| DLV-003 | Product profile: feature → PR into `quartio` → deploy and verify on Quartio's own dev VM → fast-forward `main` → full rollout. Deployment runs only on an explicit user action per run. | K, R:product | K | AC-DLV-2 |
+| DLV-003 | Product profile: feature → PR into `quartio` → deploy and verify on Quartio's own dev VM → fast-forward `main` → full rollout. Deployment runs only on an explicit action per run: a person's, or an agent's `delivery_deploy` for a command-verified environment (DLV-008, F 2026-10-10). | K, R:product, F 2026-10-10 | K + C | AC-DLV-2 |
 | DLV-004 | Studio profile: feature → PR into `quartio` → fast-forward `main` immediately (continuous; customers test live) until the profile is deliberately changed. | K, R:studio | K | AC-DLV-3 |
 | DLV-005 | Profiles stay simple: a profile is a short `yulius.toml` section; switching Studio to a production-gated profile is one change. | K ("support both simply") | K | AC-DLV-3 |
 
@@ -749,7 +749,7 @@ instance — out of scope).
 | AC-AUT-3 | Creating a task from a workflow seeds its steps and instructions. | int |
 | AC-AUT-4 | Restarting during a scheduled run never creates a second task for the same slot. | int |
 | AC-GIT-1 | Git page shows task branches, diff stats, PRs and checks (fake GitHub). A ready task opens its PR by itself (not with an open step or uncommitted work, once per task), and a merge on GitHub moves its stage in the background. With the fake GitHub answering 403 on check runs and 200 on statuses, the checks come from statuses and Actions runs; with 403 on statuses, from check runs; with nothing readable they are unknown, a merge or release that requires checks is refused with the reason, and the missing permission is in `checks_access` once (the settings link for instance administrators only), with no note repeating "GitHub:". | int, ui |
-| AC-GIT-2 | No API path merges or promotes from agent output without a user action or explicit policy. | int |
+| AC-GIT-2 | Nothing merges or promotes from agent text: agents deliver only through the gated tools `delivery_merge` (passed checks and an independent review of the exact head), `delivery_deploy` (command-verified environments only) and `delivery_promote`, with their task creator's authority, audited as the task; task tokens are no REST credentials and read-only users cannot act (DLV-008, #139). | int |
 | AC-BRW-1 | Per-sandbox browser: typing a URL navigates; another sandbox has a separate profile. | int (fake CDP), ui (real Chromium, manual) |
 | AC-BRW-2 | Agent browser tools navigate/click/type/read the same tab the user sees. | int (fake CDP) |
 | AC-BRW-3 | `browser_request_user_action` highlights the tab, notifies the user and produces a clickable link. | int, ui |
@@ -781,6 +781,9 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 ## 12. Changelog
 
+- 2026-10-10 (`F 2026-10-10`, final stage item 3(b), #139): agents deliver their own work through
+  the gated tools `delivery_merge`, `delivery_deploy` and `delivery_promote`, and log follow-ups
+  as ready issues with `issue_create` (DLV-003, AC-GIT-2 changed; DLV-008).
 - 2026-10-10 (`F 2026-10-10`, later): the streamed browser keeps up over a real link — flow
   control by the viewer's acknowledgements, a bitrate and frame rate that follow the slowest
   viewer, keyframes on demand, coalesced wheel and pointer moves, every frame decoded and the

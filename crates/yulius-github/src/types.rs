@@ -237,6 +237,26 @@ pub struct NewPull {
     pub body: String,
 }
 
+/// Request to open an issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewIssue {
+    /// Title.
+    pub title: String,
+    /// Body (Markdown).
+    pub body: String,
+    /// Label names; missing ones are created.
+    pub labels: Vec<String>,
+}
+
+/// An opened issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueRef {
+    /// Number.
+    pub number: u64,
+    /// Web URL.
+    pub url: String,
+}
+
 /// Aggregate of check runs and the combined commit status for one commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChecksSummary {

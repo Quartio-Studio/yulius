@@ -3184,7 +3184,7 @@ impl App {
             "notes": view.notes,
             "checks_access": view.checks_access.as_ref().map(|a| &a.message),
             "profile": profile_to_contract(&profile),
-            "policy": "People open, merge, deploy and promote in Yulius (or the profile auto-promotes after a merge); agents have no tool for it. Commit and push your task branch, keep the spec valid and the steps up to date.",
+            "policy": "You deliver your own work (DLV-008): Yulius opens the pull request when your work is ready; merge it on green with delivery_merge after an independent review of its head, run each command-verified environment with delivery_deploy, and promote with delivery_promote. The same checks a person's action needs apply; environments a person must verify stay with people.",
         }))
     }
 }

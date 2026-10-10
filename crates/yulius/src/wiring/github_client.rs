@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::github::{
-    ChecksReport, ChecksSource, ChecksState, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
-    GitHubPort, NewPull, RepoAccess, RulesetRequest,
+    ChecksReport, ChecksSource, ChecksState, GhIssue, GhPull, GhRepo, GhUser, GhUserToken,
+    GitHubAppConfig, GitHubPort, NewIssue, NewPull, RepoAccess, RulesetRequest,
 };
 use yulius_github::{
     AppCredentials, CheckSource, ChecksSummary, CreateRepo, GitHubClient, GitHubConfig,
@@ -342,6 +342,29 @@ impl GitHubPort for GitHubAdapter {
             client_secret: c.client_secret.expose().to_owned(),
             private_key_pem: c.private_key_pem.expose().to_owned(),
             webhook_secret: c.webhook_secret.map(|s| s.expose().to_owned()),
+        })
+    }
+
+    async fn create_issue(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo_name: &str,
+        issue: &NewIssue,
+    ) -> AppResult<GhIssue> {
+        let spec = yulius_github::NewIssue {
+            title: issue.title.clone(),
+            body: issue.body.clone(),
+            labels: issue.labels.clone(),
+        };
+        let opened = self
+            .plain
+            .create_issue(&gh(token), owner, repo_name, &spec)
+            .await
+            .map_err(map_err)?;
+        Ok(GhIssue {
+            number: opened.number,
+            html_url: opened.url,
         })
     }
 

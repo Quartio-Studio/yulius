@@ -369,8 +369,13 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 ยง6.7, ย
   expected head; a PR head that differs from the task worktree's head is refused as stale.
   With `auto_promote` (Studio), the integration branch is promoted right after a merge done
   through Yulius once no integration environment is pending; the outcome is added to `notes`
-  and audited. No other path merges, promotes or deploys on its own; agents only have the
-  read-only `delivery_status` tool.
+  and audited. No other path merges, promotes or deploys on its own. Agents deliver their own
+  work through the MCP tools `delivery_merge` (passed checks and `reviewed_head`, the commit an
+  independent review approved, equal to the branch head), `delivery_deploy` (environments with a
+  command and `verify = "command"` only) and `delivery_promote`, which take these same paths with
+  the task creator's authority and are audited as `task:<n>` too (DLV-008). `issue_create`
+  opens a GitHub issue only when it meets the Definition of Ready (one `type:`, one `priority:`,
+  at least one `area:` label and an `## Acceptance criteria` checklist).
 - **Promote** refuses while a merged task still has an integration environment pending, when
   production already equals integration, or when a fast-forward is impossible.
   `fast_forward`: production is fast-forwarded to the integration head (`result: "promoted"`,
