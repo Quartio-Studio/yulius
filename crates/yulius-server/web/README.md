@@ -52,6 +52,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/models.js` | Models (grouped by provider, each naming its harness) and effort levels the composer offers. |
 | `assets/panels.js` | Right rail and resizable panel: Editor, Shell (the user's own terminals in this sandbox as tabs: opens one at once, "+" for more, rename with F2 or a double-click; new ones start in the sandbox repository or the task worktree), Messages; hosts the browser panel. One tool is open at a time (`aria-pressed`); the panel's width is remembered per browser and re-fitted when the window narrows, so it never pushes the rail out of the window. |
 | `assets/editorview.js` | The built-in editor (EDT-001..005): explorer, tabs and Monaco over the files API; ⌘S / Ctrl+S saves; word wrap is one toolbar toggle (or ⌥Z / Alt+Z, as in VS Code) for every open file, off by default and kept per user in this browser (`localStorage` `yulius.editorWordWrap.<user id>`). |
+| `assets/filedrop.js` | Dropped and pasted files (EDT-006, UI-044): files or folders dropped on the explorer go into the folder under the pointer, on the editor into the open file's folder (text files open); an upload button picks files on phones; a file already there is replaced only after asking. Files dropped on a terminal, or an image pasted into it, are uploaded as attachments and their paths typed in as a paste (xterm's bracketed paste), quoted when needed. Drop overlays, progress and errors; a file dropped elsewhere never makes the browser leave the app. Hook points: `attachEditorDrop` (editorview.js), `attachTerminalDrop` (taskview.js, panels.js); text pastes stay with the terminal. |
 | `assets/browser.js` | Browser panel (ADR-15): the sandbox Chrome's tabs in the strip, address bar, back/forward/reload, the action-request banner, notices for agents acting in another tab, "Open live in a new window" for a sandbox dev server (ADR-14 preview origins). |
 | `assets/browserstream.js` | The streamed sandbox Chrome: its socket and tab list, H.264 video decoded with WebCodecs onto a canvas (JPEG frames as the labelled fallback), the shared viewport and its notice, pointer, wheel, touch and keyboard input (a hidden textarea for IME, dead keys and phone keyboards; ⌘ as Ctrl on macOS; paste and copy), the agent's cursor. |
 | `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery (PR, merge, environment runs and confirmations, promotion), sandbox add/remove. |
@@ -231,7 +232,8 @@ preset, `product` with a custom profile whose `dev-vm` environment has a command
 messages, accounts with usage (some unknown), Git data and delivery stages, environment runs,
 workflows, skills, automations, MCP servers and analytics. Importing a repository creates a
 sandbox whose onboarding is `pending` with a resting preparation task (Start preparation /
-Skip). Task terminals print TUI-like ANSI output, echo input and answer on Enter; type
+Skip). Uploads report progress in steps, a dropped file lands in the editor's in-memory
+repository and attachments get server-like paths and names. Task terminals print TUI-like ANSI output, echo input and answer on Enter; type
 `/exit` to close a task, `/lag` to force a 4008 reconnect, `/help` for the list. The
 browser panel draws fake pages and sends them as video (VP8 through the browser's own
 WebCodecs encoder; the real server sends H.264) or as JPEG frames when the browser cannot encode
@@ -272,6 +274,10 @@ The source of truth for paths and methods is the route table in
   presets come from `GET /api/delivery/presets`; command environments are run with
   `POST …/environments/{env}/runs {"confirm":true}` (polled via `GET …/delivery/runs/{id}`),
   manual verifications confirmed with `POST …/environments/{env}/confirm {"confirm":true}`.
+- **Uploads.** `api.put|post(path, file, {onProgress})` sends a `Blob` as the raw body; the real
+  transport uses XMLHttpRequest for upload progress (`transport.upload`), and the timeout then
+  counts from the last progress. Dropped files use `PUT /api/sandboxes/{sid}/files/upload` and the
+  attachment endpoints (docs/api.md); the limit is `instance.upload_max_bytes` from `/api/me`.
 - **Browser input.** `button` is `left|middle|right|back|forward|none`; `modifiers` is the CDP
   bitmask (Alt 1, Ctrl 2, Meta 4, Shift 8); keys send `down`/`up` with `key` and `code`, composed
   text and pastes one `event: "char"` with the `text`; ⌘C/Ctrl+C also sends `copy`, and the

@@ -72,6 +72,9 @@ pub struct InstanceInfo {
     pub github_configured: bool,
     /// Whether sandboxes run inside OS containment.
     pub contained: bool,
+    /// Largest file one upload may carry, in bytes (EDT-006, UI-044; `YULIUS_UPLOAD_MAX_MB`).
+    #[serde(default)]
+    pub upload_max_bytes: u64,
 }
 
 /// `POST /api/device/start` response.

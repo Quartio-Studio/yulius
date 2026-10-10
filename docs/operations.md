@@ -64,6 +64,8 @@ Environment=YULIUS_BIND=127.0.0.1:8080
 Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 Environment=YULIUS_MAX_SESSIONS=8
 Environment=YULIUS_CONTAINED=true
+# Largest file dropped onto the editor or a terminal, in MiB (keep the proxy's body limit above it).
+Environment=YULIUS_UPLOAD_MAX_MB=25
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 # The sandbox browser: a headful Chrome on a virtual display when xvfb and ffmpeg are installed
 # (auto, the default). See "Sandbox browser" below for the other settings.
@@ -88,7 +90,8 @@ journalctl -u yulius -f
 Only the public listener (`YULIUS_BIND`) is proxied. The internal listener (`YULIUS_INTERNAL_BIND`)
 serves agents' MCP, hooks and Git credentials; it must stay on loopback and is never proxied.
 WebSockets are used for terminals, the event stream and the browser panel; import
-chunks are up to 8 MiB. Let the proxy compress responses: Yulius serves its web UI uncompressed,
+chunks are up to 8 MiB and a dropped file up to the upload limit (`YULIUS_UPLOAD_MAX_MB`, 25 MiB
+by default), so the proxy's body limit must be above it (32 MB below; raise both together). Let the proxy compress responses: Yulius serves its web UI uncompressed,
 and compression cuts the first load from about 1 MB to about 300 KB (the editor's first open from
 4.6 MB to about 1.2 MB), which matters most on phones.
 
@@ -97,7 +100,7 @@ Caddy:
 ```caddyfile
 yulius.example.com {
     request_body {
-        max_size 16MB
+        max_size 32MB
     }
     encode zstd gzip
     header Strict-Transport-Security "max-age=31536000"
@@ -112,7 +115,7 @@ server {
     listen 443 ssl http2;
     server_name yulius.example.com;
     # ssl_certificate / ssl_certificate_key ...
-    client_max_body_size 16m;
+    client_max_body_size 32m;
     gzip on;
     gzip_min_length 1024;
     gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
@@ -287,6 +290,18 @@ cd ~/code/product && yulius import --server https://yulius.example.com --since 1
 The repository must be on GitHub under the instance owner. Uploads resume after interruptions;
 re-running imports only new sessions.
 
+### Dropped files
+
+Files users drag onto the editor are written into the repository or a task worktree; files
+dropped or pasted onto a terminal are stored as attachments in
+`<data>/sandboxes/<sid>/attachments/{tasks,shells}/<id>/`, outside every worktree (never in
+`git status` or a pull request; the sandbox's processes can read and change them like its other
+files). They count towards the
+data directory's disk: at most 25 MiB each (`YULIUS_UPLOAD_MAX_MB`), 500 per task or terminal,
+8 uploads at once. A task's attachments go when the task is deleted, a terminal's when it ends
+(left-overs are removed at the next start); archiving a task keeps them. Uploads are audited
+(`audit_log`: `file.uploaded`, `attachment.uploaded`).
+
 ## 7. Backup and restore
 
 ```sh
@@ -300,6 +315,8 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
 
 ## 8. Upgrades
 
+- Upgrading to dropped files (EDT-006, UI-044, 2026-10-10): raise the reverse proxy's request body
+  limit to 32 MB (§4) or uploads between 16 and 25 MiB fail at the proxy with 413. No migration.
 - Upgrading to the streamed browser (ADR-15, 2026-10-10): install `xvfb`, `ffmpeg` and the fonts
   (§1) before restarting; `yulius doctor` must show them. No data migration: logins in the
   sandbox Chrome profiles stay; displays and cookies live in `<data>/displays/`. Running

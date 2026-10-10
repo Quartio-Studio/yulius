@@ -360,6 +360,7 @@ impl App {
                 .join("transcripts")
                 .join(task.id.as_str()),
         );
+        self.remove_task_attachments(&task.sandbox_id, &task.id);
         self.forget_runtime(&task.id);
         let actor = ctx
             .user

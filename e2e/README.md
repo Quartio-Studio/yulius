@@ -34,6 +34,7 @@ disable`); CI sets it.
 | `shortcuts.e2e.ts` | The shortcut list opens from the keyboard and closes with Escape |
 | `editor.e2e.ts` | A file from the tree opens in a selected editor tab; a folder expands; word wrap turns on and off from the toolbar and Alt+Z without typing, the open editor has no WCAG violations, and wrapping stays after a reload |
 | `browser.e2e.ts` | The browser panel streams the sandbox Chrome (mock: a drawn page as VP8 video or JPEG frames) onto its canvas with the tab's address; keys typed after a click reach the page; the agent's sign-in tab asks for action and the click signs in; a new tab opens the welcome page; no WCAG violations |
+| `filedrop.e2e.ts` | Files dropped on an explorer folder show where they go and are added there; dropping an existing file asks (Keep existing, Replace); a text file dropped on the editor opens; files dropped on the task terminal and a pasted image are typed in by path, a text paste stays text; a read-only terminal refuses drops |
 | `terminals.e2e.ts` | The Shell panel shows a working terminal without a button; "+" opens another tab; tabs switch, rename (F2) and close (Delete); each sandbox has its own terminals |
 | `rail.e2e.ts` | The tools rail: items and counts inside the rail with one open tool (and no WCAG violations); the rail stays in the window when it narrows with a panel open; at 390 px it sits in the top bar without covering it |
 | `phone.e2e.ts` | At 390 px: no horizontal scroll, the quick input, the navigation drawer |

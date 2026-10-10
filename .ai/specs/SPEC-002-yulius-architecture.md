@@ -470,6 +470,8 @@ sandboxes/<sandbox>/repo/           primary clone; tracks the integration branch
 sandboxes/<sandbox>/worktrees/<task>/   one worktree + branch per task
 sandboxes/<sandbox>/home/           sandbox HOME inside containment (caches, .claude config dir)
 sandboxes/<sandbox>/browser/        Chromium profile
+sandboxes/<sandbox>/attachments/{tasks,shells}/<id>/  files dropped or pasted onto a terminal (UI-044):
+                                    outside every worktree; removed with the task or when the shell ends
 users/<user>/home/                  user's home in their shells (bound at /home/<login>; ADR-12)
 users/<user>/identity/              generated passwd/group files of the user's sandbox identity
 runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
@@ -761,7 +763,11 @@ continue, switch, archive, restore, feedback, steps), `/api/sandboxes/{id}/git/*
 `/api/admin/{users,accounts,github,mcp,skills}`, `/api/analytics/*`, `/api/status`,
 `/api/import/*` (CLI), `/api/sandboxes/{id}/browser` (WS), `/api/sandboxes/{id}/previews`,
 `/api/previews/authorize`; every `<port>-<key>.<host>` is a live preview (ADR-14).
-All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
+Dropped files (EDT-006, UI-044): `PUT /api/sandboxes/{id}/files/upload`, `POST
+/api/tasks/{id}/attachments`, `POST /api/sandboxes/{id}/shells/{id}/attachments`, one raw file
+per request, streamed to disk (`yulius_app::uploads`).
+All JSON bodies ≤ 1 MiB (imports use chunk endpoints ≤ 8 MiB per chunk; a dropped file is one
+raw body up to the upload limit, 25 MiB by default).
 
 ## 8. Security and trust model
 
@@ -815,7 +821,19 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 - Editor file API (ADR-10): write users only; relative paths of normal components, every
   existing path resolved and kept inside the folder (symbolic links cannot escape), `.git`
   refused, also when a link inside the folder resolves into it (#59), 2 MiB text limit, atomic
-  writes with an optimistic SHA-256 check.
+  writes with an optimistic SHA-256 check. The repository folder itself must resolve inside its
+  sandbox directory (a contained shell is root there and could swap it for a link).
+- Dropped files (EDT-006, UI-044): uploads follow the editor's rules, stream to a temporary file
+  in the destination folder and are linked into place (never replacing a name unless the user
+  confirmed, never a folder or link), bounded in size, number at once and idle time, and audited.
+  Terminal attachments live in the sandbox directory, outside every worktree, under folders that
+  must be real directories (no link a sandbox process planted is followed); containment binds the
+  sandbox at the same path, so the agent reads them by the absolute path it is given. They are
+  not mounted read-only on purpose: a bind of a folder the sandbox can rename would let a
+  sandbox process swap in a link and have bubblewrap mount its target. Like the files API, the
+  checks are by path (a swap racing the milliseconds between check and use is not excluded;
+  `openat`-based resolution would close it). Attachment names keep only characters that need no
+  shell quoting.
 - Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
   Argon2; the failure counter and permanent lock are persisted before the response is sent.
 - Browser displays (ADR-15): one Xvfb per sandbox browser with `-nolisten tcp -nolisten local` and
@@ -874,6 +892,11 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | Display input queue | 512 commands; 500 events/s per viewer (burst 1000) | moves dropped; other input refused with an error |
 | Encoder start failures | 3 in a row (backoff 0.5–3 s) | video unavailable; viewers get JPEG frames |
 | Encoder tag (access unit) | 8 MiB | encoder restarted |
+| Upload (one file, EDT-006/UI-044) | 25 MiB (`YULIUS_UPLOAD_MAX_MB`, 1–1024) | 422 before or while reading |
+| Uploads at once (instance) | 8 | 429; the UI retries 3 times with backoff |
+| Upload body idle | 60 s without a chunk | 422; temporary file removed |
+| Attachments per task or shell | 500 | 409 |
+| Files per drop (UI) | 1000 into the editor, 20 onto a terminal | the rest are left out with a note |
 
 ## 10. Failure and recovery matrix
 
@@ -974,10 +997,13 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
 | Live previews and no recursion (ADR-14, 2026-10-09) | `tests/preview.rs` (handshake, rewriting, localhost view of the app, WebSocket passthrough, refusals of users, sandboxes, ports, cross-site callers and Yulius itself, the Yulius session unusable from a preview origin, TLS `ask`); `tests/browser.rs` (per-viewer `watch`); `yulius-browser` `tests/instance.rs` and `tests/manager.rs` (the sandbox Chrome's guard: refusal, `Fetch` interception, fail-closed start); opt-in `live_ui_browser.rs` with real Chrome (live iframe with root-relative assets, a redirect, a WebSocket, native typing, selection and scrolling, address bar and Back, agent notice and cursor, hostile preview page refused, framed UI refused, the sandbox Chrome refusing Yulius). Deployed DNS/TLS not exercised. |
 | Streamed browser (ADR-15, 2026-10-10) | Unit: FLV parsing for every split of a stream, codec strings, GOP cache, subscriber and viewer backpressure, encoder lifecycle (on demand, idle stop, resize restart, give-up), key mapping, cookie format and permissions, device sizes. `tests/browser.rs` with a fake display: video config then a keyframe, a late viewer's instant start, viewport → display resize and encoder restart, XTest-shaped input, wheel and text through CDP, copy, release on leave, pages opened by pages come to the front, history and reload, a broken encoder falls back to JPEG, the display stops with the browser. Opt-in `live_display.rs` on the VM (Xvfb, ffmpeg, Chrome 155, as the service user): streaming from a keyframe, real clicks (also in an OAuth-style popup), typing incl. Polish letters and emoji in order, scrolling, canvas and image pixels, `navigator.webdriver === false`, agent cursor, screenshots, recursion refused, no display, cookie, abstract or TCP socket reachable from containment (both identities); figures in ADR-15; reCAPTCHA v2 demo (checkbox → image challenge, a tile selected) and Cloudflare's challenge on nopecha.com (checkbox → passed) with XTest clicks. `live_ui_browser.rs` with a display: the panel decodes H.264 in Chrome and its input reaches the page. `e2e/tests/browser.e2e.ts` (mock UI, VP8 via WebCodecs). |
+| Dropped files (EDT-006, UI-044, 2026-10-10) | `tests/uploads.rs`: editor uploads (write users only, CSRF, folders created, byte-for-byte with SHA-256, 409 then overwrite with permissions kept, folders and links never replaced, traversal / absolute / control characters / `.git` / links out refused with nothing written outside, a repository folder linked into another sandbox refused, task worktree root, audit), bounds (declared and streamed size, an interrupted body, 8 concurrent then 429, no temporary file left), task attachments (safe unique names, read users refused, a planted link refused, removed with the task), shell attachments (owner only, removed when the shell closes or at start-up), the fake agent reading an attachment by path with a clean `git status` (uncontained; on Linux also inside bubblewrap, skipped where bubblewrap cannot run). Unit tests in `yulius_app::uploads`. `e2e/tests/filedrop.e2e.ts` (mock UI). Opt-in `live_ui_filedrop.rs` with real Chrome: real drags from disk to the explorer and to the task terminal, read by the fake agent. |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
 
+- 2026-10-10 (F 2026-10-10): dropped files — streamed uploads into the repository or a worktree and
+  terminal attachments outside git that the contained agent reads by path (§4, §7.9, §8, §9, §14).
 - 2026-10-10 (F 2026-10-10): ADR-15 — the panel streams the real, headful sandbox Chrome from a
   per-sandbox Xvfb as H.264 over the viewer WebSocket with XTest input; the DOM mirror and its
   resource endpoint removed (ADR-09 superseded for the user's view), the live iframe tabs removed

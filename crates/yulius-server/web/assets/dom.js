@@ -123,6 +123,7 @@ const ICONS = {
   lock: [['rect', { x: 5, y: 11, width: 14, height: 9, rx: 2 }], ['path', { d: 'M8 11V8a4 4 0 0 1 8 0v3' }]],
   send: [['path', { d: 'M4 12l16-8-6 16-2.5-6.5z' }]],
   download: [['path', { d: 'M12 4v11M7 10l5 5 5-5M5 20h14' }]],
+  upload: [['path', { d: 'M12 20V9M7 14l5-5 5 5M5 4h14' }]],
   grip: [[9, 6], [15, 6], [9, 12], [15, 12], [9, 18], [15, 18]].map(([cx, cy]) => ['circle', { cx, cy, r: 1.3, fill: 'currentColor', stroke: 'none' }]),
 };
 

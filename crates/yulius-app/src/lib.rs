@@ -37,5 +37,6 @@ pub mod status;
 pub mod supervisor;
 pub mod tasks;
 pub mod terminal;
+pub mod uploads;
 pub mod usage_json;
 pub mod workflows;

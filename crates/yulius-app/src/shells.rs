@@ -176,7 +176,7 @@ impl ShellRuntime {
         !self.has_ended() && !self.closing.load(Ordering::SeqCst)
     }
 
-    fn info(&self) -> ShellInfo {
+    pub(crate) fn info(&self) -> ShellInfo {
         ShellInfo {
             id: self.id.clone(),
             name: self.name(),
@@ -365,7 +365,7 @@ impl App {
     /// # Errors
     /// `NotFound` for unknown, ended or closing shells, other users' shells and shells of
     /// another sandbox; access errors.
-    async fn own_shell(
+    pub(crate) async fn own_shell(
         &self,
         ctx: &AuthContext,
         sandbox: &str,
@@ -692,6 +692,7 @@ impl App {
             map.remove(&runtime.id);
         }
         let _ = std::fs::remove_dir_all(&runtime.run_dir);
+        self.remove_shell_attachments(&runtime.sandbox, &runtime.id);
         tracing::info!(shell = %runtime.id, sandbox = %runtime.sandbox, code = ?exit.and_then(|e| e.code), "sandbox shell ended");
     }
 
@@ -964,6 +965,7 @@ impl App {
     /// requests. The reaper stops when the handle is dropped or the app is gone.
     pub async fn start_workspace_services(self: &Arc<Self>) -> WorkspaceReaper {
         let (adopted, removed) = self.adopt_shells().await;
+        self.prune_shell_attachments();
         if adopted + removed > 0 {
             tracing::info!(adopted, removed, "shells of the previous server process");
         }

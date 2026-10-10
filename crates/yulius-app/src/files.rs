@@ -35,14 +35,14 @@ pub const MAX_ENTRIES: usize = 2000;
 const SNIFF_BYTES: usize = 8192;
 
 /// A resolved file request: the root folder and the path below it.
-struct Target {
-    root: PathBuf,
-    path: PathBuf,
-    relative: String,
+pub(crate) struct Target {
+    pub(crate) root: PathBuf,
+    pub(crate) path: PathBuf,
+    pub(crate) relative: String,
 }
 
 /// Normalizes a relative path: normal components only, no `.git`.
-fn relative_components(path: &str) -> AppResult<Vec<String>> {
+pub(crate) fn relative_components(path: &str) -> AppResult<Vec<String>> {
     if path.contains('\0') || path.starts_with('/') {
         return Err(AppError::Invalid("paths are relative to the folder".into()));
     }
@@ -65,7 +65,7 @@ fn relative_components(path: &str) -> AppResult<Vec<String>> {
     Ok(parts)
 }
 
-fn io_error(err: &std::io::Error) -> AppError {
+pub(crate) fn io_error(err: &std::io::Error) -> AppError {
     match err.kind() {
         std::io::ErrorKind::NotFound => AppError::NotFound,
         std::io::ErrorKind::PermissionDenied => AppError::Forbidden("permission denied".into()),
@@ -75,7 +75,7 @@ fn io_error(err: &std::io::Error) -> AppError {
 
 /// Whether `path` (resolved) stays inside `root` (resolved) and out of every `.git` directory,
 /// also when a symbolic link inside the folder leads into one (#59).
-fn inside(root: &Path, path: &Path) -> bool {
+pub(crate) fn inside(root: &Path, path: &Path) -> bool {
     path.strip_prefix(root)
         .is_ok_and(|rest| !rest.components().any(|part| part.as_os_str() == ".git"))
 }
@@ -114,7 +114,7 @@ impl App {
     }
 
     /// Resolves `root` and `path` for a write user of `sandbox`.
-    async fn file_target(
+    pub(crate) async fn file_target(
         &self,
         ctx: &AuthContext,
         sandbox: &str,
@@ -141,6 +141,15 @@ impl App {
             }
         };
         let root = std::fs::canonicalize(&folder).map_err(|e| io_error(&e))?;
+        // A repository folder replaced by a link (a contained shell is root in its sandbox) must
+        // not lead the editor or an upload into another sandbox (EDT-006).
+        let sandbox_dir =
+            std::fs::canonicalize(self.sandbox_dir(&record.id)).map_err(|e| io_error(&e))?;
+        if !root.starts_with(&sandbox_dir) {
+            return Err(AppError::Forbidden(
+                "the folder leads outside the sandbox".into(),
+            ));
+        }
         let parts = relative_components(path)?;
         let relative = parts.join("/");
         let path = parts.iter().fold(root.clone(), |p, part| p.join(part));

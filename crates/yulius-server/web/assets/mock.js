@@ -113,7 +113,7 @@ function seed(params) {
         is_superadmin: role === 'superadmin', is_instance_admin: role !== 'member', github_linked: linked,
       },
       csrf_token: 'mock-csrf-token',
-      instance: { owner_login: 'Quartio-Studio', owner_kind: 'org', public_url: ORIGIN, github_configured: params.get('github') !== '0', contained: params.get('contained') !== '0' },
+      instance: { owner_login: 'Quartio-Studio', owner_kind: 'org', public_url: ORIGIN, github_configured: params.get('github') !== '0', contained: params.get('contained') !== '0', upload_max_bytes: 25 * 1024 * 1024 },
     },
     sandboxes: [],
     tasks: [],
@@ -1017,6 +1017,7 @@ route('GET', `/api/sandboxes/${ID}/files/content`, ({ db, p, query }) => {
   const path = repoPath(query.get('path'));
   if (!tree.files.has(path)) fail(404, 'not_found', 'not found');
   const content = tree.files.get(path);
+  if (tree.binary && tree.binary.has(path)) return { path, content: null, binary: true, too_large: false, size: content.length, sha256: mockSha(content) };
   return { path, content, binary: false, too_large: false, size: content.length, sha256: mockSha(content) };
 });
 route('PUT', `/api/sandboxes/${ID}/files/content`, ({ db, p, body }) => {
@@ -1039,6 +1040,66 @@ route('POST', `/api/sandboxes/${ID}/files`, ({ db, p, body }) => {
   if (!isDir(tree, parentOf(path))) fail(404, 'not_found', 'the folder does not exist');
   if (body.kind === 'dir') tree.dirs.add(path); else tree.files.set(path, '');
   return json(201, { name: path.split('/').pop(), path, kind: body.kind === 'dir' ? 'dir' : 'file', size: 0 });
+});
+// ---- Dropped files (EDT-006, UI-044): a raw file into the repository or a worktree (never
+// replacing one unless asked), and terminal attachments with safe, unique names.
+const uploadTooLarge = (db, size) => {
+  const limit = db.me.instance.upload_max_bytes;
+  if (size > limit) fail(422, 'invalid', `the file is larger than the upload limit of ${Math.round(limit / (1024 * 1024))} MB`);
+};
+route('PUT', `/api/sandboxes/${ID}/files/upload`, ({ db, p, query, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const tree = repoTree(db, p[0], query.get('root') || 'sandbox');
+  const path = repoPath(query.get('path'));
+  if (!path || path.split('/').some((part) => !part || /[\u0000-\u001f\u007f]/.test(part))) fail(422, 'invalid', 'a file path is required');
+  if (!body.blob) fail(422, 'invalid', 'the request body is the file');
+  uploadTooLarge(db, body.size);
+  const name = path.split('/').pop();
+  const parents = path.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'));
+  const blocker = parents.find((dir) => tree.files.has(dir));
+  if (blocker) fail(409, 'conflict', `${blocker.split('/').pop()} is a file, not a folder`);
+  if (isDir(tree, path)) fail(409, 'conflict', `a folder named ${name} exists`);
+  const replaced = tree.files.has(path);
+  if (replaced && query.get('overwrite') !== 'true') fail(409, 'conflict', `${name} exists`);
+  const text = /^(text\/|application\/(json|javascript|xml))/.test(body.type || '') || (!body.type && body.text.indexOf('\u0000') < 0);
+  tree.binary = tree.binary || new Set();
+  if (text) tree.binary.delete(path); else tree.binary.add(path);
+  tree.files.set(path, text ? body.text : body.text.slice(0, 64));
+  return json(201, { path, name, size: body.size, sha256: mockSha(body.text), replaced });
+});
+function mockAttachmentName(raw) {
+  let out = '';
+  for (const c of String(raw || '').split(/[\\/]/).pop()) {
+    if (/[A-Za-z0-9._+]/.test(c) || (c.codePointAt(0) > 127 && !/\s/u.test(c))) { if (c === '.' && out.endsWith('-')) out = out.slice(0, -1); out += c; }
+    else if (!out.endsWith('-')) out += '-';
+  }
+  out = out.replace(/^[.-]+/, '').replace(/-+$/, '');
+  return out && !/^\.+$/.test(out) ? out : 'attachment';
+}
+function storeAttachment(db, sid, folder, query, body) {
+  if (!body.blob) fail(422, 'invalid', 'the request body is the file');
+  uploadTooLarge(db, body.size);
+  db.attachments = db.attachments || new Map();
+  const names = db.attachments.get(folder) || new Set();
+  const base = mockAttachmentName(query.get('name'));
+  const dot = base.lastIndexOf('.');
+  const [stem, ext] = dot > 0 ? [base.slice(0, dot), base.slice(dot)] : [base, ''];
+  let name = base;
+  for (let n = 2; names.has(name); n += 1) name = `${stem}-${n}${ext}`;
+  names.add(name);
+  db.attachments.set(folder, names);
+  return json(201, { path: `/var/lib/yulius/sandboxes/${sid}/attachments/${folder}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
+}
+route('POST', `/api/tasks/${ID}/attachments`, ({ db, p, query, body }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  return storeAttachment(db, task.sandbox_id, `tasks/${task.id}`, query, body);
+});
+route('POST', `/api/sandboxes/${ID}/shells/${ID}/attachments`, ({ db, p, query, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const shell = db.shells.get(p[1]);
+  if (!shell || shell.sandbox_id !== p[0]) fail(404, 'not_found', 'not found');
+  return storeAttachment(db, p[0], `shells/${shell.id}`, query, body);
 });
 route('DELETE', `/api/sandboxes/${ID}/files`, ({ db, p, query }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -1350,7 +1411,11 @@ async function handleFetch(db, url, init = {}) {
   const u = new URL(url, ORIGIN);
   const method = (init.method || 'GET').toUpperCase();
   let body = {};
-  if (init.body) {
+  if (init.body instanceof Blob) {
+    // An upload (EDT-006, UI-044): the raw file; small ones are kept as text.
+    const blob = init.body;
+    body = { blob, size: blob.size, type: blob.type, text: blob.size <= 2 * 1024 * 1024 ? await blob.text() : '' };
+  } else if (init.body) {
     try { body = JSON.parse(init.body); } catch { return json(422, { error: { code: 'invalid', message: 'Malformed JSON' } }); }
   }
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
@@ -2260,6 +2325,19 @@ export function createMockTransport(params) {
         work.then(resolve, reject);
       });
     },
+    // Uploads report progress in a few steps, then answer like fetch (the real one uses XHR).
+    upload: (url, init, onProgress) => new Promise((resolve, reject) => {
+      const size = (init.body && init.body.size) || 0;
+      let step = 0;
+      const tick = () => {
+        if (init.signal && init.signal.aborted) { reject(new DOMException('The operation was aborted.', 'AbortError')); return; }
+        step += 1;
+        onProgress(Math.round((size * step) / 4), size);
+        if (step < 4) setTimeout(tick, 60);
+        else handleFetch(db, url, init).then(resolve, reject);
+      };
+      setTimeout(tick, 30);
+    }),
     openSocket: (path) => openSocket(db, path),
   };
 }

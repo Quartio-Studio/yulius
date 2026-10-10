@@ -84,3 +84,21 @@ pub struct CreateEntry {
     /// `file` or `dir`.
     pub kind: String,
 }
+
+/// Result of an upload (SPEC-001 EDT-006, UI-044): `PUT /api/sandboxes/{sid}/files/upload`
+/// (into the repository or a task worktree) and the attachment endpoints
+/// (`POST /api/tasks/{tid}/attachments`, `POST /api/sandboxes/{sid}/shells/{id}/attachments`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadedFile {
+    /// Editor uploads: the path relative to the root. Attachments: the absolute path the agent
+    /// or the shell opens (the same inside containment).
+    pub path: String,
+    /// The stored file name (attachments may be renamed: safe characters, no clash).
+    pub name: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// SHA-256 hex of the stored bytes (the base for a later editor save).
+    pub sha256: String,
+    /// An existing file was replaced (editor uploads with `overwrite=true`).
+    pub replaced: bool,
+}

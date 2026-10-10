@@ -14,6 +14,7 @@ import { allows } from './status.js';
 import { token, activeTheme, onThemeChange, px, hexToken } from './theme.js';
 import { readJson, writeJson } from './store.js';
 import { SAVE_KEYS, WRAP_KEYS, WRAP_ARIA } from './shortcuts.js';
+import { attachEditorDrop } from './filedrop.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
 const LANGUAGE_SERVICES = new Set(['javascript', 'typescript', 'json', 'css', 'scss', 'less', 'html']);
@@ -246,6 +247,8 @@ export function createEditorView(ctx, sandbox, getTask) {
     h('div', { class: 'ed-main' }, tabbar, h('div', { class: 'ed-stage' }, host, empty), status)));
 
   const query = (path) => `root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`;
+  // Files dropped on the explorer or the editor, or picked with its upload button (EDT-006).
+  attachEditorDrop({ ctx, sandboxId: sandbox.id, tree, host, head: treeHead, getRoot: () => root, activePath: () => (active ? active.path : null), reveal: (dir) => loadDir(dir), refresh: () => refreshTree(), open: (path) => openFile(path) });
 
   // ---------------------------------------------------------------- explorer
   async function loadDir(path) {
@@ -291,6 +294,7 @@ export function createEditorView(ctx, sandbox, getTask) {
           role: 'treeitem',
           'aria-expanded': isDir ? String(open) : null,
           title: entry.path,
+          dataset: { path: entry.path, kind: entry.kind },
           style: { paddingLeft: `${8 + depth * 12}px` },
           tabindex: '0',
         },
