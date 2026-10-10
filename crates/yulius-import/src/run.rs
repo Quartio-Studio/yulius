@@ -546,7 +546,7 @@ pub fn run_import(
             job
         }
         Err(err) => {
-            let _ = io.ui().progress_finish("Upload refused");
+            io.ui().progress_cancel();
             return Err(err.into());
         }
     };
@@ -590,7 +590,7 @@ pub fn run_import(
             let label = file.label.clone();
             {
                 let ui = io.ui();
-                uploader.upload_file(
+                let sent = uploader.upload_file(
                     &job.job_id,
                     &file.reference,
                     &file.path,
@@ -598,7 +598,11 @@ pub fn run_import(
                     &mut |done, _size| {
                         ui.progress_set(base + done.saturating_sub(start), &label);
                     },
-                )?;
+                );
+                if sent.is_err() {
+                    ui.progress_cancel();
+                }
+                sent?;
             }
             base += file.reference.size.saturating_sub(start);
         }
@@ -613,9 +617,7 @@ pub fn run_import(
     let result = match uploader.complete(&job.job_id) {
         Ok(result) => result,
         Err(err) => {
-            let _ = io
-                .ui()
-                .progress_finish("Not applied; run the command again to retry");
+            io.ui().progress_cancel();
             return Err(err.into());
         }
     };
@@ -1204,7 +1206,13 @@ impl ImportIo for TerminalIo {
             },
             &self.login,
         );
-        let _ = self.ui.progress_finish("Approved");
+        if shown.is_some() {
+            if token.is_ok() {
+                let _ = self.ui.progress_finish("Approved");
+            } else {
+                self.ui.progress_cancel();
+            }
+        }
         let token = token?;
         if let Some(Err(error)) = shown {
             return Err(error.into());

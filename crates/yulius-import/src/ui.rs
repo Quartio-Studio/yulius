@@ -52,6 +52,8 @@ pub trait Ui {
     fn progress_set(&mut self, done: u64, message: &str);
     /// Finishes the bar with a closing line.
     fn progress_finish(&mut self, message: &str) -> io::Result<()>;
+    /// Removes the bar without a closing line (the step failed; the error follows).
+    fn progress_cancel(&mut self);
     /// One of `options`; `default` is preselected.
     fn choose(&mut self, prompt: &str, options: &[String], default: usize) -> io::Result<usize>;
     /// Any subset of `items`; `selected` marks the preselected ones.
@@ -159,6 +161,8 @@ impl<R: BufRead, W: Write> Ui for PlainUi<R, W> {
     fn progress_finish(&mut self, message: &str) -> io::Result<()> {
         writeln!(self.output, "  ✓ {message}")
     }
+
+    fn progress_cancel(&mut self) {}
 
     fn choose(&mut self, prompt: &str, options: &[String], default: usize) -> io::Result<usize> {
         writeln!(self.output, "  {prompt}")?;
@@ -410,6 +414,12 @@ impl Ui for TerminalUi {
         if let Some(bar) = &self.bar {
             bar.set_position(done);
             bar.set_message(message.to_owned());
+        }
+    }
+
+    fn progress_cancel(&mut self) {
+        if let Some(bar) = self.bar.take() {
+            bar.finish_and_clear();
         }
     }
 

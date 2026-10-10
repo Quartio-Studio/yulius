@@ -359,6 +359,24 @@ impl App {
             let allowed = MAX_INDEXED_BYTES
                 .saturating_sub(doc.indexed_bytes)
                 .min(budget);
+            if allowed == 0 {
+                // The per-session bound: the rest stays readable, not searchable.
+                store
+                    .append_session_chunks(
+                        &doc.id,
+                        &[],
+                        IndexAdvance {
+                            expected_bytes: doc.indexed_bytes,
+                            bytes: doc.indexed_bytes,
+                            lines: doc.indexed_lines,
+                            full: true,
+                            size,
+                            at: self.now(),
+                        },
+                    )
+                    .await?;
+                continue;
+            }
             let path = PathBuf::from(&doc.transcript_path);
             let (from_byte, from_line) = (doc.indexed_bytes, doc.indexed_lines);
             let batch = match blocking(move || {
@@ -589,7 +607,7 @@ impl App {
                 ranked
             }
             None => {
-                views.sort_by(|a, b| b.0.cmp(&a.0));
+                views.sort_by_key(|view| std::cmp::Reverse(view.0));
                 views
                     .into_iter()
                     .map(|(_, view)| view)
@@ -895,6 +913,14 @@ impl App {
         let existing = store
             .imported_session_doc(&sandbox.id, harness, &session.session_id)
             .await?;
+        if existing.is_none()
+            && store
+                .provider_session_exists(&sandbox.id, harness.as_str(), &session.session_id)
+                .await?
+        {
+            // Already a task's session (imported as a task by an earlier version, or continued).
+            return Ok(StoreOutcome::Unchanged);
+        }
         if let Some(doc) = &existing {
             if doc.sha256.as_deref() == Some(main.sha256.as_str()) {
                 return Ok(StoreOutcome::Unchanged);
@@ -1010,13 +1036,18 @@ impl App {
         session_id: &str,
         sha256: &str,
     ) -> AppResult<&'static str> {
+        let store = &self.deps.store;
         Ok(
-            match self
-                .deps
-                .store
+            match store
                 .imported_session_doc(sandbox, harness, session_id)
                 .await?
             {
+                None if store
+                    .provider_session_exists(sandbox, harness.as_str(), session_id)
+                    .await? =>
+                {
+                    "unchanged"
+                }
                 None => "new",
                 Some(doc) if doc.sha256.as_deref() == Some(sha256) => "unchanged",
                 Some(doc) if doc.author_id.as_ref() != Some(user) => "taken",

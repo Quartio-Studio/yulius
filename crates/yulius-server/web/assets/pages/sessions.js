@@ -6,7 +6,7 @@
 // POST /api/sessions/{id}/continue and DELETE /api/sessions/{id} (docs/api.md "Sessions").
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, placeholder, emptyState, filterTabs, badge, toast, errorToast, confirmDialog, openModal, loadError } from '../dom.js';
+import { h, icon, setChildren, placeholder, emptyState, filterTabs, badge, toast, errorToast, confirmDialog, openModal, loadError, coalesce } from '../dom.js';
 import { href, navigate, replaceQuietly, currentLocation } from '../router.js';
 import { relLong, dateTime, bytes, plural } from '../format.js';
 import { pageFrame } from './common.js';
@@ -147,10 +147,12 @@ export function mountSessionsPage(ctx, sandbox) {
     }
   }
   reload();
-  const offs = [ctx.store.on('task', (task) => { if (task.sandbox_id === sandbox.id && !state.q) reload(); })];
+  // Task sessions grow while tasks run: refresh quietly, at most every few seconds.
+  const refresh = coalesce(() => { if (alive && !state.q) reload(); }, { minInterval: 5000 });
+  const offs = [ctx.store.on('task', (task) => { if (task.sandbox_id === sandbox.id) refresh(); })];
   return {
     el: frame.el,
-    destroy() { alive = false; clearTimeout(timer); offs.forEach((off) => off()); },
+    destroy() { alive = false; clearTimeout(timer); refresh.cancel(); offs.forEach((off) => off()); },
   };
 }
 
