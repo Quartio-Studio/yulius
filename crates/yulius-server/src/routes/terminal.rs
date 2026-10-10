@@ -82,6 +82,7 @@ async fn send_state(app: &AppState, socket: &mut WebSocket, attach: &TerminalAtt
 
 async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut socket: WebSocket) {
     if !send_state(&app, &mut socket, &attach).await {
+        app.terminal_leave(&attach).await;
         return;
     }
     let snapshot = encode_binary(
@@ -90,6 +91,7 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut s
         &attach.subscription.snapshot,
     );
     if socket.send(Message::Binary(snapshot.into())).await.is_err() {
+        app.terminal_leave(&attach).await;
         return;
     }
     let mut last_seq = attach.subscription.seq;
@@ -138,6 +140,8 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut s
                         if attach.can_write { app.terminal_resize(&ctx, &attach, cols, rows).await } else { Ok(()) }
                     }
                     TerminalClientMsg::TakeControl => app.terminal_take_control(&ctx, &attach).await,
+                    TerminalClientMsg::Active => app.terminal_presence(&ctx, &attach, true).await,
+                    TerminalClientMsg::Idle => app.terminal_presence(&ctx, &attach, false).await,
                     TerminalClientMsg::Input { data, seq, scroll } => {
                         if seq.is_some() && seq <= last_input_seq { Ok(()) } else {
                             if seq.is_some() { last_input_seq = seq; }
@@ -162,9 +166,13 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut s
                 }
                 if attach.can_write && !app.can_work(&ctx, &attach.task_id).await {
                     attach.can_write = false;
+                    // A viewer who can no longer type no longer sets the size either.
+                    app.terminal_leave(&attach).await;
                     if !send_state(&app, &mut socket, &attach).await { break; }
                 }
             }
         }
     }
+    // Control and the size pass to another viewer before this one is dropped.
+    app.terminal_leave(&attach).await;
 }

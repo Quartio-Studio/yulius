@@ -187,13 +187,18 @@ export function createEditorView(ctx, sandbox, getTask) {
   const expanded = new Map(); // dir path → entries | null (loading)
 
   const folder = h('select', { class: 'select select-sm', 'aria-label': 'Folder' });
+  // The sandbox, the selected task's worktree, and the folder open now (a terminal link can open
+  // another task's worktree).
   function folderOptions() {
     const task = getTask();
-    const current = folder.value;
-    setChildren(folder,
-      h('option', { value: 'sandbox' }, 'Sandbox'),
-      task ? h('option', { value: `task:${task.id}` }, `Task #${task.number} worktree`) : null);
-    folder.value = [...folder.options].some((o) => o.value === current) ? current : 'sandbox';
+    const options = [h('option', { value: 'sandbox' }, 'Sandbox')];
+    if (task) options.push(h('option', { value: `task:${task.id}` }, `Task #${task.number} worktree`));
+    if (root.startsWith('task:') && (!task || root !== `task:${task.id}`)) {
+      const other = (ctx.store.tasksOf(sandbox.id) || []).find((t) => `task:${t.id}` === root);
+      options.push(h('option', { value: root }, other ? `Task #${other.number} worktree` : 'Task worktree'));
+    }
+    setChildren(folder, options);
+    folder.value = root;
   }
   folderOptions();
   folder.addEventListener('change', async () => {
@@ -454,6 +459,31 @@ export function createEditorView(ctx, sandbox, getTask) {
     activate(tab);
   }
 
+  /**
+   * Opens `path` of folder `root` with the cursor at `line`/`col` (a terminal's file link, UI-018,
+   * F 2026-10-10). Another folder is opened first; unsaved changes are asked about, as when the
+   * folder is switched by hand.
+   */
+  async function openAt({ root: wanted = 'sandbox', path, line = null, col = null }) {
+    if (!path) return;
+    if (wanted !== root) {
+      if (tabs.some((t) => t.dirty) && !(await confirmDialog({ title: 'Switch folder?', message: 'Unsaved changes in open files are discarded.', confirmLabel: 'Discard and switch', danger: true }))) return;
+      root = wanted;
+      folderOptions();
+      closeAll();
+      expanded.clear();
+      renderTree();
+      loadDir('');
+    }
+    await openFile(path);
+    if (!line || !editor || !active || active.path !== path) return;
+    const lineNumber = Math.max(1, Math.min(line, active.model.getLineCount()));
+    const column = Math.max(1, Math.min(col || 1, active.model.getLineMaxColumn(lineNumber)));
+    editor.setPosition({ lineNumber, column });
+    editor.revealLineInCenter(lineNumber);
+    editor.focus();
+  }
+
   /** `focus: false` keeps keyboard focus where it is (closing a tab from the strip, #80). */
   function activate(tab, { focus = true } = {}) {
     if (active && editor) active.viewState = editor.saveViewState();
@@ -593,10 +623,12 @@ export function createEditorView(ctx, sandbox, getTask) {
   return {
     el,
     headExtra: () => [folder, wrapButton],
-    show() {
-      if (!started) { started = true; loadDir(''); }
+    /** `opts.file`: {root, path, line, col} to open (a terminal's file link). */
+    show(opts = {}) {
+      if (!started) { started = true; if (!(opts && opts.file && opts.file.root !== root)) loadDir(''); }
       if (editor) editor.layout();
       explorerSplitter.sync();
+      if (opts && opts.file) openAt(opts.file);
     },
     taskChanged: folderOptions,
     // Called when the panel host drops this view (another sandbox): free Monaco's editor and

@@ -33,6 +33,9 @@ pub struct Shell {
     pub name: String,
     /// The task whose worktree it started in; `null` for the sandbox repository.
     pub task_id: Option<String>,
+    /// Absolute path of the folder it started in, as its processes see it: paths printed in
+    /// it link to the editor (F 2026-10-10).
+    pub folder: String,
     /// Creation time (RFC 3339).
     pub created_at: String,
 }

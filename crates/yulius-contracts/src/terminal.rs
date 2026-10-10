@@ -53,15 +53,22 @@ pub enum TerminalClientMsg {
         #[serde(default)]
         scroll: bool,
     },
-    /// Viewport size changed.
+    /// The size this viewer's window fits now; the terminal takes it while this viewer
+    /// controls the size.
     Resize {
         /// Columns.
         cols: u16,
         /// Rows.
         rows: u16,
     },
-    /// Become the controlling viewer (terminal size follows this client).
+    /// The viewer clicked into the terminal: it controls the size now (as when it types).
     TakeControl,
+    /// The viewer is active (page visible and focused, terminal used recently): it takes the
+    /// size from an idle controller.
+    Active,
+    /// The viewer is idle (hidden, unfocused or unused for a while): when it controls the size,
+    /// the most recently active viewer takes over.
+    Idle,
 }
 
 /// Text frames to the browser.
@@ -141,6 +148,10 @@ mod tests {
         );
         let tc: TerminalClientMsg = serde_json::from_str(r#"{"type":"take_control"}"#)?;
         assert_eq!(tc, TerminalClientMsg::TakeControl);
+        let active: TerminalClientMsg = serde_json::from_str(r#"{"type":"active"}"#)?;
+        assert_eq!(active, TerminalClientMsg::Active);
+        let idle: TerminalClientMsg = serde_json::from_str(r#"{"type":"idle"}"#)?;
+        assert_eq!(idle, TerminalClientMsg::Idle);
         Ok(())
     }
 }
