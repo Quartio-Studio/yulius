@@ -13,6 +13,18 @@ type WithMock = Window & { __yuliusMock: { browsers: Map<string, MockBrowser> } 
 // clicks and keys reach the page; the tab an agent asks the user to act in is marked and its
 // sign-in is done right in the panel.
 test('the sandbox Chrome streams into the panel and takes clicks and keys', async ({ app, browser, screen }) => {
+  // The page is shown 1:1 once the shared viewport is this panel's size; right after the panel
+  // resizes (a banner appears) the old picture is scaled for a moment. Clicks at fixed page
+  // positions wait for that.
+  const atPanelSize = () => expect
+    .poll(() => browser.evaluate(() => {
+      const canvas = document.querySelector('.bp-canvas') as HTMLCanvasElement | null;
+      if (!canvas || canvas.width < 10) return false;
+      const rect = canvas.getBoundingClientRect();
+      return Math.abs(rect.width - canvas.width) < 1 && Math.abs(rect.height - canvas.height) < 1;
+    }), { timeout: 10000 })
+    .toBe(true);
+
   await app.open(mock('/s/studio/t/12'));
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
@@ -33,6 +45,7 @@ test('the sandbox Chrome streams into the panel and takes clicks and keys', asyn
   expect(await axeViolations(browser)).toEqual([]);
 
   // Keys typed after a click in the page go to the page.
+  await atPanelSize();
   await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
   await browser.keyboard.type('mug');
   await expect
@@ -44,6 +57,9 @@ test('the sandbox Chrome streams into the panel and takes clicks and keys', asyn
   await aws.click();
   await expect(aws).toHaveAttribute('aria-selected', 'true');
   await expect(screen.getByText(/An agent asks for your action here/)).toBeVisible();
+  // The banner made the panel shorter: its own new size is not "another viewer's".
+  await atPanelSize();
+  await expect(screen.getByText('Sized for another viewer')).toBeHidden();
   await browser.locator('.bp-surface').click({ position: { x: 200, y: 355 } });
   await expect(screen.getByRole('tab', /AWS Management Console/)).toBeVisible();
   await expect(screen.getByText(/An agent asks for your action here/)).toBeHidden();

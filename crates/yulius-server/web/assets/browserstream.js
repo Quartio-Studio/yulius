@@ -78,6 +78,10 @@ export function createStreamView(ctx, sandbox, hooks) {
   let serverViewport = null; // {width, height}: the shared viewport in CSS px
   let sentViewport = null;
   let viewportTimer = 0;
+  // A viewport was sent and the server has not answered yet: a size that differs is ours in
+  // flight, not another viewer's.
+  let awaitingViewport = false;
+  let awaitingTimer = 0;
   let moveFrame = 0;
   let pendingMove = null;
   let wheelFrame = 0;
@@ -256,7 +260,10 @@ export function createStreamView(ctx, sandbox, hooks) {
     surface.style.height = canvas.style.height;
     const mine = sentViewport && serverViewport && sentViewport.width === serverViewport.width && sentViewport.height === serverViewport.height;
     const larger = serverViewport && (serverViewport.width > Math.round(rect.width) + 1 || serverViewport.height > Math.round(rect.height) + 1);
-    sharedSize.hidden = Boolean(mine || !serverViewport || !sentViewport || !larger);
+    // While this panel resizes (its new size not yet sent or answered) the page is only scaled
+    // for a moment: that is not another viewer's size.
+    const resizing = awaitingViewport || !sentViewport || sentViewport.width !== Math.round(rect.width) || sentViewport.height !== Math.round(rect.height);
+    sharedSize.hidden = Boolean(mine || resizing || !serverViewport || !larger);
   }
 
   function sendViewport(force = false) {
@@ -265,7 +272,12 @@ export function createStreamView(ctx, sandbox, hooks) {
     const height = Math.round(rect.height);
     if (width < 50 || height < 50) return;
     if (!force && sentViewport && sentViewport.width === width && sentViewport.height === height) return;
-    if (send({ type: 'viewport', width, height })) sentViewport = { width, height };
+    if (send({ type: 'viewport', width, height })) {
+      sentViewport = { width, height };
+      awaitingViewport = true;
+      clearTimeout(awaitingTimer);
+      awaitingTimer = setTimeout(() => { awaitingViewport = false; layout(); }, 1000);
+    }
   }
 
   const observer = new ResizeObserver(() => {
@@ -591,6 +603,8 @@ export function createStreamView(ctx, sandbox, hooks) {
         break;
       case 'viewport':
         serverViewport = { width: message.width, height: message.height };
+        awaitingViewport = false;
+        clearTimeout(awaitingTimer);
         layout();
         break;
       case 'clipboard':
@@ -698,6 +712,7 @@ export function createStreamView(ctx, sandbox, hooks) {
     destroy() {
       observer.disconnect();
       clearTimeout(viewportTimer);
+      clearTimeout(awaitingTimer);
       clearTimeout(agentTimer);
       clearTimeout(copiedTimer);
       cancelAnimationFrame(moveFrame);
