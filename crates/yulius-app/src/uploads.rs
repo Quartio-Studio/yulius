@@ -218,8 +218,8 @@ fn is_disguising(c: char) -> bool {
 
 /// A safe attachment name: the last component of `raw`; ASCII letters, digits, `.`, `_`, `+`
 /// and printable non-ASCII letters are kept, anything else becomes `-` (one per run, none before
-/// a dot); no leading dot or dash; at most [`MAX_ATTACHMENT_NAME_CHARS`] characters with the extension
-/// kept; `attachment` when nothing is left. Such a path needs no quoting in a shell.
+/// a dot); no leading dot or dash; at most 100 characters with the extension kept; `attachment`
+/// when nothing is left. Such a path needs no quoting in a shell.
 #[must_use]
 pub fn attachment_name(raw: &str) -> String {
     let last = raw.rsplit(['/', '\\']).next().unwrap_or_default();
