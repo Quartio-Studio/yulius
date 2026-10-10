@@ -3,13 +3,15 @@
 // same length (a second summary request) and a line of context; the daily chart as the hero, with
 // the average, weekends and a readable hover; the outcomes as one split bar with a legend; the
 // breakdowns as bar lists with shares. Unknown values render as "—", never as zero. CSV/JSON
-// export of per-task rows stays one click away.
+// export of per-task rows stays one click away. The subscription pool (ROT-013) — capacity left,
+// burn rate, forecast and whether to buy more — has its own card for the whole instance.
 
 import { h, svgEl, setChildren, icon, iconButton, openMenu } from '../dom.js';
 import { compact, duration, int } from '../format.js';
 import { statusInfo } from '../status.js';
 import { pageFrame, loader } from './common.js';
 import { modelLabel } from '../models.js';
+import { accountUsage, capacityPanel } from '../layout.js';
 
 const RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
 const DAY = 86400000;
@@ -59,12 +61,13 @@ export function mountDashboardPage(ctx, sandbox) {
     const current = period();
     rangeLabel.textContent = `${SHORT_DATE.format(parseDay(current.from))} – ${SHORT_DATE.format(parseDay(current.to))}`;
     // The previous period only adds the changes; the page still works without it.
-    const [now, before] = await Promise.all([
+    const [now, before, capacity] = await Promise.all([
       ctx.api.get(`/api/analytics/summary?${query(current)}`),
       ctx.api.get(`/api/analytics/summary?${query(period(1))}`).catch(() => null),
+      ctx.api.get('/api/capacity').catch(() => null),
     ]);
-    return { now: now || {}, before, days };
-  }, ({ now, before, days: n }) => renderSummary(now, before, n));
+    return { now: now || {}, before, days, capacity };
+  }, ({ now, before, days: n, capacity }) => renderSummary(now, before, n, capacity));
   // Live while open (#31): tokens and runs of tasks in progress change; refresh in place while
   // the tab is visible.
   const live = setInterval(() => {
@@ -142,8 +145,20 @@ function card(title, sub, body, { tools, className } = {}) {
     body);
 }
 
+/**
+ * The subscription pool for the whole instance (`CapacityView`, ROT-013): the recommendation and
+ * its numbers, then each subscription's windows with use and reset times.
+ */
+function subscriptions(capacity) {
+  if (!capacity) return null;
+  const accounts = Array.isArray(capacity.accounts) ? capacity.accounts : [];
+  return card('Subscriptions', 'whole instance · Claude subscriptions in one pool', h('div', { class: 'stack' },
+    capacityPanel(capacity),
+    accounts.length ? h('div', { class: 'account-list' }, accounts.map((a, i) => accountUsage({ ...a, id: a.id || `pool-${i}`, provider: 'anthropic' }, { foldable: true, open: false }))) : null));
+}
+
 /** Render `AnalyticsSummary` (docs/api.md "Administration, analytics, status"). */
-export function renderSummary(data, previous = null, days = 30) {
+export function renderSummary(data, previous = null, days = 30, capacity = null) {
   const tasks = data.tasks || {};
   const tokens = data.tokens || {};
   const d = data.duration_ms || {};
@@ -175,6 +190,7 @@ export function renderSummary(data, previous = null, days = 30) {
         note: tokenNotes || null }),
       kpi({ label: 'Account switches', value: int(switches(data)), change: delta(now.switches, was('switches'), { better: 'down', days }), sub: 'between AI accounts' }),
       kpi({ label: 'Feedback correct', value: rated ? `${Math.round(now.correct * 100)}%` : '—', change: delta(now.correct, was('correct'), { points: true, days }), extra: feedbackBar, sub: rated ? `${feedback.correct || 0} of ${rated} rated` : 'no feedback yet' })),
+    subscriptions(capacity),
     h('div', { class: 'db-row' },
       tasksPerDay(perDay, tasks.total),
       outcomes(byStatus)),

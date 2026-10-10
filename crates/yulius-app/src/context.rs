@@ -44,6 +44,8 @@ pub struct AppConfig {
     pub viewer_recheck_ms: u64,
     /// Idle time before a message wakes a waiting task (COM-005).
     pub wake_idle_ms: i64,
+    /// Wait between two resumes of tasks paused for lack of subscription capacity (ROT-010).
+    pub resume_stagger_ms: u64,
     /// Extra host paths visible read-only inside containment (for example agent CLI install
     /// directories outside `/usr` and `/opt`).
     pub contained_readonly: Vec<PathBuf>,
@@ -84,6 +86,7 @@ impl AppConfig {
             secure_cookies: public_url.starts_with("https://"),
             viewer_recheck_ms: 60_000,
             wake_idle_ms: crate::background::WAKE_IDLE_MS,
+            resume_stagger_ms: crate::capacity::RESUME_STAGGER_MS,
             contained_readonly: Vec::new(),
             allowed_origins: Vec::new(),
             public_url,
@@ -140,6 +143,8 @@ pub struct App {
     pub(crate) supervisor: crate::supervisor::SupervisorState,
     /// Account login terminals.
     pub(crate) logins: crate::accounts::LoginRegistry,
+    /// The subscription pool's resume loop (SPEC-002 ADR-17).
+    pub(crate) capacity: crate::capacity::CapacityState,
     /// Sandbox shell sessions (SPEC-001 UI-015).
     pub(crate) shells: crate::shells::ShellState,
     /// Workspace tokens of user processes (SPEC-002 ADR-12).
@@ -172,6 +177,7 @@ impl App {
             message_waker: OnceLock::new(),
             supervisor: crate::supervisor::SupervisorState::default(),
             logins: crate::accounts::LoginRegistry::default(),
+            capacity: crate::capacity::CapacityState::default(),
             shells: crate::shells::ShellState::default(),
             workspace_grants: crate::identity::WorkspaceGrants::default(),
             recovery_lock: tokio::sync::Mutex::new(()),

@@ -43,6 +43,7 @@ disable`); CI sets it.
 | `layout.e2e.ts` | The sidebar, the editor's explorer and the tool panel resize by dragging their edge, by keyboard (sidebar) and back with a double-click, and keep their widths after a reload; at 1024 px with a panel open the sidebar gives way so the centre keeps 360 px; no splitters at 390 px |
 | `responsive.e2e.ts` | Every main page at 768 and 390 px: no two header, toolbar or list controls overlap (bounding boxes) and nothing scrolls sideways; Tasks with a tool panel open wraps its state tabs; a task beside an open Editor, Browser or Shell keeps its step strip and the panel head apart; at 1920 px every page is centred (no empty band on the right) |
 | `quality.e2e.ts` | Every main page: no WCAG 2.x A/AA violations (axe-core) |
+| `subscriptions.e2e.ts` | The accounts page shows the pool's capacity, burn rate, forecast and recommendation with only add, sign-in-again and remove (no priority or on/off controls); a paused task reads "Paused: waiting for subscription capacity (resets ~…)"; the dashboard shows the subscriptions card; no WCAG violations |
 | `agent.e2e.ts` | An agent reaches a goal written in plain English (needs a model, see below) |
 
 Every test also fails when the page reports an error: an uncaught exception, an unhandled

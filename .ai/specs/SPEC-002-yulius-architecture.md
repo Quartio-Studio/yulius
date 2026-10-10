@@ -85,6 +85,7 @@ Principles:
 | ADR-14 | Narrowed by ADR-15 (F 2026-10-10): the panel's live iframe tabs are removed; the preview origins and their proxy remain for one action, "Open live in a new window" on a sandbox dev server, and the no-recursion rules stay. Originally: the user browses the sandbox's apps **live in their own browser**: each (sandbox, port) has a preview origin `<port>-<key>.<yulius host>` that Yulius reverse-proxies to `127.0.0.1:<port>`, removing the iframe obstacles; the agents keep the sandbox's headless Chrome (ADR-09), whose tabs share the panel's strip and are watched remotely with the agent's cursor; Yulius never opens inside itself. Analysis and contract: §2.1. | Keep the mirror (A); pixel or video streaming (B); hybrids (D) | Native page behaviour on desktop and phone; needs wildcard DNS and TLS for the preview hosts (on-demand TLS); the app runs in the user's browser, so its absolute `localhost` URLs in page code do not reach the VM. |
 | ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
 | ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done. Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
+| ADR-17 | Claude subscriptions are **one self-managing pool** (F 2026-10-10): use-it-or-lose-it placement (weekly headroom ÷ hours to its reset ÷ tasks on the account + 1), a proactive switch at 98 % of any binding window at the turn boundary by native resume, and a **gentle, invisible pause** held by the harness — the Stop / `UserPromptSubmit` hook answers `202 Retry-After` and `yulius hook` keeps polling — persisted in `capacity_pauses`, resumed oldest first and staggered; a burn-rate forecast says when to buy more. Analysis and contract: §2.4. | Manual priorities (before); suspending the agent (SIGSTOP); letting the CLI hit the limit and typing a resume prompt; killing and resuming | No knobs; capacity that expires is spent first; switches only when forced; the agent is never told; a hold survives restarts; the CLI shows "running hook" while paused and a held agent keeps its session slot; relies on Claude Code honouring a long hook `timeout` (fallback: the reported-limit pause). |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 
 ### 2.1 ADR-14: the browser panel renders the sandbox's apps live (F 2026-10-09)
@@ -549,6 +550,118 @@ through, which is the chosen side of the trade-off; a wrong hold costs one click
 Chained tasks need GitHub to see "tested" (a merged pull request needs no call). Stacked branches
 can repeat the predecessor's commits in the successor's pull request until it is merged.
 
+### 2.4 ADR-17: Claude subscriptions as one self-managing pool (F 2026-10-10)
+
+Status: accepted and implemented (issue #112). Replaces the priority-ordered rotation of §6.3.
+
+**Request.** "We want to reduce management of subscriptions — priority etc. … run multiple tasks
+at the same moment but we don't want to manage subscriptions … implement the most efficient
+mechanism of switching … maximally use all our resources … monitor when we'll need to buy more …
+pausing tasks should be gentle: paused when 98 % is used and nothing is left, resumed gently when
+the first subscription arrives … done by our harness only … invisible for the agents."
+
+**How the windows behave.** `GET /api/oauth/usage` (the endpoint Claude Code reads) reports per
+subscription: `five_hour` — a session window that starts with the first request and resets five
+hours later (`resets_at` absent while none runs); `seven_day` — a weekly window with a fixed reset
+per subscription (the same weekday and hour every week); and per-model weekly caps
+(`seven_day_opus`, `seven_day_sonnet`; `null` when the plan has none). Each gives `utilization` in
+percent of that window's allowance; how requests are weighted is not documented, so Yulius uses
+only the reported percentages. The CLI's own limit record names the window it hit
+(`rateLimitType`). A few full 5-hour windows exhaust a week, so over a week the weekly window is
+the binding budget and the 5-hour window caps how fast one subscription can be spent.
+
+**What "maximally use all resources" means: use it or lose it.** Capacity is perishable: a
+window's unused headroom is gone at its reset. Hence:
+
+1. Spend first the weekly headroom that resets soonest. `headroom ÷ hours to reset` is the burn
+   rate needed to use it before it is lost; the higher, the more urgent.
+2. Keep every subscription's 5-hour window working rather than piling tasks onto one: the score is
+   divided by the live tasks already on the subscription plus one, so concurrent tasks spread in
+   proportion to urgency (a subscription that must burn 4 points/h takes more tasks than one that
+   needs 1).
+3. Do not exhaust the weekly budget of a subscription far from its reset: its urgency is low, so it
+   is used when the expiring capacity is gone, instead of being drained early and dead for days.
+
+**Keeping switches cheap.** A switch ends the CLI and resumes the session on another subscription.
+Prompt caches belong to one subscription, so the resumed session re-reads its whole context
+uncached — for a long session about as much as several ordinary turns. So Yulius never rebalances
+running tasks: a task moves only when its subscription reaches 98 % (the 2 % margin covers the turn
+in flight), only at a turn boundary (nothing in flight is lost), placement prefers at least 5 points
+of room in every window (a task placed with less would move again within minutes), a paused task
+resumes in place when its own subscription recovers (no switch), and the idle CLI is ended with
+SIGTERM instead of an interrupt that could start or cancel anything.
+
+**Policy** (`yulius-domain::rotation`, pure; SPEC-001 §7.4). A candidate is a signed-in subscription
+(status `ok` or `limited`) below 98 % in every window binding the task — 5-hour, weekly, and the
+weekly cap of an Opus or Sonnet task — with no reported limit in effect. Ranking: tier (≥ 5 points
+of room in every known window, then less, then no known window — unknown is never zero), then
+`score = (98 − weekly used) ÷ hours to the weekly reset ÷ (in_use + 1)` (hours clamped to
+0.25–168; unknown reset = 168), then the capacity that expires soonest (weekly reset, then 5-hour
+reset), fewer tasks, id. Triggers: *Start* (no process: placement), *Proactive* (a boundary or a
+paused task with a process: stay while the current subscription is a candidate, else the best
+other), *LimitReached* (always off the current one), *Manual* (ROT-007). No candidate → *Wait*
+until the earliest time a subscription becomes a candidate again.
+
+**The pause: options.**
+
+| Option | Hook timeouts | Claude Code's timers | ptyhost / terminal | Yulius restart | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| A. Hold the boundary hook: Stop / `UserPromptSubmit` answer `202 Retry-After`, `yulius hook` asks again with the same payload | Yulius writes the CLI's `timeout` for these two events (8 days + 1 h; Node timers overflow at 24.8 days); the client gives up at 8 days (more than a week) and fails open; each request keeps its 5 s bound, no long-lived connection | The CLI is in a normal, supported state (running a hook); no request is in flight, nothing times out; MCP servers stay connected | Unaffected: the process runs, the terminal shows the hook spinner, Stop still works (an interrupt cancels the hook) | Survives: the pause is a database row and the polling client is the CLI's child, not the server's; while held, a refused connection or a 5xx is retried every 2 s and the restarted server answers from the row | **Chosen** |
+| B. Suspend the process (SIGSTOP / SIGCONT) between turns | No safe moment: a goal or gate continuation starts the next request right after Stop; stopped during a hook, the hook's timer fires on SIGCONT and the decision is lost | Every timer fires at once on SIGCONT (streams, MCP calls, hooks) | The PTY looks hung; input piles up in a small kernel buffer; Stop's interrupt waits for SIGCONT; PID namespaces need care | Survives in the kernel, but a lost database leaves processes frozen | Rejected |
+| C. Let the CLI hit the limit, then type a resume prompt (before) | — | — | — | — | Rejected: the agent sees the limit and the prompt |
+| D. Kill now, resume later | — | Cold cache on every resume | — | Survives | Only when capacity returns on another subscription |
+
+**What is held, and how it ends.** At Stop, a task that would work on (its gate blocks, or goal
+mode) is held; a turn that ends idle is not — its next prompt (the user's, a wake notice, an
+automation) is held at `UserPromptSubmit`, and the prompt (≤ 100 KiB) is kept for a resume
+elsewhere. A task with no process (new task, Continue, a switch that found nothing) waits to
+start. An agent without hooks pauses idle at the turn end its transcript shows. A `202` carries no
+output, so the model is never involved; the final answer is the ordinary hook output computed when
+the hold ends. The pause is a `capacity_pauses` row (`turn`, `prompt`, `limit`, `start`) plus the
+task status `waiting_capacity`. A usage limit the CLI reports mid-turn turns the pause into
+`limit`: the CLI ended that turn itself, so resuming it needs a user message, and that message is
+the neutral "Continue." — the only text the harness ever sends on its own after a pause.
+
+**Resume.** One loop (`App::start_capacity_loop`) wakes on usage readings, an added or removed
+subscription, a new pause, the earliest known reset (+1 s) and every 5 minutes, and walks the open
+pauses oldest first with 20 s between two resumes ("gently": usage readings catch up, and a fresh
+window is not hit by every waiting task at once). Per task the policy decides: in place when the
+process's own subscription is a candidate (the held hook answers on its next poll, ≤ 10 s); else a
+native resume on the chosen subscription (prompt: the held prompt, the gate's reasons, or
+"Continue." after a reported limit; a goal-mode session gets its goal again as at every launch);
+a task without a process starts there.
+
+**Forecast** (`yulius-domain::capacity`, ROT-013). Points are percentage points of one
+subscription's weekly window; T = 98; N = healthy subscriptions.
+
+- Weekly headroom H = Σ (T − uᵢ)⁺ over members with a known weekly use uᵢ (unknown adds nothing).
+- Burn rate B_w for w = 24 h and 7 d: per subscription, the sum over consecutive readings inside w
+  of Δ = u_k − u_{k−1} when positive, u_k when the window reset in between, 0 when it fell without
+  a reset, divided by the hours those readings span (≥ 1 h, else skipped); summed over
+  subscriptions (removed ones count: their use was served demand); unknown without readings.
+- Runs out: walking forward from now at B_24h, H falls linearly and gains min(uᵢ, T) at member i's
+  weekly reset (capped at T × members with known use); the first time H reaches 0, shown when
+  within 7 days.
+- Paused P = task-hours of pauses in the last 7 days; active A = task-hours of runs minus pauses
+  that held a process.
+- Needed = ⌈max(B_24h × 168 ÷ T, N × (A + P) ÷ A)⌉, the second term only when P > 0 (N + 1 when
+  A = 0); add = max(needed − N, 0), at least 1 when the pool is empty and work waits.
+- Recommendation: "Capacity is sufficient" when add = 0, else "Add about {add} subscription(s) to
+  stop pausing" ("Add a subscription to start working" for an empty pool).
+
+The rate term is long-run demand at the current pace; pauses mean demand went unobserved (tasks
+waited), so the pause factor scales the pool by the share of time tasks were held. Readings come
+every 10 minutes (ROT-009), so B is an average, not a measurement of single turns.
+
+**Consequences.** No priorities, order or on/off switch (API, UI and schema: migration 0004 drops
+`accounts.priority` and `accounts.enabled`; a disabled account joins the pool — remove unwanted
+ones before upgrading). A held agent keeps its session slot (§9). The terminal shows the CLI's
+hook spinner while paused. A per-model limit the CLI reports blocks the whole subscription until
+its reset (conservative). Not verified against a live CLI (no paid run in this change): that Claude
+Code honours an 8-day hook `timeout`; if it ended the hook earlier, the hook fails open, the agent
+continues on a subscription at 98 % or more, and a reported limit pauses it as `limit` — work is
+never lost.
+
 ## 3. Code organization
 
 Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
@@ -618,8 +731,9 @@ Schema version 1 (tables; columns abbreviated):
 | `tasks` | id, sandbox_id, number (per sandbox), title, harness, workflow_id, status, activity, branch, worktree_path, spec_path, created_by, created_at, closed_at, archived_at, origin (ui/automation/import/onboarding), automation_run_id |
 | `attempts` | id, task_id, seq, harness, account_id, provider_session_id, launch_kind (new/resume), state, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason; partial unique index: one attempt per task in (spawning, live) |
 | `provider_sessions` | id, task_id, harness, session_id, transcript_ref, first_seen, last_seen, origin |
-| `accounts` | id, provider, label, credential (enc), priority, enabled, status, last_usage (json), last_error |
-| `usage_samples` | account_id, at, window, used_percent, resets_at, source |
+| `accounts` | id, provider, label, credential (enc), status, usage (json), last_error (version 4 drops priority and enabled, ADR-17) |
+| `usage_samples` | account_id, at, window_name (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`), used_percent, resets_at, source; kept 8 days (ADR-17 forecast) |
+| `capacity_pauses` | id, task_id, kind (turn/prompt/limit/start), account_id, continuation (held prompt), started_at, ended_at, outcome; at most one open per task (partial unique index) |
 | `switch_decisions` | id, task_id, at, reason, inputs (json), outcome |
 | `steps` | id, task_id, ordinal, title, status, note, updated_by, updated_at |
 | `step_events` | step_id, at, actor, from_status, to_status, note |
@@ -654,7 +768,7 @@ For every nonterminal state: owner, exit trigger, timeout and behavior if the tr
 | `starting` | supervisor | ptyhost Welcome + child running → `running`; spawn error → `failed` | 30 s → kill ptyhost tree, `failed(start_timeout)`. |
 | `running` | supervisor | child exit 0/normal → `closed`; abnormal exit → `stopped(crashed)`; cancel → `stopping`; switch decision → `switching`; limit with no capacity → `waiting_capacity` | Liveness ping every 10 s; 3 missed pings + no process → `stopped(lost)`. |
 | `switching` | rotation controller | new attempt `live` → `running`; failure → `stopped(switch_failed)` with retry offered | 120 s total; on expiry the old process is confirmed dead and the task becomes `stopped(switch_timeout)`. |
-| `waiting_capacity` | rotation controller | an account becomes available (reset time passes or admin adds/enables) → `switching`; cancel → `stopped` | Re-evaluated at earliest reset and every 5 min. |
+| `waiting_capacity` | capacity controller (ADR-17) | a subscription becomes a candidate (a reset passes, new usage, a subscription added) → `running` in place, `switching` to another one, or `starting` without a process; the process exits → `closed`/`stopped`; cancel → `stopped` | Re-evaluated at the earliest reset, on usage readings and subscription changes, and every 5 min; the pause row survives restarts; a held hook gives up after 8 days (fails open). |
 | `stopping` | supervisor | child and descendants reaped → `stopped(cancelled)` | Interrupt → 5 s → SIGTERM → 5 s → SIGKILL (bwrap: namespace dies) → 10 s; if still not reaped: `stopped(lost)` + audit alert; capacity released only after reaping or `lost`. |
 | `closed`, `stopped`, `failed` | — (terminal for the run) | Continue → `starting` (new attempt, resume) | — |
 
@@ -670,11 +784,16 @@ observation; the other is ignored (RUN-002).
 
 ### 6.3 Switch (account)
 
-1. Decide (domain policy, inputs persisted in `switch_decisions`).
-2. Quiesce: proactive → wait for turn end (Stop hook) up to 10 min; reactive → turn already ended.
-3. Stop old attempt (as `stopping`, but final state `exited(switched)`).
+1. Decide (pool policy, ADR-17; inputs persisted in `switch_decisions`): proactive at 98 % of a
+   binding window, reactive on a reported limit, or the resume of a paused task.
+2. Quiesce: proactive → the turn boundary (the Stop hook holds the agent while it moves; a run
+   without hooks: the transcript's turn end); reactive → the turn already ended.
+3. Stop old attempt (as `stopping`, but final state `exited(switched)`); an automatic switch sends
+   SIGTERM first (the agent is idle), a person's switch an interrupt.
 4. Prepare target: nothing to copy (the sandbox home is shared); a task never changes harness.
-5. Launch new attempt with native resume and a continuation prompt when the last turn failed.
+5. Launch new attempt with native resume; a prompt only when the turn must go on: the held prompt,
+   the gate's reasons, or "Continue." after a reported limit (never words about accounts or limits).
+   No candidate → the task pauses (`start`).
 6. Bridge viewers to the new attempt; write a one-line notice into the terminal stream.
 
 Idempotency: a task has at most one in-flight switch (row lock via task status CAS).
@@ -831,8 +950,14 @@ output) and is recorded. Responses:
   `working`. The Jev deadline (3 s) fits inside the hook client's 5 s; any failure passes.
 - `Stop` → activity `waiting`; discipline gate: if the worktree has changes and the task spec is
   missing/invalid, or there are unread urgent messages, return `{"decision":"block","reason":…}`;
-  at most 3 consecutive blocks per turn, then `needs_attention`. Also the turn boundary for
-  proactive rotation.
+  at most 3 consecutive blocks per turn, then `needs_attention`. Also the turn boundary of the
+  subscription pool (ADR-17): a switch at 98 %, or a hold when no subscription has capacity and the
+  agent would work on.
+- Hold (ADR-17): `Stop` and `UserPromptSubmit` may answer `202 Accepted` with `Retry-After`
+  (10 s) and no body. The hook client sleeps that long (1–60 s) and sends the same request again
+  until a `200` (printed as usual), a 4xx (fails open) or 8 days pass (fails open); while held, a
+  refused connection or a 5xx is retried every 2 s (a server restart). The CLI's `timeout` for
+  these two events is 8 days + 1 h; the other events keep 15 s.
 - `Notification` / `PermissionRequest` → `needs_attention`.
 
 Waking idle tasks (COM-005): when a direct message arrives for a `running` task with activity
@@ -977,6 +1102,10 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | Stop escalation | 5 s + 5 s + 10 s | `lost` + alert |
 | Switch total | 120 s | `stopped(switch_timeout)` |
 | Hook call | 5 s | fail-open |
+| Hook hold (Stop, `UserPromptSubmit`) | `Retry-After` 10 s (client: 1–60 s), 2 s after a failure, 8 days in total (CLI `timeout` 8 days + 1 h) | fail-open; a reported limit then pauses as `limit` |
+| Resume of paused tasks | oldest first, 20 s apart; loop at least every 5 min | — |
+| Held prompt carried to another subscription | 100 KiB | longer prompts are not held (they run; a reported limit pauses them) |
+| Usage readings kept | 8 days | pruned on insert |
 | Discipline blocks per turn | 3 | `needs_attention` |
 | MCP request / result | 1 MiB / 256 KiB | error |
 | Transcript line | 4 MiB | skip + diagnostic |
@@ -1009,7 +1138,9 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | ptyhost crash | socket EOF + no exit.json + pid gone | Child is in ptyhost's session → receives SIGHUP; contained runs die with bwrap; attempt `lost`, task `stopped`. |
 | Agent crash | exit frame non-zero | Task `stopped(crashed)`; Continue offered. |
 | VM reboot | boot id mismatch | All live attempts `lost`; tasks continuable; automations resume schedule. |
-| Usage limit | transcript/rate-limit events | Rotation (§6.3). |
+| Usage limit | transcript/rate-limit events | Rotation (§6.3); with no candidate the task pauses as `limit` (ADR-17). |
+| Every subscription exhausted | pool policy at a boundary or start | Gentle pause held by the harness (ADR-17); resume when capacity returns. |
+| Server restart during a pause | open `capacity_pauses` rows | Paused runs are reattached and stay held (the hook client keeps polling); the resume loop resumes them. |
 | Provider outage/auth failure | spawn exits early / auth error text | Account marked `error`; rotation excludes it; admin notified. |
 | GitHub outage | HTTP errors | Bounded retries; permission cache serves stale-but-recent (≤ 30 min) for read-only views; writes needing GitHub fail visibly. |
 | GitHub App lacks a check permission (#111) | 403 "Resource not accessible by integration" from check runs, the combined status or Actions runs | The other sources decide (Actions runs stand in for unreadable check runs); the source is named once per repository in `checks_access`, with the App's permission page for instance administrators; nothing reported while a source is unreadable, or nothing readable, is `unknown`, which blocks merges and releases that require checks. Other GitHub errors: `unknown` with a note. |
@@ -1044,7 +1175,8 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | R-01 | Undocumented transcript formats change. | Version-pinned parsers, unknown-record tolerance, live smoke per CLI upgrade. |
 | R-02 | Closed (F 2026-10-08): Codex refresh-token rotation (Codex removed). | — |
 | R-03 | Closed (F 2026-10-08): Codex hook configuration semantics (Codex removed). | — |
-| R-04 | Claude usage percentage not available for setup tokens. | Reactive switching on limit errors; proactive switching (99 %) when an administrator's usage refresh (`/api/oauth/usage`) reports the windows. |
+| R-04 | Claude usage percentage not available for setup tokens. | Reactive switching on limit errors; proactive switching (98 %) and placement when the background usage refresh (`/api/oauth/usage`) reports the windows; unknown usage ranks last. |
+| R-14 | Claude Code's handling of a hook held for days is not verified live (ADR-17). | The CLI timeout is written explicitly; the hook client fails open first; a reported limit still pauses the task as `limit`. Open: a live smoke of a held Stop hook. |
 | R-05 | Browser video on phones and slow links. | Skip-to-keyframe backpressure per viewer, client decode queue bound; fps and size configurable (ADR-15). Open: adaptive bitrate. |
 | R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
 | R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; sandboxes share the loopback network, so any local process (including other sandboxes' agents) can drive a sandbox browser and its logged-in sessions; in contained mode CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's containment/network namespace. |
@@ -1101,10 +1233,16 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Live previews and no recursion (ADR-14, 2026-10-09) | `tests/preview.rs` (handshake, rewriting, localhost view of the app, WebSocket passthrough, refusals of users, sandboxes, ports, cross-site callers and Yulius itself, the Yulius session unusable from a preview origin, TLS `ask`); `tests/browser.rs` (per-viewer `watch`); `yulius-browser` `tests/instance.rs` and `tests/manager.rs` (the sandbox Chrome's guard: refusal, `Fetch` interception, fail-closed start); opt-in `live_ui_browser.rs` with real Chrome (live iframe with root-relative assets, a redirect, a WebSocket, native typing, selection and scrolling, address bar and Back, agent notice and cursor, hostile preview page refused, framed UI refused, the sandbox Chrome refusing Yulius). Deployed DNS/TLS not exercised. |
 | Streamed browser (ADR-15, 2026-10-10) | Unit: FLV parsing for every split of a stream, codec strings, GOP cache, subscriber and viewer backpressure, encoder lifecycle (on demand, idle stop, resize restart, give-up), key mapping, cookie format and permissions, device sizes. `tests/browser.rs` with a fake display: video config then a keyframe, a late viewer's instant start, viewport → display resize and encoder restart, XTest-shaped input, wheel and text through CDP, copy, release on leave, pages opened by pages come to the front, history and reload, a broken encoder falls back to JPEG, the display stops with the browser. Opt-in `live_display.rs` on the VM (Xvfb, ffmpeg, Chrome 155, as the service user): streaming from a keyframe, real clicks (also in an OAuth-style popup), typing incl. Polish letters and emoji in order, scrolling, canvas and image pixels, `navigator.webdriver === false`, agent cursor, screenshots, recursion refused, no display, cookie, abstract or TCP socket reachable from containment (both identities); figures in ADR-15; reCAPTCHA v2 demo (checkbox → image challenge, a tile selected) and Cloudflare's challenge on nopecha.com (checkbox → passed) with XTest clicks. `live_ui_browser.rs` with a display: the panel decodes H.264 in Chrome and its input reaches the page. `e2e/tests/browser.e2e.ts` (mock UI, VP8 via WebCodecs). |
 | Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
+| Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
 
+- 2026-10-10 (F 2026-10-10, item 10b): ADR-17 — Claude subscriptions as one self-managing pool:
+  use-it-or-lose-it placement, a 98 % switch at the turn boundary, a pause held at the Stop /
+  `UserPromptSubmit` hook (`202 Retry-After`, invisible to the agent, persisted, resumed oldest
+  first and staggered) and a capacity forecast; §5 (`capacity_pauses`, `usage_samples`, accounts
+  without priority and enabled — migration 0004), §6.1, §6.3, §7.5, §9, §10, R-04, R-14, §14.
 - 2026-10-10 (F 2026-10-10, #110/#111): `POST /api/tasks/{tid}/messages` removed (people talk to
   the agent in its terminal); `GitOverview`/`Delivery` gain `checks_access`; checks read each source
   on its own with an Actions-runs fallback and a `ChecksState::Unknown` that never passes a gate;

@@ -148,7 +148,7 @@ function seed(params) {
       model: 'claude-opus-4',
       effort: 'high',
       delivery: extra.delivery || null, // {stage, environment, pr} once delivery started
-      // Every account at its usage limit: when the earliest one resets (ROT-010).
+      // Paused for subscription capacity: when the earliest window resets (ROT-010).
       resumes_at: status === 'waiting_capacity' ? new Date(Date.now() + 38 * MIN).toISOString() : null,
     };
   };
@@ -160,7 +160,7 @@ function seed(params) {
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
     t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3 }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
-    t('sb_studio', 7, 'Search indexing', 'claude', 'waiting_capacity', 'needs_attention', { done: 1 }),
+    t('sb_studio', 7, 'Search indexing', 'claude', 'waiting_capacity', null, { done: 1 }),
     t('sb_studio', 6, 'Fix flaky checkout test', 'claude', 'starting', null, { noSteps: true }),
     t('sb_studio', 5, 'Docs restructure', 'claude', 'closed', null, { done: 7, current: false, updated: 5 * HOUR, delivery: { stage: 'pr_open', environment: null, pr: pr(214, 'Docs restructure', 'open', 'quartio', 'success') } }),
     t('sb_studio', 4, 'Payment webhook', 'claude', 'stopped_cancelled', null, { done: 3, current: false, updated: 9 * HOUR, delivery: { stage: 'pr_open', environment: null, pr: pr(209, 'Payment webhook', 'open', 'quartio', 'failure') } }),
@@ -194,12 +194,12 @@ function seed(params) {
     { id: 'msg_3', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_12', login: null, title: '#12 Checkout API' }, to_task_id: null, kind: 'question', subject: 'Stripe keys', body: 'Should checkout use the Stripe test keys or the live ones? The AWS sign-in tab is open: ' + `${ORIGIN}/s/studio/browser?tab=tab-aws`, created_at: iso(3 * MIN), read: true },
   ];
   db.accounts = [
-    { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', email: 'michal.karp@example.com', plan: 'Max 20x', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
-    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', email: 'team.dev@example.com', plan: 'Max 20x', enabled: true, priority: 2, status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: the provider is limiting usage requests for this account (HTTP 429); Yulius asks again in about 12 min', in_use_by: 3 },
-    { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', email: 'ops@example.com', plan: 'Max 5x', enabled: true, priority: 3, status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
-    { id: 'acc_x1', provider: 'anthropic', label: 'Claude #4', email: 'studio@example.com', plan: 'Max 5x', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
-    { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', email: 'product@example.com', plan: 'Pro', enabled: true, priority: 2, status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
-    { id: 'acc_x3', provider: 'anthropic', label: 'Claude spare', email: null, plan: null, enabled: false, priority: 9, status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', email: 'michal.karp@example.com', plan: 'Max 20x', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
+    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', email: 'team.dev@example.com', plan: 'Max 20x', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: the provider is limiting usage requests for this account (HTTP 429); Yulius asks again in about 12 min', in_use_by: 3 },
+    { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', email: 'ops@example.com', plan: 'Max 5x', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
+    { id: 'acc_x1', provider: 'anthropic', label: 'Claude #4', email: 'studio@example.com', plan: 'Max 5x', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
+    { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', email: 'product@example.com', plan: 'Pro', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_x3', provider: 'anthropic', label: 'Claude spare', email: null, plan: null, status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
   // `wf-feature` and `wf-quick-task` are the built-in instance workflows the server seeds.
   db.workflows = [
@@ -391,7 +391,7 @@ function recount(db) {
     const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived);
     sandbox.counts = {
       running: tasks.filter((t) => t.status === 'running').length,
-      needs_attention: tasks.filter((t) => (t.status === 'running' && t.activity === 'needs_attention') || t.status === 'waiting_capacity').length,
+      needs_attention: tasks.filter((t) => t.status === 'running' && t.activity === 'needs_attention').length,
       queued: tasks.filter((t) => t.status === 'queued').length,
     };
   }
@@ -1296,7 +1296,7 @@ route('POST', '/api/admin/accounts', ({ db, body }) => {
   if (body.provider !== 'anthropic') fail(422, 'invalid', 'provider must be anthropic (Claude)');
   if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
   db.nextId += 1;
-  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, enabled: true, priority: 100, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
   return json(201, { account, login_id: `login_${account.id}` });
 });
@@ -1304,9 +1304,10 @@ route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
-  if (body.priority !== undefined && !(Number.isInteger(body.priority) && body.priority >= 0 && body.priority <= 10000)) fail(422, 'invalid', 'priority must be 0–10000');
-  if (body.label !== undefined && !(body.label.length >= 1 && body.label.length <= 80)) fail(422, 'invalid', 'label must be 1–80 characters');
-  for (const key of ['enabled', 'priority', 'label']) if (body[key] !== undefined) account[key] = body[key];
+  // Only the name: the pool has no priorities or switches (F 2026-10-10).
+  if (Object.keys(body).some((key) => key !== 'label')) fail(422, 'invalid', 'unknown field; only `label` can change');
+  if (typeof body.label !== 'string' || !(body.label.trim().length >= 1 && body.label.length <= 80)) fail(422, 'invalid', 'label must be 1–80 characters');
+  account.label = body.label.trim();
   emit(db, { type: 'account.updated', account });
   return account;
 });
@@ -1382,7 +1383,7 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
       { harness: 'claude', ...tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown) },
     ],
     tokens_by_account: [
-      ...db.accounts.filter((a) => a.enabled).map((a, i) => ({ account_id: a.id, account_label: a.label, ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
+      ...db.accounts.filter((a) => a.status !== 'pending_login').map((a, i) => ({ account_id: a.id, account_label: a.label, ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
       { account_id: 'acc_deleted', account_label: null, ...tokenTotals(2, 1, n(1e6), n(0.1e6), null, null, 0) },
     ],
     switches: { total: Math.round(total * 0.15) },
@@ -1426,9 +1427,44 @@ route('GET', '/api/status', ({ db }) => {
     sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: 8, queued: db.tasks.filter((t) => t.status === 'queued').length },
     sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: s.counts.running })),
     accounts: db.accounts.map((a) => (admin
-      ? { label: a.label, provider: a.provider, plan: a.plan, status: a.status, enabled: a.enabled, usage: a.usage, id: a.id, priority: a.priority, last_error: a.last_error, in_use_by: a.in_use_by, email: a.email }
-      : { label: a.label, provider: a.provider, plan: a.plan, status: a.status, enabled: a.enabled, usage: a.usage })),
+      ? { label: a.label, provider: a.provider, plan: a.plan, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by, email: a.email }
+      : { label: a.label, provider: a.provider, plan: a.plan, status: a.status, usage: a.usage })),
     contained: db.me.instance.contained,
+  };
+});
+// GET /api/capacity (`CapacityView`, ROT-013): the pool, burn rate and forecast. The mock's pool
+// burns faster than it refills and tasks waited this week, so it recommends one more subscription.
+route('GET', '/api/capacity', ({ db }) => {
+  const admin = db.me.user.is_instance_admin || db.me.user.is_superadmin;
+  const threshold = 98;
+  const healthy = db.accounts.filter((a) => a.status === 'ok' || a.status === 'limited');
+  const left = (key) => {
+    const known = healthy.map((a) => a.usage && a.usage[key] && a.usage[key].used_percent).filter(Number.isFinite);
+    return known.length ? known.reduce((sum, used) => sum + Math.max(0, threshold - used), 0) : null;
+  };
+  const isAvailable = (a) => healthy.includes(a) && ['primary', 'secondary'].every((key) => !(a.usage && a.usage[key] && a.usage[key].used_percent >= threshold));
+  const paused = db.tasks.filter((t) => t.status === 'waiting_capacity');
+  return {
+    threshold,
+    subscriptions: healthy.length,
+    unknown_usage: healthy.filter((a) => !(a.usage && a.usage.secondary && Number.isFinite(a.usage.secondary.used_percent))).length,
+    available: db.accounts.filter(isAvailable).length,
+    weekly_left: left('secondary'),
+    five_hour_left: left('primary'),
+    burn_24h: 2.4,
+    burn_7d: 1.9,
+    runs_out_at: isoIn(1.6 * DAY),
+    paused_hours_7d: 6.5,
+    active_hours_7d: 118,
+    needed: healthy.length + 1,
+    add: 1,
+    recommendation: 'Add about 1 subscription to stop pausing',
+    paused_tasks: paused.length,
+    resumes_at: null,
+    accounts: db.accounts.map((a) => ({
+      label: a.label, status: a.status, usage: a.usage, available: isAvailable(a),
+      ...(admin ? { id: a.id, in_use_by: a.in_use_by } : {}),
+    })),
   };
 });
 
