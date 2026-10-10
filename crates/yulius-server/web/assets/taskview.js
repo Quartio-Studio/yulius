@@ -123,9 +123,10 @@ export function mountTaskView(ctx, sandbox, task) {
   // floats over the top of the terminal: coming and going with every turn, it must not resize
   // the terminal (each resize makes Claude Code redraw its whole screen, F 2026-10-09).
   const attention = h('div', { class: 'attention-bar', role: 'status', hidden: true });
+  // Where the user answers the agent: its terminal (the quick input on phones).
+  const reply = () => (isPhone() ? quickInput.focus() : terminal.focus());
   function renderAttention() {
     const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
-    const reply = () => (isPhone() ? quickInput.focus() : terminal.focus());
     let content = null;
     if (info.request) {
       content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
@@ -258,6 +259,8 @@ export function mountTaskView(ctx, sandbox, task) {
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
       if (wasLive && current.status === 'closed' && ctx.onTaskClosed) ctx.onTaskClosed(current);
     },
+    /** Focuses the terminal to answer the agent (the quick input on phones). */
+    reply,
     get task() { return current; },
     get detail() { return detail; },
     destroy() {

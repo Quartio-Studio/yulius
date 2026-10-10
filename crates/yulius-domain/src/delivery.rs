@@ -529,6 +529,9 @@ pub enum ChecksState {
     Success,
     /// At least one check failed.
     Failure,
+    /// The checks cannot be read (GitHub refused, or the App lacks the permission for the
+    /// sources that could report them). Never counts as passed: gates that require checks wait.
+    Unknown,
 }
 
 impl ChecksState {
@@ -540,6 +543,7 @@ impl ChecksState {
             Self::Pending => "pending",
             Self::Success => "success",
             Self::Failure => "failure",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -714,6 +718,9 @@ pub enum DeliveryError {
     /// Checks still running.
     #[error("checks are still running on the pull request")]
     ChecksPending,
+    /// Checks cannot be read, so they do not count as passed.
+    #[error("the pull request's checks can't be read, so they don't count as passed")]
+    ChecksUnknown,
     /// The pull request is not in the required state.
     #[error("the pull request is {actual}; expected {expected}")]
     PullRequestState {
@@ -961,6 +968,7 @@ fn check_merge(
         match facts.checks {
             ChecksState::Failure => return Err(DeliveryError::ChecksFailing),
             ChecksState::Pending => return Err(DeliveryError::ChecksPending),
+            ChecksState::Unknown => return Err(DeliveryError::ChecksUnknown),
             ChecksState::None | ChecksState::Success => {}
         }
     }
@@ -1198,11 +1206,12 @@ mod tests {
         stage = user(&stage, &DeliveryAction::OpenPr, &profile, &facts())?;
         assert_eq!(stage, DeliveryStage::PrOpen);
 
-        // Merge waits for green checks.
+        // Merge waits for green checks; checks that can't be read are not green (#111).
         let open = with_pr(PrState::Open);
         for (checks, error) in [
             (ChecksState::Pending, DeliveryError::ChecksPending),
             (ChecksState::Failure, DeliveryError::ChecksFailing),
+            (ChecksState::Unknown, DeliveryError::ChecksUnknown),
         ] {
             let observed = DeliveryFacts {
                 checks,
@@ -1479,11 +1488,12 @@ mod tests {
     #[test]
     fn studio_flow_ac_dlv_3() -> TestResult {
         let profile = DeliveryProfile::studio();
-        // No required checks: pending or failing checks do not block the merge.
+        // No required checks: pending, failing or unreadable checks do not block the merge.
         for checks in [
             ChecksState::Pending,
             ChecksState::Failure,
             ChecksState::None,
+            ChecksState::Unknown,
         ] {
             let observed = DeliveryFacts {
                 checks,

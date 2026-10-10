@@ -117,6 +117,9 @@ pub enum ChecksState {
     Success,
     /// Any failed.
     Failure,
+    /// Cannot be known: no source could be read, or nothing was reported while a source could
+    /// not be read. Never counts as passed.
+    Unknown,
 }
 
 impl ChecksState {
@@ -128,6 +131,59 @@ impl ChecksState {
             Self::Pending => "pending",
             Self::Success => "success",
             Self::Failure => "failure",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Where GitHub reports CI results, each behind its own App permission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ChecksSource {
+    /// Check runs (GitHub Actions and every Checks API app): "Checks: read".
+    CheckRuns,
+    /// Commit statuses (CI that reports statuses): "Commit statuses: read".
+    CommitStatuses,
+    /// GitHub Actions workflow runs, read only when check runs cannot be: "Actions: read".
+    WorkflowRuns,
+}
+
+impl ChecksSource {
+    /// The App permission that reads this source, as GitHub's settings name it.
+    #[must_use]
+    pub fn permission(self) -> &'static str {
+        match self {
+            Self::CheckRuns => "Checks",
+            Self::CommitStatuses => "Commit statuses",
+            Self::WorkflowRuns => "Actions",
+        }
+    }
+
+    /// What the source holds, in words.
+    #[must_use]
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::CheckRuns => "check runs",
+            Self::CommitStatuses => "commit statuses",
+            Self::WorkflowRuns => "Actions runs",
+        }
+    }
+}
+
+/// The checks of one commit and the sources the App may not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChecksReport {
+    /// Aggregate over the readable sources.
+    pub state: ChecksState,
+    /// Sources the App lacks the permission for (sorted, without repeats).
+    pub unreadable: Vec<ChecksSource>,
+}
+
+impl From<ChecksState> for ChecksReport {
+    /// A report read from every source.
+    fn from(state: ChecksState) -> Self {
+        Self {
+            state,
+            unreadable: Vec::new(),
         }
     }
 }
@@ -283,14 +339,15 @@ pub trait GitHubPort: Send + Sync {
         repo: &str,
         head: Option<&str>,
     ) -> AppResult<Vec<GhPull>>;
-    /// Aggregated checks of a commit.
+    /// Aggregated checks of a commit, read from every source the App may read (a missing
+    /// permission is reported in [`ChecksReport::unreadable`], not as an error).
     async fn checks(
         &self,
         token: &Secret,
         owner: &str,
         repo: &str,
         sha: &str,
-    ) -> AppResult<ChecksState>;
+    ) -> AppResult<ChecksReport>;
     /// Merges a pull request at the expected head.
     async fn merge_pull(
         &self,

@@ -36,6 +36,8 @@ disable`); CI sets it.
 | `browser.e2e.ts` | The browser panel streams the sandbox Chrome (mock: a drawn page as VP8 video or JPEG frames) onto its canvas with the tab's address; keys typed after a click reach the page; the agent's sign-in tab asks for action and the click signs in; a new tab opens the welcome page; no WCAG violations |
 | `terminals.e2e.ts` | The Shell panel shows a working terminal without a button; "+" opens another tab; tabs switch, rename (F2) and close (Delete); each sandbox has its own terminals |
 | `rail.e2e.ts` | The tools rail: items and counts inside the rail with one open tool (and no WCAG violations); the rail stays in the window when it narrows with a panel open; at 390 px it sits in the top bar without covering it |
+| `messages.e2e.ts` | The Messages panel lists messages between tasks and the agent's question to people, has no text box or Send button (and no WCAG violations); "Reply in the terminal" focuses the task's terminal |
+| `git.e2e.ts` | A GitHub App permission Yulius lacks is one quiet line on the Git page for administrators, with a link to the App's permissions, no warning banner, hidden for the session once dismissed (also after a reload); members don't see it |
 | `phone.e2e.ts` | At 390 px: no horizontal scroll, the quick input, the navigation drawer |
 | `quality.e2e.ts` | Every main page: no WCAG 2.x A/AA violations (axe-core) |
 | `agent.e2e.ts` | An agent reaches a goal written in plain English (needs a model, see below) |

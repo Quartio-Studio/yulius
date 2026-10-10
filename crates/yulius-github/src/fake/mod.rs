@@ -4,9 +4,10 @@
 //! that [`crate::GitHubClient`] uses, on `127.0.0.1:0`. The API lives under `/api/` and the
 //! web (OAuth) endpoints under `/web/` of the same server, which also exercises base URLs
 //! with a path (as on GitHub Enterprise Server). Tests configure users, tokens,
-//! installations, repositories, permissions, commits, branches, pull requests, check runs
-//! and statuses; inject faults; and inspect every recorded request. All data is synthetic,
-//! including the App key in `synthetic_app_key.pem`.
+//! installations, repositories, permissions, commits, branches, pull requests, check runs,
+//! statuses and Actions workflow runs; withhold App permissions; inject faults; and inspect
+//! every recorded request. All data is synthetic, including the App key in
+//! `synthetic_app_key.pem`.
 //!
 //! App JWTs are verified for real (RS256 signature, issuer, `iat`/`exp` window) against the
 //! fake App's key, so a client that signs incorrectly fails against the fake.
@@ -200,6 +201,7 @@ struct FakeRepo {
     pulls: Vec<FakePull>,
     check_runs: HashMap<String, Vec<FakeCheckRun>>,
     statuses: HashMap<String, Vec<FakeStatus>>,
+    workflow_runs: HashMap<String, Vec<FakeCheckRun>>,
     rulesets: Vec<Value>,
 }
 
@@ -224,6 +226,9 @@ struct FakeState {
     installations: BTreeMap<u64, (String, OwnerKind)>,
     installation_tokens: HashMap<String, u64>,
     repos: HashMap<(String, String), FakeRepo>,
+    /// App permissions the App does not have (`checks`, `statuses`, `actions`): their
+    /// endpoints answer 403 "Resource not accessible by integration" to every token.
+    withheld: HashSet<String>,
     faults: Vec<FakeFault>,
     requests: VecDeque<RecordedRequest>,
 }
@@ -293,6 +298,7 @@ impl FakeGitHub {
             installations: BTreeMap::new(),
             installation_tokens: HashMap::new(),
             repos: HashMap::new(),
+            withheld: HashSet::new(),
             faults: Vec::new(),
             requests: VecDeque::new(),
         }));
@@ -502,6 +508,21 @@ impl FakeGitHub {
         if let Some(repo) = lock(&self.state).repos.get_mut(&key(owner, repo)) {
             repo.check_runs.insert(sha.to_owned(), runs);
         }
+    }
+
+    /// Replaces the GitHub Actions workflow runs whose head is commit `sha`.
+    pub fn set_workflow_runs(&self, owner: &str, repo: &str, sha: &str, runs: Vec<FakeCheckRun>) {
+        if let Some(repo) = lock(&self.state).repos.get_mut(&key(owner, repo)) {
+            repo.workflow_runs.insert(sha.to_owned(), runs);
+        }
+    }
+
+    /// Takes App permission `permission` (`checks`, `statuses` or `actions`) away from the App:
+    /// its read endpoints (check runs, the combined status, workflow runs) then answer 403
+    /// "Resource not accessible by integration", as GitHub does for installation and
+    /// user-to-server tokens of an App without it.
+    pub fn withhold_permission(&self, permission: &str) {
+        lock(&self.state).withheld.insert(permission.to_owned());
     }
 
     /// Replaces the commit statuses of commit `sha`.
@@ -1153,6 +1174,15 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
         Ok(permissions) => permissions,
         Err((status, message)) => return error(status, message),
     };
+    let app_permission = match (method.as_str(), tail) {
+        ("GET", ["commits", _, "check-runs"]) => Some("checks"),
+        ("GET", ["commits", _, "status" | "statuses"]) => Some("statuses"),
+        ("GET", ["actions", ..]) => Some("actions"),
+        _ => None,
+    };
+    if app_permission.is_some_and(|p| state.withheld.contains(p)) {
+        return error(403, "Resource not accessible by integration");
+    }
     match (method.as_str(), tail) {
         ("GET", []) => reply(200, repo_json(state, repo, permissions)),
         ("POST", ["rulesets"]) => {
@@ -1263,6 +1293,21 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
             reply(
                 200,
                 json!({"state": combined, "total_count": list.len(), "statuses": list}),
+            )
+        }
+        ("GET", ["actions", "runs"]) => {
+            let runs: Vec<Value> = query
+                .get("head_sha")
+                .and_then(|sha| repo.workflow_runs.get(sha))
+                .map(|runs| {
+                    runs.iter()
+                        .map(|r| json!({"name": r.name, "status": r.status, "conclusion": r.conclusion}))
+                        .collect()
+                })
+                .unwrap_or_default();
+            reply(
+                200,
+                json!({"total_count": runs.len(), "workflow_runs": paginate(&runs, query)}),
             )
         }
         ("PATCH", ["git", "refs", "heads", branch @ ..]) => {

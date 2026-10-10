@@ -19,8 +19,8 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::Clock;
 use yulius_app::ports::github::{
-    ChecksState, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort, NewPull,
-    RepoAccess, RulesetRequest,
+    ChecksReport, ChecksState, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort,
+    NewPull, RepoAccess, RulesetRequest,
 };
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::time::Timestamp;
@@ -46,8 +46,10 @@ pub struct FakeGitHub {
     pub fail_permissions: std::sync::atomic::AtomicBool,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
-    /// Check state per commit SHA (default `None`).
-    pub check_states: Mutex<HashMap<String, ChecksState>>,
+    /// Checks per commit SHA (default: `None`, every source read).
+    pub check_states: Mutex<HashMap<String, ChecksReport>>,
+    /// When set, reading checks fails with this error (as the adapter maps GitHub errors).
+    pub checks_error: Mutex<Option<AppError>>,
     /// Repository side of PRs and refs; without it PR heads are unknown.
     pub remote: Mutex<Option<Arc<dyn FakeRemote>>>,
     /// Recorded state-changing calls (`create_pull …`, `merge_pull …`, `fast_forward …`).
@@ -259,14 +261,22 @@ impl GitHubPort for FakeGitHub {
             .cloned()
             .collect())
     }
-    async fn checks(&self, _: &Secret, _: &str, _: &str, sha: &str) -> AppResult<ChecksState> {
+    async fn checks(&self, _: &Secret, _: &str, _: &str, sha: &str) -> AppResult<ChecksReport> {
+        if let Some(err) = self
+            .checks_error
+            .lock()
+            .map_err(AppError::internal)?
+            .clone()
+        {
+            return Err(err);
+        }
         Ok(self
             .check_states
             .lock()
             .map_err(AppError::internal)?
             .get(sha)
-            .copied()
-            .unwrap_or(ChecksState::None))
+            .cloned()
+            .unwrap_or_else(|| ChecksState::None.into()))
     }
     async fn merge_pull(
         &self,
@@ -661,8 +671,12 @@ impl FakeGitHub {
         }
     }
     pub fn set_checks(&self, sha: &str, state: ChecksState) {
+        self.set_checks_report(sha, state.into());
+    }
+    /// Checks of `sha` with sources the App may not read (#111).
+    pub fn set_checks_report(&self, sha: &str, report: ChecksReport) {
         if let Ok(mut m) = self.check_states.lock() {
-            m.insert(sha.into(), state);
+            m.insert(sha.into(), report);
         }
     }
     pub fn writes(&self) -> Vec<String> {

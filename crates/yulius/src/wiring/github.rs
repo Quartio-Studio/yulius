@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::github::{
-    ChecksState, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort, NewPull,
+    ChecksReport, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort, NewPull,
     RepoAccess, RulesetRequest,
 };
 
@@ -87,7 +87,7 @@ impl GitHubPort for UnavailableGitHub {
     ) -> AppResult<Vec<GhPull>> {
         unavailable()
     }
-    async fn checks(&self, _: &Secret, _: &str, _: &str, _: &str) -> AppResult<ChecksState> {
+    async fn checks(&self, _: &Secret, _: &str, _: &str, _: &str) -> AppResult<ChecksReport> {
         unavailable()
     }
     async fn merge_pull(

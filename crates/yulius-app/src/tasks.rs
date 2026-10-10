@@ -6,16 +6,14 @@ use yulius_contracts::api::tasks::{
     AttemptView, FeedbackView, MessageFrom, MessageView, Metrics, StepProgress, StepView,
     SwitchView, TaskDetail, TaskSummary,
 };
-use yulius_domain::ids::{MessageId, SandboxId, TaskId};
+use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::Action;
 use yulius_domain::task::TaskStatus;
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::{
-    FeedbackRecord, InboxEntry, MessageRecord, MetricsRecord, StepRecord, TaskRecord,
-};
+use crate::model::{FeedbackRecord, InboxEntry, MetricsRecord, StepRecord, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
 
 /// Maximum title length derived from a prompt.
@@ -446,54 +444,6 @@ impl App {
             created_at: rfc3339(m.created_at),
             read: entry.read,
         })
-    }
-
-    /// A user's message to a task's agent (delivered like inter-task messages).
-    ///
-    /// # Errors
-    /// `Invalid` empty body, access errors.
-    pub async fn post_user_message(
-        &self,
-        ctx: &AuthContext,
-        id: &str,
-        body: &str,
-    ) -> AppResult<MessageView> {
-        let task = self.load_task(ctx, id, Action::Work).await?;
-        let body = body.trim();
-        if body.is_empty() || body.len() > 16 * 1024 {
-            return Err(AppError::Invalid("message must be 1 byte to 16 KiB".into()));
-        }
-        let record = MessageRecord {
-            id: MessageId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
-            sandbox_id: task.sandbox_id.clone(),
-            from_task: None,
-            from_user: Some(ctx.user.id.clone()),
-            to_task: Some(task.id.clone()),
-            kind: "request".into(),
-            subject: "Message from a user".into(),
-            body: body.to_owned(),
-            created_at: self.now(),
-        };
-        self.deps
-            .store
-            .insert_message(&record, std::slice::from_ref(&task.id))
-            .await?;
-        let entry = InboxEntry {
-            message: record,
-            delivered: false,
-            read: false,
-        };
-        let view = self.message_view(&entry).await?;
-        self.events.publish(
-            Some(task.sandbox_id.clone()),
-            false,
-            yulius_contracts::events::UiEvent::Message {
-                task_id: task.id.to_string(),
-                message: view.clone(),
-            },
-        );
-        self.publish_task(&task.id).await;
-        Ok(view)
     }
 
     /// Messages involving a task.
