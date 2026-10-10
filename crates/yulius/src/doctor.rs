@@ -191,8 +191,84 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
             "not found; the sandbox browser is unavailable",
         ),
     });
+    checks.extend(browser_display_checks());
     checks.extend(containment_visibility(contained, extra));
     checks
+}
+
+/// The virtual display's prerequisites (SPEC-002 ADR-15): Xvfb, and ffmpeg with x11grab and
+/// libx264. Without them the sandbox browser runs headless and shows JPEG frames.
+fn browser_display_checks() -> Vec<Check> {
+    let headless = "the sandbox browser runs headless (JPEG frames, no real input for captchas)";
+    let xvfb = match which("Xvfb") {
+        Some(path) => check("Xvfb", Level::Ok, path.display().to_string()),
+        None => check("Xvfb", Level::Warn, format!("not found; {headless}")),
+    };
+    let ffmpeg = match which("ffmpeg") {
+        None => check("ffmpeg", Level::Warn, format!("not found; {headless}")),
+        Some(path) => {
+            let encoders = output_of(&path, &["-hide_banner", "-encoders"]).unwrap_or_default();
+            let devices = output_of(&path, &["-hide_banner", "-devices"]).unwrap_or_default();
+            let missing: Vec<&str> = [
+                ("libx264", encoders.contains("libx264")),
+                ("x11grab", devices.contains("x11grab")),
+            ]
+            .into_iter()
+            .filter(|(_, present)| !present)
+            .map(|(name, _)| name)
+            .collect();
+            if missing.is_empty() {
+                check(
+                    "ffmpeg",
+                    Level::Ok,
+                    format!("{} (libx264, x11grab)", path.display()),
+                )
+            } else {
+                check(
+                    "ffmpeg",
+                    Level::Warn,
+                    format!(
+                        "{} lacks {}; {headless}",
+                        path.display(),
+                        missing.join(", ")
+                    ),
+                )
+            }
+        }
+    };
+    vec![xvfb, ffmpeg]
+}
+
+/// The whole stdout of a short command (at most 1 MiB), when it succeeds in time.
+fn output_of(program: &Path, args: &[&str]) -> Option<String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    // Read on a thread so a large output never fills the pipe while we wait.
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = (&mut stdout).take(1 << 20).read_to_string(&mut out);
+        out
+    });
+    let deadline = Instant::now() + VERSION_TIMEOUT;
+    let success = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
+            }
+        }
+    };
+    let out = reader.join().ok()?;
+    success.then_some(out)
 }
 
 fn which(program: &str) -> Option<PathBuf> {

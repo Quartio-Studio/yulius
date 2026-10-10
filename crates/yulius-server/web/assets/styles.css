@@ -1528,17 +1528,18 @@ a.dl-task:hover { text-decoration: underline; }
 .bp-bar { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-bottom: 1px solid var(--border); flex: none; }
 .bp-bar .input { height: var(--control-md); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .bp-attn { margin: 6px; }
-.bp-view { position: relative; flex: 1; min-height: 0; background: var(--mirror-bg); overflow: hidden; }
-.bp-canvas { position: absolute; top: 0; left: 0; display: block; background: var(--canvas); }
-.bp-canvas[hidden], .bp-mirror[hidden] { display: none; }
-/* DOM mirror (BRW-005): rrweb's wrapper is scaled to the panel; the input layer sits on top. */
-.bp-mirror { position: absolute; inset: 0; overflow: hidden; background: var(--mirror-bg); }
-.bp-mirror .replayer-wrapper { position: absolute; top: 0; left: 0; }
-.bp-mirror iframe { border: 0; display: block; background: var(--mirror-bg); pointer-events: auto !important; }
-.bp-mirror .replayer-mouse, .bp-mirror .replayer-mouse-tail { display: none !important; }
-.bp-input { position: absolute; top: 0; left: 0; z-index: var(--z-sticky); outline: none; cursor: default; }
-.bp-input[hidden] { display: none; }
-.bp-input:focus-visible { box-shadow: var(--focus-inset); outline: 2px solid transparent; outline-offset: -2px; }
+.bp-view { position: relative; flex: 1; min-height: 0; background: var(--canvas); overflow: hidden; }
+/* The streamed sandbox Chrome (ADR-15): the canvas at the page's size, scaled to fit; the user's
+   own pointer is the local cursor. */
+.bp-surface { position: absolute; top: 0; left: 0; cursor: default; touch-action: none; }
+.bp-canvas { display: block; width: 100%; height: 100%; background: var(--mirror-bg); }
+/* The keyboard's focus target (IME, dead keys, phone keyboards): present, never seen. */
+.bp-keys { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; overflow: hidden; pointer-events: none; }
+.bp-stream:focus-within { box-shadow: var(--focus-inset); }
+.bp-shared { position: absolute; z-index: var(--z-float); right: 8px; top: 8px; display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 12px; border-radius: var(--radius-full); background: var(--surface-2); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow-sm); }
+.bp-shared[hidden] { display: none; }
+.bp-keyboard { display: none; flex: none; }
+@media (pointer: coarse) { .bp-keyboard { display: inline-flex; } }
 .bp-viewchip { flex: none; cursor: help; }
 /* The agent's cursor (BRW-007). */
 .bp-agent { position: absolute; z-index: var(--z-float); pointer-events: none; transition: left var(--duration-slow) var(--ease), top var(--duration-slow) var(--ease); }
@@ -1555,25 +1556,11 @@ a.dl-task:hover { text-decoration: underline; }
 /* Shown instead of the app when it is framed (BRW-008). */
 .framed-notice { max-width: 560px; margin: 0 auto; padding: 48px 24px; color: var(--text); }
 .framed-notice h1 { font: 600 var(--fs-lg)/var(--lh-lg) var(--font); }
-/* Live tabs (ADR-14): the sandbox's dev servers in the user's own browser. */
 .bp-stages { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.bp-livestage { background: var(--surface); }
-.bp-frame { position: absolute; inset: 0; }
-.bp-frame[hidden], .bp-start[hidden], .bp-view[hidden] { display: none; }
-.bp-live { display: block; width: 100%; height: 100%; border: 0; background: var(--canvas); }
-.bp-start { position: absolute; inset: 0; overflow: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
-.bp-start-title { margin: 0; font: 600 var(--fs-lg)/var(--lh-lg) var(--font); color: var(--text); }
-.bp-start-section { display: flex; flex-direction: column; gap: 8px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg); }
-.bp-start-section h3 { margin: 0; font: 600 var(--fs-xs)/var(--lh-xs) var(--font); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-.bp-start-section ul { margin: 0; padding-left: 20px; color: var(--text-2); }
-.bp-ports { display: flex; flex-direction: column; gap: 4px; }
-.bp-port { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: var(--control-lg); padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2); color: var(--text); font: 400 var(--fs-sm)/var(--lh-sm) var(--font-mono); cursor: pointer; text-align: left; }
-.bp-port:hover { border-color: var(--accent-border); }
-.bp-port:focus-visible { box-shadow: var(--focus); }
+.bp-view[hidden] { display: none; }
 .bp-notice { position: absolute; z-index: var(--z-float); top: 8px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; max-width: calc(100% - 16px); padding: 4px 4px 4px 12px; border-radius: var(--radius-full); background: var(--agent); color: var(--agent-ink); font: 600 var(--fs-sm)/var(--lh-sm) var(--font); box-shadow: var(--shadow-sm); }
 .bp-notice[hidden] { display: none; }
 .bp-agent-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--agent-ink); flex: none; }
-.bp-tab.remote { font-style: italic; }
 .bp-tab.agent:not(.active) { border-bottom-color: var(--agent); }
 
 .msg-list { flex: 1; overflow: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }

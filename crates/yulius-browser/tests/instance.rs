@@ -306,7 +306,6 @@ async fn yulius_itself_is_refused_and_intercepted() -> TestResult {
                 })
                 .await
                 .map(|_| ()),
-            instance.fetch_resource(&tab, url).await.map(|_| ()),
         ];
         for result in results {
             match result {

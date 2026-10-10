@@ -21,6 +21,8 @@ yulius-app = { workspace = true }
 yulius-contracts = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Video decoder configurations (avcC) in the browser viewer's JSON messages.
+base64 = { workspace = true }
 futures = { workspace = true }
 # CORS for additional frontends (desktop app) listed in the origin allowlist.
 tower-http = { workspace = true }

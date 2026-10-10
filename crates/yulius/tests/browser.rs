@@ -1,7 +1,9 @@
 //! The shared sandbox browser end to end: the viewer WebSocket, agent MCP tools and the
-//! user-action hand-off, the DOM mirror with its pixel fallback, page resources and the agent's
-//! cursor, over the real Chromium manager with a fake Chromium launcher and an in-process fake
-//! DevTools server (SPEC-001 BRW-001..007, AC-BRW-1..4, AC-BRW-6).
+//! user-action hand-off, the display's H.264 video with real input and its JPEG fallback, copy,
+//! the shared viewport and the agent's cursor, over the real Chromium manager with a fake
+//! Chromium launcher, an in-process fake DevTools server and a fake virtual display that records
+//! input and streams synthetic frames (SPEC-001 BRW-001..008, AC-BRW-1..4, AC-BRW-6, AC-BRW-9..11;
+//! SPEC-002 ADR-15).
 
 mod support;
 
@@ -21,10 +23,11 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use yulius::wiring::browser::ChromiumBrowsers;
 use yulius_app::ports::store::TaskStore;
 use yulius_browser::fake::{
-    FAKE_ARGV_FILE, FAKE_PID_FILE, FakeCdpServer, FakeChromium, write_fake_chromium,
+    FAKE_ARGV_FILE, FAKE_AVCC, FAKE_PID_FILE, FakeCdpServer, FakeChromium, FakeDisplay,
+    write_fake_chromium,
 };
-use yulius_browser::{BrowserConfig, StopTimeouts};
-use yulius_contracts::browser::decode_frame;
+use yulius_browser::{BrowserConfig, DisplayInput, StopTimeouts};
+use yulius_contracts::browser::{decode_frame, decode_video_frame};
 use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, TaskStatus};
@@ -51,14 +54,15 @@ fn browser_config(exe: &Path, root: &Path) -> BrowserConfig {
 struct Fixture {
     h: Harness,
     fake: FakeCdpServer,
+    display: Option<FakeDisplay>,
     writer: support::Creds,
     reader: support::Creds,
     _scripts: tempfile::TempDir,
 }
 
 /// Users alice (write) and bob (read) on sandboxes `s1` (`fixture`) and `s2` (`other`); task
-/// `t1` of `s1` runs with a live MCP token.
-async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
+/// `t1` of `s1` runs with a live MCP token. Browsers are headless unless `display` is given.
+async fn fixture_with(display: Option<FakeDisplay>) -> Result<Fixture, Box<dyn std::error::Error>> {
     let fake = FakeCdpServer::start().await?;
     let scripts = tempfile::tempdir()?;
     let exe = write_fake_chromium(
@@ -66,7 +70,11 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
         "fake-chromium",
         FakeChromium::Ready { port: fake.port() },
     )?;
-    let browsers = ChromiumBrowsers::new(browser_config(&exe, &scripts.path().join("unused")));
+    let mut config = browser_config(&exe, &scripts.path().join("unused"));
+    if let Some(display) = &display {
+        config.display = display.mode();
+    }
+    let browsers = ChromiumBrowsers::new(config);
     let h = harness_with(HarnessOptions {
         browser: Some(Arc::new(browsers)),
         ..HarnessOptions::default()
@@ -84,10 +92,15 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     Ok(Fixture {
         h,
         fake,
+        display,
         writer,
         reader,
         _scripts: scripts,
     })
+}
+
+async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_with(None).await
 }
 
 /// Next JSON message, skipping binary frames; fails after [`WAIT`].
@@ -164,6 +177,22 @@ where
     result
 }
 
+/// [`with_fixture`] with browsers on a fake virtual display.
+async fn with_display<F>(display: FakeDisplay, body: impl FnOnce(Arc<Fixture>) -> F) -> TestResult
+where
+    F: std::future::Future<Output = TestResult>,
+{
+    let f = Arc::new(fixture_with(Some(display)).await?);
+    let result = body(Arc::clone(&f)).await;
+    f.h.app.stop_workspace_services().await;
+    result
+}
+
+/// The fixture's fake display.
+fn display_of(f: &Fixture) -> Result<&FakeDisplay, Box<dyn std::error::Error>> {
+    Ok(f.display.as_ref().ok_or("no display")?)
+}
+
 #[tokio::test]
 async fn viewers_need_write_access_and_drive_a_per_sandbox_browser() -> TestResult {
     with_fixture(|f| async move {
@@ -178,14 +207,18 @@ async fn viewers_need_write_access_and_drive_a_per_sandbox_browser() -> TestResu
         let anonymous = ws_connect(served.addr, path, &support::Creds::default(), ORIGIN).await;
         assert_eq!(anonymous.as_ref().err().and_then(ws_refusal_status), Some(401));
 
-        // A write user gets the tab list; this fake cannot mirror the DOM, so the viewer is told
-        // and gets JPEG frames of the active tab instead.
+        // A write user gets the tab list; a headless browser has no video, so the viewer is
+        // told why and gets JPEG frames of the active tab (the labelled fallback).
         let mut socket = ws_connect(served.addr, path, &f.writer, ORIGIN).await?;
         let tabs = next_json(&mut socket).await?;
         assert_eq!(tabs["type"], "tabs");
         let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
-        let unavailable = wait_json(&mut socket, |m| m["type"] == "dom_unavailable").await?;
-        assert_eq!(unavailable["tab_id"], first.as_str());
+        let stream = wait_json(&mut socket, |m| m["type"] == "stream").await?;
+        assert_eq!(stream["mode"], "pixels");
+        assert!(
+            stream["reason"].as_str().is_some_and(|r| r.contains("headless")),
+            "{stream}"
+        );
         let frame = next_binary(&mut socket).await?;
         let (tab, jpeg) = decode_frame(&frame)?;
         assert_eq!(tab.as_str(), first);
@@ -219,9 +252,14 @@ async fn viewers_need_write_access_and_drive_a_per_sandbox_browser() -> TestResu
         .await?;
         send(&mut socket, json!({"type": "mouse", "tab_id": new_tab, "event": "down", "x": 10, "y": 20, "button": "left"}))
             .await?;
-        send(&mut socket, json!({"type": "key", "tab_id": new_tab, "event": "char", "text": "hi"})).await?;
+        send(&mut socket, json!({"type": "key", "tab_id": new_tab, "event": "down", "key": "h", "code": "KeyH"})).await?;
+        // Text without a key (a paste) is inserted: a key event carries at most four characters.
+        send(&mut socket, json!({"type": "key", "tab_id": new_tab, "event": "char", "text": "hi there"})).await?;
         assert!(f.fake.wait_for_calls("Input.dispatchMouseEvent", 1, WAIT).await);
         assert!(f.fake.wait_for_calls("Input.dispatchKeyEvent", 1, WAIT).await);
+        assert!(f.fake.wait_for_calls("Input.insertText", 1, WAIT).await);
+        let key = &f.fake.calls_for("Input.dispatchKeyEvent")[0].params;
+        assert_eq!((key["type"].clone(), key["text"].clone()), (json!("keyDown"), json!("h")), "a printable key types its character");
 
         // Refused addresses and malformed messages are reported, not fatal.
         send(&mut socket, json!({"type": "open", "url": "file:///etc/passwd"})).await?;
@@ -554,144 +592,323 @@ async fn get_raw(
     Ok((status, headers, body))
 }
 
+/// Next binary video frame, skipping JSON messages: (keyframe, payload).
+async fn next_video(socket: &mut Socket) -> Result<(bool, Vec<u8>), Box<dyn std::error::Error>> {
+    let frame = next_binary(socket).await?;
+    let decoded = decode_video_frame(&frame)?;
+    Ok((decoded.keyframe, decoded.data.to_vec()))
+}
+
+/// ADR-15: a browser on a virtual display is streamed as H.264 video: the decoder configuration
+/// first, then access units from a keyframe; the viewport resizes the display and restarts the
+/// encoder at the new size; a viewer that joins later starts at once from the cached group.
 #[tokio::test]
-async fn viewers_see_the_live_dom_and_pages_load_resources_through_yulius() -> TestResult {
-    with_fixture(|f| async move {
-        f.fake.enable_mirror();
+async fn the_display_streams_video_from_a_keyframe_and_follows_the_viewport() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        use base64::Engine as _;
+        let display = display_of(&f)?;
+        let served = serve(f.h.router.clone()).await?;
+        let path = "/api/sandboxes/s1/browser";
+        let mut socket = ws_connect(served.addr, path, &f.writer, ORIGIN).await?;
+        let stream = wait_json(&mut socket, |m| m["type"] == "stream").await?;
+        assert_eq!(stream, json!({"type": "stream", "mode": "video"}));
+        let config = wait_json(&mut socket, |m| m["type"] == "video_config").await?;
+        assert_eq!(config["codec"], "avc1.42c01f");
+        assert_eq!(
+            (config["width"].clone(), config["height"].clone()),
+            (json!(1280), json!(800))
+        );
+        let description = base64::engine::general_purpose::STANDARD
+            .decode(config["description"].as_str().ok_or("description")?)?;
+        assert_eq!(description, FAKE_AVCC);
+        let (keyframe, data) = next_video(&mut socket).await?;
+        assert!(keyframe, "the stream starts at a keyframe");
+        assert!(data.starts_with(b"au-"));
+        let mut deltas = 0;
+        while deltas < 3 {
+            let (keyframe, _) = next_video(&mut socket).await?;
+            deltas += usize::from(!keyframe);
+        }
+        assert_eq!(display.running_encoders(), 1, "one encoder for the display");
+        // No emulation on a display: the window has the size.
+        assert!(
+            f.fake
+                .calls_for("Emulation.setDeviceMetricsOverride")
+                .is_empty()
+        );
+        // Chrome runs on the display in kiosk mode without the automation flag.
+        let profile = f.h.app.config.data_dir.join("sandboxes/s1/browser");
+        let argv = std::fs::read_to_string(profile.join(FAKE_ARGV_FILE))?;
+        for expected in [
+            "--kiosk",
+            "--disable-blink-features=AutomationControlled",
+            "--window-size=1280,800",
+        ] {
+            assert!(
+                argv.lines().any(|line| line == expected),
+                "{expected} in {argv}"
+            );
+        }
+        assert!(!argv.contains("--headless"), "{argv}");
+
+        // A second viewer starts at once: configuration, then the cached group's keyframe.
+        let mut late = ws_connect(served.addr, path, &f.writer, ORIGIN).await?;
+        let config = wait_json(&mut late, |m| m["type"] == "video_config").await?;
+        assert_eq!(config["width"], 1280);
+        assert!(
+            next_video(&mut late).await?.0,
+            "the backlog starts at its keyframe"
+        );
+        assert_eq!(display.running_encoders(), 1, "still one encoder");
+        drop(late);
+
+        // The viewport resizes the display (device pixels) and the encoder restarts at it.
+        send(
+            &mut socket,
+            json!({"type": "viewport", "width": 1001, "height": 700}),
+        )
+        .await?;
+        let viewport = wait_json(&mut socket, |m| {
+            m["type"] == "viewport" && m["width"] != 1280
+        })
+        .await?;
+        assert_eq!(
+            (viewport["width"].clone(), viewport["height"].clone()),
+            (json!(1000), json!(700))
+        );
+        assert!(
+            display
+                .wait_for_input(
+                    |i| *i
+                        == DisplayInput::Resize {
+                            width: 1000,
+                            height: 700
+                        },
+                    WAIT
+                )
+                .await
+        );
+        let config = wait_json(&mut socket, |m| {
+            m["type"] == "video_config" && m["width"] == 1000
+        })
+        .await?;
+        assert_eq!(config["height"], 700);
+        assert!(
+            next_video(&mut socket).await?.0,
+            "a new size starts at a keyframe"
+        );
+        assert!(
+            display.encoder_sizes().contains(&(1000, 700)),
+            "{:?}",
+            display.encoder_sizes()
+        );
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-15: a viewer's pointer and keys are real input on the display (XTest), the wheel scrolls
+/// the shown tab by CSS pixels through CDP, text no key types is inserted, copy answers with the
+/// selection, and everything the viewer held is released when it leaves.
+#[tokio::test]
+async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
         let served = serve(f.h.router.clone()).await?;
         let mut socket =
             ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
         let tabs = next_json(&mut socket).await?;
-        assert_eq!(tabs["type"], "tabs");
         let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
-        // The viewport comes first, so the mirror is laid out at the page's size.
-        let viewport = next_json(&mut socket).await?;
-        assert_eq!(
-            (viewport["type"].clone(), viewport["width"].clone()),
-            (json!("viewport"), json!(1280))
-        );
 
-        // The active tab arrives as DOM: a reset batch starting with the page's Meta.
-        let first = wait_json(&mut socket, |m| m["type"] == "dom").await?;
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10.4, "y": 20, "button": "left"})).await?;
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "up", "x": 12, "y": 20, "button": "left"})).await?;
+        assert!(display.wait_for_input(|i| *i == DisplayInput::Button { button: 1, press: false }, WAIT).await);
+        // An uppercase letter without Shift held: Shift is pressed around the key.
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "down", "key": "A", "code": "KeyA", "modifiers": 0})).await?;
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "up", "key": "A", "code": "KeyA"})).await?;
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "down", "key": "Enter", "code": "Enter"})).await?;
+        assert!(display.wait_for_input(|i| *i == DisplayInput::Key { keycode: 36, press: true }, WAIT).await);
+        let inputs: Vec<DisplayInput> = display
+            .inputs()
+            .into_iter()
+            .filter(|i| !matches!(i, DisplayInput::Resize { .. }))
+            .collect();
         assert_eq!(
-            (first["tab_id"].as_str(), first["reset"].clone()),
-            (Some(tab.as_str()), json!(true))
+            inputs,
+            [
+                DisplayInput::Motion { x: 10, y: 20 },
+                DisplayInput::Button { button: 1, press: true },
+                DisplayInput::Motion { x: 12, y: 20 },
+                DisplayInput::Button { button: 1, press: false },
+                DisplayInput::Key { keycode: 50, press: true },
+                DisplayInput::Key { keycode: 38, press: true },
+                DisplayInput::Key { keycode: 50, press: false },
+                DisplayInput::Key { keycode: 38, press: false },
+                DisplayInput::Key { keycode: 36, press: true },
+            ]
         );
-        assert_eq!(first["events"][0]["type"], 4, "{first}");
-        assert_eq!(first["events"][1]["type"], 2);
-        assert_eq!(f.fake.calls_for("Runtime.addBinding").len(), 1);
-        assert_eq!(
-            f.fake.calls_for("Page.startScreencast").len(),
-            0,
-            "no pixels while viewing DOM"
-        );
+        assert!(f.fake.calls_for("Input.dispatchMouseEvent").is_empty(), "clicks are not CDP");
+        assert!(f.fake.calls_for("Input.dispatchKeyEvent").is_empty(), "keys are not CDP");
 
-        // A viewport change reaches every viewer; a navigation starts a new stream.
-        send(
-            &mut socket,
-            json!({"type": "viewport", "width": 900, "height": 700}),
-        )
-        .await?;
-        wait_json(&mut socket, |m| {
-            m["type"] == "viewport" && m["width"] == 900
+        // The wheel scrolls the shown tab by CSS pixels. A Polish letter and short text are
+        // typed as real key presses (in order with the other keys); a long paste is inserted.
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "wheel", "x": 5, "y": 6, "dx": 0, "dy": 37.5})).await?;
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "down", "key": "ą", "code": "KeyA"})).await?;
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "char", "text": "zażółć 🙂\n"})).await?;
+        let paste = "x".repeat(100);
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "char", "text": paste})).await?;
+        assert!(f.fake.wait_for_calls("Input.insertText", 1, WAIT).await);
+        let wheel = f.fake.calls_for("Input.dispatchMouseEvent");
+        assert_eq!(wheel[0].params["type"], "mouseWheel");
+        assert_eq!(wheel[0].params["deltaY"], 37.5);
+        let typed: String = display
+            .inputs()
+            .into_iter()
+            .filter_map(|i| match i {
+                DisplayInput::Type(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(typed, "ązażółć 🙂\n");
+        let inserted = f.fake.calls_for("Input.insertText");
+        assert_eq!(inserted.len(), 1);
+        assert_eq!(inserted[0].params["text"], paste.as_str());
+
+        // Copy answers this viewer with the page's selection.
+        f.fake.set_selection("copied text");
+        send(&mut socket, json!({"type": "copy", "tab_id": tab})).await?;
+        let clipboard = wait_json(&mut socket, |m| m["type"] == "clipboard").await?;
+        assert_eq!(clipboard["text"], "copied text");
+
+        // A key held when the viewer leaves is released.
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "down", "key": "Shift", "code": "ShiftLeft"})).await?;
+        assert!(display.wait_for_input(|i| *i == DisplayInput::Key { keycode: 50, press: true }, WAIT).await);
+        drop(socket);
+        assert!(display.wait_for_input(|i| *i == DisplayInput::ReleaseAll, WAIT).await);
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-15: a page opening a page (a link to a new tab, an OAuth popup) brings it to the front of
+/// the display, so the panel shows it as the active tab; watching a tab brings it to the front
+/// for every viewer.
+#[tokio::test]
+async fn pages_opened_by_pages_and_watched_tabs_come_to_the_front() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let popup = f
+            .fake
+            .open_from_page(&first, "https://accounts.example/oauth")
+            .await;
+        let shown = wait_json(&mut socket, |m| {
+            m["type"] == "tabs"
+                && m["tabs"].as_array().is_some_and(|tabs| {
+                    tabs.iter()
+                        .any(|t| t["id"] == popup.as_str() && t["active"] == true)
+                })
         })
         .await?;
+        assert_eq!(shown["tabs"].as_array().map(Vec::len), Some(2));
+        send(&mut socket, json!({"type": "watch", "tab_id": first})).await?;
+        assert!(
+            f.fake
+                .wait_for_calls("Target.activateTarget", 1, WAIT)
+                .await
+        );
+        assert_eq!(
+            f.fake.calls_for("Target.activateTarget")[0].params["targetId"],
+            first.as_str()
+        );
+        // Back, forward beyond the end (nothing) and reload.
         send(
             &mut socket,
-            json!({"type": "navigate", "tab_id": tab, "url": "http://localhost:43000/"}),
+            json!({"type": "history", "tab_id": first, "delta": -1}),
         )
         .await?;
-        let navigated = wait_json(&mut socket, |m| {
-            m["type"] == "dom" && m["events"][0]["data"]["href"] == "http://localhost:43000/"
+        send(
+            &mut socket,
+            json!({"type": "history", "tab_id": first, "delta": 1}),
+        )
+        .await?;
+        send(&mut socket, json!({"type": "reload", "tab_id": first})).await?;
+        assert!(f.fake.wait_for_calls("Page.reload", 1, WAIT).await);
+        let entries = f.fake.calls_for("Page.navigateToHistoryEntry");
+        assert_eq!(
+            entries.len(),
+            1,
+            "forward past the newest entry does nothing"
+        );
+        assert_eq!(entries[0].params["entryId"], 7);
+        // Closing the shown tab brings the next one to the front.
+        send(&mut socket, json!({"type": "close", "tab_id": first})).await?;
+        assert!(
+            f.fake
+                .wait_for_calls("Target.activateTarget", 2, WAIT)
+                .await
+        );
+        assert_eq!(
+            f.fake.calls_for("Target.activateTarget")[1].params["targetId"],
+            popup.as_str()
+        );
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-15: when the display's encoder cannot run, viewers are told why and get JPEG frames.
+#[tokio::test]
+async fn a_broken_encoder_falls_back_to_labelled_jpeg_frames() -> TestResult {
+    let display = FakeDisplay::new();
+    display.fail_encoder();
+    with_display(display, |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let stream = wait_json(&mut socket, |m| {
+            m["type"] == "stream" && m["mode"] == "pixels"
         })
         .await?;
-        assert_eq!(navigated["reset"], true);
-
-        // Pixels on request, DOM again (from the buffered snapshot) after.
-        send(&mut socket, json!({"type": "view", "mode": "pixels"})).await?;
-        let frame = next_binary(&mut socket).await?;
-        assert_eq!(decode_frame(&frame)?.0.as_str(), tab);
-        send(&mut socket, json!({"type": "view", "mode": "dom"})).await?;
-        let again = wait_json(&mut socket, |m| m["type"] == "dom" && m["reset"] == true).await?;
         assert!(
-            again["events"]
-                .to_string()
-                .contains("page http://localhost:43000/"),
-            "{again}"
-        );
-
-        // An agent's click is shown to viewers with its position and label.
-        let clicked = mcp_tool(
-            &f.h,
-            TOKEN,
-            "browser_click",
-            json!({"tab_id": tab, "selector": "#login"}),
-        )
-        .await?;
-        assert_eq!(clicked["isError"], false, "{clicked}");
-        let activity = wait_json(&mut socket, |m| m["type"] == "agent_activity").await?;
-        assert_eq!(
-            (activity["action"].clone(), activity["x"].clone()),
-            (json!("click"), json!(100.5))
-        );
-        assert!(
-            activity["label"]
+            stream["reason"]
                 .as_str()
-                .is_some_and(|l| l.starts_with('#')),
-            "{activity}"
+                .is_some_and(|r| r.contains("broken")),
+            "{stream}"
         );
+        let frame = next_binary(&mut socket).await?;
+        assert_eq!(decode_frame(&frame)?.0.as_str(), first);
+        // A viewer may also ask for pixels itself.
+        let mut second =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        send(&mut second, json!({"type": "view", "mode": "pixels"})).await?;
+        let frame = next_binary(&mut second).await?;
+        assert!(decode_frame(&frame).is_ok());
+        Ok(())
+    })
+    .await
+}
 
-        // Page resources load through Yulius for write users, as inert same-origin subresources.
-        let path = format!(
-            "/api/sandboxes/s1/browser/resource?tab={tab}&url={}",
-            "http%3A%2F%2Flocalhost%3A43000%2Flogo.svg"
-        );
-        let (status, headers, body) = get_raw(
-            &f.h.router,
-            &path,
-            &f.writer,
-            &[("sec-fetch-site", "same-origin")],
-        )
-        .await?;
-        assert_eq!(status, 200);
-        assert_eq!(body, yulius_browser::fake::FAKE_RESOURCE);
-        assert_eq!(headers["content-type"], "image/svg+xml");
-        assert_eq!(headers["x-content-type-options"], "nosniff");
-        assert!(
-            headers["content-security-policy"]
-                .to_str()?
-                .starts_with("sandbox")
-        );
-        let (status, _, _) = get_raw(
-            &f.h.router,
-            &path,
-            &f.writer,
-            &[("sec-fetch-site", "cross-site")],
-        )
-        .await?;
-        assert_eq!(
-            status, 403,
-            "another site cannot make the sandbox browser fetch"
-        );
-        let (status, _, _) = get_raw(
-            &f.h.router,
-            &path,
-            &f.writer,
-            &[
-                ("sec-fetch-site", "same-origin"),
-                ("sec-fetch-mode", "navigate"),
-            ],
-        )
-        .await?;
-        assert_eq!(status, 403, "resources are not pages");
-        let (status, _, _) = get_raw(&f.h.router, &path, &f.reader, &[]).await?;
-        assert_eq!(status, 403, "read users cannot use the browser");
-        let missing = path.replace("logo.svg", "missing.svg");
-        let (status, _, _) = get_raw(&f.h.router, &missing, &f.writer, &[]).await?;
-        assert!(
-            status.is_client_error() || status.is_server_error(),
-            "{status}"
-        );
+/// ADR-15: the browser's display is stopped with the browser (encoder and X server reaped).
+#[tokio::test]
+async fn the_display_stops_with_the_browser() -> TestResult {
+    let display = FakeDisplay::new();
+    let observed = display.clone();
+    with_display(display, |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        wait_json(&mut socket, |m| m["type"] == "video_config").await?;
+        assert_eq!(observed.lifecycle(), (1, 0));
+        drop(socket);
+        f.h.app.stop_workspace_services().await;
+        assert_eq!(observed.lifecycle(), (1, 1));
+        assert_eq!(observed.running_encoders(), 0);
         Ok(())
     })
     .await
@@ -751,8 +968,8 @@ async fn the_welcome_page_names_the_sandbox_and_links_its_listening_ports() -> T
     Ok(())
 }
 
-/// ADR-14: each viewer watches the sandbox Chrome tab it chose (`watch`), or none while it shows
-/// one of its own live tabs — then nothing streams, even when an agent opens a tab.
+/// A viewer that watches nothing (its panel shows no browser tab) gets no frames, even when an
+/// agent opens a tab; watching a tab brings it to the front and streams it.
 #[tokio::test]
 async fn a_viewer_watches_the_tab_it_chose_or_none() -> TestResult {
     with_fixture(|f| async move {
@@ -791,11 +1008,18 @@ async fn a_viewer_watches_the_tab_it_chose_or_none() -> TestResult {
             }
         }
         assert!(saw_tabs, "the new tab is listed");
-        // Watching the first tab streams it, although the agent's tab is the active one.
+        // Watching the first tab brings it to the front (the agent's tab was active) and
+        // streams it.
         send(&mut socket, json!({"type": "watch", "tab_id": first})).await?;
         let frame = next_binary(&mut socket).await?;
         let (tab, _) = decode_frame(&frame)?;
         assert_eq!(tab.as_str(), first);
+        assert!(
+            f.fake
+                .calls_for("Target.activateTarget")
+                .iter()
+                .any(|call| call.params["targetId"] == first.as_str())
+        );
         Ok(())
     })
     .await

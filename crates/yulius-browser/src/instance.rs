@@ -1,9 +1,11 @@
-//! One running sandbox browser: tab registry, per-tab sessions, screencast, input and the
-//! agent tool functions (SPEC-001 BRW-001..004, SPEC-002 ADR-09).
+//! One running sandbox browser: tab registry, per-tab sessions, video or screencast, input and
+//! the agent tool functions (SPEC-001 BRW-001..008, SPEC-002 ADR-15).
 //!
-//! Users (viewer WebSocket) and agents (MCP tools) act on the same tabs. All operations are
-//! bounded by the CDP call timeout; input events are serialized per browser so their order is
-//! preserved.
+//! Users (viewer WebSocket) and agents (MCP tools) act on the same tabs. With a virtual display
+//! the browser is headful: users get its video and their input is real (XTest) on the display,
+//! which shows one tab at a time (the active tab); agents use CDP. Without one (headless) users
+//! get JPEG frames and CDP input. All operations are bounded by the CDP call timeout; input
+//! events are serialized per browser so their order is preserved.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
@@ -14,7 +16,8 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 use yulius_contracts::browser::{
-    ACTION_REASON_MAX_BYTES, ActionRequest, ClickParams, ClickResult, ClickTarget, KeyEventKind,
+    ACTION_REASON_MAX_BYTES, ActionRequest, CLIPBOARD_MAX_BYTES, ClickParams, ClickResult,
+    ClickTarget, KeyEventKind, MODIFIER_ALT, MODIFIER_CTRL, MODIFIER_META, MODIFIER_SHIFT,
     MouseButton, MouseEventKind, NavigateParams, NavigationResult, OpenParams,
     SCREENSHOT_MAX_BASE64_BYTES, SNAPSHOT_MAX_BYTES, ScreenshotParams, ScreenshotResult,
     SnapshotParams, SnapshotResult, TabId, TabInfo, TabsResult, TypeParams, TypeResult,
@@ -23,12 +26,13 @@ use yulius_contracts::browser::{
 use yulius_domain::ids::{SandboxId, TaskId};
 
 use crate::cdp::{CdpClient, CdpConfig, CdpEvent, FrameSink, ScreencastFrame, wait_closed};
+use crate::display::VirtualDisplay;
 use crate::error::{BrowserError, CdpError};
-use crate::keys;
-use crate::mirror::{self, BINDING, DomBatch, MirrorBuffer};
+use crate::keys::{self, DisplayKey, SHIFT_KEYCODES};
 use crate::process::{StopTimeouts, Supervised};
 use crate::snapshot;
 use crate::url_policy::{UrlDenyList, UrlRefused, normalize_url};
+use crate::video::{VideoSubscription, VideoUnavailable};
 
 /// Smallest accepted viewport edge in CSS pixels.
 pub const VIEWPORT_MIN: u32 = 64;
@@ -38,8 +42,11 @@ pub const VIEWPORT_MAX: u32 = 4096;
 const COORDINATE_LIMIT: f64 = 1.0e6;
 /// Largest accepted `key`/`code` text.
 const KEY_FIELD_MAX_BYTES: usize = 64;
-/// Largest accepted text of one key event.
-const KEY_TEXT_MAX_BYTES: usize = 4096;
+/// Largest accepted text of one key event (a paste).
+const KEY_TEXT_MAX_BYTES: usize = 32 * 1024;
+/// Text up to this many characters is typed as real key presses on a display (in order with
+/// other keys); longer text (a paste) is inserted through CDP once the display settled.
+const TYPED_TEXT_MAX_CHARS: usize = 64;
 /// Presses closer than this in time and space count as a multi-click.
 const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(500);
 const MULTI_CLICK_DISTANCE: f64 = 5.0;
@@ -47,12 +54,16 @@ const MULTI_CLICK_DISTANCE: f64 = 5.0;
 const CONTROL_QUEUE: usize = 64;
 /// Browser events buffered per subscriber.
 const EVENT_QUEUE: usize = 64;
-/// DOM batches queued per mirror subscriber; a lagging viewer resubscribes (full snapshot).
-const DOM_QUEUE: usize = 256;
-/// Largest page resource fetched for a viewer.
-pub const MAX_RESOURCE_BYTES: usize = 20 << 20;
-/// Bytes read per `IO.read` call.
-const IO_READ_CHUNK: u32 = 1 << 20;
+/// Reads the user's selection in the shown tab (the focused text field's, or the page's).
+const SELECTION_EXPRESSION: &str = "(() => {
+  let doc = document;
+  let active = doc.activeElement;
+  try { while (active && active.tagName === 'IFRAME' && active.contentDocument) { doc = active.contentDocument; active = doc.activeElement; } } catch (_) {}
+  const field = active && (active.tagName === 'TEXTAREA' || (active.tagName === 'INPUT' && /^(text|search|url|tel|email|number)$/i.test(active.type)));
+  if (field && typeof active.selectionStart === 'number') return active.value.slice(active.selectionStart, active.selectionEnd);
+  const selection = doc.getSelection ? doc.getSelection() : null;
+  return selection ? String(selection) : '';
+})()";
 
 const CENTER_FUNCTION: &str = "function (selector) {
   const element = this.querySelector(selector);
@@ -208,70 +219,13 @@ pub enum BrowserEvent {
         /// Who acted (e.g. `#12 Claude Code`).
         label: String,
     },
-    /// The viewport of all tabs changed (viewers lay their DOM mirror out at this size).
+    /// The viewport of all tabs changed (viewers scale the page to it).
     Viewport {
         /// Width in CSS pixels.
         width: u32,
         /// Height in CSS pixels.
         height: u32,
     },
-}
-
-/// A page resource fetched by the browser for a viewer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resource {
-    /// HTTP status, when known.
-    pub status: Option<u16>,
-    /// `Content-Type`, when given.
-    pub content_type: Option<String>,
-    /// The bytes.
-    pub body: Vec<u8>,
-}
-
-/// What a DOM subscriber receives.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DomEvent {
-    /// New events (or, with `reset`, a new stream).
-    Batch(DomBatch),
-    /// The subscriber fell behind; it must resubscribe for a fresh snapshot.
-    Lagged,
-}
-
-/// The DOM mirror of one tab. Dropping it unsubscribes; the recorder stops when the last
-/// subscriber of a tab is gone.
-#[derive(Debug)]
-pub struct DomSubscription {
-    tab: TabId,
-    initial: Option<DomBatch>,
-    receiver: broadcast::Receiver<DomBatch>,
-    control: mpsc::Sender<TabId>,
-}
-
-impl DomSubscription {
-    /// The tab.
-    #[must_use]
-    pub fn tab_id(&self) -> &TabId {
-        &self.tab
-    }
-
-    /// The next batch (the buffered snapshot first, when one existed); `None` once the tab or
-    /// browser closed.
-    pub async fn recv(&mut self) -> Option<DomEvent> {
-        if let Some(batch) = self.initial.take() {
-            return Some(DomEvent::Batch(batch));
-        }
-        match self.receiver.recv().await {
-            Ok(batch) => Some(DomEvent::Batch(batch)),
-            Err(broadcast::error::RecvError::Lagged(_)) => Some(DomEvent::Lagged),
-            Err(broadcast::error::RecvError::Closed) => None,
-        }
-    }
-}
-
-impl Drop for DomSubscription {
-    fn drop(&mut self) {
-        let _ = self.control.try_send(self.tab.clone());
-    }
 }
 
 /// Pointer input for [`BrowserInstance::dispatch_mouse`], in CSS pixels of the viewport.
@@ -448,22 +402,12 @@ impl Pointer {
     }
 }
 
-/// A tab whose DOM is mirrored to viewers (SPEC-001 BRW-005).
-struct MirrorTab {
-    session: String,
-    script: Option<String>,
-    buffer: MirrorBuffer,
-    tx: broadcast::Sender<DomBatch>,
-    checkout_pending: bool,
-}
-
 struct State {
     tabs: Vec<TabEntry>,
     active: Option<TabId>,
     sessions: HashMap<TabId, String>,
     actions: HashMap<TabId, ActionRequest>,
     screencasts: HashMap<TabId, Screencast>,
-    mirrors: HashMap<TabId, MirrorTab>,
     viewport: (u32, u32),
     pointer: Pointer,
 }
@@ -491,7 +435,6 @@ impl State {
         self.tabs.retain(|entry| &entry.id != tab);
         let had_action = self.actions.remove(tab).is_some();
         self.screencasts.remove(tab);
-        self.mirrors.remove(tab);
         let session = self.sessions.remove(tab);
         if self.active.as_ref() == Some(tab) {
             self.active = self.tabs.last().map(|entry| entry.id.clone());
@@ -514,6 +457,27 @@ impl State {
     }
 }
 
+/// Real keyboard state of a virtual display: which keycode each viewer key pressed (so its
+/// release matches even if the character changed meanwhile) and which Shift keys are down.
+#[derive(Debug, Default)]
+struct Keyboard {
+    pressed: HashMap<String, u8>,
+    shift: Vec<u8>,
+    /// Headless: modifier bits of the modifier keys a viewer holds (CDP needs them on every key
+    /// event; a viewer mapping ⌘C to Ctrl+C sends the Control key and then a plain C).
+    modifiers: u8,
+}
+
+impl Keyboard {
+    /// Whether Ctrl, Alt or Meta is down: a shortcut, whose Shift state is the user's own
+    /// (Ctrl+Shift+Z stays Ctrl+Shift+Z).
+    fn shortcut(&self) -> bool {
+        self.pressed
+            .values()
+            .any(|keycode| keys::SHORTCUT_KEYCODES.contains(keycode))
+    }
+}
+
 /// A running (or attached) Chromium shared by a sandbox's users and agents.
 pub struct BrowserInstance {
     sandbox: SandboxId,
@@ -531,7 +495,9 @@ pub struct BrowserInstance {
     last_used: Mutex<Instant>,
     process: OnceLock<Supervised>,
     event_task: Mutex<Option<JoinHandle<()>>>,
-    mirror_lock: tokio::sync::Mutex<()>,
+    /// The virtual display the browser runs on (headful), when it has one.
+    display: Option<VirtualDisplay>,
+    keyboard: Mutex<Keyboard>,
     /// Address of new and blank tabs (the Yulius welcome page, BRW-006).
     new_tab_url: Mutex<Option<String>>,
     /// Addresses this browser never loads: Yulius itself (BRW-008).
@@ -649,10 +615,37 @@ impl BrowserInstance {
         ws_url: &str,
         config: InstanceConfig,
     ) -> Result<Arc<Self>, BrowserError> {
-        let cdp = CdpClient::connect(ws_url, config.cdp).await?;
-        let events = cdp.subscribe_events();
-        cdp.call("Target.setDiscoverTargets", json!({"discover": true}))
-            .await?;
+        Self::attach_on(sandbox, ws_url, config, None).await
+    }
+
+    /// [`Self::attach`] to a browser running on `display` (the instance owns the display and
+    /// stops it after the browser).
+    pub(crate) async fn attach_on(
+        sandbox: SandboxId,
+        ws_url: &str,
+        config: InstanceConfig,
+        display: Option<VirtualDisplay>,
+    ) -> Result<Arc<Self>, BrowserError> {
+        let viewport = match &display {
+            Some(display) => display.config().css_size(display.size()),
+            None => config.viewport,
+        };
+        let connected = async {
+            let cdp = CdpClient::connect(ws_url, config.cdp).await?;
+            let events = cdp.subscribe_events();
+            cdp.call("Target.setDiscoverTargets", json!({"discover": true}))
+                .await?;
+            Ok::<_, BrowserError>((cdp, events))
+        };
+        let (cdp, events) = match connected.await {
+            Ok(connected) => connected,
+            Err(error) => {
+                if let Some(display) = &display {
+                    let _ = display.stop(StopTimeouts::default()).await;
+                }
+                return Err(error);
+            }
+        };
         let http_url = ws_url
             .strip_prefix("ws://")
             .and_then(|rest| rest.split('/').next())
@@ -671,8 +664,7 @@ impl BrowserInstance {
                 sessions: HashMap::new(),
                 actions: HashMap::new(),
                 screencasts: HashMap::new(),
-                mirrors: HashMap::new(),
-                viewport: config.viewport,
+                viewport,
                 pointer: Pointer::default(),
             }),
             tabs_tx: watch::channel(Vec::new()).0,
@@ -685,11 +677,17 @@ impl BrowserInstance {
             last_used: Mutex::new(Instant::now()),
             process: OnceLock::new(),
             event_task: Mutex::new(None),
-            mirror_lock: tokio::sync::Mutex::new(()),
+            display,
+            keyboard: Mutex::new(Keyboard::default()),
             new_tab_url: Mutex::new(None),
             deny: Mutex::new(UrlDenyList::default()),
         });
-        instance.resync().await?;
+        if let Err(error) = instance.resync().await {
+            if let Some(display) = &instance.display {
+                let _ = display.stop(StopTimeouts::default()).await;
+            }
+            return Err(error);
+        }
         let task = tokio::spawn(event_loop(
             Arc::downgrade(&instance),
             events,
@@ -754,10 +752,19 @@ impl BrowserInstance {
         self.process.get().map(Supervised::pid)
     }
 
-    /// Whether the DevTools connection is open and the owned process (if any) runs.
+    /// Whether the DevTools connection is open and the owned process (and display, if any)
+    /// runs.
     #[must_use]
     pub fn is_alive(&self) -> bool {
-        !self.cdp.is_closed() && self.process.get().is_none_or(|p| !p.has_exited())
+        !self.cdp.is_closed()
+            && self.process.get().is_none_or(|p| !p.has_exited())
+            && self.display.as_ref().is_none_or(VirtualDisplay::is_alive)
+    }
+
+    /// The virtual display, when the browser runs on one.
+    #[must_use]
+    pub fn display(&self) -> Option<&VirtualDisplay> {
+        self.display.as_ref()
     }
 
     /// Resolves when the connection closes or the owned process exits (crash detection).
@@ -785,14 +792,20 @@ impl BrowserInstance {
         *lock(&self.last_used)
     }
 
-    /// Live screencast subscribers across tabs (viewers watching keep the browser busy).
+    /// Live viewers' streams: screencast subscribers across tabs plus video subscribers
+    /// (viewers watching keep the browser busy).
     #[must_use]
     pub fn frame_subscribers(&self) -> usize {
+        let video = self
+            .display
+            .as_ref()
+            .map_or(0, |display| display.video().subscribers());
         lock(&self.state)
             .screencasts
             .values()
             .map(|cast| cast.sink.receiver_count())
-            .sum()
+            .sum::<usize>()
+            + video
     }
 
     /// Current tabs in creation order.
@@ -870,9 +883,22 @@ impl BrowserInstance {
     fn on_event(&self, event: &CdpEvent) {
         match event.method.as_str() {
             "Target.targetCreated" | "Target.targetInfoChanged" => {
-                if let Some((id, title, url)) = event.params.get("targetInfo").and_then(page_entry)
-                {
-                    lock(&self.state).upsert(id, title, url);
+                let info = event.params.get("targetInfo");
+                if let Some((id, title, url)) = info.and_then(page_entry) {
+                    // A page a page opened (a link to a new tab, a popup) comes to the front on
+                    // the display: it is the shown tab now.
+                    let opened = event.method == "Target.targetCreated"
+                        && self.display.is_some()
+                        && info
+                            .and_then(|info| info.get("openerId"))
+                            .and_then(Value::as_str)
+                            .is_some_and(|opener| !opener.is_empty());
+                    let mut state = lock(&self.state);
+                    state.upsert(id.clone(), title, url);
+                    if opened {
+                        state.active = Some(id);
+                    }
+                    drop(state);
                     self.publish();
                 }
             }
@@ -886,7 +912,6 @@ impl BrowserInstance {
                     self.forget_tab(&tab);
                 }
             }
-            "Runtime.bindingCalled" => self.on_mirror_batch(event),
             "Fetch.requestPaused" if event.session_id.is_none() => self.on_request_paused(event),
             "Target.detachedFromTarget" => {
                 if let Some(session) = event.params.get("sessionId").and_then(Value::as_str) {
@@ -894,7 +919,6 @@ impl BrowserInstance {
                         let mut state = lock(&self.state);
                         state.sessions.retain(|_, s| s != session);
                         state.screencasts.retain(|_, cast| cast.session != session);
-                        state.mirrors.retain(|_, mirror| mirror.session != session);
                     }
                     self.cdp.remove_frame_sink(session);
                 }
@@ -937,12 +961,27 @@ impl BrowserInstance {
     }
 
     fn forget_tab(&self, tab: &TabId) {
-        let (session, had_action, existed) = {
+        let (session, had_action, existed, front) = {
             let mut state = lock(&self.state);
             let existed = state.has(tab);
+            let was_active = state.active.as_ref() == Some(tab);
             let (session, had_action) = state.remove(tab);
-            (session, had_action, existed)
+            let front = was_active.then(|| state.active.clone()).flatten();
+            (session, had_action, existed, front)
         };
+        // The display shows the active tab: bring the new one to the front so what Chrome shows
+        // and what the panel says agree.
+        if let (Some(front), true) = (front, self.display.is_some()) {
+            let cdp = self.cdp.clone();
+            tokio::spawn(async move {
+                if let Err(error) = cdp
+                    .call("Target.activateTarget", json!({"targetId": front.as_str()}))
+                    .await
+                {
+                    debug!(%error, "showing the next tab failed");
+                }
+            });
+        }
         if let Some(session) = session {
             self.cdp.remove_frame_sink(&session);
         }
@@ -961,7 +1000,6 @@ impl BrowserInstance {
             let mut state = lock(&self.state);
             state.screencasts.clear();
             state.sessions.clear();
-            state.mirrors.clear();
         }
         let _ = self.events_tx.send(BrowserEvent::Disconnected);
     }
@@ -990,13 +1028,16 @@ impl BrowserInstance {
             .call_session(&session, "Page.enable", json!({}))
             .await?;
         let (width, height) = lock(&self.state).viewport;
-        self.cdp
-            .call_session(
-                &session,
-                "Emulation.setDeviceMetricsOverride",
-                metrics(width, height),
-            )
-            .await?;
+        // On a display the window has the viewport's size: no emulation (a page could tell).
+        if self.display.is_none() {
+            self.cdp
+                .call_session(
+                    &session,
+                    "Emulation.setDeviceMetricsOverride",
+                    metrics(width, height),
+                )
+                .await?;
+        }
         let latest = {
             let mut state = lock(&self.state);
             if !state.has(tab) {
@@ -1007,7 +1048,7 @@ impl BrowserInstance {
         };
         // A viewport set while this tab was attaching did not reach it (it was not in the
         // sessions yet): apply the newest one.
-        if latest != (width, height) {
+        if latest != (width, height) && self.display.is_none() {
             self.cdp
                 .call_session(
                     &session,
@@ -1136,6 +1177,64 @@ impl BrowserInstance {
             .call("Target.closeTarget", json!({"targetId": tab.as_str()}))
             .await?;
         self.forget_tab(tab);
+        Ok(())
+    }
+
+    /// Moves `delta` entries through a tab's history (back is -1); beyond its ends nothing
+    /// happens. An entry that is Yulius itself is refused like any navigation (BRW-008).
+    ///
+    /// # Errors
+    /// [`BrowserError::UrlRefused`], [`BrowserError::TabNotFound`] or CDP failures.
+    pub async fn history(&self, tab: &TabId, delta: i32) -> Result<(), BrowserError> {
+        self.touch();
+        let session = self.session(tab).await?;
+        let history = self
+            .cdp
+            .call_session(&session, "Page.getNavigationHistory", json!({}))
+            .await?;
+        let current = history
+            .get("currentIndex")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| malformed("Page.getNavigationHistory", "missing currentIndex"))?;
+        let entries = history
+            .get("entries")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let target = current + i64::from(delta.clamp(-100, 100));
+        let Some(entry) = usize::try_from(target)
+            .ok()
+            .and_then(|index| entries.get(index))
+        else {
+            return Ok(());
+        };
+        if let Some(url) = entry.get("url").and_then(Value::as_str) {
+            self.check_allowed(url)?;
+        }
+        let id = entry
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| malformed("Page.getNavigationHistory", "entry without id"))?;
+        self.cdp
+            .call_session(
+                &session,
+                "Page.navigateToHistoryEntry",
+                json!({"entryId": id}),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Reloads a tab.
+    ///
+    /// # Errors
+    /// [`BrowserError::TabNotFound`] or CDP failures.
+    pub async fn reload(&self, tab: &TabId) -> Result<(), BrowserError> {
+        self.touch();
+        let session = self.session(tab).await?;
+        self.cdp
+            .call_session(&session, "Page.reload", json!({}))
+            .await?;
         Ok(())
     }
 
@@ -1308,317 +1407,6 @@ impl BrowserInstance {
         }
     }
 
-    /// Subscribes to a tab's DOM mirror, starting the recorder on first use (BRW-005).
-    ///
-    /// # Errors
-    /// [`BrowserError::TabNotFound`] or CDP failures while installing the recorder.
-    pub async fn subscribe_dom(&self, tab: &TabId) -> Result<DomSubscription, BrowserError> {
-        self.touch();
-        let session = self.session(tab).await?;
-        let _guard = self.mirror_lock.lock().await;
-        let installed = lock(&self.state)
-            .mirrors
-            .get(tab)
-            .is_some_and(|mirror| mirror.session == session);
-        if !installed {
-            self.install_mirror(tab, &session).await?;
-        }
-        let (initial, receiver) = {
-            let state = lock(&self.state);
-            let mirror = state
-                .mirrors
-                .get(tab)
-                .ok_or_else(|| BrowserError::TabNotFound(tab.clone()))?;
-            (mirror.buffer.snapshot(), mirror.tx.subscribe())
-        };
-        if initial.is_none() && installed {
-            // A running recorder without a buffered snapshot sends one on request; a fresh one
-            // snapshots by itself when it starts.
-            if let Err(error) = self
-                .cdp
-                .call_session(
-                    &session,
-                    "Runtime.evaluate",
-                    json!({"expression": mirror::SNAPSHOT_EXPRESSION}),
-                )
-                .await
-            {
-                debug!(%error, "requesting a DOM snapshot failed");
-            }
-        }
-        Ok(DomSubscription {
-            tab: tab.clone(),
-            initial,
-            receiver,
-            control: self.control_tx.clone(),
-        })
-    }
-
-    async fn install_mirror(&self, tab: &TabId, session: &str) -> Result<(), BrowserError> {
-        let script = mirror::injection_script();
-        self.cdp
-            .call_session(session, "Runtime.enable", json!({}))
-            .await?;
-        self.cdp
-            .call_session(session, "Runtime.addBinding", json!({"name": BINDING}))
-            .await?;
-        let added = self
-            .cdp
-            .call_session(
-                session,
-                "Page.addScriptToEvaluateOnNewDocument",
-                json!({"source": script}),
-            )
-            .await?;
-        {
-            let mut state = lock(&self.state);
-            if !state.has(tab) {
-                return Err(BrowserError::TabNotFound(tab.clone()));
-            }
-            state.mirrors.insert(
-                tab.clone(),
-                MirrorTab {
-                    session: session.to_owned(),
-                    script: added
-                        .get("identifier")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    buffer: MirrorBuffer::default(),
-                    tx: broadcast::channel(DOM_QUEUE).0,
-                    checkout_pending: false,
-                },
-            );
-        }
-        // The current document gets the recorder now; later documents through the script.
-        if let Err(error) = self
-            .cdp
-            .call_session(session, "Runtime.evaluate", json!({"expression": script}))
-            .await
-        {
-            debug!(%error, "starting the DOM recorder in the current document failed");
-        }
-        Ok(())
-    }
-
-    fn on_mirror_batch(&self, event: &CdpEvent) {
-        if event.params.get("name").and_then(Value::as_str) != Some(BINDING) {
-            return;
-        }
-        let (Some(session), Some(payload)) = (
-            event.session_id.as_deref(),
-            event.params.get("payload").and_then(Value::as_str),
-        ) else {
-            return;
-        };
-        let mut checkout = false;
-        {
-            let mut state = lock(&self.state);
-            let Some(mirror) = state
-                .mirrors
-                .values_mut()
-                .find(|mirror| mirror.session == session)
-            else {
-                return;
-            };
-            match mirror.buffer.push(payload) {
-                Ok((batch, outgrown)) => {
-                    if batch.reset {
-                        mirror.checkout_pending = false;
-                    }
-                    let _ = mirror.tx.send(batch);
-                    if outgrown && !mirror.checkout_pending {
-                        mirror.checkout_pending = true;
-                        checkout = true;
-                    }
-                }
-                Err(error) => debug!(%error, "dropping a DOM mirror batch"),
-            }
-        }
-        if checkout {
-            self.request_snapshot(session);
-        }
-    }
-
-    fn request_snapshot(&self, session: &str) {
-        let cdp = self.cdp.clone();
-        let session = session.to_owned();
-        tokio::spawn(async move {
-            let _ = cdp
-                .call_session(
-                    &session,
-                    "Runtime.evaluate",
-                    json!({"expression": mirror::SNAPSHOT_EXPRESSION}),
-                )
-                .await;
-        });
-    }
-
-    /// Asks every running recorder for a fresh full snapshot (after lost events).
-    fn checkout_mirrors(&self) {
-        let sessions: Vec<String> = {
-            let mut state = lock(&self.state);
-            state
-                .mirrors
-                .values_mut()
-                .map(|mirror| {
-                    mirror.checkout_pending = true;
-                    mirror.session.clone()
-                })
-                .collect()
-        };
-        for session in sessions {
-            self.request_snapshot(&session);
-        }
-    }
-
-    /// Stops recorders nobody watches (CPU and memory of agent-driven pages).
-    async fn stop_unwatched_mirrors(&self) {
-        let _guard = self.mirror_lock.lock().await;
-        let idle: Vec<MirrorTab> = {
-            let mut state = lock(&self.state);
-            let tabs: Vec<TabId> = state
-                .mirrors
-                .iter()
-                .filter(|(_, mirror)| mirror.tx.receiver_count() == 0)
-                .map(|(tab, _)| tab.clone())
-                .collect();
-            tabs.iter()
-                .filter_map(|tab| state.mirrors.remove(tab))
-                .collect()
-        };
-        for mirror in idle {
-            let session = mirror.session.as_str();
-            let _ = self
-                .cdp
-                .call_session(
-                    session,
-                    "Runtime.evaluate",
-                    json!({"expression": mirror::STOP_EXPRESSION}),
-                )
-                .await;
-            if let Some(identifier) = &mirror.script {
-                let _ = self
-                    .cdp
-                    .call_session(
-                        session,
-                        "Page.removeScriptToEvaluateOnNewDocument",
-                        json!({"identifier": identifier}),
-                    )
-                    .await;
-            }
-            let _ = self
-                .cdp
-                .call_session(session, "Runtime.removeBinding", json!({"name": BINDING}))
-                .await;
-        }
-    }
-
-    /// Fetches a page resource with the browser's own network stack (its cookies and the
-    /// VM's loopback), for a viewer's mirror (BRW-005).
-    ///
-    /// # Errors
-    /// [`BrowserError::UrlRefused`] outside http(s), [`BrowserError::TabNotFound`],
-    /// [`BrowserError::NavigationFailed`] when the fetch fails,
-    /// [`BrowserError::ResultTooLarge`] beyond [`MAX_RESOURCE_BYTES`], CDP failures.
-    pub async fn fetch_resource(&self, tab: &TabId, url: &str) -> Result<Resource, BrowserError> {
-        use base64::Engine as _;
-        let url = normalize_url(url)?;
-        if url == "about:blank" {
-            return Err(BrowserError::InvalidInput("not a resource address".into()));
-        }
-        self.check_allowed(&url)?;
-        let session = self.session(tab).await?;
-        let tree = self
-            .cdp
-            .call_session(&session, "Page.getFrameTree", json!({}))
-            .await?;
-        let frame = tree
-            .pointer("/frameTree/frame/id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| malformed("Page.getFrameTree", "missing frame id"))?;
-        let loaded = self
-            .cdp
-            .call_session(
-                &session,
-                "Network.loadNetworkResource",
-                json!({"frameId": frame, "url": url, "options": {"disableCache": false, "includeCredentials": true}}),
-            )
-            .await?;
-        let resource = loaded.get("resource").cloned().unwrap_or_default();
-        if resource.get("success").and_then(Value::as_bool) != Some(true) {
-            let reason = resource
-                .get("netErrorName")
-                .and_then(Value::as_str)
-                .unwrap_or("the resource could not be loaded");
-            return Err(BrowserError::NavigationFailed(reason.to_owned()));
-        }
-        let status = resource
-            .get("httpStatusCode")
-            .and_then(Value::as_u64)
-            .and_then(|s| u16::try_from(s).ok());
-        let content_type = resource
-            .get("headers")
-            .and_then(Value::as_object)
-            .and_then(|headers| {
-                headers
-                    .iter()
-                    .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-                    .and_then(|(_, value)| value.as_str())
-                    .map(str::to_owned)
-            });
-        let Some(stream) = resource.get("stream").and_then(Value::as_str) else {
-            return Ok(Resource {
-                status,
-                content_type,
-                body: Vec::new(),
-            });
-        };
-        let mut body = Vec::new();
-        let outcome = loop {
-            let chunk = match self
-                .cdp
-                .call_session(
-                    &session,
-                    "IO.read",
-                    json!({"handle": stream, "size": IO_READ_CHUNK}),
-                )
-                .await
-            {
-                Ok(chunk) => chunk,
-                Err(error) => break Err(BrowserError::Cdp(error)),
-            };
-            let data = chunk
-                .get("data")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if chunk.get("base64Encoded").and_then(Value::as_bool) == Some(true) {
-                match base64::engine::general_purpose::STANDARD.decode(data) {
-                    Ok(bytes) => body.extend_from_slice(&bytes),
-                    Err(_) => break Err(malformed("IO.read", "invalid base64")),
-                }
-            } else {
-                body.extend_from_slice(data.as_bytes());
-            }
-            if body.len() > MAX_RESOURCE_BYTES {
-                break Err(BrowserError::ResultTooLarge {
-                    limit: MAX_RESOURCE_BYTES,
-                });
-            }
-            if chunk.get("eof").and_then(Value::as_bool) == Some(true) {
-                break Ok(());
-            }
-        };
-        let _ = self
-            .cdp
-            .call_session(&session, "IO.close", json!({"handle": stream}))
-            .await;
-        outcome.map(|()| Resource {
-            status,
-            content_type,
-            body,
-        })
-    }
-
     /// Tells viewers that an agent acted in a tab (its cursor and action, BRW-007).
     pub fn agent_activity(
         &self,
@@ -1682,10 +1470,19 @@ impl BrowserInstance {
                 "viewport must be within {VIEWPORT_MIN}..={VIEWPORT_MAX} pixels per edge"
             )));
         }
+        // On a display the screen and the windows take the size (clamped to its maximum).
+        let (width, height) = match &self.display {
+            Some(display) => display.resize((width, height))?,
+            None => (width, height),
+        };
         let (sessions, casts) = {
             let mut state = lock(&self.state);
             state.viewport = (width, height);
-            let sessions: Vec<String> = state.sessions.values().cloned().collect();
+            let sessions: Vec<String> = if self.display.is_some() {
+                Vec::new()
+            } else {
+                state.sessions.values().cloned().collect()
+            };
             let casts: Vec<String> = state
                 .screencasts
                 .values()
@@ -1739,6 +1536,9 @@ impl BrowserInstance {
         ] {
             check_coordinate(name, value)?;
         }
+        if let Some(display) = &self.display {
+            return self.display_mouse(display, input).await;
+        }
         let session = self.session(tab).await?;
         let _input = self.input_lock.lock().await;
         let (kind, click_count, buttons) = lock(&self.state).pointer.apply(&input, Instant::now());
@@ -1762,6 +1562,197 @@ impl BrowserInstance {
         Ok(())
     }
 
+    /// Real pointer input on the display: moves, presses and releases go through XTest wherever
+    /// the pointer is (any window, any frame); the wheel scrolls the shown tab by CSS pixels
+    /// (smooth for trackpads, which X wheel buttons are not).
+    async fn display_mouse(
+        &self,
+        display: &VirtualDisplay,
+        input: MouseInput,
+    ) -> Result<(), BrowserError> {
+        match input.event {
+            MouseEventKind::Move => display.pointer(input.x, input.y),
+            MouseEventKind::Down | MouseEventKind::Up => {
+                display.pointer(input.x, input.y)?;
+                display.button(input.button, input.event == MouseEventKind::Down)
+            }
+            MouseEventKind::Wheel => {
+                let Some(tab) = lock(&self.state).active.clone() else {
+                    return Ok(());
+                };
+                let session = self.session(&tab).await?;
+                let _input = self.input_lock.lock().await;
+                self.cdp
+                    .call_session(
+                        &session,
+                        "Input.dispatchMouseEvent",
+                        json!({"type": "mouseWheel", "x": input.x, "y": input.y,
+                               "deltaX": input.dx, "deltaY": input.dy, "button": "none",
+                               "modifiers": input.modifiers & 0x0F}),
+                    )
+                    .await?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Inserts text in the shown tab's focused field (IME, emoji, non-ASCII letters, paste).
+    async fn insert_text(&self, text: &str) -> Result<(), BrowserError> {
+        let Some(tab) = lock(&self.state).active.clone() else {
+            return Ok(());
+        };
+        let session = self.session(&tab).await?;
+        let _input = self.input_lock.lock().await;
+        self.cdp
+            .call_session(&session, "Input.insertText", json!({"text": text}))
+            .await?;
+        Ok(())
+    }
+
+    /// Real keyboard input on the display (see [`crate::keys`]): printable ASCII by character,
+    /// pressing or lifting Shift around the key when the character needs another Shift state
+    /// than the user's; other keys by code; text no key types through `Input.insertText`.
+    async fn display_key(
+        &self,
+        display: &VirtualDisplay,
+        input: KeyInput,
+    ) -> Result<(), BrowserError> {
+        let id = input
+            .code
+            .clone()
+            .filter(|code| !code.is_empty())
+            .or_else(|| input.key.clone())
+            .unwrap_or_default();
+        match input.event {
+            KeyEventKind::Char => match input.text.as_deref().filter(|t| !t.is_empty()) {
+                Some(text) if text.chars().count() <= TYPED_TEXT_MAX_CHARS => text
+                    .chars()
+                    .filter(|c| *c != '\r')
+                    .try_for_each(|c| display.type_char(c)),
+                Some(text) => {
+                    display.settle().await;
+                    self.insert_text(text).await
+                }
+                None => Err(BrowserError::InvalidInput("a char event needs text".into())),
+            },
+            KeyEventKind::Down => {
+                match keys::display_key(input.key.as_deref(), input.code.as_deref()) {
+                    DisplayKey::Char { keycode, shift } => {
+                        let (held, shortcut) = {
+                            let mut keyboard = lock(&self.keyboard);
+                            let shortcut = keyboard.shortcut();
+                            keyboard.pressed.insert(id, keycode);
+                            (keyboard.shift.clone(), shortcut)
+                        };
+                        if shortcut {
+                            return display.key(keycode, true);
+                        }
+                        match (shift, held.is_empty()) {
+                            (true, true) => {
+                                display.key(SHIFT_KEYCODES[0], true)?;
+                                display.key(keycode, true)?;
+                                display.key(SHIFT_KEYCODES[0], false)
+                            }
+                            (false, false) => {
+                                for shift in &held {
+                                    display.key(*shift, false)?;
+                                }
+                                display.key(keycode, true)?;
+                                for shift in &held {
+                                    display.key(*shift, true)?;
+                                }
+                                Ok(())
+                            }
+                            _ => display.key(keycode, true),
+                        }
+                    }
+                    DisplayKey::Key(keycode) => {
+                        {
+                            let mut keyboard = lock(&self.keyboard);
+                            if SHIFT_KEYCODES.contains(&keycode)
+                                && !keyboard.shift.contains(&keycode)
+                            {
+                                keyboard.shift.push(keycode);
+                            }
+                            keyboard.pressed.insert(id, keycode);
+                        }
+                        display.key(keycode, true)
+                    }
+                    DisplayKey::Text(text) => text.chars().try_for_each(|c| display.type_char(c)),
+                    DisplayKey::Ignore => Ok(()),
+                }
+            }
+            KeyEventKind::Up => {
+                let keycode = {
+                    let mut keyboard = lock(&self.keyboard);
+                    let keycode =
+                        keyboard.pressed.remove(&id).or_else(|| {
+                            match keys::display_key(input.key.as_deref(), input.code.as_deref()) {
+                                DisplayKey::Key(keycode) | DisplayKey::Char { keycode, .. } => {
+                                    Some(keycode)
+                                }
+                                DisplayKey::Text(_) | DisplayKey::Ignore => None,
+                            }
+                        });
+                    if let Some(keycode) = keycode {
+                        keyboard.shift.retain(|shift| *shift != keycode);
+                    }
+                    keycode
+                };
+                match keycode {
+                    Some(keycode) => display.key(keycode, false),
+                    None => Ok(()),
+                }
+            }
+        }
+    }
+
+    /// Releases every key and button a viewer held (it left or reconnected).
+    pub fn release_input(&self) {
+        *lock(&self.keyboard) = Keyboard::default();
+        if let Some(display) = &self.display {
+            display.release_all();
+        }
+    }
+
+    /// Subscribes to the display's video.
+    ///
+    /// # Errors
+    /// [`VideoUnavailable`] without a display or when its encoder failed.
+    pub fn subscribe_video(&self) -> Result<VideoSubscription, VideoUnavailable> {
+        match &self.display {
+            Some(display) => display.subscribe_video(),
+            None => Err(VideoUnavailable(
+                "the sandbox browser runs headless (no virtual display)".into(),
+            )),
+        }
+    }
+
+    /// The text selected in a tab (the focused field's selection or the page's), at most
+    /// [`CLIPBOARD_MAX_BYTES`]: what the user copied.
+    ///
+    /// # Errors
+    /// Tab or CDP failures.
+    pub async fn copy_selection(&self, tab: &TabId) -> Result<String, BrowserError> {
+        self.touch();
+        let session = self.session(tab).await?;
+        let result = self
+            .cdp
+            .call_session(
+                &session,
+                "Runtime.evaluate",
+                json!({"expression": SELECTION_EXPRESSION, "returnByValue": true}),
+            )
+            .await?;
+        let mut text = result
+            .pointer("/result/value")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        snapshot::truncate_utf8(&mut text, CLIPBOARD_MAX_BYTES);
+        Ok(text)
+    }
+
     /// Dispatches keyboard input to a tab, adding the virtual key code Chromium needs for
     /// non-text keys and `\r` text for Enter.
     ///
@@ -1778,13 +1769,55 @@ impl BrowserInstance {
                 "modifiers must be a 4-bit field".into(),
             ));
         }
+        if let Some(display) = &self.display {
+            return self.display_key(display, input).await;
+        }
+        let bit = match input.key.as_deref() {
+            Some("Control") => MODIFIER_CTRL,
+            Some("Shift") => MODIFIER_SHIFT,
+            Some("Alt") => MODIFIER_ALT,
+            Some("Meta") => MODIFIER_META,
+            _ => 0,
+        };
+        let held = {
+            let mut keyboard = lock(&self.keyboard);
+            match input.event {
+                KeyEventKind::Down => keyboard.modifiers |= bit,
+                KeyEventKind::Up => keyboard.modifiers &= !bit,
+                KeyEventKind::Char => {}
+            }
+            keyboard.modifiers
+        };
+        let input = KeyInput {
+            modifiers: input.modifiers | held | bit,
+            ..input
+        };
+        // Text without a key (IME, paste): a key event carries at most four characters.
+        if input.event == KeyEventKind::Char
+            && let Some(text) = input.text.as_deref().filter(|t| t.chars().count() > 1)
+        {
+            let session = self.session(tab).await?;
+            let _input = self.input_lock.lock().await;
+            self.cdp
+                .call_session(&session, "Input.insertText", json!({"text": text}))
+                .await?;
+            return Ok(());
+        }
         let text = match input.event {
             KeyEventKind::Up => None,
             KeyEventKind::Down | KeyEventKind::Char => input
                 .text
                 .clone()
                 .filter(|text| !text.is_empty())
-                .or_else(|| keys::implied_text(input.key.as_deref()).map(str::to_owned)),
+                .or_else(|| keys::implied_text(input.key.as_deref()).map(str::to_owned))
+                // A printable key without Ctrl/Meta types its character (viewers send no text).
+                .or_else(|| {
+                    let printable = input.key.as_deref().filter(|key| {
+                        key.chars().count() == 1 && !key.chars().any(char::is_control)
+                    });
+                    let shortcut = input.modifiers & (MODIFIER_CTRL | MODIFIER_META) != 0;
+                    printable.filter(|_| !shortcut).map(str::to_owned)
+                }),
         };
         let kind = match (input.event, &text) {
             (KeyEventKind::Down, Some(_)) => "keyDown",
@@ -1833,6 +1866,10 @@ impl BrowserInstance {
             }
             ViewerClientMsg::Activate { tab_id } => self.activate(&tab_id).await.map(|()| None),
             ViewerClientMsg::Close { tab_id } => self.close(&tab_id).await.map(|()| None),
+            ViewerClientMsg::History { tab_id, delta } => {
+                self.history(&tab_id, delta).await.map(|()| None)
+            }
+            ViewerClientMsg::Reload { tab_id } => self.reload(&tab_id).await.map(|()| None),
             ViewerClientMsg::Mouse {
                 tab_id,
                 event,
@@ -1841,6 +1878,7 @@ impl BrowserInstance {
                 button,
                 dx,
                 dy,
+                modifiers,
             } => {
                 let input = MouseInput {
                     event,
@@ -1849,7 +1887,7 @@ impl BrowserInstance {
                     button: button.unwrap_or_default(),
                     dx: dx.unwrap_or(0.0),
                     dy: dy.unwrap_or(0.0),
-                    modifiers: 0,
+                    modifiers: modifiers.unwrap_or(0) & 0x0F,
                 };
                 self.dispatch_mouse(&tab_id, input).await.map(|()| None)
             }
@@ -1873,9 +1911,9 @@ impl BrowserInstance {
             ViewerClientMsg::Viewport { width, height } => {
                 self.set_viewport(width, height).await.map(|()| None)
             }
-            // Per-connection choices, handled by the viewer connection.
+            // Per-connection choices and answers, handled by the viewer connection.
             ViewerClientMsg::View { .. }
-            | ViewerClientMsg::DomResync
+            | ViewerClientMsg::Copy { .. }
             | ViewerClientMsg::Watch { .. } => Ok(None),
         }
     }
@@ -2287,19 +2325,27 @@ impl BrowserInstance {
     /// Stops the owned process: `Browser.close` (flushes the profile), then the escalation in
     /// `timeouts`; the process is reaped before this returns `Ok`.
     pub(crate) async fn terminate(&self, timeouts: StopTimeouts) -> Result<(), BrowserError> {
-        let Some(process) = self.process.get() else {
-            return Ok(());
+        let browser = match self.process.get() {
+            Some(process) => {
+                if !process.has_exited() && !self.cdp.is_closed() && !timeouts.graceful.is_zero() {
+                    let closing = self.cdp.call("Browser.close", json!({}));
+                    // The browser may drop the socket before answering; either outcome is fine.
+                    let _ = tokio::time::timeout(timeouts.graceful, closing).await;
+                }
+                process
+                    .terminate(timeouts)
+                    .await
+                    .map(|_| ())
+                    .map_err(|_| BrowserError::NotReaped { pid: process.pid() })
+            }
+            None => Ok(()),
         };
-        if !process.has_exited() && !self.cdp.is_closed() && !timeouts.graceful.is_zero() {
-            let closing = self.cdp.call("Browser.close", json!({}));
-            // The browser may drop the socket before answering; either outcome is fine.
-            let _ = tokio::time::timeout(timeouts.graceful, closing).await;
-        }
-        process
-            .terminate(timeouts)
-            .await
-            .map(|_| ())
-            .map_err(|_| BrowserError::NotReaped { pid: process.pid() })
+        // The display goes after the browser that draws on it (encoder and X server reaped).
+        let display = match &self.display {
+            Some(display) => display.stop(timeouts).await,
+            None => Ok(()),
+        };
+        browser.and(display)
     }
 }
 
@@ -2329,8 +2375,6 @@ async fn event_loop(
                         if let Err(error) = instance.resync().await {
                             warn!(%error, "target resynchronization failed");
                         }
-                        // Lost recorder batches leave mirrors inconsistent: start over.
-                        instance.checkout_mirrors();
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         instance.on_disconnected();
@@ -2341,7 +2385,6 @@ async fn event_loop(
             tab = control.recv() => {
                 let (Some(_), Some(instance)) = (tab, instance.upgrade()) else { return };
                 instance.stop_unwatched_screencasts().await;
-                instance.stop_unwatched_mirrors().await;
             }
             () = wait_closed(&mut closed) => {
                 if let Some(instance) = instance.upgrade() {

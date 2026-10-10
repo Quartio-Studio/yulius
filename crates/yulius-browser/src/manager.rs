@@ -1,4 +1,5 @@
-//! Lazily started, one-per-sandbox Chromium processes (SPEC-001 BRW-002).
+//! Lazily started, one-per-sandbox Chromium processes (SPEC-001 BRW-002), each on its own
+//! virtual display when one is configured (SPEC-002 ADR-15).
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -12,6 +13,7 @@ use yulius_domain::ids::SandboxId;
 
 use crate::cdp::CdpConfig;
 use crate::discovery::resolve_executable;
+use crate::display::{DisplayMode, VirtualDisplay};
 use crate::error::BrowserError;
 use crate::instance::{BrowserInstance, InstanceConfig, ScreencastConfig};
 use crate::process::{StopTimeouts, Supervised, passed_env};
@@ -23,14 +25,17 @@ pub const DEVTOOLS_PORT_FILE: &str = "DevToolsActivePort";
 const PORT_FILE_POLL: Duration = Duration::from_millis(50);
 
 /// Browser adapter configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct BrowserConfig {
     /// Chromium executable: a path, or a bare name searched on `PATH`
     /// (see [`crate::discover_chromium`]).
     pub chromium_exe: PathBuf,
     /// Root for default per-sandbox profiles ([`BrowserManager::default_profile_dir`]).
     pub profile_root: PathBuf,
-    /// Run with `--headless=new` (always in production; `false` only for local debugging).
+    /// How browsers render: headless, or headful on a virtual display (SPEC-002 ADR-15).
+    pub display: DisplayMode,
+    /// Without a display: run with `--headless=new` (`false` only for local debugging, where
+    /// Chrome opens a window on the developer's desktop).
     pub headless: bool,
     /// Initial viewport (width, height) in CSS pixels.
     pub default_viewport: (u32, u32),
@@ -62,7 +67,7 @@ pub struct BrowserConfig {
 }
 
 impl BrowserConfig {
-    /// Defaults: headless, 1280×800, 30 min idle timeout, 30 s startup, 5+5+10 s stop
+    /// Defaults: headless without a display, 1280×800, 30 min idle timeout, 30 s startup, 5+5+10 s stop
     /// escalation, Chromium sandbox on, 32 tabs, 15 s load wait.
     #[must_use]
     pub fn new(chromium_exe: PathBuf, profile_root: PathBuf) -> Self {
@@ -70,6 +75,7 @@ impl BrowserConfig {
         Self {
             chromium_exe,
             profile_root,
+            display: DisplayMode::Headless,
             headless: true,
             default_viewport: instance.viewport,
             idle_timeout: Duration::from_secs(30 * 60),
@@ -107,8 +113,17 @@ impl BrowserConfig {
             "--remote-debugging-address=127.0.0.1".into(),
             user_data_dir,
         ];
-        if self.headless {
-            args.push("--headless=new".into());
+        match &self.display {
+            DisplayMode::Virtual(display) => {
+                args.extend(display.chromium_args(display.device_size(self.default_viewport)));
+            }
+            #[cfg(feature = "fake")]
+            DisplayMode::Fake(fake) => {
+                let display = fake.config();
+                args.extend(display.chromium_args(display.device_size(self.default_viewport)));
+            }
+            DisplayMode::Headless if self.headless => args.push("--headless=new".into()),
+            DisplayMode::Headless => {}
         }
         args.extend(
             [
@@ -119,7 +134,9 @@ impl BrowserConfig {
             ]
             .map(OsString::from),
         );
-        args.push(format!("--window-size={width},{height}").into());
+        if !self.display.is_virtual() {
+            args.push(format!("--window-size={width},{height}").into());
+        }
         if cfg!(target_os = "linux") {
             args.push("--password-store=basic".into());
         }
@@ -313,27 +330,58 @@ impl BrowserManager {
         let exe = resolve_executable(&self.config.chromium_exe)?;
         let port_file = prepare_profile(profile_dir).await?;
         let args = self.config.chromium_args(profile_dir);
-        let process = Supervised::spawn(&exe, &args, &passed_env()).map_err(BrowserError::Spawn)?;
         let quick = StopTimeouts {
             graceful: Duration::ZERO,
             ..self.config.stop
+        };
+        // The display first: Chrome connects to it at start.
+        let display =
+            VirtualDisplay::start(&self.config.display, sandbox, self.config.default_viewport)
+                .await?;
+        let mut env = passed_env();
+        if let Some(display) = &display {
+            env.retain(|(name, _)| name != "DISPLAY" && name != "XAUTHORITY");
+            env.extend(display.env());
+        }
+        let stop_display = |display: Option<VirtualDisplay>| async move {
+            if let Some(display) = display
+                && let Err(error) = display.stop(quick).await
+            {
+                warn!(%error, "could not stop the display of a browser that failed to start");
+            }
+        };
+        let process = match Supervised::spawn(&exe, &args, &env) {
+            Ok(process) => process,
+            Err(error) => {
+                stop_display(display).await;
+                return Err(BrowserError::Spawn(error));
+            }
         };
         let ws_url =
             match wait_for_port_file(&port_file, &process, self.config.startup_timeout).await {
                 Ok(url) => url,
                 Err(error) => {
                     let _ = process.terminate(quick).await;
+                    stop_display(display).await;
                     return Err(error);
                 }
             };
-        match BrowserInstance::attach(sandbox.clone(), &ws_url, self.config.instance_config()).await
+        let display_name = display.as_ref().map(VirtualDisplay::name);
+        match BrowserInstance::attach_on(
+            sandbox.clone(),
+            &ws_url,
+            self.config.instance_config(),
+            display,
+        )
+        .await
         {
             Ok(instance) => {
-                info!(sandbox = %sandbox, pid = process.pid(), "browser started");
+                info!(sandbox = %sandbox, pid = process.pid(), display = ?display_name, "browser started");
                 instance.set_process(process);
                 Ok(instance)
             }
             Err(error) => {
+                // A failed attach has stopped the display it was given.
                 let _ = process.terminate(quick).await;
                 Err(error)
             }

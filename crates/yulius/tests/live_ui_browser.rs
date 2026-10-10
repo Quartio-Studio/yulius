@@ -1,20 +1,18 @@
-//! Opt-in browser checks of the sandbox browser panel with a real server-side Chromium (the
+//! Opt-in browser checks of the sandbox browser panel with a real server-side Chrome (the
 //! sandbox Chrome agents drive) and a second headless Chrome as the user's browser running the
-//! real UI (SPEC-001 BRW-005..008, SPEC-002 ADR-14).
+//! real UI (SPEC-001 BRW-005..008, SPEC-002 ADR-14, ADR-15).
 //!
-//! - Live tabs: the start page lists the listening sandbox port; opening it shows the app live
-//!   in an iframe on its preview origin (`<port>-<key>.yulius.localhost`), through the handshake:
-//!   root-relative stylesheet and image, a redirect to `localhost`, a WebSocket, native typing,
-//!   double-click selection and wheel scrolling inside the page, the address bar and Back from
-//!   the bridge script; an agent acting on the same app is announced over the live tab and its
-//!   cursor shows in its own tab; a hostile page on the preview origin cannot use the Yulius
-//!   session (API and WebSocket refused); Yulius refuses to render framed; the sandbox Chrome
-//!   refuses to open Yulius.
-//! - The sandbox Chrome's tab (an agent's) is mirrored as DOM: its stylesheet and image load
-//!   through Yulius, a canvas keeps updating, clicks and typing reach the real page, text
-//!   selects and copies, the agent's click shows its cursor, the pixel view can be chosen and
-//!   left, and a hostile page that feeds crafted events to the recorder cannot run script in the
-//!   UI (the mirror iframe stays script-free).
+//! - The panel streams the sandbox Chrome: an agent's page shows on the canvas (a canvas in the
+//!   page updates in the stream); a click and keys in the panel reach the page; a paste inserts
+//!   the user's text; copy brings the page's selection to the user's clipboard; the wheel scrolls;
+//!   the agent's click shows its cursor. With `YULIUS_LIVE_DISPLAY=1` on Linux (Xvfb, ffmpeg) the
+//!   server Chrome is headful on a virtual display and the panel decodes its video; otherwise it is
+//!   headless and the panel shows labelled JPEG frames.
+//! - A sandbox dev server opens live in a new window on its preview origin, through the
+//!   handshake: root-relative stylesheet and image, a redirect to `localhost`, a WebSocket; a
+//!   hostile page on the preview origin cannot use the Yulius session (API and WebSocket refused);
+//!   the sandbox Chrome refuses to open Yulius.
+//! - Yulius refuses to render framed.
 //! - The terminal (F 2026-10-07): its text is HTML and a double-click selects a word even after
 //!   the program switched on mouse tracking; links to the VM are told apart from others.
 //!
@@ -110,32 +108,12 @@ async fn until(cdp: &CdpClient, session: &str, what: &str, expression: &str) -> 
             return Ok(());
         }
         if Instant::now() > deadline {
-            let page = eval(cdp, session, "(() => { const d = document.querySelector('.bp-mirror iframe')?.contentDocument; return document.querySelector('.bp')?.innerText.slice(0, 300) + ' | mirror: ' + (d ? d.body?.innerText.slice(0, 300) : 'none'); })()").await?;
+            let page = eval(cdp, session, "(() => document.querySelector('.bp')?.innerText.slice(0, 300) + ' | address: ' + document.querySelector('.bp-bar input')?.value + ' | shown: ' + document.querySelector('.bp-tab.active')?.textContent)()").await?;
             return Err(format!("timed out waiting for {what}; {page}").into());
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
-
-/// A page that calls the recorder's binding itself with a crafted snapshot whose inline handler
-/// and script would run in the UI if the mirror iframe allowed scripts.
-const HOSTILE_PAGE: &str = r"<!doctype html><html><body><p>hostile page</p><script>
-setTimeout(() => {
-  const t = Date.now();
-  const node = { type: 0, id: 1, childNodes: [{ type: 2, tagName: 'html', attributes: {}, id: 2, childNodes: [
-    { type: 2, tagName: 'head', attributes: {}, id: 3, childNodes: [] },
-    { type: 2, tagName: 'body', attributes: { onload: 'parent.__pwned = 3' }, id: 4, childNodes: [
-      { type: 3, textContent: 'crafted mirror', id: 5 },
-      { type: 2, tagName: 'img', attributes: { src: 'data:,', onerror: 'parent.__pwned = 1' }, id: 6, childNodes: [] },
-      { type: 2, tagName: 'script', attributes: {}, id: 7, childNodes: [{ type: 3, textContent: 'parent.__pwned = 2', id: 8 }] },
-    ] },
-  ] }] };
-  window.__yuliusMirrorSend(JSON.stringify([
-    { type: 4, data: { href: location.href, width: 800, height: 600 }, timestamp: t },
-    { type: 2, data: { node, initialOffset: { left: 0, top: 0 } }, timestamp: t },
-  ]));
-}, 1500);
-</script></body></html>";
 
 /// The page served on the VM's loopback: its stylesheet and image are VM-only resources.
 fn fixture_site() -> Router {
@@ -149,6 +127,7 @@ fn fixture_site() -> Router {
 <button id="go" onclick="document.getElementById('title').textContent='Clicked!'" style="position:absolute;left:100px;top:160px;width:140px;height:44px">Click me</button>
 <canvas id="paint" width="60" height="30" style="position:absolute;left:300px;top:20px"></canvas>
 <input id="name" style="position:absolute;left:100px;top:240px;width:160px">
+<div style="height:3000px"></div>
 <script>
 const g = document.getElementById('paint').getContext('2d');
 g.fillStyle = 'rgb(255, 0, 0)'; g.fillRect(0, 0, 60, 30);
@@ -156,10 +135,6 @@ setTimeout(() => { g.fillStyle = 'rgb(0, 200, 0)'; g.fillRect(0, 0, 60, 30); }, 
 </script></body></html>"#,
                 )
             }),
-        )
-        .route(
-            "/hostile",
-            get(|| async { axum::response::Html(HOSTILE_PAGE) }),
         )
         .route(
             "/style.css",
@@ -173,31 +148,6 @@ setTimeout(() => { g.fillStyle = 'rgb(0, 200, 0)'; g.fillRect(0, 0, 60, 30); }, 
         )
 }
 
-/// Clicks the centre of `selector` in the mirror with real input events in the viewer.
-async fn click_in_mirror(cdp: &CdpClient, session: &str, selector: &str) -> TestResult {
-    let target = eval(
-        cdp,
-        session,
-        &format!(
-            "(() => {{ const frame = document.querySelector('.bp-mirror iframe'); const b = frame.contentDocument.querySelector(\"{selector}\").getBoundingClientRect(); const f = frame.getBoundingClientRect(); const scale = f.width / frame.offsetWidth; return {{ x: f.left + (b.left + b.width / 2) * scale, y: f.top + (b.top + b.height / 2) * scale }}; }})()"
-        ),
-    )
-    .await?;
-    let (x, y) = (
-        target["x"].as_f64().ok_or("x")?,
-        target["y"].as_f64().ok_or("y")?,
-    );
-    for kind in ["mousePressed", "mouseReleased"] {
-        cdp.call_session(
-            session,
-            "Input.dispatchMouseEvent",
-            json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 }),
-        )
-        .await?;
-    }
-    Ok(())
-}
-
 async fn serve_on(
     router: Router,
 ) -> Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>), Box<dyn std::error::Error>> {
@@ -209,9 +159,88 @@ async fn serve_on(
     Ok((addr, task))
 }
 
+/// The panel point (viewer CSS pixels) of page point `(x, y)` (CSS pixels of the sandbox page).
+async fn stage_point(
+    cdp: &CdpClient,
+    session: &str,
+    (x, y): (f64, f64),
+) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+    let point = eval(
+        cdp,
+        session,
+        &format!("(() => {{ const c = document.querySelector('.bp-canvas'); const r = c.getBoundingClientRect(); const fit = r.width / c.width; return {{ x: r.left + {x} * fit, y: r.top + {y} * fit }}; }})()"),
+    )
+    .await?;
+    Ok((
+        point["x"].as_f64().ok_or("x")?,
+        point["y"].as_f64().ok_or("y")?,
+    ))
+}
+
+/// Evaluates `expression` in the server Chrome's page whose URL starts with `url`.
+async fn page_eval(
+    browser: &CdpClient,
+    url: &str,
+    expression: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let targets = browser.call("Target.getTargets", json!({})).await?;
+    let target = targets["targetInfos"]
+        .as_array()
+        .and_then(|infos| {
+            infos.iter().find(|t| {
+                t["type"] == "page" && t["url"].as_str().is_some_and(|u| u.starts_with(url))
+            })
+        })
+        .and_then(|t| t["targetId"].as_str())
+        .ok_or_else(|| format!("no page at {url}"))?
+        .to_owned();
+    let attached = browser
+        .call(
+            "Target.attachToTarget",
+            json!({ "targetId": target, "flatten": true }),
+        )
+        .await?;
+    let session = attached["sessionId"].as_str().ok_or("session")?.to_owned();
+    let value = browser
+        .call_session(
+            &session,
+            "Runtime.evaluate",
+            json!({ "expression": expression, "returnByValue": true }),
+        )
+        .await?;
+    let _ = browser
+        .call("Target.detachFromTarget", json!({ "sessionId": session }))
+        .await;
+    Ok(value["result"]["value"].clone())
+}
+
+async fn until_page(browser: &CdpClient, url: &str, what: &str, expression: &str) -> TestResult {
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        if page_eval(browser, url, &format!("!!({expression})"))
+            .await
+            .ok()
+            == Some(Value::Bool(true))
+        {
+            return Ok(());
+        }
+        if Instant::now() > deadline {
+            let text = page_eval(
+                browser,
+                url,
+                "document.body ? document.body.innerText.slice(0, 200) : ''",
+            )
+            .await
+            .unwrap_or(Value::Null);
+            return Err(format!("timed out waiting for {what} in the sandbox page: {text}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 #[tokio::test]
 #[ignore = "needs Chrome (YULIUS_LIVE_CHROME)"]
-async fn the_sandbox_chrome_tab_is_mirrored_as_dom() -> TestResult {
+async fn the_panel_streams_the_sandbox_chrome_and_takes_input() -> TestResult {
     let Ok(chrome_exe) = std::env::var("YULIUS_LIVE_CHROME") else {
         eprintln!("skipped: set YULIUS_LIVE_CHROME");
         return Ok(());
@@ -220,19 +249,27 @@ async fn the_sandbox_chrome_tab_is_mirrored_as_dom() -> TestResult {
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_default())
         .with_test_writer()
         .try_init();
-    // The internal listener serves the welcome page; its address is fixed before the app.
+    let display = std::env::var("YULIUS_LIVE_DISPLAY").ok().as_deref() == Some("1");
     let internal_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let internal_addr = internal_listener.local_addr()?;
-    // The UI listener too: its origin must be allowed for the viewer WebSocket.
     let ui_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let addr = ui_listener.local_addr()?;
     let dir = tempfile::Builder::new().prefix("ylb").tempdir_in("/tmp")?;
     let mut config =
         yulius_browser::BrowserConfig::new(PathBuf::from(&chrome_exe), dir.path().join("profiles"));
-    config.no_sandbox = true;
     config.new_tab_url = Some(format!(
         "http://{internal_addr}/browser/welcome?sandbox={{sandbox}}"
     ));
+    if display {
+        let mut virtual_display = yulius_browser::DisplayConfig::new(dir.path().join("displays"));
+        virtual_display.first_display = std::env::var("YULIUS_LIVE_DISPLAY_BASE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(90);
+        config.display = yulius_browser::DisplayMode::Virtual(virtual_display);
+    } else {
+        config.no_sandbox = true;
+    }
     let h = harness_with(HarnessOptions {
         browser: Some(Arc::new(ChromiumBrowsers::new(config))),
         dir: Some(dir),
@@ -270,17 +307,8 @@ async fn the_sandbox_chrome_tab_is_mirrored_as_dom() -> TestResult {
     let server_task = tokio::spawn(async move {
         let _ = axum::serve(ui_listener, router).await;
     });
-    // The fixture site listens on the sandbox's first port, so the welcome page links it.
-    let port = h
-        .store
-        .sandbox(&SandboxId::parse("s1")?)
-        .await?
-        .ok_or("sandbox")?
-        .port_base;
-    let site_listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    let site_task = tokio::spawn(async move {
-        let _ = axum::serve(site_listener, fixture_site()).await;
-    });
+    let (site, site_task) = serve_on(fixture_site()).await?;
+    let page = format!("http://localhost:{}/", site.port());
 
     let result = async {
         let profile = tempfile::tempdir()?;
@@ -292,91 +320,82 @@ async fn the_sandbox_chrome_tab_is_mirrored_as_dom() -> TestResult {
             .await?;
         let session = attached["sessionId"].as_str().ok_or("session")?.to_owned();
         let session = session.as_str();
+        let mut console = cdp.subscribe_events();
+        cdp.call_session(session, "Runtime.enable", json!({})).await?;
         cdp.call_session(session, "Network.enable", json!({})).await?;
         cdp.call_session(session, "Network.setCookie", json!({ "name": "yulius_session", "value": cookie, "url": format!("http://{addr}/") }))
             .await?;
-        cdp.call_session(session, "Page.navigate", json!({ "url": format!("http://{addr}/s/fixture") }))
-            .await?;
-        until(&cdp, session, "the workspace", "document.querySelector('.tools-toggle')").await?;
-        let rail_hidden = eval(&cdp, session, "document.querySelector('.app').classList.contains('rail-hidden')").await?;
-        assert_eq!(rail_hidden, json!(true), "the tools rail is hidden by default");
-        eval(&cdp, session, "document.querySelector('.tools-toggle').click(); document.querySelector('.rail-btn[aria-label=\"Browser\"]').click(); true").await?;
-        // The start page lists the listening port. An agent opens the page in the sandbox Chrome:
-        // its tab joins the strip, marked as the sandbox Chrome's; watching it mirrors the page
-        // served on the VM's loopback, with its stylesheet and image.
-        until(&cdp, session, "the start page", &format!("[...document.querySelectorAll('.bp-port')].some((b) => b.textContent.includes('localhost:{port}'))")).await?;
-        let agent = h.app.browser_session(&SandboxId::parse("s1")?).await?;
-        let opened = agent.tool_open(&OpenParams { url: format!("http://localhost:{port}/") }).await?;
-        agent.agent_activity(&opened.tab.id, None, "open", "#7 Claude Code");
-        until(&cdp, session, "the agent's tab in the strip", "document.querySelector('.bp-tab.remote')").await?;
-        eval(&cdp, session, "document.querySelector('.bp-tab.remote').click(), true").await?;
-        let mirror = "document.querySelector('.bp-mirror iframe')?.contentDocument";
-        until(&cdp, session, "the fixture page in the mirror", &format!("{mirror}?.body?.innerText.includes('Fixture page')")).await?;
-        let sandbox = eval(&cdp, session, "document.querySelector('.bp-mirror iframe').getAttribute('sandbox')").await?;
-        assert_eq!(sandbox, json!("allow-same-origin"), "the mirror iframe never runs scripts");
-        until(&cdp, session, "the proxied image", &format!("(() => {{ const i = {mirror}?.querySelector('#logo'); return i && i.complete && i.naturalWidth > 0 && i.src.includes('/browser/resource'); }})()")).await?;
-        until(&cdp, session, "the page's styles", &format!("(() => {{ const d = {mirror}; const t = d?.querySelector('#title'); return t && d.defaultView.getComputedStyle(t).color === 'rgb(1, 2, 3)'; }})()")).await?;
-        // The canvas keeps updating (sampled frames painted by the UI, not by the iframe).
-        until(&cdp, session, "the updated canvas", &format!("(() => {{ const c = {mirror}?.querySelector('#paint'); if (!c) return false; const p = c.getContext('2d').getImageData(5, 5, 1, 1).data; return p[0] < 50 && p[1] > 150; }})()")).await?;
-        // The mirror is a real page: a double-click selects a word and copies it at once.
         cdp.call(
             "Browser.grantPermissions",
             json!({ "origin": format!("http://{addr}"), "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"] }),
         )
         .await?;
-        let word = eval(&cdp, session, &format!("(() => {{ const frame = document.querySelector('.bp-mirror iframe'); const d = {mirror}; const text = d.querySelector('#title').firstChild; const range = d.createRange(); range.setStart(text, 1); range.setEnd(text, 4); const b = range.getBoundingClientRect(); const f = frame.getBoundingClientRect(); const scale = f.width / frame.offsetWidth; return {{ x: f.left + (b.left + b.width / 2) * scale, y: f.top + (b.top + b.height / 2) * scale }}; }})()")).await?;
-        let (x, y) = (word["x"].as_f64().ok_or("x")?, word["y"].as_f64().ok_or("y")?);
-        for count in [1, 2] {
-            for kind in ["mousePressed", "mouseReleased"] {
-                cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": count }))
-                    .await?;
-            }
+        cdp.call_session(session, "Page.navigate", json!({ "url": format!("http://{addr}/s/fixture") }))
+            .await?;
+        until(&cdp, session, "the workspace", "document.querySelector('.tools-toggle')").await?;
+        eval(&cdp, session, "document.querySelector('.tools-toggle').click(); document.querySelector('.rail-btn[aria-label=\"Browser\"]').click(); true").await?;
+        // The welcome page streams in the first tab.
+        until(&cdp, session, "the first picture", "document.querySelector('.bp-overlay').hidden && document.querySelector('.bp-canvas').width > 0").await?;
+        until(&cdp, session, "the welcome tab", "[...document.querySelectorAll('.bp-tab')].some((t) => t.textContent.includes('New tab'))").await?;
+        let jpeg = eval(&cdp, session, "!document.querySelector('.bp-viewchip').hidden").await?;
+        eprintln!("the panel shows {}", if jpeg == json!(true) { "JPEG frames" } else { "video" });
+        if !display {
+            assert_eq!(jpeg, json!(true), "a headless server browser is labelled JPEG mode");
         }
-        until(&cdp, session, "the selected word", &format!("{mirror}.getSelection().toString().trim() === 'Fixture'")).await?;
-        until(&cdp, session, "the copy notice", "!document.querySelector('.bp-copied').hidden").await?;
-        // Dragging selects across words (starting outside the current selection, as on any page).
-        eval(&cdp, session, &format!("{mirror}.getSelection().removeAllRanges(), true")).await?;
-        let span = eval(&cdp, session, &format!("(() => {{ const frame = document.querySelector('.bp-mirror iframe'); const d = {mirror}; const text = d.querySelector('#title').firstChild; const point = (offset) => {{ const r = d.createRange(); r.setStart(text, offset); r.setEnd(text, offset + 1); const b = r.getBoundingClientRect(); const f = frame.getBoundingClientRect(); const scale = f.width / frame.offsetWidth; return [f.left + (b.left + 1) * scale, f.top + (b.top + b.height / 2) * scale]; }}; return {{ from: point(0), to: point(text.data.length - 1) }}; }})()")).await?;
-        let (fx, fy) = (span["from"][0].as_f64().ok_or("from")?, span["from"][1].as_f64().ok_or("from")?);
-        let (tx, ty) = (span["to"][0].as_f64().ok_or("to")?, span["to"][1].as_f64().ok_or("to")?);
-        cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": "mousePressed", "x": fx, "y": fy, "button": "left", "clickCount": 1 })).await?;
-        for step in 1..=5 {
-            let x = fx + (tx + 8.0 - fx) * f64::from(step) / 5.0;
-            cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": "mouseMoved", "x": x, "y": ty, "button": "left", "buttons": 1 })).await?;
+        // An agent opens the fixture: it comes to the front and shows in the panel.
+        let agent = h.app.browser_session(&SandboxId::parse("s1")?).await?;
+        let browser = CdpClient::connect(&agent.cdp_endpoint(), CdpConfig::default()).await?;
+        let opened = agent.tool_open(&OpenParams { url: page.clone() }).await?;
+        until(&cdp, session, "the agent's tab selected", &format!("document.querySelector('.bp-bar input').value === 'localhost:{}/'", site.port())).await?;
+        // The page's canvas turns green after 1.5 s: the stream shows it.
+        until(&cdp, session, "the updated canvas in the stream", "(() => { const c = document.querySelector('.bp-canvas'); const p = c.getContext('2d').getImageData(330, 35, 1, 1).data; return p[1] > 150 && p[0] < 80; })()").await?;
+        // A click in the panel reaches the page.
+        let button = stage_point(&cdp, session, (170.0, 182.0)).await?;
+        for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
+            cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": kind, "x": button.0, "y": button.1, "button": "left", "clickCount": 1 }))
+                .await?;
         }
-        cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": "mouseReleased", "x": tx + 8.0, "y": ty, "button": "left", "clickCount": 1 })).await?;
-        until(&cdp, session, "the dragged selection", &format!("{mirror}.getSelection().toString().trim() === 'Fixture page'")).await?;
-        // A click in the mirror reaches the real page; the mirror shows the change.
-        click_in_mirror(&cdp, session, "#go").await?;
-        until(&cdp, session, "the click result in the mirror", &format!("{mirror}?.querySelector('#title')?.textContent === 'Clicked!'")).await?;
-        // Typing into a field of the mirror reaches the real page; its value streams back.
-        click_in_mirror(&cdp, session, "#name").await?;
+        until_page(&browser, &page, "the click", "document.getElementById('title').textContent === 'Clicked!'").await?;
+        // Keys typed in the panel reach the focused field; a paste inserts the user's text.
+        let field = stage_point(&cdp, session, (180.0, 251.0)).await?;
+        for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
+            cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": kind, "x": field.0, "y": field.1, "button": "left", "clickCount": 1 }))
+                .await?;
+        }
+        until_page(&browser, &page, "the field focused", "document.activeElement && document.activeElement.id === 'name'").await?;
         for (key, code) in [("A", "KeyA"), ("d", "KeyD"), ("a", "KeyA")] {
-            for kind in ["keyDown", "keyUp"] {
-                let text = if kind == "keyDown" { key } else { "" };
-                cdp.call_session(session, "Input.dispatchKeyEvent", json!({ "type": kind, "key": key, "code": code, "text": text })).await?;
+            cdp.call_session(session, "Input.dispatchKeyEvent", json!({ "type": "keyDown", "key": key, "code": code, "text": key })).await?;
+            cdp.call_session(session, "Input.dispatchKeyEvent", json!({ "type": "keyUp", "key": key, "code": code })).await?;
+        }
+        until_page(&browser, &page, "the typed text", "document.getElementById('name').value === 'Ada'").await?;
+        eval(&cdp, session, "(() => { const data = new DataTransfer(); data.setData('text/plain', ' Lovelace'); document.querySelector('.bp-keys').dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true })); return true; })()").await?;
+        until_page(&browser, &page, "the pasted text", "document.getElementById('name').value === 'Ada Lovelace'").await?;
+        // Copy: the page's selection reaches the user's clipboard.
+        page_eval(&browser, &page, "(() => { document.activeElement.blur(); getSelection().selectAllChildren(document.getElementById('title')); return true; })()").await?;
+        let mac = eval(&cdp, session, "/Mac/.test(navigator.platform)").await? == json!(true);
+        let modifier = if mac { 4 } else { 2 };
+        cdp.call_session(session, "Input.dispatchKeyEvent", json!({ "type": "rawKeyDown", "key": "c", "code": "KeyC", "modifiers": modifier, "windowsVirtualKeyCode": 67 })).await?;
+        cdp.call_session(session, "Input.dispatchKeyEvent", json!({ "type": "keyUp", "key": "c", "code": "KeyC", "modifiers": modifier, "windowsVirtualKeyCode": 67 })).await?;
+        until(&cdp, session, "the copied selection", "navigator.clipboard.readText().then((t) => t === 'Clicked!')").await?;
+        // The wheel scrolls the page.
+        cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": "mouseWheel", "x": field.0, "y": field.1, "deltaX": 0, "deltaY": 500 })).await?;
+        until_page(&browser, &page, "the scrolled page", "window.scrollY > 100").await?;
+        // An agent's click shows its labelled cursor over the stream.
+        agent.agent_activity(&opened.tab.id, Some((150.0, 180.0)), "click", "#7 Claude Code");
+        until(&cdp, session, "the agent cursor", "(() => { const c = document.querySelector('.bp-agent'); return c && !c.hidden && c.textContent.includes('#7 Claude Code'); })()").await?;
+        // A new tab opens the welcome page.
+        eval(&cdp, session, "document.querySelector('.bp-tabs button[aria-label=\"New tab\"]').click(), true").await?;
+        until(&cdp, session, "the new welcome tab", "document.querySelector('.bp-tab.active')?.textContent.includes('New tab') && document.querySelector('.bp-bar input').value === ''").await?;
+        // No uncaught exception or console error in the UI.
+        let mut errors = Vec::new();
+        while let Ok(event) = console.try_recv() {
+            let error = event.method == "Runtime.exceptionThrown"
+                || (event.method == "Runtime.consoleAPICalled" && event.params["type"] == "error");
+            if error && event.session_id.as_deref() == Some(session) {
+                errors.push(event.params.to_string());
             }
         }
-        until(&cdp, session, "the typed value in the mirror", &format!("{mirror}?.querySelector('#name')?.value === 'Ada'")).await?;
-        // An agent's click shows its cursor.
-        let browser = h.app.browser_session(&SandboxId::parse("s1")?).await?;
-        let tab = browser.tabs().into_iter().find(|t| t.active).ok_or("active tab")?;
-        browser.agent_activity(&tab.id, Some((150.0, 180.0)), "click", "#7 Claude Code");
-        until(&cdp, session, "the agent cursor", "(() => { const c = document.querySelector('.bp-agent'); return c && !c.hidden && c.textContent.includes('#7 Claude Code'); })()").await?;
-        // The pixel view on request, and back.
-        let toggle = "[...document.querySelectorAll('button')].find((b) => b.textContent === 'Pixels')";
-        eval(&cdp, session, &format!("{toggle}.click(), true")).await?;
-        until(&cdp, session, "the pixel view", "(() => { const c = document.querySelector('.bp-canvas'); return c && !c.hidden && c.width > 0 && document.querySelector('.bp-mirror').hidden; })()").await?;
-        eval(&cdp, session, &format!("{toggle}.click(), true")).await?;
-        until(&cdp, session, "the DOM view again", &format!("document.querySelector('.bp-canvas').hidden && {mirror}?.body?.innerText.includes('Clicked!')")).await?;
-        // A hostile page feeding crafted events: shown, but nothing runs in the UI.
-        eval(&cdp, session, &format!("(() => {{ const a = document.querySelector('.bp-bar input'); a.value = 'http://127.0.0.1:{port}/hostile'; a.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', bubbles: true }})); return true; }})()")).await?;
-        until(&cdp, session, "the crafted mirror", &format!("{mirror}?.body?.innerText.includes('crafted mirror')")).await?;
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let pwned = eval(&cdp, session, "String(window.__pwned)").await?;
-        assert_eq!(pwned, json!("undefined"), "crafted mirror content ran script in the UI");
-        let sandbox = eval(&cdp, session, "document.querySelector('.bp-mirror iframe').getAttribute('sandbox')").await?;
-        assert_eq!(sandbox, json!("allow-same-origin"));
+        assert!(errors.is_empty(), "UI errors: {errors:?}");
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
@@ -469,127 +488,9 @@ spy.onclose = () => {{ if (!found.ws) found.ws = 'refused'; report(); }};
         )
 }
 
-/// Evaluates `expression` in the first frame whose URL starts with `prefix` (an isolated world:
-/// the page's DOM, none of its scripts).
-async fn frame_eval(
-    cdp: &CdpClient,
-    session: &str,
-    prefix: &str,
-    expression: &str,
-) -> Result<Value, Box<dyn std::error::Error>> {
-    fn find(node: &Value, prefix: &str) -> Option<String> {
-        let frame = &node["frame"];
-        if frame["url"]
-            .as_str()
-            .is_some_and(|url| url.starts_with(prefix))
-        {
-            return frame["id"].as_str().map(str::to_owned);
-        }
-        node["childFrames"]
-            .as_array()?
-            .iter()
-            .find_map(|child| find(child, prefix))
-    }
-    let tree = cdp
-        .call_session(session, "Page.getFrameTree", json!({}))
-        .await?;
-    let Some(frame) = find(&tree["frameTree"], prefix) else {
-        return Ok(Value::Null);
-    };
-    let world = cdp
-        .call_session(
-            session,
-            "Page.createIsolatedWorld",
-            json!({ "frameId": frame, "worldName": "live-test" }),
-        )
-        .await?;
-    let value = cdp
-        .call_session(
-            session,
-            "Runtime.evaluate",
-            json!({ "expression": expression, "contextId": world["executionContextId"], "returnByValue": true, "awaitPromise": true }),
-        )
-        .await?;
-    Ok(value["result"]["value"].clone())
-}
-
-async fn until_frame(
-    cdp: &CdpClient,
-    session: &str,
-    prefix: &str,
-    what: &str,
-    expression: &str,
-) -> TestResult {
-    let deadline = Instant::now() + Duration::from_secs(45);
-    loop {
-        if frame_eval(cdp, session, prefix, &format!("!!({expression})")).await?
-            == Value::Bool(true)
-        {
-            return Ok(());
-        }
-        if Instant::now() > deadline {
-            let text = frame_eval(
-                cdp,
-                session,
-                prefix,
-                "document.body ? document.body.innerText.slice(0, 300) : location.href",
-            )
-            .await?;
-            let ui = eval(
-                cdp,
-                session,
-                "document.querySelector('.bp')?.innerText.slice(0, 300)",
-            )
-            .await?;
-            return Err(format!("timed out waiting for {what}; frame: {text}; panel: {ui}").into());
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-}
-
-/// Page coordinates of `selector`'s centre inside the live iframe (with `text_chars`, the centre
-/// of its first characters: a word to double-click).
-async fn live_point(
-    cdp: &CdpClient,
-    session: &str,
-    prefix: &str,
-    selector: &str,
-) -> Result<(f64, f64), Box<dyn std::error::Error>> {
-    live_point_of(cdp, session, prefix, selector, 0).await
-}
-
-async fn live_point_of(
-    cdp: &CdpClient,
-    session: &str,
-    prefix: &str,
-    selector: &str,
-    text_chars: u32,
-) -> Result<(f64, f64), Box<dyn std::error::Error>> {
-    let frame = eval(cdp, session, "(() => { const r = [...document.querySelectorAll('.bp-live')].find((f) => f.offsetParent).getBoundingClientRect(); return { x: r.left, y: r.top }; })()").await?;
-    let inner = frame_eval(cdp, session, prefix, &format!("(() => {{ const el = document.querySelector(\"{selector}\"); let r = el.getBoundingClientRect(); if ({text_chars} > 0) {{ const range = document.createRange(); range.setStart(el.firstChild, 0); range.setEnd(el.firstChild, {text_chars}); r = range.getBoundingClientRect(); }} return {{ x: r.left + r.width / 2, y: r.top + r.height / 2 }}; }})()")).await?;
-    Ok((
-        frame["x"].as_f64().ok_or("frame x")? + inner["x"].as_f64().ok_or("x")?,
-        frame["y"].as_f64().ok_or("frame y")? + inner["y"].as_f64().ok_or("y")?,
-    ))
-}
-
-async fn click_at(cdp: &CdpClient, session: &str, (x, y): (f64, f64), count: u32) -> TestResult {
-    for click in 1..=count {
-        for kind in ["mousePressed", "mouseReleased"] {
-            cdp.call_session(
-                session,
-                "Input.dispatchMouseEvent",
-                json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": click }),
-            )
-            .await?;
-        }
-    }
-    Ok(())
-}
-
 #[tokio::test]
 #[ignore = "needs Chrome (YULIUS_LIVE_CHROME)"]
-async fn sandbox_apps_open_live_in_the_users_browser() -> TestResult {
+async fn a_dev_server_opens_live_in_a_new_window() -> TestResult {
     let Ok(chrome_exe) = std::env::var("YULIUS_LIVE_CHROME") else {
         eprintln!("skipped: set YULIUS_LIVE_CHROME");
         return Ok(());
@@ -693,61 +594,50 @@ async fn sandbox_apps_open_live_in_the_users_browser() -> TestResult {
         cdp.call_session(session, "Page.navigate", json!({ "url": format!("{yulius}/s/fixture") })).await?;
         until(&cdp, session, "the workspace", "document.querySelector('.tools-toggle')").await?;
         eval(&cdp, session, "document.querySelector('.tools-toggle').click(); document.querySelector('.rail-btn[aria-label=\"Browser\"]').click(); true").await?;
-        // The start page lists the listening port; opening it shows the app live, in an iframe
-        // on its own preview origin, after the handshake through Yulius.
-        let button = format!("[...document.querySelectorAll('.bp-port')].find((b) => b.textContent.includes('localhost:{port}'))");
-        until(&cdp, session, "the port on the start page", &button).await?;
-        eval(&cdp, session, &format!("{button}.click(), true")).await?;
-        until(&cdp, session, "the live iframe", &format!("[...document.querySelectorAll('.bp-live')].some((f) => f.src.startsWith('{preview}/'))")).await?;
-        until_frame(&cdp, session, &preview, "the live page", "document.getElementById('title')?.textContent === 'Live fixture'").await?;
-        // Root-relative stylesheet and image load from the preview origin; the WebSocket works.
-        until_frame(&cdp, session, &preview, "the page's styles", "getComputedStyle(document.getElementById('title')).color === 'rgb(1, 2, 3)'").await?;
-        until_frame(&cdp, session, &preview, "the image", "document.getElementById('logo').complete && document.getElementById('logo').naturalWidth > 0").await?;
-        until_frame(&cdp, session, &preview, "the WebSocket echo", "document.getElementById('ws').textContent === 'ws: echo: hello'").await?;
-        // The page on the preview origin cannot use the Yulius session: the API refuses it and
-        // its WebSockets do not open.
-        until_frame(&cdp, session, &preview, "the hostile report", "/fetch=(?!undefined)\\w+ ws=(?!undefined)\\w+/.test(document.getElementById('hostile').textContent)").await?;
-        let hostile = frame_eval(&cdp, session, &preview, "document.getElementById('hostile').textContent").await?;
-        assert_eq!(hostile, json!("hostile: fetch=refused ws=refused"), "a preview page used the Yulius session");
-        // The bridge reports the address; the panel shows it as localhost.
-        until(&cdp, session, "the address bar", &format!("document.querySelector('.bp-bar input').value === 'localhost:{port}/'")).await?;
-        // Native typing, selection and scrolling: real events in the user's browser.
-        let field = live_point(&cdp, session, &preview, "#name").await?;
-        click_at(&cdp, session, field, 1).await?;
-        cdp.call_session(session, "Input.insertText", json!({ "text": "Ada" })).await?;
-        until_frame(&cdp, session, &preview, "the typed text", "document.getElementById('name').value === 'Ada'").await?;
-        let word = live_point_of(&cdp, session, &preview, "#title", 4).await?;
-        click_at(&cdp, session, word, 2).await?;
-        until_frame(&cdp, session, &preview, "the double-click selection", "getSelection().toString().trim() === 'Live'").await?;
-        cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": "mouseWheel", "x": word.0, "y": word.1 + 60.0, "deltaX": 0, "deltaY": 600 }))
-            .await?;
-        until_frame(&cdp, session, &preview, "the scrolled page", "window.scrollY > 0").await?;
-        // A link that redirects to localhost stays on the preview; Back returns.
-        cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": "mouseWheel", "x": word.0, "y": word.1, "deltaX": 0, "deltaY": -2000 }))
-            .await?;
-        until_frame(&cdp, session, &preview, "the top of the page", "window.scrollY === 0").await?;
-        let link = live_point(&cdp, session, &preview, "#go").await?;
-        click_at(&cdp, session, link, 1).await?;
-        until(&cdp, session, "the redirected address", &format!("document.querySelector('.bp-bar input').value === 'localhost:{port}/after'")).await?;
-        until_frame(&cdp, session, &preview, "the page after the redirect", "document.body.innerText.includes('After the redirect')").await?;
-        until(&cdp, session, "Back enabled", "!document.querySelector('.bp-bar button[aria-label=\"Back\"]').disabled").await?;
-        eval(&cdp, session, "document.querySelector('.bp-bar button[aria-label=\"Back\"]').click(), true").await?;
-        until(&cdp, session, "the address after Back", &format!("document.querySelector('.bp-bar input').value === 'localhost:{port}/'")).await?;
-        // An agent works on the same app in the sandbox Chrome: announced over the live tab,
-        // and its cursor shows in its own tab.
+        // The dev server is open in the sandbox Chrome (an agent opened it): "Open live in a new
+        // window" opens it on its preview origin in the user's own browser, after the handshake.
         let agent = h.app.browser_session(&SandboxId::parse("s1")?).await?;
         let opened = agent.tool_open(&OpenParams { url: format!("http://localhost:{port}/") }).await?;
-        until(&cdp, session, "the agent's tab", "document.querySelector('.bp-tab.remote')").await?;
-        agent.agent_activity(&opened.tab.id, Some((120.0, 40.0)), "click", "#7 Claude Code");
-        until(&cdp, session, "the agent notice over the live tab", "(() => { const n = document.querySelector('.bp-notice'); return n && !n.hidden && n.textContent.includes('#7 Claude Code'); })()").await?;
-        eval(&cdp, session, "[...document.querySelectorAll('.bp-notice button')].find((b) => b.textContent === 'Watch').click(), true").await?;
-        until(&cdp, session, "the agent's tab watched", "document.querySelector('.bp-tab.remote.active')").await?;
-        agent.agent_activity(&opened.tab.id, Some((120.0, 40.0)), "click", "#7 Claude Code");
-        until(&cdp, session, "the agent cursor", "(() => { const c = document.querySelector('.bp-agent'); return c && !c.hidden && c.textContent.includes('#7 Claude Code'); })()").await?;
-        // One click opens the agent's page live.
-        until(&cdp, session, "Open live", "!document.querySelector('.bp-bar button.btn-sm:not([hidden])')?.hidden").await?;
-        eval(&cdp, session, "[...document.querySelectorAll('.bp-bar button')].find((b) => b.textContent === 'Open live').click(), true").await?;
-        until(&cdp, session, "a live tab again", "document.querySelector('.bp-tab.active:not(.remote)')").await?;
+        until(&cdp, session, "the app's tab", &format!("document.querySelector('.bp-bar input').value === 'localhost:{port}/'")).await?;
+        let live = "document.querySelector('.bp-bar button[aria-label=\"Open live in a new window\"]')";
+        until(&cdp, session, "Open live", &format!("{live} && !{live}.hidden")).await?;
+        // A real click (a user gesture: the new window is not a blocked popup).
+        let button = eval(&cdp, session, &format!("(() => {{ const r = {live}.getBoundingClientRect(); return {{ x: r.left + r.width / 2, y: r.top + r.height / 2 }}; }})()")).await?;
+        let (bx, by) = (button["x"].as_f64().ok_or("x")?, button["y"].as_f64().ok_or("y")?);
+        for kind in ["mousePressed", "mouseReleased"] {
+            cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": kind, "x": bx, "y": by, "button": "left", "clickCount": 1 }))
+                .await?;
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let window = loop {
+            let targets = cdp.call("Target.getTargets", json!({})).await?;
+            let found = targets["targetInfos"].as_array().and_then(|infos| {
+                infos.iter().find(|t| t["type"] == "page" && t["url"].as_str().is_some_and(|u| u.starts_with(&preview)))
+            }).and_then(|t| t["targetId"].as_str()).map(str::to_owned);
+            if let Some(found) = found {
+                break found;
+            }
+            if Instant::now() > deadline {
+                return Err(format!("no window on {preview}: {targets}").into());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        };
+        let attached = cdp.call("Target.attachToTarget", json!({ "targetId": window, "flatten": true })).await?;
+        let live_session = attached["sessionId"].as_str().ok_or("session")?.to_owned();
+        let live_session = live_session.as_str();
+        until(&cdp, live_session, "the live page", "document.getElementById('title')?.textContent === 'Live fixture'").await?;
+        // Root-relative stylesheet and image load from the preview origin; the WebSocket works.
+        until(&cdp, live_session, "the page's styles", "getComputedStyle(document.getElementById('title')).color === 'rgb(1, 2, 3)'").await?;
+        until(&cdp, live_session, "the image", "document.getElementById('logo').complete && document.getElementById('logo').naturalWidth > 0").await?;
+        until(&cdp, live_session, "the WebSocket echo", "document.getElementById('ws').textContent === 'ws: echo: hello'").await?;
+        // The page on the preview origin cannot use the Yulius session: the API refuses it and
+        // its WebSockets do not open.
+        until(&cdp, live_session, "the hostile report", "/fetch=(?!undefined)\\w+ ws=(?!undefined)\\w+/.test(document.getElementById('hostile').textContent)").await?;
+        let hostile = eval(&cdp, live_session, "document.getElementById('hostile').textContent").await?;
+        assert_eq!(hostile, json!("hostile: fetch=refused ws=refused"), "a preview page used the Yulius session");
+        // A link that redirects to localhost stays on the preview origin.
+        eval(&cdp, live_session, "document.getElementById('go').click(), true").await?;
+        until(&cdp, live_session, "the page after the redirect", &format!("location.href.startsWith('{preview}/after') && document.body.innerText.includes('After the redirect')")).await?;
         // The sandbox Chrome refuses Yulius itself, asked directly or through a page.
         let refused = agent.tool_open(&OpenParams { url: format!("{yulius}/") }).await;
         assert!(refused.is_err(), "the sandbox Chrome opened Yulius: {refused:?}");

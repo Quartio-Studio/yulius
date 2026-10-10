@@ -77,17 +77,43 @@ impl Supervised {
         args: &[OsString],
         env: &[(OsString, OsString)],
     ) -> std::io::Result<Self> {
+        Self::spawn_with(program, args, env, false).map(|(process, _)| process)
+    }
+
+    /// [`Self::spawn`] with stdout piped to the caller (an encoder's output stream). The caller
+    /// must keep reading it: a full pipe blocks the child.
+    pub(crate) fn spawn_piped(
+        program: &Path,
+        args: &[OsString],
+        env: &[(OsString, OsString)],
+    ) -> std::io::Result<(Self, tokio::process::ChildStdout)> {
+        let (process, stdout) = Self::spawn_with(program, args, env, true)?;
+        let stdout = stdout.ok_or_else(|| std::io::Error::other("child stdout is not piped"))?;
+        Ok((process, stdout))
+    }
+
+    fn spawn_with(
+        program: &Path,
+        args: &[OsString],
+        env: &[(OsString, OsString)],
+        pipe_stdout: bool,
+    ) -> std::io::Result<(Self, Option<tokio::process::ChildStdout>)> {
         let mut command = tokio::process::Command::new(program);
         command
             .args(args)
             .env_clear()
             .envs(env.iter().map(|(k, v)| (k.as_os_str(), v.as_os_str())))
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(if pipe_stdout {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .process_group(0);
         let mut child = command.spawn()?;
+        let stdout = child.stdout.take();
         let pid = child
             .id()
             .ok_or_else(|| std::io::Error::other("spawned child has no pid"))?;
@@ -117,13 +143,16 @@ impl Supervised {
             };
             let _ = tx.send(Some(text));
         });
-        Ok(Self {
-            pid,
-            exit,
-            stderr,
-            _monitor: monitor,
-            stderr_reader,
-        })
+        Ok((
+            Self {
+                pid,
+                exit,
+                stderr,
+                _monitor: monitor,
+                stderr_reader,
+            },
+            stdout,
+        ))
     }
 
     pub(crate) fn pid(&self) -> u32 {

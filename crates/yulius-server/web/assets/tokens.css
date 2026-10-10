@@ -72,7 +72,7 @@
   --surface-3: #292827;    /* neutral fills: secondary buttons, badges */
   --surface-hover: #2e2e2d;
   --canvas: #1e1d1c;       /* behind the pixel browser view */
-  --mirror-bg: var(--white); /* web pages in the browser panel are white */
+  --mirror-bg: var(--white); /* the streamed page before its first frame */
   /* lines */
   --border: #2c2b2a;
   --border-strong: #3f3e3d;
