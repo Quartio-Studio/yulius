@@ -21,6 +21,7 @@ test('the sandbox pages open from the sandbox navigation', async ({ app, browser
   for (const [page, path] of [
     ['Tasks', 'tasks'],
     ['Git', 'git'],
+    ['CI', 'ci'],
     ['Workflows', 'workflows'],
     ['Skills', 'skills'],
     ['Automations', 'automations'],
