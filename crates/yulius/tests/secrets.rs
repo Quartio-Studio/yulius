@@ -642,3 +642,72 @@ async fn nothing_is_stored_in_clear() -> TestResult {
     assert_eq!(shown.body["password"], MAIL_PASSWORD);
     Ok(())
 }
+
+/// The egress proxy is served on the internal listener (SPEC-002 ADR-18): a `CONNECT` with the
+/// run's task token opens a tunnel, without it 407; the internal API keeps working beside it.
+#[tokio::test]
+async fn the_proxy_shares_the_internal_listener() -> TestResult {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let w = world().await?;
+    let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let echo_addr = echo.local_addr()?;
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = echo.accept().await {
+            tokio::spawn(async move {
+                let (mut read, mut write) = stream.split();
+                let _ = tokio::io::copy(&mut read, &mut write).await;
+            });
+        }
+    });
+    let proxy = yulius::wiring::egress::egress_proxy(
+        &w.h.app,
+        yulius_egress::EgressConfig {
+            resolve: std::collections::HashMap::from([("tunnel.test".to_owned(), echo_addr)]),
+            ..yulius_egress::EgressConfig::default()
+        },
+    )
+    .await?;
+    let router = yulius::wiring::egress::with_egress(
+        yulius_server::internal_router(w.h.app.clone()),
+        proxy,
+        &w.h.app.config.internal_url,
+    )
+    .layer(axum::extract::connect_info::MockConnectInfo(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 5001)),
+    ));
+    let served = support::serve(router).await?;
+
+    async fn exchange(addr: std::net::SocketAddr, head: &str) -> Result<(tokio::net::TcpStream, String), Box<dyn std::error::Error>> {
+        let mut stream = tokio::net::TcpStream::connect(addr).await?;
+        stream.write_all(head.as_bytes()).await?;
+        let mut buffer = vec![0u8; 1024];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buffer)).await??;
+        Ok((stream, String::from_utf8_lossy(&buffer[..n]).into_owned()))
+    }
+    let (_, refused) = exchange(served.addr, "CONNECT tunnel.test:443 HTTP/1.1\r\nHost: tunnel.test:443\r\n\r\n").await?;
+    assert!(refused.starts_with("HTTP/1.1 407"), "{refused}");
+    use base64::Engine as _;
+    let credentials = base64::engine::general_purpose::STANDARD.encode(format!("yulius:{TOKEN_S1}"));
+    let (mut tunnel, opened) = exchange(
+        served.addr,
+        &format!("CONNECT tunnel.test:443 HTTP/1.1\r\nHost: tunnel.test:443\r\nProxy-Authorization: Basic {credentials}\r\n\r\n"),
+    )
+    .await?;
+    assert!(opened.starts_with("HTTP/1.1 200"), "{opened}");
+    tunnel.write_all(b"ping through the tunnel\n").await?;
+    let mut buffer = vec![0u8; 64];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(10), tunnel.read(&mut buffer)).await??;
+    assert_eq!(&buffer[..n], b"ping through the tunnel\n");
+    // A local destination is refused even with credentials.
+    let (_, local) = exchange(
+        served.addr,
+        &format!("CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: x\r\nProxy-Authorization: Basic {credentials}\r\n\r\n", echo_addr.port()),
+    )
+    .await?;
+    assert!(local.starts_with("HTTP/1.1 403"), "{local}");
+    // The internal API is unchanged.
+    let (_, health) = exchange(served.addr, "GET /internal/healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await?;
+    assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+    Ok(())
+}
