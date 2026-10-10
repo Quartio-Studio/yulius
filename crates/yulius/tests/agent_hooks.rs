@@ -503,12 +503,15 @@ async fn git_credentials_are_scoped_to_the_project_repository() -> TestResult {
 #[tokio::test]
 async fn briefing_includes_the_task_workflow_instructions() -> TestResult {
     let f = fixture().await?;
-    f.h.app.ensure_builtin_workflows().await?;
     let mut task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    // The default Feature workflow (catalog/workflows/feature.md) answers to the old id.
     task.workflow_id = Some("wf-feature".into());
+    let feature =
+        yulius_app::workflows::catalog::default_workflow("wf-feature").ok_or("feature")?;
+    let first_line = feature.instructions.lines().next().ok_or("instructions")?;
     let briefing = f.h.app.briefing(&task, Agent::ClaudeCode).await?;
     assert!(briefing.contains("## Workflow instructions"), "{briefing}");
-    assert!(briefing.contains("Implement only what the spec describes"));
+    assert!(briefing.contains(first_line), "{briefing}");
     assert!(briefing.len() <= 12 * 1024 + 64);
     Ok(())
 }
