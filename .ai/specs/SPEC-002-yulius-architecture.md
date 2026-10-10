@@ -87,6 +87,7 @@ Principles:
 | ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done. Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
 | ADR-17 | Claude subscriptions are **one self-managing pool** (F 2026-10-10): use-it-or-lose-it placement (weekly headroom ÷ hours to its reset ÷ tasks on the account + 1), a proactive switch at 98 % of any binding window at the turn boundary by native resume, and a **gentle, invisible pause** held by the harness — the Stop / `UserPromptSubmit` hook answers `202 Retry-After` and `yulius hook` keeps polling — persisted in `capacity_pauses`, resumed oldest first and staggered; a burn-rate forecast says when to buy more. Analysis and contract: §2.4. | Manual priorities (before); suspending the agent (SIGSTOP); letting the CLI hit the limit and typing a resume prompt; killing and resuming | No knobs; capacity that expires is spent first; switches only when forced; the agent is never told; a hold survives restarts; the CLI shows "running hook" while paused and a held agent keeps its session slot; relies on Claude Code honouring a long hook `timeout` (fallback: the reported-limit pause). |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
+| ADR-19 | **One autonomous delivery discipline** (F 2026-10-10, #139): steps of similar effort with effort-weighted progress and pure-function rules (bounds, at most 2 in progress, no reopening by agents, reasons for blocked/skipped) plus never-blocking nudges; a spec only where it matters (by workflow, else by changed paths); one pipeline for features and fixes with an independent review in a fresh session and merge on green; infra bootstrap on Yulius CI without GitHub Actions; a docs-first briefing; bundled skills adapted to be universal. Analysis and contract: §2.5. | A hard step gate at every turn; LLM-judged step sizes; specs for everything; vendoring skills byte for byte; Bartek's full N2/N3 rule set (module locks, owner flags, scripted merge lock, DORA dashboards) | Progress means something without ceremony; agents keep momentum; the harness checks what a machine can check and nudges the rest; the remaining judgment (step sizes) stays with the agent, so a dishonest plan is caught only by its pace. |
 
 ### 2.1 ADR-14: the browser panel renders the sandbox's apps live (F 2026-10-09)
 
@@ -776,6 +777,55 @@ Code honours an 8-day hook `timeout`; if it ended the hook earlier, the hook fai
 continues on a subscription at 98 % or more, and a reported limit pauses it as `limit` — work is
 never lost.
 
+### 2.5 ADR-19: one autonomous delivery discipline (F 2026-10-10)
+
+**Problem.** Michał (F 2026-10-10, item 3(b)): "9/10 should mean 90%", steps must "keep arriving
+uniformly to avoid 0%->100% jumps", every feature takes the same path from spec to production
+with no human acceptance, "features must have specs but research not … robust but flexible, first
+principles", projects get senior-grade foundations on our own CI, agents know the whole product,
+and the Open Mercato skills become universal. Before: the Feature workflow seeded phases
+("Implement" was most of the work), the step tools accepted any shape, the domain step rules were
+unused, the Stop gate demanded a spec for any change, the briefing said people merge, and the
+skills assumed Open Mercato's harness.
+
+**Steps** (`yulius_domain::steps`, pure; `yulius_app::discipline` feeds them):
+
+| Rule | Where | Kind |
+| --- | --- | --- |
+| 1-30 unique, non-empty steps ≤ 200 chars; effort 1-3 (default 1); `blocked` only with a note | `steps_set` (`validate_plan`), `spec_check` (Plan ≤ 30 top-level items, no repeats) | refusal |
+| At most 2 in progress; an agent never reopens done/skipped; blocked always and skipped by an agent need a note | `step_update` (`check_update`) | refusal |
+| Effort-weighted `percent` (skipped counts as finished) | API, tools, briefing, strip | — |
+| Coarse plan (< 3 when a spec is needed), fine plan (> 12), phase-only titles, > ⅓ of steps at effort 3, none started, two open, stale (> max(45 min, 3 × typical duration per effort unit)), burst (≥ 3 steps and ≥ 30 % of the effort finished in the last 10 min) | step tool results, `spec_check`, briefing | nudge |
+| Branch changed and no step ever started; for a goal, a stale step | Stop hook, once per task and kind, only when the turn stays on its subscription, never counted as a gate block | one-shot nudge |
+
+Start and finish times are the latest `in_progress` and `done`/`skipped` events of `step_events`
+(indexed per task by migration 11), so every path that changes steps (tools, spec sync, people)
+feeds them without new bookkeeping. Effort lives in `steps.effort`; the spec sync keeps it by title.
+
+**Spec policy** (`SpecPolicy`): the task's workflow decides (`require_spec`); without one, a spec
+is required as soon as the branch's changed paths (`review_changes` against the integration
+branch, both sides of renames) include anything that is not documentation; a cut or unreadable
+list counts as code. The Stop gate, `spec_check` (`required`) and the automatic pull request (no
+plan needed when no spec is) apply it.
+
+**Pipeline.** Briefing, `delivery-pipeline` skill and workflows describe one path: ready issue →
+spec → test-first slices → gates → independent review (fresh context, read-only, verdict for the
+exact head, ≤ 3 rounds) → fixes → pull request → merge on green → deploy/verify → promote → verify
+→ cleanup. Machine-checked: base, linked ready issue, size, tests changed, gate green on the exact
+head (Yulius CI, #138), review on the exact head, up to date. Agent merge/deploy/promote and
+`issue_create` are a separate change (DLV-008).
+
+**Foundations.** The briefing reads `yulius.toml` (test, lint) and counts `.github/workflows/*.y(a)ml`
+(a real directory inside the repository) and asks a code-changing task to bootstrap first
+(workflow Infra bootstrap, skill `infra-bootstrap`); the onboarding prompt does the same.
+
+**Taken from Bartek's N2/N3 playbook:** small PRs, a test that fails without the change,
+independent review in a fresh session, machine-checked gates, flaky-test rules (no retries,
+quarantine with an issue), Definition-of-Ready labels. **Left out:** owner flags and exceptions
+(no human acceptance), module locks (scope claims and messages instead), the scripted merge lock
+and promotion records (Yulius delivery serializes merges), second-model-family review (Claude
+only, F 2026-10-08), GitHub rulesets and Actions (paid), DORA dashboards.
+
 ## 3. Code organization
 
 Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
@@ -820,7 +870,8 @@ shells/<shell>/                     ptyhost run directories of sandbox shells (U
 logins/<login>/                     temporary provider login (config dir + run dir); zero-filled and removed after the login
 exports/sandbox-<slug>-<ms>.json    task export written when a sandbox is removed (PRJ-009), 0600
 transcripts/<task>/                 archived/imported provider transcripts (immutable copies)
-skills/open-mercato/                instance skill catalog extracted from the binary (vendored Open Mercato pack)
+skills/<pack>/                      bundled skill packs extracted from the binary: yulius, open-mercato,
+                                    superpowers (SKL-007; rewritten when they differ, extras removed)
 ```
 
 Unix socket paths are limited (104 bytes on macOS, 108 on Linux): `serve` refuses a data directory
@@ -851,8 +902,8 @@ Schema version 1 (tables; columns abbreviated):
 | `usage_samples` | account_id, at, window_name (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`), used_percent, resets_at, source; kept 8 days (ADR-17 forecast) |
 | `capacity_pauses` | id, task_id, kind (turn/prompt/limit/start), account_id, continuation (held prompt), started_at, ended_at, outcome; at most one open per task (partial unique index) |
 | `switch_decisions` | id, task_id, at, reason, inputs (json), outcome |
-| `steps` | id, task_id, ordinal, title, status, note, updated_by, updated_at |
-| `step_events` | step_id, at, actor, from_status, to_status, note |
+| `steps` | id, task_id, ordinal, title, status, note, updated_by, updated_at, effort (1-3, version 11, STP-006) |
+| `step_events` | step_id, at, actor, from_status, to_status, note; index (task_id, step_id) (version 11): start and finish times (STP-007) |
 | `messages` | id, sandbox_id, from_task, to_task (null = broadcast), kind, subject, body, created_at |
 | `message_receipts` | message_id, task_id, delivered_at, read_at |
 | `scope_claims` | id, task_id, pattern, note, created_at, released_at |
@@ -1080,8 +1131,8 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `tasks_list`, `task_get` | Previous and parallel tasks: status, harness, branch, spec, steps, summary (COM-001) |
 | `message_send`, `messages_inbox` | Harness-independent messages, direct or broadcast (COM-002) |
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
-| `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002) |
-| `spec_check` | Run the format validator on the task spec and docs (DSC-003) |
+| `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
+| `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
 | `automation_create`, `automations_list`, `automation_update` | Prompt-created automations (AUT-002) |
 | `workflows_list` | Workflows available (AUT-004) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
@@ -1107,9 +1158,11 @@ output) and is recorded. Responses:
   `working`; a typed prompt that passes clears an achieved goal (§6.1 Finish rule). The Jev
   deadline (3 s) fits inside the hook client's 5 s; any failure passes.
 - `Stop` → activity `waiting`, or `done` when the goal is achieved (§6.1 Finish rule); discipline
-  gate: if the worktree has changes and the task spec is
+  gate: if the worktree has changes, the task needs a spec (DSC-013) and the spec is
   missing/invalid, or there are unread urgent messages, return `{"decision":"block","reason":…}`;
-  at most 3 consecutive blocks per turn, then `needs_attention`. Also the turn boundary of the
+  at most 3 consecutive blocks per turn, then `needs_attention`. A clean turn end that stays on its
+  subscription may return one step nudge as a block (STP-008, ADR-19): given once per task and
+  kind (kept in memory), not counted as a gate block, so it never escalates. Also the turn boundary of the
   subscription pool (ADR-17): a switch at 98 %, or a hold when no subscription has capacity and the
   agent would work on.
 - Hold (ADR-17): `Stop` and `UserPromptSubmit` may answer `202 Accepted` with `Retry-After`
@@ -1126,10 +1179,14 @@ Enter into the PTY (configurable per task; never during `needs_attention`).
 ### 7.6 Briefing
 
 Assembled in domain from store data and repository files, in this order, truncating each part to
-its budget: role and discipline rules (format, branch/profile rules, Yulius tools), task (goal,
-spec path, steps), project summary (`docs/product.md` head), architecture pointer, decision index
-(titles), recent changes (last 10 delivered tasks + `docs/changes.md` head), parallel tasks and
-scope claims, unread messages count.
+its budget: role and discipline rules (know the product first, the spec policy of the task's
+workflow, steps of similar effort, tests, decisions, evidence; ADR-19), the delivery pipeline with
+Git hygiene and the profile's path, "Read before you build" (the docs index and sessions as docs:
+`sessions_search`, `session_read`), Yulius tools, dev-server ports, task (goal, workflow, spec path
+and policy, steps with weighted progress and nudges), project foundations it lacks (DSC-014), project
+summary (`docs/product.md` head), architecture pointer, decision index (titles), recent changes
+(last 10 delivered tasks + `docs/changes.md` head), parallel tasks and scope claims, unread
+messages count.
 
 ### 7.7 Terminal WebSocket (`/api/tasks/{id}/terminal`)
 
@@ -1432,10 +1489,16 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Dropped files (EDT-006, UI-048, 2026-10-10) | `tests/uploads.rs`: editor uploads (write users only, CSRF, folders created, byte-for-byte with SHA-256, 409 then overwrite with permissions kept, folders and links never replaced, traversal / absolute / control characters / `.git` / links out refused with nothing written outside, a repository folder linked into another sandbox refused, task worktree root, audit), bounds (declared and streamed size, an interrupted body, 8 concurrent then 429, no temporary file left), task attachments (safe unique names, read users refused, a planted link refused, removed with the task), shell attachments (owner only, removed when the shell closes or at start-up), the fake agent reading an attachment by path with a clean `git status` (uncontained; on Linux also inside bubblewrap, skipped where bubblewrap cannot run). Unit tests in `yulius_app::uploads`. `e2e/tests/filedrop.e2e.ts` (mock UI). Opt-in `live_ui_filedrop.rs` with real Chrome: real drags from disk to the explorer and to the task terminal, read by the fake agent. |
 | Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
 | Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
+| Delivery discipline (ADR-19, #139, 2026-10-10) | Unit: `yulius-domain` `steps` (plan bounds, keeping status and effort by title, no reopening by agents, WIP limit with its message, blocked/skipped reasons, 9 of 10 = 90 % and effort weighting, phase titles, plan-shape nudges, stale and burst with a fake clock), `spec_format` (Plan bounds and repeats, `SpecPolicy`, documentation paths), `briefing` (docs index, sessions, pipeline, git hygiene, spec policy per workflow, weighted steps and nudges, foundations); `yulius-app` `discipline` (weighted progress, timings, turn-end nudges, the six default workflows' content), `skills` (every pack equals its catalog directory, unique names, licenses and upstream commits, no Open Mercato harness or manual mode in adapted skills, attribution notes, extraction of three packs), `hooks` (foundations without following links). Store: effort and timings from the history. `mcp_coordination.rs` (step rules and nudges over MCP, `spec_check` `required`), `agent_hooks.rs` (briefing sections, the spec asked only where it matters by workflow and by changed paths, the one-shot untracked-work nudge), `delivery.rs` (a docs-only task opens its pull request without a spec; a code change waits), `skills_mcp.rs` (three sources listed, run set, no `.ai/agentic.config.json`), `e2e/tests/steps.e2e.ts` (weighted progress bar, mock). Not exercised: a live agent following the briefing; agent merge/deploy/promote tools (separate change). |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
 
+- 2026-10-10 (F 2026-10-10, item 3(b), #139): ADR-19 — delivery discipline (§2.5): step rules and
+  nudges, effort-weighted progress, spec policy, the autonomous pipeline, foundations in the
+  briefing, bundled packs `yulius` / `open-mercato` (adapted) / `superpowers`; §4 skill packs, §5
+  `steps.effort` and the `step_events` index (migration 11), §7.4 step tools and `spec_check`,
+  §7.5 Stop nudge, §7.6 briefing order, §14.
 - 2026-10-10 (F 2026-10-10, later; #122): ADR-15 over the user's link — flow control by
   acknowledged frames, VBV bitrate tiers following the slowest viewer, keyframes on demand from a
   replacement encoder (make before break), coalesced wheel and pointer moves, every frame decoded
