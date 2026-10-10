@@ -388,6 +388,11 @@ export function mountComposer(ctx, sandbox) {
     button.addEventListener('click', () => onOpen(button));
     return button;
   };
+  // The sandbox's workflows (instance first), read once; Auto chooses among them on the server.
+  const workflowsRead = ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`).then((list) => {
+    workflows = Array.isArray(list) ? list : [];
+    renderChips();
+  }).catch(() => { /* workflows are optional */ });
   const modeChip = chip('Mode', openModeMenu);
   const workflowChip = chip('Workflow', openWorkflowMenu);
   const afterChip = chip('Run after', openAfterMenu);
@@ -461,7 +466,10 @@ export function mountComposer(ctx, sandbox) {
     openMenu(anchor, MODES.map((m) => ({ label: m.name, icon: m.icon, description: m.description, checked: m.id === mode, onSelect: () => { mode = m.id; renderChips(); prompt.focus(); } })));
   }
 
-  function openWorkflowMenu(anchor) {
+  async function openWorkflowMenu(anchor) {
+    // A menu opened right away still lists the sandbox's workflows: wait for their first read.
+    await workflowsRead;
+    if (!anchor.isConnected) return;
     const slug = encodeURIComponent(sandbox.slug);
     openMenu(anchor, [
       { label: 'Auto workflow', icon: 'zap', description: 'Jev picks the workflow that fits, or none: features get a spec, research and questions do not', checked: workflowId === AUTO, onSelect: () => { workflowId = AUTO; renderChips(); } },
@@ -721,10 +729,7 @@ export function mountComposer(ctx, sandbox) {
 
   startButton.addEventListener('click', start);
 
-  ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`).then((list) => {
-    workflows = Array.isArray(list) ? list : [];
-    renderChips();
-  }).catch(() => { /* workflows are optional */ });
+
   renderChips();
 
   destroyers.push(ctx.store.on('sandboxes', renderBanner));
