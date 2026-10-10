@@ -1407,11 +1407,11 @@ async fn studio_auto_promotes_until_the_profile_is_gated() -> TestResult {
     assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
     assert_eq!(merged.body["stage"], "merged_integration");
     assert_eq!(actions(&merged.body), ["promote"]);
-    assert_eq!(
-        f.h.github.writes().len(),
-        writes_before + 1,
-        "only the merge happened"
-    );
+    // Only the merge and the merged branch's deletion (DLV-007), no promotion.
+    let after: Vec<String> = f.h.github.writes()[writes_before..].to_vec();
+    assert_eq!(after.len(), 2, "{after:?}");
+    assert!(after[0].starts_with("merge_pull #"), "{after:?}");
+    assert_eq!(after[1], "delete_branch feat/2-pricing");
     assert_eq!(f.origin_sha("main")?, quartio, "main did not move");
 
     let promoted = f

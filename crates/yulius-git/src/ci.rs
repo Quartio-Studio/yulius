@@ -136,15 +136,11 @@ impl Git {
             )?;
             return Ok(());
         }
+        // `commit` is a full object id from `rev-parse`, never an option. (`checkout --detach`
+        // refuses `--end-of-options` in Git 2.43, Ubuntu 24.04's.)
         self.run_ok(
             Invocation::new(self, "checkout", Some(path))
-                .args([
-                    "checkout",
-                    "--quiet",
-                    "--force",
-                    "--detach",
-                    "--end-of-options",
-                ])
+                .args(["checkout", "--quiet", "--force", "--detach"])
                 .arg(&commit),
         )?;
         // Untracked files go; ignored ones (caches) stay. Submodules are not touched.
