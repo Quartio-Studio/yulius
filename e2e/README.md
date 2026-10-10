@@ -29,8 +29,8 @@ disable`); CI sets it.
 | --- | --- |
 | `navigation.e2e.ts` | Open a task from the sidebar, every sandbox page from the sandbox navigation, another sandbox from the tabs |
 | `new-task.e2e.ts` | The new-task shortcut focuses the composer; Enter starts the task and opens it |
-| `sign-in.e2e.ts` | Signed out: a wrong superadmin password is refused, the right one signs in |
-| `access.e2e.ts` | Without a GitHub link the superadmin sees every sandbox; an instance admin sees none and is asked to sign in with GitHub |
+| `sign-in.e2e.ts` | Signed out: a wrong superadmin password is refused, the right one signs in (to the home screen) |
+| `access.e2e.ts` | Without a GitHub link the superadmin sees every sandbox (home cards and tabs); an instance admin sees none and is asked to sign in with GitHub |
 | `shortcuts.e2e.ts` | The shortcut list opens from the keyboard and closes with Escape |
 | `editor.e2e.ts` | A file from the tree opens in a selected editor tab; a folder expands; word wrap turns on and off from the toolbar and Alt+Z without typing, the open editor has no WCAG violations, and wrapping stays after a reload |
 | `browser.e2e.ts` | The browser panel streams the sandbox Chrome (mock: a drawn page as VP8 video or JPEG frames) onto its canvas with the tab's address; keys typed after a click reach the page; the agent's sign-in tab asks for action and the click signs in; a new tab opens the welcome page; no WCAG violations |
@@ -39,6 +39,9 @@ disable`); CI sets it.
 | `messages.e2e.ts` | The Messages panel lists messages between tasks and the agent's question to people, has no text box or Send button (and no WCAG violations); "Reply in the terminal" focuses the task's terminal |
 | `git.e2e.ts` | A GitHub App permission Yulius lacks is one quiet line on the Git page for administrators, with a link to the App's permissions, no warning banner, hidden for the session once dismissed (also after a reload); members don't see it |
 | `phone.e2e.ts` | At 390 px: no horizontal scroll, the quick input, the navigation drawer |
+| `home.e2e.ts` | `/` is the home screen: a card per sandbox with its repository, counts and last activity; a card's New task focuses that sandbox's composer, Open opens it; deep links still open directly; the logo, the All sandboxes tab and ⌘⇧H / Ctrl+Shift+H go home (listed in the sheet); with no sandbox, Import and Create; no WCAG violations |
+| `layout.e2e.ts` | The sidebar, the editor's explorer and the tool panel resize by dragging their edge, by keyboard (sidebar) and back with a double-click, and keep their widths after a reload; at 1024 px with a panel open the sidebar gives way so the centre keeps 360 px; no splitters at 390 px |
+| `responsive.e2e.ts` | Every main page at 768 and 390 px: no two header, toolbar or list controls overlap (bounding boxes) and nothing scrolls sideways; Tasks with a tool panel open wraps its state tabs; a task beside an open Editor, Browser or Shell keeps its step strip and the panel head apart; at 1920 px every page is centred (no empty band on the right) |
 | `quality.e2e.ts` | Every main page: no WCAG 2.x A/AA violations (axe-core) |
 | `subscriptions.e2e.ts` | The accounts page shows the pool's capacity, burn rate, forecast and recommendation with only add, sign-in-again and remove (no priority or on/off controls); a paused task reads "Paused: waiting for subscription capacity (resets ~…)"; the dashboard shows the subscriptions card; no WCAG violations |
 | `agent.e2e.ts` | An agent reaches a goal written in plain English (needs a model, see below) |

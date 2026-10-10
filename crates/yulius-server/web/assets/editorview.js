@@ -14,11 +14,15 @@ import { allows } from './status.js';
 import { token, activeTheme, onThemeChange, px, hexToken } from './theme.js';
 import { readJson, writeJson } from './store.js';
 import { SAVE_KEYS, WRAP_KEYS, WRAP_ARIA } from './shortcuts.js';
+import { createSplitter, layoutPrefs } from './splitter.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
 const LANGUAGE_SERVICES = new Set(['javascript', 'typescript', 'json', 'css', 'scss', 'less', 'html']);
 /** Word wrap preference per user in this browser: `true` wraps long lines (default off). */
 const WRAP_KEY = 'yulius.editorWordWrap';
+/** The explorer's narrowest width, and the room it always leaves the open file (UI-044). */
+const EXPLORER_MIN = 140;
+const EDITOR_MIN = 240;
 
 /** ⌥Z / Alt+Z, the VS Code word-wrap toggle (`code` for macOS, where ⌥Z types "Ω"). */
 function isWrapShortcut(event) {
@@ -241,9 +245,32 @@ export function createEditorView(ctx, sandbox, getTask) {
     h('span', null, 'Explorer'),
     iconButton('plus', 'New file or folder', (event) => newEntryMenu(event.currentTarget, '')),
     iconButton('refresh', 'Refresh', () => refreshTree()));
-  setChildren(el, h('div', { class: 'ed-root' },
-    h('div', { class: 'ed-side' }, treeHead, tree),
-    h('div', { class: 'ed-main' }, tabbar, h('div', { class: 'ed-stage' }, host, empty), status)));
+  const side = h('div', { class: 'ed-side' }, treeHead, tree);
+  const edRoot = h('div', { class: 'ed-root' }, side, h('div', { class: 'ed-main' }, tabbar, h('div', { class: 'ed-stage' }, host, empty), status));
+  setChildren(el, edRoot);
+
+  // The explorer's width (UI-044): dragged on its right edge and kept per user; the stylesheet keeps
+  // it within the panel when the panel narrows (and ignores it on phones).
+  const prefs = layoutPrefs(ctx);
+  const explorerRange = () => ({ min: EXPLORER_MIN, max: Math.max(EXPLORER_MIN, edRoot.getBoundingClientRect().width - EDITOR_MIN) });
+  function setExplorer(px) {
+    if (px) edRoot.style.setProperty('--ed-side-w', `${Math.round(px)}px`);
+    else edRoot.style.removeProperty('--ed-side-w');
+  }
+  setExplorer(prefs.get('explorer'));
+  const explorerSplitter = createSplitter({
+    label: 'Resize explorer',
+    className: 'splitter-explorer',
+    width: () => side.getBoundingClientRect().width,
+    resize: (px) => { const { min, max } = explorerRange(); setExplorer(Math.max(min, Math.min(max, px))); },
+    commit: () => prefs.set('explorer', side.getBoundingClientRect().width),
+    reset: () => { prefs.clear('explorer'); setExplorer(null); },
+    range: explorerRange,
+  });
+  side.append(explorerSplitter.el);
+  // The panel's width changes the explorer's room: its separator keeps saying the true width.
+  const sizeWatch = typeof ResizeObserver === 'function' ? new ResizeObserver(() => explorerSplitter.sync()) : null;
+  if (sizeWatch) sizeWatch.observe(edRoot);
 
   const query = (path) => `root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`;
 
@@ -569,11 +596,13 @@ export function createEditorView(ctx, sandbox, getTask) {
     show() {
       if (!started) { started = true; loadDir(''); }
       if (editor) editor.layout();
+      explorerSplitter.sync();
     },
     taskChanged: folderOptions,
     // Called when the panel host drops this view (another sandbox): free Monaco's editor and
     // models, so other sandboxes' files neither leak nor feed suggestions.
     destroy() {
+      if (sizeWatch) sizeWatch.disconnect();
       for (const tab of tabs) tab.model.dispose();
       tabs.length = 0;
       active = null;

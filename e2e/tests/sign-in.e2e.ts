@@ -25,5 +25,6 @@ test('a wrong password is refused and the right one signs in', async ({ app, bro
   await screen.getByRole('button', 'Sign in').click();
 
   await expect(browser).not.toHaveURL(/#\/signin/);
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+  // `/` is the home screen with every sandbox (UI-045).
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
 });

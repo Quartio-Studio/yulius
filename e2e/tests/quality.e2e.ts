@@ -6,6 +6,7 @@ failOnPageErrors();
 
 // Every main page: no WCAG 2.x A/AA violations (and, as everywhere, no page errors).
 const pages = [
+  ['home', '/', 'Sandboxes'],
   ['task', '/s/studio/t/12', '#12 Checkout API'],
   ['new task', '/s/studio', 'New task'],
   ['tasks', '/s/studio/tasks', 'Tasks'],

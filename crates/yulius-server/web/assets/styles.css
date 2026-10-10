@@ -243,6 +243,8 @@ p { margin: 0; }
   grid-template-areas: "tabs tabs tabs tabs" "side main panel rail";
 }
 .app.no-sandbox { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 0 0; }
+/* The home screen (UI-045) has no sandbox, so no tools: the rail, its panel and its toggle go. */
+.app.no-sandbox .rail, .app.no-sandbox .panel, .app.no-sandbox .tools-toggle { display: none; }
 /* The sidebar stays while a tool panel is open (developers keep their tasks in view): the panel
    takes its width from the centre (panels.js applyWidth). */
 
@@ -265,6 +267,10 @@ p { margin: 0; }
 .tab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; }
 .tab-running { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-variant-numeric: tabular-nums; }
 .tab-add { align-self: center; width: var(--control-md); height: var(--control-md); }
+/* All sandboxes (UI-045): the first tab, an icon. */
+.tab-home { flex: none; justify-content: center; padding: 0 12px; }
+.tab-home .icon { color: var(--muted); }
+.tab-home:hover .icon, .tab-home.active .icon { color: var(--text); }
 .tab-select { display: none; }
 .tabrow-right { display: flex; align-items: center; gap: 8px; margin-left: auto; padding-right: 6px; flex: none; }
 .tabrow-right .btn-icon { width: var(--control-lg); height: var(--control-lg); }
@@ -278,7 +284,7 @@ p { margin: 0; }
 
 /* sidebar */
 .sidebar {
-  grid-area: side; display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  grid-area: side; position: relative; z-index: var(--z-raised); display: flex; flex-direction: column; min-height: 0; min-width: 0;
   background: var(--surface); border-right: 1px solid var(--border);
 }
 /* The sidebar lines up like a chat list: rows are cards 6 px from the edge with 12 px inside; every
@@ -410,7 +416,7 @@ button.task-group-head:hover { color: var(--text); }
 }
 
 /* center */
-.center { grid-area: main; position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--term-bg); }
+.center { grid-area: main; position: relative; isolation: isolate; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--term-bg); }
 .center.paper { background: var(--bg); }
 
 /* right rail + panel (UI-002, UI-015) */
@@ -439,16 +445,29 @@ button.task-group-head:hover { color: var(--text); }
 .rail .rail-dot { position: static; margin-left: auto; flex: none; box-shadow: none; }
 .panel { grid-area: panel; position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; max-width: 100%; background: var(--surface); border-left: 1px solid var(--border); }
 .panel[hidden] { display: none; }
-.panel-resize { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: var(--z-float); touch-action: none; }
-.panel-resize:hover, .panel-resize.dragging { background: linear-gradient(90deg, transparent 3px, var(--accent) 3px 5px, transparent 5px); }
+/* Column splitters (splitter.js, UI-044): an 8 px hit area across the column's edge, a quiet grip
+   at rest; the edge turns accent on hover, focus and drag. The columns they overlap are isolated
+   (.center, .panel-body, .ed-main), so terminal and editor layers never cover the grip. */
+.splitter { position: absolute; top: 0; bottom: 0; z-index: var(--z-float); width: 8px; cursor: col-resize; touch-action: none; }
+.splitter::before { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: transparent; transition: background var(--duration-fast) var(--ease); }
+.splitter::after { content: ""; position: absolute; top: 50%; left: 2px; width: 4px; height: 28px; border-radius: var(--radius-full); background: var(--border-control); transform: translateY(-50%); transition: background var(--duration-fast) var(--ease); }
+.splitter:hover::before, .splitter:focus-visible::before, .splitter.dragging::before,
+.splitter:hover::after, .splitter:focus-visible::after, .splitter.dragging::after { background: var(--accent); }
+.splitter-side, .splitter-explorer { right: -4px; }
+.panel-resize { left: -4px; }
 .panel-head { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--border); flex: none; }
-.panel-title { font-weight: 600; flex: 1; }
-.panel-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.panel-title { font-weight: 600; flex: 1 0 auto; white-space: nowrap; }
+/* A panel at its narrowest (300 px) keeps one line: the title stays, its pickers and notes give way. */
+.panel-head .row { flex: 0 1 auto; min-width: 0; }
+.panel-head .row > .muted { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-head .select { min-width: 0; max-width: 168px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.panel-body { position: relative; isolation: isolate; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .panel-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .panel-view[hidden] { display: none; }
 .panel-msg { padding: 24px 16px; color: var(--muted); text-align: center; }
 body.resizing { cursor: col-resize; user-select: none; }
-body.resizing iframe { pointer-events: none; }
+/* While a splitter is dragged, frames and canvases under the pointer never take its moves. */
+body.resizing iframe, body.resizing canvas { pointer-events: none; }
 
 /* status panel (UI-007) */
 .status-pop {
@@ -975,7 +994,16 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 .split-prompt { flex-basis: 100%; }
 .split-prompt pre { margin: 4px 0 0; padding: 8px 12px; max-height: 160px; overflow: auto; border-radius: var(--radius-sm); background: var(--surface-2); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
 .split-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.stepstrip { flex: none; background: var(--surface); border-bottom: 1px solid var(--border); }
+.stepstrip { flex: none; background: var(--surface); border-bottom: 1px solid var(--border); container: strip / inline-size; }
+/* A narrow centre (a tool panel open beside it): the step name, then the state and count give way,
+   so the strip's parts never overlap (UI-046). */
+@container strip (max-width: 560px) {
+  .step-progress { width: 60px; }
+  .step-current, .strip-extra { display: none; }
+}
+@container strip (max-width: 420px) {
+  .strip-state, .step-count { display: none; }
+}
 .stepstrip-main { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 4px 0 8px; }
 .stepstrip-toggle { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: var(--control-md); padding: 0 6px; border: 0; border-radius: var(--radius-sm); background: transparent; cursor: pointer; text-align: left; color: var(--text-2); }
 .stepstrip-toggle:hover { background: var(--surface-3); color: var(--text); }
@@ -1116,13 +1144,16 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 
 /* ---------------------------------------------------------------- pages */
 
-.page { flex: 1; overflow: auto; background: var(--bg); }
+/* A page is a size container: its lists and cards adapt to the width the page has (a tool panel
+   open beside it counts), not only to the window (UI-046). */
+.page { flex: 1; overflow: auto; background: var(--bg); container: page / inline-size; }
 /* Material: a brand's soft light and texture (tokens --light, --texture; none by default). */
 .composer, .page, .auth { background-image: var(--light), var(--texture); }
 .sidebar, .rail { background-image: var(--texture); }
-.page-inner { padding: 24px 32px 40px; max-width: 1280px; display: flex; flex-direction: column; gap: 16px; }
+/* Centred up to its maximum width, with equal margins: never an empty band on one side (UI-047). */
+.page-inner { padding: 24px 32px 40px; max-width: 1280px; margin-inline: auto; display: flex; flex-direction: column; gap: 16px; }
 .page-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 30px; }
-.page-title { font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 600; margin-right: 6px; }
+.page-title { font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 600; margin-right: 6px; min-width: 0; overflow-wrap: anywhere; }
 .page-sub { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .page-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -1188,7 +1219,7 @@ summary { cursor: pointer; }
 
 /* Tasks page (pages/tasks.js): toolbar, then a grouped list of two-line rows */
 .tl-toolbar { display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap; }
-.tl-tabs { display: flex; gap: 2px; }
+.tl-tabs { display: flex; flex-wrap: wrap; gap: 2px; min-width: 0; }
 .tl-tab { display: inline-flex; align-items: center; gap: 6px; height: var(--control-lg); padding: 0 12px; border: 0; border-radius: var(--radius-full); background: transparent; color: var(--text-2); font: inherit; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; cursor: pointer; white-space: nowrap; }
 .tl-tab:hover { background: var(--surface-3); color: var(--text); }
 .tl-tab.active { background: var(--surface-3); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-strong); }
@@ -1236,8 +1267,11 @@ summary { cursor: pointer; }
 .tl-row:has(.tl-link:focus-visible) { box-shadow: var(--focus-inset); outline: 2px solid transparent; outline-offset: -2px; }
 .tl-mark { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 24px; }
 .tl-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
+/* The title cell keeps its contents: an origin chip gives way (ellipsis) before it would reach the
+   Status column (UI-046). The row's stretched link (::after) belongs to the row, so it is not clipped. */
+.tl-link { overflow: hidden; }
 .group-stopped .tl-title, .group-closed .tl-title { color: var(--text-2); font-weight: 400; }
-.tl-origin { flex: none; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.tl-origin { flex: 0 3 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .tl-cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .tl-row.group-needs .tl-status { color: var(--text); }
 .tl-branch { font-family: var(--font-mono); }
@@ -1250,6 +1284,16 @@ summary { cursor: pointer; }
 @container (max-width: 760px) {
   .tl-row, .tl-columns { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 104px 48px 64px; }
   .tl-diff, .tl-avatar, .tl-columns > :nth-child(4), .tl-columns > :nth-child(6) { display: none; }
+}
+/* A narrow list (a phone, or a tool panel open beside it): the title takes the line, the status in
+   words goes under it, the time and the actions stay on the right; no column headers (UI-046). */
+@container (max-width: 600px) {
+  .tl-columns, .tl-row > .tl-branch, .tl-row > .tl-diff, .tl-row > .tl-pr, .tl-row > .tl-avatar, .tl-row > .tl-started { display: none; }
+  .tl-row { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "link time actions" "status status status"; gap: 0 12px; padding-right: 8px; }
+  .tl-link { grid-area: link; height: auto; padding: 12px 0 2px 16px; }
+  .tl-status { grid-area: status; padding: 0 0 12px calc(16px + 24px + 12px); }
+  .tl-time { grid-area: time; }
+  .tl-actions { grid-area: actions; }
 }
 .tl-pr, .tl-avatar, .tl-time, .tl-actions { position: relative; z-index: var(--z-raised); }
 .tl-avatar, .tl-time { pointer-events: none; }
@@ -1286,15 +1330,13 @@ summary { cursor: pointer; }
 .tl-find-text { display: inline-flex; align-items: center; gap: 4px; }
 .kbd-on-accent { margin-left: 4px; border-color: transparent; background: var(--accent-strong); color: var(--accent-ink); }
 @media (max-width: 767px) {
-  .tl-tabs { order: 1; width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .tl-tabs { order: 1; width: 100%; }
   .tl-find { width: var(--control-xl); height: var(--control-xl); justify-content: center; padding: 0; }
   .tl-find-text { display: none; }
   .tl-chips { order: 3; }
   .tl-summary { order: 4; width: 100%; }
   .tl-tab { height: var(--control-lg); }
-  .tl-row { grid-template-columns: minmax(0, 1fr) var(--control-xl); gap: 4px; }
-  .tl-link { padding: 12px 0 12px 12px; }
-  .tl-pr, .tl-avatar, .tl-time, .tl-cell, .tl-columns, .tl-actions .tl-action:not(:last-child) { display: none; }
+  .tl-actions .tl-action:not(:last-child) { display: none; }
   .page-actions .kbd-on-accent { display: none; }
   .tl-action { width: var(--control-xl); height: var(--control-xl); }
 }
@@ -1415,19 +1457,22 @@ a.dl-task:hover { text-decoration: underline; }
 .item-open { padding: 0; border: 0; background: none; font: inherit; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; text-align: left; cursor: pointer; }
 .item-open:focus-visible { box-shadow: none; }
 .item-open::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
-.item-desc { color: var(--text-2); }
+.item-desc { color: var(--text-2); min-width: 0; overflow-wrap: anywhere; }
 .item-meta { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item-controls { position: relative; z-index: var(--z-raised); display: flex; align-items: center; gap: 8px; flex: none; }
 .item-chevron { display: inline-flex; color: var(--muted); }
 .item-card.clickable:hover .item-chevron { color: var(--text-2); }
-/* Phones: the text takes the full width and the controls move to their own row (UX2-05). */
-@media (max-width: 767px) {
+/* A narrow page (a phone, or a tool panel open beside it): the text takes the full width and the
+   controls move to their own row (UX2-05, UI-046). */
+@container page (max-width: 560px) {
   .item-card { flex-wrap: wrap; align-items: flex-start; }
   .item-main { flex: 1 1 calc(100% - 52px); }
   .item-controls { flex: 1 1 100%; justify-content: flex-end; padding-top: 8px; border-top: 1px solid var(--border); }
+  .item-card .item-meta { white-space: normal; }
+}
+@media (max-width: 767px) {
   .term-banner-row { flex-wrap: wrap; padding: 8px 12px; }
   .term-banner-text { flex: 1 1 100%; }
-  .item-card .item-meta { white-space: normal; }
 }
 .btn-quiet-danger { color: var(--muted); }
 .btn-quiet-danger:hover:not(:disabled) { color: var(--danger-fg); background: var(--danger-soft); }
@@ -1620,6 +1665,31 @@ a.dl-task:hover { text-decoration: underline; }
 .auth-alt { align-self: center; }
 .drawer-backdrop { display: none; }
 
+/* ---------------------------------------------------------------- home (pages/home.js, UI-045) */
+
+.home { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.home-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 12px; }
+.home-card {
+  display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 16px 20px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface);
+  transition: background var(--duration-fast) var(--ease), border-color var(--duration-fast) var(--ease);
+}
+.home-card:hover, .home-card:focus-within { background: var(--surface-2); border-color: var(--border-strong); }
+.home-card-head { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.home-card-titles { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.home-card-name { font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; overflow-wrap: anywhere; }
+.home-card-name a { color: var(--text); }
+.home-card-repo { display: flex; align-items: center; gap: 4px; min-width: 0; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.home-card-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.home-counts { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 0; list-style: none; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.home-count { display: inline-flex; align-items: center; gap: 6px; }
+.home-count .icon { color: var(--muted); }
+.home-count strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.home-count-attention .icon, .home-count-attention strong { color: var(--warn-fg); }
+.home-count-running .icon { color: var(--ok); }
+.home-activity { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.home-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+
 /* ---------------------------------------------------------------- phone (< 768 px, §6.4) */
 
 @media (max-width: 1023px) {
@@ -1662,7 +1732,9 @@ a.dl-task:hover { text-decoration: underline; }
   .nav-item { height: var(--control-xl); }
 
   .panel { position: fixed; z-index: var(--z-panel); inset: 0; width: auto !important; border-left: 0; }
-  .panel-resize { display: none; }
+  /* Phones keep the drawer and full-screen panels: no column splitters (UI-044). */
+  .splitter { display: none; }
+  .ed .ed-root { grid-template-columns: minmax(120px, max(160px, 22%)) minmax(0, 1fr); }
   .panel-head { height: 44px; }
 
   .quickbar { display: flex; }
@@ -1691,8 +1763,10 @@ a.dl-task:hover { text-decoration: underline; }
 
 /* Built-in editor (EDT-001): explorer, tabs, Monaco. */
 .ed { min-height: 0; }
-.ed-root { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(160px, 22%) minmax(0, 1fr); }
-.ed-side { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: var(--surface); }
+/* The explorer's width: dragged (--ed-side-w, UI-044) or 22 % (at least 160 px), always leaving
+   the open file 240 px. */
+.ed-root { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(120px, min(var(--ed-side-w, max(160px, 22%)), calc(100% - 240px))) minmax(0, 1fr); }
+.ed-side { position: relative; z-index: var(--z-raised); display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--border); background: var(--surface); }
 .ed-tree-head { display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 12px; font-size: var(--fs-xs); line-height: var(--lh-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border-bottom: 1px solid var(--border); }
 .ed-tree-head > span { flex: 1; }
 .ed-tree { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; font-size: var(--fs); line-height: var(--lh); }
@@ -1702,7 +1776,7 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ed-twisty { width: 12px; flex: none; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .ed-name { overflow: hidden; text-overflow: ellipsis; }
-.ed-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--term-bg); }
+.ed-main { isolation: isolate; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--term-bg); }
 .ed-tabs, .term-tabs { display: flex; overflow-x: auto; flex: none; background: var(--surface); border-bottom: 1px solid var(--border); min-height: var(--control-lg); }
 .ed-tab, .term-tab { display: flex; align-items: center; gap: 6px; padding: 0 4px 0 12px; height: var(--control-lg); border-right: 1px solid var(--border); font-size: var(--fs); line-height: var(--lh); cursor: pointer; color: var(--muted); white-space: nowrap; }
 .ed-tab.active, .term-tab.active { background: var(--term-bg); color: var(--text); box-shadow: inset 0 1px 0 var(--accent); }

@@ -9,7 +9,12 @@ import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions
 import { createNotificationCenter } from './notifications.js';
 import { BRAND } from './brand.js';
 import { readJson, writeJson } from './store.js';
-import { NEW_TASK_KEYS, NEW_TASK_ARIA } from './shortcuts.js';
+import { NEW_TASK_KEYS, NEW_TASK_ARIA, HOME_KEYS, HOME_ARIA } from './shortcuts.js';
+import { createSplitter, layoutPrefs } from './splitter.js';
+import { isPhone } from './theme.js';
+
+/** Sidebar widths (UI-044): its range, and what it leaves the panel and the centre (as panels.js). */
+const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
 
 const NAV = [
   ['tasks', 'Tasks', 'tasks'],
@@ -28,8 +33,10 @@ export function createTabRow(ctx) {
   const tabs = h('nav', { class: 'tabrow-tabs', 'aria-label': 'Sandboxes' });
   const select = h('select', { class: 'select tab-select', 'aria-label': 'Sandbox', onChange: () => {
     if (select.value === '__add') {
-      select.value = currentSlug || '';
+      select.value = currentSlug || (home ? '__home' : '');
       openSandboxDialog(ctx);
+    } else if (select.value === '__home') {
+      ctx.navigate('/');
     } else if (select.value) {
       ctx.navigate(`/s/${encodeURIComponent(select.value)}`);
     }
@@ -74,10 +81,21 @@ export function createTabRow(ctx) {
   );
 
   let currentSlug = null;
+  let home = false;
   let dragId = null;
 
   function renderTabs() {
     const sandboxes = ctx.store.state.sandboxes;
+    // Home first (UI-045): every sandbox at a glance, also reached with the logo and ⌘⇧H.
+    const homeTab = h('a', {
+      class: ['tab', 'tab-home', home && 'active'],
+      href: href('/'),
+      dataset: { route: '/' },
+      title: `All sandboxes (${HOME_KEYS})`,
+      'aria-label': 'All sandboxes',
+      'aria-keyshortcuts': HOME_ARIA,
+      'aria-current': home ? 'page' : null,
+    }, icon('grid', { size: 16 }));
     const anchors = sandboxes.map((sandbox) => {
       const counts = sandbox.counts || {};
       const a = h('a', {
@@ -127,15 +145,16 @@ export function createTabRow(ctx) {
       a.addEventListener('dragend', () => { dragId = null; });
       return a;
     });
-    keepFocus(tabs, () => setChildren(tabs, anchors)); // counts refresh often; focus stays
+    keepFocus(tabs, () => setChildren(tabs, homeTab, anchors)); // counts refresh often; focus stays
     const active = tabs.querySelector('.tab.active');
     if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 
     setChildren(select,
-      currentSlug ? null : h('option', { value: '' }, 'Choose sandbox…'),
+      h('option', { value: '__home' }, 'All sandboxes'),
+      currentSlug || home ? null : h('option', { value: '' }, 'Choose sandbox…'),
       sandboxes.map((s) => h('option', { value: s.slug }, `${s.name}${s.counts && s.counts.needs_attention ? ' (!)' : ''}`)),
       h('option', { value: '__add' }, '+ Add sandbox…'));
-    select.value = currentSlug || '';
+    select.value = currentSlug || (home ? '__home' : '');
   }
 
   function renderMe() {
@@ -158,8 +177,10 @@ export function createTabRow(ctx) {
     el,
     /** Sign-out: unsubscribe and close the Status panel. */
     destroy() { offs.forEach((off) => off()); statusPanel.close(); },
-    update(slug) {
+    /** The sandbox in view (its tab is current), or the home screen (`{home: true}`). */
+    update(slug, { home: onHome = false } = {}) {
       currentSlug = slug;
+      home = onHome;
       renderTabs();
       renderMe();
     },
@@ -478,10 +499,11 @@ export function capacityPanel(view) {
  * the signed-in user at its foot, which opens the user menu.
  */
 export function createSidebar(ctx) {
-  // The logo slot holds the favicon's Y until Yulius has a real logo.
-  const brand = h('a', { class: 'sidebar-brand', href: href('/'), dataset: { route: '/' }, title: BRAND.name },
+  // The logo goes home: every sandbox at a glance (UI-045).
+  const brand = h('a', { class: 'sidebar-brand', href: href('/'), dataset: { route: '/' }, title: `All sandboxes (${HOME_KEYS})`, 'aria-keyshortcuts': HOME_ARIA },
     h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 34 })),
-    h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, BRAND.name), h('span', { class: 'brand-by' }, BRAND.tagline)));
+    h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, BRAND.name), h('span', { class: 'brand-by' }, BRAND.tagline)),
+    h('span', { class: 'sr-only' }, ', all sandboxes'));
   const shortcut = NEW_TASK_KEYS;
   const newTask = h('a', { class: 'btn btn-newtask', href: '#', dataset: { route: '/' }, title: `New task (${shortcut})`, 'aria-keyshortcuts': NEW_TASK_ARIA },
     h('span', { class: 'newtask-plus', 'aria-hidden': 'true' }, icon('plus', { size: 16 })), h('span', null, 'New task'), h('span', { class: 'newtask-key', 'aria-hidden': 'true' }, shortcut));
@@ -498,6 +520,50 @@ export function createSidebar(ctx) {
     h('div', { class: 'sidebar-foot' }, userButton),
   );
 
+  // ---- width (UI-044): dragged on its right edge, kept per user, never so wide that the rail or the
+  // centre (360 px) leaves the window. With a tool panel open the panel keeps its 300 px minimum, so
+  // the sidebar gives way first; both grow back when the window widens (panels.js refit).
+  const prefs = layoutPrefs(ctx);
+  let wanted = prefs.get('sidebar'); // px, or null: the stylesheet's default (300 px, 200 px below 1024 px)
+  const app = () => el.parentElement;
+  const cssDefault = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w')) || 300;
+  function range() {
+    const shell = app();
+    let other = 0;
+    if (shell && !shell.classList.contains('no-sandbox')) {
+      const rail = shell.querySelector('.rail');
+      const panel = shell.querySelector('.panel');
+      other += rail && !rail.hidden ? rail.getBoundingClientRect().width : 0;
+      if (panel && !panel.hidden && !shell.classList.contains('panel-max')) other += SIDEBAR.panelMin;
+    }
+    return { min: SIDEBAR.min, max: Math.max(SIDEBAR.min, Math.min(SIDEBAR.max, window.innerWidth - other - SIDEBAR.centerMin)) };
+  }
+  /** Applies the wanted width within the room there is; on phones the sidebar is a drawer instead. */
+  function fit() {
+    const shell = app();
+    if (!shell) return;
+    if (isPhone()) { shell.style.removeProperty('--sidebar-w'); return; }
+    const { min, max } = range();
+    const base = wanted || cssDefault();
+    const width = Math.round(Math.max(min, Math.min(max, base)));
+    if (!wanted && width === Math.round(base)) shell.style.removeProperty('--sidebar-w');
+    else shell.style.setProperty('--sidebar-w', `${width}px`);
+    splitter.sync();
+    if (ctx.refitPanel) ctx.refitPanel();
+  }
+  const splitter = createSplitter({
+    label: 'Resize sidebar',
+    className: 'splitter-side',
+    width: () => el.getBoundingClientRect().width,
+    resize: (px) => { const { min, max } = range(); wanted = Math.round(Math.max(min, Math.min(max, px))); fit(); },
+    commit: () => { if (wanted) prefs.set('sidebar', wanted); },
+    reset: () => { wanted = null; prefs.clear('sidebar'); fit(); },
+    range,
+  });
+  el.append(splitter.el);
+  ctx.fitSidebar = fit;
+  window.addEventListener('resize', fit);
+
   let sandbox = null;
   let route = null;
   const rows = new Map();
@@ -513,9 +579,11 @@ export function createSidebar(ctx) {
 
   function renderNav() {
     const slug = sandbox ? encodeURIComponent(sandbox.slug) : null;
-    newTask.dataset.route = slug ? `/s/${slug}` : '/';
+    // On the home screen New task starts in the sandbox used last (UI-045).
+    const target = sandbox || (ctx.defaultSandbox ? ctx.defaultSandbox() : null);
+    newTask.dataset.route = target ? `/s/${encodeURIComponent(target.slug)}` : '/';
     newTask.href = href(newTask.dataset.route);
-    newTask.classList.toggle('disabled', !slug);
+    newTask.classList.toggle('disabled', !target);
     // Links are built once and updated in place, so a focused link keeps focus across routes.
     if (!nav.children.length) nav.append(...NAV.map(([, label, iconName]) => h('a', { class: 'nav-item' }, h('span', { class: 'nav-slot' }, icon(iconName, { size: 20 })), h('span', null, label))));
     NAV.forEach(([page], i) => {
@@ -620,7 +688,7 @@ export function createSidebar(ctx) {
   function renderTasks() {
     if (!sandbox) {
       shape = '';
-      setChildren(list, h('div', { class: 'placeholder' }, 'No sandbox selected.'));
+      setChildren(list, h('div', { class: 'placeholder small' }, 'Open a sandbox to see its tasks.'));
       return;
     }
     const all = ctx.store.tasksOf(sandbox.id);
@@ -673,7 +741,8 @@ export function createSidebar(ctx) {
   return {
     el,
     /** Sign-out: unsubscribe and stop the timer. */
-    destroy() { offs.forEach((off) => off()); repaint.cancel(); clearInterval(ageTimer); if (unwatchPulls) unwatchPulls(); },
+    destroy() { offs.forEach((off) => off()); repaint.cancel(); clearInterval(ageTimer); if (unwatchPulls) unwatchPulls(); window.removeEventListener('resize', fit); if (ctx.fitSidebar === fit) ctx.fitSidebar = null; },
+    fit,
     update(nextRoute, nextSandbox) {
       if (!nextSandbox || !sandbox || nextSandbox.id !== sandbox.id) {
         rows.clear();
