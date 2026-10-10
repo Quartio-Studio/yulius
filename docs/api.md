@@ -748,6 +748,40 @@ task-hours; `needed` = ⌈max(burn_24h × 168 ÷ 98, subscriptions × (active + 
 `add` = needed − subscriptions (SPEC-002 ADR-17 §2.4). `resumes_at` is set while no subscription is
 available. `id` and `in_use_by` are for instance administrators only.
 
+## Secrets vault
+
+SPEC-001 VLT-001..009, SPEC-002 ADR-18. Values are never logged; responses that carry one have
+`Cache-Control: no-store`.
+
+**Team secrets** — every signed-in member.
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/team-secrets` | → `[TeamSecret]`: `{id, title, url, username, has_password, has_notes, has_totp, created_by, updated_by, updated_at, value_updated_at, rotate_due}` (never a password, notes or seed) |
+| POST | `/api/team-secrets` | `{title, url?, username?, password?, notes?, totp?}` → 201 `TeamSecret`. `totp`: base32 or `otpauth://totp/…` (422 otherwise) |
+| PATCH | `/api/team-secrets/{id}` | the same fields, each optional: absent keeps, `""` clears → `TeamSecret` |
+| DELETE | `/api/team-secrets/{id}` | → 204 |
+| POST | `/api/team-secrets/{id}/reveal` | `{purpose?: "show"\|"copy", fields?: ["password","notes","totp"]}` → `{password, notes, totp}` (only the asked, stored fields). Audited (`vault.team.reveal` / `vault.team.copy`) |
+| POST | `/api/team-secrets/{id}/totp` | → `{code, period, remaining}`. Audited (`vault.team.totp`) |
+| GET | `/api/auth/reauth` | → `{fresh, fresh_until, methods}`; `methods` ⊆ `["password", "github"]` |
+| POST | `/api/auth/reauth` | `{password}` (the superadmin) → the status; 401 for a wrong password (audited), 429 after 5 attempts a minute, 403 for an account without a password |
+| GET | `/api/secrets/activity?limit=100` | → `[{at, actor, action, secret_id, detail}]`, newest first (≤ 500); an agent secret's entries only for members who can view its sandbox |
+
+Reveal and TOTP need a **fresh re-authentication**: the browser session was created, or
+re-authenticated, within the last 10 minutes. Otherwise they answer `403`
+`{"error": {"code": "reauth_required", …}, "reauth": {fresh, fresh_until, methods}}`; the client
+confirms with `POST /api/auth/reauth` (password) or by signing in with GitHub again
+(`/api/auth/github/start?next=<page>`), then retries. Bearer tokens never reveal (403).
+
+**Agent secrets** — values are write-only (never returned).
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, can_manage}` — the sandbox's and the instance-wide ones |
+| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts: [..], injection?: "none"\|"bearer"\|"basic"\|"header", header_name?, username?, value, totp?}` → 201. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 1–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks; `basic` needs `username`. 409 when the name already applies to the sandbox |
+| PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, totp` → `AgentSecret` (`value` replaces it; `""` clears `username`/`totp`) |
+| DELETE | `/api/agent-secrets/{id}` | → 204 |
+
 ## UI event stream
 
 `WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.removed",
@@ -770,3 +804,20 @@ body while no Claude subscription has capacity (ROT-010, SPEC-002 ADR-17): the a
 boundary and the client sends the same request again after `Retry-After` seconds (1–60), until a
 `200`, a 4xx (it fails open) or 8 days. While held it retries a refused connection or a 5xx every
 2 s, so a server restart does not release the agent. `401` means the run is unknown or finished.
+`PostToolUse` is not forwarded: the hook client redacts the tool result inside the sandbox
+(below).
+
+### Agent secrets on the internal listener (SPEC-002 ADR-18)
+
+- **Egress proxy**: a `CONNECT host:port` or an absolute-form `http://` request to the internal
+  listener is a proxy request, authenticated with `Proxy-Authorization: Basic
+  base64("yulius:" + task token)` (407 otherwise). Hosts bound to an agent secret of the run's
+  sandbox are intercepted (credential added, placeholders `yulius-secret-NAME` replaced,
+  `X-Yulius-Secret: NAME` chooses between secrets adding the same header, 409 when ambiguous;
+  the response redacted); other hosts are tunneled. Local destinations answer 403.
+- `POST /internal/scrub/fingerprints` (task token) → `{version, base, salt, names, needles:
+  [{secret, len, rolling, digest}]}`: the run's redaction fingerprints (no values).
+- `POST /internal/scrub/report` (task token) `{channel: "bash"|"tool", names}` → 204; audited
+  once per run, secret and channel (`vault.agent.redacted`).
+- MCP: `secrets_list` and `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
+  selector?}`; every MCP result is redacted.

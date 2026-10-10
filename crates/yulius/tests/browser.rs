@@ -319,7 +319,9 @@ async fn agent_tools_drive_the_tabs_the_viewer_sees() -> TestResult {
             .filter_map(|t| t["name"].as_str())
             .filter(|n| n.starts_with("browser_"))
             .collect();
-        assert_eq!(names.len(), 8, "{names:?}");
+        // The eight browser tools, plus typing an agent secret (SPEC-002 ADR-18).
+        assert_eq!(names.len(), 9, "{names:?}");
+        assert!(names.contains(&"browser_fill_secret"));
 
         let served = serve(f.h.router.clone()).await?;
         let mut viewer =

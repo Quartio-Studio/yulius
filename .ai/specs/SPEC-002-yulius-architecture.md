@@ -86,6 +86,7 @@ Principles:
 | ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Over the user's link (F 2026-10-10, later): the viewer acknowledges frames and the server keeps about a round trip on the way, the bitrate and frame rate follow the slowest viewer (VBV tiers), keyframes come on demand from a replacement encoder, wheel and pointer moves are coalesced. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
 | ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done. Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
 | ADR-17 | Claude subscriptions are **one self-managing pool** (F 2026-10-10): use-it-or-lose-it placement (weekly headroom ÷ hours to its reset ÷ tasks on the account + 1), a proactive switch at 98 % of any binding window at the turn boundary by native resume, and a **gentle, invisible pause** held by the harness — the Stop / `UserPromptSubmit` hook answers `202 Retry-After` and `yulius hook` keeps polling — persisted in `capacity_pauses`, resumed oldest first and staggered; a burn-rate forecast says when to buy more. Analysis and contract: §2.4. | Manual priorities (before); suspending the agent (SIGSTOP); letting the CLI hit the limit and typing a resume prompt; killing and resuming | No knobs; capacity that expires is spent first; switches only when forced; the agent is never told; a hold survives restarts; the CLI shows "running hook" while paused and a held agent keeps its session slot; relies on Claude Code honouring a long hook `timeout` (fallback: the reported-limit pause). |
+| ADR-18 | **Secrets vault** (F 2026-10-10): team secrets and agent secrets under envelope encryption (per-write data keys, XChaCha20-Poly1305, KEK from the master key by HKDF); team reveals behind a 10-minute re-authentication, audited; agents use secrets without seeing them through a credential-injecting egress proxy on the internal listener (TLS interception only for hosts bound to a secret) and `browser_fill_secret`; exact values and encodings redacted from every channel an agent reads (Bash wrapper, `PostToolUse` rewrite, MCP results, proxy responses) and from the terminal. Analysis: §2.5. | `age`; `aes-gcm`; SQLCipher; an external vault; values in the environment; a request-making tool | One store for people and agents; agents' HTTP goes through Yulius; redaction is an oracle for weak values (8-character minimum); remaining threats in §2.5. |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 
 ### 2.1 ADR-14: the browser panel renders the sandbox's apps live (F 2026-10-09)
@@ -776,6 +777,181 @@ Code honours an 8-day hook `timeout`; if it ended the hook earlier, the hook fai
 continues on a subscription at 98 % or more, and a reported limit pauses it as `limit` — work is
 never lost.
 
+### 2.5 ADR-18: the secrets vault — team secrets people reveal, agent secrets agents use but never see (F 2026-10-10)
+
+Status: accepted and implemented (issue #141). Requirements VLT-001..009 (SPEC-001 §5.19).
+
+**Request.** "We want to have 2 sections for storing secrets. One section is for team secrets:
+passwords to shared mails, infra etc. The second one is something similar but for agents: API
+keys, also passwords etc. Agent can access them but never see them. … You should probably use some
+ready library for storing this because it should be very safe. It solves 2 problems: in early
+startups the permission layer is flat … but secrets are sent on WhatsApp, mail etc. … And we don't
+have a good way to pass credentials to agents without leaking them." Later the same evening:
+"maybe just check all input for the exact strings we have and redact them?" — exact-value
+redaction is a primary mechanism, not only defence in depth.
+
+**Two problems, two threat models.** Team secrets are read by people who are all trusted alike
+(flat permissions); the risk is the channel (chats, mail) and a session left open, so the answer
+is a shared encrypted store, a fresh proof of identity before a value shows, and an audit trail.
+Agent secrets must be *used* by a process that may be wrong or manipulated (prompt injection in a
+web page, an issue, a dependency) and whose every input is recorded in its transcript; anything in
+its environment, files or tool results can be echoed, committed or sent anywhere. So a value must
+never enter the sandbox in clear, and if one gets in anyway (a `.env` in the repository, an API
+echoing it), it must not reach the agent's context.
+
+**Storage (both sections).** One table, `vault_secrets` (migration 0006). Every field that is
+secret — and, for team secrets, the URL and user name too — is one JSON payload under **envelope
+encryption**: a fresh random 256-bit data key per write, XChaCha20-Poly1305 with the row's id and
+section as associated data (a ciphertext copied into another row does not open), the data key
+wrapped by the vault key-encryption key with its own associated data, the KEK derived from the
+instance master key with HKDF-SHA256 (`yulius/vault/kek/v1`; domain-separated from the master
+key's other uses) and recorded as `kek_id`. Libraries: RustCrypto `chacha20poly1305` (already the
+master-key cipher; audited by NCC Group), `ring` for HKDF and the TOTP HMACs (already a
+dependency), `zeroize` for data keys and decrypted payloads, `subtle` for constant-time equality;
+all MIT/Apache/ISC/BSD and accepted by `cargo deny`. SQLite runs with `secure_delete` so replaced
+ciphertext is overwritten in the file. Plaintext types have redacted `Debug`; no value is logged,
+put in an error, a metric or an audit entry (they name secrets, never values).
+
+| Alternative | Why not |
+| --- | --- |
+| `age` (file format, X25519/scrypt recipients) | Made for files sent to recipients; one server key gains nothing from recipients; no binding to a database row; larger dependency tree. A natural format for a future export. |
+| `aes-gcm` | 96-bit random nonces have a birthday bound per key; fine with per-write keys, but XChaCha20's 192-bit nonces remove the question with a dependency we already ship. |
+| SQLCipher (whole-file encryption) | The key would live next to the file anyway; needs a different SQLite build; no per-secret binding, re-authentication or audit. |
+| External vault (HashiCorp Vault, Infisical, a cloud KMS) | Another service to run and secure for a team of 2–5 on one VM; the use-without-seeing layer is still Yulius' own. Revisit when Yulius holds customers' production keys. |
+
+Backups (`yulius backup`, `VACUUM INTO`) hold ciphertext only; `master.key` is backed up
+separately (docs/operations.md). **Rotation**: every write uses a new data key; values are rotated
+at their source and replaced in Yulius (each shows its age; after 180 days the UI suggests
+rotating it); `kek_id` lets a future master-key rotation re-wrap 72-byte keys without touching any
+ciphertext; that instance-wide command (it must also re-seal accounts, GitHub tokens and MCP
+secrets) is a follow-up. After a suspected leak of `master.key` together with a database copy,
+re-encryption does not help: the values themselves must be rotated at their providers.
+
+**Team section.** Every signed-in member lists, adds, edits and deletes team secrets (flat, as the
+team works): title, URL, user name, password, notes and a TOTP seed (base32 or an
+`otpauth://totp/…` URI; RFC 6238 SHA-1/256/512, 6–8 digits). The list shows titles, URLs and user
+names. Revealing a password, notes or the seed, copying, and reading the current code need a
+**fresh re-authentication**: the browser session signed in, or re-authenticated, within the last
+10 minutes — the superadmin's password (rate limited, audited), or signing in with GitHub again
+(a new session). API tokens (CLI) never reveal. Copy writes the clipboard and clears it after
+30 seconds (when it still holds the value and the page has focus: browsers allow no more). Every
+reveal, copy, code, failed confirmation and change is in the audit trail shown on the page
+(`vault.*` entries; an agent secret's entries only to members who can view its sandbox).
+
+**Agent section: use, never see.** An agent secret has a NAME (environment style), a description
+agents read, **bound hosts** (`api.stripe.com`, `*.supabase.co`, optional port), an optional
+injection (`Authorization: Bearer`, Basic with a user name, or a named header), an optional user
+name and TOTP seed, and a value of at least 8 characters (shorter values cannot be recognised in
+output, VLT-006). Sandbox secrets are managed by members with write access, instance-wide ones by
+instance administrators; members who can view a sandbox see names, descriptions and bindings.
+Values are write-only for everyone (replace, never read back).
+
+Mechanisms considered for *using* a secret:
+
+| Mechanism | Decision |
+| --- | --- |
+| (i) HTTP APIs: credential-injecting egress proxy | **Chosen.** Below. |
+| (ii) Website sign-in: `browser_fill_secret` types into the sandbox browser | **Chosen.** Only into a tab whose page is on a bound host (no typing a password into an attacker's page); returns no value; audited. |
+| (iii) CLIs | Token CLIs (`gh`, `vercel`, `stripe`, `supabase`, SDKs) work unchanged through the proxy and placeholders (`GH_TOKEN=yulius-secret-GH_TOKEN`). Git keeps its credential helper (a repository-scoped token the agent can read, as before). Helpers that print a credential to their caller (`credential_process`, Docker helpers) would hand it to the agent: not offered. Request-signing CLIs (AWS SigV4, service-account JWTs) need the key itself: not supported; give them short-lived scoped credentials. |
+| Environment variables or files with real values; an MCP tool returning a value | Rejected: the agent reads them. |
+| A tool that performs HTTP requests on the agent's behalf | Works, but every SDK and CLI would have to be rewritten around a tool; the proxy covers real programs. |
+
+**Egress proxy contract.** Served on the **internal listener** (the address of `YULIUS_URL`): a
+`CONNECT` or an absolute-form request is a proxy request, everything else the internal API.
+Agent runs get `HTTP(S)_PROXY`/`http(s)_proxy = http://yulius:<task token>@<internal host:port>`
+(secret environment), `NO_PROXY` for loopback and Claude Code's own API hosts (a Yulius restart
+never interrupts a turn), `NODE_USE_ENV_PROXY=1`, and — when the host's CA roots are found —
+`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO` and
+`NODE_EXTRA_CA_CERTS` pointing at `<run>/egress-ca.pem` (the host's roots plus the instance's
+egress CA, bound read-only into containment). Without credentials of a live run the proxy answers
+407.
+- `CONNECT host:port` to a host **bound** to an agent secret of the run's sandbox (or an
+  instance-wide one): TLS ends at Yulius with a leaf certificate for the host signed by the egress
+  CA (ECDSA P-256; the CA key sealed in `vault_meta`, trusted only by agent runs), the inner
+  HTTP/1.1 requests are rewritten and sent over HTTPS with the host's real certificate verified
+  against the system roots. Any other host: an opaque tunnel (Yulius sees nothing).
+- Absolute `http://` requests: to a bound host they are sent over HTTPS (a secret never travels
+  in clear); otherwise forwarded as plain HTTP.
+- Rewriting a request to a bound host: `yulius-secret-NAME` placeholders in header values
+  (inside Basic credentials too) and in the path and query are replaced by NAME's value only when
+  NAME is bound to this host; then a secret with an injection adds its header when the request
+  lacks it; two secrets adding the same header need `X-Yulius-Secret: NAME` (else 409 naming
+  them); `X-Yulius-Secret` and proxy headers are removed; `Accept-Encoding: identity` so the
+  response can be checked. Request bodies are never rewritten.
+- Responses (intercepted and plain HTTP): every in-scope value and encoding is redacted from
+  headers and the streamed body; a compressed response that would hide one is refused (502).
+- Destinations are resolved first and loopback, unspecified, link-local (cloud metadata),
+  multicast and broadcast addresses refused, also after DNS (no rebinding). Bounds: 256
+  connections, 10 s connect and handshake, 60 s request head, 24 h per connection.
+- The first use of a secret by a run on a host is audited (`vault.agent.use`) and `last_used_at`
+  set.
+
+**Exact-value redaction (primary, F 2026-10-10 later).** Every channel through which an agent can
+read is scanned for the exact value of every agent secret that applies, and for its encodings:
+hexadecimal (both cases), base64 and base64url at each of the three byte alignments inside longer
+encoded text, percent-encoding and JSON escaping (needles of ≥ 8 bytes). Matches become
+`[secret:NAME]` before the agent sees them.
+
+| Channel | How |
+| --- | --- |
+| Bash tool output (stdout, stderr, background shells) | `CLAUDE_CODE_SHELL_PREFIX = <yulius> --scrub-exec`: Claude Code 2.1.292 runs every Bash command as `'<yulius>' --scrub-exec '<command>'` (also hooks and stdio MCP servers). The wrapper runs the command with the shell and streams both outputs through a redactor that holds an unfinished line's last `max − 1` bytes across chunks (released after 50 ms of quiet), then exits with the command's status. Inspected read-only in the installed bundle. |
+| Every tool result (Read, Grep, WebFetch, Bash, MCP tools, subagents' tools) | A `PostToolUse` hook (matcher `*`) answers `hookSpecificOutput.updatedToolOutput` with the redacted result ("Replaces the tool output before it is sent to the model", Claude Code 2.1.292). |
+| Yulius MCP results (browser page text and accessibility snapshots, task prompts, messages) | Redacted on the server before they are returned. |
+| HTTP through the proxy | Response headers and bodies, as above. |
+| The terminal people watch | PTY output and snapshots redacted before the hub's screen and its viewers (a tail that may begin a value waits ≤ 40 ms). |
+| Transcripts Yulius serves | `App::redact_for_sandbox` (the sessions view, #137, applies it). |
+
+The in-sandbox parts run as the agent's own user, so they never hold a value: they work from
+**fingerprints** — the rolling hash and a salted SHA-256 of each needle — fetched with the task
+token (`POST /internal/scrub/fingerprints`) or, while Yulius restarts, read from the run's
+`scrub.json`. With neither, a Yulius run fails closed: the command does not run and a tool result
+is withheld. Redactions are reported for the audit trail (`vault.agent.redacted`).
+
+**Threats that remain (stated honestly).**
+1. *Echo through a bound host in a form redaction does not know*: a manipulated agent can make a
+   bound host reflect the injected credential transformed (reversed, split across fields, stored
+   then read in pieces, encrypted). Binding limits this to hosts the team chose: never bind a host
+   the agent controls (its own app, a deployment it can change, request-echo services); prefer
+   narrowly scoped keys.
+2. *Use without seeing is still use*: the agent can do anything the credential allows on its
+   hosts.
+3. *Deliberate extraction of a value present in the sandbox*: exact-value redaction stops
+   accidental exposure (a `.env`, a log, an echoing API), not an agent determined to print a file
+   in slices shorter than a needle. The design's first line is that no value is ever put in the
+   sandbox; a value someone else placed there (a committed `.env`) is the leak to fix.
+4. *Redaction is an oracle*: an agent can learn whether a guess equals a secret by watching what
+   is redacted (and the fingerprints allow offline checks of guesses). High-entropy keys are safe;
+   a weak password is not — hence the 8-character minimum and the advice to store generated
+   values.
+5. *Browser*: the page of a bound origin can read a filled field (it is the site); Yulius' tools
+   redact snapshots and page text, and password fields are masked in screenshots, but pixels are
+   not redacted, and an agent attaching raw CDP to the unauthenticated DevTools port (R-07) can
+   read a field's value. Closing R-07 (isolation work) removes that path.
+6. *Clients that ignore proxy variables or custom CA bundles* (pinned certificates, a Java
+   keystore) cannot use injected secrets; they fail closed (TLS error), never leak.
+7. *Channels outside Claude Code's hooks*: tool errors (`PostToolUseFailure` cannot rewrite) of
+   tools other than Bash; WebFetch's page summary is made by a model that sees the raw page unless
+   the host is bound (then the proxy redacts first).
+8. Sandboxes share loopback today: another sandbox's process can reach the proxy but needs a live
+   task token of a run (256-bit, never in argv). The server holds decrypted agent values in memory
+   while runs use them (root on the VM can read them, as it can read `master.key`).
+
+**Integration with sandbox isolation** (`feat/sandbox-isolation`): the proxy lives on the internal
+listener, so whatever keeps `YULIUS_URL` reachable from a sandbox keeps the proxy reachable, and
+the proxy URL is derived from the same `internal_url`. With egress denied by default inside a
+network namespace the proxy becomes the sandbox's single way out (unbound hosts are tunneled; an
+allowlist can be added as a policy decision without changing agents), and it already refuses
+local destinations, so it is not a bypass. Shells are not proxied (people's own processes).
+
+**Consequences.** Agent runs route HTTP(S) through Yulius (Claude Code's own API traffic stays
+direct); every Bash command and tool result passes a redaction step (milliseconds; nothing when no
+agent secret applies); a vault that cannot be read fails a run's start rather than starting it
+without redaction. People get one place for shared credentials with TOTP codes, gated reveals and
+an audit trail. Not verified against a live CLI (no paid run in this change): the end-to-end
+behaviour of `CLAUDE_CODE_SHELL_PREFIX` and `updatedToolOutput` inside a real Claude Code session;
+both were read from the installed 2.1.292 bundle, and the wrapper and the hook are tested
+directly.
+
 ## 3. Code organization
 
 Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
@@ -791,6 +967,7 @@ Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
 | `crates/yulius-github` | adapter | GitHub REST, App JWT, OAuth, installation tokens. |
 | `crates/yulius-git` | adapter | Git CLI wrapper: clone/fetch, worktrees, branches, bundles, diff stats, hooks install. |
 | `crates/yulius-browser` | adapter | Chromium lifecycle, CDP client, virtual displays (Xvfb, XTest, RandR), the H.264 encoder and video hub, screencast fallback, browser tools. |
+| `crates/yulius-egress` | adapter | The agents' egress proxy: CONNECT tunnels, TLS interception of hosts bound to agent secrets (egress CA, rcgen + rustls), verified HTTPS upstream, response redaction (ADR-18). |
 | `crates/yulius-server` | interface | axum routes, auth middleware, WS endpoints, MCP and hook endpoints, embedded web UI (`web/`). |
 | `crates/yulius-cli` | interface | `import`, `login`, admin client commands (HTTP client, argument parsing). |
 | `crates/yulius` | composition | Configuration, wiring, subcommand dispatch, signal handling; the Jev client and the headless Claude split proposer (ADR-16). |
@@ -814,7 +991,9 @@ users/<user>/home/                  user's home in their shells (bound at /home/
 users/<user>/identity/              generated passwd/group files of the user's sandbox identity
 runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
-runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files
+runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files;
+                                    scrub.json (redaction fingerprints) and egress-ca.pem (host roots
+                                    plus the egress CA), both bound read-only into containment (ADR-18)
 shells/<shell>/                     ptyhost run directories of sandbox shells (UI-015); shell.json (owner,
                                     sandbox, folder, name, sealed host token) to adopt them after a restart
 logins/<login>/                     temporary provider login (config dir + run dir); zero-filled and removed after the login
@@ -866,6 +1045,9 @@ Schema version 1 (tables; columns abbreviated):
 | `import_jobs` | id, sandbox_id, user_id, state, manifest (json), received (json), created_at |
 | `audit_log` | id, at, actor, action, target, detail |
 | `task_chains` | task_id (PK), after_task_id (NULL once the predecessor is deleted), after_number, blocked_reason, created_at — ADR-16 |
+| `vault_secrets` | id, section (team/agent), sandbox_id (agent: one sandbox, NULL = every sandbox), name, description, hosts (json), injection, header_name, fields (json, names only), kek_id, wrapped_key, ciphertext, created/updated by and at, value_updated_at, last_used_at; agent names unique where they apply — ADR-18 (version 6) |
+| `vault_reauth` | session_hash (PK), at: a browser session's last re-authentication — ADR-18 |
+| `vault_meta` | name (PK), kek_id, wrapped_key, ciphertext, created_at: sealed vault key material (the egress CA) — ADR-18 |
 | `prompt_holds` | id, task_id, class, prompt, prompt_sha256, percent, typed_by, state (pending/sent/consumed/parallel/after/skipped_after/reverted/dismissed/superseded), created_at, resolved_by, resolved_at, new_task_id — ADR-16 |
 
 Versioning: each migration is one transaction; startup refuses a database from a newer schema.
@@ -1022,7 +1204,10 @@ Common launch environment: `YULIUS_URL` (internal listener), `YULIUS_TASK_TOKEN`
 home), `TERM=xterm-256color`, `COLORTERM=truecolor`, git author identity of the acting user,
 `GIT_CONFIG_*` credential helper `yulius git-credential`, `YULIUS_PORT_BASE`/`YULIUS_PORT_COUNT`
 (per-sandbox range of 20 ports from 20000 upward, persisted on the sandbox row; SPEC-001 PRJ-010)
-and `PORT` (first port of the range). Provider secrets are environment-only.
+and `PORT` (first port of the range). Provider secrets are environment-only. Agent secrets
+(ADR-18): `NAME=yulius-secret-NAME` placeholders, `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec`
+and `YULIUS_SCRUB_FILE`, and, with the egress proxy, `HTTP(S)_PROXY` (secret: it carries the task
+token), `NO_PROXY`, `NODE_USE_ENV_PROXY` and the CA bundle variables.
 
 Sandbox shell sessions (SPEC-001 UI-015, UI-016) reuse the same ptyhost machinery with the user's
 login shell in the contained sandbox; they are not tasks, have no harness hooks or MCP token, are
@@ -1086,8 +1271,11 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `workflows_list` | Workflows available (AUT-004) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
+| `secrets_list`, `browser_fill_secret` | Agent secrets: names, descriptions and bindings; typing a value, user name or TOTP code into a page of a bound host (VLT-004/005, ADR-18) |
 
 Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
+Every tool result (and error) is redacted of the sandbox's agent secrets before it is returned
+(VLT-007).
 `scope_claim` takes one glob or up to 20, a task holds at most 50; claims of tasks that are no
 longer live are ignored, a repeated claim is kept once and messages nobody again, and each other
 task whose claim overlaps a new claim gets one `scope` message (which wakes it when idle).
@@ -1118,6 +1306,10 @@ output) and is recorded. Responses:
   refused connection or a 5xx is retried every 2 s (a server restart). The CLI's `timeout` for
   these two events is 8 days + 1 h; the other events keep 15 s.
 - `Notification` / `PermissionRequest` → `needs_attention`.
+- `PostToolUse` (matcher `*`, timeout 60 s) never reaches the server with the tool result: the hook
+  client redacts it in the sandbox from the run's fingerprints and prints
+  `hookSpecificOutput.updatedToolOutput` when it held an agent secret (ADR-18); without
+  fingerprints in a Yulius run the result is withheld.
 
 Waking idle tasks (COM-005): when a direct message arrives for a `running` task with activity
 `waiting` or `done` for ≥ 30 s and no viewer typed in the last 30 s, the supervisor types a short notice and
@@ -1249,6 +1441,15 @@ raw body up to the upload limit, 25 MiB by default).
   write-access and Origin checks. The sandbox Chrome refuses Yulius's origins and listeners
   (ADR-14, BRW-008).
 
+- Secrets vault (ADR-18): values only under envelope encryption (per-write data keys, KEK derived
+  from the master key, row identity as associated data); team reveals need a browser session
+  authenticated within 10 minutes and are audited; agent secrets are write-only, added to
+  requests by the egress proxy only for their bound hosts (TLS interception only there; local
+  destinations refused after resolution), typed by `browser_fill_secret` only into pages of those
+  hosts, and redacted with their encodings from every channel an agent reads, from the terminal
+  and from served transcripts. In-sandbox redaction holds fingerprints, never values, and fails
+  closed. Remaining threats: ADR-18.
+
 ## 8a. Imported repository specifics (Product, Studio)
 
 - Sandboxes clone from GitHub; local machine state arrives only through `yulius import` uploads.
@@ -1297,6 +1498,10 @@ raw body up to the upload limit, 25 MiB by default).
 | GitHub retries | 3 attempts, ≤ 30 s total, honoring `Retry-After` | surface error |
 | Permission cache | 5 min | refetch |
 | Preview handshakes / grants | 1024 pending (60 s) / 4096 (12 h, re-checked every 30 s) | refuse with 429 / drop the oldest |
+| Egress proxy connections | 256; connect and TLS handshake 10 s; request head 60 s; 24 h per connection | 503 |
+| Re-authentication window / attempts | 10 min / 5 per user and minute | `reauth_required` / 429 |
+| Agent secrets per sandbox (with instance-wide) / hosts per secret / value | 200 / 16 / 8 characters – 16 KiB | 429 / 422 / 422 |
+| Redaction hold | Bash wrapper: an unfinished line's last needle − 1 bytes, 50 ms quiet; terminal: a possible beginning of ≥ 4 bytes, 40 ms; `PostToolUse` input 32 MiB | released; larger results withheld |
 | Preview requests awaiting a head / WebSockets | 512 / 256 (connect 5 s, head 120 s) | 503 |
 | Browser video GOP cache (per display) | 600 frames / 6 MiB; replayed to a joining viewer up to 512 KiB | not cached / not replayed; the viewer asks for a keyframe |
 | Browser video queue per subscriber / per viewer socket | 616 packets / 300 frames, 8 MiB, 250 ms waiting | skip to a fresh keyframe, asked of the encoder (a keyframe flushes what it supersedes) |
@@ -1321,6 +1526,9 @@ raw body up to the upload limit, 25 MiB by default).
 
 | Failure | Detection | Behavior |
 | --- | --- | --- |
+| Vault unreadable (decryption or store failure) at a run's start | error from the vault | The run does not start (never without redaction); MCP and served text are withheld, not shown unredacted (ADR-18). |
+| Yulius unreachable from the Bash wrapper or the tool hook | request fails | Fingerprints from the run's `scrub.json`; without them the command is not run (exit 126) and a tool result is withheld. |
+| Egress upstream unreachable, refused destination, compressed response from a bound host | connect error / policy / `Content-Encoding` | 502 / 403 / 502 with a plain-text reason to the agent's client; nothing forwarded. |
 | Browser disconnect | WS close | Session continues; reconnect → snapshot (AC-NFR-1). |
 | Display encoder fails (ffmpeg missing, crash) | start error / output ends | Restart with backoff; after 3 failed starts viewers get JPEG frames with the reason (ADR-15). |
 | Xvfb missing or fails | resolve / exit before ready | `auto`: headless with JPEG frames; `xvfb`: the browser does not start, with the reason; a crashed display ends the browser, which restarts on next use. |
@@ -1380,6 +1588,7 @@ raw body up to the upload limit, 25 MiB by default).
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
 | R-12 | Closed (F 2026-10-08): Codex releases without `--no-daemon` (Codex removed). | — |
+| R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding, the 8-character minimum, write-only values, audit of every use; ADR-18 lists the threats. Open: a live smoke with Claude Code; R-07. |
 | R-13 | The server's own Git (worktree creation, commits, status and readiness checks, fetch, delivery pushes) runs outside containment in the sandbox repository and worktrees, whose Git directories agents can write (#54). | Every server-side Git command runs with repository hooks off (`core.hooksPath=/dev/null`), fsmonitor off and `ext::` refused; agents' own Git still runs hooks, so the pre-push guard applies to them. Open (#54 part B): repository-local configuration that runs programs or redirects remotes (filter, diff and merge drivers, credential helpers, URL rewriting) — read-only Git config in containment or a Yulius-owned mirror. |
 
 ## 13. Delivery checkpoints
@@ -1432,10 +1641,15 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Dropped files (EDT-006, UI-048, 2026-10-10) | `tests/uploads.rs`: editor uploads (write users only, CSRF, folders created, byte-for-byte with SHA-256, 409 then overwrite with permissions kept, folders and links never replaced, traversal / absolute / control characters / `.git` / links out refused with nothing written outside, a repository folder linked into another sandbox refused, task worktree root, audit), bounds (declared and streamed size, an interrupted body, 8 concurrent then 429, no temporary file left), task attachments (safe unique names, read users refused, a planted link refused, removed with the task), shell attachments (owner only, removed when the shell closes or at start-up), the fake agent reading an attachment by path with a clean `git status` (uncontained; on Linux also inside bubblewrap, skipped where bubblewrap cannot run). Unit tests in `yulius_app::uploads`. `e2e/tests/filedrop.e2e.ts` (mock UI). Opt-in `live_ui_filedrop.rs` with real Chrome: real drags from disk to the explorer and to the task terminal, read by the fake agent. |
 | Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
 | Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
+| Secrets vault (ADR-18, 2026-10-10) | Unit: names, host bindings, placeholders, injections, encodings (base64 at every alignment), plain and fingerprinted redaction with every split point, RFC 4226/6238 vectors, envelopes (row binding, tampering, foreign key), migration and store. `yulius-egress/tests/proxy.rs`: real TLS upstream echoing the credential, interception with injection and query placeholder, opaque tunnels, 407/403/409 refusals, plain HTTP upgraded to HTTPS. `tests/secrets.rs`: team CRUD, re-authentication by password and GitHub, bearer tokens refused, activity, encryption at rest (database, WAL, backup), access control, agent secrets via the App's policy (placeholders, Basic, injection, conflicts, other sandbox), MCP `secrets_list`, `browser_fill_secret` (fake browser), MCP result redaction, MCP `${secret:NAME}`. `tests/secrets_redaction.rs`: the real `yulius --scrub-exec` with fingerprints (echo, file read back, base64, chunks split by sleeps), the `PostToolUse` hook, a fake agent printing a value into the task terminal, launch environment. `e2e/tests/secrets.e2e.ts` (mock UI). Not exercised: a live Claude Code session. |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
 
+- 2026-10-10 (F 2026-10-10, item 3a): ADR-18 — the secrets vault: envelope encryption, team
+  secrets with re-authenticated audited reveals and TOTP, agent secrets used through the egress
+  proxy and browser filling, exact-value redaction of every channel an agent reads; §3, §4, §5,
+  §7.2, §7.4, §7.5, §8, §9, §10, R-15, §14.
 - 2026-10-10 (F 2026-10-10, later; #122): ADR-15 over the user's link — flow control by
   acknowledged frames, VBV bitrate tiers following the slowest viewer, keyframes on demand from a
   replacement encoder (make before break), coalesced wheel and pointer moves, every frame decoded
