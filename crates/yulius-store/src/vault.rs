@@ -336,7 +336,12 @@ mod tests {
     use super::*;
     use yulius_app::ports::store::AuditStore as _;
 
-    fn record(id: &str, section: VaultSection, sandbox: Option<&str>, name: &str) -> VaultSecretRecord {
+    fn record(
+        id: &str,
+        section: VaultSection,
+        sandbox: Option<&str>,
+        name: &str,
+    ) -> VaultSecretRecord {
         VaultSecretRecord {
             id: id.into(),
             section,
@@ -459,9 +464,17 @@ mod tests {
         assert!(!store.vault_insert_meta("ca", &env, Timestamp(2)).await?);
         assert_eq!(store.vault_meta("ca").await?, Some(env));
 
-        store.audit(Timestamp(1), "u", "login.github", None, None).await?;
         store
-            .audit(Timestamp(2), "u", "vault.team.reveal", Some("t1"), Some("Gmail"))
+            .audit(Timestamp(1), "u", "login.github", None, None)
+            .await?;
+        store
+            .audit(
+                Timestamp(2),
+                "u",
+                "vault.team.reveal",
+                Some("t1"),
+                Some("Gmail"),
+            )
             .await?;
         let audit = store.vault_audit(10).await?;
         assert_eq!(audit.len(), 1);
@@ -477,7 +490,10 @@ mod tests {
             .vault_insert(&record("a", VaultSection::Agent, Some("s2"), "KEY"))
             .await?;
         store
-            .call(|c| c.execute("DELETE FROM sandboxes WHERE id = 's2'", []).map_err(db))
+            .call(|c| {
+                c.execute("DELETE FROM sandboxes WHERE id = 's2'", [])
+                    .map_err(db)
+            })
             .await?;
         assert!(store.vault_get("a").await?.is_none());
         Ok(())

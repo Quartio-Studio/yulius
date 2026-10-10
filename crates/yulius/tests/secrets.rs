@@ -45,9 +45,11 @@ async fn create_team_secret(
         &h.router,
         Method::POST,
         "/api/team-secrets",
-        Some(json!({"title": "Shared Gmail", "url": "https://mail.google.com",
+        Some(
+            json!({"title": "Shared Gmail", "url": "https://mail.google.com",
             "username": "team@acme.test", "password": MAIL_PASSWORD,
-            "notes": "recovery: 1111-2222", "totp": SEED})),
+            "notes": "recovery: 1111-2222", "totp": SEED}),
+        ),
         creds,
     )
     .await?;
@@ -147,7 +149,14 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
     assert_eq!(token_reveal.body["error"]["code"], "forbidden");
 
     // Every reveal, copy, code and confirmation is in the trail; no value is.
-    let activity = call(&h.router, Method::GET, "/api/secrets/activity", None, &admin).await?;
+    let activity = call(
+        &h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &admin,
+    )
+    .await?;
     let actions: Vec<&str> = activity
         .body
         .as_array()
@@ -163,7 +172,10 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
         "vault.reauth",
         "vault.reauth.failed",
     ] {
-        assert!(actions.contains(&action), "{action} missing from {actions:?}");
+        assert!(
+            actions.contains(&action),
+            "{action} missing from {actions:?}"
+        );
     }
     assert_hidden(&activity.body, &[MAIL_PASSWORD, "1111-2222", SEED]);
 
@@ -230,13 +242,18 @@ async fn members_confirm_with_a_new_github_sign_in() -> TestResult {
     let shown = call(&h.router, Method::POST, &reveal, None, &again).await?;
     assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
     assert_eq!(shown.body["password"], MAIL_PASSWORD);
-    let activity = call(&h.router, Method::GET, "/api/secrets/activity", None, &again).await?;
-    assert!(
-        activity
-            .body
-            .as_array()
-            .is_some_and(|a| a.iter().any(|e| e["actor"] == "anna" && e["action"] == "vault.team.reveal"))
-    );
+    let activity = call(
+        &h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &again,
+    )
+    .await?;
+    assert!(activity.body.as_array().is_some_and(|a| {
+        a.iter()
+            .any(|e| e["actor"] == "anna" && e["action"] == "vault.team.reveal")
+    }));
     Ok(())
 }
 
@@ -338,23 +355,60 @@ async fn agent_secrets_follow_sandbox_access_and_stay_write_only() -> TestResult
     let created = add_agent_secret(&w, &w.writer, "s1", stripe.clone()).await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     assert_eq!(created.body["placeholder"], "yulius-secret-STRIPE_KEY");
-    assert_eq!(created.body["injection_text"], "Authorization: Bearer <value>");
+    assert_eq!(
+        created.body["injection_text"],
+        "Authorization: Bearer <value>"
+    );
     assert_hidden(&created.body, &[STRIPE]);
     let id = created.body["id"].as_str().ok_or("id")?.to_owned();
 
     // Read access lists, cannot add or change; no access sees nothing.
-    let listed = call(&w.h.router, Method::GET, "/api/sandboxes/s1/agent-secrets", None, &w.reader).await?;
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-secrets",
+        None,
+        &w.reader,
+    )
+    .await?;
     assert_eq!(listed.status, StatusCode::OK);
     assert_eq!(listed.body[0]["name"], "STRIPE_KEY");
     assert_eq!(listed.body[0]["can_manage"], false);
     assert_hidden(&listed.body, &[STRIPE]);
-    let refused = add_agent_secret(&w, &w.reader, "s1", json!({"name": "OTHER", "hosts": ["a.test"], "value": "12345678"})).await?;
+    let refused = add_agent_secret(
+        &w,
+        &w.reader,
+        "s1",
+        json!({"name": "OTHER", "hosts": ["a.test"], "value": "12345678"}),
+    )
+    .await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
-    let patch = call(&w.h.router, Method::PATCH, &format!("/api/agent-secrets/{id}"), Some(json!({"value": "replaced-value-1"})), &w.reader).await?;
+    let patch = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"value": "replaced-value-1"})),
+        &w.reader,
+    )
+    .await?;
     assert_eq!(patch.status, StatusCode::FORBIDDEN);
-    let hidden = call(&w.h.router, Method::GET, "/api/sandboxes/s1/agent-secrets", None, &w.outsider).await?;
+    let hidden = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-secrets",
+        None,
+        &w.outsider,
+    )
+    .await?;
     assert_eq!(hidden.status, StatusCode::NOT_FOUND);
-    let hidden_patch = call(&w.h.router, Method::PATCH, &format!("/api/agent-secrets/{id}"), Some(json!({"description": "x"})), &w.outsider).await?;
+    let hidden_patch = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"description": "x"})),
+        &w.outsider,
+    )
+    .await?;
     assert_eq!(hidden_patch.status, StatusCode::NOT_FOUND);
 
     // Instance-wide secrets: instance administrators only.
@@ -363,29 +417,78 @@ async fn agent_secrets_follow_sandbox_access_and_stay_write_only() -> TestResult
     assert_eq!(by_writer.status, StatusCode::FORBIDDEN);
     let by_admin = add_agent_secret(&w, &w.admin, "s1", global).await?;
     assert_eq!(by_admin.status, StatusCode::CREATED, "{}", by_admin.body);
-    let other = call(&w.h.router, Method::GET, "/api/sandboxes/s2/agent-secrets", None, &w.writer).await?;
-    let names: Vec<&str> = other.body.as_array().ok_or("list")?.iter().filter_map(|s| s["name"].as_str()).collect();
-    assert_eq!(names, vec!["GLOBAL_KEY"], "instance-wide ones apply to every sandbox");
+    let other = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s2/agent-secrets",
+        None,
+        &w.writer,
+    )
+    .await?;
+    let names: Vec<&str> = other
+        .body
+        .as_array()
+        .ok_or("list")?
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["GLOBAL_KEY"],
+        "instance-wide ones apply to every sandbox"
+    );
 
     // Validation: short values, reserved names, duplicates, Basic without a user name.
     for (body, status) in [
-        (json!({"name": "SHORT", "hosts": ["a.test"], "value": "1234567"}), StatusCode::UNPROCESSABLE_ENTITY),
-        (json!({"name": "PATH", "hosts": ["a.test"], "value": "12345678"}), StatusCode::UNPROCESSABLE_ENTITY),
-        (json!({"name": "NO_HOST", "hosts": [], "value": "12345678"}), StatusCode::UNPROCESSABLE_ENTITY),
-        (json!({"name": "LOCAL", "hosts": ["localhost"], "value": "12345678"}), StatusCode::UNPROCESSABLE_ENTITY),
-        (json!({"name": "BASIC", "hosts": ["a.test"], "injection": "basic", "value": "12345678"}), StatusCode::UNPROCESSABLE_ENTITY),
+        (
+            json!({"name": "SHORT", "hosts": ["a.test"], "value": "1234567"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"name": "PATH", "hosts": ["a.test"], "value": "12345678"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"name": "NO_HOST", "hosts": [], "value": "12345678"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"name": "LOCAL", "hosts": ["localhost"], "value": "12345678"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"name": "BASIC", "hosts": ["a.test"], "injection": "basic", "value": "12345678"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
         (stripe, StatusCode::CONFLICT),
-        (json!({"name": "GLOBAL_KEY", "hosts": ["a.test"], "value": "12345678"}), StatusCode::CONFLICT),
+        (
+            json!({"name": "GLOBAL_KEY", "hosts": ["a.test"], "value": "12345678"}),
+            StatusCode::CONFLICT,
+        ),
     ] {
         let response = add_agent_secret(&w, &w.writer, "s1", body.clone()).await?;
         assert_eq!(response.status, status, "{body}: {}", response.body);
     }
 
     // A replaced value is never returned either.
-    let replaced = call(&w.h.router, Method::PATCH, &format!("/api/agent-secrets/{id}"), Some(json!({"value": "sk_test_replaced_999"})), &w.writer).await?;
+    let replaced = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"value": "sk_test_replaced_999"})),
+        &w.writer,
+    )
+    .await?;
     assert_eq!(replaced.status, StatusCode::OK);
     assert_hidden(&replaced.body, &["sk_test_replaced_999"]);
-    let removed = call(&w.h.router, Method::DELETE, &format!("/api/agent-secrets/{id}"), None, &w.writer).await?;
+    let removed = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/agent-secrets/{id}"),
+        None,
+        &w.writer,
+    )
+    .await?;
     assert_eq!(removed.status, StatusCode::NO_CONTENT);
     Ok(())
 }
@@ -434,43 +537,85 @@ async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
     assert_eq!(s1.sandbox_id.as_str(), "s1");
     assert!(app.egress_intercepts(&s1, "api.stripe.test", 443).await);
     assert!(app.egress_intercepts(&s1, "eu.hdr.test", 443).await);
-    assert!(!app.egress_intercepts(&s1, "hdr.test", 443).await, "*. needs a subdomain");
+    assert!(
+        !app.egress_intercepts(&s1, "hdr.test", 443).await,
+        "*. needs a subdomain"
+    );
     assert!(!app.egress_intercepts(&s1, "api.stripe.test", 8443).await);
     assert!(!app.egress_intercepts(&s1, "example.com", 443).await);
-    assert!(!app.egress_intercepts(&s2, "api.stripe.test", 443).await, "another sandbox's secret");
+    assert!(
+        !app.egress_intercepts(&s2, "api.stripe.test", 443).await,
+        "another sandbox's secret"
+    );
 
     // Injected header; the agent's proxy headers removed; identity encoding requested.
     let plain = app
-        .egress_apply(&s1, request("api.stripe.test", "/v1/charges", &[("proxy-authorization", "Basic x"), ("accept-encoding", "gzip")]))
+        .egress_apply(
+            &s1,
+            request(
+                "api.stripe.test",
+                "/v1/charges",
+                &[
+                    ("proxy-authorization", "Basic x"),
+                    ("accept-encoding", "gzip"),
+                ],
+            ),
+        )
         .await;
-    assert_eq!(header(&plain, "authorization"), Some(format!("Bearer {STRIPE}").as_str()));
+    assert_eq!(
+        header(&plain, "authorization"),
+        Some(format!("Bearer {STRIPE}").as_str())
+    );
     assert_eq!(header(&plain, "proxy-authorization"), None);
     assert_eq!(header(&plain, "accept-encoding"), Some("identity"));
 
     // Placeholders in a header and the query are replaced; one for an unbound secret is not.
     let placeholder = app
-        .egress_apply(&s1, request(
-            "api.stripe.test",
-            "/v1/x?key=yulius-secret-STRIPE_KEY&other=yulius-secret-SVC_PASS",
-            &[("authorization", "Bearer yulius-secret-STRIPE_KEY")],
-        ))
+        .egress_apply(
+            &s1,
+            request(
+                "api.stripe.test",
+                "/v1/x?key=yulius-secret-STRIPE_KEY&other=yulius-secret-SVC_PASS",
+                &[("authorization", "Bearer yulius-secret-STRIPE_KEY")],
+            ),
+        )
         .await;
     match &placeholder {
-        EgressDecision::Forward { path_and_query, used, .. } => {
-            assert_eq!(path_and_query, &format!("/v1/x?key={STRIPE}&other=yulius-secret-SVC_PASS"));
+        EgressDecision::Forward {
+            path_and_query,
+            used,
+            ..
+        } => {
+            assert_eq!(
+                path_and_query,
+                &format!("/v1/x?key={STRIPE}&other=yulius-secret-SVC_PASS")
+            );
             assert_eq!(used, &vec!["STRIPE_KEY".to_owned()]);
         }
         EgressDecision::Refuse { .. } => return Err("refused".into()),
     }
-    assert_eq!(header(&placeholder, "authorization"), Some(format!("Bearer {STRIPE}").as_str()));
+    assert_eq!(
+        header(&placeholder, "authorization"),
+        Some(format!("Bearer {STRIPE}").as_str())
+    );
 
     // Basic credentials and a named header.
     let basic = app.egress_apply(&s1, request("svc.test", "/", &[])).await;
-    assert_eq!(header(&basic, "authorization"), Some("Basic Ym9iOnN2Yy1wYXNzd29yZC00Mg=="));
-    let named = app.egress_apply(&s1, request("eu.hdr.test", "/", &[])).await;
+    assert_eq!(
+        header(&basic, "authorization"),
+        Some("Basic Ym9iOnN2Yy1wYXNzd29yZC00Mg==")
+    );
+    let named = app
+        .egress_apply(&s1, request("eu.hdr.test", "/", &[]))
+        .await;
     assert_eq!(header(&named, "x-api-key"), Some("hdr-value-12345"));
     // The agent's own header stays (no injection over it).
-    let own = app.egress_apply(&s1, request("api.stripe.test", "/", &[("authorization", "Bearer mine")])).await;
+    let own = app
+        .egress_apply(
+            &s1,
+            request("api.stripe.test", "/", &[("authorization", "Bearer mine")]),
+        )
+        .await;
     assert_eq!(header(&own, "authorization"), Some("Bearer mine"));
 
     // Two secrets for one header: refused until one is chosen.
@@ -478,29 +623,82 @@ async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
     match twins {
         EgressDecision::Refuse { status, message } => {
             assert_eq!(status, 409);
-            assert!(message.contains("TWIN_A, TWIN_B") && message.contains("X-Yulius-Secret"), "{message}");
+            assert!(
+                message.contains("TWIN_A, TWIN_B") && message.contains("X-Yulius-Secret"),
+                "{message}"
+            );
         }
         EgressDecision::Forward { .. } => return Err("ambiguous injection was forwarded".into()),
     }
-    let chosen = app.egress_apply(&s1, request("twin.test", "/", &[("x-yulius-secret", "TWIN_B")])).await;
-    assert_eq!(header(&chosen, "authorization"), Some("Bearer twin-b-value-2"));
+    let chosen = app
+        .egress_apply(
+            &s1,
+            request("twin.test", "/", &[("x-yulius-secret", "TWIN_B")]),
+        )
+        .await;
+    assert_eq!(
+        header(&chosen, "authorization"),
+        Some("Bearer twin-b-value-2")
+    );
     assert_eq!(header(&chosen, "x-yulius-secret"), None);
-    let unknown = app.egress_apply(&s1, request("twin.test", "/", &[("x-yulius-secret", "STRIPE_KEY")])).await;
-    assert!(matches!(unknown, EgressDecision::Refuse { status: 403, .. }));
+    let unknown = app
+        .egress_apply(
+            &s1,
+            request("twin.test", "/", &[("x-yulius-secret", "STRIPE_KEY")]),
+        )
+        .await;
+    assert!(matches!(
+        unknown,
+        EgressDecision::Refuse { status: 403, .. }
+    ));
 
     // Responses are redacted of every in-scope value and encoding.
     let matcher = app.egress_redactor(&s1).await;
-    let (redacted, names) = redact_text(matcher.as_ref(), &format!("echo: Bearer {STRIPE} hex {}", yulius_domain::vault::encode::hex(STRIPE.as_bytes(), false)));
-    assert_eq!(redacted, "echo: Bearer [secret:STRIPE_KEY] hex [secret:STRIPE_KEY]");
+    let (redacted, names) = redact_text(
+        matcher.as_ref(),
+        &format!(
+            "echo: Bearer {STRIPE} hex {}",
+            yulius_domain::vault::encode::hex(STRIPE.as_bytes(), false)
+        ),
+    );
+    assert_eq!(
+        redacted,
+        "echo: Bearer [secret:STRIPE_KEY] hex [secret:STRIPE_KEY]"
+    );
     assert_eq!(names, vec!["STRIPE_KEY".to_owned()]);
     assert!(app.egress_redactor(&s2).await.is_empty());
 
     // Uses are audited by name.
-    let activity = call(&w.h.router, Method::GET, "/api/secrets/activity", None, &w.writer).await?;
-    assert!(activity.body.as_array().is_some_and(|a| a.iter().any(|e| e["action"] == "vault.agent.use" && e["actor"].as_str().is_some_and(|a| a.starts_with("task:")))));
+    let activity = call(
+        &w.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &w.writer,
+    )
+    .await?;
+    assert!(activity.body.as_array().is_some_and(|a| {
+        a.iter().any(|e| {
+            e["action"] == "vault.agent.use"
+                && e["actor"].as_str().is_some_and(|a| a.starts_with("task:"))
+        })
+    }));
     assert_hidden(&activity.body, &[STRIPE, "svc-password-42"]);
-    let unseen = call(&w.h.router, Method::GET, "/api/secrets/activity", None, &w.outsider).await?;
-    assert!(unseen.body.as_array().is_some_and(|a| a.iter().all(|e| e["action"] != "vault.agent.use")), "another sandbox's activity stays hidden");
+    let unseen = call(
+        &w.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &w.outsider,
+    )
+    .await?;
+    assert!(
+        unseen
+            .body
+            .as_array()
+            .is_some_and(|a| a.iter().all(|e| e["action"] != "vault.agent.use")),
+        "another sandbox's activity stays hidden"
+    );
     Ok(())
 }
 
@@ -516,10 +714,17 @@ async fn agents_list_names_and_read_redacted_results() -> TestResult {
     let text = tool_text(&listed);
     assert_eq!(text["secrets"][0]["name"], "STRIPE_KEY");
     assert_eq!(text["secrets"][0]["hosts"], json!(["api.stripe.test"]));
-    assert_eq!(text["secrets"][0]["placeholder"], "yulius-secret-STRIPE_KEY");
+    assert_eq!(
+        text["secrets"][0]["placeholder"],
+        "yulius-secret-STRIPE_KEY"
+    );
     assert_hidden(&listed, &[STRIPE]);
     let other = tool_text(&mcp_tool(&w.h, TOKEN_S2, "secrets_list", json!({})).await?);
-    assert_eq!(other["secrets"], json!([]), "another sandbox's agent sees nothing");
+    assert_eq!(
+        other["secrets"],
+        json!([]),
+        "another sandbox's agent sees nothing"
+    );
 
     // A task prompt (or any text a tool returns) holding the value comes back redacted, in
     // every encoding.
@@ -531,7 +736,12 @@ async fn agents_list_names_and_read_redacted_results() -> TestResult {
             "use {STRIPE} and {}",
             yulius_domain::vault::encode::base64(format!("k={STRIPE}").as_bytes(), false, true)
         );
-        w.h.store.insert_task(&yulius_app::model::TaskRecord { id: yulius_domain::ids::TaskId::parse("t4")?, ..record }).await?;
+        w.h.store
+            .insert_task(&yulius_app::model::TaskRecord {
+                id: yulius_domain::ids::TaskId::parse("t4")?,
+                ..record
+            })
+            .await?;
     }
     let got = mcp_tool(&w.h, TOKEN_S1, "task_get", json!({"task_id": "t4"})).await?;
     let raw = got.to_string();
@@ -544,7 +754,10 @@ async fn agents_list_names_and_read_redacted_results() -> TestResult {
         Method::POST,
         "/internal/scrub/fingerprints",
         Some(json!({})),
-        &Creds { bearer: Some(TOKEN_S1.into()), ..Creds::default() },
+        &Creds {
+            bearer: Some(TOKEN_S1.into()),
+            ..Creds::default()
+        },
     )
     .await?;
     assert_eq!(fingerprints.status, StatusCode::OK);
@@ -553,19 +766,44 @@ async fn agents_list_names_and_read_redacted_results() -> TestResult {
     let matcher = yulius_harness::scrub_client::matcher(&set).ok_or("matcher")?;
     let (out, _) = redact_text(&matcher, &format!("STRIPE={STRIPE}\n"));
     assert_eq!(out, "STRIPE=[secret:STRIPE_KEY]\n");
-    let refused = call(&w.h.internal, Method::POST, "/internal/scrub/fingerprints", Some(json!({})), &Creds { bearer: Some("nope".into()), ..Creds::default() }).await?;
+    let refused = call(
+        &w.h.internal,
+        Method::POST,
+        "/internal/scrub/fingerprints",
+        Some(json!({})),
+        &Creds {
+            bearer: Some("nope".into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
     assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
     let report = call(
         &w.h.internal,
         Method::POST,
         "/internal/scrub/report",
         Some(json!({"channel": "bash", "names": ["STRIPE_KEY"]})),
-        &Creds { bearer: Some(TOKEN_S1.into()), ..Creds::default() },
+        &Creds {
+            bearer: Some(TOKEN_S1.into()),
+            ..Creds::default()
+        },
     )
     .await?;
     assert_eq!(report.status, StatusCode::NO_CONTENT);
-    let activity = call(&w.h.router, Method::GET, "/api/secrets/activity", None, &w.writer).await?;
-    assert!(activity.body.as_array().is_some_and(|a| a.iter().any(|e| e["action"] == "vault.agent.redacted")));
+    let activity = call(
+        &w.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &w.writer,
+    )
+    .await?;
+    assert!(
+        activity
+            .body
+            .as_array()
+            .is_some_and(|a| a.iter().any(|e| e["action"] == "vault.agent.redacted"))
+    );
     Ok(())
 }
 
@@ -578,26 +816,46 @@ async fn mcp_secret_references_resolve_to_agent_secrets() -> TestResult {
         &w.h.router,
         Method::POST,
         "/api/sandboxes/s1/mcp",
-        Some(json!({"name": "apify", "transport": "stdio", "command": "npx", "args": ["apify-mcp"],
-            "env": {"APIFY_TOKEN": "${secret:APIFY_TOKEN}", "MISSING": "${secret:NOT_THERE}"}})),
+        Some(
+            json!({"name": "apify", "transport": "stdio", "command": "npx", "args": ["apify-mcp"],
+            "env": {"APIFY_TOKEN": "${secret:APIFY_TOKEN}", "MISSING": "${secret:NOT_THERE}"}}),
+        ),
         &w.writer,
     )
     .await?;
     assert_eq!(server.status, StatusCode::CREATED, "{}", server.body);
     use yulius_app::ports::store::SandboxStore as _;
-    let sandbox = w.h.store.sandbox(&yulius_domain::ids::SandboxId::parse("s1")?).await?.ok_or("sandbox")?;
+    let sandbox =
+        w.h.store
+            .sandbox(&yulius_domain::ids::SandboxId::parse("s1")?)
+            .await?
+            .ok_or("sandbox")?;
     let attachments = w.h.app.mcp_attachments(&sandbox).await?;
     let env = attachments
         .iter()
         .find_map(|a| match a {
-            yulius_app::ports::harness::McpAttachment::Stdio { name, env, .. } if name == "apify" => Some(env.clone()),
+            yulius_app::ports::harness::McpAttachment::Stdio { name, env, .. }
+                if name == "apify" =>
+            {
+                Some(env.clone())
+            }
             _ => None,
         })
         .ok_or("apify attachment")?;
-    assert_eq!(env, vec![("APIFY_TOKEN".to_owned(), "apify-token-value-77".to_owned())]);
+    assert_eq!(
+        env,
+        vec![("APIFY_TOKEN".to_owned(), "apify-token-value-77".to_owned())]
+    );
     // Another sandbox's servers cannot reach s1's secret.
-    let other = w.h.store.sandbox(&yulius_domain::ids::SandboxId::parse("s2")?).await?.ok_or("sandbox")?;
-    assert_eq!(w.h.app.resolve_secret_ref(&other, "APIFY_TOKEN").await?, None);
+    let other =
+        w.h.store
+            .sandbox(&yulius_domain::ids::SandboxId::parse("s2")?)
+            .await?
+            .ok_or("sandbox")?;
+    assert_eq!(
+        w.h.app.resolve_secret_ref(&other, "APIFY_TOKEN").await?,
+        None
+    );
     Ok(())
 }
 
@@ -629,7 +887,15 @@ async fn nothing_is_stored_in_clear() -> TestResult {
     }
     for path in &files {
         let bytes = std::fs::read(path)?;
-        for needle in [MAIL_PASSWORD, "1111-2222", SEED, "team@acme.test", STRIPE, "stripe-user-x", "mail.google.com"] {
+        for needle in [
+            MAIL_PASSWORD,
+            "1111-2222",
+            SEED,
+            "team@acme.test",
+            STRIPE,
+            "stripe-user-x",
+            "mail.google.com",
+        ] {
             assert!(
                 !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
                 "{needle} in clear in {}",
@@ -638,7 +904,14 @@ async fn nothing_is_stored_in_clear() -> TestResult {
         }
     }
     // Encrypted, not lost.
-    let shown = call(&h.router, Method::POST, &format!("/api/team-secrets/{id}/reveal"), None, &admin).await?;
+    let shown = call(
+        &h.router,
+        Method::POST,
+        &format!("/api/team-secrets/{id}/reveal"),
+        None,
+        &admin,
+    )
+    .await?;
     assert_eq!(shown.body["password"], MAIL_PASSWORD);
     Ok(())
 }
@@ -678,17 +951,26 @@ async fn the_proxy_shares_the_internal_listener() -> TestResult {
     ));
     let served = support::serve(router).await?;
 
-    async fn exchange(addr: std::net::SocketAddr, head: &str) -> Result<(tokio::net::TcpStream, String), Box<dyn std::error::Error>> {
+    async fn exchange(
+        addr: std::net::SocketAddr,
+        head: &str,
+    ) -> Result<(tokio::net::TcpStream, String), Box<dyn std::error::Error>> {
         let mut stream = tokio::net::TcpStream::connect(addr).await?;
         stream.write_all(head.as_bytes()).await?;
         let mut buffer = vec![0u8; 1024];
-        let n = tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buffer)).await??;
+        let n = tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buffer))
+            .await??;
         Ok((stream, String::from_utf8_lossy(&buffer[..n]).into_owned()))
     }
-    let (_, refused) = exchange(served.addr, "CONNECT tunnel.test:443 HTTP/1.1\r\nHost: tunnel.test:443\r\n\r\n").await?;
+    let (_, refused) = exchange(
+        served.addr,
+        "CONNECT tunnel.test:443 HTTP/1.1\r\nHost: tunnel.test:443\r\n\r\n",
+    )
+    .await?;
     assert!(refused.starts_with("HTTP/1.1 407"), "{refused}");
     use base64::Engine as _;
-    let credentials = base64::engine::general_purpose::STANDARD.encode(format!("yulius:{TOKEN_S1}"));
+    let credentials =
+        base64::engine::general_purpose::STANDARD.encode(format!("yulius:{TOKEN_S1}"));
     let (mut tunnel, opened) = exchange(
         served.addr,
         &format!("CONNECT tunnel.test:443 HTTP/1.1\r\nHost: tunnel.test:443\r\nProxy-Authorization: Basic {credentials}\r\n\r\n"),
@@ -697,7 +979,8 @@ async fn the_proxy_shares_the_internal_listener() -> TestResult {
     assert!(opened.starts_with("HTTP/1.1 200"), "{opened}");
     tunnel.write_all(b"ping through the tunnel\n").await?;
     let mut buffer = vec![0u8; 64];
-    let n = tokio::time::timeout(std::time::Duration::from_secs(10), tunnel.read(&mut buffer)).await??;
+    let n = tokio::time::timeout(std::time::Duration::from_secs(10), tunnel.read(&mut buffer))
+        .await??;
     assert_eq!(&buffer[..n], b"ping through the tunnel\n");
     // A local destination is refused even with credentials.
     let (_, local) = exchange(
@@ -707,7 +990,11 @@ async fn the_proxy_shares_the_internal_listener() -> TestResult {
     .await?;
     assert!(local.starts_with("HTTP/1.1 403"), "{local}");
     // The internal API is unchanged.
-    let (_, health) = exchange(served.addr, "GET /internal/healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await?;
+    let (_, health) = exchange(
+        served.addr,
+        "GET /internal/healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    )
+    .await?;
     assert!(health.starts_with("HTTP/1.1 200"), "{health}");
     Ok(())
 }

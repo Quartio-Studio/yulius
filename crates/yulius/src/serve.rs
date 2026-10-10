@@ -431,8 +431,8 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let public_router = yulius_server::public_router(app.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
     // Agent runs' egress proxy shares the internal listener (SPEC-002 ADR-18).
-    let egress = crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default())
-        .await?;
+    let egress =
+        crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default()).await?;
     let internal_router = crate::wiring::egress::with_egress(
         yulius_server::internal_router(app.clone()),
         egress,

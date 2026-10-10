@@ -309,11 +309,20 @@ impl App {
         if !matches!(report.channel.as_str(), "bash" | "tool") {
             return Err(AppError::Invalid("channel must be bash or tool".into()));
         }
-        let records = self.deps.store.vault_agent(Some(&ctx.task.sandbox_id)).await?;
+        let records = self
+            .deps
+            .store
+            .vault_agent(Some(&ctx.task.sandbox_id))
+            .await?;
         for name in report.names.iter().take(64) {
             if let Some(record) = records.iter().find(|r| &r.name == name) {
                 self.vault_audit_once(
-                    format!("redacted|{}|{}|{}", ctx.attempt.id.as_str(), record.id, report.channel),
+                    format!(
+                        "redacted|{}|{}|{}",
+                        ctx.attempt.id.as_str(),
+                        record.id,
+                        report.channel
+                    ),
                     &ctx.actor(),
                     "vault.agent.redacted",
                     Some(&record.id),
@@ -362,7 +371,9 @@ impl App {
         // commands, hooks and stdio MCP servers.
         let exe = self.config.yulius_exe.to_string_lossy();
         if exe.contains(" -") {
-            tracing::warn!("the yulius path contains \" -\": Bash output is redacted by the tool hook only");
+            tracing::warn!(
+                "the yulius path contains \" -\": Bash output is redacted by the tool hook only"
+            );
         } else {
             launch.env.push((
                 "CLAUDE_CODE_SHELL_PREFIX".into(),
@@ -423,7 +434,9 @@ impl App {
 
     /// The vault's generation (terminal redactors reload when it changes).
     pub(crate) fn vault_generation(&self) -> u64 {
-        self.vault.generation.load(std::sync::atomic::Ordering::SeqCst)
+        self.vault
+            .generation
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// `secrets_list`: names, descriptions and bindings of the agent secrets this task may use,

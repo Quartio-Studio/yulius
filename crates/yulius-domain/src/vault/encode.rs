@@ -139,7 +139,10 @@ mod tests {
             ("foobar", "Zm9vYmFy"),
         ] {
             assert_eq!(base64(input.as_bytes(), false, true), padded);
-            assert_eq!(base64(input.as_bytes(), false, false), padded.trim_end_matches('='));
+            assert_eq!(
+                base64(input.as_bytes(), false, false),
+                padded.trim_end_matches('=')
+            );
         }
         assert_eq!(base64(&[0xfb, 0xff], false, true), "+/8=");
         assert_eq!(base64(&[0xfb, 0xff], true, true), "-_8=");
@@ -165,12 +168,18 @@ mod tests {
                 for url in [false, true] {
                     let encoded = base64(text.as_bytes(), url, true);
                     assert!(
-                        set.iter().any(|n| encoded.as_bytes().windows(n.len()).any(|w| w == n.as_slice())),
+                        set.iter().any(|n| encoded
+                            .as_bytes()
+                            .windows(n.len())
+                            .any(|w| w == n.as_slice())),
                         "{prefix:?}+value+{suffix:?} url={url}: {encoded}"
                     );
                 }
                 let hexed = hex(text.as_bytes(), false);
-                assert!(set.iter().any(|n| hexed.as_bytes().windows(n.len()).any(|w| w == n.as_slice())));
+                assert!(
+                    set.iter()
+                        .any(|n| hexed.as_bytes().windows(n.len()).any(|w| w == n.as_slice()))
+                );
             }
         }
     }

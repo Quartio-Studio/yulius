@@ -37,7 +37,9 @@ fn username(text: Option<&str>) -> AppResult<Option<String>> {
     if let Some(value) = &value
         && value.chars().any(char::is_control)
     {
-        return Err(AppError::Invalid("the user name cannot contain control characters".into()));
+        return Err(AppError::Invalid(
+            "the user name cannot contain control characters".into(),
+        ));
     }
     Ok(value)
 }
@@ -164,7 +166,11 @@ impl App {
         let scope = match input.scope.as_deref().unwrap_or("sandbox") {
             "sandbox" => Some(sid.clone()),
             "instance" => None,
-            _ => return Err(AppError::Invalid("scope must be sandbox or instance".into())),
+            _ => {
+                return Err(AppError::Invalid(
+                    "scope must be sandbox or instance".into(),
+                ));
+            }
         };
         self.require_manage_agent(ctx, scope.as_ref()).await?;
         let meta = meta(
@@ -221,7 +227,11 @@ impl App {
             &format!(
                 "{} ({}) → {}",
                 record.name,
-                if scope.is_some() { "this sandbox" } else { "every sandbox" },
+                if scope.is_some() {
+                    "this sandbox"
+                } else {
+                    "every sandbox"
+                },
                 record.hosts.join(", ")
             ),
         )
@@ -338,7 +348,12 @@ impl App {
             return Err(AppError::NotFound);
         }
         self.vault.bump();
-        self.vault_audit(&Self::vault_actor(ctx), "vault.agent.delete", Some(id), &record.name)
-            .await
+        self.vault_audit(
+            &Self::vault_actor(ctx),
+            "vault.agent.delete",
+            Some(id),
+            &record.name,
+        )
+        .await
     }
 }

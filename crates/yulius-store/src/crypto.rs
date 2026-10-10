@@ -14,8 +14,8 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use rand::RngExt as _;
 use sha2::{Digest, Sha256};
-use yulius_app::error::{AppError, AppResult};
 use subtle::ConstantTimeEq as _;
+use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{Sealed, Secret};
 use yulius_app::ports::{Crypto, Envelope};
 use yulius_domain::vault::totp::OtpAlgorithm;
@@ -109,7 +109,13 @@ fn seal_with(cipher: &XChaCha20Poly1305, aad: &[u8], plaintext: &[u8]) -> AppRes
     let mut nonce = [0u8; NONCE_LEN];
     rand::rng().fill(&mut nonce[..]);
     let ciphertext = cipher
-        .encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad })
+        .encrypt(
+            &XNonce::from(nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|_| AppError::Internal("vault seal failed".into()))?;
     let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     out.extend_from_slice(&nonce);
@@ -129,7 +135,13 @@ fn open_with(
     let nonce = XNonce::try_from(nonce)
         .map_err(|_| AppError::Internal("vault value could not be opened".into()))?;
     cipher
-        .decrypt(&nonce, Payload { msg: ciphertext, aad })
+        .decrypt(
+            &nonce,
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map(Zeroizing::new)
         .map_err(|_| AppError::Internal("vault value could not be opened".into()))
 }
@@ -215,8 +227,8 @@ impl Crypto for MasterKeyCrypto {
     fn envelope_seal(&self, aad: &[u8], plaintext: &[u8]) -> AppResult<Envelope> {
         let mut data_key = Zeroizing::new([0u8; 32]);
         rand::rng().fill(&mut data_key[..]);
-        let key = Key::try_from(&data_key[..])
-            .map_err(|_| AppError::Internal("vault key".into()))?;
+        let key =
+            Key::try_from(&data_key[..]).map_err(|_| AppError::Internal("vault key".into()))?;
         let cipher = XChaCha20Poly1305::new(&key);
         let ciphertext = seal_with(&cipher, &with_prefix(AAD_PAYLOAD, aad), plaintext)?;
         let wrapped_key = seal_with(
@@ -245,7 +257,11 @@ impl Crypto for MasterKeyCrypto {
         let key = Key::try_from(&data_key[..])
             .map_err(|_| AppError::Internal("vault value could not be opened".into()))?;
         let cipher = XChaCha20Poly1305::new(&key);
-        open_with(&cipher, &with_prefix(AAD_PAYLOAD, aad), &envelope.ciphertext)
+        open_with(
+            &cipher,
+            &with_prefix(AAD_PAYLOAD, aad),
+            &envelope.ciphertext,
+        )
     }
 
     fn totp_hmac(&self, algorithm: OtpAlgorithm, key: &[u8], counter: u64) -> Vec<u8> {
@@ -290,14 +306,11 @@ mod tests {
         let crypto = MasterKeyCrypto::from_key(&[7u8; 32])?;
         let envelope = crypto.envelope_seal(b"secret-1|team", b"hunter2 password")?;
         assert_eq!(envelope.kek_id, VAULT_KEK_ID);
-        assert!(
-            !envelope
-                .ciphertext
-                .windows(8)
-                .any(|w| w == b"hunter2 ")
-        );
+        assert!(!envelope.ciphertext.windows(8).any(|w| w == b"hunter2 "));
         assert_eq!(
-            crypto.envelope_open(b"secret-1|team", &envelope)?.as_slice(),
+            crypto
+                .envelope_open(b"secret-1|team", &envelope)?
+                .as_slice(),
             b"hunter2 password"
         );
         // Another row's identity, a flipped bit, another master key: nothing opens.
@@ -340,7 +353,10 @@ mod tests {
             .into_iter()
             .zip(codes)
             {
-                assert_eq!(code_from_hmac(&crypto.totp_hmac(algorithm, key, t), 8), code);
+                assert_eq!(
+                    code_from_hmac(&crypto.totp_hmac(algorithm, key, t), 8),
+                    code
+                );
             }
         }
         Ok(())

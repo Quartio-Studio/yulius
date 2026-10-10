@@ -229,8 +229,13 @@ impl App {
         if !self.deps.store.vault_delete(id).await? {
             return Err(AppError::NotFound);
         }
-        self.vault_audit(&Self::vault_actor(ctx), "vault.team.delete", Some(id), &record.name)
-            .await
+        self.vault_audit(
+            &Self::vault_actor(ctx),
+            "vault.team.delete",
+            Some(id),
+            &record.name,
+        )
+        .await
     }
 
     /// When the caller's browser session last proved who they are: its sign-in or a
@@ -320,7 +325,8 @@ impl App {
             return Err(AppError::Forbidden("wrong password".into()));
         }
         self.deps.store.vault_set_reauth(hash, now).await?;
-        self.vault_audit(&actor, "vault.reauth", None, "password").await?;
+        self.vault_audit(&actor, "vault.reauth", None, "password")
+            .await?;
         self.reauth_status(ctx).await
     }
 
@@ -369,7 +375,11 @@ impl App {
         }
         let payload: TeamPayload = self.open_payload(&record)?;
         let pick = |name: &str, value: &Option<String>| {
-            wanted.iter().any(|w| w == name).then(|| value.clone()).flatten()
+            wanted
+                .iter()
+                .any(|w| w == name)
+                .then(|| value.clone())
+                .flatten()
         };
         let revealed = TeamSecretReveal {
             password: pick("password", &payload.password),

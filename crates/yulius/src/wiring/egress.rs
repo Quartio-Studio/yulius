@@ -26,7 +26,10 @@ pub struct EgressLayer {
 ///
 /// # Errors
 /// The CA cannot be loaded or created, or the upstream client cannot be built.
-pub async fn egress_proxy(app: &Arc<App>, config: EgressConfig) -> Result<Arc<EgressProxy>, String> {
+pub async fn egress_proxy(
+    app: &Arc<App>,
+    config: EgressConfig,
+) -> Result<Arc<EgressProxy>, String> {
     let material = app
         .egress_ca_material(|| generate_ca_material().map_err(|e| e.to_string()))
         .await
@@ -70,9 +73,5 @@ async fn dispatch(State(layer): State<EgressLayer>, request: Request, next: Next
     if request.method() != Method::CONNECT && !absolute {
         return next.run(request).await;
     }
-    layer
-        .proxy
-        .handle(request)
-        .await
-        .map(axum::body::Body::new)
+    layer.proxy.handle(request).await.map(axum::body::Body::new)
 }

@@ -47,7 +47,6 @@ fn today() -> i64 {
     i64::try_from(secs / 86_400).unwrap_or(0)
 }
 
-
 fn ca_params(name: &str) -> CertificateParams {
     let mut params = CertificateParams::default();
     let mut dn = DistinguishedName::new();
@@ -80,7 +79,9 @@ pub fn generate_ca_material() -> Result<String, CaError> {
     let ((y0, m0, d0), (y1, m1, d1)) = (civil(start), civil(start + 3650));
     params.not_before = date_time_ymd(y0, m0, d0);
     params.not_after = date_time_ymd(y1, m1, d1);
-    let cert = params.self_signed(&key).map_err(|e| err("self-signed", e))?;
+    let cert = params
+        .self_signed(&key)
+        .map_err(|e| err("self-signed", e))?;
     Ok(json!({"name": name, "cert_pem": cert.pem(), "key_pem": key.serialize_pem()}).to_string())
 }
 
@@ -94,7 +95,8 @@ pub struct CertificateAuthority {
 
 impl std::fmt::Debug for CertificateAuthority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CertificateAuthority").finish_non_exhaustive()
+        f.debug_struct("CertificateAuthority")
+            .finish_non_exhaustive()
     }
 }
 
@@ -150,7 +152,9 @@ impl CertificateAuthority {
         let key = KeyPair::generate().map_err(|e| err("leaf key", e))?;
         let mut params =
             CertificateParams::new(vec![host.clone()]).map_err(|e| err("leaf name", e))?;
-        params.distinguished_name.push(DnType::CommonName, host.as_str());
+        params
+            .distinguished_name
+            .push(DnType::CommonName, host.as_str());
         let start = today() - 1;
         let ((y0, m0, d0), (y1, m1, d1)) = (civil(start), civil(start + 8));
         params.not_before = date_time_ymd(y0, m0, d0);

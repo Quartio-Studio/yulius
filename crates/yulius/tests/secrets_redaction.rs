@@ -107,7 +107,11 @@ async fn fingerprint_file(dir: &Path) -> Result<PathBuf, Box<dyn std::error::Err
 
 /// Runs `yulius --scrub-exec <command>` as Claude Code does, inside a run (fingerprint file
 /// only: Yulius is not reachable, so the file is the source).
-fn scrub_exec(scrub_file: Option<&Path>, cwd: &Path, command: &str) -> std::io::Result<std::process::Output> {
+fn scrub_exec(
+    scrub_file: Option<&Path>,
+    cwd: &Path,
+    command: &str,
+) -> std::io::Result<std::process::Output> {
     let mut child = Command::new(exe());
     child
         .arg("--scrub-exec")
@@ -140,9 +144,22 @@ async fn the_bash_wrapper_redacts_every_form_of_a_value() -> TestResult {
         ("a file read back", "cat .env".into()),
         ("grep", "grep STRIPE .env".into()),
         ("base64", "base64 < .env".into()),
-        ("base64 at another offset", "(printf 'xy'; cat .env) | base64".into()),
-        ("split across writes", format!("printf '{}'; sleep 0.3; printf '{}\\n'", &VALUE[..9], &VALUE[9..])),
-        ("byte by byte", format!("for c in $(echo {VALUE} | sed 's/./& /g'); do printf '%s' \"$c\"; done; echo")),
+        (
+            "base64 at another offset",
+            "(printf 'xy'; cat .env) | base64".into(),
+        ),
+        (
+            "split across writes",
+            format!(
+                "printf '{}'; sleep 0.3; printf '{}\\n'",
+                &VALUE[..9],
+                &VALUE[9..]
+            ),
+        ),
+        (
+            "byte by byte",
+            format!("for c in $(echo {VALUE} | sed 's/./& /g'); do printf '%s' \"$c\"; done; echo"),
+        ),
         ("stderr", format!("echo {VALUE} >&2")),
     ];
     for (what, command) in &cases {
@@ -151,16 +168,29 @@ async fn the_bash_wrapper_redacts_every_form_of_a_value() -> TestResult {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{what}: {stderr}");
         for text in [&stdout, &stderr] {
-            assert!(!text.contains(VALUE), "{what}: the value reached the agent: {text}");
-            assert!(!text.contains(&VALUE[4..20]), "{what}: a long part reached the agent: {text}");
+            assert!(
+                !text.contains(VALUE),
+                "{what}: the value reached the agent: {text}"
+            );
+            assert!(
+                !text.contains(&VALUE[4..20]),
+                "{what}: a long part reached the agent: {text}"
+            );
         }
         assert!(
             stdout.contains(LABEL) || stderr.contains(LABEL),
             "{what}: no label in {stdout:?} / {stderr:?}"
         );
     }
-    let decoded = scrub_exec(Some(&scrub), &work, "base64 < .env | base64 -d 2>/dev/null || base64 -D < /dev/null")?;
-    assert!(!String::from_utf8_lossy(&decoded.stdout).contains(VALUE), "decoding redacted output gives no value");
+    let decoded = scrub_exec(
+        Some(&scrub),
+        &work,
+        "base64 < .env | base64 -d 2>/dev/null || base64 -D < /dev/null",
+    )?;
+    assert!(
+        !String::from_utf8_lossy(&decoded.stdout).contains(VALUE),
+        "decoding redacted output gives no value"
+    );
 
     // Ordinary output is untouched and the status is the command's.
     let plain = scrub_exec(Some(&scrub), &work, "echo hello; exit 7")?;
@@ -198,7 +228,11 @@ async fn the_tool_hook_rewrites_results_that_hold_a_value() -> TestResult {
         .spawn()?;
     {
         use std::io::Write as _;
-        child.stdin.take().ok_or("stdin")?.write_all(input.to_string().as_bytes())?;
+        child
+            .stdin
+            .take()
+            .ok_or("stdin")?
+            .write_all(input.to_string().as_bytes())?;
     }
     let output = child.wait_with_output()?;
     assert!(output.status.success());
@@ -237,11 +271,22 @@ fn seed_repo(data: &Path, sandbox: &SandboxId) -> TestResult {
     std::fs::write(seed.join("README.md"), "# fixture\n")?;
     git(&seed, &["add", "README.md"])?;
     git(&seed, &["commit", "-q", "-m", "init"])?;
-    git(&seed, &["remote", "add", "origin", &origin.to_string_lossy()])?;
+    git(
+        &seed,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    )?;
     git(&seed, &["push", "-q", "origin", "main"])?;
     let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
     std::fs::create_dir_all(repo.parent().ok_or("no parent")?)?;
-    git(data, &["clone", "-q", &origin.to_string_lossy(), &repo.to_string_lossy()])?;
+    git(
+        data,
+        &[
+            "clone",
+            "-q",
+            &origin.to_string_lossy(),
+            &repo.to_string_lossy(),
+        ],
+    )?;
     Ok(())
 }
 
@@ -274,7 +319,12 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
         .build()?;
     runtime.block_on(async {
         let store = SqliteStore::open(&data.join("yulius.db"))?;
-        let mut config = AppConfig::new(data.clone(), "https://yulius.test", "http://127.0.0.1:9", exe());
+        let mut config = AppConfig::new(
+            data.clone(),
+            "https://yulius.test",
+            "http://127.0.0.1:9",
+            exe(),
+        );
         config.contained = false;
         let deps = Deps {
             store: Arc::new(store),
@@ -345,20 +395,27 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
         wait_for(&app, &task.id, "ENV YULIUS_SCRUB_FILE=set").await?;
 
         // A value typed into the terminal (echoed by the PTY and by the agent) shows as the label.
-        app.send_input(&task.id, format!("{VALUE}\r").as_bytes()).await?;
+        app.send_input(&task.id, format!("{VALUE}\r").as_bytes())
+            .await?;
         wait_for(&app, &task.id, &format!("ECHO: {LABEL}")).await?;
         let screen = app.runtime(&task.id).hub.screen_text();
         assert!(!screen.contains(VALUE), "{screen}");
         // Split over two writes it is still found.
         app.send_input(&task.id, VALUE[..10].as_bytes()).await?;
         tokio::time::sleep(Duration::from_millis(10)).await;
-        app.send_input(&task.id, format!("{}\r", &VALUE[10..]).as_bytes()).await?;
+        app.send_input(&task.id, format!("{}\r", &VALUE[10..]).as_bytes())
+            .await?;
         tokio::time::sleep(Duration::from_millis(500)).await;
         let screen = app.runtime(&task.id).hub.screen_text();
         assert!(!screen.contains(VALUE), "{screen}");
 
         // The run's files: fingerprints and launch record hold no value.
-        let attempt = app.deps.store.live_attempt(&task.id).await?.ok_or("no attempt")?;
+        let attempt = app
+            .deps
+            .store
+            .live_attempt(&task.id)
+            .await?
+            .ok_or("no attempt")?;
         for entry in std::fs::read_dir(&attempt.run_dir)? {
             let path = entry?.path();
             if path.is_file() {

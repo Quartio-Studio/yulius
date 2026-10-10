@@ -220,10 +220,13 @@ async fn fingerprints(
     headers: HeaderMap,
 ) -> Result<Json<FingerprintSet>, StatusCode> {
     let token = bearer(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    app.scrub_fingerprints(token).await.map(Json).map_err(|err| {
-        tracing::debug!(error = %err, "fingerprints refused");
-        crate::error::status_for(&err)
-    })
+    app.scrub_fingerprints(token)
+        .await
+        .map(Json)
+        .map_err(|err| {
+            tracing::debug!(error = %err, "fingerprints refused");
+            crate::error::status_for(&err)
+        })
 }
 
 async fn report(

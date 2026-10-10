@@ -60,7 +60,10 @@ impl HostPattern {
         };
         let labels: Vec<&str> = domain.split('.').collect();
         let all_digits = labels.iter().all(|l| l.bytes().all(|b| b.is_ascii_digit()));
-        if domain.len() > 253 || labels.len() < 2 || all_digits || !labels.iter().all(|l| valid_label(l))
+        if domain.len() > 253
+            || labels.len() < 2
+            || all_digits
+            || !labels.iter().all(|l| valid_label(l))
         {
             return Err(bad());
         }

@@ -115,8 +115,12 @@ pub trait VaultStore: Send + Sync {
     /// Sealed vault key material by name.
     async fn vault_meta(&self, name: &str) -> AppResult<Option<Envelope>>;
     /// Stores key material unless `name` exists; `false` when it existed (another writer won).
-    async fn vault_insert_meta(&self, name: &str, envelope: &Envelope, at: Timestamp)
-    -> AppResult<bool>;
+    async fn vault_insert_meta(
+        &self,
+        name: &str,
+        envelope: &Envelope,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// The newest vault audit entries (`vault.*`), newest first.
     async fn vault_audit(&self, limit: u32) -> AppResult<Vec<VaultAuditEntry>>;
 }

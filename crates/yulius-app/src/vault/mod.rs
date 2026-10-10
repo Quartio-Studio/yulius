@@ -75,7 +75,9 @@ fn field(value: Option<&str>, name: &str, trim: bool) -> AppResult<Option<String
         return Ok(None);
     }
     if value.len() > MAX_FIELD_BYTES || value.contains('\0') {
-        return Err(AppError::Invalid(format!("{name} is too long or malformed")));
+        return Err(AppError::Invalid(format!(
+            "{name} is too long or malformed"
+        )));
     }
     Ok(Some(value.to_owned()))
 }
@@ -176,7 +178,10 @@ impl App {
     }
 
     /// Opens a row's payload.
-    fn open_payload<T: serde::de::DeserializeOwned>(&self, record: &VaultSecretRecord) -> AppResult<T> {
+    fn open_payload<T: serde::de::DeserializeOwned>(
+        &self,
+        record: &VaultSecretRecord,
+    ) -> AppResult<T> {
         let bytes = self
             .deps
             .crypto
@@ -216,9 +221,7 @@ impl App {
             }
             Err(_) => true,
         };
-        if first
-            && let Err(err) = self.vault_audit(actor, action, target, detail).await
-        {
+        if first && let Err(err) = self.vault_audit(actor, action, target, detail).await {
             tracing::warn!(error = %err, action, "vault audit entry not written");
         }
     }

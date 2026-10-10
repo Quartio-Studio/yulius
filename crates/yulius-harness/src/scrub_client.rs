@@ -304,12 +304,12 @@ fn redact_value(value: &mut Value, matcher: &dyn Matcher, names: &mut Vec<String
                 true
             }
         }
-        Value::Array(items) => items
-            .iter_mut()
-            .fold(false, |changed, item| redact_value(item, matcher, names) | changed),
-        Value::Object(map) => map
-            .values_mut()
-            .fold(false, |changed, item| redact_value(item, matcher, names) | changed),
+        Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
+            redact_value(item, matcher, names) | changed
+        }),
+        Value::Object(map) => map.values_mut().fold(false, |changed, item| {
+            redact_value(item, matcher, names) | changed
+        }),
         _ => false,
     }
 }
@@ -321,9 +321,8 @@ fn replacement(output: &mut dyn Write, tool_output: &Value) -> i32 {
             "updatedToolOutput": tool_output,
         }
     });
-    let _ignored = serde_json::to_writer(&mut *output, &answer).and_then(|()| {
-        output.flush().map_err(serde_json::Error::io)
-    });
+    let _ignored = serde_json::to_writer(&mut *output, &answer)
+        .and_then(|()| output.flush().map_err(serde_json::Error::io));
     0
 }
 
@@ -444,7 +443,10 @@ mod tests {
         let content = answer["hookSpecificOutput"]["updatedToolOutput"]["file"]["content"]
             .as_str()
             .ok_or("content")?;
-        assert!(content.starts_with("STRIPE=[secret:STRIPE_KEY]\nB64="), "{content}");
+        assert!(
+            content.starts_with("STRIPE=[secret:STRIPE_KEY]\nB64="),
+            "{content}"
+        );
         assert!(content.contains("[secret:STRIPE_KEY]"));
         assert_eq!(answer["hookSpecificOutput"]["hookEventName"], "PostToolUse");
 

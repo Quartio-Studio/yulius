@@ -128,9 +128,7 @@ pub fn parse_otp(text: &str) -> Result<OtpConfig, VaultError> {
                         .parse()
                         .ok()
                         .filter(|p| (15..=300).contains(p))
-                        .ok_or_else(|| {
-                            VaultError::Otp("period must be 15–300 seconds".into())
-                        })?;
+                        .ok_or_else(|| VaultError::Otp("period must be 15–300 seconds".into()))?;
                 }
                 "algorithm" => {
                     config.algorithm = match value.to_ascii_uppercase().as_str() {
@@ -189,7 +187,10 @@ pub fn code_from_hmac(hmac: &[u8], digits: u32) -> String {
         | (u32::from(window[2]) << 8)
         | u32::from(window[3]);
     let code = binary % 10u32.pow(digits);
-    format!("{code:0width$}", width = usize::try_from(digits).unwrap_or(6))
+    format!(
+        "{code:0width$}",
+        width = usize::try_from(digits).unwrap_or(6)
+    )
 }
 
 #[cfg(test)]
@@ -238,7 +239,10 @@ mod tests {
             "otpauth://totp/ACME%3Ateam%40acme.com?secret={seed}&issuer=ACME&digits=8&period=60&algorithm=SHA256"
         ))?;
         assert_eq!(uri.secret, b"12345678901234567890".to_vec());
-        assert_eq!((uri.digits, uri.period, uri.algorithm), (8, 60, OtpAlgorithm::Sha256));
+        assert_eq!(
+            (uri.digits, uri.period, uri.algorithm),
+            (8, 60, OtpAlgorithm::Sha256)
+        );
         assert!(parse_otp("otpauth://hotp/x?secret=GEZDGNBVGY3TQOJQ&counter=1").is_err());
         assert!(parse_otp("otpauth://totp/x?issuer=a").is_err());
         assert!(parse_otp("GEZDGNBV").is_err(), "too short");

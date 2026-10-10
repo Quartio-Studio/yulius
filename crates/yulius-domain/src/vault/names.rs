@@ -107,7 +107,13 @@ mod tests {
 
     #[test]
     fn names_are_environment_style_and_not_reserved() {
-        for good in ["STRIPE_API_KEY", "A", "OPENAI_KEY_2", "NPM_TOKEN", "GH_TOKEN"] {
+        for good in [
+            "STRIPE_API_KEY",
+            "A",
+            "OPENAI_KEY_2",
+            "NPM_TOKEN",
+            "GH_TOKEN",
+        ] {
             assert!(SecretName::parse(good).is_ok(), "{good}");
         }
         for bad in [

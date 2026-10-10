@@ -245,9 +245,9 @@ fn mul_mod(a: u64, b: u64) -> u64 {
 #[must_use]
 pub fn rolling_hash(base: u64, bytes: &[u8]) -> u64 {
     let base = base % MODULUS;
-    bytes.iter().fold(0, |h, &b| {
-        (mul_mod(h, base) + u64::from(b) + 1) % MODULUS
-    })
+    bytes
+        .iter()
+        .fold(0, |h, &b| (mul_mod(h, base) + u64::from(b) + 1) % MODULUS)
 }
 
 /// One needle as a fingerprint: its length, its rolling hash and the salted digest that
@@ -511,7 +511,12 @@ mod tests {
                 digest: digest(n),
             })
             .collect();
-        HashedMatcher::new(base, vec!["STRIPE_KEY".into()], fingerprints, digest as Digest)
+        HashedMatcher::new(
+            base,
+            vec!["STRIPE_KEY".into()],
+            fingerprints,
+            digest as Digest,
+        )
     }
 
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -568,9 +573,15 @@ mod tests {
                     .zip(bytes.iter())
                     .take_while(|(a, b)| a == b)
                     .count();
-                assert!(shown_prefix < "before ".len() + min_hold.max(1), "{name} split {split}");
+                assert!(
+                    shown_prefix < "before ".len() + min_hold.max(1),
+                    "{name} split {split}"
+                );
                 let shown = String::from_utf8_lossy(&out);
-                assert!(shown.contains("[secret:STRIPE_KEY]"), "{name} split {split}: {shown}");
+                assert!(
+                    shown.contains("[secret:STRIPE_KEY]"),
+                    "{name} split {split}: {shown}"
+                );
                 assert!(shown.ends_with(" after\n"), "{name} split {split}: {shown}");
             }
         }

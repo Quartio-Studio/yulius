@@ -58,7 +58,10 @@ impl EgressPolicy for Policy {
         }
         let mut headers = request.headers;
         headers.retain(|(name, _)| name != "authorization");
-        headers.push(("authorization".into(), format!("Bearer {VALUE}").into_bytes()));
+        headers.push((
+            "authorization".into(),
+            format!("Bearer {VALUE}").into_bytes(),
+        ));
         EgressDecision::Forward {
             path_and_query: request
                 .path_and_query
@@ -163,9 +166,13 @@ struct Setup {
 async fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut ca = CertificateParams::default();
-    ca.distinguished_name.push(DnType::CommonName, "test upstream CA");
+    ca.distinguished_name
+        .push(DnType::CommonName, "test upstream CA");
     ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
+    ca.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
     let issuer = CertifiedIssuer::self_signed(ca, KeyPair::generate()?)?;
     let test_ca = issuer.pem();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -217,7 +224,9 @@ async fn bound_hosts_get_the_credential_and_the_agent_never_sees_it() -> TestRes
     let setup = setup().await?;
     let client = agent(&setup, "good-token")?;
     let response = client
-        .post(format!("https://{BOUND}/v1/charges?key=yulius-secret-API_KEY"))
+        .post(format!(
+            "https://{BOUND}/v1/charges?key=yulius-secret-API_KEY"
+        ))
         .body("amount=100")
         .send()
         .await?;
@@ -233,8 +242,16 @@ async fn bound_hosts_get_the_credential_and_the_agent_never_sees_it() -> TestRes
     // The upstream received the real credential (header and placeholder in the query)…
     let seen = setup.seen.lock().map_err(|_| "lock")?.clone();
     assert_eq!(seen.len(), 1);
-    assert!(seen[0].contains(&format!("auth=Bearer {VALUE}")), "{}", seen[0]);
-    assert!(seen[0].contains(&format!("path=/v1/charges?key={VALUE}")), "{}", seen[0]);
+    assert!(
+        seen[0].contains(&format!("auth=Bearer {VALUE}")),
+        "{}",
+        seen[0]
+    );
+    assert!(
+        seen[0].contains(&format!("path=/v1/charges?key={VALUE}")),
+        "{}",
+        seen[0]
+    );
     assert!(seen[0].contains("body=amount=100"));
     // …and reflected it, but nothing the agent can read contains it.
     for readable in [&body, &headers, &echoed_header] {

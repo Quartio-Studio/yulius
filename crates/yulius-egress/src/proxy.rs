@@ -97,14 +97,18 @@ async fn lookup(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
         return if egress_destination_allowed(ip) {
             Ok(vec![SocketAddr::new(ip, port)])
         } else {
-            Err(format!("Yulius proxy: {host} is a local address; it is not reachable through the proxy"))
+            Err(format!(
+                "Yulius proxy: {host} is a local address; it is not reachable through the proxy"
+            ))
         };
     }
     let found = tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, port)))
         .await
         .map_err(|_| format!("Yulius proxy: resolving {host} timed out"))?
         .map_err(|_| format!("Yulius proxy: {host} could not be resolved"))?;
-    let allowed: Vec<SocketAddr> = found.filter(|a| egress_destination_allowed(a.ip())).collect();
+    let allowed: Vec<SocketAddr> = found
+        .filter(|a| egress_destination_allowed(a.ip()))
+        .collect();
     if allowed.is_empty() {
         return Err(format!(
             "Yulius proxy: {host} resolves only to local addresses; it is not reachable through the proxy"
@@ -186,7 +190,10 @@ fn url_host(host: &str) -> String {
 /// `host:port` of a CONNECT request.
 fn connect_target(uri: &hyper::http::Uri) -> Option<(String, u16)> {
     let authority = uri.authority()?;
-    let host = authority.host().trim_matches(['[', ']']).to_ascii_lowercase();
+    let host = authority
+        .host()
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase();
     let port = authority.port_u16()?;
     (!host.is_empty() && port != 0).then_some((host, port))
 }
@@ -381,19 +388,17 @@ impl EgressProxy {
             }
         };
         let acceptor = tokio_rustls::TlsAcceptor::from(config);
-        let tls = match tokio::time::timeout(
-            HANDSHAKE_TIMEOUT,
-            acceptor.accept(TokioIo::new(upgraded)),
-        )
-        .await
-        {
-            Ok(Ok(tls)) => tls,
-            Ok(Err(error)) => {
-                tracing::debug!(%error, "client refused the egress certificate");
-                return;
-            }
-            Err(_) => return,
-        };
+        let tls =
+            match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(TokioIo::new(upgraded)))
+                .await
+            {
+                Ok(Ok(tls)) => tls,
+                Ok(Err(error)) => {
+                    tracing::debug!(%error, "client refused the egress certificate");
+                    return;
+                }
+                Err(_) => return,
+            };
         let proxy = Arc::clone(&self);
         let service = hyper::service::service_fn(move |request: Request<Incoming>| {
             let proxy = Arc::clone(&proxy);
@@ -505,14 +510,21 @@ impl EgressProxy {
                 tracing::debug!(host = %upstream.host, error = %error, "upstream request failed");
                 return text(
                     502,
-                    &format!("Yulius proxy: {} could not be reached ({why})", upstream.host),
+                    &format!(
+                        "Yulius proxy: {} could not be reached ({why})",
+                        upstream.host
+                    ),
                 );
             }
         };
         self.respond(client, response).await
     }
 
-    async fn respond(&self, client: &EgressClient, response: reqwest::Response) -> Response<EgressBody> {
+    async fn respond(
+        &self,
+        client: &EgressClient,
+        response: reqwest::Response,
+    ) -> Response<EgressBody> {
         let matcher = self.policy.egress_redactor(client).await;
         if !matcher.is_empty()
             && let Some(encoding) = response
@@ -548,8 +560,7 @@ impl EgressProxy {
 
 /// An opaque tunnel to a host without agent secrets.
 async fn tunnel(addrs: Vec<SocketAddr>, upgraded: Upgraded, permit: OwnedSemaphorePermit) {
-    let stream = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&addrs[..])).await
-    {
+    let stream = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&addrs[..])).await {
         Ok(Ok(stream)) => stream,
         _ => {
             tracing::debug!("tunnel destination unreachable");
@@ -598,7 +609,8 @@ mod tests {
         let encoded = base64::engine::general_purpose::STANDARD.encode("yulius:tok123");
         headers.insert(
             header::PROXY_AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {encoded}")).unwrap_or(HeaderValue::from_static("")),
+            HeaderValue::from_str(&format!("Basic {encoded}"))
+                .unwrap_or(HeaderValue::from_static("")),
         );
         assert_eq!(proxy_token(&headers), Some("tok123".into()));
         assert_eq!(proxy_token(&hyper::http::HeaderMap::new()), None);

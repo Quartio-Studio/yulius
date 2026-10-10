@@ -219,10 +219,7 @@ pub fn substitute_placeholders(
             .count();
         let name = &after[..name_len];
         out.push_str(&rest[..at]);
-        match (name_len > 0)
-            .then(|| resolve(name))
-            .flatten()
-        {
+        match (name_len > 0).then(|| resolve(name)).flatten() {
             Some(value) => {
                 out.push_str(&value);
                 if !used.iter().any(|u| u == name) {
@@ -279,7 +276,10 @@ mod tests {
     #[test]
     fn agent_values_need_eight_characters_without_controls() {
         assert!(check_agent_value("sk_live_1").is_ok());
-        assert!(check_agent_value("zażółć12").is_ok(), "characters, not bytes");
+        assert!(
+            check_agent_value("zażółć12").is_ok(),
+            "characters, not bytes"
+        );
         assert!(check_agent_value("short12").is_err());
         assert!(check_agent_value("line one\nline two").is_err());
         assert!(check_agent_value(&"x".repeat(MAX_FIELD_BYTES + 1)).is_err());
@@ -323,9 +323,8 @@ mod tests {
         assert_eq!(result.used, vec!["STRIPE_KEY".to_owned()]);
         assert!(substitute_placeholders("nothing here", |_| Some("x".into())).is_none());
         // The longest name wins: API_KEY is not API followed by _KEY.
-        let longest = substitute_placeholders("yulius-secret-API_KEY", |name| {
-            Some(format!("<{name}>"))
-        });
+        let longest =
+            substitute_placeholders("yulius-secret-API_KEY", |name| Some(format!("<{name}>")));
         assert_eq!(longest.map(|s| s.text), Some("<API_KEY>".to_owned()));
     }
 
