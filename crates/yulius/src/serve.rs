@@ -424,8 +424,15 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let workspace_reaper = app.start_workspace_services().await;
     let public_router = yulius_server::public_router(app.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
-    let internal_router = yulius_server::internal_router(app.clone())
-        .into_make_service_with_connect_info::<SocketAddr>();
+    // Agent runs' egress proxy shares the internal listener (SPEC-002 ADR-18).
+    let egress = crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default())
+        .await?;
+    let internal_router = crate::wiring::egress::with_egress(
+        yulius_server::internal_router(app.clone()),
+        egress,
+        &app.config.internal_url,
+    )
+    .into_make_service_with_connect_info::<SocketAddr>();
     let public_task = axum::serve(public.tap_io(no_delay), public_router)
         .with_graceful_shutdown(shutdown_signal());
     let internal_task = axum::serve(internal.tap_io(no_delay), internal_router)

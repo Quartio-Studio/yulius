@@ -335,6 +335,7 @@ pub trait ExtensionStores:
     + AnalyticsStore
     + CapacityStore
     + IntakeStore
+    + crate::ports::vault::VaultStore
 {
 }
 
@@ -348,5 +349,6 @@ impl<T> ExtensionStores for T where
         + AnalyticsStore
         + CapacityStore
         + IntakeStore
+        + crate::ports::vault::VaultStore
 {
 }

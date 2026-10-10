@@ -163,6 +163,8 @@ pub struct App {
     pub instance_tag: String,
     /// Task intake (Jev, split proposals); unset means nothing is checked (SPEC-002 ADR-16).
     pub(crate) intake: OnceLock<crate::intake::IntakeServices>,
+    /// Secrets vault runtime state (SPEC-002 ADR-18).
+    pub(crate) vault: crate::vault::VaultState,
 }
 
 impl App {
@@ -189,6 +191,7 @@ impl App {
             previews: crate::preview::PreviewState::default(),
             uploads: crate::uploads::UploadState::default(),
             intake: OnceLock::new(),
+            vault: crate::vault::VaultState::default(),
         })
     }
 

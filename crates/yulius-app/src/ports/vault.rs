@@ -1,0 +1,122 @@
+//! Vault persistence port (SPEC-002 ADR-18): sealed secrets, re-authentication times, sealed
+//! vault key material and the vault's audit trail. Records hold envelopes, never plaintext.
+
+use async_trait::async_trait;
+use yulius_domain::ids::SandboxId;
+use yulius_domain::time::Timestamp;
+
+use crate::error::AppResult;
+use crate::ports::Envelope;
+
+/// Which section a secret belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultSection {
+    /// People's shared credentials (every member).
+    Team,
+    /// Credentials agents use without seeing.
+    Agent,
+}
+
+impl VaultSection {
+    /// Stored form.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Team => "team",
+            Self::Agent => "agent",
+        }
+    }
+
+    /// Parses the stored form.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "team" => Some(Self::Team),
+            "agent" => Some(Self::Agent),
+            _ => None,
+        }
+    }
+}
+
+/// One stored secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultSecretRecord {
+    /// Identifier.
+    pub id: String,
+    /// Section.
+    pub section: VaultSection,
+    /// Agent secrets: the sandbox, or `None` for every sandbox. Always `None` for team secrets.
+    pub sandbox_id: Option<SandboxId>,
+    /// Team: title. Agent: NAME.
+    pub name: String,
+    /// Agent: what it is for.
+    pub description: String,
+    /// Agent: host bindings as entered (normalized).
+    pub hosts: Vec<String>,
+    /// Agent: injection kind.
+    pub injection: String,
+    /// Agent: header of the `header` injection.
+    pub header_name: Option<String>,
+    /// Names of the fields present (no values).
+    pub fields: Vec<String>,
+    /// The sealed payload.
+    pub envelope: Envelope,
+    /// Who created it (user id).
+    pub created_by: String,
+    /// When.
+    pub created_at: Timestamp,
+    /// Who changed it last.
+    pub updated_by: String,
+    /// When.
+    pub updated_at: Timestamp,
+    /// When a value field last changed (rotation age).
+    pub value_updated_at: Timestamp,
+    /// When an agent last used it.
+    pub last_used_at: Option<Timestamp>,
+}
+
+/// One vault audit entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultAuditEntry {
+    /// When.
+    pub at: Timestamp,
+    /// Who (a login, `superadmin` or `task:<n>`).
+    pub actor: String,
+    /// `vault.…` action.
+    pub action: String,
+    /// Secret id.
+    pub target: Option<String>,
+    /// Name and context (never a value).
+    pub detail: Option<String>,
+}
+
+/// Vault storage.
+#[async_trait]
+pub trait VaultStore: Send + Sync {
+    /// Inserts a secret; `Conflict` for an agent name taken in the same scope.
+    async fn vault_insert(&self, record: &VaultSecretRecord) -> AppResult<()>;
+    /// Replaces every mutable column of the secret `record.id`; `false` when it is gone.
+    async fn vault_update(&self, record: &VaultSecretRecord) -> AppResult<bool>;
+    /// Deletes a secret; `false` when it is gone.
+    async fn vault_delete(&self, id: &str) -> AppResult<bool>;
+    /// One secret.
+    async fn vault_get(&self, id: &str) -> AppResult<Option<VaultSecretRecord>>;
+    /// Team secrets by name.
+    async fn vault_team(&self) -> AppResult<Vec<VaultSecretRecord>>;
+    /// Agent secrets that apply to `sandbox` (its own and the instance-wide ones), or every
+    /// agent secret when `None`.
+    async fn vault_agent(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>>;
+    /// Records an agent's use.
+    async fn vault_touch_used(&self, id: &str, at: Timestamp) -> AppResult<()>;
+    /// Records a re-authentication of a browser session.
+    async fn vault_set_reauth(&self, session_hash: &str, at: Timestamp) -> AppResult<()>;
+    /// The session's last re-authentication.
+    async fn vault_reauth(&self, session_hash: &str) -> AppResult<Option<Timestamp>>;
+    /// Sealed vault key material by name.
+    async fn vault_meta(&self, name: &str) -> AppResult<Option<Envelope>>;
+    /// Stores key material unless `name` exists; `false` when it existed (another writer won).
+    async fn vault_insert_meta(&self, name: &str, envelope: &Envelope, at: Timestamp)
+    -> AppResult<bool>;
+    /// The newest vault audit entries (`vault.*`), newest first.
+    async fn vault_audit(&self, limit: u32) -> AppResult<Vec<VaultAuditEntry>>;
+}

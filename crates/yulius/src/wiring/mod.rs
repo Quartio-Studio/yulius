@@ -2,6 +2,7 @@
 
 pub mod browser;
 pub mod clock;
+pub mod egress;
 pub mod git;
 pub mod github;
 pub mod github_client;

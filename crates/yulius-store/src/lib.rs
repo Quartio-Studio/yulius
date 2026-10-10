@@ -21,6 +21,7 @@ mod sessions;
 mod skills;
 mod tasks;
 mod users;
+mod vault;
 mod workflows;
 
 use std::path::Path;
@@ -41,6 +42,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0003_claude_only.sql"),
     include_str!("migrations/0004_task_intake.sql"),
     include_str!("migrations/0005_subscription_pool.sql"),
+    include_str!("migrations/0006_secrets_vault.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -144,6 +146,9 @@ fn prepare(conn: &mut Connection) -> Result<(), OpenError> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // Deleted and replaced content (vault ciphertext, old tokens) is overwritten in the file,
+    // not left in free pages (SPEC-002 ADR-18).
+    conn.pragma_update(None, "secure_delete", "ON")?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     let integrity: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
     if integrity != "ok" {

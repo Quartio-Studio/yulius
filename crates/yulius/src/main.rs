@@ -94,6 +94,16 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // Claude Code's `CLAUDE_CODE_SHELL_PREFIX` runs `yulius --scrub-exec '<command>'` for every
+    // Bash command of an agent run: the command's output is redacted of agent secrets
+    // (SPEC-002 ADR-18). Handled before argument parsing: the command is opaque text.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some(yulius_app::vault::SCRUB_EXEC_FLAG) {
+        let code = yulius_harness::scrub_client::run_scrub_exec(&args[1..], &|k| {
+            std::env::var(k).ok()
+        });
+        return ExitCode::from(u8::try_from(code).unwrap_or(1));
+    }
     let cli = Cli::parse();
     match cli.command {
         Command::Ptyhost { run_dir } => match yulius_ptyhost::run_host(&run_dir) {

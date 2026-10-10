@@ -8,4 +8,5 @@ pub mod hooks;
 pub mod import;
 pub mod mcp;
 pub mod ptyhost;
+pub mod scrub;
 pub mod terminal;
