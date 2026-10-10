@@ -3,8 +3,9 @@
 //! Jev is not configured, fails or is unsure.
 //!
 //! - *Mode:* `goal` or `prompt`. Jev's confident answer wins; otherwise Goal.
-//! - *Workflow:* one of the sandbox's workflows, read from the store and offered as options
-//!   `w1`…`wN` with their names, descriptions, steps and whether they need a spec, or `none`.
+//! - *Workflow:* one of the sandbox's workflows — the defaults of the catalog, then instance and
+//!   sandbox workflows, as `App::workflows_for` lists them — offered as options `w1`…`wN` with
+//!   their names, whether they need a spec, descriptions, when to use them and steps, or `none`.
 //!   Jev's confident answer wins; otherwise the workflow named "Feature" (the sandbox's own
 //!   first) or none. A prompt-mode task is never given a spec-first workflow by Auto: features
 //!   need specs; research, questions about the product and explanations do not.
@@ -22,8 +23,9 @@ pub const MODE_THRESHOLD: f64 = 0.75;
 pub const WORKFLOW_THRESHOLD: f64 = 0.6;
 /// Most workflows offered to Jev (the first ones in the store's order: instance, then sandbox).
 pub const MAX_WORKFLOW_OPTIONS: usize = 12;
-/// Longest option text for one workflow, in bytes (before the cut marker).
-pub const WORKFLOW_OPTION_BYTES: usize = 300;
+/// Longest option text for one workflow, in bytes (before the cut marker). The name and whether
+/// it needs a spec come first, so a cut never drops them.
+pub const WORKFLOW_OPTION_BYTES: usize = 400;
 /// The workflow Auto falls back to, by name (case-insensitive).
 pub const DEFAULT_WORKFLOW_NAME: &str = "Feature";
 /// The option key for "no workflow".
@@ -54,10 +56,11 @@ pub const MODE_QUESTION: ChoiceQuestion<'static> = ChoiceQuestion {
 
 /// The workflow question's text; its options are the sandbox's workflows plus "none".
 pub const WORKFLOW_INSTRUCTIONS: &str = "A person starts a coding agent on the request below. \
-    Which of this project's workflows fits it best? Each option names a workflow and what it is \
-    for. Features and other changes to the product need a spec first; research, questions about \
-    the product, explanations and reviews do not, so never pick a spec-first workflow for them. \
-    Choose none when no workflow clearly fits.";
+    Which of this project's workflows fits it best? Each option names a workflow, whether it \
+    needs a spec first, what it is for and when to use it. Features and other changes to the \
+    product need a spec first; research, questions about the product, explanations and reviews \
+    do not, so never pick a spec-first workflow for them. Choose none when no workflow clearly \
+    fits.";
 
 /// What "none" means to Jev.
 const NO_WORKFLOW_DESCRIPTION: &str = "None: no workflow fits; the agent plans the work itself";
@@ -129,6 +132,8 @@ pub struct WorkflowCandidate<'a> {
     pub name: &'a str,
     /// What it is for.
     pub description: &'a str,
+    /// When to pick it, in one line (the catalog's defaults; empty for the others).
+    pub when_to_use: &'a str,
     /// Its initial steps.
     pub steps: &'a [String],
     /// Whether it requires a spec before delivery.
@@ -142,7 +147,8 @@ fn one_line(text: &str) -> String {
 }
 
 /// The workflow question's options as `(key, description)`: `w1`…`wN` for the first
-/// [`MAX_WORKFLOW_OPTIONS`] candidates, then `none`.
+/// [`MAX_WORKFLOW_OPTIONS`] candidates — "Name (spec first|no spec): description Use when: …
+/// Steps: a → b." — then `none`.
 #[must_use]
 pub fn workflow_options(candidates: &[WorkflowCandidate<'_>]) -> Vec<(String, String)> {
     let mut options: Vec<(String, String)> = candidates
@@ -150,21 +156,22 @@ pub fn workflow_options(candidates: &[WorkflowCandidate<'_>]) -> Vec<(String, St
         .take(MAX_WORKFLOW_OPTIONS)
         .enumerate()
         .map(|(i, c)| {
-            let mut text = one_line(c.name);
-            let description = one_line(c.description);
-            if !description.is_empty() {
-                text.push_str(": ");
-                text.push_str(&description);
+            let gate = if c.require_spec {
+                "spec first"
+            } else {
+                "no spec"
+            };
+            let mut text = format!("{} ({gate}):", one_line(c.name));
+            for (label, part) in [("", c.description), ("Use when: ", c.when_to_use)] {
+                let part = one_line(part);
+                if !part.is_empty() {
+                    text.push_str(&format!(" {label}{part}"));
+                }
             }
             let steps: Vec<String> = c.steps.iter().map(|s| one_line(s)).collect();
             if !steps.is_empty() {
                 text.push_str(&format!(" Steps: {}.", steps.join(" → ")));
             }
-            text.push_str(if c.require_spec {
-                " Spec first."
-            } else {
-                " No spec."
-            });
             (format!("w{}", i + 1), clip(&text, WORKFLOW_OPTION_BYTES))
         })
         .collect();
@@ -261,6 +268,7 @@ mod tests {
             WorkflowCandidate {
                 name: "Feature",
                 description: "Spec first, then implementation.",
+                when_to_use: "The task adds or changes behaviour.",
                 steps: &steps[0],
                 require_spec: true,
                 own: false,
@@ -268,6 +276,7 @@ mod tests {
             WorkflowCandidate {
                 name: "Quick task",
                 description: "A small change.",
+                when_to_use: "",
                 steps: &steps[1],
                 require_spec: false,
                 own: false,
@@ -275,6 +284,7 @@ mod tests {
             WorkflowCandidate {
                 name: "Research",
                 description: "Answers a question about the product.",
+                when_to_use: "",
                 steps: &steps[2],
                 require_spec: false,
                 own: true,
@@ -316,13 +326,15 @@ mod tests {
         assert_eq!(keys, ["w1", "w2", "w3", "none"]);
         assert_eq!(
             options[0].1,
-            "Feature: Spec first, then implementation. Steps: Write spec with plan → Implement. Spec first."
+            "Feature (spec first): Spec first, then implementation. Use when: The task adds or \
+             changes behaviour. Steps: Write spec with plan → Implement."
         );
-        assert_eq!(options[1].1, "Quick task: A small change. No spec.");
+        assert_eq!(options[1].1, "Quick task (no spec): A small change.");
         let many: Vec<WorkflowCandidate<'_>> = (0..30)
             .map(|_| WorkflowCandidate {
                 name: "Long",
                 description: "x ",
+                when_to_use: "",
                 steps: &steps[0],
                 require_spec: false,
                 own: false,
@@ -334,12 +346,15 @@ mod tests {
         let long = [WorkflowCandidate {
             name: "Long",
             description: &long_text,
+            when_to_use: "",
             steps: &[],
-            require_spec: false,
+            require_spec: true,
             own: false,
         }];
-        // Cut on a character boundary with a short marker (`clip`).
-        assert!(workflow_options(&long)[0].1.len() <= WORKFLOW_OPTION_BYTES + 8);
+        // Cut on a character boundary with a short marker (`clip`); the gate survives the cut.
+        let cut = &workflow_options(&long)[0].1;
+        assert!(cut.len() <= WORKFLOW_OPTION_BYTES + 8);
+        assert!(cut.starts_with("Long (spec first): word"));
         // Option keys follow Jev's key pattern.
         for (key, _) in workflow_options(&many) {
             assert!(key.starts_with(|c: char| c.is_ascii_alphabetic()) && key.len() <= 64);
@@ -422,6 +437,7 @@ mod tests {
         own.push(WorkflowCandidate {
             name: " feature ",
             description: "",
+            when_to_use: "",
             steps: &steps[1],
             require_spec: true,
             own: true,

@@ -658,8 +658,9 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
 });
 /**
  * The mock's Auto choice (TSK-015): a question ("?", or starting with how/why/what…) is a prompt
- * and gets no workflow; "fix", "bug" or "crash" gets a workflow named Bugfix; anything else is a
- * goal with Feature. "maybe" makes the stand-in unsure, so the defaults apply (Goal, Feature).
+ * with the Research workflow (never a spec-first one); "fix", "bug" or "crash" gets Fix; anything
+ * else is a goal with Feature. "maybe" makes the stand-in unsure, so the defaults apply (Goal and
+ * Feature; no workflow for a prompt).
  */
 async function mockAutoChoice(body, workflows) {
   await delay(700);
@@ -671,7 +672,10 @@ async function mockAutoChoice(body, workflows) {
   const mode = autoMode ? (!unsure && question ? 'prompt' : 'goal') : body.mode || 'goal';
   let workflow = body.workflow_id && body.workflow_id !== 'auto' ? workflows.find((w) => w.id === body.workflow_id) : null;
   if (body.workflow_id === 'auto') {
-    workflow = mode === 'prompt' ? null : !unsure && /\b(fix|bug|crash)/i.test(text) ? named('bugfix') || named('feature') : named('feature');
+    const noSpec = (w) => (w && !(w.gates && w.gates.require_spec) ? w : null);
+    if (unsure) workflow = mode === 'prompt' ? null : named('feature');
+    else if (mode === 'prompt') workflow = noSpec(named('research'));
+    else workflow = /\b(fix|bug|crash)/i.test(text) ? named('fix') || named('feature') : named('feature');
   }
   return {
     mode,

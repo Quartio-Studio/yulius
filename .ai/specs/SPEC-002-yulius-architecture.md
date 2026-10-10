@@ -618,10 +618,12 @@ context.
    a workflow). Before the task exists, Jev answers at most two questions at once, within one
    2.5 s deadline (`crates/yulius-domain/src/auto_choice.rs`, `crates/yulius-app/src/auto_choice.rs`):
    - `mode` (`goal` | `prompt`), threshold 0.75 — default Goal;
-   - `workflow`: a fixed question text whose options are the sandbox's workflows as stored
-     (`w1`…`w12`, instance first, each "name: description. Steps: …. Spec first. / No spec."; never
-     hard-coded) and `none`, threshold 0.6 — default the workflow named "Feature" (the sandbox's
-     own before the instance's), none without one, and none for a prompt-mode task.
+   - `workflow`: a fixed question text whose options are the sandbox's workflows as
+     `App::workflows_for` lists them — the catalog's defaults (§7.10), then instance and sandbox
+     workflows — as `w1`…`w12`, each "Name (spec first | no spec): description Use when: … Steps:
+     …." (the gate first, so the 400-byte cut never drops it; never hard-coded), and `none`,
+     threshold 0.6 — default the workflow named "Feature" (the sandbox's own before the default),
+     none without one, and none for a prompt-mode task.
    - A prompt-mode task never gets a spec-first (`require_spec`) workflow from Auto: Jev's pick
      becomes none, recorded as the default ("features need specs; research and questions don't").
    - Picked values are never sent to Jev; a bad mode or workflow is refused before any call. The

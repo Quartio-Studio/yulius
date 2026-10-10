@@ -105,15 +105,16 @@ test('Auto is the default; a question runs as a prompt and picked values win', a
   await screen.getByRole('button', 'Start task').click();
   await expect(browser.locator('.intake-status')).toHaveText('Choosing mode and workflow…');
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
-  await expect(browser.locator('.auto-chip')).toHaveText('Auto → Prompt · No workflow');
+  // A question is a prompt with the Research workflow: no spec first.
+  await expect(browser.locator('.auto-chip')).toHaveText('Auto → Prompt · Research');
 
   // Picked mode and workflow are sent as they are: no Auto label.
   await browser.keyboard.press('ControlOrMeta+Shift+O');
   await screen.getByRole('button', 'Mode: Auto mode').click();
   await screen.getByRole('menuitemradio', /^Goal/).click();
   await screen.getByRole('button', 'Workflow: Auto workflow').click();
-  await screen.getByRole('menuitemradio', /^Quick task/).click();
-  await expect(screen.getByRole('button', 'Workflow: Quick task')).toBeVisible();
+  await screen.getByRole('menuitemradio', /^Fix \(default\)/).click();
+  await expect(screen.getByRole('button', 'Workflow: Fix')).toBeVisible();
   await screen.getByRole('textbox', 'Task prompt').fill('Bump the lockfile');
   await screen.getByRole('textbox', 'Task prompt').press('ControlOrMeta+Enter');
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#\d+ Bump the lockfile$/);

@@ -474,7 +474,7 @@ export function mountComposer(ctx, sandbox) {
     openMenu(anchor, [
       { label: 'Auto workflow', icon: 'zap', description: 'Jev picks the workflow that fits, or none: features get a spec, research and questions do not', checked: workflowId === AUTO, onSelect: () => { workflowId = AUTO; renderChips(); } },
       { label: 'No workflow', icon: 'x', description: 'The agent plans the work itself', checked: !workflowId, onSelect: () => { workflowId = ''; renderChips(); } },
-      ...workflows.map((wf) => ({ label: `${wf.name}${wf.scope === 'instance' ? ' (instance)' : ''}`, icon: 'workflow', description: wf.description || (Array.isArray(wf.steps) ? wf.steps.join(' → ') : null), checked: wf.id === workflowId, onSelect: () => { workflowId = wf.id; renderChips(); } })),
+      ...workflows.map((wf) => ({ label: `${wf.name}${wf.builtin ? ' (default)' : wf.scope === 'instance' ? ' (instance)' : ''}`, icon: 'workflow', description: wf.description || (Array.isArray(wf.steps) ? wf.steps.join(' → ') : null), checked: wf.id === workflowId, onSelect: () => { workflowId = wf.id; renderChips(); } })),
       { separator: true },
       { label: 'Manage workflows…', icon: 'gear', onSelect: () => ctx.navigate(`/s/${slug}/workflows`) },
     ]);

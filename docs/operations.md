@@ -295,8 +295,8 @@ sudo sh -c 'cat > /var/lib/yulius/jev.key'   # paste the key, then Ctrl-D
 - The start log says `task intake is on (Jev jev-1.13.0)` or why it is off.
 - Requests go to `https://api.typesafe.ai/v1/systemone` (outbound HTTPS). Each request carries one
   question: for a split check or an Auto choice, the new task's prompt (the workflow question also
-  carries the sandbox's workflow names, descriptions and step titles); for a typed prompt, the
-  task's title, prompt and step titles plus the typed text.
+  carries the sandbox's workflow names, descriptions, when to use them and step titles); for a
+  typed prompt, the task's title, prompt and step titles plus the typed text.
 - Every Auto decision is in the audit log (`task.auto_choice`, for example `mode goal (jev 91%),
   workflow Feature (default)`) and in the service log (`auto choice`); a Jev failure is logged as
   `auto choice without Jev's answer; the default applies`.

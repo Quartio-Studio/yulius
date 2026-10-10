@@ -163,6 +163,7 @@ impl App {
             .map(|w| WorkflowCandidate {
                 name: &w.name,
                 description: &w.description,
+                when_to_use: &w.when_to_use,
                 steps: &w.steps,
                 require_spec: w.require_spec,
                 own: w.sandbox_id.is_some(),
