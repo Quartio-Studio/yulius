@@ -27,12 +27,14 @@ export function mountMcpPage(ctx, sandbox, route) {
   const write = allows(sandbox.access, 'write');
   const instanceAdmin = ctx.isInstanceAdmin();
   const base = `/s/${encodeURIComponent(sandbox.slug)}/mcp`;
+  // Adding happens on its own page (UI-038); both Add buttons go there.
+  const add = () => navigate(`${base}/new`);
   const scopeFilter = filterTabs({ label: 'Scope', value: route.query.get('scope') || '', onChange: () => setChildren(host, render()),
     options: [{ value: '', label: 'All' }, { value: 'sandbox', label: 'This sandbox', icon: 'folder' }, { value: 'instance', label: 'Every sandbox', icon: 'globe' }] });
   const frame = pageFrame({
     title: 'MCP',
-    sub: 'attached once, available to every Claude Code session',
-    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => navigate(`${base}/new`) }, 'Add server')],
+    sub: 'attached once, available to every Claude Code session on every subscription',
+    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: add }, 'Add server')],
   });
   const host = h('div');
   frame.body.append(h('div', { class: 'toolbar' }, scopeFilter.el, h('span', { class: 'muted small' }, `The ${BRAND.name} tool server is always attached and not listed here.`)), host);
@@ -48,7 +50,7 @@ export function mountMcpPage(ctx, sandbox, route) {
     const shown = servers.filter((s) => !scopeFilter.value || s.scope === scopeFilter.value);
     if (shown.length === 0) return servers.length
       ? emptyState({ iconName: 'plug', title: 'No server in this scope', text: 'Choose All to see every server.' })
-      : emptyState({ iconName: 'plug', title: 'No MCP servers yet', text: 'Attach a tool server once and every Claude Code session gets it — for example the Quartio MCP (HTTP) or the Apify MCP (local command).', action: write ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => edit(null) }, 'Add server') : null });
+      : emptyState({ iconName: 'plug', title: 'No MCP servers yet', text: 'Attach a tool server once and every Claude Code session gets it — for example the Quartio MCP (HTTP) or the Apify MCP (local command).', action: write ? h('button', { type: 'button', class: 'btn btn-primary', onClick: add }, 'Add server') : null });
     return h('div', { class: 'item-list' }, shown.map((server) => {
       const testResult = h('div', { class: 'small' });
       const manage = canManage(server);

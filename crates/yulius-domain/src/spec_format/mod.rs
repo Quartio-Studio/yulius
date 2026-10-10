@@ -21,7 +21,7 @@
 //! Callers read the files (this module performs no I/O) and pass their contents.
 
 mod config;
-mod markdown;
+pub(crate) mod markdown;
 mod project;
 mod templates;
 

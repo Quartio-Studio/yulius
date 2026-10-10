@@ -595,6 +595,65 @@ async fn test_server(w: &World, creds: &Creds, id: &str) -> Result<(StatusCode, 
     Ok((r.status, r.body))
 }
 
+/// MCP-003: a secret value may be a reference to an agent secret, `${secret:NAME}`. It is kept
+/// write-only like any value and resolved when a run starts through the vault's hook; while
+/// nothing answers to it, the run gets the server without that variable or token (never the
+/// literal reference). Plain values are attached as before.
+#[tokio::test]
+async fn mcp_secret_references_resolve_through_the_vault_hook() -> TestResult {
+    let w = world(false).await?;
+    for body in [
+        json!({"name": "apify", "transport": "stdio", "command": "npx", "args": ["-y", "@apify/actors-mcp-server"],
+            "env": {"APIFY_TOKEN": "${secret:apify}", "APIFY_LOG": "info"}}),
+        json!({"name": "quartio", "transport": "http", "url": "https://mcp.quartio.test/mcp",
+            "headers": {"Authorization": "Bearer ${secret:quartio}"}}),
+    ] {
+        let created = call(
+            &w.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/mcp",
+            Some(body),
+            &w.alice,
+        )
+        .await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    }
+    let list = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/mcp",
+        None,
+        &w.alice,
+    )
+    .await?;
+    let apify = by_name(&list.body, "apify").ok_or("apify")?;
+    assert_eq!(apify["env_keys"], json!(["APIFY_LOG", "APIFY_TOKEN"]));
+    assert!(
+        !list.body.to_string().contains("${secret:"),
+        "values stay write-only"
+    );
+
+    let sandbox =
+        w.h.store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("sandbox")?;
+    assert_eq!(w.h.app.resolve_secret_ref(&sandbox, "apify").await?, None);
+    let attachments = w.h.app.mcp_attachments(&sandbox).await?;
+    assert!(attachments.contains(&McpAttachment::Stdio {
+        name: "apify".into(),
+        command: "npx".into(),
+        args: vec!["-y".into(), "@apify/actors-mcp-server".into()],
+        env: vec![("APIFY_LOG".into(), "info".into())],
+    }));
+    assert!(attachments.contains(&McpAttachment::Http {
+        name: "quartio".into(),
+        url: "https://mcp.quartio.test/mcp".into(),
+        bearer: None,
+    }));
+    Ok(())
+}
+
 #[tokio::test]
 async fn mcp_test_endpoint_probes_http_and_stdio_servers() -> TestResult {
     let w = world(false).await?;
