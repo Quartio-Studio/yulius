@@ -4,11 +4,11 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, placeholder, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { createTerminalView } from './terminal.js';
-import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo } from './status.js';
+import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, chainCandidates } from './intake.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
 import { attachTerminalDrop, taskAttachments } from './filedrop.js';
-import { relLong, dateTime, resetLabel } from './format.js';
+import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
 import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
@@ -44,10 +44,7 @@ function emptyTerminalMessage(task) {
     case 'queued': return { title: 'Queued', text: 'The agent starts as soon as a session slot is free.' };
     case 'starting': return { title: 'Starting Claude Code…', text: 'The session appears here in a moment.' };
     case 'switching': return { title: 'Moving to another AI account…', text: 'The session continues here in a moment.' };
-    case 'waiting_capacity': {
-      const reset = task.resumes_at ? resetLabel(task.resumes_at) : '';
-      return { title: 'Usage limit reached', text: `Every AI account is at its limit${reset ? ` · ${reset}` : ''}. The agent continues by itself.` };
-    }
+    case 'waiting_capacity': return { title: 'Paused', text: `${pausedLine(task)}. It continues by itself.` };
     case 'running': return { title: 'Claude Code is starting…', text: 'The session appears here in a moment.' };
     case 'chained': {
       const after = task.after;
@@ -207,7 +204,7 @@ export function mountTaskView(ctx, sandbox, task) {
     progress.setAttribute('aria-label', `${done} of ${total} steps done`);
     progress.hidden = !total;
     statusEl.dataset.tone = info.tone;
-    const reset = current.status === 'waiting_capacity' && current.resumes_at ? resetLabel(current.resumes_at) : '';
+    const reset = current.status === 'waiting_capacity' ? resetAround(current.resumes_at) : '';
     statusEl.title = [info.label, reset, info.detail].filter(Boolean).join(' · ');
     setChildren(statusEl,
       statusMark(info),

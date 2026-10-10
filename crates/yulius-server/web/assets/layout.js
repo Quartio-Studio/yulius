@@ -340,7 +340,7 @@ function statusSection(key, iconName, title, summary, body, openByDefault) {
  * Render GET /api/status (`StatusView`: vm, sessions, sandboxes, accounts, contained) so it reads
  * in seconds: one health line, machine tiles, then sandboxes and accounts as collapsible lists.
  * VM fields are null when unknown (CPU needs two readings) and render as "—"/"unknown", never as
- * zero. Account id/priority/last_error/in_use_by are present for admins only.
+ * zero. Account id/last_error/in_use_by are present for admins only.
  */
 export function renderStatus(data) {
   const vm = data.vm || {};
@@ -353,7 +353,7 @@ export function renderStatus(data) {
   const load = Array.isArray(vm.load) ? vm.load.map((v) => Number(v).toFixed(2)) : Number.isFinite(vm.load_1m) ? [Number(vm.load_1m).toFixed(2)] : null;
 
   // One line that says whether anything needs a person; those accounts are listed first.
-  const troubled = accounts.filter((a) => a.enabled !== false && a.status && a.status !== 'ok');
+  const troubled = accounts.filter((a) => a.status && a.status !== 'ok');
   const hot = [vm.cpu_percent, memPct, diskPct].some((v) => Number.isFinite(v) && v >= 90);
   let health = { tone: 'ok', icon: 'check', text: 'Everything is running normally' };
   if (data.contained === false) health = { tone: 'warn', icon: 'shield', text: 'Host mode: agent sessions are not isolated' };
@@ -375,7 +375,7 @@ export function renderStatus(data) {
       ? h('span', { class: 'status-count live', title: `${s.live_sessions} live sessions` }, h('span', { class: 'live-dot' }), `${s.live_sessions} running`)
       : h('span', { class: 'status-count' }, Number.isFinite(s.live_sessions) ? 'idle' : '—')));
 
-  const ready = accounts.filter((a) => a.enabled !== false && a.status === 'ok').length;
+  const ready = accounts.filter((a) => a.status === 'ok').length;
   const accountSummary = [`${ready} ready`, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean).join(' · ');
 
   return [
@@ -410,9 +410,7 @@ function accountInitials(account) {
 export function accountUsage(account, { foldable = false, open = false } = {}) {
   const usage = account.usage || {};
   const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
-  const state = account.enabled === false
-    ? { icon: 'x', tone: 'muted', label: 'Disabled' }
-    : ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
+  const state = ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
   const usageRow = (w, fallback) => {
     const name = limitName(w && w.window_minutes, fallback);
     const used = w ? w.used_percent : null;
@@ -438,12 +436,60 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
     account.last_error && usageNote ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, `Usage: ${account.last_error.slice('usage:'.length).trim()}`)) : null,
     account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.last_error)) : null,
     usageRow(usage.primary, 'Current session'),
-    usageRow(usage.secondary, 'Longer window'),
+    usageRow(usage.secondary, 'This week'),
+    // Per-model weekly caps, when the plan has them (they bind only tasks of that model).
+    usage.weekly_opus ? usageRow({ ...usage.weekly_opus, window_minutes: null }, 'Opus this week') : null,
+    usage.weekly_sonnet ? usageRow({ ...usage.weekly_sonnet, window_minutes: null }, 'Sonnet this week') : null,
     h('div', { class: 'account-foot' },
       account.in_use_by ? h('span', { class: 'status-count live' }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'} on this account`) : h('span', null, 'No tasks right now'),
       h('span', null, usage.observed_at ? `Updated ${relLong(usage.observed_at)}` : 'Usage not known yet')));
-  if (!foldable) return h('div', { class: ['account-card', account.enabled === false && 'disabled'] }, h('div', { class: 'account-head' }, head), body);
-  return rememberOpen(h('details', { class: ['account-fold', account.enabled === false && 'disabled'] }, h('summary', { class: 'account-head' }, head), body), `account:${account.id}`, open);
+  if (!foldable) return h('div', { class: 'account-card' }, h('div', { class: 'account-head' }, head), body);
+  return rememberOpen(h('details', { class: 'account-fold' }, h('summary', { class: 'account-head' }, head), body), `account:${account.id}`, open);
+}
+
+/** A number tile of the capacity panel: name, value and a detail line (no meter). */
+function capacityTile(iconName, name, value, detail, tone = 'ok') {
+  return h('div', { class: ['stat-tile', `stat-${tone}`] },
+    h('div', { class: 'stat-head' }, icon(iconName, { size: 15 }), h('span', null, name)),
+    h('div', { class: 'tile-value' }, value),
+    h('div', { class: 'stat-detail' }, detail || ' '));
+}
+
+/** Subscriptions' weekly limits used per week at `burn` points per hour (ADR-17 §2.4). */
+function perWeek(burn) {
+  return Number.isFinite(burn) ? (burn * 168) / 100 : null;
+}
+
+/**
+ * The subscription pool from GET /api/capacity (ROT-013): one recommendation line and the
+ * numbers behind it — available now, what is left this week, the burn rate, when the pool runs
+ * out at that rate and the hours tasks waited. Shared by the Accounts page and the Dashboard;
+ * unknown values read as "—" or "not enough readings yet", never as zero.
+ */
+export function capacityPanel(view) {
+  const v = view || {};
+  const subscriptions = Number.isFinite(v.subscriptions) ? v.subscriptions : 0;
+  const known = subscriptions - (v.unknown_usage || 0);
+  const threshold = Number.isFinite(v.threshold) ? v.threshold : 98;
+  const share = (left) => (Number.isFinite(left) && known > 0 ? Math.max(0, Math.min(100, (left / (threshold * known)) * 100)) : null);
+  const weekly = share(v.weekly_left);
+  const session = share(v.five_hour_left);
+  const burn24 = perWeek(v.burn_24h);
+  const burn7 = perWeek(v.burn_7d);
+  const add = v.add || 0;
+  const paused = v.paused_tasks || 0;
+  const reset = v.resumes_at ? resetLabel(v.resumes_at) : '';
+  const line = [v.recommendation || 'Capacity not known yet', paused ? `${paused} ${paused === 1 ? 'task' : 'tasks'} paused${reset ? ` · ${reset.toLowerCase()}` : ''}` : null].filter(Boolean).join(' · ');
+  const leftTone = (p) => (!Number.isFinite(p) ? 'unknown' : p <= 10 ? 'danger' : p <= 30 ? 'warn' : 'ok');
+  const hours = Number.isFinite(v.paused_hours_7d) ? v.paused_hours_7d : 0;
+  return h('div', { class: 'stack capacity-panel' },
+    h('div', { class: ['status-health', `health-${add > 0 ? 'warn' : 'ok'}`], role: 'status' }, icon(add > 0 ? 'warn' : 'check', { size: 16 }), h('span', null, line)),
+    h('div', { class: 'stat-tiles' },
+      capacityTile('user', 'Available now', `${Number.isFinite(v.available) ? v.available : 0} of ${subscriptions}`, 'below 98 % in every window', v.available ? 'ok' : 'danger'),
+      capacityTile('clock', 'Left this week', Number.isFinite(weekly) ? `${Math.round(weekly)}%` : '—', Number.isFinite(session) ? `current sessions: ${Math.round(session)}% left` : 'of the pool before it pauses', leftTone(weekly)),
+      capacityTile('zap', 'Burn rate', burn24 === null ? '—' : `${burn24.toFixed(1)} / week`, burn24 === null ? 'not enough readings yet' : `subscriptions' weekly limits, last 24 h${burn7 === null ? '' : ` (7 d: ${burn7.toFixed(1)})`}`, 'ok'),
+      capacityTile('chart', 'Runs out', v.runs_out_at ? resetLabel(v.runs_out_at).replace(/^Resets (at )?/, '') : burn24 === null ? '—' : 'Not this week', v.runs_out_at ? 'at the current rate' : 'at the current rate, before the next resets', v.runs_out_at ? 'warn' : 'ok'),
+      capacityTile('pulse', 'Paused (7 days)', `${hours.toFixed(hours >= 10 ? 0 : 1)} h`, Number.isFinite(v.active_hours_7d) ? `task-hours; ${Math.round(v.active_hours_7d)} h worked` : 'task-hours', hours > 0 ? 'warn' : 'ok')));
 }
 
 // ---------------------------------------------------------------- sidebar

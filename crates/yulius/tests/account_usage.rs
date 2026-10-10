@@ -107,8 +107,6 @@ async fn account(h: &support::Harness, id: &str, credential: &[u8]) -> TestResul
             provider: Provider::Anthropic,
             label: id.into(),
             credential: Some(h.app.deps.crypto.seal(credential)?),
-            priority: 0,
-            enabled: true,
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,

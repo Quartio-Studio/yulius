@@ -6,7 +6,9 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
 
-use yulius_harness::hook_client::{MAX_INPUT_BYTES, run_hook};
+use std::time::{Duration, Instant};
+
+use yulius_harness::hook_client::{HoldPolicy, MAX_INPUT_BYTES, run_hook, run_hook_with};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -151,6 +153,7 @@ fn non_200_and_unsupported_framing_print_nothing() -> TestResult {
     for response in [
         b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 5\r\n\r\nnope!".to_vec(),
         b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        b"HTTP/1.1 204 No Content\r\n\r\n".to_vec(),
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n".to_vec(),
         b"HTTP/1.1 200 OK\r\nContent-Length: 999999999\r\n\r\n".to_vec(),
         b"SSH-2.0-not-http\r\n\r\n".to_vec(),
@@ -294,5 +297,182 @@ fn output_errors_still_exit_zero() -> TestResult {
     );
     assert_eq!(code, 0);
     join(server)?;
+    Ok(())
+}
+
+/// Fast hold bounds for tests.
+const FAST_HOLD: HoldPolicy = HoldPolicy {
+    max: Duration::from_secs(20),
+    min_wait: Duration::from_millis(10),
+    reconnect: Duration::from_millis(50),
+};
+
+/// Serves `responses` in order on one listener, one connection each, and returns the requests.
+fn serve_sequence(
+    listener: TcpListener,
+    responses: Vec<Vec<u8>>,
+) -> JoinHandle<io::Result<Vec<Request>>> {
+    thread::spawn(move || {
+        let mut requests = Vec::new();
+        for response in responses {
+            let (mut stream, _) = listener.accept()?;
+            requests.push(read_request(&mut stream)?);
+            stream.write_all(&response)?;
+        }
+        Ok(requests)
+    })
+}
+
+const HOLD: &[u8] = b"HTTP/1.1 202 Accepted\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
+
+/// ADR-17: `202` + `Retry-After` holds the agent at its boundary: the same request is sent again
+/// until a `200` answers, and only that answer is printed.
+#[test]
+fn a_held_hook_asks_again_and_prints_only_the_final_answer() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    let server = serve_sequence(
+        listener,
+        vec![
+            HOLD.to_vec(),
+            HOLD.to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 17\r\n\r\n{\"decision\":null}".to_vec(),
+        ],
+    );
+    let mut output = Vec::new();
+    let payload = br#"{"hook_event_name":"Stop"}"#;
+    let code = run_hook_with(
+        "claude",
+        "Stop",
+        &mut &payload[..],
+        &mut output,
+        &env_with(url, Some("t")),
+        FAST_HOLD,
+    );
+    assert_eq!(code, 0);
+    assert_eq!(output, br#"{"decision":null}"#);
+    let requests = server
+        .join()
+        .map_err(|_| io::Error::other("server thread panicked"))??;
+    assert_eq!(requests.len(), 3, "asked again after each hold");
+    assert!(
+        requests.iter().all(|r| r.body == payload),
+        "the same payload"
+    );
+    Ok(())
+}
+
+/// ADR-17: a hold survives a Yulius restart — while held, a refused connection and a 5xx are
+/// retried instead of failing open, and the restarted server's answer is printed.
+#[test]
+fn a_held_hook_survives_a_server_restart() -> TestResult {
+    let first = TcpListener::bind("127.0.0.1:0")?;
+    let port = first.local_addr()?.port();
+    let url = format!("http://127.0.0.1:{port}");
+    let before = serve_sequence(first, vec![HOLD.to_vec()]);
+    let client = thread::spawn(move || {
+        let mut output = Vec::new();
+        run_hook_with(
+            "claude",
+            "Stop",
+            &mut &b"{}"[..],
+            &mut output,
+            &env_with(url, Some("t")),
+            FAST_HOLD,
+        );
+        output
+    });
+    before
+        .join()
+        .map_err(|_| io::Error::other("server thread panicked"))??;
+    // The server is down for a while (connections refused), then comes back on the same port,
+    // first failing once, then answering.
+    thread::sleep(Duration::from_millis(300));
+    let again = TcpListener::bind(("127.0.0.1", port))?;
+    let after = serve_sequence(
+        again,
+        vec![
+            b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            HOLD.to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
+        ],
+    );
+    let output = client
+        .join()
+        .map_err(|_| io::Error::other("client thread panicked"))?;
+    assert_eq!(output, b"ok");
+    after
+        .join()
+        .map_err(|_| io::Error::other("server thread panicked"))??;
+    Ok(())
+}
+
+/// A held hook fails open (prints nothing) when the run is refused or the hold bound passes.
+#[test]
+fn a_held_hook_fails_open_on_refusal_or_after_its_bound() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    let server = serve_sequence(
+        listener,
+        vec![
+            HOLD.to_vec(),
+            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        ],
+    );
+    let mut output = Vec::new();
+    run_hook_with(
+        "claude",
+        "Stop",
+        &mut &b"{}"[..],
+        &mut output,
+        &env_with(url, Some("t")),
+        FAST_HOLD,
+    );
+    assert!(output.is_empty(), "a finished run fails open");
+    server
+        .join()
+        .map_err(|_| io::Error::other("server thread panicked"))??;
+
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    let server = serve_sequence(listener, vec![HOLD.to_vec(); 3]);
+    let started = Instant::now();
+    let mut output = Vec::new();
+    run_hook_with(
+        "claude",
+        "Stop",
+        &mut &b"{}"[..],
+        &mut output,
+        &env_with(url, Some("t")),
+        HoldPolicy {
+            max: Duration::from_millis(150),
+            min_wait: Duration::from_millis(60),
+            reconnect: Duration::from_millis(60),
+        },
+    );
+    assert!(output.is_empty(), "the hold bound fails open");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    // The client stopped asking before the third hold.
+    drop(server);
+    Ok(())
+}
+
+/// Without a prior hold, an unreachable server still fails open at once (no retry loop).
+#[test]
+fn an_unheld_hook_does_not_retry() -> TestResult {
+    let (url, listener) = untouched_listener()?;
+    drop(listener);
+    let started = Instant::now();
+    let mut output = Vec::new();
+    run_hook_with(
+        "claude",
+        "Stop",
+        &mut &b"{}"[..],
+        &mut output,
+        &env_with(url, Some("t")),
+        FAST_HOLD,
+    );
+    assert!(output.is_empty());
+    assert!(started.elapsed() < Duration::from_secs(3));
     Ok(())
 }

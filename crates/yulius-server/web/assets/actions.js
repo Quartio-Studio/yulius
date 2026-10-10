@@ -139,11 +139,11 @@ export async function openSwitchDialog(ctx, task) {
     accounts = []; // Only instance admins can list accounts; others let rotation choose.
   }
   const accountSelect = h('select', { class: 'select' },
-    h('option', { value: '' }, 'Automatic (rotation picks the best account)'),
+    h('option', { value: '' }, 'Automatic (the pool picks the best account)'),
     // Accounts that cannot take the task are listed but disabled, with the reason in words.
     (Array.isArray(accounts) ? accounts : []).map((a) => {
       const used = a.usage && a.usage.primary && Number.isFinite(a.usage.primary.used_percent) ? Math.round(a.usage.primary.used_percent) : null;
-      const why = !a.enabled ? 'turned off' : a.status === 'relogin' || a.status === 'pending_login' ? 'sign in again first' : a.status === 'limited' || (used !== null && used >= 99) ? 'limit reached' : a.status === 'error' ? 'not working' : null;
+      const why = a.status === 'relogin' || a.status === 'pending_login' ? 'sign in again first' : a.status === 'limited' || (used !== null && used >= 98) ? 'limit reached' : a.status === 'error' ? 'not working' : null;
       const label = `${a.label}${why ? ` — ${why}` : used !== null ? ` · ${used}% used` : ''}`;
       return h('option', { value: a.id, disabled: Boolean(why) }, label);
     }));

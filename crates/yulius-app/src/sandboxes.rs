@@ -35,8 +35,10 @@ impl App {
             if task.status == TaskStatus::Queued {
                 counts.queued += 1;
             }
+            // A task paused for subscription capacity needs nobody: it continues by itself
+            // (ROT-010, F 2026-10-10).
             if task.activity == Some(Activity::NeedsAttention)
-                || task.status == TaskStatus::WaitingCapacity
+                && task.status != TaskStatus::WaitingCapacity
             {
                 counts.needs_attention += 1;
             }

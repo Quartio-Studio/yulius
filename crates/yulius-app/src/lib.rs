@@ -9,6 +9,7 @@ pub mod auth;
 pub mod automations;
 pub mod background;
 pub mod browser;
+pub mod capacity;
 pub mod chains;
 pub mod context;
 pub mod coordination;

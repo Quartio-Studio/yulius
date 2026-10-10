@@ -769,8 +769,6 @@ async fn agent_task(
             provider: Provider::Anthropic,
             label: "Claude".into(),
             credential: Some(h.app.deps.crypto.seal(b"sk-ant-oat01-upload-test")?),
-            priority: 0,
-            enabled: true,
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,

@@ -61,6 +61,12 @@ pub struct AccountUsageView {
     pub primary: Option<UsageWindowView>,
     /// Secondary (weekly) window.
     pub secondary: Option<UsageWindowView>,
+    /// Weekly cap of Opus models (`seven_day_opus`), when the provider reports it.
+    #[serde(default)]
+    pub weekly_opus: Option<UsageWindowView>,
+    /// Weekly cap of Sonnet models (`seven_day_sonnet`), when the provider reports it.
+    #[serde(default)]
+    pub weekly_sonnet: Option<UsageWindowView>,
     /// When the snapshot was observed.
     pub observed_at: Option<String>,
 }
@@ -74,10 +80,6 @@ pub struct AccountView {
     pub provider: String,
     /// Label.
     pub label: String,
-    /// Enabled.
-    pub enabled: bool,
-    /// Lower is preferred.
-    pub priority: i32,
     /// `ok`, `relogin`, `error`, `limited` or `pending_login`.
     pub status: String,
     /// Usage snapshot.
@@ -129,18 +131,75 @@ pub struct AccountLoginStarted {
     pub login_id: String,
 }
 
-/// `PATCH /api/admin/accounts/{id}`.
+/// `PATCH /api/admin/accounts/{id}`: only the label. The pool has no priorities or switches
+/// (F 2026-10-10); any other field is refused (422).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateAccount {
-    /// Enabled.
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    /// Priority.
-    #[serde(default)]
-    pub priority: Option<i32>,
     /// Label.
-    #[serde(default)]
-    pub label: Option<String>,
+    pub label: String,
+}
+
+/// One account in [`CapacityView`]. Everyone sees label, status and usage; `id` and
+/// `in_use_by` are for instance administrators only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CapacityAccount {
+    /// Label.
+    pub label: String,
+    /// `ok`, `relogin`, `error`, `limited` or `pending_login`.
+    pub status: String,
+    /// Usage snapshot (unknown windows are `null`).
+    pub usage: AccountUsageView,
+    /// Below the threshold in its windows and healthy: new work can go here now.
+    pub available: bool,
+    /// Id (instance administrators only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Live tasks on it (instance administrators only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_use_by: Option<u32>,
+}
+
+/// `GET /api/capacity` (signed in): the subscription pool, its burn rate and forecast
+/// (SPEC-001 ROT-013, SPEC-002 ADR-17 §2.4). Points are percentage points of one
+/// subscription's weekly window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CapacityView {
+    /// Pause and switch threshold in percent (98).
+    pub threshold: f64,
+    /// Healthy subscriptions in the pool.
+    pub subscriptions: u32,
+    /// Healthy subscriptions whose weekly usage is not known yet.
+    pub unknown_usage: u32,
+    /// Subscriptions below the threshold right now.
+    pub available: u32,
+    /// Points left in the pool's weekly windows before it pauses; `null` when unknown.
+    pub weekly_left: Option<f64>,
+    /// Points left in the pool's 5-hour windows; `null` when unknown.
+    pub five_hour_left: Option<f64>,
+    /// Burn rate of the last 24 hours in points per hour; `null` without enough readings.
+    pub burn_24h: Option<f64>,
+    /// Burn rate of the last 7 days in points per hour.
+    pub burn_7d: Option<f64>,
+    /// When the pool's weekly capacity runs out at the 24-hour rate, if within 7 days.
+    pub runs_out_at: Option<String>,
+    /// Task-hours paused for lack of capacity in the last 7 days.
+    pub paused_hours_7d: f64,
+    /// Task-hours agents ran in the last 7 days (pauses excluded).
+    pub active_hours_7d: f64,
+    /// Subscriptions the observed demand needs.
+    pub needed: u32,
+    /// Subscriptions to add (0 when capacity is sufficient).
+    pub add: u32,
+    /// Plain recommendation ("Capacity is sufficient", "Add about 2 subscriptions to stop
+    /// pausing").
+    pub recommendation: String,
+    /// Tasks paused right now.
+    pub paused_tasks: u32,
+    /// While every subscription is exhausted: the earliest known time one has capacity again.
+    pub resumes_at: Option<String>,
+    /// The subscriptions.
+    pub accounts: Vec<CapacityAccount>,
 }
 
 /// `GET /api/admin/github`.
