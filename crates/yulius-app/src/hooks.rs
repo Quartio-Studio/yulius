@@ -374,6 +374,11 @@ impl App {
                 return Ok(hold());
             }
         }
+        // A typed prompt starts new work: an achieved goal no longer makes the task done
+        // (TSK-014). Claude Code's own wake-ups (a background shell ended) keep it.
+        if crate::finish::is_typed_prompt(input.prompt.as_deref()) {
+            self.prompt_submitted(&ctx.task.id);
+        }
         if ctx.task.gate_blocks != 0 {
             let update = TaskFieldUpdate {
                 gate_blocks: Some(0),
@@ -503,7 +508,12 @@ impl App {
                 };
                 store.update_task(&task.id, &update, self.now()).await?;
             }
-            self.set_task_activity(task, Activity::Waiting).await?;
+            // Done when the goal is achieved, waiting otherwise (TSK-014).
+            let next = self.activity_after_clean_turn(&task.id);
+            self.set_task_activity(task, next).await?;
+            let app = Arc::clone(self);
+            let task_id = task.id.clone();
+            tokio::spawn(async move { app.probe_idle_shells(&task_id).await });
             // A clean stop of a finished task opens its pull request (#35).
             let app = Arc::clone(self);
             let task_id = task.id.clone();

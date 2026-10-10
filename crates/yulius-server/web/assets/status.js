@@ -49,18 +49,41 @@ export function isLive(status) {
   return LIVE_STATUSES.has(status);
 }
 
+/** Background shells the agent left running while idle (TSK-014), 0 when none or not known. */
+export function backgroundShells(task) {
+  return Number.isInteger(task.background_shells) && task.background_shells > 0 ? task.background_shells : 0;
+}
+
+/** "1 background shell still running" (TSK-014). */
+export function shellsLine(count) {
+  return `${count} background shell${count === 1 ? '' : 's'} still running`;
+}
+
+/** A finished task that still has background shells reads as Working, with them said (TSK-014). */
+function stillWorking(count) {
+  return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working', shells: count, detail: shellsLine(count) };
+}
+
+const DONE = { glyph: '✓', icon: 'check', tone: 'done', label: 'Done', group: 'done' };
+
 /**
  * How a task's status reads: an SVG `icon` (one distinct shape per state, dom.js), a colour
  * `tone`, a plain `label`, and the sidebar `group` — `needs` (waiting for the user), `working`
- * (running or on its way) or `ended` (stopped or failed). `glyph` is the text fallback.
+ * (running or on its way), `done` (finished, TSK-014) or `ended` (stopped or failed). `glyph` is
+ * the text fallback.
  */
 export function statusInfo(task) {
   const status = task.status;
   const activity = task.activity;
   if (status === 'running') {
     // needs_attention: blocked mid-turn (a permission prompt, a browser request, failing gates);
-    // waiting: the agent finished its turn and the next move is the user's.
+    // waiting: the agent finished its turn and the next move is the user's;
+    // done: the goal is achieved and the turn ended — Done once no background shell is left.
     if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs your action', group: 'needs' };
+    if (activity === 'done') {
+      const shells = backgroundShells(task);
+      return shells ? stillWorking(shells) : { ...DONE };
+    }
     if (activity === 'waiting') return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
     if (activity === 'working') return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working' };
     return { glyph: '●', icon: 'st-working', tone: 'running', label: 'Running', group: 'working' };
@@ -106,9 +129,11 @@ export function pausedLine(task) {
 export function activityLine(task, info = statusInfo(task)) {
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
   if (info.held) return 'A prompt was held · choose what to do';
+  if (info.shells) return shellsLine(info.shells);
   if (info.pr) return info.label;
   const steps = task.steps || {};
   if (task.status === 'running') {
+    if (task.activity === 'done') return steps.total ? `Goal achieved · ${steps.done || 0}/${steps.total} steps` : 'Goal achieved';
     if (task.activity === 'needs_attention') return 'Approve or answer in the terminal';
     if (task.activity === 'waiting') return steps.total && steps.done >= steps.total ? 'All steps done — review it' : 'Agent replied — your turn';
     if (steps.total) return `Step ${Math.min((steps.done || 0) + 1, steps.total)}/${steps.total}${steps.current ? ` · ${steps.current}` : ''}`;
@@ -129,8 +154,13 @@ export function activityLine(task, info = statusInfo(task)) {
  * a live task "Needs you in the browser", and the pull request of a finished turn makes it
  * "Done" (tested: checks green or not required, or merged), "In review" (checks running) or
  * "Needs you" (checks failing) (#35). `actionRequests` is store.state.actionRequests and `pr` the
- * task's pull request from store.pullsOf(). The sidebar and the Tasks page both use this, so they
- * always agree.
+ * task's pull request from store.pullsOf(). The sidebar, the Tasks page, the task header and the
+ * Git page all use this, so they always agree.
+ *
+ * The one rule for Done (SPEC-001 TSK-014): the last turn ended cleanly, nothing needs the user,
+ * no background shell is left, and the work is evidently complete — Claude Code recorded the goal
+ * as achieved (activity `done`) or the pull request is tested. Failing checks need the user; a
+ * background shell keeps it Working; checks still running (without an achieved goal) are In review.
  */
 export function taskInfo(task, actionRequests, pr) {
   const info = statusInfo(task);
@@ -145,11 +175,17 @@ export function taskInfo(task, actionRequests, pr) {
   // The agent finished and its pull request exists (#35): done once it is tested — checks green
   // or not required — or merged; in review while checks run; needs you when they fail.
   // Only after a finished turn: a task waiting for approval (needs_attention) or working is not done (#68).
-  if (pr && task.status === 'running' && task.activity === 'waiting' && (pr.state === 'open' || pr.state === 'merged')) {
+  const finished = task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done');
+  if (pr && finished && (pr.state === 'open' || pr.state === 'merged')) {
     if (pr.state === 'open' && pr.checks === 'failure') return { ...info, icon: 'branch', tone: 'attention', label: `PR #${pr.number} · checks failing`, group: 'needs', pr };
+    const shells = backgroundShells(task);
+    if (shells) return { ...info, ...stillWorking(shells), pr };
+    const done = { ...info, ...DONE, label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, pr };
+    // An achieved goal is done whatever the checks are still doing (TSK-014).
+    if (task.activity === 'done') return done;
     // Tested means known green (or no required checks); running or unreadable checks are not.
     if (pr.state === 'open' && !['success', 'none'].includes(pr.checks)) return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · ${pr.checks === 'pending' ? 'checks running' : 'checks not known yet'}`, group: 'working', pr };
-    return { ...info, glyph: '✓', icon: 'check', tone: 'done', label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, group: 'done', pr };
+    return done;
   }
   return info;
 }

@@ -151,7 +151,7 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 TaskSummary = {
   "id": "…", "sandbox_id": "…", "number": 12, "title": "Checkout API",
   "harness": "claude", "status": "running|…(see domain wire names)",
-  "activity": "working|waiting|needs_attention|null",
+  "activity": "working|waiting|needs_attention|done|null",
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null"},
@@ -159,7 +159,8 @@ TaskSummary = {
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
-  "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null
+  "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
+  "background_shells": "0|1|…|null"
 }
 ChainLink = {"task_id|null","number","title|null","status|null","blocked":"reason|null"}
 ```
@@ -175,6 +176,13 @@ the agent, and the task continues by itself. `resumes_at` is set only then: the 
 time a subscription has capacity for it again. The UI shows "Paused: waiting for subscription
 capacity (resets ~14:20)" outside Needs you. A Continue with no capacity answers `200` with the
 task paused, not an error.
+
+`activity` is `done` when Claude Code recorded the task's goal as achieved and the turn ended
+cleanly (TSK-014); the session stays open, and any new prompt makes it `working` again.
+`background_shells` is set while the agent is idle (`waiting` or `done`): the Bash-tool shells it
+left running (Claude Code's "· 1 shell"), probed every 5 s; null when not known. The UI shows a
+`done` task as Done only when no shell is running ("Working · 1 background shell still running"
+otherwise), and applies the same shell condition to Done by a tested pull request.
 
 ```json
 TaskDetail = TaskSummary + {

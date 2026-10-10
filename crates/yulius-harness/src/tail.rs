@@ -29,6 +29,8 @@ pub struct TranscriptTail {
     skipping: bool,
     skipped_lines: u64,
     truncations: u64,
+    /// File length seen by the last poll (`None` before the first poll).
+    seen_len: Option<u64>,
 }
 
 impl TranscriptTail {
@@ -65,6 +67,7 @@ impl TranscriptTail {
             skipping: false,
             skipped_lines: 0,
             truncations: 0,
+            seen_len: None,
         })
     }
 
@@ -114,6 +117,14 @@ impl TranscriptTail {
         self.truncations
     }
 
+    /// `true` once a poll has read everything the file held when that poll looked (a missing
+    /// file counts as read). A large file takes several polls ([`MAX_POLL_BYTES`] each): until
+    /// then the lines returned are history being caught up on, not new events.
+    #[must_use]
+    pub fn at_end(&self) -> bool {
+        self.seen_len.is_some_and(|len| self.read_pos >= len)
+    }
+
     /// Returns the complete, non-empty lines appended since the last poll (without line
     /// terminators; invalid UTF-8 is replaced).
     ///
@@ -122,10 +133,14 @@ impl TranscriptTail {
     pub fn poll(&mut self) -> io::Result<Vec<String>> {
         let mut file = match File::open(&self.path) {
             Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.seen_len = Some(0);
+                return Ok(Vec::new());
+            }
             Err(error) => return Err(error),
         };
         let len = file.metadata()?.len();
+        self.seen_len = Some(len);
         if len < self.read_pos {
             self.read_pos = 0;
             self.committed = 0;

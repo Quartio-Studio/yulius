@@ -9,6 +9,7 @@
 //!            [--bytes N] [--code N] [--seconds N] [--ignore-term]
 //!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
 //!            [--limit-after N] [--report-env NAME]... [--tui]
+//!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-delay-ms MS]
 //! ```
 //!
 //! Modes:
@@ -33,6 +34,20 @@
 //! `LIMIT REACHED`. `--report-env NAME` prints `ENV NAME=set len=<n>` or `ENV NAME=unset` (never
 //! the value).
 //!
+//! Goal mode (TSK-010/TSK-014), like Claude Code 2.1.292: `/goal <condition>` prints `GOAL SET`,
+//! appends the goal's sentinel record, then (after `--goal-delay-ms`, default 0) runs one turn and
+//! records the goal as achieved (`goal_status` with `met: true`, after the turn's Stop hook) and
+//! prints `✓ Goal achieved`. With `--goal-background N` the goal turn first starts a background
+//! shell shaped like Claude Code's Bash tool (`/bin/sh -c "sleep N && pwd -P >| /dev/null"`, a
+//! child of this process) and prints `BACKGROUND <pid>`; when it exits the agent is woken like
+//! Claude Code wakes it (a `queued_command` task notification and a short turn with its Stop
+//! hook) and prints `BACKGROUND DONE`.
+//!
+//! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
+//! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
+//! JSON on stdin (the hook client reads `YULIUS_URL` and `YULIUS_TASK_TOKEN` from the inherited
+//! environment). A Stop answer that blocks prints `STOP BLOCKED`.
+//!
 //! `--tui` draws like a full-screen agent TUI (Claude Code 2.1.x): the alternate screen with a
 //! header box, the transcript and an input box between two rules along the bottom, all as wide
 //! as the terminal, redrawn in full whenever the terminal is resized (SIGWINCH). Printed lines
@@ -40,7 +55,7 @@
 
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -52,6 +67,8 @@ const MAX_LINE: u64 = 64 * 1024;
 const MAX_FLOOD_BYTES: u64 = 1 << 30;
 const MAX_SLEEP_SECONDS: u64 = 3600;
 const MAX_LATER_MS: u64 = 60_000;
+const MAX_GOAL_DELAY_MS: u64 = 60_000;
+const MAX_HOOK_OUTPUT: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -75,6 +92,9 @@ struct Options {
     limit_after: Option<u64>,
     report_env: Vec<String>,
     tui: bool,
+    hooks: Option<PathBuf>,
+    goal_background: Option<u64>,
+    goal_delay_ms: u64,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -96,6 +116,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         limit_after: None,
         report_env: Vec::new(),
         tui: false,
+        hooks: None,
+        goal_background: None,
+        goal_delay_ms: 0,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -131,6 +154,17 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options
                     .report_env
                     .push(args.next().ok_or("--report-env needs a name")?);
+            }
+            "--hooks" => {
+                options.hooks = Some(args.next().ok_or("--hooks needs a path")?.into());
+            }
+            "--goal-background" => {
+                let seconds: u64 = parse_number(&flag, args.next())?;
+                options.goal_background = Some(seconds.min(MAX_SLEEP_SECONDS));
+            }
+            "--goal-delay-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.goal_delay_ms = ms.min(MAX_GOAL_DELAY_MS);
             }
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -359,6 +393,61 @@ impl Transcript {
         self.append(&[user, assistant])
     }
 
+    /// A `goal_status` attachment shaped like Claude Code 2.1.292's.
+    fn goal_status(&mut self, goal: Value) -> io::Result<()> {
+        let uuid = format!("fake-{}-goal-{}", self.session_id, self.turns);
+        let mut record = self.claude_envelope("attachment", &uuid, &rfc3339(now_ms()));
+        record["attachment"] = goal;
+        self.last_uuid = Some(uuid);
+        self.append(&[record])
+    }
+
+    /// The `system` records Claude Code writes when a turn closes after its Stop hooks.
+    fn close_turn(&mut self, duration_ms: u64) -> io::Result<()> {
+        let timestamp = rfc3339(now_ms());
+        let summary_uuid = format!("fake-{}-{}-stop", self.session_id, self.turns);
+        let mut summary = self.claude_envelope("system", &summary_uuid, &timestamp);
+        summary["subtype"] = json!("stop_hook_summary");
+        summary["hookCount"] = json!(2);
+        summary["hookErrors"] = json!([]);
+        summary["preventedContinuation"] = json!(false);
+        let duration_uuid = format!("fake-{}-{}-duration", self.session_id, self.turns);
+        let mut duration = self.claude_envelope("system", &duration_uuid, &timestamp);
+        duration["subtype"] = json!("turn_duration");
+        duration["durationMs"] = json!(duration_ms);
+        self.last_uuid = Some(duration_uuid);
+        self.append(&[summary, duration])
+    }
+
+    /// A background shell ended: Claude Code queues a task notification and wakes the agent.
+    fn notification_turn(&mut self, pid: u32) -> io::Result<()> {
+        self.turns += 1;
+        let n = self.turns;
+        let timestamp = rfc3339(now_ms());
+        let queued_uuid = format!("fake-{}-{n}-q", self.session_id);
+        let mut queued = self.claude_envelope("attachment", &queued_uuid, &timestamp);
+        queued["attachment"] = json!({
+            "type": "queued_command",
+            "commandMode": "task-notification",
+            "prompt": format!("<task-notification>\n<task-id>bash-{pid}</task-id>\n<status>completed</status>\n</task-notification>"),
+            "origin": {"kind": "task-notification", "producer": "session-task"},
+        });
+        let assistant_uuid = format!("fake-{}-{n}-a", self.session_id);
+        let mut assistant = self.claude_envelope("assistant", &assistant_uuid, &timestamp);
+        assistant["message"] = json!({
+            "id": format!("msg_fake_{n}"),
+            "type": "message",
+            "role": "assistant",
+            "model": "fake-model",
+            "content": [{"type": "text", "text": "The background command finished."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 8, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 6}
+        });
+        self.last_uuid = Some(assistant_uuid);
+        self.append(&[queued, assistant])
+    }
+
     fn limit(&mut self) -> io::Result<()> {
         let timestamp = rfc3339(now_ms());
         let resets_at = now_ms() / 1000 + 3600;
@@ -386,6 +475,88 @@ impl Transcript {
         self.last_uuid = Some(uuid);
         self.append(&[record])
     }
+}
+
+/// Runs one Claude Code hook through Yulius' hook client; returns its output (empty when none).
+fn run_hook(exe: &Path, event: &str, input: &Value) -> String {
+    let child = Command::new(exe)
+        .args(["hook", "claude", event])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return String::new();
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input.to_string().as_bytes());
+    }
+    let mut output = String::new();
+    if let Some(stdout) = child.stdout.take() {
+        let _ = stdout.take(MAX_HOOK_OUTPUT).read_to_string(&mut output);
+    }
+    let _ = child.wait();
+    output
+}
+
+/// The hooks of one session, when `--hooks` is given.
+#[derive(Clone)]
+struct Hooks {
+    exe: PathBuf,
+    session_id: String,
+}
+
+impl Hooks {
+    fn prompt(&self, prompt: &str) {
+        run_hook(
+            &self.exe,
+            "UserPromptSubmit",
+            &json!({"session_id": self.session_id, "hook_event_name": "UserPromptSubmit",
+                "prompt": prompt}),
+        );
+    }
+
+    fn stop(&self) -> io::Result<()> {
+        let answer = run_hook(
+            &self.exe,
+            "Stop",
+            &json!({"session_id": self.session_id, "hook_event_name": "Stop",
+                "stop_hook_active": false}),
+        );
+        if answer.contains("\"block\"") {
+            say("STOP BLOCKED")?;
+        }
+        Ok(())
+    }
+}
+
+/// Starts a background shell shaped like Claude Code's Bash tool (`run_in_background`) and wakes
+/// the agent when it exits, like Claude Code does.
+fn start_background(
+    seconds: u64,
+    transcript: Option<Arc<Mutex<Transcript>>>,
+    hooks: Option<Hooks>,
+) -> io::Result<u32> {
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", &format!("sleep {seconds} && pwd -P >| /dev/null")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        if let Some(transcript) = &transcript
+            && let Ok(mut transcript) = transcript.lock()
+        {
+            let _ = transcript.notification_turn(pid);
+        }
+        let _ = say("BACKGROUND DONE");
+        if let Some(hooks) = &hooks {
+            let _ = hooks.stop();
+        }
+    });
+    Ok(pid)
 }
 
 fn report_env(names: &[String]) -> io::Result<()> {
@@ -487,11 +658,71 @@ fn read_line(input: &mut impl BufRead) -> io::Result<Option<String>> {
     Ok(Some(text.trim_end_matches(['\n', '\r']).to_owned()))
 }
 
+/// One `/goal` turn (see the module docs).
+fn goal_turn(
+    options: &Options,
+    line: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+) -> io::Result<()> {
+    let condition = line
+        .get("/goal ".len()..)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    say("GOAL SET")?;
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        t.goal_status(
+            json!({"type": "goal_status", "met": false, "sentinel": true,
+            "condition": condition}),
+        )?;
+    }
+    if let Some(hooks) = hooks {
+        hooks.prompt(line);
+    }
+    if let Some(seconds) = options.goal_background {
+        let pid = start_background(seconds, transcript.cloned(), hooks.cloned())?;
+        say(&format!("BACKGROUND {pid}"))?;
+    }
+    std::thread::sleep(Duration::from_millis(options.goal_delay_ms));
+    let answer = format!("ECHO: {line}");
+    say(&answer)?;
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        t.turn(line, &answer)?;
+    }
+    // Claude Code's goal evaluator is a Stop hook: its record follows the turn's Stop hooks.
+    if let Some(hooks) = hooks {
+        hooks.stop()?;
+    }
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        t.goal_status(
+            json!({"type": "goal_status", "met": true, "condition": condition,
+            "reason": "Done and verified.", "iterations": 1, "durationMs": 51_000,
+            "tokens": 7_100}),
+        )?;
+        t.close_turn(51_000)?;
+    }
+    say("✓ Goal achieved")
+}
+
 fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
-    let mut transcript = match &options.transcript {
-        Some(path) => Some(Transcript::open(path.clone(), session_id)?),
+    let transcript = match &options.transcript {
+        Some(path) => Some(Arc::new(Mutex::new(Transcript::open(
+            path.clone(),
+            session_id,
+        )?))),
         None => None,
     };
+    let hooks = options.hooks.as_ref().map(|exe| Hooks {
+        exe: exe.clone(),
+        session_id: session_id.to_owned(),
+    });
     let mut turns = 0u64;
     let mut limited = false;
     let stdin = io::stdin();
@@ -541,19 +772,32 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 });
             }
             _ if limited => say("LIMIT REACHED")?,
+            _ if line.starts_with("/goal ") && (transcript.is_some() || hooks.is_some()) => {
+                turns += 1;
+                goal_turn(options, &line, transcript.as_ref(), hooks.as_ref())?;
+            }
             _ => {
+                if let Some(hooks) = &hooks {
+                    hooks.prompt(&line);
+                }
                 let answer = format!("ECHO: {line}");
                 say(&answer)?;
                 turns += 1;
-                if let Some(transcript) = transcript.as_mut() {
-                    transcript.turn(&line, &answer)?;
+                if let Some(transcript) = &transcript
+                    && let Ok(mut t) = transcript.lock()
+                {
+                    t.turn(&line, &answer)?;
                 }
                 if options.limit_after.is_some_and(|limit| turns >= limit) {
                     limited = true;
                     say("LIMIT REACHED")?;
-                    if let Some(transcript) = transcript.as_mut() {
-                        transcript.limit()?;
+                    if let Some(transcript) = &transcript
+                        && let Ok(mut t) = transcript.lock()
+                    {
+                        t.limit()?;
                     }
+                } else if let Some(hooks) = &hooks {
+                    hooks.stop()?;
                 }
             }
         }
@@ -640,5 +884,10 @@ mod tests {
         assert!(parse(&["--mode", "ignore-term"]).is_ok_and(|o| o.ignore_term));
         assert!(parse(&["--tui"]).is_ok_and(|o| o.tui));
         assert!(parse(&["--seconds", "999999"]).is_ok_and(|o| o.seconds == MAX_SLEEP_SECONDS));
+        assert!(parse(&["--hooks"]).is_err());
+        assert!(
+            parse(&["--goal-background", "3", "--goal-delay-ms", "999999"])
+                .is_ok_and(|o| o.goal_background == Some(3) && o.goal_delay_ms == MAX_GOAL_DELAY_MS)
+        );
     }
 }

@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use yulius_domain::harness::Harness;
+use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::TokenUsage;
 
@@ -100,9 +101,16 @@ pub enum Observation {
         cwd: Option<String>,
     },
     /// A user turn started.
-    UserTurn,
+    UserTurn {
+        /// When the prompt was recorded, if known.
+        at: Option<Timestamp>,
+    },
     /// A turn completed.
     TurnComplete,
+    /// Claude Code recorded the session goal's state (TSK-014).
+    Goal(GoalOutcome),
+    /// Claude Code closed a turn after its Stop hooks (only used to reduce a replay).
+    TurnEnded,
     /// The provider reported a usage limit.
     LimitReached {
         /// Reset time if known.
@@ -134,6 +142,11 @@ pub trait TranscriptWatch: Send {
     fn poll(&mut self) -> AppResult<Vec<Observation>>;
     /// Accumulated usage.
     fn usage(&self) -> UsageSnapshot;
+    /// Whether the last poll read everything the transcript held: until then the observations
+    /// are history being replayed (after a restart), not new events.
+    fn caught_up(&self) -> bool {
+        true
+    }
 }
 
 /// Streaming filter that hides provider tokens in login terminal output.

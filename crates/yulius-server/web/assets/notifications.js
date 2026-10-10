@@ -1,5 +1,5 @@
 // Notification center (SPEC-001 UI-020): what happened while the user looked elsewhere, in one
-// list behind the bell in the tab row — tasks waiting for input, needing attention or failing,
+// list behind the bell in the tab row — tasks waiting for input, done (TSK-014), needing attention or failing,
 // browser action requests, agent messages, automation runs, account problems and instance
 // notices. Built from the event stream the UI already receives; toasts still show. Kept per
 // user in this browser and bounded, so a reload keeps the history. With desktop notifications
@@ -13,7 +13,7 @@ import { readJson, writeJson } from './store.js';
 const MAX_ITEMS = 100;
 const KINDS = new Set(['info', 'ok', 'warn', 'error']);
 /** Task tones that notify when a task enters them, and the notification kind. */
-const TASK_TONES = { waiting: 'info', attention: 'warn', failed: 'error', 'stopped-abnormal': 'error' };
+const TASK_TONES = { waiting: 'info', done: 'ok', attention: 'warn', failed: 'error', 'stopped-abnormal': 'error' };
 const ACCOUNT_PROBLEMS = { relogin: 'needs to sign in again', limited: 'reached its usage limit', error: 'reports an error' };
 /** Settings → Preferences: also notify through the operating system while the tab is hidden. */
 export const DESKTOP_KEY = 'yulius.desktopNotifications';

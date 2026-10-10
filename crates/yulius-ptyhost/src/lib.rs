@@ -28,6 +28,7 @@ mod files;
 mod host;
 mod process;
 mod reconcile;
+pub mod shells;
 mod spawn;
 #[cfg(feature = "test-support")]
 pub mod test_support;
