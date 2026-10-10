@@ -1,6 +1,6 @@
 # Quality Rubric
 
-Apply this rubric internally before finalizing. Do not print the score unless the user asks for an audit.
+Apply this rubric internally before finalizing. Do not print the score unless the task asks for an audit.
 
 Score each item:
 
