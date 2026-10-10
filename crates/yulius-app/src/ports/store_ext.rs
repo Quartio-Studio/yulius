@@ -336,11 +336,8 @@ pub trait CiStore: Send + Sync {
     /// One run.
     async fn ci_run(&self, id: &str) -> AppResult<Option<crate::ci::CiRunRecord>>;
     /// The jobs of a run in order; outputs only when `with_output`.
-    async fn ci_jobs(
-        &self,
-        run: &str,
-        with_output: bool,
-    ) -> AppResult<Vec<crate::ci::CiJobRecord>>;
+    async fn ci_jobs(&self, run: &str, with_output: bool)
+    -> AppResult<Vec<crate::ci::CiJobRecord>>;
     /// Most recent runs of a sandbox (by queue time), newest first, at most `limit`.
     async fn ci_runs(
         &self,

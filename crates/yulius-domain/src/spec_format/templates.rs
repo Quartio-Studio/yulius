@@ -308,7 +308,10 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
         ("Test", commands.test.clone()),
         ("Lint", commands.lint.clone()),
         ("Build", commands.build.clone()),
-        ("CI gate (Yulius runs it on every pull request)", commands.gate.clone()),
+        (
+            "CI gate (Yulius runs it on every pull request)",
+            commands.gate.clone(),
+        ),
         ("Run", run_command(template, names)),
     ] {
         if let Some(command) = command {

@@ -383,7 +383,7 @@ impl GitHubPort for FakeGitHub {
             .filter(|p| p.head == branch)
             .cloned()
             .collect();
-        pulls.sort_by(|a, b| b.number.cmp(&a.number));
+        pulls.sort_by_key(|p| std::cmp::Reverse(p.number));
         Ok(pulls)
     }
     async fn branch_sha(

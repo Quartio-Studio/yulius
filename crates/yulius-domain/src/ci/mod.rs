@@ -206,12 +206,11 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
         if defs[..index].iter().any(|other| other.name == def.name) {
             return Err(CiConfigError::DuplicateJob(def.name.clone()));
         }
-        let command = validate_gate(&def.command).map_err(|problem| {
-            CiConfigError::InvalidCommand {
+        let command =
+            validate_gate(&def.command).map_err(|problem| CiConfigError::InvalidCommand {
                 job: def.name.clone(),
                 problem,
-            }
-        })?;
+            })?;
         if def.matrix.is_empty() {
             jobs.push(Job {
                 name: def.name.clone(),
@@ -298,7 +297,7 @@ pub fn aggregate(jobs: &[RunState]) -> RunState {
     if jobs.is_empty() {
         return RunState::Error;
     }
-    if jobs.iter().any(|s| *s == RunState::Running) {
+    if jobs.contains(&RunState::Running) {
         return RunState::Running;
     }
     if jobs.iter().all(|s| *s == RunState::Queued) {
@@ -390,7 +389,11 @@ impl CiRef {
     #[must_use]
     pub fn parse(key: &str) -> Option<Self> {
         if let Some(number) = key.strip_prefix("pr/") {
-            return number.parse().ok().filter(|n| *n > 0).map(Self::PullRequest);
+            return number
+                .parse()
+                .ok()
+                .filter(|n| *n > 0)
+                .map(Self::PullRequest);
         }
         key.strip_prefix("branch/")
             .filter(|name| !name.is_empty())
@@ -451,9 +454,9 @@ pub struct Plan {
 pub fn plan(targets: &[Target], runs: &[RunFacts]) -> Plan {
     let mut out = Plan::default();
     for target in targets {
-        let tested = runs.iter().any(|run| {
-            run.sha == target.sha && (run.state.is_active() || has_verdict(run.state))
-        });
+        let tested = runs
+            .iter()
+            .any(|run| run.sha == target.sha && (run.state.is_active() || has_verdict(run.state)));
         let cancelled_here = runs.iter().any(|run| {
             run.sha == target.sha
                 && run.reference == target.reference
@@ -548,7 +551,10 @@ fn clip(text: &str) -> String {
     if text.chars().count() <= MAX_STATUS_DESCRIPTION_CHARS {
         return text.to_owned();
     }
-    let mut out: String = text.chars().take(MAX_STATUS_DESCRIPTION_CHARS - 1).collect();
+    let mut out: String = text
+        .chars()
+        .take(MAX_STATUS_DESCRIPTION_CHARS - 1)
+        .collect();
     out.push('…');
     out
 }
@@ -595,7 +601,10 @@ pub fn commit_status(state: RunState, summary: RunSummary<'_>) -> CommitStatus {
         ),
         RunState::Error => (
             CommitState::Error,
-            format!("Error: {}", summary.reason.unwrap_or("the CI could not run")),
+            format!(
+                "Error: {}",
+                summary.reason.unwrap_or("the CI could not run")
+            ),
         ),
         RunState::Cancelled => (
             CommitState::Error,
@@ -747,10 +756,8 @@ pub fn classify_remote_branch(facts: &RemoteBranchFacts, now_ms: i64) -> Option<
             StaleReason::PullClosed(last.number)
         });
     }
-    if facts.pulls.is_none() {
-        // Not looked up (scan bound): unknown, keep.
-        return None;
-    }
+    // Not looked up (scan bound): unknown, keep.
+    facts.pulls.as_ref()?;
     let days = (now_ms - facts.last_commit_ms) / DAY_MS;
     (days >= IDLE_BRANCH_DAYS).then_some(StaleReason::Idle(days))
 }
@@ -899,7 +906,13 @@ mod tests {
             command: "x".into(),
             matrix: many,
         };
-        let mut defs = vec![wide.clone(), JobDef { name: "v".into(), ..wide }];
+        let mut defs = vec![
+            wide.clone(),
+            JobDef {
+                name: "v".into(),
+                ..wide
+            },
+        ];
         defs.push(def("u", "x", ""));
         assert_eq!(expand_jobs(&defs), Err(CiConfigError::TooManyJobs));
         assert_eq!(
@@ -999,7 +1012,10 @@ mod tests {
             },
         );
         assert_eq!(failed.state, CommitState::Failure);
-        assert_eq!(failed.description, "Failed: test (1/2) (exit code 101) in 5 s");
+        assert_eq!(
+            failed.description,
+            "Failed: test (1/2) (exit code 101) in 5 s"
+        );
         let long = "x".repeat(400);
         let error = commit_status(
             RunState::Error,
@@ -1029,7 +1045,10 @@ mod tests {
     fn yulius_ci_alone_decides_once_configured() {
         use ChecksState as C;
         assert_eq!(gate_checks(C::None, GateResult::NotConfigured), C::None);
-        assert_eq!(gate_checks(C::Failure, GateResult::NotConfigured), C::Failure);
+        assert_eq!(
+            gate_checks(C::Failure, GateResult::NotConfigured),
+            C::Failure
+        );
         assert_eq!(gate_checks(C::None, GateResult::Run(None)), C::Pending);
         assert_eq!(
             gate_checks(C::Failure, GateResult::Run(Some(RunState::Passed))),

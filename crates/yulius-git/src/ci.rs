@@ -38,7 +38,12 @@ impl Git {
     ///
     /// # Errors
     /// Invalid input, an unknown revision, or Git failures.
-    pub fn show_file(&self, repo: &Path, rev: &str, path: &str) -> Result<Option<String>, GitError> {
+    pub fn show_file(
+        &self,
+        repo: &Path,
+        rev: &str,
+        path: &str,
+    ) -> Result<Option<String>, GitError> {
         let relative = validate_relative_path(path)?;
         let sha = self.rev_parse(repo, rev)?;
         let spec = format!("{sha}:{}", relative.to_string_lossy());
@@ -102,7 +107,11 @@ impl Git {
             });
         }
         let commit = self.rev_parse(repo, sha)?;
-        let registered = self.worktree_list(repo)?.iter().skip(1).any(|w| w.path == path);
+        let registered = self
+            .worktree_list(repo)?
+            .iter()
+            .skip(1)
+            .any(|w| w.path == path);
         if !registered || !path.join(".git").exists() {
             if path.exists() {
                 std::fs::remove_dir_all(path).map_err(|source| GitError::Io {
@@ -129,7 +138,13 @@ impl Git {
         }
         self.run_ok(
             Invocation::new(self, "checkout", Some(path))
-                .args(["checkout", "--quiet", "--force", "--detach", "--end-of-options"])
+                .args([
+                    "checkout",
+                    "--quiet",
+                    "--force",
+                    "--detach",
+                    "--end-of-options",
+                ])
                 .arg(&commit),
         )?;
         // Untracked files go; ignored ones (caches) stay. Submodules are not touched.
@@ -244,7 +259,9 @@ impl Git {
     /// # Errors
     /// Git failures.
     pub fn worktree_prune(&self, repo: &Path) -> Result<(), GitError> {
-        self.run_ok(Invocation::new(self, "worktree prune", Some(repo)).args(["worktree", "prune"]))?;
+        self.run_ok(
+            Invocation::new(self, "worktree prune", Some(repo)).args(["worktree", "prune"]),
+        )?;
         Ok(())
     }
 }

@@ -40,8 +40,7 @@ use std::time::Duration;
 use tokio::sync::{Notify, Semaphore, watch};
 use yulius_contracts::api::ci::{CiGate, CiJob, CiJobSpec, CiOverview, CiRun};
 use yulius_domain::ci::{
-    self as dom, CiRef, Gate, GateResult, GateSource, Job, RunFacts, RunState, RunSummary,
-    Target,
+    self as dom, CiRef, Gate, GateResult, GateSource, Job, RunFacts, RunState, RunSummary, Target,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
@@ -323,7 +322,12 @@ impl App {
         let text = match self.deps.git.show_file(repo, rev, "yulius.toml").await {
             Ok(Some(text)) => text,
             Ok(None) => return Ok(Vec::new()),
-            Err(err) => return Err(format!("yulius.toml can't be read: {}", err.public_message())),
+            Err(err) => {
+                return Err(format!(
+                    "yulius.toml can't be read: {}",
+                    err.public_message()
+                ));
+            }
         };
         if text.len() > MAX_CONFIG_BYTES {
             return Err("yulius.toml is larger than 64 KiB".into());
@@ -512,21 +516,25 @@ impl App {
             .take(MAX_PULLS_TESTED)
         {
             // Heads of other repositories (forks) are not in the clone: not tested.
-            if !matches!(self.deps.git.resolve_commit(&repo, &pull.head_sha).await, Ok(Some(_))) {
+            if !matches!(
+                self.deps.git.resolve_commit(&repo, &pull.head_sha).await,
+                Ok(Some(_))
+            ) {
                 continue;
             }
             let gate = match &view.gate {
                 Some(gate) => Some(gate.clone()),
                 // Bootstrap: the integration branch has no CI yet; the pull request that adds
                 // it is tested with its own configuration.
-                None if view.problem.is_none() => match self.ci_jobs_at(&repo, &pull.head_sha).await
-                {
-                    Ok(jobs) if !jobs.is_empty() => Some(Gate {
-                        jobs,
-                        source: GateSource::PullRequest,
-                    }),
-                    _ => None,
-                },
+                None if view.problem.is_none() => {
+                    match self.ci_jobs_at(&repo, &pull.head_sha).await {
+                        Ok(jobs) if !jobs.is_empty() => Some(Gate {
+                            jobs,
+                            source: GateSource::PullRequest,
+                        }),
+                        _ => None,
+                    }
+                }
                 None => None,
             };
             if let Some(gate) = gate {
@@ -562,8 +570,14 @@ impl App {
         }
         for target in plan.queue {
             if let Some((_, gate)) = targets.iter().find(|(t, _)| *t == target) {
-                self.ci_queue(sandbox, target.reference.clone(), &target.sha, gate, "yulius")
-                    .await?;
+                self.ci_queue(
+                    sandbox,
+                    target.reference.clone(),
+                    &target.sha,
+                    gate,
+                    "yulius",
+                )
+                .await?;
             }
         }
         Ok(())
@@ -856,13 +870,18 @@ impl App {
             match self.deps.store.requeue_ci_run(&run.id).await {
                 Ok(true) => tracing::info!(run = %run.id, "CI run queued again after a restart"),
                 Ok(false) => {}
-                Err(err) => tracing::warn!(run = %run.id, error = %err, "requeueing a CI run failed"),
+                Err(err) => {
+                    tracing::warn!(run = %run.id, error = %err, "requeueing a CI run failed")
+                }
             }
         }
     }
 
     fn ci_run_dir(&self, job_id: &str) -> PathBuf {
-        self.config.data_dir.join("runs").join(format!("ci-{job_id}"))
+        self.config
+            .data_dir
+            .join("runs")
+            .join(format!("ci-{job_id}"))
     }
 
     // ---------------------------------------------------------------- API
@@ -957,8 +976,13 @@ impl App {
         {
             return Err(AppError::Conflict("this run has already ended".into()));
         }
-        self.dlv_audit(&actor, "ci.cancel", &sandbox.slug, &format!("run {} at {}", run.id, run.sha))
-            .await;
+        self.dlv_audit(
+            &actor,
+            "ci.cancel",
+            &sandbox.slug,
+            &format!("run {} at {}", run.id, run.sha),
+        )
+        .await;
         let run = self.ci_run_of(&sandbox, run_id).await?;
         let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
         Ok(run_view(&run, &jobs, false))
@@ -975,7 +999,11 @@ impl App {
         by: &str,
     ) -> AppResult<CiRunRecord> {
         let run = self.ci_run_of(sandbox, run_id).await?;
-        let others = self.deps.store.ci_runs_for_sha(&sandbox.id, &run.sha).await?;
+        let others = self
+            .deps
+            .store
+            .ci_runs_for_sha(&sandbox.id, &run.sha)
+            .await?;
         if others.iter().any(|r| r.state.is_active()) {
             return Err(AppError::Conflict(
                 "a run of this commit is already queued or running".into(),
@@ -992,7 +1020,9 @@ impl App {
                     .await
                     .map_err(AppError::Conflict)?;
                 if jobs.is_empty() {
-                    return Err(AppError::Conflict("this commit has no CI configured".into()));
+                    return Err(AppError::Conflict(
+                        "this commit has no CI configured".into(),
+                    ));
                 }
                 Gate {
                     jobs,
@@ -1000,9 +1030,10 @@ impl App {
                 }
             }
             None => {
-                return Err(AppError::Conflict(view.problem.unwrap_or_else(|| {
-                    "this sandbox has no CI configured".into()
-                })));
+                return Err(AppError::Conflict(
+                    view.problem
+                        .unwrap_or_else(|| "this sandbox has no CI configured".into()),
+                ));
             }
         };
         self.ci_queue(sandbox, run.reference.clone(), &run.sha, &gate, by)
@@ -1022,8 +1053,13 @@ impl App {
         let (sandbox, _) = self.ci_sandbox(ctx, sandbox_id, Action::Work).await?;
         let actor = Self::dlv_actor_login(&ctx.user);
         let run = self.ci_rerun(&sandbox, run_id, &actor).await?;
-        self.dlv_audit(&actor, "ci.rerun", &sandbox.slug, &format!("{} at {}", run.reference.key(), run.sha))
-            .await;
+        self.dlv_audit(
+            &actor,
+            "ci.rerun",
+            &sandbox.slug,
+            &format!("{} at {}", run.reference.key(), run.sha),
+        )
+        .await;
         let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
         Ok(run_view(&run, &jobs, false))
     }

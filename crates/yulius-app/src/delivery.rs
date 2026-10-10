@@ -800,7 +800,10 @@ impl App {
     }
 
     /// Short-lived installation token for Git transport (push, fetch).
-    pub(crate) async fn dlv_installation_token(&self, sandbox: &SandboxRecord) -> AppResult<Secret> {
+    pub(crate) async fn dlv_installation_token(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Secret> {
         let app = self.github_app().await?;
         let installed = self
             .deps

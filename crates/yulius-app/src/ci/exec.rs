@@ -204,7 +204,10 @@ impl App {
             state = RunState::Error;
         }
         let reason = match state {
-            RunState::Cancelled => cancel.borrow().clone().or_else(|| first_reason(&jobs, state)),
+            RunState::Cancelled => cancel
+                .borrow()
+                .clone()
+                .or_else(|| first_reason(&jobs, state)),
             RunState::Error => first_reason(&jobs, state),
             _ => None,
         };
@@ -226,15 +229,21 @@ impl App {
     /// Makes sure the run's commit is in the sandbox clone (fetching once if not).
     async fn ci_prepare(&self, sandbox: &SandboxRecord, run: &CiRunRecord) -> Result<(), String> {
         let repo = self.sandbox_repo(&sandbox.id);
-        if matches!(self.deps.git.resolve_commit(&repo, &run.sha).await, Ok(Some(_))) {
+        if matches!(
+            self.deps.git.resolve_commit(&repo, &run.sha).await,
+            Ok(Some(_))
+        ) {
             return Ok(());
         }
         if let Err(err) = self.dlv_refresh_clone(sandbox).await {
-            return Err(format!("fetching the repository failed: {}", err.public_message()));
+            return Err(format!(
+                "fetching the repository failed: {}",
+                err.public_message()
+            ));
         }
         match self.deps.git.resolve_commit(&repo, &run.sha).await {
             Ok(Some(_)) => Ok(()),
-            _ => Err(format!("commit {} is not in the repository", &run.sha)),
+            _ => Err(format!("commit {} is not in the repository", run.sha)),
         }
     }
 
@@ -294,9 +303,7 @@ impl App {
             ),
             Ok(Ended::Exit(exit)) if exit.is_clean() => (RunState::Passed, Some(0), None),
             Ok(Ended::Exit(exit)) => {
-                let code = exit
-                    .code
-                    .or_else(|| exit.signal.map(|signal| 128 + signal));
+                let code = exit.code.or_else(|| exit.signal.map(|signal| 128 + signal));
                 (RunState::Failed, code, None)
             }
             Ok(Ended::Cancelled(reason)) => (RunState::Cancelled, None, Some(reason)),
@@ -362,7 +369,10 @@ impl App {
             ("YULIUS_CI_JOB".to_owned(), job.name.clone()),
             ("YULIUS_CI_SHA".to_owned(), run.sha.clone()),
             ("YULIUS_CI_REF".to_owned(), run.reference.key()),
-            ("YULIUS_CI_CACHE".to_owned(), cache.to_string_lossy().into_owned()),
+            (
+                "YULIUS_CI_CACHE".to_owned(),
+                cache.to_string_lossy().into_owned(),
+            ),
             ("YULIUS_SANDBOX".to_owned(), sandbox.slug.clone()),
         ];
         if let Some(value) = &job.matrix {
@@ -396,9 +406,14 @@ impl App {
     ) -> Result<Ended, String> {
         let ci_dir = self.ci_dir(&sandbox.id);
         let checkout = ci_dir.join("jobs").join(checkout_name);
-        let (home, cache, logs) = (ci_dir.join("home"), ci_dir.join("cache"), ci_dir.join("logs"));
+        let (home, cache, logs) = (
+            ci_dir.join("home"),
+            ci_dir.join("cache"),
+            ci_dir.join("logs"),
+        );
         for dir in [&home, &cache, &logs] {
-            std::fs::create_dir_all(dir).map_err(|e| format!("preparing the CI directory failed: {e}"))?;
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("preparing the CI directory failed: {e}"))?;
         }
         let repo = self.sandbox_repo(&sandbox.id);
         self.deps
@@ -426,7 +441,8 @@ impl App {
         };
         let run_dir = self.ci_run_dir(&job.id);
         let _ = std::fs::remove_dir_all(&run_dir);
-        std::fs::create_dir_all(&run_dir).map_err(|e| format!("creating the run directory failed: {e}"))?;
+        std::fs::create_dir_all(&run_dir)
+            .map_err(|e| format!("creating the run directory failed: {e}"))?;
         let token = self.deps.crypto.random_bytes();
         let outcome = self
             .ci_watch(&run_dir, job, &plan, &token, &log, ring, cancel)
@@ -455,7 +471,10 @@ impl App {
             Ok(attached) => attached,
             Err(err) => {
                 let _ = host.terminate(run_dir);
-                return Err(format!("the job's process host did not answer: {}", err.public_message()));
+                return Err(format!(
+                    "the job's process host did not answer: {}",
+                    err.public_message()
+                ));
             }
         };
         let (mut reader, mut writer) = (attached.reader, attached.writer);
@@ -500,7 +519,7 @@ impl App {
                         _ => {}
                     }
                     ticks += 1;
-                    if ticks % FLUSH_EVERY_TICKS == 0 {
+                    if ticks.is_multiple_of(FLUSH_EVERY_TICKS) {
                         let _ = self.deps.store.set_ci_job_output(&job.id, &ring.text()).await;
                     }
                 }
@@ -521,7 +540,11 @@ impl App {
 fn first_reason(jobs: &[CiJobRecord], state: RunState) -> Option<String> {
     jobs.iter()
         .filter(|job| job.state == state)
-        .find_map(|job| job.reason.clone().map(|reason| format!("{}: {reason}", job.name)))
+        .find_map(|job| {
+            job.reason
+                .clone()
+                .map(|reason| format!("{}: {reason}", job.name))
+        })
 }
 
 /// Resolves once the run is cancelled, with the reason.

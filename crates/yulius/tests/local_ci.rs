@@ -55,7 +55,16 @@ struct Origin(PathBuf);
 
 impl FakeRemote for Origin {
     fn branch_sha(&self, branch: &str) -> Option<String> {
-        git(&self.0, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).ok()
+        git(
+            &self.0,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .ok()
     }
     fn merge(&self, _: &str, _: &str, _: &str, _: &str) -> Result<String, String> {
         Err("not used".into())
@@ -67,9 +76,12 @@ impl FakeRemote for Origin {
         if self.branch_sha(branch).is_none() {
             return Ok(false);
         }
-        git(&self.0, &["update-ref", "-d", &format!("refs/heads/{branch}")])
-            .map(|_| true)
-            .map_err(|e| e.to_string())
+        git(
+            &self.0,
+            &["update-ref", "-d", &format!("refs/heads/{branch}")],
+        )
+        .map(|_| true)
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -119,7 +131,10 @@ async fn fixture() -> BoxResult<Fixture> {
     std::fs::create_dir_all(&origin)?;
     git(&origin, &["init", "--bare", "-q", "-b", "main"])?;
     let work = root.join("work");
-    git(&root, &["clone", "-q", origin.to_str().ok_or("path")?, "work"])?;
+    git(
+        &root,
+        &["clone", "-q", origin.to_str().ok_or("path")?, "work"],
+    )?;
     std::fs::write(work.join("README.md"), "# app\n")?;
     std::fs::write(work.join("yulius.toml"), YULIUS_TOML)?;
     git(&work, &["add", "-A"])?;
@@ -267,7 +282,11 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
     // One sync: main and dev share a commit (tested once) and the pull request head.
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     let queued = f.get("/api/sandboxes/s1/ci").await?;
-    assert_eq!(queued["runs"].as_array().ok_or("runs")?.len(), 2, "{queued}");
+    assert_eq!(
+        queued["runs"].as_array().ok_or("runs")?.len(),
+        2,
+        "{queued}"
+    );
     assert_eq!(f.last_status(&pr_sha).ok_or("pending")?.0, "pending");
     f.settle().await?;
 
@@ -283,7 +302,10 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
     assert_eq!(pr_run["label"], "PR #1");
     assert_eq!(pr_run["status"], "published");
     let detail = f
-        .get(&format!("/api/sandboxes/s1/ci/runs/{}", pr_run["id"].as_str().ok_or("id")?))
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            pr_run["id"].as_str().ok_or("id")?
+        ))
         .await?;
     let jobs = detail["jobs"].as_array().ok_or("jobs")?;
     assert_eq!(jobs.len(), 3);
@@ -293,16 +315,28 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
     for (index, part) in [(1, "part 1"), (2, "part 2")] {
         let text = output(index);
         assert!(text.contains(part), "{text}");
-        assert!(text.contains("clean-env"), "no secret in the environment: {text}");
-        assert!(text.contains(&format!("home {}", ci_home.display())), "{text}");
+        assert!(
+            text.contains("clean-env"),
+            "no secret in the environment: {text}"
+        );
+        assert!(
+            text.contains(&format!("home {}", ci_home.display())),
+            "{text}"
+        );
         // Escape sequences are removed from stored output.
-        assert!(text.contains("colored") && !text.contains('\u{1b}'), "{text:?}");
+        assert!(
+            text.contains("colored") && !text.contains('\u{1b}'),
+            "{text:?}"
+        );
     }
     // The commit statuses: success on both commits, linking to the run.
     let (state, description, url) = f.last_status(&pr_sha).ok_or("status")?;
     assert_eq!(state, "success");
     assert!(description.starts_with("Passed: 3 jobs"), "{description}");
-    assert!(url.starts_with("https://yulius.test/s/app/ci?run="), "{url}");
+    assert!(
+        url.starts_with("https://yulius.test/s/app/ci?run="),
+        "{url}"
+    );
     assert_eq!(f.last_status(&main_sha).ok_or("main status")?.0, "success");
     assert_eq!(
         f.h.app.ci_gate_result(&f.sandbox, &pr_sha).await,
@@ -336,11 +370,17 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
     let overview = f.get("/api/sandboxes/s1/ci").await?;
     let failed_id = overview["runs"][0]["id"].as_str().ok_or("id")?.to_owned();
     let again = f
-        .post(&format!("/api/sandboxes/s1/ci/runs/{failed_id}/rerun"), None)
+        .post(
+            &format!("/api/sandboxes/s1/ci/runs/{failed_id}/rerun"),
+            None,
+        )
         .await?;
     assert_eq!(again.status, StatusCode::OK, "{}", again.body);
     let twice = f
-        .post(&format!("/api/sandboxes/s1/ci/runs/{failed_id}/rerun"), None)
+        .post(
+            &format!("/api/sandboxes/s1/ci/runs/{failed_id}/rerun"),
+            None,
+        )
         .await?;
     assert_eq!(twice.status, StatusCode::CONFLICT);
     f.settle().await?;
@@ -355,9 +395,15 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
     let fixed = f.push_feature("slow", None)?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
-    assert!(started.elapsed() < Duration::from_secs(20), "the slow jobs were killed");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the slow jobs were killed"
+    );
     let detail = f
-        .get(&format!("/api/sandboxes/s1/ci/runs/{}", running["id"].as_str().ok_or("id")?))
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            running["id"].as_str().ok_or("id")?
+        ))
         .await?;
     assert_eq!(detail["state"], "cancelled", "{detail}");
     assert!(
@@ -420,7 +466,11 @@ async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
     let f = fixture().await?;
     // feat/old is merged into dev; feat/closed had a pull request closed without merging;
     // feat/one has an open pull request; feat/wip is recent work without a pull request.
-    for (branch, file) in [("feat/old", "old.txt"), ("feat/closed", "closed.txt"), ("feat/wip", "wip.txt")] {
+    for (branch, file) in [
+        ("feat/old", "old.txt"),
+        ("feat/closed", "closed.txt"),
+        ("feat/wip", "wip.txt"),
+    ] {
         git(&f.work, &["checkout", "-q", "-B", branch, "origin/dev"])?;
         std::fs::write(f.work.join(file), "x\n")?;
         git(&f.work, &["add", "-A"])?;
@@ -460,7 +510,10 @@ async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
         .iter()
         .filter_map(|i| i["name"].as_str())
         .collect();
-    assert!(removed.contains(&"feat/old") && removed.contains(&"feat/closed"), "{removed:?}");
+    assert!(
+        removed.contains(&"feat/old") && removed.contains(&"feat/closed"),
+        "{removed:?}"
+    );
     let remaining = git(&f.origin, &["branch", "--format=%(refname:short)"])?;
     assert!(!remaining.contains("feat/old") && !remaining.contains("feat/closed"));
     assert!(remaining.contains("feat/one") && remaining.contains("feat/wip"));

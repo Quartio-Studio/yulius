@@ -9,9 +9,8 @@ use yulius_domain::time::Timestamp;
 use yulius_github::fake::{FakeCheckRun, FakeFault, FakeGitHub, FakeStatus};
 use yulius_github::{
     AccessLevel, CheckSource, ChecksSummary, Clock, CommitStatus, CompareStatus, CreateRepo,
-    GitHubClient,
-    GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewPull, OwnerKind, PullFilter,
-    PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock, Url,
+    GitHubClient, GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewPull, OwnerKind,
+    PullFilter, PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock, Url,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -1107,7 +1106,10 @@ async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
         .ok_or("status request")?;
     let body: serde_json::Value = serde_json::from_str(&sent.body)?;
     assert_eq!(body["context"], "yulius/ci");
-    assert_eq!(body["description"].as_str().map(|d| d.chars().count()), Some(140));
+    assert_eq!(
+        body["description"].as_str().map(|d| d.chars().count()),
+        Some(140)
+    );
     // Invalid input never reaches GitHub.
     assert!(matches!(
         client
@@ -1124,8 +1126,16 @@ async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
         Err(GitHubError::Forbidden { .. })
     ));
     // Branch deletion: true once, false when already gone.
-    assert!(client.delete_branch(&token, "acme", "app", "task/ci").await?);
-    assert!(!client.delete_branch(&token, "acme", "app", "task/ci").await?);
+    assert!(
+        client
+            .delete_branch(&token, "acme", "app", "task/ci")
+            .await?
+    );
+    assert!(
+        !client
+            .delete_branch(&token, "acme", "app", "task/ci")
+            .await?
+    );
     assert_eq!(fake.branch_sha("acme", "app", "task/ci"), None);
     Ok(())
 }

@@ -78,8 +78,8 @@ impl App {
         for run in self.deps.store.ci_runs(&sandbox.id, TOOL_RUNS).await? {
             let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
             let mine = pr.is_some_and(|n| run.reference == CiRef::PullRequest(n));
-            let mut value = serde_json::to_value(run_view(&run, &jobs, false))
-                .map_err(AppError::internal)?;
+            let mut value =
+                serde_json::to_value(run_view(&run, &jobs, false)).map_err(AppError::internal)?;
             value["this_task"] = Value::Bool(mine);
             runs.push(value);
         }
@@ -144,7 +144,9 @@ impl App {
         };
         let base = self.ci_gate(&sandbox).await;
         let done = workflows.is_empty()
-            && config["jobs"].as_array().is_some_and(|jobs| !jobs.is_empty());
+            && config["jobs"]
+                .as_array()
+                .is_some_and(|jobs| !jobs.is_empty());
         Ok(json!({
             "github_actions_workflows": workflows,
             "worktree_ci": config,
@@ -161,7 +163,11 @@ impl App {
     /// Store failures.
     pub async fn tool_repo_hygiene(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
         let sandbox = self.tool_sandbox(ctx).await?;
-        let report = if args.get("refresh").and_then(Value::as_bool).unwrap_or(false) {
+        let report = if args
+            .get("refresh")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             self.hygiene_scan(&sandbox).await
         } else {
             self.hygiene_report(&sandbox).await
@@ -178,9 +184,7 @@ impl App {
         let items: Vec<HygieneTarget> = match args.get("items") {
             None | Some(Value::Null) => Vec::new(),
             Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
-                AppError::Invalid(
-                    "items must be a list of {kind, name} from repo_hygiene".into(),
-                )
+                AppError::Invalid("items must be a list of {kind, name} from repo_hygiene".into())
             })?,
         };
         let request = HygieneCleanup {

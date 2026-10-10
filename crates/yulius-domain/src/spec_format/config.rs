@@ -591,10 +591,10 @@ fn ci_jobs(document: &Document, commands: &Commands) -> Result<Vec<JobDef>, Form
         .iter()
         .map(ci_job)
         .collect::<Result<Vec<_>, _>>()?;
-    let line = document
-        .ci_jobs
-        .first()
-        .map_or_else(|| document.commands.as_ref().map_or(1, |t| t.line), |t| t.line);
+    let line = document.ci_jobs.first().map_or_else(
+        || document.commands.as_ref().map_or(1, |t| t.line),
+        |t| t.line,
+    );
     project_jobs(commands.gate.as_deref(), &defs).map_err(|e| err(line, ConfigProblem::Ci(e)))?;
     Ok(defs)
 }

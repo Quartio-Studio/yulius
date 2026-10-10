@@ -35,7 +35,7 @@ use crate::ports::github::GhPull;
 pub const HYGIENE_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 /// First background scan after start.
 const HYGIENE_FIRST: Duration = Duration::from_secs(10 * 60);
-/// Remote branches examined per scan.
+/// Remote (and local) branches examined per scan.
 pub const MAX_BRANCHES_SCANNED: usize = 300;
 /// Pull request lookups per scan (one GitHub request each).
 pub const MAX_PULL_LOOKUPS: usize = 50;
@@ -155,17 +155,17 @@ impl App {
         report: &mut HygieneReport,
     ) {
         let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
-        let open: HashSet<String> = match self.deps.github.list_pulls(token, owner, name, None).await
-        {
-            Ok(pulls) => pulls.into_iter().map(|p| p.head).collect(),
-            Err(err) => {
-                report.notes.push(format!(
-                    "Open pull requests can't be listed ({}): remote branches are not checked.",
-                    err.public_message()
-                ));
-                return;
-            }
-        };
+        let open: HashSet<String> =
+            match self.deps.github.list_pulls(token, owner, name, None).await {
+                Ok(pulls) => pulls.into_iter().map(|p| p.head).collect(),
+                Err(err) => {
+                    report.notes.push(format!(
+                        "Open pull requests can't be listed ({}): remote branches are not checked.",
+                        err.public_message()
+                    ));
+                    return;
+                }
+            };
         let mut branches = match self.deps.git.remote_branches(repo).await {
             Ok(branches) => branches,
             Err(err) => {
@@ -198,7 +198,10 @@ impl App {
             }
             let mut merged = false;
             for target in &targets {
-                if matches!(self.deps.git.is_ancestor(repo, &branch.sha, target).await, Ok(true)) {
+                if matches!(
+                    self.deps.git.is_ancestor(repo, &branch.sha, target).await,
+                    Ok(true)
+                ) {
                     merged = true;
                     break;
                 }
@@ -259,7 +262,14 @@ impl App {
         };
         let checked_out: HashSet<String> =
             worktrees.iter().filter_map(|w| w.branch.clone()).collect();
-        if let Ok(locals) = self.deps.git.local_branches(repo).await {
+        if let Ok(mut locals) = self.deps.git.local_branches(repo).await {
+            if locals.len() > MAX_BRANCHES_SCANNED {
+                locals.sort_by_key(|b| b.committed_ms);
+                locals.truncate(MAX_BRANCHES_SCANNED);
+                report.notes.push(format!(
+                    "Only the {MAX_BRANCHES_SCANNED} oldest local branches were examined."
+                ));
+            }
             for branch in locals {
                 let facts = LocalBranchFacts {
                     protected: protected.contains(&branch.name),
@@ -310,13 +320,10 @@ impl App {
                 _ => WorktreeOwner::Other,
             };
             if let Some(reason) = classify_worktree(owner, worktree.prunable) {
-                let name = worktree
-                    .path
-                    .strip_prefix(&sandbox_dir)
-                    .map_or_else(
-                        |_| worktree.path.to_string_lossy().into_owned(),
-                        |p| p.to_string_lossy().into_owned(),
-                    );
+                let name = worktree.path.strip_prefix(&sandbox_dir).map_or_else(
+                    |_| worktree.path.to_string_lossy().into_owned(),
+                    |p| p.to_string_lossy().into_owned(),
+                );
                 report.items.push(item(WORKTREE, name, &reason));
             }
         }
@@ -351,7 +358,12 @@ impl App {
         let report = self.hygiene_scan(sandbox).await;
         let mut skipped = Vec::new();
         let selected: Vec<HygieneItem> = if request.items.is_empty() {
-            report.items.iter().filter(|i| i.safe || request.force).cloned().collect()
+            report
+                .items
+                .iter()
+                .filter(|i| i.safe || request.force)
+                .cloned()
+                .collect()
         } else {
             let mut chosen = Vec::new();
             for target in &request.items {
@@ -456,11 +468,21 @@ impl App {
         }
         let token = match self.dlv_installation_token(sandbox).await {
             Ok(token) => token,
-            Err(err) => return Some(format!("Branch {} was kept: {}", pull.head, err.public_message())),
+            Err(err) => {
+                return Some(format!(
+                    "Branch {} was kept: {}",
+                    pull.head,
+                    err.public_message()
+                ));
+            }
         };
         let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
         match self.deps.github.list_pulls(&token, owner, name, None).await {
-            Ok(open) if open.iter().any(|p| p.head == pull.head && p.number != pull.number) => {
+            Ok(open)
+                if open
+                    .iter()
+                    .any(|p| p.head == pull.head && p.number != pull.number) =>
+            {
                 return None;
             }
             Ok(_) => {}
@@ -472,7 +494,12 @@ impl App {
                 ));
             }
         }
-        match self.deps.github.delete_branch(&token, owner, name, &pull.head).await {
+        match self
+            .deps
+            .github
+            .delete_branch(&token, owner, name, &pull.head)
+            .await
+        {
             Ok(_) => {
                 self.dlv_audit(
                     "yulius",
@@ -497,7 +524,11 @@ impl App {
     ///
     /// # Errors
     /// Access errors.
-    pub async fn hygiene_view(&self, ctx: &AuthContext, sandbox_id: &str) -> AppResult<HygieneReport> {
+    pub async fn hygiene_view(
+        &self,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+    ) -> AppResult<HygieneReport> {
         let (sandbox, _) = self.ci_sandbox(ctx, sandbox_id, Action::View).await?;
         Ok(self.hygiene_report(&sandbox).await)
     }

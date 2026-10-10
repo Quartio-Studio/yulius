@@ -29,7 +29,8 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<CiRunRecord> {
     Ok(CiRunRecord {
         id: row.get("id")?,
         sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
-        reference: CiRef::parse(&reference).ok_or_else(|| bad_column("CI reference", &reference))?,
+        reference: CiRef::parse(&reference)
+            .ok_or_else(|| bad_column("CI reference", &reference))?,
         sha: row.get("sha")?,
         source: GateSource::parse(&source).ok_or_else(|| bad_column("CI source", &source))?,
         state: state(&run_state)?,
@@ -101,7 +102,10 @@ impl CiStore for SqliteStore {
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             tx.execute(
-                &format!("INSERT INTO ci_runs ({RUN_COLS}) VALUES ({})", placeholders(1, 14)),
+                &format!(
+                    "INSERT INTO ci_runs ({RUN_COLS}) VALUES ({})",
+                    placeholders(1, 14)
+                ),
                 params![
                     run.id,
                     run.sandbox_id.as_str(),
@@ -243,7 +247,10 @@ impl CiStore for SqliteStore {
                 Box::new(update.ended_at.map(|t| t.0)),
                 Box::new(id),
             ];
-            args.extend(from.into_iter().map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>));
+            args.extend(
+                from.into_iter()
+                    .map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>),
+            );
             match c.execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref))) {
                 Ok(changed) => Ok(changed == 1),
                 Err(rusqlite::Error::SqliteFailure(err, _))
@@ -284,7 +291,10 @@ impl CiStore for SqliteStore {
                 Box::new(update.ended_at.map(|t| t.0)),
                 Box::new(id),
             ];
-            args.extend(from.into_iter().map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>));
+            args.extend(
+                from.into_iter()
+                    .map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>),
+            );
             let changed = c
                 .execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref)))
                 .map_err(db)?;
@@ -443,9 +453,14 @@ mod tests {
     async fn runs_jobs_transitions_and_one_running_run_per_sandbox() -> TestResult {
         let store = SqliteStore::open_in_memory()?;
         store
-            .insert_ci_run(&run("r1", "a", 1)?, &[job("j1", "r1", 0), job("j2", "r1", 1)])
+            .insert_ci_run(
+                &run("r1", "a", 1)?,
+                &[job("j1", "r1", 0), job("j2", "r1", 1)],
+            )
             .await?;
-        store.insert_ci_run(&run("r2", "b", 2)?, &[job("j3", "r2", 0)]).await?;
+        store
+            .insert_ci_run(&run("r2", "b", 2)?, &[job("j3", "r2", 0)])
+            .await?;
         let start = CiRunUpdate {
             started_at: Some(Timestamp(5)),
             ..CiRunUpdate::default()
@@ -509,7 +524,10 @@ mod tests {
         for (i, at) in (1..=5).enumerate() {
             let id = format!("r{i}");
             store
-                .insert_ci_run(&run(&id, &format!("s{i}"), at)?, &[job(&format!("j{i}"), &id, 0)])
+                .insert_ci_run(
+                    &run(&id, &format!("s{i}"), at)?,
+                    &[job(&format!("j{i}"), &id, 0)],
+                )
                 .await?;
             let end = CiRunUpdate {
                 ended_at: Some(Timestamp(at + 1)),
@@ -519,13 +537,25 @@ mod tests {
                 .transition_ci_run(&id, &[RunState::Queued], RunState::Passed, &end)
                 .await?;
         }
-        assert_eq!(store.unpublished_ci_runs(Timestamp(0), 5, 10).await?.len(), 5);
-        store.record_ci_status("r0", Some(RunState::Passed), None).await?;
-        store.record_ci_status("r1", None, Some("not published: x")).await?;
+        assert_eq!(
+            store.unpublished_ci_runs(Timestamp(0), 5, 10).await?.len(),
+            5
+        );
+        store
+            .record_ci_status("r0", Some(RunState::Passed), None)
+            .await?;
+        store
+            .record_ci_status("r1", None, Some("not published: x"))
+            .await?;
         let pending = store.unpublished_ci_runs(Timestamp(0), 5, 10).await?;
         assert_eq!(pending.len(), 4);
         assert_eq!(
-            store.ci_run("r1").await?.ok_or("r1")?.status_note.as_deref(),
+            store
+                .ci_run("r1")
+                .await?
+                .ok_or("r1")?
+                .status_note
+                .as_deref(),
             Some("not published: x")
         );
         let sandbox = SandboxId::parse("s1")?;

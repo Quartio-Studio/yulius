@@ -10,9 +10,9 @@ use yulius_app::ports::github::{
     GitHubPort, NewCommitStatus, NewPull, RepoAccess, RulesetRequest, STATUS_PERMISSION_MISSING,
 };
 use yulius_github::{
-    AppCredentials, CheckSource, ChecksSummary, CommitStatus, CreateRepo, GitHubClient, GitHubConfig,
-    GitHubError, MergeMethod, OwnerKind, PullFilter, PullRequest, PullState, Repo, RulesetSpec,
-    Secret as GhSecret, Url,
+    AppCredentials, CheckSource, ChecksSummary, CommitStatus, CreateRepo, GitHubClient,
+    GitHubConfig, GitHubError, MergeMethod, OwnerKind, PullFilter, PullRequest, PullState, Repo,
+    RulesetSpec, Secret as GhSecret, Url,
 };
 
 /// GitHub adapter with one cached client per App id (keeps installation tokens warm).
@@ -527,7 +527,7 @@ impl GitHubPort for GitHubAdapter {
             .into_iter()
             .map(pull)
             .collect();
-        pulls.sort_by(|a, b| b.number.cmp(&a.number));
+        pulls.sort_by_key(|p| std::cmp::Reverse(p.number));
         Ok(pulls)
     }
 

@@ -194,11 +194,17 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/sandboxes/{sid}/ci", get(ci::overview))
         .route("/api/sandboxes/{sid}/ci/sync", post(ci::sync))
         .route("/api/sandboxes/{sid}/ci/runs/{rid}", get(ci::run))
-        .route("/api/sandboxes/{sid}/ci/runs/{rid}/cancel", post(ci::cancel))
+        .route(
+            "/api/sandboxes/{sid}/ci/runs/{rid}/cancel",
+            post(ci::cancel),
+        )
         .route("/api/sandboxes/{sid}/ci/runs/{rid}/rerun", post(ci::rerun))
         .route("/api/sandboxes/{sid}/hygiene", get(ci::hygiene))
         .route("/api/sandboxes/{sid}/hygiene/scan", post(ci::hygiene_scan))
-        .route("/api/sandboxes/{sid}/hygiene/cleanup", post(ci::hygiene_cleanup))
+        .route(
+            "/api/sandboxes/{sid}/hygiene/cleanup",
+            post(ci::hygiene_cleanup),
+        )
         .route(
             "/api/sandboxes/{sid}/delivery/runs/{run_id}",
             get(delivery::run),

@@ -397,7 +397,10 @@ impl FakeRemote for BareRemote {
         if self.branch_sha(branch).is_none() {
             return Ok(false);
         }
-        git_sync(&self.origin, &["update-ref", "-d", &format!("refs/heads/{branch}")])?;
+        git_sync(
+            &self.origin,
+            &["update-ref", "-d", &format!("refs/heads/{branch}")],
+        )?;
         Ok(true)
     }
 }
@@ -942,7 +945,18 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         "{:?}",
         f.h.github.writes()
     );
-    assert!(git(&f.origin, &["rev-parse", "--verify", "--quiet", "refs/heads/feat/1-checkout-api"]).is_err());
+    assert!(
+        git(
+            &f.origin,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/heads/feat/1-checkout-api"
+            ]
+        )
+        .is_err()
+    );
 
     // The dev checkpoint comes first and needs an explicit confirmation.
     let early = f

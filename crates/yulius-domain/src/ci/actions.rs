@@ -341,9 +341,15 @@ jobs:
             quality.runs_on.as_deref(),
             Some("blacksmith-4vcpu-ubuntu-2404")
         );
-        assert_eq!(quality.strategy.as_deref(), Some("matrix:\n  node: [20, 22]"));
+        assert_eq!(
+            quality.strategy.as_deref(),
+            Some("matrix:\n  node: [20, 22]")
+        );
         assert_eq!(quality.steps.len(), 4);
-        assert_eq!(quality.steps[0].uses.as_deref(), Some("actions/checkout@abc"));
+        assert_eq!(
+            quality.steps[0].uses.as_deref(),
+            Some("actions/checkout@abc")
+        );
         assert_eq!(
             quality.steps[1].run.as_deref(),
             Some("python3 scripts/bootstrap.py")
@@ -364,7 +370,10 @@ jobs:
         assert_eq!(summarize_workflow(""), WorkflowSummary::default());
         let garbage = "jobs:\n  - x\n   y: [\n\t:\n- - -\n  a:\n    steps:\n      -\n      - \n";
         let _ = summarize_workflow(garbage);
-        let huge = format!("jobs:\n  a:\n    steps:\n{}", "      - run: x\n".repeat(200));
+        let huge = format!(
+            "jobs:\n  a:\n    steps:\n{}",
+            "      - run: x\n".repeat(200)
+        );
         let summary = summarize_workflow(&huge);
         assert_eq!(summary.jobs[0].steps.len(), MAX_JOB_STEPS);
         assert!(summary.truncated);
