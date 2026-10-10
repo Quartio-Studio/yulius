@@ -1277,6 +1277,146 @@ route('GET', `/api/automations/${ID}/runs`, ({ db, p }) => {
   return [0, 1, 2, 3, 4].map((i) => ({ scheduled_for: iso((i + 1) * DAY - 10 * HOUR), state: i === 2 ? 'skipped_previous_active' : i === 4 ? 'failed' : 'task_created', task_id: i === 2 || i === 4 ? null : 'tsk_studio_8', error: i === 4 ? 'the task could not be created: capacity reached' : null }));
 });
 
+// ------------------------------------------------------------------ secrets vault (VLT-001..009)
+// Synthetic values only. Reveals need a confirmation within 10 minutes (mock password below);
+// agent secret values are write-only and never returned.
+
+const REAUTH_MS = 10 * MIN;
+const MOCK_SUPERADMIN_PASSWORD = 'correct horse battery';
+
+function vaultOf(db) {
+  if (!db.vault) {
+    db.vault = {
+      reauthAt: 0,
+      team: [{ id: 'ts_gmail', title: 'Shared Gmail', url: 'https://mail.google.com', username: 'team@example.test', password: 'mock-not-a-real-password', notes: 'Recovery codes: mock', totp: 'JBSWY3DPEHPK3PXPJBSWY3DP', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
+      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', totp: null, created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR) }],
+      activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (password)' }],
+    };
+  }
+  return db.vault;
+}
+
+const INJECTION_TEXT = { bearer: 'Authorization: Bearer <value>', basic: 'Authorization: Basic <username:value>', none: 'no header (placeholders and browser filling only)' };
+
+function teamView(s) {
+  return { id: s.id, title: s.title, url: s.url || null, username: s.username || null, has_password: Boolean(s.password), has_notes: Boolean(s.notes), has_totp: Boolean(s.totp), created_by: s.created_by, updated_by: s.updated_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, rotate_due: false };
+}
+
+function agentView(db, s, sandbox) {
+  const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: Boolean(s.totp), created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
+}
+
+function reauthStatus(db) {
+  const vault = vaultOf(db);
+  const fresh = Date.now() - vault.reauthAt < REAUTH_MS;
+  const methods = [];
+  if (db.me.user.is_superadmin) methods.push('password');
+  if (db.me.user.github_linked) methods.push('github');
+  return { fresh, fresh_until: fresh ? new Date(vault.reauthAt + REAUTH_MS).toISOString() : null, methods };
+}
+
+function needFresh(db) {
+  const status = reauthStatus(db);
+  if (status.fresh) return null;
+  return json(403, { error: { code: 'reauth_required', message: 'Confirm it is you to reveal secrets (password or GitHub sign-in in the last 10 minutes).' }, reauth: status });
+}
+
+function audit(db, action, id, detail) {
+  vaultOf(db).activity.unshift({ at: new Date().toISOString(), actor: db.me.user.login, action, secret_id: id, detail });
+}
+
+function teamSecret(db, id) {
+  return vaultOf(db).team.find((s) => s.id === id) || fail(404, 'not_found', 'not found');
+}
+
+const AGENT_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+function validateAgent(body, creating) {
+  if (body.name !== undefined && !AGENT_NAME_RE.test(body.name)) fail(422, 'invalid', `invalid name "${body.name}"`);
+  if (body.hosts !== undefined && (!Array.isArray(body.hosts) || body.hosts.length === 0)) fail(422, 'invalid', 'bind the secret to at least one host');
+  if ((creating || body.value !== undefined) && [...(body.value || '')].length < 8) fail(422, 'invalid', 'an agent secret needs at least 8 characters');
+}
+
+route('GET', '/api/team-secrets', ({ db }) => vaultOf(db).team.map(teamView));
+route('POST', '/api/team-secrets', ({ db, body }) => {
+  if (!String(body.title || '').trim()) fail(422, 'invalid', 'a title is required');
+  const secret = { id: `ts_${db.nextId++}`, title: body.title.trim(), url: body.url || null, username: body.username || null, password: body.password || null, notes: body.notes || null, totp: body.totp || null, created_by: db.me.user.login, updated_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString() };
+  vaultOf(db).team.push(secret);
+  audit(db, 'vault.team.create', secret.id, secret.title);
+  return json(201, teamView(secret));
+});
+route('PATCH', `/api/team-secrets/${ID}`, ({ db, p, body }) => {
+  const secret = teamSecret(db, p[0]);
+  for (const key of ['title', 'url', 'username', 'password', 'notes', 'totp']) if (body[key] !== undefined) secret[key] = body[key] || (key === 'title' ? secret.title : null);
+  secret.updated_at = new Date().toISOString();
+  audit(db, 'vault.team.update', secret.id, secret.title);
+  return teamView(secret);
+});
+route('DELETE', `/api/team-secrets/${ID}`, ({ db, p }) => {
+  const secret = teamSecret(db, p[0]);
+  vaultOf(db).team = vaultOf(db).team.filter((s) => s !== secret);
+  audit(db, 'vault.team.delete', secret.id, secret.title);
+  return json(204);
+});
+route('POST', `/api/team-secrets/${ID}/reveal`, ({ db, p, body }) => {
+  const secret = teamSecret(db, p[0]);
+  const refused = needFresh(db);
+  if (refused) return refused;
+  const fields = body.fields || ['password', 'notes', 'totp'];
+  audit(db, body.purpose === 'copy' ? 'vault.team.copy' : 'vault.team.reveal', secret.id, secret.title);
+  return { password: fields.includes('password') ? secret.password : null, notes: fields.includes('notes') ? secret.notes : null, totp: fields.includes('totp') ? secret.totp : null };
+});
+route('POST', `/api/team-secrets/${ID}/totp`, ({ db, p }) => {
+  const secret = teamSecret(db, p[0]);
+  const refused = needFresh(db);
+  if (refused) return refused;
+  if (!secret.totp) fail(422, 'invalid', 'this secret has no TOTP seed');
+  audit(db, 'vault.team.totp', secret.id, secret.title);
+  return { code: String(100000 + (Math.floor(Date.now() / 30000) % 900000)), period: 30, remaining: 30 - (Math.floor(Date.now() / 1000) % 30) };
+});
+route('GET', '/api/auth/reauth', ({ db }) => reauthStatus(db));
+route('POST', '/api/auth/reauth', ({ db, body }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'this account has no password: sign in with GitHub again to confirm');
+  if (body.password !== MOCK_SUPERADMIN_PASSWORD) { audit(db, 'vault.reauth.failed', null, 'password'); fail(403, 'forbidden', `wrong password (mock: ${MOCK_SUPERADMIN_PASSWORD})`); }
+  vaultOf(db).reauthAt = Date.now();
+  audit(db, 'vault.reauth', null, 'password');
+  return reauthStatus(db);
+});
+route('GET', '/api/secrets/activity', ({ db }) => vaultOf(db).activity.slice(0, 100));
+route('GET', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  return vaultOf(db).agent.filter((s) => s.scope === 'instance' || s.sandbox === sandbox.id).map((s) => agentView(db, s, sandbox));
+});
+route('POST', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const scope = body.scope || 'sandbox';
+  if (scope === 'instance' && !(db.me.user.is_instance_admin || db.me.user.is_superadmin)) fail(403, 'forbidden', 'secrets for every sandbox are managed by instance administrators');
+  if (scope === 'sandbox') need(sandbox, 'write');
+  validateAgent(body, true);
+  if (vaultOf(db).agent.some((s) => s.name === body.name && (s.scope === 'instance' || s.sandbox === sandbox.id))) fail(409, 'conflict', `an agent secret named ${body.name} already applies here`);
+  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts, injection: body.injection || 'bearer', header_name: body.header_name || null, username: body.username || null, value: body.value, totp: body.totp || null, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null };
+  vaultOf(db).agent.push(secret);
+  audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ')}`);
+  return json(201, agentView(db, secret, sandbox));
+});
+route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
+  if (secret.scope === 'sandbox') need(sandbox, 'write');
+  validateAgent(body, false);
+  for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value', 'totp']) if (body[key] !== undefined) secret[key] = body[key];
+  secret.updated_at = new Date().toISOString();
+  audit(db, 'vault.agent.update', secret.id, secret.name);
+  return agentView(db, secret, sandbox);
+});
+route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  if (secret.scope === 'sandbox') need(sandboxOf(db, secret.sandbox), 'write');
+  vaultOf(db).agent = vaultOf(db).agent.filter((s) => s !== secret);
+  audit(db, 'vault.agent.delete', secret.id, secret.name);
+  return json(204);
+});
+
 route('GET', `/api/sandboxes/${ID}/mcp`, ({ db, p }) => db.mcp.filter((m) => m.scope === 'instance' || m.sandbox === p[0]).map(({ sandbox: _s, ...m }) => m));
 route('POST', `/api/sandboxes/${ID}/mcp`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');

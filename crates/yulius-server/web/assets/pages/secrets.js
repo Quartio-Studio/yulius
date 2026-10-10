@@ -5,15 +5,21 @@
 // and browser filling and never see them.
 
 import { enc } from '../api.js';
-import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, setChildren, iconButton, emptyState, filterTabs, openModal, field, invalid } from '../dom.js';
+import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, setChildren, iconButton, emptyState, openModal, field, invalid } from '../dom.js';
 import { replaceQuietly } from '../router.js';
 import { allows } from '../status.js';
 import { relLong } from '../format.js';
 import { pageFrame, loader } from './common.js';
+import { BRAND } from '../brand.js';
 
 /** The clipboard is cleared this long after a copy (VLT-002). */
 const CLEAR_CLIPBOARD_MS = 30000;
 const NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/** A small text button; `label` is its accessible name when the text alone is ambiguous. */
+function smallButton(text, label, onClick, attrs = {}) {
+  return h('button', { type: 'button', class: ['btn btn-sm', attrs.class], 'aria-label': label || null, title: attrs.title || label || null, disabled: attrs.disabled, onClick }, text);
+}
 
 let clearTimer = null;
 /** Copies a value and clears the clipboard after 30 s (when the page still has focus). */
@@ -85,7 +91,7 @@ function teamForm(secret) {
     field('User name', username),
     field('Password', password, secret ? 'Leave empty to keep the stored password.' : null),
     field('Notes', notes, 'Encrypted like the password.'),
-    field('Two-factor seed (TOTP)', totp, 'From the QR code’s “enter this key” text. Yulius shows the current code.'),
+    field('Two-factor seed (TOTP)', totp, `From the QR code’s “enter this key” text. ${BRAND.name} shows the current code.`),
   );
   const values = () => {
     const out = { title: title.value.trim(), url: url.value.trim(), username: username.value.trim() };
@@ -103,7 +109,7 @@ function showTeamSecret(ctx, secret, revealed) {
   if (revealed.password) {
     rows.push(field('Password', h('div', { class: 'row-wrap' },
       h('code', { class: 'mono secret-value' }, revealed.password),
-      iconButton('copy', 'Copy password', () => copyValue(revealed.password, 'Password').catch((e) => errorToast(e, 'Could not copy'))))));
+      smallButton('Copy', 'Copy password', () => copyValue(revealed.password, 'Password').catch((e) => errorToast(e, 'Could not copy'))))));
   }
   if (revealed.notes) rows.push(field('Notes', h('pre', { class: 'mono secret-notes' }, revealed.notes)));
   const code = h('code', { class: 'mono secret-value' }, '······');
@@ -127,7 +133,7 @@ function showTeamSecret(ctx, secret, revealed) {
     };
     refresh();
     rows.push(field('Current code', h('div', { class: 'row-wrap' }, code, left,
-      iconButton('copy', 'Copy code', () => copyValue(code.textContent, 'Code').catch((e) => errorToast(e, 'Could not copy'))))));
+      smallButton('Copy', 'Copy code', () => copyValue(code.textContent, 'Code').catch((e) => errorToast(e, 'Could not copy'))))));
   }
   if (rows.length === 0) rows.push(h('p', { class: 'muted' }, 'This secret stores no password, notes or seed.'));
   openModal({ title: secret.title, body: h('div', { class: 'stack' }, ...rows), actions: [{ label: 'Done', kind: 'primary' }], onClose: () => clearInterval(countdown) });
@@ -154,27 +160,27 @@ function mountTeam(ctx, host) {
       iconName: 'key',
       title: secret.title,
       badges: [
-        secret.has_totp ? iconBadge('clock', '2FA codes', '', 'A TOTP seed is stored: Yulius shows the current code') : null,
+        secret.has_totp ? iconBadge('clock', '2FA codes', '', `A TOTP seed is stored: ${BRAND.name} shows the current code`) : null,
         secret.rotate_due ? badge('rotate', 'warn', 'Changed more than 180 days ago') : null,
       ].filter(Boolean),
       description: h('span', null, [secret.username, secret.url].filter(Boolean).join(' · ') || 'No user name or address'),
       extra: h('span', { class: 'muted small' }, `Changed ${relLong(secret.value_updated_at)} · by @${secret.updated_by}`),
       controls: [
-        secret.has_password ? iconButton('copy', `Copy password of ${secret.title}`, async () => {
+        secret.has_password ? smallButton('Copy password', `Copy password of ${secret.title}`, async () => {
           try {
             const values = await reveal(secret, 'copy', ['password']);
             if (values && values.password) await copyValue(values.password, 'Password');
           } catch (error) { errorToast(error, 'Could not copy'); }
           reloadActivity();
         }) : null,
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: async () => {
+        smallButton('Show', `Show ${secret.title}`, async () => {
           try {
             const values = await reveal(secret, 'show');
             if (values) showTeamSecret(ctx, secret, values);
           } catch (error) { errorToast(error, 'Could not reveal'); }
           reloadActivity();
-        } }, 'Show'),
-        iconButton('edit', `Edit ${secret.title}`, () => edit(secret)),
+        }),
+        smallButton('Edit', `Edit ${secret.title}`, () => edit(secret)),
         iconButton('trash', `Delete ${secret.title}`, () => remove(secret), { class: 'btn-quiet-danger' }),
       ].filter(Boolean),
     })));
@@ -295,7 +301,7 @@ function mountAgents(ctx, sandbox, host) {
   const add = h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'Add agent secret');
   setChildren(host,
     h('div', { class: 'banner banner-info' }, icon('shield'), h('div', { class: 'banner-text small' },
-      'Agents use these without seeing them: Yulius adds a secret to HTTPS requests for its hosts and types it into sign-in pages of those hosts. Anything that would show a value to an agent — command output, files, web pages, tool results — shows ',
+      `Agents use these without seeing them: ${BRAND.name} adds a secret to HTTPS requests for its hosts and types it into sign-in pages of those hosts. Anything that would show a value to an agent — command output, files, web pages, tool results — shows `,
       h('code', null, '[secret:NAME]'), ' instead.')),
     h('div', { class: 'toolbar' }, h('span', { class: 'muted small' }, `For ${sandbox.name} and every sandbox.`), add),
     list);
@@ -314,7 +320,7 @@ function mountAgents(ctx, sandbox, host) {
         h('div', { class: 'chips' }, secret.hosts.map((name) => iconBadge('globe', name, '', 'Bound host'))),
         h('span', { class: 'muted small' }, `${secret.injection_text} · ${secret.last_used_at ? `used ${relLong(secret.last_used_at)}` : 'not used yet'} · changed ${relLong(secret.value_updated_at)}`)),
       controls: [
-        iconButton('edit', `Edit ${secret.name}`, () => edit(secret), { disabled: !secret.can_manage, title: secret.can_manage ? `Edit ${secret.name}` : 'You cannot change this secret' }),
+        smallButton('Edit', `Edit ${secret.name}`, () => edit(secret), { disabled: !secret.can_manage, title: secret.can_manage ? `Edit ${secret.name}` : 'You cannot change this secret' }),
         iconButton('trash', `Delete ${secret.name}`, () => remove(secret), { class: 'btn-quiet-danger', disabled: !secret.can_manage }),
       ],
     })));
@@ -357,12 +363,33 @@ export function mountSecretsPage(ctx, sandbox, route) {
   const frame = pageFrame({ title: 'Secrets', sub: 'team logins for people, keys agents use without seeing them' });
   const base = sandbox ? `/s/${encodeURIComponent(sandbox.slug)}/secrets` : '/secrets';
   const host = h('div');
-  const tabs = filterTabs({ label: 'Section', value: route.query.get('section') === 'agents' ? 'agents' : '',
-    options: [{ value: '', label: 'Team secrets', icon: 'users' }, { value: 'agents', label: 'Agent secrets', icon: 'key' }],
-    onChange: (value) => { replaceQuietly(value ? `${base}?section=${value}` : base); show(); } });
-  frame.body.append(tabs.el, host);
+  let current = route.query.get('section') === 'agents' ? 'agents' : '';
+  const tabs = h('div', { class: 'tl-tabs ftabs', role: 'radiogroup', 'aria-label': 'Section' });
+  const options = [{ value: '', label: 'Team secrets', icon: 'users' }, { value: 'agents', label: 'Agent secrets', icon: 'key' }];
+  function renderTabs() {
+    const focused = tabs.contains(document.activeElement);
+    setChildren(tabs, options.map((o) => h('button', {
+      type: 'button', role: 'radio', 'aria-checked': String(o.value === current), tabindex: o.value === current ? '0' : '-1', class: ['tl-tab', o.value === current && 'active'],
+      onClick: () => {
+        if (current === o.value) return;
+        current = o.value;
+        replaceQuietly(current ? `${base}?section=${current}` : base);
+        renderTabs();
+        show();
+      },
+      onKeydown: (event) => {
+        if (!['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        event.preventDefault();
+        const other = [...tabs.children].find((b) => b !== event.currentTarget);
+        if (other) other.click();
+      },
+    }, h('span', { class: 'tl-tab-icon' }, icon(o.icon, { size: 14 })), o.label)));
+    if (focused) tabs.querySelector('[aria-checked="true"]')?.focus();
+  }
+  renderTabs();
+  frame.body.append(tabs, host);
   function show() {
-    if (tabs.value === 'agents') mountAgents(ctx, sandbox, host);
+    if (current === 'agents') mountAgents(ctx, sandbox, host);
     else mountTeam(ctx, host);
   }
   show();

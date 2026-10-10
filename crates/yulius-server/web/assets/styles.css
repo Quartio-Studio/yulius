@@ -1879,3 +1879,11 @@ a.dl-task:hover { text-decoration: underline; }
 }
 button.task-group-head:hover { color: var(--text); }
 
+
+/* Secrets page (VLT-001..009): revealed values wrap and stay selectable; the activity trail is
+   a quiet list. */
+.secret-value { word-break: break-all; user-select: all; }
+.secret-notes { max-height: 240px; overflow: auto; }
+.section-title { margin: 16px 0 0; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
+.plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.stack-tight { display: flex; flex-direction: column; gap: 4px; }
