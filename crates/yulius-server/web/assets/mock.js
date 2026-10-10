@@ -541,7 +541,8 @@ route('DELETE', `/api/sandboxes/${ID}`, ({ db, p }) => {
   return json(204);
 });
 
-// Live previews (ADR-14): the mock has no preview proxy, so a "live page" is a small data: page.
+// Live previews (ADR-14, "Open live in a new window"): the mock has no preview proxy, so a
+// live page is a small data: page.
 const MOCK_PREVIEW = ['<!doctype html><html lang="en"><title>Mock app</title><body><h1>Mock app on port ', '</h1><p>On a real server this tab shows the dev server live, running in your browser.</p></body></html>'];
 route('GET', `/api/sandboxes/${ID}/previews`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
@@ -1909,17 +1910,27 @@ class LoginSession {
   closed() { this.ws = null; }
 }
 
-/** Fake shared browser for one sandbox: tabs and rendered JPEG frames. */
+/**
+ * Fake shared browser for one sandbox (SPEC-002 ADR-15): tabs, a page drawn on a canvas and sent
+ * as video — encoded in the browser with WebCodecs (VP8, which every engine with WebCodecs
+ * encodes; the real server sends H.264) — or as JPEG frames when a viewer asks for pixels or
+ * WebCodecs is missing. Clicks and keys change the drawn page; copy answers with the typed text.
+ */
 class BrowserSession {
   constructor(db, sandbox) {
     this.db = db;
     this.sandbox = sandbox;
-    this.viewers = new Set();
+    this.viewers = new Map(); // ws → 'video' | 'pixels'
     this.size = { width: 1280, height: 800 };
     this.cursor = { x: 200, y: 200 };
     this.typed = new Map();
     this.next = 3;
     this.renderPending = false;
+    this.encoder = null; // VideoEncoder
+    this.encoderSize = null;
+    this.config = null; // the video_config message
+    this.needKey = true;
+    this.frameNo = 0;
     const port = sandbox.port_base || 20000;
     this.tabs = [
       { id: 'tab-app', title: `Checkout — localhost:${port + 3}`, url: `http://localhost:${port + 3}/`, active: true, action_requested: null },
@@ -1928,43 +1939,50 @@ class BrowserSession {
   }
 
   open(ws) {
-    this.viewers.add(ws);
-    this.sendTabs();
-    this.domUnavailable(ws);
-    this.render();
+    this.viewers.set(ws, 'video');
+    ws.push(JSON.stringify({ type: 'tabs', tabs: this.tabs }));
+    ws.push(JSON.stringify({ type: 'viewport', ...this.size }));
+    this.announce(ws);
   }
 
-  /** The mock renders pixels only: the panel shows its pixel view at once. */
-  domUnavailable(ws) {
-    const active = this.tabs.find((t) => t.active);
-    if (active) ws.push(JSON.stringify({ type: 'dom_unavailable', tab_id: active.id, reason: 'the mock browser renders pixels only' }));
+  /** Tells a viewer what it gets and starts its stream from a keyframe. */
+  announce(ws) {
+    const wanted = this.viewers.get(ws);
+    const video = wanted === 'video' && typeof VideoEncoder === 'function';
+    if (wanted === 'video' && !video) this.viewers.set(ws, 'pixels');
+    ws.push(JSON.stringify(video ? { type: 'stream', mode: 'video' } : { type: 'stream', mode: 'pixels', reason: wanted === 'video' ? 'the mock browser cannot encode video here' : undefined }));
+    if (video && this.config) ws.push(JSON.stringify(this.config));
+    this.needKey = true;
+    this.render();
   }
 
   receive(ws, data) {
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
     const tab = this.tabs.find((t) => t.id === msg.tab_id);
+    const activate = (target) => { for (const t of this.tabs) t.active = t === target; };
     switch (msg.type) {
       case 'viewport':
-        this.viewers.add(ws);
-        this.size = { width: Math.max(320, Math.min(2560, msg.width | 0)), height: Math.max(240, Math.min(1600, msg.height | 0)) };
-        this.sendTabs();
+        this.size = { width: Math.max(320, Math.min(1920, msg.width | 0)) & ~1, height: Math.max(240, Math.min(1200, msg.height | 0)) & ~1 };
+        this.broadcast(JSON.stringify({ type: 'viewport', ...this.size }));
         this.render();
         break;
       case 'view':
-        if (msg.mode === 'dom') this.domUnavailable(ws);
+        this.viewers.set(ws, msg.mode === 'pixels' ? 'pixels' : 'video');
+        this.announce(ws);
         break;
       case 'watch':
-        // The viewer chose a tab: the mock renders pixels only, so say so at once.
-        if (msg.tab_id && this.tabs.some((t) => t.id === msg.tab_id)) ws.push(JSON.stringify({ type: 'dom_unavailable', tab_id: msg.tab_id, reason: 'the mock browser renders pixels only' }));
+        // The display shows one tab: watching brings it to the front.
+        if (tab) { activate(tab); this.sendTabs(); this.render(); }
         break;
       case 'open': {
         this.next += 1;
-        for (const t of this.tabs) t.active = false;
-        const url = msg.url || 'about:blank';
+        const url = msg.url || `http://127.0.0.1:8081/browser/welcome?sandbox=${this.sandbox.id}`;
         let host = url;
         try { host = new URL(url).host || 'New tab'; } catch { /* keep raw */ }
-        this.tabs.push({ id: `tab-${this.next}`, title: host, url, active: true, action_requested: null });
+        const created = { id: `tab-${this.next}`, title: msg.url ? host : 'Welcome', url, active: true, action_requested: null };
+        this.tabs.push(created);
+        activate(created);
         this.sendTabs();
         this.render();
         break;
@@ -1973,7 +1991,11 @@ class BrowserSession {
         if (tab) { tab.url = msg.url; try { tab.title = new URL(msg.url).host || msg.url; } catch { tab.title = msg.url; } this.sendTabs(); this.render(); }
         break;
       case 'activate':
-        if (tab) { for (const t of this.tabs) t.active = t === tab; this.sendTabs(); this.render(); }
+        if (tab) { activate(tab); this.sendTabs(); this.render(); }
+        break;
+      case 'history':
+      case 'reload':
+        this.render();
         break;
       case 'close':
         if (tab) {
@@ -1984,23 +2006,32 @@ class BrowserSession {
           this.render();
         }
         break;
-      case 'mouse':
-        if (!tab) break;
+      case 'copy':
+        ws.push(JSON.stringify({ type: 'clipboard', text: this.typed.get(msg.tab_id) || '' }));
+        break;
+      case 'mouse': {
+        const shown = this.tabs.find((t) => t.active);
+        if (!shown || msg.event === 'wheel') break;
         this.cursor = { x: msg.x, y: msg.y };
-        if (msg.event === 'down' && tab.id === 'tab-aws' && tab.action_requested && msg.x > 60 && msg.x < 360 && msg.y > 330 && msg.y < 380) {
-          tab.action_requested = null;
-          tab.title = 'AWS Management Console';
-          tab.url = 'https://console.aws.amazon.com/';
+        if (msg.event === 'down' && shown.id === 'tab-aws' && shown.action_requested && msg.x > 60 && msg.x < 360 && msg.y > 330 && msg.y < 380) {
+          shown.action_requested = null;
+          shown.title = 'AWS Management Console';
+          shown.url = 'https://console.aws.amazon.com/';
           this.sendTabs();
         }
         this.render();
         break;
-      case 'key':
-        if (!tab) break;
-        if (msg.event === 'down' && msg.key === 'Backspace') this.typed.set(tab.id, (this.typed.get(tab.id) || '').slice(0, -1));
-        else if ((msg.event === 'down' || msg.event === 'char') && msg.text && msg.text !== '\r') this.typed.set(tab.id, ((this.typed.get(tab.id) || '') + msg.text).slice(-80));
+      }
+      case 'key': {
+        const shown = this.tabs.find((t) => t.active);
+        if (!shown) break;
+        const typed = this.typed.get(shown.id) || '';
+        if (msg.event === 'down' && msg.key === 'Backspace') this.typed.set(shown.id, typed.slice(0, -1));
+        else if (msg.event === 'down' && typeof msg.key === 'string' && msg.key.length === 1) this.typed.set(shown.id, (typed + msg.key).slice(-80));
+        else if (msg.event === 'char' && msg.text) this.typed.set(shown.id, (typed + msg.text).slice(-80));
         this.render();
         break;
+      }
       default:
         break;
     }
@@ -2010,15 +2041,46 @@ class BrowserSession {
     this.viewers.delete(ws);
   }
 
+  broadcast(data) {
+    for (const ws of this.viewers.keys()) ws.push(data);
+  }
+
   sendTabs() {
-    const data = JSON.stringify({ type: 'tabs', tabs: this.tabs });
-    for (const ws of this.viewers) ws.push(data);
+    this.broadcast(JSON.stringify({ type: 'tabs', tabs: this.tabs }));
   }
 
   render() {
     if (this.renderPending || this.viewers.size === 0) return;
     this.renderPending = true;
     setTimeout(() => { this.renderPending = false; this.drawFrame(); }, 60);
+  }
+
+  /** The video encoder for the current size (re-created on a resize, announced to viewers). */
+  videoEncoder() {
+    const { width, height } = this.size;
+    if (this.encoder && this.encoderSize && this.encoderSize.width === width && this.encoderSize.height === height) return this.encoder;
+    if (this.encoder) { try { this.encoder.close(); } catch { /* closed */ } }
+    this.encoderSize = { width, height };
+    this.config = { type: 'video_config', codec: 'vp8', description: '', width, height };
+    this.needKey = true;
+    try {
+      this.encoder = new VideoEncoder({
+        output: (chunk) => {
+          const bytes = new Uint8Array(10 + chunk.byteLength);
+          bytes[0] = 4;
+          bytes[1] = chunk.type === 'key' ? 1 : 0;
+          new DataView(bytes.buffer).setBigUint64(2, BigInt(Math.max(0, Math.round(chunk.timestamp))), false);
+          chunk.copyTo(bytes.subarray(10));
+          for (const [ws, mode] of this.viewers) if (mode === 'video') ws.push(bytes.buffer.slice(0));
+        },
+        error: () => { this.encoder = null; },
+      });
+      this.encoder.configure({ codec: 'vp8', width, height, bitrate: 2_000_000, framerate: 30, latencyMode: 'realtime' });
+    } catch {
+      this.encoder = null;
+    }
+    for (const [ws, mode] of this.viewers) if (mode === 'video') ws.push(JSON.stringify(this.config));
+    return this.encoder;
   }
 
   async drawFrame() {
@@ -2028,19 +2090,20 @@ class BrowserSession {
     const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(width, height) : Object.assign(document.createElement('canvas'), { width, height });
     const g = canvas.getContext('2d');
     const aws = tab.id === 'tab-aws';
+    const welcome = /\/browser\/welcome/.test(tab.url);
     g.fillStyle = '#ffffff';
     g.fillRect(0, 0, width, height);
     g.fillStyle = aws ? '#232f3e' : '#0f172a';
     g.fillRect(0, 0, width, 56);
     g.fillStyle = '#ffffff';
     g.font = 'bold 20px system-ui, sans-serif';
-    g.fillText(aws ? 'aws' : 'Checkout (dev)', 24, 36);
+    g.fillText(aws ? 'aws' : welcome ? 'Welcome' : 'Checkout (dev)', 24, 36);
     g.fillStyle = '#111827';
     g.font = 'bold 28px system-ui, sans-serif';
-    g.fillText(tab.title, 60, 120);
+    g.fillText(welcome ? `Browser of ${this.sandbox.name || this.sandbox.slug}` : tab.title, 60, 120);
     g.font = '15px ui-monospace, monospace';
     g.fillStyle = '#6b7280';
-    g.fillText(tab.url, 60, 150);
+    g.fillText(welcome ? `localhost:${(this.sandbox.port_base || 20000) + 3} is listening` : tab.url, 60, 150);
     g.strokeStyle = '#d1d5db';
     g.lineWidth = 1;
     g.strokeRect(60, 250, 300, 40);
@@ -2057,7 +2120,7 @@ class BrowserSession {
       g.fillStyle = '#16a34a';
       g.font = 'bold 18px system-ui, sans-serif';
       g.fillText('✓ Signed in — the agent can continue.', 60, 362);
-    } else {
+    } else if (!welcome) {
       for (let i = 0; i < 3; i += 1) {
         g.fillStyle = '#f3f4f6';
         g.fillRect(60 + i * 240, 330, 220, 160);
@@ -2066,17 +2129,21 @@ class BrowserSession {
         g.fillText(['Espresso cup', 'Pour-over kit', 'Grinder'][i], 76 + i * 240, 520);
       }
     }
-    g.fillStyle = 'rgba(17, 24, 39, 0.85)';
-    g.beginPath();
-    g.moveTo(this.cursor.x, this.cursor.y);
-    g.lineTo(this.cursor.x + 12, this.cursor.y + 30);
-    g.lineTo(this.cursor.x + 18, this.cursor.y + 18);
-    g.lineTo(this.cursor.x + 30, this.cursor.y + 12);
-    g.closePath();
-    g.fill();
     g.fillStyle = '#9ca3af';
     g.font = '12px system-ui, sans-serif';
     g.fillText(`Mock sandbox browser · ${this.sandbox.name} · ${width}×${height}`, 60, height - 20);
+    const modes = [...this.viewers.values()];
+    if (modes.includes('video')) {
+      const encoder = this.videoEncoder();
+      if (encoder && encoder.state === 'configured') {
+        this.frameNo += 1;
+        const frame = new VideoFrame(canvas, { timestamp: this.frameNo * 33_333 });
+        encoder.encode(frame, { keyFrame: this.needKey });
+        frame.close();
+        this.needKey = false;
+      }
+    }
+    if (!modes.includes('pixels')) return;
     let blob;
     if (canvas.convertToBlob) blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.8 });
     else blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.8));
@@ -2087,7 +2154,7 @@ class BrowserSession {
     const id = tab.id.padEnd(32, ' ').slice(0, 32);
     for (let i = 0; i < 32; i += 1) frame[1 + i] = id.charCodeAt(i);
     frame.set(jpeg, 33);
-    for (const ws of this.viewers) ws.push(frame.buffer);
+    for (const [ws, mode] of this.viewers) if (mode === 'pixels') ws.push(frame.buffer.slice(0));
   }
 }
 

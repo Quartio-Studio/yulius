@@ -1,8 +1,10 @@
-//! Shared sandbox browser port (SPEC-002 ADR-09; SPEC-001 BRW-001..004, U-10).
+//! Shared sandbox browser port (SPEC-002 ADR-15; SPEC-001 BRW-001..008, U-10).
 //!
-//! One headless Chromium per sandbox, lazily started by [`BrowserPort::ensure`] and shared by
-//! the sandbox's users (viewer WebSocket) and agents (MCP tools). Only contracts and
-//! application types cross this boundary; the adapter owns the Chrome DevTools Protocol.
+//! One Chromium per sandbox, lazily started by [`BrowserPort::ensure`] and shared by the
+//! sandbox's users (viewer WebSocket) and agents (MCP tools). With a virtual display users get
+//! the browser's video ([`BrowserSession::video`]) and real input; without one, JPEG frames
+//! ([`BrowserSession::frames`]). Only contracts and application types cross this boundary; the
+//! adapter owns the Chrome DevTools Protocol, the display and the encoder.
 //!
 //! Trust model: the adapter's DevTools endpoint listens on loopback without authentication,
 //! so any local process (including other sandboxes' processes, which share loopback) can
@@ -135,38 +137,51 @@ pub enum BrowserNotice {
     },
 }
 
-/// What a DOM mirror subscriber receives (SPEC-001 BRW-005).
+/// What a video subscriber receives, in order (SPEC-002 ADR-15).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DomUpdate {
-    /// rrweb events (JSON texts); with `reset` they start a new stream.
-    Batch {
-        /// The events replace the viewer's stream.
-        reset: bool,
-        /// rrweb events.
-        events: Arc<[Arc<str>]>,
+pub enum VideoUpdate {
+    /// Decoder configuration for the frames that follow.
+    Config {
+        /// Codec string, e.g. `avc1.42c028`.
+        codec: String,
+        /// The `avcC` record.
+        description: Arc<[u8]>,
+        /// Coded width in device pixels.
+        width: u32,
+        /// Coded height in device pixels.
+        height: u32,
     },
-    /// The subscriber fell behind and must subscribe again.
-    Lagged,
+    /// One access unit.
+    Frame {
+        /// A decoder can start here.
+        keyframe: bool,
+        /// Presentation timestamp in microseconds.
+        timestamp_us: u64,
+        /// Length-prefixed NAL units.
+        data: Arc<[u8]>,
+    },
 }
 
-/// The DOM mirror of one tab; dropping it unsubscribes.
+impl VideoUpdate {
+    /// Whether a decoder can start at this update (a configuration or a keyframe).
+    #[must_use]
+    pub fn starts_decoding(&self) -> bool {
+        match self {
+            Self::Config { .. } => true,
+            Self::Frame { keyframe, .. } => *keyframe,
+        }
+    }
+}
+
+/// The video of the sandbox browser's display; dropping it unsubscribes. A subscriber that
+/// falls behind misses frames until the next keyframe; the producer never waits for it.
 #[async_trait]
-pub trait BrowserDom: Send {
-    /// The tab.
-    fn tab_id(&self) -> &TabId;
-    /// The next update; `None` once the tab or browser closed.
-    async fn next(&mut self) -> Option<DomUpdate>;
-}
-
-/// A page resource fetched by the sandbox browser for a viewer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchedResource {
-    /// HTTP status, when known.
-    pub status: Option<u16>,
-    /// `Content-Type`, when given.
-    pub content_type: Option<String>,
-    /// The bytes.
-    pub body: Vec<u8>,
+pub trait BrowserVideo: Send {
+    /// The configuration and cached frames to send before live ones (taken once).
+    fn take_backlog(&mut self) -> Vec<VideoUpdate>;
+    /// The next live update; `None` once the stream ended (the browser stopped or the encoder
+    /// failed: the viewer falls back to JPEG frames).
+    async fn next(&mut self) -> Option<VideoUpdate>;
 }
 
 /// A screenshot that fits the caller's byte budget.
@@ -220,16 +235,15 @@ pub trait BrowserSession: Send + Sync {
     fn notices(&self) -> Box<dyn BrowserNotices>;
     /// Applies one viewer message (open, navigate, activate, close, input, viewport).
     async fn apply_viewer(&self, message: ViewerClientMsg) -> Result<(), BrowserFailure>;
-    /// Subscribes to a tab's screencast.
+    /// Subscribes to a tab's JPEG screencast (the fallback view).
     async fn frames(&self, tab: &TabId) -> Result<Box<dyn BrowserFrames>, BrowserFailure>;
-    /// Subscribes to a tab's DOM mirror (BRW-005).
-    async fn dom(&self, tab: &TabId) -> Result<Box<dyn BrowserDom>, BrowserFailure>;
-    /// Fetches a page resource with the browser's network stack (cookies, VM loopback).
-    async fn fetch_resource(
-        &self,
-        tab: &TabId,
-        url: &str,
-    ) -> Result<FetchedResource, BrowserFailure>;
+    /// Subscribes to the display's H.264 video; an error says why there is none (no display,
+    /// the encoder failed).
+    fn video(&self) -> Result<Box<dyn BrowserVideo>, String>;
+    /// The text the user selected in a tab (what they copied).
+    async fn copy_selection(&self, tab: &TabId) -> Result<String, BrowserFailure>;
+    /// Releases every key and button a viewer held on the display (it left).
+    fn release_input(&self);
     /// Tells viewers that an agent acted in a tab (BRW-007).
     fn agent_activity(&self, tab: &TabId, position: Option<(f64, f64)>, action: &str, label: &str);
     /// `browser_tabs`.

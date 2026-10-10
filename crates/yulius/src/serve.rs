@@ -56,6 +56,32 @@ pub struct ServeArgs {
     /// Pass `--no-sandbox` to Chromium (only where Chromium's own sandbox cannot run).
     #[arg(long, env = "YULIUS_CHROMIUM_NO_SANDBOX", default_value_t = false)]
     pub chromium_no_sandbox: bool,
+    /// How sandbox browsers render (SPEC-002 ADR-15): `xvfb` (a headful Chrome on a virtual
+    /// display, streamed as H.264 video with real input), `headless` (JPEG frames, CDP input) or
+    /// `auto` (`xvfb` on Linux when Xvfb and ffmpeg are installed, else `headless`).
+    #[arg(long, env = "YULIUS_BROWSER_DISPLAY", value_enum, default_value_t = BrowserDisplay::Auto)]
+    pub browser_display: BrowserDisplay,
+    /// The Xvfb executable (a path or a name on `PATH`).
+    #[arg(long, env = "YULIUS_XVFB", default_value = "Xvfb")]
+    pub xvfb: PathBuf,
+    /// The ffmpeg executable (with libx264 and x11grab).
+    #[arg(long, env = "YULIUS_FFMPEG", default_value = "ffmpeg")]
+    pub ffmpeg: PathBuf,
+    /// Frames per second of the browser video (5–60).
+    #[arg(long, env = "YULIUS_BROWSER_FPS", default_value_t = 60,
+          value_parser = clap::value_parser!(u32).range(5..=60))]
+    pub browser_fps: u32,
+    /// Largest browser viewport in CSS pixels, `WIDTHxHEIGHT`; larger panels show the page scaled
+    /// down.
+    #[arg(long, env = "YULIUS_BROWSER_MAX_SIZE", default_value = "1920x1200", value_parser = parse_size)]
+    pub browser_max_size: (u32, u32),
+    /// Device pixels per CSS pixel of the browser (1–3): 2 makes text crisp on HiDPI screens and
+    /// costs about three times the encoding CPU and bandwidth.
+    #[arg(long, env = "YULIUS_BROWSER_SCALE", default_value_t = 1.0, value_parser = parse_scale)]
+    pub browser_scale: f64,
+    /// First X display number for browsers (numbers in use are skipped).
+    #[arg(long, env = "YULIUS_BROWSER_DISPLAY_BASE", default_value_t = 100)]
+    pub browser_display_base: u32,
     /// Extra host paths visible read-only inside containment, colon-separated (for example agent
     /// CLI install directories outside /usr and /opt).
     #[arg(long, env = "YULIUS_CONTAINED_READONLY", value_delimiter = ':')]
@@ -76,6 +102,70 @@ pub struct ServeArgs {
     /// (docs/operations.md).
     #[arg(long, env = "YULIUS_PREVIEW_DOMAIN")]
     pub preview_domain: Option<String>,
+}
+
+/// Rendering of the sandbox browsers (SPEC-002 ADR-15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum BrowserDisplay {
+    /// A virtual display when the prerequisites are installed (Linux), else headless.
+    Auto,
+    /// A headful Chrome on a virtual display (Xvfb), streamed as video.
+    Xvfb,
+    /// A headless Chrome shown as JPEG frames.
+    Headless,
+}
+
+/// Parses `WIDTHxHEIGHT` (each 320–4096).
+pub fn parse_size(text: &str) -> Result<(u32, u32), String> {
+    let (width, height) = text
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("invalid size {text:?}: expected WIDTHxHEIGHT"))?;
+    let parse = |value: &str| {
+        value
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|n| (320..=4096).contains(n))
+            .ok_or_else(|| format!("invalid size {text:?}: each edge must be 320..=4096"))
+    };
+    Ok((parse(width)?, parse(height)?))
+}
+
+/// Parses a device scale factor (1–3).
+pub fn parse_scale(text: &str) -> Result<f64, String> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|scale| (1.0..=3.0).contains(scale))
+        .ok_or_else(|| format!("invalid scale {text:?}: expected a number from 1 to 3"))
+}
+
+/// The display mode for the browser options: `auto` picks a virtual display on Linux when Xvfb
+/// and ffmpeg resolve, else headless (development hosts, CI).
+pub fn browser_display_mode(args: &ServeArgs) -> yulius_browser::DisplayMode {
+    let installed = || {
+        yulius_browser::resolve_executable(&args.xvfb).is_ok()
+            && yulius_browser::resolve_executable(&args.ffmpeg).is_ok()
+    };
+    let virtual_display = match args.browser_display {
+        BrowserDisplay::Headless => false,
+        BrowserDisplay::Xvfb => true,
+        BrowserDisplay::Auto => cfg!(target_os = "linux") && installed(),
+    };
+    if !virtual_display {
+        if args.browser_display == BrowserDisplay::Auto && cfg!(target_os = "linux") {
+            tracing::info!("sandbox browsers run headless: Xvfb or ffmpeg is not installed");
+        }
+        return yulius_browser::DisplayMode::Headless;
+    }
+    let mut config = yulius_browser::DisplayConfig::new(args.data_dir.join("displays"));
+    config.xvfb.clone_from(&args.xvfb);
+    config.ffmpeg.clone_from(&args.ffmpeg);
+    config.fps = args.browser_fps;
+    config.max_size = args.browser_max_size;
+    config.scale = args.browser_scale;
+    config.first_display = args.browser_display_base;
+    yulius_browser::DisplayMode::Virtual(config)
 }
 
 /// Parses `first-last` into an inclusive port range.
@@ -107,6 +197,7 @@ fn browser_port(args: &ServeArgs) -> Arc<dyn yulius_app::ports::browser::Browser
     });
     let mut config = yulius_browser::BrowserConfig::new(exe, args.data_dir.join("sandboxes"));
     config.no_sandbox = args.chromium_no_sandbox;
+    config.display = browser_display_mode(args);
     // New and blank tabs show the welcome page from the internal listener (BRW-006).
     let welcome = format!("http://{}/browser/welcome", args.internal_bind);
     config.new_tab_url = Some(format!("{welcome}?sandbox={{sandbox}}"));

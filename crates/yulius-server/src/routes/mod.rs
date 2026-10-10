@@ -183,10 +183,6 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             get(delivery::run),
         )
         .route("/api/sandboxes/{sid}/browser", get(browser::browser))
-        .route(
-            "/api/sandboxes/{sid}/browser/resource",
-            get(browser::resource),
-        )
         .route("/api/sandboxes/{sid}/previews", get(previews::info))
         .route("/api/previews/authorize", get(previews::authorize))
         .route(

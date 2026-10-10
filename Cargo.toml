@@ -77,6 +77,8 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system", 
 hyper = "1.12.0"
 hyper-util = "0.1.21"
 http-body-util = "0.1.5"
+# The sandbox browser's virtual display (SPEC-002 ADR-15): XTest input and RandR sizing, pure Rust.
+x11rb = { version = "0.14.0", default-features = false, features = ["xtest", "randr"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -45,6 +45,7 @@ reqwest = { workspace = true }
 sysinfo = { workspace = true }
 
 [dev-dependencies]
+base64 = { workspace = true }
 yulius-ptyhost = { workspace = true, features = ["test-support"] }
 yulius-browser = { workspace = true, features = ["fake"] }
 tokio-tungstenite = { workspace = true }

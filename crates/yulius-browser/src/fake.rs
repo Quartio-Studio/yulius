@@ -1,4 +1,5 @@
-//! Test doubles (feature `fake`): an in-process fake CDP server and a fake Chromium launcher.
+//! Test doubles (feature `fake`): an in-process fake CDP server, a fake Chromium launcher and a
+//! fake virtual display.
 //!
 //! [`FakeCdpServer`] speaks JSON-RPC over WebSocket on `127.0.0.1:<OS-assigned port>` and
 //! answers the methods this adapter uses with canned results. It records every request,
@@ -9,7 +10,12 @@
 //! [`write_fake_chromium`] writes a POSIX shell script that behaves like Chromium's startup
 //! contract: it reads `--user-data-dir=`, records its argv, writes `DevToolsActivePort`
 //! pointing at a fake server, forks a descendant (to prove process-group cleanup) and stays
-//! alive until killed. Synthetic data only; nothing here talks to a real browser.
+//! alive until killed.
+//!
+//! [`FakeDisplay`] stands in for Xvfb, XTest and ffmpeg ([`DisplayMode::Fake`]): it records the
+//! input the display would receive and streams synthetic H.264-shaped access units (a
+//! configuration, then frames with a keyframe every few frames) through the real video hub.
+//! Synthetic data only; nothing here talks to a real browser or X server.
 
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::PermissionsExt;
@@ -21,10 +27,17 @@ use std::time::Duration;
 use base64::Engine as _;
 use futures::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
+use std::sync::atomic::AtomicUsize;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
+
+use crate::display::{DisplayConfig, DisplayInput, DisplayMode};
+use crate::video::{
+    ENCODER_EVENTS, EncoderEvent, EncoderStart, EncoderStop, RunningEncoder, VideoConfig,
+    VideoFrame,
+};
 
 /// Maximum recorded requests; older entries are discarded.
 const MAX_RECORDED: usize = 10_000;
@@ -68,8 +81,7 @@ struct FakeState {
     screenshot_base64_len: usize,
     ax_nodes: Value,
     emit_load_events: bool,
-    /// Pages run the DOM recorder (Runtime.addBinding etc. succeed and snapshots are sent).
-    mirror: bool,
+    selection: String,
     connections: Vec<Arc<Connection>>,
 }
 
@@ -156,7 +168,7 @@ impl FakeCdpServer {
                 screenshot_base64_len: 0,
                 ax_nodes: default_ax_nodes(),
                 emit_load_events: true,
-                mirror: false,
+                selection: String::new(),
                 connections: Vec::new(),
             }),
             calls_seen: watch::channel(0).0,
@@ -281,11 +293,32 @@ impl FakeCdpServer {
         lock(&self.shared.state).emit_load_events = emit;
     }
 
-    /// Lets pages run the DOM recorder (default: the mirror's CDP calls are unknown, so viewers
-    /// fall back to the screencast). A started recorder or a snapshot request sends a `Meta` and
-    /// a full snapshot naming the page's URL; a navigation sends a new pair.
-    pub fn enable_mirror(&self) {
-        lock(&self.shared.state).mirror = true;
+    /// The text pages report as the user's selection (the copy expression's result).
+    pub fn set_selection(&self, text: &str) {
+        text.clone_into(&mut lock(&self.shared.state).selection);
+    }
+
+    /// A page opens a new page (a link to a new tab or `window.open`): a target with an
+    /// `openerId` appears. Returns its id.
+    pub async fn open_from_page(&self, opener: &str, url: &str) -> String {
+        let (event, id, connections) = {
+            let mut state = lock(&self.shared.state);
+            let target = FakeTarget {
+                id: fake_target_id(state.next_target),
+                url: url.to_owned(),
+                title: String::new(),
+            };
+            state.next_target += 1;
+            let mut event = target_event("Target.targetCreated", &target);
+            event["params"]["targetInfo"]["openerId"] = json!(opener);
+            let id = target.id.clone();
+            state.targets.push(target);
+            (event, id, state.connections.clone())
+        };
+        for connection in connections {
+            let _ = connection.outgoing.send(event.to_string()).await;
+        }
+        id
     }
 
     /// Current page target ids.
@@ -585,10 +618,18 @@ fn respond(
                                   "sessionId": session_id}),
                 );
             }
-            if state.mirror {
-                after.push(mirror_snapshot(session_id, &url));
-            }
             Ok(json!({"frameId": "frame-1", "loaderId": "loader-1"}))
+        }
+        "Page.getNavigationHistory" => {
+            let state = lock(&shared.state);
+            let url = session_id
+                .and_then(|s| state.sessions.get(s))
+                .and_then(|target| state.targets.iter().find(|t| &t.id == target))
+                .map(|t| t.url.clone())
+                .unwrap_or_default();
+            Ok(json!({"currentIndex": 1, "entries": [
+                {"id": 7, "url": "https://previous.example/", "title": "Previous"},
+                {"id": 8, "url": url, "title": "Current"}]}))
         }
         "Page.startScreencast" => {
             let Some(session) = session_id else {
@@ -636,58 +677,13 @@ fn respond(
             Ok(json!({"data": data}))
         }
         "Accessibility.getFullAXTree" => Ok(json!({"nodes": lock(&shared.state).ax_nodes.clone()})),
-        "Runtime.evaluate"
-            if lock(&shared.state).mirror && text("expression").contains("__yuliusMirror") =>
-        {
-            let expression = text("expression");
-            // The recorder starting in the current document, or a snapshot request.
-            if !expression.contains(".stop()") || expression.contains("record(") {
-                let state = lock(&shared.state);
-                let url = session_id
-                    .and_then(|s| state.sessions.get(s))
-                    .and_then(|target| state.targets.iter().find(|t| &t.id == target))
-                    .map(|t| t.url.clone())
-                    .unwrap_or_default();
-                after.push(mirror_snapshot(session_id, &url));
-            }
-            Ok(json!({"result": {"type": "undefined"}}))
-        }
-        "Runtime.addBinding"
-        | "Runtime.removeBinding"
-        | "Page.removeScriptToEvaluateOnNewDocument"
-            if lock(&shared.state).mirror =>
-        {
-            Ok(json!({}))
-        }
-        "Page.addScriptToEvaluateOnNewDocument" if lock(&shared.state).mirror => {
-            Ok(json!({"identifier": "1"}))
-        }
-        "Page.getFrameTree" => Ok(
-            json!({"frameTree": {"frame": {"id": "frame-1", "loaderId": "loader-1",
-            "url": "about:blank", "securityOrigin": "://", "mimeType": "text/html"}}}),
-        ),
-        "Network.loadNetworkResource" => {
-            let url = params
-                .get("url")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if url.contains("missing") {
-                return Ok(
-                    json!({"resource": {"success": false, "netErrorName": "net::ERR_CONNECTION_REFUSED"}}),
-                );
-            }
-            Ok(
-                json!({"resource": {"success": true, "httpStatusCode": 200, "stream": "stream-1",
-                "headers": {"Content-Type": "image/svg+xml"}}}),
-            )
-        }
-        "IO.read" => Ok(
-            json!({"data": base64::engine::general_purpose::STANDARD.encode(FAKE_RESOURCE),
-            "base64Encoded": true, "eof": true}),
-        ),
-        "IO.close" => Ok(json!({})),
         "Runtime.evaluate" => {
-            if text("expression") == "document" {
+            let expression = text("expression");
+            if expression.contains("getSelection") {
+                let selection = lock(&shared.state).selection.clone();
+                return Ok(json!({"result": {"type": "string", "value": selection}}));
+            }
+            if expression == "document" {
                 Ok(
                     json!({"result": {"type": "object", "subtype": "node", "className": "HTMLDocument",
                                      "objectId": "document-object"}}),
@@ -725,26 +721,11 @@ fn respond(
         | "Input.dispatchMouseEvent"
         | "Input.dispatchKeyEvent"
         | "Input.insertText"
+        | "Page.navigateToHistoryEntry"
+        | "Page.reload"
         | "Browser.close" => Ok(json!({})),
         other => Err((-32601, format!("'{other}' wasn't found"))),
     }
-}
-
-/// Body of every resource the fake serves through `Network.loadNetworkResource`.
-pub const FAKE_RESOURCE: &[u8] = b"<svg xmlns='http://www.w3.org/2000/svg'/>";
-
-/// A recorder batch for a new document: `Meta` and a full snapshot whose text names `url`.
-fn mirror_snapshot(session_id: Option<&str>, url: &str) -> Value {
-    let events = json!([
-        {"type": 4, "data": {"href": url, "width": 1280, "height": 800}, "timestamp": 1},
-        {"type": 2, "data": {"node": {"type": 0, "id": 1, "childNodes": [
-            {"type": 2, "id": 2, "tagName": "html", "attributes": {}, "childNodes": [
-                {"type": 2, "id": 3, "tagName": "body", "attributes": {}, "childNodes": [
-                    {"type": 3, "id": 4, "textContent": format!("page {url}")}]}]}]},
-            "initialOffset": {"left": 0, "top": 0}}, "timestamp": 2}
-    ]);
-    json!({"method": "Runtime.bindingCalled", "sessionId": session_id,
-           "params": {"name": crate::mirror::BINDING, "payload": events.to_string(), "executionContextId": 1}})
 }
 
 /// Synthetic size of a configured screenshot: PNG keeps `len`; JPEG shrinks with `quality`
@@ -878,4 +859,241 @@ printf '%s' "$$" > "$dir/fake-chromium.pid"
     std::fs::write(&path, format!("#!/bin/sh\n{body}"))?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
     Ok(path)
+}
+
+/// The `avcC` record of the fake display's stream (constrained baseline 3.1).
+pub const FAKE_AVCC: [u8; 8] = [1, 0x42, 0xC0, 0x1F, 0xFF, 0xE1, 0, 0];
+
+struct FakeDisplayInner {
+    config: Mutex<DisplayConfig>,
+    inputs: Mutex<Vec<DisplayInput>>,
+    inputs_seen: watch::Sender<u64>,
+    encoders: Mutex<Vec<(u32, u32)>>,
+    running: AtomicUsize,
+    frame_interval_ms: AtomicU64,
+    keyframe_every: AtomicU64,
+    frame_bytes: AtomicUsize,
+    fail_encoder: AtomicBool,
+    started: AtomicU64,
+    stopped: AtomicU64,
+}
+
+/// A fake virtual display ([`DisplayMode::Fake`]). Clones share the recording.
+#[derive(Clone)]
+pub struct FakeDisplay {
+    inner: Arc<FakeDisplayInner>,
+}
+
+impl std::fmt::Debug for FakeDisplay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeDisplay").finish_non_exhaustive()
+    }
+}
+
+impl Default for FakeDisplay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FakeDisplay {
+    /// A display with the default configuration (scale 1, at most 1920×1200) streaming a frame
+    /// every 20 ms with a keyframe every 10 frames.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_config(DisplayConfig::new(
+            "/nonexistent/yulius-fake-displays".into(),
+        ))
+    }
+
+    /// A display with `config` (its scale and maximum size apply; programs are not used).
+    #[must_use]
+    pub fn with_config(config: DisplayConfig) -> Self {
+        Self {
+            inner: Arc::new(FakeDisplayInner {
+                config: Mutex::new(config),
+                inputs: Mutex::new(Vec::new()),
+                inputs_seen: watch::channel(0).0,
+                encoders: Mutex::new(Vec::new()),
+                running: AtomicUsize::new(0),
+                frame_interval_ms: AtomicU64::new(20),
+                keyframe_every: AtomicU64::new(10),
+                frame_bytes: AtomicUsize::new(64),
+                fail_encoder: AtomicBool::new(false),
+                started: AtomicU64::new(0),
+                stopped: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    /// The display mode that uses this fake.
+    #[must_use]
+    pub fn mode(&self) -> DisplayMode {
+        DisplayMode::Fake(self.clone())
+    }
+
+    /// Every input the display received, in order.
+    #[must_use]
+    pub fn inputs(&self) -> Vec<DisplayInput> {
+        lock(&self.inner.inputs).clone()
+    }
+
+    /// Waits until an input satisfying `matches` was received.
+    pub async fn wait_for_input(
+        &self,
+        matches: impl Fn(&DisplayInput) -> bool,
+        timeout: Duration,
+    ) -> bool {
+        let mut seen = self.inner.inputs_seen.subscribe();
+        let waiting = async {
+            loop {
+                if self.inputs().iter().any(&matches) {
+                    return true;
+                }
+                if seen.changed().await.is_err() {
+                    return false;
+                }
+            }
+        };
+        tokio::time::timeout(timeout, waiting)
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Sizes the encoder was started at (device pixels), in order.
+    #[must_use]
+    pub fn encoder_sizes(&self) -> Vec<(u32, u32)> {
+        lock(&self.inner.encoders).clone()
+    }
+
+    /// Encoders running now.
+    #[must_use]
+    pub fn running_encoders(&self) -> usize {
+        self.inner.running.load(Ordering::SeqCst)
+    }
+
+    /// Time between synthetic frames.
+    pub fn set_frame_interval(&self, interval: Duration) {
+        let millis = u64::try_from(interval.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        self.inner
+            .frame_interval_ms
+            .store(millis, Ordering::Relaxed);
+    }
+
+    /// A keyframe every `frames` frames.
+    pub fn set_keyframe_every(&self, frames: u64) {
+        self.inner
+            .keyframe_every
+            .store(frames.max(1), Ordering::Relaxed);
+    }
+
+    /// Bytes of each synthetic access unit.
+    pub fn set_frame_bytes(&self, bytes: usize) {
+        self.inner
+            .frame_bytes
+            .store(bytes.max(16), Ordering::Relaxed);
+    }
+
+    /// Makes every encoder start fail (video unavailable).
+    pub fn fail_encoder(&self) {
+        self.inner.fail_encoder.store(true, Ordering::Relaxed);
+    }
+
+    /// Displays started and stopped so far.
+    #[must_use]
+    pub fn lifecycle(&self) -> (u64, u64) {
+        (
+            self.inner.started.load(Ordering::SeqCst),
+            self.inner.stopped.load(Ordering::SeqCst),
+        )
+    }
+
+    pub(crate) fn config(&self) -> DisplayConfig {
+        lock(&self.inner.config).clone()
+    }
+
+    pub(crate) fn record(&self, input: DisplayInput) {
+        lock(&self.inner.inputs).push(input);
+        self.inner.inputs_seen.send_modify(|n| *n += 1);
+    }
+
+    pub(crate) fn started(&self) {
+        self.inner.started.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn stopped(&self) {
+        self.inner.stopped.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn encoder(&self) -> FakeEncoderStart {
+        FakeEncoderStart(self.clone())
+    }
+}
+
+/// Starts the fake display's synthetic encoder.
+pub(crate) struct FakeEncoderStart(FakeDisplay);
+
+struct FakeEncoderStop {
+    display: FakeDisplay,
+    task: JoinHandle<()>,
+}
+
+impl EncoderStop for FakeEncoderStop {
+    fn stop(
+        self: Box<Self>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>> {
+        self.task.abort();
+        self.display.inner.running.fetch_sub(1, Ordering::SeqCst);
+        Box::pin(async { None })
+    }
+}
+
+impl EncoderStart for FakeEncoderStart {
+    async fn start(&self, size: (u32, u32)) -> Result<RunningEncoder, String> {
+        let display = self.0.clone();
+        lock(&display.inner.encoders).push(size);
+        if display.inner.fail_encoder.load(Ordering::Relaxed) {
+            return Err("the fake encoder is broken".into());
+        }
+        display.inner.running.fetch_add(1, Ordering::SeqCst);
+        let (tx, events) = mpsc::channel(ENCODER_EVENTS);
+        let inner = Arc::clone(&display.inner);
+        let task = tokio::spawn(async move {
+            let config = VideoConfig {
+                codec: "avc1.42c01f".into(),
+                description: FAKE_AVCC.to_vec().into(),
+                width: size.0,
+                height: size.1,
+            };
+            if tx
+                .send(EncoderEvent::Config(Arc::new(config)))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            for n in 0_u64.. {
+                let every = inner.keyframe_every.load(Ordering::Relaxed).max(1);
+                let bytes = inner.frame_bytes.load(Ordering::Relaxed);
+                let mut data = format!("au-{n};").into_bytes();
+                data.resize(bytes, b'.');
+                let frame = VideoFrame {
+                    keyframe: n % every == 0,
+                    timestamp_us: n * 16_667,
+                    data: data.into(),
+                };
+                if tx.send(EncoderEvent::Frame(frame)).await.is_err() {
+                    return;
+                }
+                let interval = inner.frame_interval_ms.load(Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(interval)).await;
+            }
+        });
+        Ok(RunningEncoder {
+            events,
+            stop: Box::new(FakeEncoderStop { display, task }),
+        })
+    }
 }
