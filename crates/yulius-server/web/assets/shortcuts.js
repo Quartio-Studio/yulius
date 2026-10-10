@@ -1,7 +1,7 @@
 // Keyboard shortcuts (SPEC-001 UI-029): the platform's key names and one sheet that lists every
 // shortcut, opened with ⌘/ (Ctrl+/) or from Settings. Keep the sheet in step with the handlers in
 // app.js (new task, F6, this sheet), taskview.js (composer), pages/tasks.js (single keys), dom.js
-// (menus), editorview.js (save, word wrap) and panels.js (messages).
+// (menus) and editorview.js (save, word wrap).
 
 import { h, openModal } from './dom.js';
 import { readJson } from './store.js';
@@ -53,9 +53,6 @@ function groups() {
       [['Home', 'End'], 'First / last tab'],
       [['Enter', 'Space'], 'Show the focused tab'],
       [['Delete', 'Backspace'], 'Close the focused tab'],
-    ]],
-    ['Messages', [
-      [[`${MOD}Enter`], 'Send'],
     ]],
   ];
 }

@@ -179,7 +179,8 @@ function seed(params) {
   db.messages = [
     { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_11', login: null, title: '#11 3D model viewer (claude)' }, to_task_id: 'tsk_studio_12', kind: 'scope', subject: 'Scope: src/viewer/**', body: 'I am working in src/viewer/** and public/models/**. Please avoid those paths; I will stay out of src/api/**.', created_at: iso(42 * MIN), read: true },
     { id: 'msg_2', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_10', login: null, title: '#10 AWS login for deploy (claude)' }, to_task_id: 'tsk_studio_12', kind: 'question', subject: 'Which port does the API use?', body: 'Is the checkout API served on http://localhost:20003 in this sandbox? I need it for the deploy smoke test.', created_at: iso(8 * MIN), read: false },
-    { id: 'msg_3', task: 'tsk_studio_12', from: { task_id: null, login: 'mkarp', title: 'mkarp' }, to_task_id: 'tsk_studio_12', kind: 'info', subject: '', body: 'Use the Stripe test keys only. The AWS sign-in tab is open: ' + `${ORIGIN}/s/studio/browser?tab=tab-aws`, created_at: iso(3 * MIN), read: false },
+    // The agent asks people (message_send to="people"): they answer in its terminal (F 2026-10-10).
+    { id: 'msg_3', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_12', login: null, title: '#12 Checkout API' }, to_task_id: null, kind: 'question', subject: 'Stripe keys', body: 'Should checkout use the Stripe test keys or the live ones? The AWS sign-in tab is open: ' + `${ORIGIN}/s/studio/browser?tab=tab-aws`, created_at: iso(3 * MIN), read: true },
   ];
   db.accounts = [
     { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', email: 'michal.karp@example.com', plan: 'Max 20x', enabled: true, priority: 1, status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
@@ -271,6 +272,23 @@ function specProblems(task) {
 }
 
 /** `Delivery` of a task: next actions the domain accepts now, blocked ones with the reason. */
+/**
+ * Check results the GitHub App may not read (#111), as the server reports them: the studio
+ * sandbox's App lacks "Commit statuses", so its results come from check runs alone. The link to
+ * the App's permissions is for instance administrators only.
+ */
+function checksAccess(db, sandbox) {
+  if (sandbox.id !== 'sb_studio') return null;
+  const repo = `${sandbox.repo.owner}/${sandbox.repo.name}`;
+  return {
+    repo,
+    missing: ['Commit statuses'],
+    read_from: ['check runs'],
+    message: `Yulius can't read commit statuses for ${repo}: the GitHub App needs the 'Commit statuses: read' permission. Results come from check runs only.`,
+    settings_url: db.me.user.is_superadmin || db.me.user.is_instance_admin ? `https://github.com/organizations/${sandbox.repo.owner}/settings/apps/yulius-quartio-studio/permissions` : null,
+  };
+}
+
 function delivery(db, task) {
   const sandbox = sandboxOf(db, task.sandbox_id);
   const profile = sandbox.profile;
@@ -286,7 +304,9 @@ function delivery(db, task) {
     else next.push('open_pr');
   } else if (pos.kind === 'pr_open') {
     const checks = state.pr ? state.pr.checks : 'none';
-    if (profile.require_checks !== false && checks !== 'success') blocked.push({ action: 'merge', reason: `checks are ${checks}; the profile requires green checks` });
+    // As the server: checks that can't be read never count as passed (#111).
+    if (profile.require_checks !== false && checks === 'unknown') blocked.push({ action: 'merge', reason: 'the pull request\u2019s checks can\u2019t be read, so they don\u2019t count as passed' });
+    else if (profile.require_checks !== false && checks !== 'success') blocked.push({ action: 'merge', reason: `checks are ${checks}; the profile requires green checks` });
     else if (stepsOpen) blocked.push({ action: 'merge', reason: `${stepsOpen} plan steps are still open` });
     else next.push('merge');
   } else if (pos.kind === 'env') {
@@ -307,6 +327,7 @@ function delivery(db, task) {
     next_actions: next,
     blocked,
     notes: [],
+    checks_access: pull && pull.state === 'open' ? checksAccess(db, sandbox) : null,
   };
 }
 
@@ -644,23 +665,6 @@ route('GET', `/api/tasks/${ID}/messages`, ({ db, p }) => {
   if (task.unread_messages) touch(db, task, { unread_messages: 0 });
   return list;
 });
-route('POST', `/api/tasks/${ID}/messages`, ({ db, p, body }) => {
-  const task = taskOf(db, p[0]);
-  needTaskWrite(db, task);
-  if (!body.body || !body.body.trim()) fail(422, 'invalid', 'Empty message.');
-  db.nextId += 1;
-  const stored = { id: `msg_${db.nextId}`, task: task.id, from: { task_id: null, login: db.me.user.login, title: db.me.user.display_name || db.me.user.login }, to_task_id: task.id, kind: 'info', subject: '', body: body.body, created_at: new Date().toISOString(), read: true };
-  db.messages.push(stored);
-  const { task: _t, ...message } = stored;
-  later(() => {
-    db.nextId += 1;
-    const reply = { id: `msg_${db.nextId}`, task: task.id, from: { task_id: task.id, login: null, title: `#${task.number} ${task.title} (${task.harness})` }, to_task_id: null, kind: 'info', subject: 'Re: your message', body: 'Noted — I will take this into account at my next turn.', created_at: new Date().toISOString(), read: false };
-    db.messages.push(reply);
-    const { task: _r, ...out } = reply;
-    emit(db, { type: 'message', task_id: task.id, message: out });
-  }, 2500);
-  return message;
-});
 route('GET', '/api/archived-tasks', ({ db }) => db.tasks.filter((t) => t.archived && db.sandboxes.some((s) => s.id === t.sandbox_id)).map(summary));
 
 // ---- Git and delivery
@@ -681,7 +685,8 @@ route('GET', `/api/sandboxes/${ID}/git`, ({ db, p }) => {
     // Open pull requests only.
     pulls: tasks.map(pull).filter((pr) => pr && pr.state === 'open'),
     // Reads degrade: a GitHub failure becomes a note instead of an error.
-    notes: sandbox.id === 'sb_three' ? ['GitHub: pull requests could not be read (rate limited); lists may be incomplete.'] : [],
+    notes: sandbox.id === 'sb_three' ? ['Pull requests can\u2019t be listed: GitHub rate limit exceeded; lists may be incomplete.'] : [],
+    checks_access: checksAccess(db, sandbox),
   };
 });
 route('GET', `/api/tasks/${ID}/delivery`, ({ db, p }) => delivery(db, taskOf(db, p[0])));

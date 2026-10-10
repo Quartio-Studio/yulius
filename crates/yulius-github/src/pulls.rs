@@ -7,16 +7,41 @@ use crate::error::GitHubError;
 use crate::http::{Call, upstream_message};
 use crate::secret::Secret;
 use crate::types::{
-    ChecksSummary, CompareStatus, Comparison, MergeMethod, MergeOutcome, NewPull, PullFilter,
-    PullRequest,
+    CheckSource, ChecksReport, CompareStatus, Comparison, MergeMethod, MergeOutcome, NewPull,
+    PullFilter, PullRequest,
 };
 use crate::validate;
 use crate::wire::{
-    WireCheckRun, WireCheckRuns, WireCombinedStatus, WireCompare, WireMerge, WirePull,
+    CheckReads, WireCheckRun, WireCheckRuns, WireCombinedStatus, WireCompare, WireMerge, WirePull,
+    WireWorkflowRuns, summarize,
 };
 
 /// Most check-run pages read for one commit.
 const MAX_CHECK_PAGES: u32 = 5;
+
+/// Whether a 403 means the App lacks the permission for the endpoint (GitHub's wording for App
+/// installation and user-to-server tokens), as opposed to another refusal.
+fn missing_permission(err: &GitHubError) -> bool {
+    matches!(err, GitHubError::Forbidden { message }
+        if message.to_ascii_lowercase().contains("not accessible by integration"))
+}
+
+/// A source's read: its value, `None` (recorded in `unreadable`) when the App may not read it,
+/// or the error.
+fn readable<T>(
+    read: Result<T, GitHubError>,
+    source: CheckSource,
+    unreadable: &mut Vec<CheckSource>,
+) -> Result<Option<T>, GitHubError> {
+    match read {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if missing_permission(&err) => {
+            unreadable.push(source);
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
+}
 
 fn repo_args(owner: &str, repo: &str) -> Result<(), GitHubError> {
     validate::owner(owner)?;
@@ -102,19 +127,56 @@ impl GitHubClient {
         .await
     }
 
-    /// Aggregate CI state of commit `sha`: check runs plus the combined commit status.
+    /// Aggregate CI state of commit `sha`: check runs plus the combined commit status, each read
+    /// on its own. A source the App may not read (HTTP 403 "Resource not accessible by
+    /// integration") is reported in [`ChecksReport::unreadable`] instead of failing the read;
+    /// without check runs, the commit's GitHub Actions workflow runs stand in for them. See
+    /// [`crate::ChecksSummary`] for how unreadable sources affect the result: never green.
     ///
     /// # Errors
-    /// Typed GitHub errors.
+    /// Typed GitHub errors other than a missing permission (rate limits, 5xx, 401, 404, …).
     pub async fn check_status(
         &self,
         token: &Secret,
         owner: &str,
         repo: &str,
         sha: &str,
-    ) -> Result<ChecksSummary, GitHubError> {
+    ) -> Result<ChecksReport, GitHubError> {
         repo_args(owner, repo)?;
         validate::sha(sha)?;
+        let mut reads = CheckReads::default();
+        reads.check_runs = readable(
+            self.check_runs(token, owner, repo, sha).await,
+            CheckSource::CheckRuns,
+            &mut reads.unreadable,
+        )?;
+        let mut url = self.api_url(&["repos", owner, repo, "commits", sha, "status"])?;
+        url.query_pairs_mut().append_pair("per_page", "100");
+        let combined: Result<WireCombinedStatus, GitHubError> =
+            self.get_json(url, Some(token)).await;
+        reads.statuses = readable(
+            combined.map(|c| c.statuses),
+            CheckSource::CommitStatuses,
+            &mut reads.unreadable,
+        )?;
+        if reads.check_runs.is_none() {
+            reads.workflow_runs = readable(
+                self.workflow_runs(token, owner, repo, sha).await,
+                CheckSource::WorkflowRuns,
+                &mut reads.unreadable,
+            )?;
+        }
+        Ok(summarize(reads))
+    }
+
+    /// The check runs of `sha` (at most [`MAX_CHECK_PAGES`] pages).
+    async fn check_runs(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> Result<Vec<WireCheckRun>, GitHubError> {
         let mut runs: Vec<WireCheckRun> = Vec::new();
         for page in 1..=MAX_CHECK_PAGES {
             let mut url = self.api_url(&["repos", owner, repo, "commits", sha, "check-runs"])?;
@@ -128,10 +190,32 @@ impl GitHubClient {
                 break;
             }
         }
-        let mut url = self.api_url(&["repos", owner, repo, "commits", sha, "status"])?;
-        url.query_pairs_mut().append_pair("per_page", "100");
-        let combined: WireCombinedStatus = self.get_json(url, Some(token)).await?;
-        Ok(crate::wire::aggregate_checks(&runs, &combined.statuses))
+        Ok(runs)
+    }
+
+    /// The GitHub Actions workflow runs whose head is `sha` (at most [`MAX_CHECK_PAGES`] pages).
+    async fn workflow_runs(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> Result<Vec<WireCheckRun>, GitHubError> {
+        let mut runs: Vec<WireCheckRun> = Vec::new();
+        for page in 1..=MAX_CHECK_PAGES {
+            let mut url = self.api_url(&["repos", owner, repo, "actions", "runs"])?;
+            url.query_pairs_mut()
+                .append_pair("head_sha", sha)
+                .append_pair("per_page", "100")
+                .append_pair("page", &page.to_string());
+            let batch: WireWorkflowRuns = self.get_json(url, Some(token)).await?;
+            let fetched = batch.workflow_runs.len();
+            runs.extend(batch.workflow_runs);
+            if fetched < 100 || runs.len() as u64 >= batch.total_count {
+                break;
+            }
+        }
+        Ok(runs)
     }
 
     /// Merges pull request `number` only if its head is still `expected_head_sha`

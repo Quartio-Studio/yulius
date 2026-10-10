@@ -53,7 +53,7 @@ pub const YULIUS_TOOLS: [(&str, &str); 25] = [
     ("task_get", "one task in detail"),
     (
         "message_send",
-        "message another task (direct or broadcast), or answer people with to=\"people\"",
+        "message another task (direct or broadcast), or people with to=\"people\" (they reply in your terminal)",
     ),
     ("messages_inbox", "read your messages"),
     (

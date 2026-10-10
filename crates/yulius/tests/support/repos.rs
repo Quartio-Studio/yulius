@@ -19,7 +19,7 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{GitHubTokenRecord, Secret, UserRecord};
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort};
 use yulius_app::ports::github::{
-    ChecksState, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort, NewPull,
+    ChecksReport, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort, NewPull,
     RepoAccess, RulesetRequest,
 };
 use yulius_app::ports::store::{InstanceStore, UserStore};
@@ -540,7 +540,7 @@ impl GitHubPort for RepoGitHub {
     ) -> AppResult<Vec<GhPull>> {
         self.base.list_pulls(t, o, r, head).await
     }
-    async fn checks(&self, t: &Secret, o: &str, r: &str, sha: &str) -> AppResult<ChecksState> {
+    async fn checks(&self, t: &Secret, o: &str, r: &str, sha: &str) -> AppResult<ChecksReport> {
         self.base.checks(t, o, r, sha).await
     }
     async fn merge_pull(

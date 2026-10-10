@@ -237,7 +237,9 @@ pub struct MessageFrom {
     pub title: String,
 }
 
-/// An inter-task or user message.
+/// A task's message: between tasks, an agent's message to people (`to="people"`, null
+/// `to_task_id`), or a person's message stored before 2026-10-10 (people now talk to the agent in
+/// its terminal).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageView {
     /// Message id.
@@ -256,11 +258,4 @@ pub struct MessageView {
     pub created_at: String,
     /// Read by the recipient.
     pub read: bool,
-}
-
-/// `POST /api/tasks/{tid}/messages`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PostMessage {
-    /// Body.
-    pub body: String,
 }

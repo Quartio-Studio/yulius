@@ -248,10 +248,13 @@ pub enum ChecksSummary {
     Success,
     /// Any failure, error, cancellation, timeout, required action or stale run.
     Failure,
+    /// The checks cannot be known: no source could be read, or the readable ones reported
+    /// nothing while another could not be read. Never counts as passed.
+    Unknown,
 }
 
 impl ChecksSummary {
-    /// API contract name (`none|pending|success|failure`).
+    /// API contract name (`none|pending|success|failure|unknown`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -259,8 +262,46 @@ impl ChecksSummary {
             Self::Pending => "pending",
             Self::Success => "success",
             Self::Failure => "failure",
+            Self::Unknown => "unknown",
         }
     }
+}
+
+/// Where GitHub reports a commit's CI results, each behind its own App permission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CheckSource {
+    /// Check runs (`GET …/commits/{sha}/check-runs`): GitHub Actions and every Checks API app.
+    /// App permission "Checks: read".
+    CheckRuns,
+    /// The combined commit status (`GET …/commits/{sha}/status`): CI that reports statuses.
+    /// App permission "Commit statuses: read".
+    CommitStatuses,
+    /// GitHub Actions workflow runs of the commit (`GET …/actions/runs?head_sha=`), read only
+    /// when check runs cannot be. App permission "Actions: read".
+    WorkflowRuns,
+}
+
+impl CheckSource {
+    /// The App permission that reads this source, as GitHub's settings name it.
+    #[must_use]
+    pub fn permission(self) -> &'static str {
+        match self {
+            Self::CheckRuns => "Checks",
+            Self::CommitStatuses => "Commit statuses",
+            Self::WorkflowRuns => "Actions",
+        }
+    }
+}
+
+/// The CI state of one commit with the sources that could not be read (HTTP 403 "Resource not
+/// accessible by integration": the App lacks the source's permission).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChecksReport {
+    /// Aggregate over the sources that could be read ([`ChecksSummary::Unknown`] when that
+    /// cannot tell).
+    pub summary: ChecksSummary,
+    /// Sources the App may not read, in [`CheckSource`] order.
+    pub unreadable: Vec<CheckSource>,
 }
 
 /// Result of a successful merge.
