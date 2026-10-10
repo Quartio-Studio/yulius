@@ -694,6 +694,8 @@ sandboxes/<sandbox>/repo/           primary clone; tracks the integration branch
 sandboxes/<sandbox>/worktrees/<task>/   one worktree + branch per task
 sandboxes/<sandbox>/home/           sandbox HOME inside containment (caches, .claude config dir)
 sandboxes/<sandbox>/browser/        Chromium profile
+sandboxes/<sandbox>/attachments/{tasks,shells}/<id>/  files dropped or pasted onto a terminal (UI-048):
+                                    outside every worktree; removed with the task or when the shell ends
 users/<user>/home/                  user's home in their shells (bound at /home/<login>; ADR-12)
 users/<user>/identity/              generated passwd/group files of the user's sandbox identity
 runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
@@ -1053,7 +1055,11 @@ continue, switch, archive, restore, feedback, steps, `start-now`, `held-prompts/
 `/api/admin/{users,accounts,github,mcp,skills}`, `/api/analytics/*`, `/api/status`,
 `/api/import/*` (CLI), `/api/sandboxes/{id}/browser` (WS), `/api/sandboxes/{id}/previews`,
 `/api/previews/authorize`; every `<port>-<key>.<host>` is a live preview (ADR-14).
-All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
+Dropped files (EDT-006, UI-048): `PUT /api/sandboxes/{id}/files/upload`, `POST
+/api/tasks/{id}/attachments`, `POST /api/sandboxes/{id}/shells/{id}/attachments`, one raw file
+per request, streamed to disk (`yulius_app::uploads`).
+All JSON bodies ≤ 1 MiB (imports use chunk endpoints ≤ 8 MiB per chunk; a dropped file is one
+raw body up to the upload limit, 25 MiB by default).
 
 ## 8. Security and trust model
 
@@ -1107,7 +1113,19 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 - Editor file API (ADR-10): write users only; relative paths of normal components, every
   existing path resolved and kept inside the folder (symbolic links cannot escape), `.git`
   refused, also when a link inside the folder resolves into it (#59), 2 MiB text limit, atomic
-  writes with an optimistic SHA-256 check.
+  writes with an optimistic SHA-256 check. The repository folder itself must resolve inside its
+  sandbox directory (a contained shell is root there and could swap it for a link).
+- Dropped files (EDT-006, UI-048): uploads follow the editor's rules, stream to a temporary file
+  in the destination folder and are linked into place (never replacing a name unless the user
+  confirmed, never a folder or link), bounded in size, number at once and idle time, and audited.
+  Terminal attachments live in the sandbox directory, outside every worktree, under folders that
+  must be real directories (no link a sandbox process planted is followed); containment binds the
+  sandbox at the same path, so the agent reads them by the absolute path it is given. They are
+  not mounted read-only on purpose: a bind of a folder the sandbox can rename would let a
+  sandbox process swap in a link and have bubblewrap mount its target. Like the files API, the
+  checks are by path (a swap racing the milliseconds between check and use is not excluded;
+  `openat`-based resolution would close it). Attachment names keep only characters that need no
+  shell quoting.
 - Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
   Argon2; the failure counter and permanent lock are persisted before the response is sent.
 - Browser displays (ADR-15): one Xvfb per sandbox browser with `-nolisten tcp -nolisten local` and
@@ -1171,6 +1189,11 @@ All JSON bodies ≤ 1 MiB (uploads use chunk endpoints ≤ 8 MiB per chunk).
 | Display input queue | 512 commands; 500 events/s per viewer (burst 1000) | moves dropped; other input refused with an error |
 | Encoder start failures | 3 in a row (backoff 0.5–3 s) | video unavailable; viewers get JPEG frames |
 | Encoder tag (access unit) | 8 MiB | encoder restarted |
+| Upload (one file, EDT-006/UI-048) | 25 MiB (`YULIUS_UPLOAD_MAX_MB`, 1–1024) | 422 before or while reading |
+| Uploads at once (instance) | 8 | 429; the UI retries 3 times with backoff |
+| Upload body idle | 60 s without a chunk | 422; temporary file removed |
+| Attachments per task or shell | 500 | 409 |
+| Files per drop (UI) | 1000 into the editor, 20 onto a terminal | the rest are left out with a note |
 | Jev request / answer / deadline (ADR-16) | 28 KiB / 256 KiB / 2.5 s split, 3 s scope; one request, no retries | refused before sending / typed failure → no check |
 | Split proposals | 2 at once, 60 s each, 256 KiB output | `capacity` / failure → one task |
 | Chained tasks per sandbox | 32 | refused at creation |
@@ -1287,6 +1310,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Live previews and no recursion (ADR-14, 2026-10-09) | `tests/preview.rs` (handshake, rewriting, localhost view of the app, WebSocket passthrough, refusals of users, sandboxes, ports, cross-site callers and Yulius itself, the Yulius session unusable from a preview origin, TLS `ask`); `tests/browser.rs` (per-viewer `watch`); `yulius-browser` `tests/instance.rs` and `tests/manager.rs` (the sandbox Chrome's guard: refusal, `Fetch` interception, fail-closed start); opt-in `live_ui_browser.rs` with real Chrome (live iframe with root-relative assets, a redirect, a WebSocket, native typing, selection and scrolling, address bar and Back, agent notice and cursor, hostile preview page refused, framed UI refused, the sandbox Chrome refusing Yulius). Deployed DNS/TLS not exercised. |
 | Task finishing (TSK-014, 2026-10-10) | Unit: `goal_status` and turn-closing records (fixture `goal.jsonl`, structure of Claude Code 2.1.292 read from the installed bundle and a production transcript, read-only), the replay reduction, typed prompts vs wake-ups, `Activity::Done`, the tail's catch-up flag, the background-shell counter (synthetic tables, depth/size bounds, a real wrapper shell found until it exits). `tests/task_done.rs`: fake agent with Claude Code's hooks through `yulius hook` → Done with 0 shells; a goal turn leaving a Bash-tool shell → 1 shell until it ends, then Done; typing after Done → `working` → `waiting`; a restart keeps a done task done (no `working` event) and applies a goal achieved while the server was down. With the catch-up disabled the restart test fails. Mock UI e2e `task-done.e2e.ts`. |
 | Streamed browser (ADR-15, 2026-10-10) | Unit: FLV parsing for every split of a stream, codec strings, GOP cache, subscriber and viewer backpressure, encoder lifecycle (on demand, idle stop, resize restart, give-up), key mapping, cookie format and permissions, device sizes. `tests/browser.rs` with a fake display: video config then a keyframe, a late viewer's instant start, viewport → display resize and encoder restart, XTest-shaped input, wheel and text through CDP, copy, release on leave, pages opened by pages come to the front, history and reload, a broken encoder falls back to JPEG, the display stops with the browser. Opt-in `live_display.rs` on the VM (Xvfb, ffmpeg, Chrome 155, as the service user): streaming from a keyframe, real clicks (also in an OAuth-style popup), typing incl. Polish letters and emoji in order, scrolling, canvas and image pixels, `navigator.webdriver === false`, agent cursor, screenshots, recursion refused, no display, cookie, abstract or TCP socket reachable from containment (both identities); figures in ADR-15; reCAPTCHA v2 demo (checkbox → image challenge, a tile selected) and Cloudflare's challenge on nopecha.com (checkbox → passed) with XTest clicks. `live_ui_browser.rs` with a display: the panel decodes H.264 in Chrome and its input reaches the page. `e2e/tests/browser.e2e.ts` (mock UI, VP8 via WebCodecs). |
+| Dropped files (EDT-006, UI-048, 2026-10-10) | `tests/uploads.rs`: editor uploads (write users only, CSRF, folders created, byte-for-byte with SHA-256, 409 then overwrite with permissions kept, folders and links never replaced, traversal / absolute / control characters / `.git` / links out refused with nothing written outside, a repository folder linked into another sandbox refused, task worktree root, audit), bounds (declared and streamed size, an interrupted body, 8 concurrent then 429, no temporary file left), task attachments (safe unique names, read users refused, a planted link refused, removed with the task), shell attachments (owner only, removed when the shell closes or at start-up), the fake agent reading an attachment by path with a clean `git status` (uncontained; on Linux also inside bubblewrap, skipped where bubblewrap cannot run). Unit tests in `yulius_app::uploads`. `e2e/tests/filedrop.e2e.ts` (mock UI). Opt-in `live_ui_filedrop.rs` with real Chrome: real drags from disk to the explorer and to the task terminal, read by the fake agent. |
 | Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
 | Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
@@ -1296,6 +1320,8 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 - 2026-10-10 (F 2026-10-10): §6.1 activity `done` and the finish rule (goal achieved, clean turn
   end, background shells as a live overlay, restart catch-up); §7.2 goal and turn-closing records;
   §7.5 Stop/UserPromptSubmit; §9 probe bounds; §10 restart and unanswered Stop; §14.
+- 2026-10-10 (F 2026-10-10): dropped files — streamed uploads into the repository or a worktree and
+  terminal attachments outside git that the contained agent reads by path (§4, §7.9, §8, §9, §14).
 - 2026-10-10 (F 2026-10-10, item 10b): ADR-17 — Claude subscriptions as one self-managing pool:
   use-it-or-lose-it placement, a 98 % switch at the turn boundary, a pause held at the Stop /
   `UserPromptSubmit` hook (`202 Retry-After`, invisible to the agent, persisted, resumed oldest

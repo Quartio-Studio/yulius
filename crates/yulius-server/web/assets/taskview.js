@@ -7,6 +7,7 @@ import { createTerminalView } from './terminal.js';
 import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround, shellsLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, chainCandidates } from './intake.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
+import { attachTerminalDrop, taskAttachments } from './filedrop.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -112,6 +113,8 @@ export function mountTaskView(ctx, sandbox, task) {
       open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: `task:${task.id}`, ...file }),
     } : null,
   });
+  // Files dropped (or an image pasted) here reach Claude by path, as in a local terminal (UI-048).
+  attachTerminalDrop(ctx, terminal, { label: 'Drop to send to Claude', upload: taskAttachments(ctx, task.id) });
 
   // ---- phone quick input
   const quickInput = h('input', { class: 'input', type: 'text', placeholder: 'Message the agent…', autocomplete: 'off', autocapitalize: 'off', enterkeyhint: 'send', 'aria-label': 'Quick input' });

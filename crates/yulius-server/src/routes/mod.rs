@@ -22,6 +22,7 @@ mod skills;
 mod status;
 mod tasks;
 mod terminal;
+mod uploads;
 mod workflows;
 
 use std::sync::Arc;
@@ -216,6 +217,16 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(6 << 20)),
         )
         .route("/api/shells/{id}/terminal", get(shells::terminal))
+        // Dropped files (EDT-006, UI-048): raw streamed bodies, bounded by the upload limit.
+        .route("/api/sandboxes/{sid}/files/upload", put(uploads::file))
+        .route(
+            "/api/tasks/{tid}/attachments",
+            post(uploads::task_attachment),
+        )
+        .route(
+            "/api/sandboxes/{sid}/shells/{id}/attachments",
+            post(uploads::shell_attachment),
+        )
 }
 
 /// Internal (loopback) routes.
