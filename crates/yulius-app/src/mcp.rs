@@ -158,7 +158,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "workflows_list".into(),
-            description: "List the workflows (reusable task recipes with initial steps, instructions and gates) available in this project.".into(),
+            description: "List the workflows (reusable task recipes with initial steps, instructions and gates) available in this project: Yulius's defaults first (builtin, with when_to_use), then the project's own.".into(),
             input_schema: schema(json!({}), &[]),
         },
     ];

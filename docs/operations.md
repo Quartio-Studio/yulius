@@ -425,6 +425,11 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
   tasks imported earlier as archived tasks stay tasks (their sessions appear on the Sessions page as
   task sessions). Task sessions are indexed lazily, 32 MiB of transcript per list or search, so the
   first searches after the upgrade on a busy sandbox index while they answer. No configuration.
+- Upgrading to default workflows (AUT-006, #136, 2026-10-10): the default workflows now ship with
+  the binary (`catalog/workflows/`) and are read-only. On the first start the "Feature" and "Quick
+  task" rows seeded by earlier releases are retired (audited as `workflow.retired`); an edited
+  "Feature" is kept as "Feature (custom)", an edited "Quick task" stays as it is. Automations that
+  used "Quick task" continue without a workflow. No migration and no configuration.
 - Upgrading to dropped files (EDT-006, UI-048, 2026-10-10): raise the reverse proxy's request body
   limit to 32 MB (§4) or uploads between 16 and 25 MiB fail at the proxy with 413. No migration.
 - Upgrading to the subscription pool (ADR-17, 2026-10-10): migration 0005 drops the accounts'

@@ -1,6 +1,7 @@
-//! Workflows and automations end to end: CRUD and permissions, the scheduler with a
-//! controllable clock (due run, restart deduplication, catch-up, disabled and previous-active
-//! skips, failures) and the agent tools (AC-AUT-1..4).
+//! Workflows and automations end to end: CRUD and permissions, the default workflows from the
+//! catalog and the retirement of the old seeded ones, the scheduler with a controllable clock
+//! (due run, restart deduplication, catch-up, disabled and previous-active skips, failures) and
+//! the agent tools (AC-AUT-1..5).
 
 mod support;
 
@@ -16,7 +17,8 @@ use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord};
 use yulius_app::ports::store::{SandboxStore, TaskStore};
-use yulius_app::ports::store_ext::AutomationStore;
+use yulius_app::ports::store_ext::{AutomationStore, WorkflowStore};
+use yulius_app::workflows::{WorkflowRecord, catalog};
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
@@ -109,9 +111,26 @@ async fn runs(w: &World, automation: &str) -> Result<Vec<Value>, Error> {
     Ok(r.body.as_array().cloned().unwrap_or_default())
 }
 
+fn names(list: &Value) -> Vec<String> {
+    list.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|w| w["name"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn default_names() -> Vec<String> {
+    catalog::defaults().iter().map(|w| w.name.clone()).collect()
+}
+
+/// AC-AUT-5: the default workflows come from the catalog (first, read-only, with when to use
+/// them), can be duplicated, and give a task their steps and instructions.
 #[tokio::test]
-async fn workflows_seed_builtins_scope_permissions_and_task_steps() -> TestResult {
+async fn workflows_defaults_scope_permissions_and_task_steps() -> TestResult {
     let w = world().await?;
+    let feature = catalog::default_workflow("wf-feature").ok_or("the Feature default")?;
     let list = call(
         &w.h.router,
         Method::GET,
@@ -121,24 +140,77 @@ async fn workflows_seed_builtins_scope_permissions_and_task_steps() -> TestResul
     )
     .await?;
     assert_eq!(list.status, StatusCode::OK);
-    let names: Vec<&str> = list
+    assert_eq!(names(&list.body), default_names());
+    for (shown, default) in list
         .body
         .as_array()
         .ok_or("list")?
         .iter()
-        .filter_map(|w| w["name"].as_str())
-        .collect();
-    assert_eq!(names, ["Feature", "Quick task"]);
-    assert_eq!(
-        list.body[0]["steps"],
-        json!(["Write spec with plan", "Implement", "Test", "Open PR"])
-    );
-    assert_eq!(
-        list.body[0]["gates"],
-        json!({"require_spec": true, "require_tests": true})
-    );
-    assert_eq!(list.body[1]["steps"], json!([]));
-    assert_eq!(list.body[0]["scope"], "instance");
+        .zip(catalog::defaults())
+    {
+        assert_eq!(shown["id"], default.id.as_str());
+        assert_eq!(shown["builtin"], true);
+        assert_eq!(shown["scope"], "instance");
+        assert_eq!(shown["when_to_use"], default.when_to_use.as_str());
+        assert_eq!(shown["steps"], json!(default.steps));
+        assert_eq!(
+            shown["gates"],
+            json!({"require_spec": default.require_spec, "require_tests": default.require_tests})
+        );
+    }
+    assert!(!feature.when_to_use.is_empty() && feature.require_spec);
+
+    // Read-only, even for an instance administrator: duplicate to customise.
+    for (method, body) in [
+        (Method::PUT, Some(json!({"name": "Mine", "steps": ["Tag"]}))),
+        (Method::DELETE, None),
+    ] {
+        let refused = call(
+            &w.h.router,
+            method,
+            "/api/workflows/wf-feature",
+            body,
+            &w.root,
+        )
+        .await?;
+        assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+        assert!(
+            refused.body.to_string().contains("duplicate"),
+            "{}",
+            refused.body
+        );
+    }
+    let copy = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/workflows",
+        Some(json!({"name": format!("{} (copy)", feature.name), "description": feature.description, "steps": feature.steps, "instructions": feature.instructions, "gates": {"require_spec": true, "require_tests": true}, "builtin": true, "when_to_use": "ignored"})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(copy.status, StatusCode::CREATED, "{}", copy.body);
+    assert_eq!(copy.body["builtin"], false, "builtin is not settable");
+    assert_eq!(copy.body["when_to_use"], "");
+    assert_eq!(copy.body["steps"], json!(feature.steps));
+    let copy_id = copy.body["id"].as_str().ok_or("id")?.to_owned();
+    let copy_edit = call(
+        &w.h.router,
+        Method::PUT,
+        &format!("/api/workflows/{copy_id}"),
+        Some(json!({"name": "Our feature", "steps": ["Spec", "Build"]})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(copy_edit.status, StatusCode::OK, "{}", copy_edit.body);
+    let copy_delete = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/workflows/{copy_id}"),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(copy_delete.status, StatusCode::NO_CONTENT);
 
     let recipe = json!({"name": "Release", "steps": ["Bump version", "Changelog"], "instructions": "Follow RELEASING.md.", "gates": {"require_spec": false, "require_tests": true}});
     let denied = call(
@@ -226,8 +298,11 @@ async fn workflows_seed_builtins_scope_permissions_and_task_steps() -> TestResul
     // AC-AUT-3: a task created from a workflow gets its steps and instructions.
     let task = call(&w.h.router, Method::POST, "/api/sandboxes/s1/tasks", Some(json!({"prompt": "Add a checkout API", "harness": "claude", "workflow_id": "wf-feature"})), &w.alice).await?;
     assert_eq!(task.status, StatusCode::CREATED, "{}", task.body);
-    assert_eq!(task.body["steps"]["total"], 4);
-    assert_eq!(task.body["steps"]["current"], "Write spec with plan");
+    assert_eq!(task.body["steps"]["total"], feature.steps.len());
+    assert_eq!(
+        task.body["steps"]["current"],
+        feature.steps.first().map_or(Value::Null, |s| json!(s))
+    );
     let record =
         w.h.store
             .task(&TaskId::parse(task.body["id"].as_str().ok_or("id")?)?)
@@ -238,12 +313,12 @@ async fn workflows_seed_builtins_scope_permissions_and_task_steps() -> TestResul
             .workflow_instructions(&record)
             .await
             .ok_or("instructions")?;
-    assert!(instructions.contains("spec"), "{instructions}");
+    assert_eq!(instructions, feature.instructions);
     let quick = call(
         &w.h.router,
         Method::POST,
         "/api/sandboxes/s1/tasks",
-        Some(json!({"prompt": "Fix a typo", "workflow_id": "wf-quick-task"})),
+        Some(json!({"prompt": "Fix a typo"})),
         &w.alice,
     )
     .await?;
@@ -271,15 +346,21 @@ async fn workflows_seed_builtins_scope_permissions_and_task_steps() -> TestResul
             .await?
             .ok_or("task")?;
     assert_eq!(w.h.app.workflow_instructions(&quick_record).await, None);
-    let unknown = call(
-        &w.h.router,
-        Method::POST,
-        "/api/sandboxes/s1/tasks",
-        Some(json!({"prompt": "x", "harness": "claude", "workflow_id": "nope"})),
-        &w.alice,
-    )
-    .await?;
-    assert_eq!(unknown.status, StatusCode::UNPROCESSABLE_ENTITY);
+    for retired in ["nope", "wf-quick-task"] {
+        let unknown = call(
+            &w.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/tasks",
+            Some(json!({"prompt": "x", "harness": "claude", "workflow_id": retired})),
+            &w.alice,
+        )
+        .await?;
+        assert_eq!(
+            unknown.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{retired}"
+        );
+    }
 
     // A sandbox workflow is not usable from another sandbox.
     add_sandbox(&w.h, "s2", "product", 20020).await?;
@@ -312,14 +393,124 @@ async fn workflows_seed_builtins_scope_permissions_and_task_steps() -> TestResul
         &w.alice,
     )
     .await?;
-    let names: Vec<&str> = after
+    let mut expected = default_names();
+    expected.push("Hotfix".into());
+    assert_eq!(names(&after.body), expected);
+    Ok(())
+}
+
+/// The old seeded "Feature" and "Quick task" rows: an unchanged one is retired (references to
+/// `wf-feature` now reach the default, those to `wf-quick-task` are cleared), an edited one
+/// whose id a default answers to is kept as a custom copy, any other edited one stays.
+#[tokio::test]
+async fn workflows_seeded_before_the_catalog_are_retired() -> TestResult {
+    let legacy =
+        |id: &str, name: &str, steps: &[&str], instructions: &str, gate: bool| WorkflowRecord {
+            id: id.to_owned(),
+            sandbox_id: None,
+            name: name.to_owned(),
+            description: if gate {
+                "Spec first, then implementation, tests and a pull request.".into()
+            } else {
+                "A small change without required steps or gates.".into()
+            },
+            steps: steps.iter().map(|s| (*s).to_owned()).collect(),
+            instructions: instructions.to_owned(),
+            require_spec: gate,
+            require_tests: gate,
+            created_at: Timestamp(1),
+            builtin: false,
+            when_to_use: String::new(),
+        };
+    const FEATURE_TEXT: &str = "Start by writing the task spec with a Plan checklist in the project's spec directory and keep the steps in sync with it. Implement only what the spec describes, add tests that prove the behavior, run the project's test command and open a pull request into the integration branch.";
+    const FEATURE_STEPS: [&str; 4] = ["Write spec with plan", "Implement", "Test", "Open PR"];
+
+    // Unchanged rows, each used by an automation.
+    let w = world().await?;
+    let store = &w.h.store;
+    store
+        .insert_workflow(
+            &legacy("wf-feature", "Feature", &FEATURE_STEPS, FEATURE_TEXT, true),
+            200,
+        )
+        .await?;
+    store
+        .insert_workflow(&legacy("wf-quick-task", "Quick task", &[], "", false), 200)
+        .await?;
+    let mut uses = Vec::new();
+    for workflow in ["wf-feature", "wf-quick-task"] {
+        let mut body = daily(workflow, "0 9 * * *");
+        body["workflow_id"] = json!(workflow);
+        uses.push(create_automation(&w, body).await?);
+    }
+    assert_eq!(w.h.app.retire_legacy_workflows().await?, 2);
+    assert_eq!(w.h.app.retire_legacy_workflows().await?, 0, "idempotent");
+    assert!(store.workflow("wf-feature").await?.is_none());
+    assert!(store.workflow("wf-quick-task").await?.is_none());
+    let feature_use = store.automation(&uses[0]).await?.ok_or("automation")?;
+    assert_eq!(feature_use.workflow_id.as_deref(), Some("wf-feature"));
+    let quick_use = store.automation(&uses[1]).await?.ok_or("automation")?;
+    assert_eq!(quick_use.workflow_id, None);
+    let list = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/workflows",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(names(&list.body), default_names());
+
+    // Edited rows keep their edits.
+    let w = world().await?;
+    let store = &w.h.store;
+    store
+        .insert_workflow(
+            &legacy(
+                "wf-feature",
+                "Feature",
+                &["Spec", "Ship"],
+                FEATURE_TEXT,
+                true,
+            ),
+            200,
+        )
+        .await?;
+    store
+        .insert_workflow(
+            &legacy("wf-quick-task", "Quick task", &["Do it"], "", false),
+            200,
+        )
+        .await?;
+    assert_eq!(w.h.app.retire_legacy_workflows().await?, 1);
+    assert!(store.workflow("wf-feature").await?.is_none());
+    assert!(
+        store.workflow("wf-quick-task").await?.is_some(),
+        "a custom workflow now"
+    );
+    let list = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/workflows",
+        None,
+        &w.bob,
+    )
+    .await?;
+    let custom: Vec<&Value> = list
         .body
         .as_array()
         .ok_or("list")?
         .iter()
-        .filter_map(|w| w["name"].as_str())
+        .filter(|w| w["builtin"] == false)
         .collect();
-    assert_eq!(names, ["Feature", "Hotfix", "Quick task"]);
+    assert_eq!(custom.len(), 2, "{}", list.body);
+    let kept = custom
+        .iter()
+        .find(|w| w["name"] == "Feature (custom)")
+        .ok_or("the edited Feature kept as a copy")?;
+    assert_eq!(kept["steps"], json!(["Spec", "Ship"]));
+    assert_eq!(kept["scope"], "instance");
+    assert!(custom.iter().any(|w| w["id"] == "wf-quick-task"));
     Ok(())
 }
 
@@ -1027,7 +1218,13 @@ async fn agents_manage_automations_through_mcp_tools() -> TestResult {
     let (listed, _) = tool(&internal, "tok-agent", "automations_list", json!({})).await?;
     assert_eq!(listed["automations"].as_array().map(Vec::len), Some(1));
     let (workflows, _) = tool(&internal, "tok-agent", "workflows_list", json!({})).await?;
-    assert_eq!(workflows["workflows"][0]["name"], "Feature");
+    let first = &catalog::defaults()[0];
+    assert_eq!(workflows["workflows"][0]["name"], first.name.as_str());
+    assert_eq!(workflows["workflows"][0]["builtin"], true);
+    assert_eq!(
+        workflows["workflows"][0]["when_to_use"],
+        first.when_to_use.as_str()
+    );
 
     // Automations of other sandboxes are invisible to the agent.
     add_sandbox(&w.h, "s2", "product", 20020).await?;
