@@ -338,8 +338,12 @@ impl App {
         let Some(text) = input.prompt.as_deref().map(str::trim) else {
             return Ok(None);
         };
-        if task.status != TaskStatus::Running
-            || policy::bypass(text).is_some()
+        // A task paused at its turn end for capacity has a live session too: what a person types
+        // there is checked like in a running one.
+        if !matches!(
+            task.status,
+            TaskStatus::Running | TaskStatus::WaitingCapacity
+        ) || policy::bypass(text).is_some()
             || text == task.prompt.trim()
         {
             return Ok(None);
@@ -373,6 +377,14 @@ impl App {
             }
         };
         let class = policy::scope_class(&answer, services.scope_threshold);
+        // One line per check, without the prompt (it is private): whether intake caught a typed
+        // prompt can be read from the server log.
+        tracing::info!(
+            task = %task.id,
+            verdict = class.as_str(),
+            percent = percent(&answer, class.as_str()),
+            "scope check of a typed prompt"
+        );
         if class == PromptClass::Context {
             return Ok(None);
         }

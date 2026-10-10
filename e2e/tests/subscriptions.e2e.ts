@@ -19,13 +19,28 @@ test('the accounts page shows the pool capacity and nothing to manage but add an
   // No priority, ordering or on/off controls remain (only the account list's Remove buttons).
   expect(await browser.evaluate(() => document.querySelectorAll('main input[type=number], main [role=switch]').length)).toBe(0);
   await expect(screen.getByText('Refresh usage')).toBeHidden();
+  // A usage reading that failed for now is one quiet sentence, no HTTP codes (F 2026-10-10).
+  await expect(screen.getByText('Usage updates again in about 12 min.')).toBeVisible();
+  expect(await browser.evaluate(() => (document.querySelector('main') || document.body).innerText.includes('HTTP'))).toBe(false);
+  await expect(screen.getByText(/Tasks don.t belong to a subscription/)).toBeVisible();
 
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-test('a task paused for capacity says so with the reset time, outside Needs you', async ({ app, screen }) => {
+test('tasks are subscription-agnostic: no account choice or account in the task view', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await expect(screen.getByRole('link', /Search indexing\s*, Paused: waiting for subscription capacity \(resets ~[^)]+\)/)).toBeVisible();
+  const strip = browser.locator('.taskview .stepstrip-main');
+  await strip.locator('[aria-label="Task actions"]').click();
+  await expect(screen.getByRole('menuitem', /^Stop/)).toBeVisible();
+  await expect(screen.getByRole('menuitem', /Switch account/)).toBeHidden();
+  await browser.keyboard.press('Escape');
+  // The subscription the task runs on shows only in Task details.
+  expect((await strip.innerText()).includes('Claude #2')).toBe(false);
+});
+
+test('a task paused because no subscription has capacity left says so with the reset time, outside Needs you', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('link', /Search indexing\s*, Paused: no subscription has capacity left \(resets ~[^)]+\)/)).toBeVisible();
 });
 
 test('the dashboard shows the subscriptions of the whole instance', async ({ app, browser, screen }) => {

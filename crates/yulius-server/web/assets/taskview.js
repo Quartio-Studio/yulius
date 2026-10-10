@@ -43,7 +43,7 @@ function emptyTerminalMessage(task) {
   switch (task.status) {
     case 'queued': return { title: 'Queued', text: 'The agent starts as soon as a session slot is free.' };
     case 'starting': return { title: 'Starting Claude Code…', text: 'The session appears here in a moment.' };
-    case 'switching': return { title: 'Moving to another AI account…', text: 'The session continues here in a moment.' };
+    case 'switching': return { title: 'Continuing…', text: 'The session picks up where it left off in a moment.' };
     case 'waiting_capacity': return { title: 'Paused', text: `${pausedLine(task)}. It continues by itself.` };
     case 'running': return { title: 'Claude Code is starting…', text: 'The session appears here in a moment.' };
     case 'chained': {
@@ -66,8 +66,9 @@ export function mountTaskView(ctx, sandbox, task) {
   const stripLabel = h('span', { class: 'step-label' });
   const progressFill = h('div', { class: 'step-progress-fill' });
   const progress = h('div', { class: 'step-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100 }, progressFill);
-  // The session's state in words, coloured by tone; announced when it changes. Mode and account
-  // stay beside it, in the strip's own colours.
+  // The session's state in words, coloured by tone; announced when it changes. The mode stays
+  // beside it, in the strip's own colours; the subscription is not a property of the task (F
+  // 2026-10-10) and shows only in Task details.
   const statusEl = h('span', { class: 'strip-status', role: 'status' });
   const extrasEl = h('span', { class: 'strip-extras' });
   // The pull request, its checks and the next delivery step, beside the state (UX2-18).
@@ -227,8 +228,7 @@ export function mountTaskView(ctx, sandbox, task) {
     setChildren(extrasEl,
       current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       after,
-      next,
-      current.account_label ? h('span', { class: 'muted xs strip-extra' }, current.account_label) : null);
+      next);
   }
 
   function renderStepList() {

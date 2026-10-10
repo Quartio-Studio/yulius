@@ -17,6 +17,26 @@ pub mod events {
     pub const STOP: &str = "Stop";
     /// Claude Code notification (for example a permission prompt).
     pub const NOTIFICATION: &str = "Notification";
+    /// The session ends (`/exit`, Ctrl+C twice, `/clear`, a signal); `reason` says why.
+    pub const SESSION_END: &str = "SessionEnd";
+    /// Not a hook: Claude Code's `statusLine` command, run by the same client. Its input is a
+    /// [`StatusLineInput`]; the answer is the status line's text.
+    pub const STATUS_LINE: &str = "StatusLine";
+}
+
+/// `SessionEnd` reasons (Claude Code 2.1.292): the person left the session (`/exit`, Ctrl+C
+/// twice, Ctrl+D) — `prompt_input_exit`; `/clear` started a new conversation in the same
+/// process; `logout`; `resume` (another session was resumed in the same process); anything else
+/// (a signal, an error) is `other`.
+pub mod session_end {
+    /// `/exit`, Ctrl+C twice or Ctrl+D at the prompt.
+    pub const PROMPT_INPUT_EXIT: &str = "prompt_input_exit";
+    /// `/clear`: the process goes on with a new session.
+    pub const CLEAR: &str = "clear";
+    /// `/logout`.
+    pub const LOGOUT: &str = "logout";
+    /// Another session was resumed in the same process (`/resume`).
+    pub const RESUME: &str = "resume";
 }
 
 /// The JSON a CLI sends to a hook command. Every field is optional and unknown fields are
@@ -63,6 +83,51 @@ pub struct HookInput {
     /// Model of the session, when the CLI reports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Why the session ends (`SessionEnd`, see [`session_end`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// One plan rate-limit window as Claude Code passes it to its status line command:
+/// `used_percentage` (0–100) and `resets_at` in Unix seconds. Claude Code reads both from the
+/// `anthropic-ratelimit-unified-*` headers of its own API responses, so they are known for every
+/// Claude subscription sign-in, including `claude setup-token` ones that cannot read the usage
+/// endpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RateLimitWindow {
+    /// Percent of the window used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_percentage: Option<f64>,
+    /// When the window resets (Unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+}
+
+/// The plan rate limits in Claude Code's status line input (present once a response of the
+/// session reported them).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RateLimits {
+    /// The five-hour session window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub five_hour: Option<RateLimitWindow>,
+    /// The weekly window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seven_day: Option<RateLimitWindow>,
+}
+
+/// The JSON Claude Code sends to its `statusLine` command (Claude Code 2.1.292; only the fields
+/// Yulius reads — the rest, such as `model` as an object, `workspace` and `cost`, is ignored).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatusLineInput {
+    /// Provider session id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Plan rate limits; absent before the session's first response or without a plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limits: Option<RateLimits>,
 }
 
 /// Event-specific output (`hookSpecificOutput`).
@@ -187,6 +252,45 @@ mod tests {
             json!({"session_id":"s","hook_event_name":"UserPromptSubmit","prompt":"fix the bug"})
         );
         assert_eq!(serde_json::from_str::<HookInput>(&text)?, input);
+        Ok(())
+    }
+
+    /// The status line input of Claude Code 2.1.292 (synthetic values): `model` is an object
+    /// there, so it has its own type and does not break [`HookInput`].
+    #[test]
+    fn status_line_input_reads_the_rate_limits() -> TestResult {
+        let raw = json!({
+            "session_id": "3f2b1c9e-aaaa-4bbb-8ccc-0123456789ab",
+            "model": {"id": "claude-opus-4-1", "display_name": "Opus"},
+            "workspace": {"current_dir": "/w", "project_dir": "/w"},
+            "cost": {"total_cost_usd": 0.5},
+            "rate_limits": {
+                "five_hour": {"used_percentage": 42.5, "resets_at": 1_791_700_000},
+                "seven_day": {"used_percentage": 18.0, "resets_at": 1_792_000_000}
+            }
+        });
+        let input: StatusLineInput = serde_json::from_value(raw)?;
+        let limits = input
+            .rate_limits
+            .ok_or_else(|| serde::de::Error::custom("limits"))?;
+        assert_eq!(
+            limits.five_hour,
+            Some(RateLimitWindow {
+                used_percentage: Some(42.5),
+                resets_at: Some(1_791_700_000)
+            })
+        );
+        assert_eq!(limits.seven_day.and_then(|w| w.used_percentage), Some(18.0));
+        let before_first_response: StatusLineInput =
+            serde_json::from_value(json!({"session_id": "s", "model": {"id": "m"}}))?;
+        assert_eq!(before_first_response.rate_limits, None);
+        let ended: HookInput = serde_json::from_value(
+            json!({"hook_event_name": "SessionEnd", "reason": "prompt_input_exit"}),
+        )?;
+        assert_eq!(
+            ended.reason.as_deref(),
+            Some(session_end::PROMPT_INPUT_EXIT)
+        );
         Ok(())
     }
 

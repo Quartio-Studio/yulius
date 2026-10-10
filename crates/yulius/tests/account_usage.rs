@@ -1,6 +1,8 @@
 //! Account usage in the accounts section (SPEC-001 ROT-009, AC-ROT-7): provider windows from
 //! the usage probe, failures recorded without losing the last snapshot, and the tokens Yulius
-//! observed per account in the last 24 hours and 7 days (unknown stays null).
+//! observed per account in the last 24 hours and 7 days (unknown stays null). A `setup-token`
+//! sign-in the usage endpoint refuses (HTTP 403, F 2026-10-10) is not an error: its sessions
+//! report its usage.
 
 mod support;
 
@@ -14,7 +16,7 @@ use axum::http::{Method, StatusCode};
 use support::{HarnessOptions, TestResult, call, harness_with, setup_superadmin_creds};
 use yulius_app::model::{AccountRecord, AccountStatus, Secret};
 use yulius_app::ports::store::AccountStore;
-use yulius_app::ports::usage::{UsageFailure, UsageProbe};
+use yulius_app::ports::usage::{UsageFailure, UsageFailureKind, UsageProbe};
 use yulius_domain::harness::Provider;
 use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
@@ -38,16 +40,17 @@ impl UsageProbe for FakeProbe {
             "the stored credential is passed"
         );
         if credential.expose() == "expired" {
-            return Err(UsageFailure::new(
-                "the provider refused this account's token for usage (HTTP 401)",
+            return Err(UsageFailure::of(
+                UsageFailureKind::Rejected,
+                "Claude did not accept this subscription's sign-in. If its tasks fail too, sign in again.",
             ));
         }
         if credential.expose() == "busy" {
             BUSY_CALLS.fetch_add(1, Ordering::SeqCst);
-            return Err(UsageFailure {
-                message: "the provider is limiting usage requests for this account (HTTP 429); Yulius asks again in about 2 min".into(),
-                retry_after: Some(Duration::from_secs(120)),
-            });
+            return Err(UsageFailure::throttled(Some(Duration::from_secs(120))));
+        }
+        if credential.expose() == "setup-token" {
+            return Err(UsageFailure::not_shared());
         }
         match provider {
             Provider::Anthropic => Ok(AccountUsage {
@@ -93,10 +96,7 @@ impl UsageProbe for LimitDuringRequest {
                 )
                 .await;
         }
-        Err(UsageFailure {
-            message: "the provider is limiting usage requests for this account (HTTP 429)".into(),
-            retry_after: Some(Duration::from_secs(120)),
-        })
+        Err(UsageFailure::throttled(Some(Duration::from_secs(120))))
     }
 }
 
@@ -166,13 +166,69 @@ async fn admins_refresh_provider_usage_and_see_observed_tokens() -> TestResult {
         .as_array()
         .and_then(|a| a.iter().find(|x| x["id"] == "a-expired"))
         .ok_or("expired account")?;
-    assert!(
-        expired["last_error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("HTTP 401")
+    assert_eq!(
+        expired["last_error"],
+        "usage: Claude did not accept this subscription's sign-in. If its tasks fail too, sign in again."
     );
     assert!(expired["tokens_7d"].is_object(), "token totals in the list");
+    Ok(())
+}
+
+/// F 2026-10-10 item 1(a): every subscription Yulius signs in with `claude setup-token` has only
+/// the `user:inference` scope, so the usage endpoint refuses it (HTTP 403). That is not an
+/// error: Refresh answers with the account as it is, an old note about usage goes away, and the
+/// background round asks again only a day later.
+#[tokio::test]
+async fn a_sign_in_that_cannot_read_usage_is_not_an_error() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        usage: Some(Arc::new(FakeProbe)),
+        ..HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    account(&h, "a-setup", b"setup-token").await?;
+    let id = AccountId::parse("a-setup")?;
+    let old = "usage: the provider refused this account's token for usage (HTTP 403); it refreshes on the next run or needs a re-login";
+    h.store.set_account_error(&id, old, Timestamp(2)).await?;
+
+    let refreshed = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/accounts/a-setup/usage",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
+    assert!(
+        refreshed.body["last_error"].is_null(),
+        "{:?}",
+        refreshed.body
+    );
+    assert_eq!(refreshed.body["status"], "ok");
+
+    // Other errors are not cleared by it.
+    h.store
+        .set_account_error(
+            &id,
+            "re-login failed: the sign-in was cancelled",
+            Timestamp(3),
+        )
+        .await?;
+    let mut not_before = HashMap::new();
+    h.app.refresh_usage_round(&mut not_before).await;
+    let record = h.store.account(&id).await?.ok_or("a-setup")?;
+    assert_eq!(
+        record.last_error.as_deref(),
+        Some("re-login failed: the sign-in was cancelled")
+    );
+    let wait = not_before
+        .get(&id)
+        .ok_or("no back-off")?
+        .millis_since(h.app.now());
+    assert!(
+        (23 * 3_600_000..=24 * 3_600_000).contains(&wait),
+        "asked again a day later: {wait} ms"
+    );
     Ok(())
 }
 
@@ -214,11 +270,9 @@ async fn background_rounds_refresh_usage_and_back_off_on_throttling() -> TestRes
         .account(&AccountId::parse("a-busy")?)
         .await?
         .ok_or("a-busy")?;
-    assert!(
-        busy.last_error
-            .as_deref()
-            .unwrap_or("")
-            .contains("HTTP 429")
+    assert_eq!(
+        busy.last_error.as_deref(),
+        Some("usage: Usage updates again in about 2 min.")
     );
     assert_eq!(busy.usage_json.as_deref(), Some(known), "last usage kept");
     assert_eq!(
@@ -270,7 +324,10 @@ async fn a_failed_refresh_keeps_a_limit_observed_meanwhile() -> TestResult {
     );
     assert_eq!(hit.usage_json.as_deref(), Some(LIMITED_USAGE));
     assert!(
-        hit.last_error.as_deref().unwrap_or("").contains("HTTP 429"),
+        hit.last_error
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("usage: Usage updates again"),
         "the failure is still reported"
     );
     Ok(())

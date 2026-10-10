@@ -684,6 +684,23 @@ only the reported percentages. The CLI's own limit record names the window it hi
 (`rateLimitType`). A few full 5-hour windows exhaust a week, so over a week the weekly window is
 the binding budget and the 5-hour window caps how fast one subscription can be spent.
 
+**Where the readings come from (F 2026-10-10, #143).** The usage endpoint needs the OAuth scope
+`user:profile`. Yulius signs subscriptions in with `claude setup-token`, whose token Claude Code
+2.1.292 creates with `user:inference` only (Claude Code itself skips the endpoint without
+`user:profile`), so the endpoint answers HTTP 403 for every subscription, whatever is refreshed or
+signed in again; on production all three had no reading at all. Claude Code does know the usage:
+it reads the `anthropic-ratelimit-unified-*` headers of its own API responses and passes them to
+its `statusLine` command as `rate_limits.five_hour` / `seven_day` (`used_percentage`, `resets_at`
+in Unix seconds). Every run's settings name `yulius hook claude StatusLine` as that command
+(§7.5); its readings are the subscription's 5-hour and weekly windows — per-model caps and a
+reported limit kept — stored when they change (at once for a move of a point or more, a reset or
+crossing 98 %; else at most every 15 s) and sampled for the burn rate at most every 5 minutes
+(`usage_samples.source` = `session`). An idle subscription has no fresh reading: its last one
+counts until its windows reset (then fresh, §2.4 policy), unknown ranks last. The probe stays for
+sign-ins that may read the endpoint; its 403 is "not shared": no error, an old note cleared, asked
+again a day later. A subscription also used outside Yulius is seen as Claude saw it at the last
+response of a Yulius session.
+
 **What "maximally use all resources" means: use it or lose it.** Capacity is perishable: a
 window's unused headroom is gone at its reset. Hence:
 
@@ -882,15 +899,17 @@ For every nonterminal state: owner, exit trigger, timeout and behavior if the tr
 | `chained` | chain controller (ADR-16) | predecessor Done, or a person's Start now → `queued`; cancel → `stopped(cancelled)` | Re-evaluated when the predecessor's run ends, after its clean Stop, on cancel/delete and every minute; a predecessor that ends otherwise sets a reason and the task waits for a person (no timeout); at most 32 per sandbox. |
 | `queued` | scheduler | capacity available → `starting`; cancel → `stopped` | Queue bound 32; position shown; no timeout. |
 | `starting` | supervisor | ptyhost Welcome + child running → `running`; spawn error → `failed` | 30 s → kill ptyhost tree, `failed(start_timeout)`. |
-| `running` | supervisor | child exit 0/normal → `closed`; abnormal exit → `stopped(crashed)`; cancel → `stopping`; switch decision → `switching`; limit with no capacity → `waiting_capacity` | Liveness ping every 10 s; 3 missed pings + no process → `stopped(lost)`. |
+| `running` | supervisor | child exit 0, or any exit after Claude Code's `SessionEnd` said the person left (`prompt_input_exit`, `logout`) → `closed`; ended by SIGTERM/SIGKILL/SIGHUP/SIGINT or exit 129/130/137/143 → `stopped(killed)`; any other exit → `stopped(crashed)`; cancel → `stopping`; switch decision → `switching`; limit with no capacity → `waiting_capacity` | Liveness ping every 10 s; 3 missed pings + no process → `stopped(lost)`. |
 | `switching` | rotation controller | new attempt `live` → `running`; failure → `stopped(switch_failed)` with retry offered | 120 s total; on expiry the old process is confirmed dead and the task becomes `stopped(switch_timeout)`. |
-| `waiting_capacity` | capacity controller (ADR-17) | a subscription becomes a candidate (a reset passes, new usage, a subscription added) → `running` in place, `switching` to another one, or `starting` without a process; the process exits → `closed`/`stopped`; cancel → `stopped` | Re-evaluated at the earliest reset, on usage readings and subscription changes, and every 5 min; the pause row survives restarts; a held hook gives up after 8 days (fails open). |
+| `waiting_capacity` | capacity controller (ADR-17) | a subscription becomes a candidate (a reset passes, new usage, a subscription added) → `running` in place, `switching` to another one, or `starting` without a process; the hold ends without the pool — a held hook nobody asked about for 45 s, a transcript line (prompt or interrupt) written after the hold, or a typed prompt replacing a held turn — → `running` (held again at submit when still no capacity); the process exits → `closed`/`stopped`; cancel → `stopped` | Re-evaluated at the earliest reset, on usage readings and subscription changes, and every 5 min (every 15 s while a hook is held); the pause row survives restarts; a held hook gives up after 8 days (fails open). |
 | `stopping` | supervisor | child and descendants reaped → `stopped(cancelled)` | Interrupt → 5 s → SIGTERM → 5 s → SIGKILL (bwrap: namespace dies) → 10 s; if still not reaped: `stopped(lost)` + audit alert; capacity released only after reaping or `lost`. |
 | `closed`, `stopped`, `failed` | — (terminal for the run) | Continue → `starting` (new attempt, resume) | — |
 
 `activity` (when `running`): `working` (UserPromptSubmit / output after input), `waiting` (Stop hook /
-turn complete), `needs_attention` (permission request hook, browser action request, discipline gate
-exhausted, waiting for capacity), `done` (the goal is achieved and the turn ended, below).
+turn complete / the person interrupted the turn — Claude Code's "[Request interrupted by user]" line,
+for which no Stop hook runs), `needs_attention` (permission request hook, browser action request,
+discipline gate exhausted, waiting for capacity), `done` (the goal is achieved and the turn ended,
+below).
 `archived_at` is allowed only in non-live states.
 
 **Finish rule (SPEC-001 TSK-014, F 2026-10-10).** Owner: supervisor (`yulius-app::finish`).
@@ -1049,14 +1068,17 @@ Claude's own keys. Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` a
 | Updates | `DISABLE_AUTOUPDATER=1` in every session and sign-in terminal: the operator updates the CLI on the host (docs/operations.md); a contained session could only fail to update itself (#45) |
 | Transcript | `<config>/projects/<cwd-slug>/<session>.jsonl` |
 | Usage | `message.usage` per assistant message (dedupe by message id + request id); limit errors from synthetic API error messages |
-| Hooks | `--settings` JSON `hooks` for SessionStart, UserPromptSubmit, Stop, Notification |
+| Hooks | `--settings` JSON `hooks` for SessionStart, UserPromptSubmit, Stop, Notification, SessionEnd |
+| Status line | `--settings` JSON `statusLine` → `yulius hook claude StatusLine` (§7.5): the repository and branch, and the session's plan usage for the pool (ADR-17) |
 | Skills | `<config>/skills/<name>/SKILL.md` + repository `.claude/skills` |
 | Login (account add) | `claude setup-token` in a server-owned PTY; token captured from output and masked before display |
 | Session-id drift | new `.jsonl` for the same worktree slug → adopt into lineage (HRN-004) |
 
 Transcript tailing: poll size every 1 s; parse only complete lines; max line 4 MiB (longer lines
 skipped with a diagnostic); unknown record types ignored; malformed lines counted, never fatal.
-Observed besides usage: user prompts (with their time), `end_turn`, usage limits, the goal's
+Observed besides usage: user prompts (with their time), the person interrupting a turn (a user
+line that is exactly "[Request interrupted by user]" or "… for tool use": the turn's end, not a
+prompt), `end_turn`, usage limits, the goal's
 `goal_status` attachments (`sentinel` = a goal set — or cleared when `met: true` —, `met: false` = not
 met yet, `met: true` = achieved, `failed: true` = impossible; sidechain records ignored) and the
 `system` records `stop_hook_summary` / `turn_duration` that close a turn. After a restart, the
@@ -1118,6 +1140,16 @@ output) and is recorded. Responses:
   refused connection or a 5xx is retried every 2 s (a server restart). The CLI's `timeout` for
   these two events is 8 days + 1 h; the other events keep 15 s.
 - `Notification` / `PermissionRequest` → `needs_attention`.
+- `SessionEnd` → no output; its `reason` is kept for the run until it exits: `prompt_input_exit`
+  (`/exit`, Ctrl+C twice, Ctrl+D) and `logout` make the exit a normal close whatever its code;
+  `clear` (the process goes on with a new session) drops an achieved goal (§6.1).
+- `StatusLine` (Claude Code's `statusLine` command, not a hook; same client and listener): the
+  input is the status line JSON, of which `rate_limits` becomes the run's subscription's usage
+  (ADR-17); the `200` answer is `text/plain`, the line "→ <repository> git:(<branch>)" (HRN-005).
+- A hold nobody asks about any more ends: the client asks every 10 s (2 s during a restart), so a
+  hold without a request for 45 s was given up by the CLI (an interrupt, its own hook timeout — 15 s
+  in sessions started before ADR-17 — or a killed client); the pause closes as `abandoned` and the
+  task runs again (§6.1).
 
 Waking idle tasks (COM-005): when a direct message arrives for a `running` task with activity
 `waiting` or `done` for ≥ 30 s and no viewer typed in the last 30 s, the supervisor types a short notice and
@@ -1370,7 +1402,7 @@ raw body up to the upload limit, 25 MiB by default).
 | R-01 | Undocumented transcript formats change. | Version-pinned parsers, unknown-record tolerance, live smoke per CLI upgrade. |
 | R-02 | Closed (F 2026-10-08): Codex refresh-token rotation (Codex removed). | — |
 | R-03 | Closed (F 2026-10-08): Codex hook configuration semantics (Codex removed). | — |
-| R-04 | Claude usage percentage not available for setup tokens. | Reactive switching on limit errors; proactive switching (98 %) and placement when the background usage refresh (`/api/oauth/usage`) reports the windows; unknown usage ranks last. |
+| R-04 | Claude usage percentage not available for setup tokens (confirmed: the usage endpoint answers 403 without `user:profile`). | Readings from the running sessions' status line (ADR-17 "Where the readings come from"); reactive switching on limit errors; an idle subscription keeps its last reading until its windows reset; unknown usage ranks last. |
 | R-14 | Claude Code's handling of a hook held for days is not verified live (ADR-17). | The CLI timeout is written explicitly; the hook client fails open first; a reported limit still pauses the task as `limit`. Open: a live smoke of a held Stop hook. |
 | R-05 | Browser video on phones and slow links. | Flow control by the viewer's acknowledgements, bitrate and frame-rate tiers following the slowest viewer, keyframes on demand, skip to a fresh keyframe per viewer (ADR-15, F 2026-10-10). Open: per-viewer tiers (the slowest viewer sets the shared stream). |
 | R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
@@ -1411,6 +1443,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Area | Evidence |
 | --- | --- |
 | Process supervision (NFR-001..005, AC-TSK-3, AC-NFR-3) | `crates/yulius/tests/supervision.rs`: real detached ptyhost + fake agent + real git worktrees; a server runtime is dropped and a new one reconciles and reattaches the same child pid, snapshot restores the screen, crash exit code recorded, stop escalation, queueing at the session limit, normal exit closes the task; `crates/yulius-ptyhost/tests/*` (13 + orphan watchdog). |
+| Session ends and usage from the sessions (HRN-007, ROT-007, ROT-009, AC-TSK-14, AC-ROT-15/16; #143, #144) | `tests/session_sync.rs` (real ptyhost, fake agent shaped like Claude Code 2.1.292, real `yulius hook`, keys through the terminal API): Ctrl+C during a turn → `waiting`, Ctrl+C twice and `/exit` → `closed`, crash → `stopped_crashed`, SIGTERM/SIGKILL → `stopped_killed`, Stop → `stopping` then `stopped_cancelled`; a typed new-scope prompt held by the scope check, the agent prints nothing for it, the summary carries the card; the status line prints "→ sync git:(feat/…)" and its `rate_limits` become the account's windows. `tests/subscription_pool.rs` (fake clock): status line readings (windows, caps kept, `session` samples, no write when unchanged, the 98 % switch), a hold not polled for 45 s ends `abandoned`, a prompt typed into a held turn takes the task out of the pause. `tests/account_usage.rs`: HTTP 403 is no error, clears an old note, backs off a day. Unit: `exit_event`, `TaskEvent::Killed`, the interrupt line, contracts, launch settings, usage failure kinds. `e2e/tests/subscriptions.e2e.ts` (mock UI). |
 | Rotation (AC-ROT-2 reactive, AC-ROT-6) | `supervision.rs`: a provider usage limit at turn end moves the same session to the next account with a native resume and a recorded decision; usage refreshed at 99 % moves it at the next turn boundary; with no capacity the task waits. |
 | Superadmin access (AC-ACC-8) | `http_auth.rs`: every sandbox with admin access and its routes with GitHub down, no cached permission; only the superadmin (a password instance admin sees nothing, GitHub users mirrored); terminal and event stream survive re-checks. `shells.rs`: shell with the App's repository token. `projects.rs`: listing and import through the App. `delivery.rs`: pull request through the App, merge/release 403. `analytics.rs`: summary and Status cover every sandbox. `e2e/tests/access.e2e.ts` (mock UI). |
 | Terminal and permissions (AC-TSK-2, AC-TSK-6, AC-ACC-5) | `terminal_ws.rs`: task created via the public API, two WebSocket viewers, read-only input refused, writer input reaches the agent, a GitHub downgrade turns an open socket read-only and revocation closes it (4003); the writer's `?cols=&rows=` is in its first state (AC-UI-38); the size follows the active viewer (alone and idle it keeps it; a newcomer takes it from an idle one; typing and `take_control` apply the typist's size at once; an idle or leaving controller hands it to the active viewer; the agent's `stty size` agrees). `hub::control` unit tests cover the policy. |
@@ -1436,6 +1469,12 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-10 (F 2026-10-10, final stage items 1(a)/(c); #143, #144): ADR-17 "Where the readings
+  come from" — `setup-token` sign-ins cannot read the usage endpoint (HTTP 403, no `user:profile`),
+  so the sessions' status line reports the plan usage; R-04. §6.1: how each session end moves the
+  task (`stopped(killed)` new, `SessionEnd`), interrupts end a turn, holds the session no longer
+  keeps end. §7.2 hooks and status line, the interrupt line; §7.5 `SessionEnd`, `StatusLine`, holds
+  given up; §14.
 - 2026-10-10 (F 2026-10-10, later; #122): ADR-15 over the user's link — flow control by
   acknowledged frames, VBV bitrate tiers following the slowest viewer, keyframes on demand from a
   replacement encoder (make before break), coalesced wheel and pointer moves, every frame decoded
