@@ -784,7 +784,7 @@ SPEC-001 VLT-001..009, SPEC-002 ADR-18. Values are never logged; responses that 
 | POST | `/api/team-secrets/{id}/reveal` | `{purpose?: "show"\|"copy", fields?: ["password","notes","totp"]}` → `{password, notes, totp}` (only the asked, stored fields). Audited (`vault.team.reveal` / `vault.team.copy`) |
 | POST | `/api/team-secrets/{id}/totp` | → `{code, period, remaining}`. Audited (`vault.team.totp`) |
 | GET | `/api/auth/reauth` | → `{fresh, fresh_until, methods}`; `methods` ⊆ `["password", "github"]` |
-| POST | `/api/auth/reauth` | `{password}` (the superadmin) → the status; 401 for a wrong password (audited), 429 after 5 attempts a minute, 403 for an account without a password |
+| POST | `/api/auth/reauth` | `{password}` (the superadmin) → the status; 403 for a wrong password (audited; the session stays signed in) or an account without a password, 429 after 5 attempts a minute |
 | GET | `/api/secrets/activity?limit=100` | → `[{at, actor, action, secret_id, detail}]`, newest first (≤ 500); an agent secret's entries only for members who can view its sandbox |
 
 Reveal and TOTP need a **fresh re-authentication**: the browser session was created, or

@@ -894,7 +894,7 @@ encoded text, percent-encoding and JSON escaping (needles of ≥ 8 bytes). Match
 
 | Channel | How |
 | --- | --- |
-| Bash tool output (stdout, stderr, background shells) | `CLAUDE_CODE_SHELL_PREFIX = <yulius> --scrub-exec`: Claude Code 2.1.292 runs every Bash command as `'<yulius>' --scrub-exec '<command>'` (also hooks and stdio MCP servers). The wrapper runs the command with the shell and streams both outputs through a redactor that holds an unfinished line's last `max − 1` bytes across chunks (released after 50 ms of quiet), then exits with the command's status. Inspected read-only in the installed bundle. |
+| Bash tool output (stdout, stderr, background shells) | `CLAUDE_CODE_SHELL_PREFIX = <yulius> --scrub-exec`: Claude Code 2.1.292 runs every Bash command as `'<yulius>' --scrub-exec '<command>'` (also hooks and stdio MCP servers). The wrapper runs the command with the shell and streams both outputs through a redactor that holds an unfinished line's last `max − 1` bytes across chunks (released after 1 s of quiet), then exits with the command's status. Inspected read-only in the installed bundle. |
 | Every tool result (Read, Grep, WebFetch, Bash, MCP tools, subagents' tools) | A `PostToolUse` hook (matcher `*`) answers `hookSpecificOutput.updatedToolOutput` with the redacted result ("Replaces the tool output before it is sent to the model", Claude Code 2.1.292). |
 | Yulius MCP results (browser page text and accessibility snapshots, task prompts, messages) | Redacted on the server before they are returned. |
 | HTTP through the proxy | Response headers and bodies, as above. |
@@ -1571,7 +1571,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Egress proxy connections | 256; connect and TLS handshake 10 s; request head 60 s; 24 h per connection | 503 |
 | Re-authentication window / attempts | 10 min / 5 per user and minute | `reauth_required` / 429 |
 | Agent secrets per sandbox (with instance-wide) / hosts per secret / value | 200 / 16 / 8 characters – 16 KiB | 429 / 422 / 422 |
-| Redaction hold | Bash wrapper: an unfinished line's last needle − 1 bytes, 50 ms quiet; terminal: a possible beginning of ≥ 4 bytes, 40 ms; `PostToolUse` input 32 MiB | released; larger results withheld |
+| Redaction hold | Bash wrapper: an unfinished line's last needle − 1 bytes, 1 s quiet; terminal: a possible beginning of ≥ 4 bytes, 40 ms; `PostToolUse` input 32 MiB | released; larger results withheld |
 | Preview requests awaiting a head / WebSockets | 512 / 256 (connect 5 s, head 120 s) | 503 |
 | Browser video GOP cache (per display) | 600 frames / 6 MiB; replayed to a joining viewer up to 512 KiB | not cached / not replayed; the viewer asks for a keyframe |
 | Browser video queue per subscriber / per viewer socket | 616 packets / 300 frames, 8 MiB, 250 ms waiting | skip to a fresh keyframe, asked of the encoder (a keyframe flushes what it supersedes) |

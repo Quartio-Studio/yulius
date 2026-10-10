@@ -28,8 +28,9 @@ use crate::hook_client::post_internal;
 pub const SCRUB_FILE_ENV: &str = "YULIUS_SCRUB_FILE";
 /// Largest tool result read by the `PostToolUse` hook.
 pub const MAX_TOOL_RESULT_BYTES: usize = 32 * 1024 * 1024;
-/// Quiet time after which held output is written.
-const FLUSH_AFTER: Duration = Duration::from_millis(50);
+/// Quiet time after which held output (the end of an unfinished line that may begin a value) is
+/// written. The model reads a command's output when it ends, so waiting costs only the live view.
+const FLUSH_AFTER: Duration = Duration::from_secs(1);
 /// Deadline of the fingerprint request.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 /// Deadline of a redaction report (best effort).

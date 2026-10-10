@@ -278,8 +278,8 @@ impl App {
     /// `POST /api/auth/reauth`: the superadmin confirms with the password (rate limited, audited).
     ///
     /// # Errors
-    /// `Forbidden` without a browser session or a password; `Unauthenticated` for a wrong
-    /// password; `Capacity` when rate limited.
+    /// `Forbidden` without a browser session or a password and for a wrong password;
+    /// `Capacity` when rate limited.
     pub async fn reauth_with_password(
         &self,
         ctx: &AuthContext,
@@ -316,7 +316,8 @@ impl App {
         if !self.deps.crypto.verify_password(password, phc) {
             self.vault_audit(&actor, "vault.reauth.failed", None, "password")
                 .await?;
-            return Err(AppError::Unauthenticated);
+            // 403, not 401: the session stays signed in; only the confirmation failed.
+            return Err(AppError::Forbidden("wrong password".into()));
         }
         self.deps.store.vault_set_reauth(hash, now).await?;
         self.vault_audit(&actor, "vault.reauth", None, "password").await?;

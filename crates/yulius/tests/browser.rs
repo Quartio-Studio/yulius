@@ -432,6 +432,112 @@ async fn agent_tools_drive_the_tabs_the_viewer_sees() -> TestResult {
     .await
 }
 
+/// `browser_fill_secret` (SPEC-002 ADR-18, AC-VLT-6): an agent secret is typed into a page of a
+/// bound host without the agent receiving it; another host's page is refused; the page text the
+/// agent reads back is redacted.
+#[tokio::test]
+async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
+    const VALUE: &str = "docs-pass-7731-xyz";
+    with_fixture(|f| async move {
+        let created = support::call(
+            &f.h.router,
+            axum::http::Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(json!({"name": "DOCS_LOGIN", "description": "Docs admin login",
+                "hosts": ["docs.example"], "injection": "none", "username": "alice-docs",
+                "value": VALUE})),
+            &f.writer,
+        )
+        .await?;
+        assert_eq!(created.status, axum::http::StatusCode::CREATED, "{}", created.body);
+        assert!(!created.body.to_string().contains(VALUE));
+
+        let opened = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_open",
+            json!({"url": "https://docs.example/login"}),
+        )
+        .await?;
+        let tab = tool_text(&opened)["tab"]["id"]
+            .as_str()
+            .ok_or("tab id")?
+            .to_owned();
+        let filled = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "DOCS_LOGIN", "selector": "#password"}),
+        )
+        .await?;
+        assert_eq!(filled["isError"], false, "{filled}");
+        assert!(!filled.to_string().contains(VALUE), "the result holds no value");
+        assert_eq!(tool_text(&filled)["filled"], true);
+        let typed: Vec<String> = f
+            .fake
+            .calls_for("Input.insertText")
+            .iter()
+            .filter_map(|c| c.params["text"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(typed.last().map(String::as_str), Some(VALUE), "typed into the page");
+        let user = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "DOCS_LOGIN", "field": "username"}),
+        )
+        .await?;
+        assert_eq!(user["isError"], false, "{user}");
+
+        // The page now shows the value (a filled field): what the agent reads is redacted.
+        f.fake.set_ax_nodes(json!([
+            {"nodeId": "1", "ignored": false, "role": {"type": "role", "value": "RootWebArea"},
+             "name": {"type": "computedString", "value": "Login"}, "childIds": ["2"]},
+            {"nodeId": "2", "parentId": "1", "ignored": false, "role": {"type": "role", "value": "textbox"},
+             "name": {"type": "computedString", "value": "Password"},
+             "value": {"type": "string", "value": VALUE}, "childIds": []}
+        ]));
+        let snapshot = mcp_tool(&f.h, TOKEN, "browser_snapshot", json!({"tab_id": tab})).await?;
+        let text = snapshot.to_string();
+        assert!(!text.contains(VALUE), "{text}");
+        assert!(text.contains("[secret:DOCS_LOGIN]"), "{text}");
+
+        // Another host's page is refused, with no value in the error.
+        mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_navigate",
+            json!({"tab_id": tab, "url": "https://evil.example/login"}),
+        )
+        .await?;
+        let before = f.fake.calls_for("Input.insertText").len();
+        let refused = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "DOCS_LOGIN"}),
+        )
+        .await?;
+        assert_eq!(refused["isError"], true);
+        assert!(
+            tool_text(&refused)
+                .as_str()
+                .is_some_and(|t| t.contains("may only be typed into pages of docs.example"))
+        );
+        assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+        let unknown = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "NOPE"}),
+        )
+        .await?;
+        assert_eq!(unknown["isError"], true);
+        Ok(())
+    })
+    .await
+}
+
 #[tokio::test]
 async fn user_action_requests_mark_the_task_notify_viewers_and_return_a_link() -> TestResult {
     with_fixture(|f| async move {
