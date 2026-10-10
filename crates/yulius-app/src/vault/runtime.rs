@@ -189,6 +189,30 @@ impl App {
         open(&stored)
     }
 
+    /// The value of the agent secret `name` that applies to `sandbox` (MCP `${secret:NAME}`
+    /// references, VLT-009).
+    ///
+    /// # Errors
+    /// Store or decryption failures.
+    pub(crate) async fn agent_secret_value(
+        &self,
+        sandbox: &SandboxId,
+        name: &str,
+    ) -> AppResult<Option<zeroize::Zeroizing<String>>> {
+        let Some(record) = self
+            .deps
+            .store
+            .vault_agent(Some(sandbox))
+            .await?
+            .into_iter()
+            .find(|r| r.name == name)
+        else {
+            return Ok(None);
+        };
+        let payload: AgentPayload = self.open_payload(&record)?;
+        Ok(Some(zeroize::Zeroizing::new(payload.value.clone())))
+    }
+
     /// The agent secrets bound to `host:port` for a sandbox, with their payloads.
     async fn bound_secrets(
         &self,

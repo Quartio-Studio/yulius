@@ -57,7 +57,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/filedrop.js` | Dropped and pasted files (EDT-006, UI-048): files or folders dropped on the explorer go into the folder under the pointer, on the editor into the open file's folder (text files open); an upload button picks files on phones; a file already there is replaced only after asking. Files dropped on a terminal, or an image pasted into it, are uploaded as attachments and their paths typed in as a paste (xterm's bracketed paste), quoted when needed. Drop overlays, progress and errors; a file dropped elsewhere never makes the browser leave the app. Hook points: `attachEditorDrop` (editorview.js), `attachTerminalDrop` (taskview.js, panels.js); text pastes stay with the terminal. |
 | `assets/browser.js` | Browser panel (ADR-15): the sandbox Chrome's tabs in the strip, address bar, back/forward/reload, the action-request banner, notices for agents acting in another tab, "Open live in a new window" for a sandbox dev server (ADR-14 preview origins). |
 | `assets/browserstream.js` | The streamed sandbox Chrome: its socket and tab list, H.264 video decoded with WebCodecs onto a canvas (every frame acknowledged for the server's flow control and decoded, the newest drawn; JPEG frames as the labelled fallback), the shared viewport and its notice, pointer, wheel, touch and keyboard input (a hidden textarea for IME, dead keys and phone keyboards; ⌘ as Ctrl on macOS; paste and copy), the agent's cursor. |
-| `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery (PR, merge, environment runs and confirmations, promotion), sandbox add/remove. |
+| `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery details and deploy output (read-only: agents deliver, GIT-002), sandbox add/remove. |
 | `assets/status.js` | Status → glyph/tone/label mapping and permitted actions per access level. |
 | `assets/dom.js`, `assets/format.js` | DOM builder (text only, never `innerHTML` with data), icons, toasts, modals, menus; formatting helpers. |
 | `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), git, workflows, skills, automations, MCP, dashboard, admin (users, accounts, GitHub), settings. |
@@ -274,11 +274,11 @@ The source of truth for paths and methods is the route table in
   scrolls horizontally instead of resizing it; a shell's `exit` frame ends it for good.
 - **Browser.** An `upstream` error followed by a 1011 close (Chromium missing or stopped) shows
   the reason with a Retry button instead of reconnecting in a loop.
-- **Delivery.** Next actions come from the server (`open_pr`, `merge`, `run_env:<name>`,
-  `confirm_env:<name>`, `promote`); `blocked` actions show disabled with the reason. Profile
-  presets come from `GET /api/delivery/presets`; command environments are run with
-  `POST …/environments/{env}/runs {"confirm":true}` (polled via `GET …/delivery/runs/{id}`),
-  manual verifications confirmed with `POST …/environments/{env}/confirm {"confirm":true}`.
+- **Delivery.** Shown, never driven (GIT-002): agents open, merge, deploy and release through
+  their workflow. Next steps come from the server (`open_pr`, `merge`, `run_env:<name>`,
+  `confirm_env:<name>`, `promote`) and show as status, `blocked` ones with their reason. Profile
+  presets come from `GET /api/delivery/presets`; a running deploy's output is polled via
+  `GET …/delivery/runs/{id}`.
 - **Uploads.** `api.put|post(path, file, {onProgress})` sends a `Blob` as the raw body; the real
   transport uses XMLHttpRequest for upload progress (`transport.upload`), and the timeout then
   counts from the last progress. Dropped files use `PUT /api/sandboxes/{sid}/files/upload` and the

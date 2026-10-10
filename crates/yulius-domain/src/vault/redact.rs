@@ -498,7 +498,9 @@ mod tests {
         out
     }
 
-    fn hashed() -> HashedMatcher<fn(&[u8]) -> [u8; 32]> {
+    type Digest = fn(&[u8]) -> [u8; 32];
+
+    fn hashed() -> HashedMatcher<Digest> {
         let base = 1_000_003;
         let fingerprints = needles(VALUE)
             .iter()
@@ -509,7 +511,7 @@ mod tests {
                 digest: digest(n),
             })
             .collect();
-        HashedMatcher::new(base, vec!["STRIPE_KEY".into()], fingerprints, digest as fn(&[u8]) -> [u8; 32])
+        HashedMatcher::new(base, vec!["STRIPE_KEY".into()], fingerprints, digest as Digest)
     }
 
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
