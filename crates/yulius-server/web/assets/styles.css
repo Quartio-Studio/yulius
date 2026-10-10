@@ -1012,7 +1012,8 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 }
 .split-title:hover { border-color: var(--border); }
 .split-title:focus { border-color: var(--border-control); background: var(--surface-2); }
-.split-prompt summary { display: flex; align-items: baseline; gap: 8px; min-width: 0; color: var(--muted); cursor: pointer; list-style: none; }
+/* The whole row is the disclosure's target, at least 24 px tall (WCAG 2.2 2.5.8). */
+.split-prompt summary { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: var(--control-sm); color: var(--muted); cursor: pointer; list-style: none; }
 .split-prompt summary::-webkit-details-marker { display: none; }
 .split-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .split-more { flex: none; color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); }
