@@ -696,7 +696,7 @@ async fn account_crud_permissions_usage_and_in_use_guard() -> TestResult {
             "/api/admin/accounts".to_owned(),
             Some(json!({"provider": "anthropic", "label": "x"})),
         ),
-        (Method::PATCH, path.clone(), Some(json!({"enabled": false}))),
+        (Method::PATCH, path.clone(), Some(json!({"label": "x"}))),
         (Method::DELETE, path.clone(), None),
         (Method::POST, format!("{path}/relogin"), None),
     ] {
@@ -729,26 +729,25 @@ async fn account_crud_permissions_usage_and_in_use_guard() -> TestResult {
     );
     assert!(account["usage"]["observed_at"].is_null());
     assert_eq!(account["in_use_by"], 0);
+    // The pool has no priorities or switches to manage (F 2026-10-10).
+    for gone in ["priority", "enabled"] {
+        assert!(account.get(gone).is_none(), "{gone} is gone: {account}");
+    }
 
     let patched = call(
         &s.h.router,
         Method::PATCH,
         &path,
-        Some(json!({"label": "Claude main", "priority": 3, "enabled": false})),
+        Some(json!({"label": "Claude main"})),
         &bob,
     )
     .await?;
     assert_eq!(patched.status, StatusCode::OK);
-    assert_eq!(
-        (
-            &patched.body["label"],
-            &patched.body["priority"],
-            &patched.body["enabled"]
-        ),
-        (&json!("Claude main"), &json!(3), &json!(false))
-    );
+    assert_eq!(patched.body["label"], "Claude main");
     for bad in [
-        json!({"priority": -1}),
+        json!({"priority": 3}),
+        json!({"enabled": false}),
+        json!({"label": "Claude main", "priority": 1}),
         json!({"label": "  "}),
         json!({"label": "a\u{7}b"}),
     ] {
@@ -768,7 +767,7 @@ async fn account_crud_permissions_usage_and_in_use_guard() -> TestResult {
         &s.h.router,
         Method::PATCH,
         "/api/admin/accounts/nope",
-        Some(json!({})),
+        Some(json!({"label": "x"})),
         &bob,
     )
     .await?;

@@ -28,6 +28,8 @@ pub fn to_json(usage: &AccountUsage) -> String {
     json!({
         "primary": usage.primary.as_ref().map(window_json),
         "secondary": usage.secondary.as_ref().map(window_json),
+        "weekly_opus": usage.weekly_opus.as_ref().map(window_json),
+        "weekly_sonnet": usage.weekly_sonnet.as_ref().map(window_json),
         "limit_reached": usage.limit_reached,
         "limit_resets_at": usage.limit_resets_at.map(|t| t.0),
         "observed_at": usage.observed_at.map(|t| t.0),
@@ -44,6 +46,8 @@ pub fn from_json(text: &str) -> AccountUsage {
     AccountUsage {
         primary: v.get("primary").and_then(window_from),
         secondary: v.get("secondary").and_then(window_from),
+        weekly_opus: v.get("weekly_opus").and_then(window_from),
+        weekly_sonnet: v.get("weekly_sonnet").and_then(window_from),
         limit_reached: v
             .get("limit_reached")
             .and_then(Value::as_bool)
@@ -132,6 +136,12 @@ mod tests {
                 resets_at: Some(Timestamp(9)),
             }),
             secondary: None,
+            weekly_opus: Some(UsageWindow {
+                used_percent: Some(12.0),
+                window_minutes: Some(10_080),
+                resets_at: None,
+            }),
+            weekly_sonnet: None,
             limit_reached: true,
             limit_resets_at: Some(Timestamp(10)),
             observed_at: Some(Timestamp(11)),

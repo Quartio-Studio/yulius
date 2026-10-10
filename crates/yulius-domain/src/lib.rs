@@ -1,10 +1,11 @@
 //! Deterministic Yulius domain: identifiers, permissions, task and attempt state machines,
-//! rotation policy, documentation-format validation, schedules and delivery profiles.
+//! subscription pool policy and capacity forecast, documentation-format validation, schedules and delivery profiles.
 //!
 //! This crate performs no I/O and reads no clock or environment. Callers inject time as
 //! [`time::Timestamp`] values and identifiers as already-generated strings.
 
 pub mod briefing;
+pub mod capacity;
 pub mod cron;
 pub mod delivery;
 pub mod harness;

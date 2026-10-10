@@ -1,5 +1,6 @@
-//! Provider accounts: administration and the native login flow (SPEC-001 ROT-001/002/009,
-//! ACC-009; SPEC-002 ADR-05, §7.2 "Login", §8).
+//! Provider accounts (subscriptions): add, see usage, remove, and the native login flow
+//! (SPEC-001 ROT-001/002/009, ACC-009; SPEC-002 ADR-05, ADR-16, §7.2 "Login", §8). There are no
+//! priorities or switches to manage: the pool policy decides (F 2026-10-10).
 //!
 //! Each login runs the provider CLI's own sign-in (`claude setup-token`) in a server-owned PTY through the process host, with a temporary config
 //! directory under `<data_dir>/logins/<login_id>/`. Viewers (instance administrators) watch it
@@ -62,8 +63,6 @@ pub const MAX_RETAINED_LOGINS: usize = 32;
 pub const LOGIN_INPUT_MAX: usize = 64 * 1024;
 /// Longest account label.
 pub const LABEL_MAX: usize = 80;
-/// Accepted account priorities (lower is preferred).
-pub const PRIORITY_RANGE: std::ops::RangeInclusive<i32> = 0..=10_000;
 
 /// Wait for the process to exit after a stop request before killing its host.
 const STOP_WAIT: Duration = Duration::from_secs(10);
@@ -244,6 +243,8 @@ pub fn usage_view(usage: &AccountUsage) -> AccountUsageView {
     AccountUsageView {
         primary: usage.primary.as_ref().map(window_view),
         secondary: usage.secondary.as_ref().map(window_view),
+        weekly_opus: usage.weekly_opus.as_ref().map(window_view),
+        weekly_sonnet: usage.weekly_sonnet.as_ref().map(window_view),
         observed_at: usage.observed_at.map(rfc3339),
     }
 }
@@ -276,8 +277,6 @@ pub fn account_view(account: &AccountRecord, live: &[AttemptRecord]) -> AccountV
         id: account.id.to_string(),
         provider: account.provider.as_str().to_owned(),
         label: account.label.clone(),
-        enabled: account.enabled,
-        priority: account.priority,
         status: account.status.as_str().to_owned(),
         usage: usage_view(&account_usage(account)),
         last_error: account.last_error.clone(),
@@ -314,18 +313,6 @@ fn validate_label(label: &str) -> AppResult<String> {
         )));
     }
     Ok(label.to_owned())
-}
-
-fn validate_priority(priority: i32) -> AppResult<i32> {
-    if PRIORITY_RANGE.contains(&priority) {
-        Ok(priority)
-    } else {
-        Err(AppError::Invalid(format!(
-            "priority must be between {} and {}",
-            PRIORITY_RANGE.start(),
-            PRIORITY_RANGE.end()
-        )))
-    }
 }
 
 fn human_duration(d: Duration) -> String {
@@ -543,6 +530,7 @@ impl App {
             Ok(mut usage) => {
                 usage.observed_at = Some(self.now());
                 self.record_account_usage(&account.id, &usage).await;
+                self.record_usage_samples(&account.id, &usage).await;
                 Ok(())
             }
             Err(failure) => {
@@ -559,8 +547,8 @@ impl App {
         }
     }
 
-    /// One background usage round (ROT-009): asks the provider about every enabled, signed-in
-    /// account whose back-off has passed, so routing and the account cards stay current without
+    /// One background usage round (ROT-009): asks the provider about every signed-in account
+    /// whose back-off has passed, so routing and the account cards stay current without
     /// pressing Refresh. A failure backs that account off for the provider's `Retry-After`, or
     /// [`USAGE_BACKOFF_MS`] without one (at most [`USAGE_BACKOFF_MAX_MS`]).
     pub async fn refresh_usage_round(&self, not_before: &mut HashMap<AccountId, Timestamp>) {
@@ -568,8 +556,7 @@ impl App {
             return;
         };
         for account in accounts.iter().filter(|a| {
-            a.enabled
-                && a.credential.is_some()
+            a.credential.is_some()
                 && !matches!(
                     a.status,
                     AccountStatus::PendingLogin | AccountStatus::Relogin
@@ -612,22 +599,12 @@ impl App {
             .map_err(|_| AppError::Invalid("provider must be anthropic (Claude)".into()))?;
         let label = validate_label(&req.label)?;
         let store = &self.deps.store;
-        let priority = store
-            .accounts()
-            .await?
-            .iter()
-            .filter(|a| a.provider == provider)
-            .map(|a| a.priority)
-            .max()
-            .map_or(100, |p| p.saturating_add(1).min(*PRIORITY_RANGE.end()));
         let now = self.now();
         let account = AccountRecord {
             id: AccountId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
             provider,
             label: label.clone(),
             credential: None,
-            priority,
-            enabled: true,
             status: AccountStatus::PendingLogin,
             usage_json: None,
             last_error: None,
@@ -659,7 +636,7 @@ impl App {
         })
     }
 
-    /// Updates label, priority or the enabled flag.
+    /// Renames an account (the only thing to change: the pool has no priorities or switches).
     ///
     /// # Errors
     /// `NotFound`, `Invalid`, `Forbidden`.
@@ -671,23 +648,17 @@ impl App {
     ) -> AppResult<AccountView> {
         self.require_instance_admin(ctx)?;
         let account = self.load_account(id).await?;
-        let label = req.label.as_deref().map(validate_label).transpose()?;
-        let priority = req.priority.map(validate_priority).transpose()?;
+        let label = validate_label(&req.label)?;
         let now = self.now();
         let store = &self.deps.store;
-        store
-            .update_account(&account.id, label.as_deref(), priority, req.enabled, now)
-            .await?;
+        store.update_account(&account.id, &label, now).await?;
         store
             .audit(
                 now,
                 &actor(ctx),
                 "account.updated",
                 Some(account.id.as_str()),
-                Some(&format!(
-                    "label={label:?} priority={priority:?} enabled={:?}",
-                    req.enabled
-                )),
+                Some(&format!("label={label:?}")),
             )
             .await?;
         let updated = store
@@ -719,6 +690,7 @@ impl App {
             active.request_cancel();
         }
         store.delete_account(&account.id).await?;
+        self.capacity_changed();
         store
             .audit(
                 self.now(),
@@ -1015,6 +987,14 @@ impl App {
         }
         *session.writer.lock().await = None;
         self.finish_login(&session, ending).await;
+        if session.phase().0 == LoginPhase::Succeeded {
+            // A new or repaired subscription: paused tasks may resume on it at once (ROT-010),
+            // and its usage is read right away (after viewers got the exit frame).
+            self.capacity_changed();
+            if let Ok(Some(account)) = self.deps.store.account(&session.account_id).await {
+                let _ = self.fetch_and_record_usage(&account).await;
+            }
+        }
     }
 
     /// Handles one host event; returns the exit when the process ended.
@@ -1220,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn labels_and_priorities_are_validated() {
+    fn labels_are_validated() {
         assert_eq!(
             validate_label("  Claude #1 ").ok().as_deref(),
             Some("Claude #1")
@@ -1228,8 +1208,6 @@ mod tests {
         assert!(validate_label("   ").is_err());
         assert!(validate_label("bad\nlabel").is_err());
         assert!(validate_label(&"x".repeat(LABEL_MAX + 1)).is_err());
-        assert!(validate_priority(-1).is_err());
-        assert_eq!(validate_priority(5).ok(), Some(5));
     }
 
     #[test]

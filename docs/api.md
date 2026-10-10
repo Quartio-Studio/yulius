@@ -158,9 +158,13 @@ TaskSummary = {
 }
 ```
 
-`resumes_at` is set only while `status` is `waiting_capacity` (every account of the task's provider
-at its usage limit, ROT-010): the earliest known reset, as the rotation policy would decide now. The
-UI shows such a task under Needs you as "Usage limit reached" with that time.
+`status` `waiting_capacity` means the task is **paused** for subscription capacity (ROT-010,
+SPEC-002 ADR-16): every Claude subscription is at 98 % or limited in a window binding the task, so
+the harness holds the agent at its turn boundary (or the task waits to start); nothing is sent to
+the agent, and the task continues by itself. `resumes_at` is set only then: the earliest known
+time a subscription has capacity for it again. The UI shows "Paused: waiting for subscription
+capacity (resets ~14:20)" outside Needs you. A Continue with no capacity answers `200` with the
+task paused, not an error.
 
 ```json
 TaskDetail = TaskSummary + {
@@ -503,11 +507,12 @@ Claude Code.
 | PATCH | `/api/admin/users/{id}` | superadmin | `{"disabled?","is_instance_admin?"}` → `AdminUser` |
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
 | POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
-| PATCH | `/api/admin/accounts/{id}` | instance admin | `{"enabled?","priority?" (0–10000),"label?" (1–80 chars)}` → `Account` |
+| PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"}` (1–80 chars) → `Account`; the pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
-| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 99 % its tasks move to the next account at their next turn boundary; 502 with the reason (also kept as `last_error`) when the provider refuses or fails. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) The server also refreshes every enabled account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
+| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-16); 502 with the reason (also kept as `last_error`) when the provider refuses or fails. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
+| GET | `/api/capacity` | signed in | → `CapacityView`: the subscription pool, burn rate, forecast and recommendation (ROT-013, formula in SPEC-002 ADR-16 §2.3) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
 | GET | `/api/admin/github/manifest/callback?code&state` | superadmin | converts the code, stores the sealed App credentials and owner, 303 to the App's installation page; failures 303 to `/admin/github?error=…` |
@@ -518,15 +523,18 @@ Claude Code.
 ```json
 AdminUser = {"id","github_login","display_name","is_instance_admin","disabled",
              "github_linked"}
-Account = {"id","provider","label","enabled","priority",
+Account = {"id","provider","label",
   "status":"pending_login|ok|relogin|error|limited",
   "usage":{"primary":{"used_percent":42.0,"resets_at":"…","window_minutes":300}|null,
-           "secondary":{…}|null,"observed_at":"…|null"},
+           "secondary":{…}|null,"weekly_opus":{…}|null,"weekly_sonnet":{…}|null,
+           "observed_at":"…|null"},
   "last_error":"…|null","in_use_by":0,
   "email":"…|null","plan":"Pro|Max 5x|Max 20x|…|null"}
 ```
 
-Unknown usage is `null`, never zero. Credentials are never returned. `email` (the provider sign-in,
+`primary` is the 5-hour window, `secondary` the weekly one, `weekly_opus` / `weekly_sonnet` the
+per-model weekly caps when the plan has them. Unknown usage is `null`, never zero. Credentials are
+never returned. `email` (the provider sign-in,
 administrators only) and `plan` (the subscription tier) are planned for UI-022: the web UI shows
 them when present, but **the server does not report them yet** (only the mock does), so today they
 are absent and the UI falls back to the label and provider. A task's overview names each session's
@@ -590,16 +598,38 @@ Status = {
          "uptime_s": 60},
   "sessions": {"live": 2, "limit": 8, "queued": 1},
   "sandboxes": [{"id", "slug", "name", "live_sessions": 1}],
-  "accounts": [{"label", "provider", "status", "enabled", "usage",
-                "id?", "priority?", "last_error?", "in_use_by?"}],
+  "accounts": [{"label", "provider", "status", "usage",
+                "id?", "last_error?", "in_use_by?"}],
   "contained": true
 }
 ```
 
 VM fields are `null` when unknown (CPU needs two readings). Disk figures describe the volume
 holding the data directory. `sandboxes` lists only sandboxes the caller can see; `sessions` is
-instance-wide. Account `id`, `priority`, `last_error` and `in_use_by` are present only for
-instance administrators.
+instance-wide. Account `id`, `last_error` and `in_use_by` are present only for instance
+administrators.
+
+```json
+CapacityView = {
+  "threshold": 98.0, "subscriptions": 3, "unknown_usage": 1, "available": 2,
+  "weekly_left": 46.0, "five_hour_left": 166.0,
+  "burn_24h": 2.0, "burn_7d": 1.6,
+  "runs_out_at": "2026-10-11T02:00:00Z|null",
+  "paused_hours_7d": 8.0, "active_hours_7d": 32.0,
+  "needed": 4, "add": 1, "recommendation": "Add about 1 subscription to stop pausing",
+  "paused_tasks": 0, "resumes_at": "…|null",
+  "accounts": [{"label", "status", "usage", "available", "id?", "in_use_by?"}]
+}
+```
+
+Points are percentage points of one subscription's weekly window: `weekly_left` / `five_hour_left`
+sum the headroom below 98 % over subscriptions with known use (`null` when none is known);
+`burn_*` is points per hour from the provider readings of the last 24 h / 7 days (`null` without an
+hour of readings); `runs_out_at` is when the weekly headroom runs out at `burn_24h`, walking through
+each subscription's weekly reset, if within 7 days; `paused_hours_7d` / `active_hours_7d` are
+task-hours; `needed` = ⌈max(burn_24h × 168 ÷ 98, subscriptions × (active + paused) ÷ active)⌉ and
+`add` = needed − subscriptions (SPEC-002 ADR-16 §2.3). `resumes_at` is set while no subscription is
+available. `id` and `in_use_by` are for instance administrators only.
 
 ## UI event stream
 
@@ -613,3 +643,13 @@ Sandbox views depend on the viewer's access level, so after a sandbox change (im
 onboarding transitions, removal) the server publishes `resync` to that sandbox's viewers (or
 everyone) instead of `sandbox.updated`; clients refetch `/api/sandboxes`. Sandbox `counts` are
 not pushed: clients refetch them (the web UI does so once after a burst of `task.updated`).
+
+## Agent hooks (internal listener)
+
+`POST /hooks/claude/{event}` on the loopback listener (`YULIUS_URL`), called by `yulius hook` with
+the run's task token (SPEC-002 §7.5). `200` carries the hook output (an empty body is no
+decision). `Stop` and `UserPromptSubmit` may answer **`202 Accepted` with `Retry-After: 10`** and no
+body while no Claude subscription has capacity (ROT-010, SPEC-002 ADR-16): the agent waits at that
+boundary and the client sends the same request again after `Retry-After` seconds (1–60), until a
+`200`, a 4xx (it fails open) or 8 days. While held it retries a refused connection or a 5xx every
+2 s, so a server restart does not release the agent. `401` means the run is unknown or finished.

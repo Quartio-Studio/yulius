@@ -6,6 +6,13 @@
 //! over a minimal HTTP/1.1 connection to a loopback address, and prints the body of a `200`
 //! response. Every failure prints nothing and still exits 0 (fail-open), so a Yulius outage
 //! never blocks the agent.
+//!
+//! **Hold** (subscription pool pause, SPEC-002 ADR-16): a `202 Accepted` answer with
+//! `Retry-After: <seconds>` means "keep the agent at this boundary". The client sleeps that long
+//! (1–60 s) and sends the same request again, until a `200` answers, the run is refused
+//! (4xx), or [`HoldPolicy::max`] passes. Once held, an unreachable or failing server (a Yulius
+//! restart, a 5xx) is retried every [`HoldPolicy::reconnect`] instead of failing open, so the
+//! pause survives the restart. Each request keeps its own 5 s deadline.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
@@ -22,6 +29,32 @@ const MAX_HEAD_BYTES: usize = 64 * 1024;
 /// Connect timeout and, separately, the deadline for sending the request and reading the
 /// response (SPEC-002 §9: hook call 5 s).
 pub const HOOK_TIMEOUT: Duration = Duration::from_secs(5);
+/// Longest a held hook keeps the agent waiting before it fails open: longer than a weekly
+/// window, shorter than the CLI's own timeout for held events
+/// ([`crate::launch::CLAUDE_HELD_HOOK_TIMEOUT_SECONDS`]).
+pub const HOLD_MAX: Duration = Duration::from_secs(8 * 24 * 3600);
+/// Upper bound of the server's `Retry-After` between two requests of a held hook.
+const HOLD_RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// How a held hook waits (production: [`HoldPolicy::DEFAULT`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HoldPolicy {
+    /// Total time a hook may stay held before it fails open.
+    pub max: Duration,
+    /// Shortest wait between two requests, whatever `Retry-After` says.
+    pub min_wait: Duration,
+    /// Wait before asking again when Yulius cannot be reached or fails during a hold.
+    pub reconnect: Duration,
+}
+
+impl HoldPolicy {
+    /// Production bounds: [`HOLD_MAX`], at least 1 s between requests, 2 s after a failure.
+    pub const DEFAULT: Self = Self {
+        max: HOLD_MAX,
+        min_wait: Duration::from_secs(1),
+        reconnect: Duration::from_secs(2),
+    };
+}
 
 /// Runs one hook invocation. Always returns exit code 0.
 ///
@@ -34,10 +67,30 @@ pub fn run_hook(
     output: &mut dyn Write,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> i32 {
-    if let Ok(body) = forward(harness, event, input, env, HOOK_TIMEOUT) {
+    run_hook_with(harness, event, input, output, env, HoldPolicy::DEFAULT)
+}
+
+/// [`run_hook`] with explicit hold bounds (tests).
+pub fn run_hook_with(
+    harness: &str,
+    event: &str,
+    input: &mut dyn Read,
+    output: &mut dyn Write,
+    env: &dyn Fn(&str) -> Option<String>,
+    hold: HoldPolicy,
+) -> i32 {
+    if let Ok(body) = forward(harness, event, input, env, HOOK_TIMEOUT, hold) {
         let _ignored = output.write_all(&body).and_then(|()| output.flush());
     }
     0
+}
+
+/// What one request was answered with.
+enum Answer {
+    /// `200`: print this body.
+    Output(Vec<u8>),
+    /// `202`: ask again after this long.
+    Hold(Duration),
 }
 
 #[derive(Debug)]
@@ -48,8 +101,9 @@ pub(crate) enum HookError {
     Url,
     NotLoopback,
     Io,
-    Status,
+    Status(u16),
     Protocol,
+    HoldExpired,
 }
 
 impl From<io::Error> for HookError {
@@ -68,6 +122,7 @@ pub(crate) fn forward(
     input: &mut dyn Read,
     env: &dyn Fn(&str) -> Option<String>,
     timeout: Duration,
+    hold: HoldPolicy,
 ) -> Result<Vec<u8>, HookError> {
     if !valid_name(harness) || !valid_name(event) {
         return Err(HookError::InvalidName);
@@ -92,11 +147,52 @@ pub(crate) fn forward(
     if addrs.is_empty() || !addrs.iter().all(|a| a.ip().is_loopback()) {
         return Err(HookError::NotLoopback);
     }
+    let request = Request {
+        target: &target,
+        harness,
+        event,
+        token: &token,
+        body: &body,
+        timeout,
+    };
+    let started = Instant::now();
+    let mut held = false;
+    loop {
+        let wait = match ask(&addrs, &request) {
+            Ok(Answer::Output(response)) => return Ok(response),
+            Ok(Answer::Hold(retry_after)) => {
+                held = true;
+                retry_after.clamp(hold.min_wait, HOLD_RETRY_MAX.max(hold.min_wait))
+            }
+            // Held: Yulius restarting (unreachable) or failing for a moment keeps the hold.
+            Err(HookError::Io) if held => hold.reconnect,
+            Err(HookError::Status(code)) if held && (500..600).contains(&code) => hold.reconnect,
+            Err(error) => return Err(error),
+        };
+        if started.elapsed().saturating_add(wait) > hold.max {
+            return Err(HookError::HoldExpired);
+        }
+        std::thread::sleep(wait);
+    }
+}
+
+/// One hook request's fixed parts.
+struct Request<'a> {
+    target: &'a Target,
+    harness: &'a str,
+    event: &'a str,
+    token: &'a str,
+    body: &'a [u8],
+    timeout: Duration,
+}
+
+/// Sends the request to the first address that answers.
+fn ask(addrs: &[SocketAddr], request: &Request<'_>) -> Result<Answer, HookError> {
     let mut last_error = HookError::Io;
     for addr in addrs {
-        match exchange(&addr, &target, harness, event, &token, &body, timeout) {
-            Ok(response) => return Ok(response),
-            Err(error @ (HookError::Status | HookError::Protocol)) => return Err(error),
+        match exchange(addr, request) {
+            Ok(answer) => return Ok(answer),
+            Err(error @ (HookError::Status(_) | HookError::Protocol)) => return Err(error),
             Err(error) => last_error = error,
         }
     }
@@ -163,15 +259,15 @@ fn remaining(deadline: Instant) -> Result<Duration, HookError> {
     }
 }
 
-fn exchange(
-    addr: &SocketAddr,
-    target: &Target,
-    harness: &str,
-    event: &str,
-    token: &str,
-    body: &[u8],
-    timeout: Duration,
-) -> Result<Vec<u8>, HookError> {
+fn exchange(addr: &SocketAddr, request: &Request<'_>) -> Result<Answer, HookError> {
+    let Request {
+        target,
+        harness,
+        event,
+        token,
+        body,
+        timeout,
+    } = *request;
     let stream = TcpStream::connect_timeout(addr, timeout)?;
     let deadline = Instant::now() + timeout;
     stream.set_write_timeout(Some(remaining(deadline)?))?;
@@ -200,10 +296,12 @@ fn exchange(
     if !version.starts_with("HTTP/1.") {
         return Err(HookError::Protocol);
     }
-    if code != "200" {
-        return Err(HookError::Status);
+    let status: u16 = code.parse().map_err(|_| HookError::Protocol)?;
+    if status != 200 && status != 202 {
+        return Err(HookError::Status(status));
     }
     let mut content_length: Option<usize> = None;
+    let mut retry_after: Option<Duration> = None;
     loop {
         let mut line = String::new();
         read_head_line(&mut reader, &mut line, &mut head_bytes)?;
@@ -225,7 +323,13 @@ fn exchange(
             && !value.eq_ignore_ascii_case("identity")
         {
             return Err(HookError::Protocol);
+        } else if name.eq_ignore_ascii_case("retry-after") {
+            retry_after = value.parse::<u64>().ok().map(Duration::from_secs);
         }
+    }
+    if status == 202 {
+        // A hold: the body (if any) is not hook output.
+        return Ok(Answer::Hold(retry_after.unwrap_or(HOLD_RETRY_MAX)));
     }
     let mut response = Vec::new();
     match content_length {
@@ -242,7 +346,7 @@ fn exchange(
             }
         }
     }
-    Ok(response)
+    Ok(Answer::Output(response))
 }
 
 fn read_head_line(
@@ -341,6 +445,7 @@ mod tests {
             &mut &b"{}"[..],
             &env,
             Duration::from_millis(200),
+            HoldPolicy::DEFAULT,
         );
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(3));

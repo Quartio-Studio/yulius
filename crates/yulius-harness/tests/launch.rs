@@ -137,13 +137,20 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
     }
 
     let settings = json_of(file(&plan, "claude-settings.json")?)?;
-    for event in ["SessionStart", "UserPromptSubmit", "Stop", "Notification"] {
+    // The turn boundaries may be held while no subscription has capacity (ADR-16): their CLI
+    // timeout outlasts the hook client's 8-day hold; the others keep 15 s.
+    for (event, timeout) in [
+        ("SessionStart", 15),
+        ("UserPromptSubmit", 694_800),
+        ("Stop", 694_800),
+        ("Notification", 15),
+    ] {
         assert_eq!(
             settings["hooks"][event],
             json!([{ "hooks": [{
                 "type": "command",
                 "command": format!("'/opt/yulius/bin/yulius' hook claude {event}"),
-                "timeout": 15
+                "timeout": timeout
             }] }])
         );
     }

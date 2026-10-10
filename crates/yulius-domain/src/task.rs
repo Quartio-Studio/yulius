@@ -43,7 +43,10 @@ pub enum TaskStatus {
     /// Account or provider switch in progress. Owner: rotation controller.
     /// Timeout: [`SWITCH_TIMEOUT_MS`].
     Switching,
-    /// No account has capacity. Owner: rotation controller; re-evaluated at resets.
+    /// Paused because no subscription has capacity (ROT-010): held at a turn boundary or a
+    /// limit with the process alive, or waiting to start without one. Owner: the capacity
+    /// controller; re-evaluated at the earliest reset, on new usage or accounts, and every
+    /// 5 minutes.
     WaitingCapacity,
     /// Cancellation in progress until the process tree is reaped. Owner: supervisor.
     Stopping,
@@ -92,6 +95,8 @@ pub enum TaskEvent {
     SwitchAborted(StopReason),
     /// No account has capacity right now.
     CapacityExhausted,
+    /// Capacity returned on the account a paused live run already uses.
+    CapacityReturned,
     /// The run can no longer be confirmed.
     Lost(StopReason),
     /// A user asked to continue a non-live task.
@@ -156,9 +161,15 @@ impl TaskStatus {
                 S::Stopped(StopReason::Crashed)
             }
             (S::Running, E::SwitchStarted) | (S::WaitingCapacity, E::SwitchStarted) => S::Switching,
-            (S::Running, E::CapacityExhausted) | (S::Switching, E::CapacityExhausted) => {
+            (S::Running | S::Switching | S::Starting | S::Queued, E::CapacityExhausted) => {
                 S::WaitingCapacity
             }
+            (S::WaitingCapacity, E::CapacityReturned) => S::Running,
+            (S::WaitingCapacity, E::CapacityGranted) => S::Starting,
+            (S::WaitingCapacity, E::ContinueQueued) => S::Queued,
+            (S::WaitingCapacity, E::Exited { normal: true }) => S::Closed,
+            (S::WaitingCapacity, E::Exited { normal: false }) => S::Stopped(StopReason::Crashed),
+            (S::WaitingCapacity, E::Lost(reason)) => S::Stopped(reason),
             (S::Switching, E::SwitchCompleted) => S::Running,
             (S::Switching, E::SwitchAborted(reason)) => S::Stopped(reason),
             (S::WaitingCapacity, E::CancelRequested) => S::Stopped(StopReason::Cancelled),
@@ -319,6 +330,52 @@ mod tests {
         let s = s.apply(TaskEvent::Exited { normal: true })?;
         assert_eq!(s, TaskStatus::Closed);
         assert_eq!(s.apply(TaskEvent::ContinueRequested)?, TaskStatus::Starting);
+        Ok(())
+    }
+
+    /// ROT-010: a paused task resumes in place, starts, queues, or ends with its process.
+    #[test]
+    fn paused_tasks_resume_start_or_end() -> Result<(), TransitionError> {
+        let paused = TaskStatus::Running.apply(TaskEvent::CapacityExhausted)?;
+        assert_eq!(paused, TaskStatus::WaitingCapacity);
+        assert_eq!(
+            TaskStatus::Starting.apply(TaskEvent::CapacityExhausted)?,
+            TaskStatus::WaitingCapacity
+        );
+        assert_eq!(
+            TaskStatus::Queued.apply(TaskEvent::CapacityExhausted)?,
+            TaskStatus::WaitingCapacity
+        );
+        assert_eq!(
+            paused.apply(TaskEvent::CapacityReturned)?,
+            TaskStatus::Running
+        );
+        assert_eq!(
+            paused.apply(TaskEvent::CapacityGranted)?,
+            TaskStatus::Starting
+        );
+        assert_eq!(
+            paused.apply(TaskEvent::SwitchStarted)?,
+            TaskStatus::Switching
+        );
+        assert_eq!(paused.apply(TaskEvent::ContinueQueued)?, TaskStatus::Queued);
+        assert_eq!(
+            paused.apply(TaskEvent::Exited { normal: true })?,
+            TaskStatus::Closed
+        );
+        assert_eq!(
+            paused.apply(TaskEvent::Lost(StopReason::ServerLost))?,
+            TaskStatus::Stopped(StopReason::ServerLost)
+        );
+        assert_eq!(
+            paused.apply(TaskEvent::CancelRequested)?,
+            TaskStatus::Stopped(StopReason::Cancelled)
+        );
+        assert!(
+            TaskStatus::Closed
+                .apply(TaskEvent::CapacityReturned)
+                .is_err()
+        );
         Ok(())
     }
 

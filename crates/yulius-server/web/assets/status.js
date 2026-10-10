@@ -68,15 +68,28 @@ export function statusInfo(task) {
   if (status === 'queued') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Queued', group: 'working' };
   if (status === 'starting') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Starting', group: 'working' };
   if (status === 'switching') return { glyph: '↻', icon: 'refresh', tone: 'switching', label: 'Switching account', group: 'working' };
-  // Every account is at its usage limit (ROT-010): the agent is paused, not working. It waits in
-  // Needs you with the reset time and continues by itself; the user may switch or add an account.
-  if (status === 'waiting_capacity') return { glyph: '⧗', icon: 'clock', tone: 'attention', label: 'Usage limit reached', group: 'needs' };
+  // Every subscription is at 98 % or limited (ROT-010): Yulius paused the task at its turn
+  // boundary without telling the agent. Nothing is for the user to do: it continues by itself.
+  if (status === 'waiting_capacity') return { glyph: '⏸', icon: 'clock', tone: 'queued', label: 'Paused', group: 'working' };
   if (status === 'stopping') return { glyph: '■', icon: 'st-stopped', tone: 'stopping', label: 'Stopping', group: 'working' };
   if (status === 'closed') return { glyph: '✓', icon: 'st-closed', tone: 'closed', label: 'Closed', group: 'ended' };
   if (status === 'stopped_cancelled') return { glyph: '■', icon: 'st-stopped', tone: 'stopped', label: STOP_LABELS[status], group: 'ended' };
   if (status in STOP_LABELS) return { glyph: '▲', icon: 'st-crashed', tone: 'stopped-abnormal', label: STOP_LABELS[status], group: 'ended' };
   if (status in FAIL_LABELS) return { glyph: '✕', icon: 'st-failed', tone: 'failed', label: FAIL_LABELS[status], group: 'ended' };
   return { glyph: '?', icon: 'st-stopped', tone: 'stopped', label: `Unknown (${status})`, group: 'ended' };
+}
+
+/** "resets ~14:20" (or "~Tuesday 14:20", "~Oct 12") from a reset time; '' when unknown. */
+export function resetAround(iso) {
+  const label = iso ? resetLabel(iso) : '';
+  if (!label) return '';
+  return label === 'Resetting now' ? 'resets now' : label.replace(/^Resets (at )?/, 'resets ~');
+}
+
+/** "Paused: waiting for subscription capacity (resets ~14:20)" for a paused task (ROT-010). */
+export function pausedLine(task) {
+  const reset = resetAround(task.resumes_at);
+  return `Paused: waiting for subscription capacity${reset ? ` (${reset})` : ''}`;
 }
 
 /**
@@ -93,11 +106,7 @@ export function activityLine(task, info = statusInfo(task)) {
     if (steps.total) return `Step ${Math.min((steps.done || 0) + 1, steps.total)}/${steps.total}${steps.current ? ` · ${steps.current}` : ''}`;
     return 'Working';
   }
-  if (task.status === 'waiting_capacity') {
-    const reset = task.resumes_at ? resetLabel(task.resumes_at) : '';
-    // The reset time first: narrow columns cut the end of the line.
-    return reset ? `${reset} · continues by itself` : 'Every account at its limit · continues when one resets';
-  }
+  if (task.status === 'waiting_capacity') return pausedLine(task);
   if (info.group === 'ended' && steps.total) return `${info.label} · ${steps.done || 0}/${steps.total} steps`;
   return info.label;
 }

@@ -247,6 +247,45 @@ pub trait AnalyticsStore: Send + Sync {
     ) -> crate::error::AppResult<crate::analytics::AnalyticsData>;
 }
 
+/// Subscription pool persistence (SPEC-002 ADR-16): pauses for lack of capacity and provider
+/// usage readings for the burn rate.
+#[async_trait]
+pub trait CapacityStore: Send + Sync {
+    /// Opens a pause; `false` (nothing written) when the task already has an open one.
+    async fn insert_pause(&self, pause: &crate::model::PauseRecord) -> AppResult<bool>;
+    /// The open pause of a task.
+    async fn open_pause(&self, task: &TaskId) -> AppResult<Option<crate::model::PauseRecord>>;
+    /// Every open pause, oldest first.
+    async fn open_pauses(&self) -> AppResult<Vec<crate::model::PauseRecord>>;
+    /// Changes how an open pause holds its task; `false` when the task has none.
+    async fn update_open_pause(
+        &self,
+        task: &TaskId,
+        kind: crate::model::PauseKind,
+        continuation: Option<&str>,
+    ) -> AppResult<bool>;
+    /// Closes the open pause of a task with `outcome`; `false` when there was none.
+    async fn end_pause(&self, task: &TaskId, at: Timestamp, outcome: &str) -> AppResult<bool>;
+    /// Pauses open at or after `since` (still open or ended later), oldest first.
+    async fn pauses_since(&self, since: Timestamp) -> AppResult<Vec<crate::model::PauseRecord>>;
+    /// Stores provider readings and drops readings older than `keep_after`.
+    async fn record_usage_samples(
+        &self,
+        samples: &[crate::model::UsageSampleRecord],
+        keep_after: Timestamp,
+    ) -> AppResult<()>;
+    /// Readings at or after `since`, oldest first.
+    async fn usage_samples(
+        &self,
+        since: Timestamp,
+    ) -> AppResult<Vec<crate::model::UsageSampleRecord>>;
+    /// Lifetimes `(started_at, ended_at)` of attempts that ran at or after `since`.
+    async fn attempt_spans(
+        &self,
+        since: Timestamp,
+    ) -> AppResult<Vec<(Timestamp, Option<Timestamp>)>>;
+}
+
 /// All extension areas.
 pub trait ExtensionStores:
     WorkflowStore
@@ -256,6 +295,7 @@ pub trait ExtensionStores:
     + DeliveryStore
     + ImportStore
     + AnalyticsStore
+    + CapacityStore
 {
 }
 
@@ -267,5 +307,6 @@ impl<T> ExtensionStores for T where
         + DeliveryStore
         + ImportStore
         + AnalyticsStore
+        + CapacityStore
 {
 }

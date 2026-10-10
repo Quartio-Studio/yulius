@@ -38,6 +38,7 @@ disable`); CI sets it.
 | `rail.e2e.ts` | The tools rail: items and counts inside the rail with one open tool (and no WCAG violations); the rail stays in the window when it narrows with a panel open; at 390 px it sits in the top bar without covering it |
 | `phone.e2e.ts` | At 390 px: no horizontal scroll, the quick input, the navigation drawer |
 | `quality.e2e.ts` | Every main page: no WCAG 2.x A/AA violations (axe-core) |
+| `subscriptions.e2e.ts` | The accounts page shows the pool's capacity, burn rate, forecast and recommendation with only add, sign-in-again and remove (no priority or on/off controls); a paused task reads "Paused: waiting for subscription capacity (resets ~…)"; the dashboard shows the subscriptions card; no WCAG violations |
 | `agent.e2e.ts` | An agent reaches a goal written in plain English (needs a model, see below) |
 
 Every test also fails when the page reports an error: an uncaught exception, an unhandled

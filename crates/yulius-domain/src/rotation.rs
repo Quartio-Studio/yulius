@@ -1,33 +1,45 @@
-//! Account rotation policy (SPEC-001 ROT-003..011 and §7.4, SPEC-002 §6.3).
+//! Subscription pool policy (SPEC-001 ROT-003/004/010, SPEC-002 ADR-16 and §6.3).
 //!
 //! [`decide`] is a pure function of a [`RotationInput`] snapshot and a [`Trigger`]. Callers
 //! persist the input together with the returned [`Decision`] and [`DecisionReason`] for audit
 //! (ROT-011).
 //!
-//! Rotation stays within the task's provider: Yulius runs only Claude Code (F 2026-10-08), so
-//! a task never moves to another harness. Candidate order among the provider's accounts:
+//! Every connected Claude subscription is one member of a pool; there are no manual priorities
+//! (F 2026-10-10). Rotation stays within the task's provider: Yulius runs only Claude Code
+//! (F 2026-10-08). A **candidate** is a healthy account of that provider that is below
+//! [`THRESHOLD`] in every window binding the task (5-hour, weekly and the weekly cap of the
+//! task's model family) and has no usage limit in effect. Candidates are ranked by:
 //!
-//! 1. enabled, healthy accounts that are not exhausted: known headroom before unknown usage,
-//!    then lower `priority` value, then fewer `in_use`, then account id;
-//! 2. accounts whose snapshot showed them exhausted but whose window or limit has reset (same
-//!    tie-breakers);
-//! 3. otherwise wait until the earliest known reset (ROT-010), or indefinitely when none is
-//!    known.
+//! 1. [`Tier`]: known headroom of at least [`MIN_ROOM`] points, then known headroom below it (a
+//!    task placed there would move again within minutes and pay for a cold prompt cache), then
+//!    unknown usage (never treated as zero, but not evidence of exhaustion either);
+//! 2. [`score`] — use it or lose it: the weekly headroom divided by the hours until that weekly
+//!    window resets (the rate needed to spend the capacity before it expires), divided by the
+//!    live tasks already on the account plus one, so concurrent tasks spread;
+//! 3. ties: the capacity that expires soonest (weekly reset, then 5-hour reset), fewer tasks,
+//!    account id.
 //!
-//! Accounts that report a manual reset entitlement are never chosen while exhausted, because
-//! no provider API to trigger such a reset is verified (SPEC-001 U-03); they are surfaced in
-//! [`DecisionReason::NoCapacity`] for an administrator instead.
+//! When there is no candidate the task waits ([`Decision::Wait`]) until the earliest known time
+//! an account becomes available again (ROT-010).
 
 use crate::harness::Provider;
 use crate::ids::AccountId;
 use crate::time::Timestamp;
-use crate::usage::AccountUsage;
+use crate::usage::{AccountUsage, ModelFamily, UsageWindow};
 
-/// Default proactive switch threshold in percent (SPEC-001 ROT-003).
-pub const DEFAULT_THRESHOLD: f64 = 99.0;
+/// Proactive switch and pause threshold in percent of any binding window (SPEC-001 ROT-003,
+/// F 2026-10-10).
+pub const THRESHOLD: f64 = 98.0;
 
-/// Usage at or above this percentage means the window is hard-exhausted.
-const HARD_LIMIT_PERCENT: f64 = 100.0;
+/// Headroom (percentage points below [`THRESHOLD`]) an account needs in every binding window to
+/// be preferred for placement; below it a task would move again within minutes.
+pub const MIN_ROOM: f64 = 5.0;
+
+/// Length of the weekly window in hours: the time to reset assumed when it is unknown.
+const WEEK_HOURS: f64 = 168.0;
+/// Shortest time to reset used in the score, so a window resetting now does not divide by zero.
+const MIN_HOURS: f64 = 0.25;
+const HOUR_MS: f64 = 3_600_000.0;
 
 /// The policy's view of one connected account.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,24 +48,12 @@ pub struct AccountView {
     pub id: AccountId,
     /// Provider the account belongs to.
     pub provider: Provider,
-    /// Administrator enabled the account.
-    pub enabled: bool,
-    /// Credentials work (not in an error or re-login state).
+    /// Credentials work (signed in, not in an error or re-login state).
     pub healthy: bool,
-    /// Administrator rank: a lower value is tried first.
-    pub priority: i32,
     /// Latest usage snapshot.
     pub usage: AccountUsage,
-    /// Manual reset entitlements reported by the provider; `None` when unknown.
-    pub manual_resets_available: Option<u32>,
     /// Live attempts currently using the account (including the deciding task's own attempt).
     pub in_use: u32,
-}
-
-impl AccountView {
-    fn usable(&self) -> bool {
-        self.enabled && self.healthy
-    }
 }
 
 /// Everything [`decide`] looks at.
@@ -63,29 +63,33 @@ pub struct RotationInput {
     pub current: Option<AccountId>,
     /// Provider of the task's harness; only its accounts are candidates.
     pub task_provider: Provider,
+    /// Model family of the task: its weekly cap binds too.
+    pub family: ModelFamily,
     /// All connected accounts. For [`Trigger::LimitReached`], callers fold the observed limit
     /// into the current account's usage first so its reset time is known.
     pub accounts: Vec<AccountView>,
     /// Decision time.
     pub now: Timestamp,
-    /// Proactive switch threshold in percent; usually [`DEFAULT_THRESHOLD`].
+    /// Threshold in percent; [`THRESHOLD`] in production.
     pub threshold: f64,
 }
 
 /// Why a decision is requested.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trigger {
-    /// Turn boundary check: switch only when the current account is at or above the threshold.
+    /// A new attempt is starting without a live process (new task, Continue, a queued or
+    /// paused task starting): placement among all candidates.
+    Start,
+    /// A turn boundary, or the resume check of a task paused with a live process: stay while
+    /// the current account is a candidate, else move to the best other one, else wait.
     Proactive,
-    /// The current account hit a usage limit; always move off it.
+    /// The current account hit a usage limit the CLI reported; always move off it.
     LimitReached,
     /// A user asked for a specific account, or to rotate now (ROT-007).
     Manual {
         /// Requested account; `None` rotates to the best other account.
         account: Option<AccountId>,
     },
-    /// A new attempt is starting (new task or Continue).
-    Start,
 }
 
 /// What the rotation controller should do.
@@ -98,22 +102,22 @@ pub enum Decision {
         /// Target account.
         account: AccountId,
     },
-    /// No account has capacity; wait (ROT-010).
+    /// No account has capacity; pause (ROT-010).
     Wait {
         /// Earliest known time an account becomes available; `None` when unknown.
         until: Option<Timestamp>,
     },
 }
 
-/// Which candidate class a selected account came from.
+/// Which candidate class a selected account came from (better first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Tier {
-    /// Usage is known and below the threshold.
-    Headroom,
-    /// Usage is unknown (never treated as zero, but not evidence of exhaustion either).
+    /// Known headroom of at least [`MIN_ROOM`] points in every binding window.
+    Roomy,
+    /// Known headroom below [`MIN_ROOM`] points in some binding window.
+    Tight,
+    /// No binding window has a known percentage.
     UnknownUsage,
-    /// The snapshot showed exhaustion, but the window or limit has since reset.
-    WindowReset,
 }
 
 /// Why a manual request was refused.
@@ -121,36 +125,30 @@ pub enum Tier {
 pub enum Refusal {
     /// No account has the requested id.
     UnknownAccount,
-    /// The requested account is disabled or unhealthy.
+    /// The requested account is not signed in or broken.
     Unavailable,
-    /// The requested account is exhausted at decision time.
+    /// The requested account is at the threshold or limited at decision time.
     Exhausted,
     /// The requested account belongs to another provider.
     ProviderMismatch,
-    /// No usable account matches the request.
+    /// No other candidate exists.
     NoCandidate,
 }
 
 /// Audit explanation for a [`Decision`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecisionReason {
-    /// The current account has known headroom.
+    /// The current account is still a candidate.
     CurrentUsable,
     /// The current account's usage is unknown; there is no evidence to switch.
     CurrentUsageUnknown,
-    /// The current account is at or above the threshold but below its hard limit and no
-    /// alternative exists; keep using it until a limit is reached.
-    NoAlternativeBelowLimit,
     /// The best candidate was selected automatically.
     Selected {
         /// Candidate class of the chosen account.
         tier: Tier,
     },
     /// No account has capacity.
-    NoCapacity {
-        /// Exhausted, usable accounts reporting manual reset entitlements, for administrators.
-        manual_reset_candidates: Vec<AccountId>,
-    },
+    NoCapacity,
     /// The user's explicitly chosen account was accepted.
     ManualChoice,
     /// The user chose the account the task already uses.
@@ -159,40 +157,145 @@ pub enum DecisionReason {
     ManualRefused(Refusal),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Class {
-    Exhausted,
-    Candidate(Tier),
+/// How an account ranks for a task right now; `None` from [`assess`] means "not a candidate".
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Assessment {
+    /// Candidate class.
+    pub tier: Tier,
+    /// Use-it-or-lose-it score (higher first); see [`score`].
+    pub score: f64,
+    /// Smallest headroom in points below the threshold over the binding windows with a known
+    /// percentage; `None` when none is known.
+    pub room: Option<f64>,
+    /// When the binding weekly window with the least headroom resets, if in the future.
+    pub weekly_reset: Option<Timestamp>,
+    /// When the running 5-hour window resets, if in the future.
+    pub five_hour_reset: Option<Timestamp>,
 }
 
-fn classify(account: &AccountView, now: Timestamp, threshold: f64) -> Class {
-    let usage = &account.usage;
-    if usage.exhausted(now, threshold) {
-        Class::Exhausted
-    } else if usage.recovered_by_reset(now, threshold) {
-        Class::Candidate(Tier::WindowReset)
-    } else if usage.current_used_percent(now).is_some() {
-        Class::Candidate(Tier::Headroom)
-    } else {
-        Class::Candidate(Tier::UnknownUsage)
+fn hours_until(window: &UsageWindow, now: Timestamp) -> f64 {
+    match window.resets_at {
+        // A weekly window whose reset passed restarted: a whole week lies ahead.
+        Some(at) if at > now => {
+            (at.millis_since(now) as f64 / HOUR_MS).clamp(MIN_HOURS, WEEK_HOURS)
+        }
+        _ => WEEK_HOURS,
     }
 }
 
-fn hard_exhausted(account: &AccountView, now: Timestamp) -> bool {
-    let usage = &account.usage;
-    usage.limit_in_effect(now)
-        || usage
-            .current_used_percent(now)
-            .is_some_and(|p| p >= HARD_LIMIT_PERCENT)
+/// The use-it-or-lose-it score of an account with the given weekly headroom (points below the
+/// threshold), hours until that weekly window resets, and live tasks on it:
+/// `headroom / hours / (in_use + 1)`. Higher is better.
+#[must_use]
+pub fn score(weekly_headroom: f64, hours_to_reset: f64, in_use: u32) -> f64 {
+    let hours = hours_to_reset.clamp(MIN_HOURS, WEEK_HOURS);
+    weekly_headroom.max(0.0) / hours / (f64::from(in_use) + 1.0)
 }
 
-/// Decides whether and where a task's run should move (SPEC-001 §7.4).
+/// How `account` ranks for a task of `family` at `now`; `None` when it is not a candidate
+/// (unhealthy, limited, or at the threshold in a binding window).
+#[must_use]
+pub fn assess(
+    account: &AccountView,
+    now: Timestamp,
+    threshold: f64,
+    family: ModelFamily,
+) -> Option<Assessment> {
+    let usage = &account.usage;
+    if !account.healthy || usage.exhausted_for(now, threshold, family) {
+        return None;
+    }
+    let room = usage
+        .binding_windows(family)
+        .filter_map(|w| w.current_percent(now))
+        .map(|p| threshold - p)
+        .reduce(f64::min);
+    let five_hour_reset = usage
+        .primary
+        .and_then(|w| w.resets_at)
+        .filter(|at| *at > now);
+    let Some(room) = room else {
+        return Some(Assessment {
+            tier: Tier::UnknownUsage,
+            score: 0.0,
+            room: None,
+            weekly_reset: None,
+            five_hour_reset,
+        });
+    };
+    let weekly = usage
+        .weekly_windows(family)
+        .filter_map(|w| w.current_percent(now).map(|p| (w, threshold - p)))
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    let (score, weekly_reset) = match weekly {
+        Some((window, headroom)) => (
+            score(headroom, hours_until(window, now), account.in_use),
+            window.resets_at.filter(|at| *at > now),
+        ),
+        // Only the 5-hour window is known: no weekly urgency.
+        None => (0.0, None),
+    };
+    Some(Assessment {
+        tier: if room >= MIN_ROOM {
+            Tier::Roomy
+        } else {
+            Tier::Tight
+        },
+        score,
+        room: Some(room),
+        weekly_reset,
+        five_hour_reset,
+    })
+}
+
+/// Scores are compared at micro-unit precision so float noise never decides between equals.
+/// Scores are at most 100 / 0.25 = 400, so the cast cannot overflow.
+fn quantized(score: f64) -> i64 {
+    (score * 1_000_000.0).round() as i64
+}
+
+/// Candidates for a task of the input's provider and family, best first, excluding `exclude`.
+#[must_use]
+pub fn ranked<'a>(
+    input: &'a RotationInput,
+    exclude: Option<&AccountId>,
+) -> Vec<(&'a AccountView, Assessment)> {
+    let mut candidates: Vec<(&AccountView, Assessment)> = input
+        .accounts
+        .iter()
+        .filter(|a| a.provider == input.task_provider && Some(&a.id) != exclude)
+        .filter_map(|a| {
+            assess(a, input.now, input.threshold, input.family).map(|assessment| (a, assessment))
+        })
+        .collect();
+    candidates.sort_by(|(a, x), (b, y)| {
+        let never = Timestamp(i64::MAX);
+        x.tier
+            .cmp(&y.tier)
+            .then_with(|| quantized(y.score).cmp(&quantized(x.score)))
+            .then_with(|| {
+                x.weekly_reset
+                    .unwrap_or(never)
+                    .cmp(&y.weekly_reset.unwrap_or(never))
+            })
+            .then_with(|| {
+                x.five_hour_reset
+                    .unwrap_or(never)
+                    .cmp(&y.five_hour_reset.unwrap_or(never))
+            })
+            .then_with(|| a.in_use.cmp(&b.in_use))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    candidates
+}
+
+/// Decides whether and where a task's run should go (SPEC-001 §7.4).
 ///
 /// Never panics; an unknown current account is treated as unusable.
 #[must_use]
 pub fn decide(input: &RotationInput, trigger: Trigger) -> (Decision, DecisionReason) {
     match trigger {
-        Trigger::Start => start(input),
+        Trigger::Start => select_or_wait(input, None),
         Trigger::Proactive => proactive(input),
         Trigger::LimitReached => select_or_wait(input, input.current.as_ref()),
         Trigger::Manual { account } => manual(input, account),
@@ -203,54 +306,31 @@ fn find<'a>(input: &'a RotationInput, id: &AccountId) -> Option<&'a AccountView>
     input.accounts.iter().find(|a| &a.id == id)
 }
 
-/// The current account when it is usable for the task's provider.
-fn current_fit(input: &RotationInput) -> Option<&AccountView> {
-    let current = find(input, input.current.as_ref()?)?;
-    (current.usable() && current.provider == input.task_provider).then_some(current)
-}
-
-fn start(input: &RotationInput) -> (Decision, DecisionReason) {
-    if let Some(current) = current_fit(input) {
-        match classify(current, input.now, input.threshold) {
-            Class::Candidate(Tier::UnknownUsage) => {
-                return (Decision::Stay, DecisionReason::CurrentUsageUnknown);
-            }
-            Class::Candidate(_) => return (Decision::Stay, DecisionReason::CurrentUsable),
-            Class::Exhausted => {}
-        }
-    }
-    // No exclusion: an exhausted or unusable current account is filtered out anyway.
-    select_or_wait(input, None)
-}
-
 fn proactive(input: &RotationInput) -> (Decision, DecisionReason) {
-    let Some(current) = current_fit(input) else {
-        return select_or_wait(input, input.current.as_ref());
-    };
-    match classify(current, input.now, input.threshold) {
-        Class::Candidate(Tier::UnknownUsage) => {
-            (Decision::Stay, DecisionReason::CurrentUsageUnknown)
-        }
-        Class::Candidate(_) => (Decision::Stay, DecisionReason::CurrentUsable),
-        Class::Exhausted if hard_exhausted(current, input.now) => {
-            select_or_wait(input, Some(&current.id))
-        }
-        Class::Exhausted => {
-            // Below the hard limit: keep the current account while no other one has room.
-            match best(input, Some(&current.id)) {
-                Some((account, tier)) => switch(account, tier),
-                None => (Decision::Stay, DecisionReason::NoAlternativeBelowLimit),
-            }
-        }
+    let current = input
+        .current
+        .as_ref()
+        .and_then(|id| find(input, id))
+        .filter(|a| a.provider == input.task_provider);
+    if let Some(current) = current
+        && let Some(assessment) = assess(current, input.now, input.threshold, input.family)
+    {
+        let reason = if assessment.tier == Tier::UnknownUsage {
+            DecisionReason::CurrentUsageUnknown
+        } else {
+            DecisionReason::CurrentUsable
+        };
+        return (Decision::Stay, reason);
     }
+    select_or_wait(input, input.current.as_ref())
 }
 
 fn manual(input: &RotationInput, account: Option<AccountId>) -> (Decision, DecisionReason) {
     let refuse = |refusal| (Decision::Stay, DecisionReason::ManualRefused(refusal));
     let Some(id) = account else {
         // "Rotate now": the best other account.
-        return match best(input, input.current.as_ref()) {
-            Some((target, tier)) => switch(target, tier),
+        return match ranked(input, input.current.as_ref()).first() {
+            Some((target, assessment)) => switch(target, assessment.tier),
             None => refuse(Refusal::NoCandidate),
         };
     };
@@ -263,10 +343,10 @@ fn manual(input: &RotationInput, account: Option<AccountId>) -> (Decision, Decis
     if input.current.as_ref() == Some(&target.id) {
         return (Decision::Stay, DecisionReason::ManualAlreadyCurrent);
     }
-    if !target.usable() {
+    if !target.healthy {
         return refuse(Refusal::Unavailable);
     }
-    if classify(target, input.now, input.threshold) == Class::Exhausted {
+    if assess(target, input.now, input.threshold, input.family).is_none() {
         return refuse(Refusal::Exhausted);
     }
     (
@@ -286,79 +366,63 @@ fn switch(account: &AccountView, tier: Tier) -> (Decision, DecisionReason) {
     )
 }
 
-/// Best non-exhausted, usable account of the task's provider.
-fn best<'a>(
-    input: &'a RotationInput,
-    exclude: Option<&AccountId>,
-) -> Option<(&'a AccountView, Tier)> {
-    input
-        .accounts
-        .iter()
-        .filter(|a| a.usable() && a.provider == input.task_provider && Some(&a.id) != exclude)
-        .filter_map(|a| match classify(a, input.now, input.threshold) {
-            Class::Candidate(tier) => Some((a, tier)),
-            Class::Exhausted => None,
-        })
-        .min_by(|(a, ta), (b, tb)| {
-            (ta, a.priority, a.in_use, &a.id).cmp(&(tb, b.priority, b.in_use, &b.id))
-        })
-}
-
 fn select_or_wait(
     input: &RotationInput,
     exclude: Option<&AccountId>,
 ) -> (Decision, DecisionReason) {
-    match best(input, exclude) {
-        Some((account, tier)) => switch(account, tier),
-        None => wait(input),
+    match ranked(input, exclude).first() {
+        Some((account, assessment)) => switch(account, assessment.tier),
+        None => (
+            Decision::Wait {
+                until: available_again(input),
+            },
+            DecisionReason::NoCapacity,
+        ),
     }
 }
 
-fn wait(input: &RotationInput) -> (Decision, DecisionReason) {
-    let considered = input.accounts.iter().filter(|a| {
-        a.usable()
-            && a.provider == input.task_provider
-            && a.usage.exhausted(input.now, input.threshold)
-    });
-    let mut until: Option<Timestamp> = None;
-    let mut manual_reset_candidates = Vec::new();
-    for account in considered {
-        if let Some(at) = account.usage.available_at(input.now, input.threshold) {
-            until = Some(until.map_or(at, |u| u.min(at)));
-        }
-        if account.manual_resets_available.is_some_and(|n| n > 0) {
-            manual_reset_candidates.push(account.id.clone());
-        }
-    }
-    manual_reset_candidates.sort();
-    (
-        Decision::Wait { until },
-        DecisionReason::NoCapacity {
-            manual_reset_candidates,
-        },
-    )
+/// The earliest known time a healthy account of the task's provider becomes a candidate again
+/// (ROT-010); `None` when no such time is known (for example no account at all, or limits
+/// without a reset time).
+#[must_use]
+pub fn available_again(input: &RotationInput) -> Option<Timestamp> {
+    input
+        .accounts
+        .iter()
+        .filter(|a| a.healthy && a.provider == input.task_provider)
+        .filter_map(|a| {
+            a.usage
+                .available_at_for(input.now, input.threshold, input.family)
+        })
+        .min()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ids::IdError;
-    use crate::usage::UsageWindow;
 
-    const NOW: Timestamp = Timestamp(10_000_000);
+    const NOW: Timestamp = Timestamp(10_000_000_000);
+    const HOUR: i64 = 3_600_000;
     const A: Provider = Provider::Anthropic;
 
     fn id(text: &str) -> Result<AccountId, IdError> {
         AccountId::parse(text)
     }
 
-    fn usage(percent: Option<f64>, resets_at: Option<i64>) -> AccountUsage {
+    fn window(percent: f64, resets_in_hours: Option<i64>) -> UsageWindow {
+        UsageWindow {
+            used_percent: Some(percent),
+            window_minutes: None,
+            resets_at: resets_in_hours.map(|h| NOW.plus_millis(h * HOUR)),
+        }
+    }
+
+    /// 5-hour window at `five` percent (reset in 2 h) and weekly window at `week` percent.
+    fn usage(five: f64, week: f64, week_resets_in_hours: Option<i64>) -> AccountUsage {
         AccountUsage {
-            primary: percent.map(|p| UsageWindow {
-                used_percent: Some(p),
-                window_minutes: Some(300),
-                resets_at: resets_at.map(Timestamp),
-            }),
+            primary: Some(window(five, Some(2))),
+            secondary: Some(window(week, week_resets_in_hours)),
             ..AccountUsage::default()
         }
     }
@@ -367,11 +431,8 @@ mod tests {
         Ok(AccountView {
             id: id(name)?,
             provider: A,
-            enabled: true,
             healthy: true,
-            priority: 0,
             usage,
-            manual_resets_available: None,
             in_use: 0,
         })
     }
@@ -380,9 +441,10 @@ mod tests {
         Ok(RotationInput {
             current: current.map(id).transpose()?,
             task_provider: A,
+            family: ModelFamily::Any,
             accounts,
             now: NOW,
-            threshold: DEFAULT_THRESHOLD,
+            threshold: THRESHOLD,
         })
     }
 
@@ -393,47 +455,119 @@ mod tests {
         }
     }
 
-    fn manual(account: &str) -> Result<Trigger, IdError> {
-        Ok(Trigger::Manual {
-            account: Some(id(account)?),
-        })
+    fn start(accounts: Vec<AccountView>) -> Result<Option<String>, IdError> {
+        let rotation = input(None, accounts)?;
+        Ok(switched_to(&decide(&rotation, Trigger::Start).0).map(str::to_owned))
     }
 
+    /// AC-ROT-9: capacity that expires soon is spent first (use it or lose it).
     #[test]
-    fn ac_rot_2_proactive_switch_at_threshold_to_the_next_account() -> Result<(), IdError> {
-        let rotation = input(
-            Some("a1"),
-            vec![
-                account("a1", usage(Some(99.0), Some(NOW.0 + 1_000)))?,
-                account("a2", usage(Some(10.0), None))?,
-            ],
-        )?;
+    fn placement_spends_the_capacity_that_expires_first() -> Result<(), IdError> {
+        // "soon": 50 % weekly left with 10 h to its reset needs 4.8 points/h to be used;
+        // "far": 88 % left over 150 h needs 0.59 points/h.
+        let soon = account("soon", usage(10.0, 48.0, Some(10)))?;
+        let far = account("far", usage(0.0, 10.0, Some(150)))?;
         assert_eq!(
-            decide(&rotation, Trigger::Proactive),
-            (
-                Decision::Switch { account: id("a2")? },
-                DecisionReason::Selected {
-                    tier: Tier::Headroom
-                }
+            start(vec![far.clone(), soon.clone()])?.as_deref(),
+            Some("soon")
+        );
+        // An account far from its reset is not drained while expiring capacity exists, even
+        // though it has more headroom.
+        let assessed = assess(&far, NOW, THRESHOLD, ModelFamily::Any).map(|a| a.score);
+        let urgent = assess(&soon, NOW, THRESHOLD, ModelFamily::Any).map(|a| a.score);
+        assert!(urgent > assessed, "{urgent:?} > {assessed:?}");
+        Ok(())
+    }
+
+    /// AC-ROT-9: concurrent tasks spread over accounts in proportion to their urgency.
+    #[test]
+    fn concurrent_tasks_spread_over_the_pool() -> Result<(), IdError> {
+        // a: 2 points/h needed, b: 1.5 points/h needed.
+        let mut a = account("a", usage(0.0, 58.0, Some(20)))?;
+        let mut b = account("b", usage(0.0, 68.0, Some(20)))?;
+        let mut placed = Vec::new();
+        for _ in 0..4 {
+            let chosen = start(vec![a.clone(), b.clone()])?.unwrap_or_default();
+            if chosen == "a" {
+                a.in_use += 1;
+            } else {
+                b.in_use += 1;
+            }
+            placed.push(chosen);
+        }
+        assert_eq!(placed, ["a", "b", "a", "b"]);
+        Ok(())
+    }
+
+    /// AC-ROT-9: equal scores go to the capacity that expires soonest.
+    #[test]
+    fn ties_go_to_the_capacity_that_expires_soonest() -> Result<(), IdError> {
+        let fresh = |name: &str, five_resets: Option<i64>| {
+            account(
+                name,
+                AccountUsage {
+                    primary: Some(window(0.0, five_resets)),
+                    secondary: Some(window(20.0, None)),
+                    ..AccountUsage::default()
+                },
             )
+        };
+        // Same weekly picture; "running" has a 5-hour window that ends in an hour.
+        assert_eq!(
+            start(vec![fresh("idle", None)?, fresh("running", Some(1))?])?.as_deref(),
+            Some("running")
+        );
+        // Same everything: the account id decides, deterministically.
+        assert_eq!(
+            start(vec![fresh("z", None)?, fresh("m", None)?])?.as_deref(),
+            Some("m")
         );
         Ok(())
     }
 
     #[test]
-    fn proactive_stays_below_threshold_and_with_unknown_usage() -> Result<(), IdError> {
-        let others = account("a2", usage(Some(0.0), None))?;
+    fn roomy_beats_tight_beats_unknown() -> Result<(), IdError> {
+        // "tight" expires much sooner (high score) but has 2 points of 5-hour room left.
+        let tight = account("tight", usage(96.0, 50.0, Some(2)))?;
+        let roomy = account("roomy", usage(10.0, 10.0, Some(160)))?;
+        let unknown = account("unknown", AccountUsage::default())?;
+        assert_eq!(
+            start(vec![tight.clone(), roomy.clone(), unknown.clone()])?.as_deref(),
+            Some("roomy")
+        );
+        assert_eq!(
+            start(vec![tight.clone(), unknown.clone()])?.as_deref(),
+            Some("tight")
+        );
+        assert_eq!(start(vec![unknown])?.as_deref(), Some("unknown"));
+        Ok(())
+    }
+
+    /// AC-ROT-2: at 98 % of either window the task moves at the boundary; below it stays.
+    #[test]
+    fn proactive_switch_at_98_percent_of_either_window() -> Result<(), IdError> {
+        let other = account("b", usage(0.0, 0.0, Some(100)))?;
+        for current in [usage(98.0, 10.0, Some(100)), usage(10.0, 98.0, Some(100))] {
+            let rotation = input(Some("a"), vec![account("a", current)?, other.clone()])?;
+            assert_eq!(
+                decide(&rotation, Trigger::Proactive),
+                (
+                    Decision::Switch { account: id("b")? },
+                    DecisionReason::Selected { tier: Tier::Roomy }
+                )
+            );
+        }
         let below = input(
-            Some("a1"),
-            vec![account("a1", usage(Some(98.9), None))?, others.clone()],
+            Some("a"),
+            vec![account("a", usage(97.9, 97.9, Some(100)))?, other.clone()],
         )?;
         assert_eq!(
             decide(&below, Trigger::Proactive),
             (Decision::Stay, DecisionReason::CurrentUsable)
         );
         let unknown = input(
-            Some("a1"),
-            vec![account("a1", AccountUsage::default())?, others],
+            Some("a"),
+            vec![account("a", AccountUsage::default())?, other],
         )?;
         assert_eq!(
             decide(&unknown, Trigger::Proactive),
@@ -442,96 +576,109 @@ mod tests {
         Ok(())
     }
 
+    /// AC-ROT-10: every account at 98 % or limited → wait until the earliest reset.
     #[test]
-    fn proactive_keeps_a_working_account_without_alternative() -> Result<(), IdError> {
-        let soft = input(Some("a1"), vec![account("a1", usage(Some(99.5), None))?])?;
-        assert_eq!(
-            decide(&soft, Trigger::Proactive),
-            (Decision::Stay, DecisionReason::NoAlternativeBelowLimit)
-        );
-        let hard = input(
-            Some("a1"),
-            vec![account("a1", usage(Some(100.0), Some(NOW.0 + 5_000)))?],
-        )?;
-        assert_eq!(
-            decide(&hard, Trigger::Proactive).0,
-            Decision::Wait {
-                until: Some(Timestamp(NOW.0 + 5_000))
-            }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn limit_reached_always_moves_off_current_even_with_stale_headroom() -> Result<(), IdError> {
+    fn an_exhausted_pool_waits_until_the_earliest_reset() -> Result<(), IdError> {
+        let limited = AccountUsage {
+            limit_reached: true,
+            limit_resets_at: Some(NOW.plus_millis(3 * HOUR)),
+            ..AccountUsage::default()
+        };
         let rotation = input(
-            Some("a1"),
+            Some("a"),
             vec![
-                account("a1", usage(Some(5.0), None))?,
-                account("a2", AccountUsage::default())?,
+                account("a", usage(98.5, 40.0, Some(100)))?,
+                account("b", usage(10.0, 99.0, Some(30)))?,
+                account("c", limited)?,
             ],
         )?;
-        let (decision, reason) = decide(&rotation, Trigger::LimitReached);
-        assert_eq!(switched_to(&decision), Some("a2"));
+        // a's 5-hour window resets in 2 h (the earliest), b's week in 30 h, c's limit in 3 h.
+        let expected = (
+            Decision::Wait {
+                until: Some(NOW.plus_millis(2 * HOUR)),
+            },
+            DecisionReason::NoCapacity,
+        );
+        assert_eq!(decide(&rotation, Trigger::Proactive), expected);
+        assert_eq!(decide(&rotation, Trigger::Start), expected);
+        assert_eq!(decide(&rotation, Trigger::LimitReached), expected);
+        // Two hours later a's window has reset: the paused task stays on it.
+        let later = RotationInput {
+            now: NOW.plus_millis(2 * HOUR),
+            ..rotation
+        };
         assert_eq!(
-            reason,
-            DecisionReason::Selected {
-                tier: Tier::UnknownUsage
+            decide(&later, Trigger::Proactive),
+            (Decision::Stay, DecisionReason::CurrentUsable)
+        );
+        Ok(())
+    }
+
+    /// AC-ROT-14: a single subscription works — chosen, paused at 98 %, chosen after its reset.
+    #[test]
+    fn one_account_alone_still_works() -> Result<(), IdError> {
+        let only = account("only", usage(30.0, 30.0, Some(80)))?;
+        assert_eq!(start(vec![only])?.as_deref(), Some("only"));
+        let full = input(
+            Some("only"),
+            vec![account("only", usage(98.0, 30.0, Some(80)))?],
+        )?;
+        assert_eq!(
+            decide(&full, Trigger::Proactive).0,
+            Decision::Wait {
+                until: Some(NOW.plus_millis(2 * HOUR))
             }
         );
-        Ok(())
-    }
-
-    #[test]
-    fn known_headroom_beats_unknown_then_priority_in_use_and_id() -> Result<(), IdError> {
-        let mut unknown_preferred = account("a-unknown", AccountUsage::default())?;
-        unknown_preferred.priority = -10;
-        let mut known_low_priority = account("a-known", usage(Some(80.0), None))?;
-        known_low_priority.priority = 5;
-        let rotation = input(None, vec![unknown_preferred, known_low_priority])?;
+        let after = RotationInput {
+            now: NOW.plus_millis(2 * HOUR),
+            ..full
+        };
+        assert_eq!(decide(&after, Trigger::Proactive).0, Decision::Stay);
+        assert_eq!(switched_to(&decide(&after, Trigger::Start).0), Some("only"));
+        let none = input(None, Vec::new())?;
         assert_eq!(
-            switched_to(&decide(&rotation, Trigger::Start).0),
-            Some("a-known")
+            decide(&none, Trigger::Start),
+            (Decision::Wait { until: None }, DecisionReason::NoCapacity)
         );
-
-        let mut high = account("b", usage(Some(50.0), None))?;
-        high.priority = 1;
-        let mut busy = account("c", usage(Some(50.0), None))?;
-        busy.in_use = 2;
-        let idle_z = account("z", usage(Some(50.0), None))?;
-        let idle_d = account("d", usage(Some(50.0), None))?;
-        let rotation = input(
-            None,
-            vec![high.clone(), busy.clone(), idle_z.clone(), idle_d],
-        )?;
-        assert_eq!(switched_to(&decide(&rotation, Trigger::Start).0), Some("d"));
-        let rotation = input(None, vec![high.clone(), busy.clone(), idle_z])?;
-        assert_eq!(switched_to(&decide(&rotation, Trigger::Start).0), Some("z"));
-        let rotation = input(None, vec![high, busy])?;
-        assert_eq!(switched_to(&decide(&rotation, Trigger::Start).0), Some("c"));
         Ok(())
     }
 
     #[test]
-    fn disabled_and_unhealthy_accounts_are_never_chosen() -> Result<(), IdError> {
-        let mut disabled = account("a2", usage(Some(0.0), None))?;
-        disabled.enabled = false;
-        let mut unhealthy = account("a3", usage(Some(0.0), None))?;
-        unhealthy.healthy = false;
+    fn a_model_cap_binds_only_tasks_of_that_model() -> Result<(), IdError> {
+        let capped = AccountUsage {
+            weekly_opus: Some(window(99.0, Some(40))),
+            ..usage(10.0, 10.0, Some(100))
+        };
+        let other = account("b", usage(50.0, 60.0, Some(100)))?;
+        let mut rotation = input(Some("a"), vec![account("a", capped)?, other])?;
+        assert_eq!(decide(&rotation, Trigger::Proactive).0, Decision::Stay);
+        rotation.family = ModelFamily::Opus;
+        assert_eq!(
+            switched_to(&decide(&rotation, Trigger::Proactive).0),
+            Some("b")
+        );
+        assert_eq!(ModelFamily::of(Some("claude-opus-4-5")), ModelFamily::Opus);
+        assert_eq!(ModelFamily::of(Some("sonnet")), ModelFamily::Sonnet);
+        assert_eq!(ModelFamily::of(Some("haiku")), ModelFamily::Any);
+        assert_eq!(ModelFamily::of(None), ModelFamily::Any);
+        Ok(())
+    }
+
+    #[test]
+    fn limit_reached_always_moves_off_current() -> Result<(), IdError> {
         let rotation = input(
             Some("a1"),
             vec![
-                account("a1", usage(Some(100.0), None))?,
-                disabled,
-                unhealthy,
+                account("a1", usage(5.0, 5.0, None))?,
+                account("a2", AccountUsage::default())?,
             ],
         )?;
         assert_eq!(
             decide(&rotation, Trigger::LimitReached),
             (
-                Decision::Wait { until: None },
-                DecisionReason::NoCapacity {
-                    manual_reset_candidates: vec![]
+                Decision::Switch { account: id("a2")? },
+                DecisionReason::Selected {
+                    tier: Tier::UnknownUsage
                 }
             )
         );
@@ -539,127 +686,42 @@ mod tests {
     }
 
     #[test]
-    fn ac_rot_3_an_account_whose_window_reset_is_chosen() -> Result<(), IdError> {
+    fn unhealthy_accounts_are_never_chosen() -> Result<(), IdError> {
+        let mut broken = account("a2", usage(0.0, 0.0, None))?;
+        broken.healthy = false;
         let rotation = input(
             Some("a1"),
-            vec![
-                account("a1", usage(Some(100.0), Some(NOW.0 + 60_000)))?,
-                account("a2", usage(Some(100.0), Some(NOW.0 - 1)))?,
-            ],
+            vec![account("a1", usage(100.0, 0.0, None))?, broken],
         )?;
-        let (decision, reason) = decide(&rotation, Trigger::LimitReached);
-        assert_eq!(switched_to(&decision), Some("a2"));
         assert_eq!(
-            reason,
-            DecisionReason::Selected {
-                tier: Tier::WindowReset
-            }
+            decide(&rotation, Trigger::LimitReached),
+            (
+                Decision::Wait {
+                    until: Some(NOW.plus_millis(2 * HOUR))
+                },
+                DecisionReason::NoCapacity
+            )
         );
         Ok(())
     }
 
     #[test]
-    fn reset_limit_flag_counts_as_window_reset() -> Result<(), IdError> {
-        let reset_limit = AccountUsage {
-            limit_reached: true,
-            limit_resets_at: Some(NOW),
+    fn a_reset_window_counts_as_fresh() -> Result<(), IdError> {
+        // a2's snapshot showed 100 % but its 5-hour reset has passed.
+        let reset = AccountUsage {
+            primary: Some(window(100.0, Some(-1))),
+            secondary: Some(window(30.0, Some(50))),
             ..AccountUsage::default()
         };
         let rotation = input(
             Some("a1"),
             vec![
-                account("a1", usage(Some(100.0), None))?,
-                account("a2", reset_limit)?,
-            ],
-        )?;
-        let (decision, reason) = decide(&rotation, Trigger::LimitReached);
-        assert_eq!(switched_to(&decision), Some("a2"));
-        assert_eq!(
-            reason,
-            DecisionReason::Selected {
-                tier: Tier::WindowReset
-            }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn ac_rot_6_wait_for_earliest_reset_then_resume_when_it_passes() -> Result<(), IdError> {
-        let accounts = vec![
-            account("a1", usage(Some(100.0), Some(NOW.0 + 90_000)))?,
-            account("a2", usage(Some(100.0), Some(NOW.0 + 30_000)))?,
-            account("a3", usage(Some(100.0), None))?,
-        ];
-        let rotation = input(Some("a1"), accounts)?;
-        assert_eq!(
-            decide(&rotation, Trigger::LimitReached).0,
-            Decision::Wait {
-                until: Some(Timestamp(NOW.0 + 30_000))
-            }
-        );
-        let later = RotationInput {
-            now: Timestamp(NOW.0 + 30_000),
-            ..rotation
-        };
-        let (decision, reason) = decide(&later, Trigger::Start);
-        assert_eq!(switched_to(&decision), Some("a2"));
-        assert_eq!(
-            reason,
-            DecisionReason::Selected {
-                tier: Tier::WindowReset
-            }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn wait_until_unknown_when_no_reset_is_known_and_lists_manual_resets() -> Result<(), IdError> {
-        let mut with_manual = account("a2", usage(Some(100.0), None))?;
-        with_manual.manual_resets_available = Some(1);
-        let mut disabled_with_reset = account("a3", usage(Some(100.0), Some(NOW.0 + 1)))?;
-        disabled_with_reset.enabled = false;
-        let rotation = input(
-            Some("a1"),
-            vec![
-                account("a1", usage(Some(100.0), None))?,
-                with_manual,
-                disabled_with_reset,
+                account("a1", usage(100.0, 0.0, Some(60)))?,
+                account("a2", reset)?,
             ],
         )?;
         assert_eq!(
-            decide(&rotation, Trigger::LimitReached),
-            (
-                Decision::Wait { until: None },
-                DecisionReason::NoCapacity {
-                    manual_reset_candidates: vec![id("a2")?]
-                }
-            )
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn start_keeps_usable_current_and_replaces_exhausted_current() -> Result<(), IdError> {
-        let rotation = input(
-            Some("a1"),
-            vec![
-                account("a1", usage(Some(30.0), None))?,
-                account("a2", usage(Some(0.0), None))?,
-            ],
-        )?;
-        assert_eq!(
-            decide(&rotation, Trigger::Start),
-            (Decision::Stay, DecisionReason::CurrentUsable)
-        );
-        let exhausted = input(
-            Some("a1"),
-            vec![
-                account("a1", usage(Some(99.0), None))?,
-                account("a2", usage(Some(0.0), None))?,
-            ],
-        )?;
-        assert_eq!(
-            switched_to(&decide(&exhausted, Trigger::Start).0),
+            switched_to(&decide(&rotation, Trigger::LimitReached).0),
             Some("a2")
         );
         Ok(())
@@ -667,23 +729,25 @@ mod tests {
 
     #[test]
     fn manual_account_choice_rules() -> Result<(), IdError> {
-        let mut disabled = account("a3", usage(Some(0.0), None))?;
-        disabled.enabled = false;
+        let mut broken = account("a3", usage(0.0, 0.0, None))?;
+        broken.healthy = false;
         let rotation = input(
             Some("a1"),
             vec![
-                account("a1", usage(Some(10.0), None))?,
-                account("a2", usage(Some(100.0), Some(NOW.0 + 1_000)))?,
-                disabled,
+                account("a1", usage(10.0, 10.0, None))?,
+                account("a2", usage(100.0, 0.0, Some(10)))?,
+                broken,
                 account("a4", AccountUsage::default())?,
             ],
         )?;
+        let manual = |name: &str| -> Result<Trigger, IdError> {
+            Ok(Trigger::Manual {
+                account: Some(id(name)?),
+            })
+        };
         assert_eq!(
-            decide(&rotation, manual("a2")?),
-            (
-                Decision::Stay,
-                DecisionReason::ManualRefused(Refusal::Exhausted)
-            )
+            decide(&rotation, manual("a2")?).1,
+            DecisionReason::ManualRefused(Refusal::Exhausted)
         );
         assert_eq!(
             decide(&rotation, manual("a3")?).1,
@@ -704,21 +768,9 @@ mod tests {
                 DecisionReason::ManualChoice
             )
         );
-        Ok(())
-    }
-
-    #[test]
-    fn rotate_now_picks_the_best_other_account_or_refuses() -> Result<(), IdError> {
-        let rotation = input(
-            Some("a1"),
-            vec![
-                account("a1", usage(Some(10.0), None))?,
-                account("a2", usage(Some(40.0), None))?,
-            ],
-        )?;
         let now = Trigger::Manual { account: None };
-        assert_eq!(switched_to(&decide(&rotation, now.clone()).0), Some("a2"));
-        let alone = input(Some("a1"), vec![account("a1", usage(Some(10.0), None))?])?;
+        assert_eq!(switched_to(&decide(&rotation, now.clone()).0), Some("a4"));
+        let alone = input(Some("a1"), vec![account("a1", usage(10.0, 10.0, None))?])?;
         assert_eq!(
             decide(&alone, now),
             (
@@ -731,15 +783,21 @@ mod tests {
 
     #[test]
     fn unknown_current_account_is_treated_as_unusable() -> Result<(), IdError> {
-        let rotation = input(Some("gone"), vec![account("a2", usage(Some(1.0), None))?])?;
+        let rotation = input(Some("gone"), vec![account("a2", usage(1.0, 1.0, None))?])?;
         assert_eq!(
             switched_to(&decide(&rotation, Trigger::Proactive).0),
             Some("a2")
         );
-        assert_eq!(
-            switched_to(&decide(&rotation, Trigger::Start).0),
-            Some("a2")
-        );
         Ok(())
+    }
+
+    #[test]
+    fn score_is_headroom_per_hour_shared_by_the_tasks() {
+        assert!((score(48.0, 10.0, 0) - 4.8).abs() < 1e-12);
+        assert!((score(48.0, 10.0, 1) - 2.4).abs() < 1e-12);
+        // Bounds: a reset "now" counts as a quarter hour, an unknown one as a week.
+        assert!((score(10.0, 0.0, 0) - 40.0).abs() < 1e-12);
+        assert!((score(84.0, 1_000.0, 0) - 0.5).abs() < 1e-12);
+        assert!(score(-3.0, 5.0, 0).abs() < 1e-12);
     }
 }

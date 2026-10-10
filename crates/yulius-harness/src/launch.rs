@@ -41,6 +41,13 @@ pub const CLAUDE_MCP_FILE: &str = "mcp.json";
 pub const PRIVATE_FILE_MODE: u32 = 0o600;
 /// Claude hook timeout in seconds; the hook client itself gives up after 5 s (fail-open).
 pub const CLAUDE_HOOK_TIMEOUT_SECONDS: u64 = 15;
+/// Hook events Yulius may hold while no subscription has capacity (SPEC-002 ADR-16): the turn
+/// boundaries.
+pub const CLAUDE_HELD_HOOK_EVENTS: [&str; 2] = ["Stop", "UserPromptSubmit"];
+/// Claude's timeout for the held events: an hour longer than the hook client's own hold bound
+/// ([`crate::hook_client::HOLD_MAX`], 8 days), so the client always gives up first and fails
+/// open, and far below the 24.8 days at which a Node.js timer would overflow and fire at once.
+pub const CLAUDE_HELD_HOOK_TIMEOUT_SECONDS: u64 = 8 * 24 * 3600 + 3600;
 
 /// How the session starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -386,12 +393,17 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
 
     let mut hooks = Map::new();
     for event in CLAUDE_HOOK_EVENTS {
+        let timeout = if CLAUDE_HELD_HOOK_EVENTS.contains(&event) {
+            CLAUDE_HELD_HOOK_TIMEOUT_SECONDS
+        } else {
+            CLAUDE_HOOK_TIMEOUT_SECONDS
+        };
         hooks.insert(
             event.to_owned(),
             json!([{ "hooks": [{
                 "type": "command",
                 "command": hook_command(request, "claude", event)?,
-                "timeout": CLAUDE_HOOK_TIMEOUT_SECONDS
+                "timeout": timeout
             }] }]),
         );
     }

@@ -139,6 +139,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/analytics/summary", get(analytics::summary))
         .route("/api/analytics/tasks", get(analytics::tasks))
         .route("/api/status", get(status::status))
+        .route("/api/capacity", get(status::capacity))
         .route("/api/github/repositories", get(projects::repositories))
         .route("/api/templates", get(projects::templates))
         .route("/api/sandboxes", post(projects::create))

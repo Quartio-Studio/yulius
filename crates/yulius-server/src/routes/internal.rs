@@ -7,6 +7,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use yulius_app::error::AppError;
+use yulius_app::hooks::HookReply;
 use yulius_contracts::hooks::HookInput;
 
 use crate::AppState;
@@ -32,7 +33,9 @@ fn status_of(err: &AppError) -> StatusCode {
 }
 
 /// Hook forwarding: the body is the CLI's hook JSON; the response body is printed by the hook
-/// client as the hook's stdout (empty = no decision).
+/// client as the hook's stdout (empty = no decision). `202 Accepted` with `Retry-After` holds
+/// the agent at its boundary: the hook client sends the same request again after that many
+/// seconds (subscription pool pause, SPEC-002 §7.5).
 pub async fn hook(
     State(app): State<AppState>,
     Path((harness, event)): Path<(String, String)>,
@@ -44,8 +47,13 @@ pub async fn hook(
     };
     let input: HookInput = serde_json::from_slice(&body).unwrap_or_default();
     match app.hook_event(token, &harness, &event, &input).await {
-        Ok(output) if output.is_empty() => StatusCode::OK.into_response(),
-        Ok(output) => Json(output).into_response(),
+        Ok(HookReply::Hold { retry_after_secs }) => (
+            StatusCode::ACCEPTED,
+            [(header::RETRY_AFTER, retry_after_secs.to_string())],
+        )
+            .into_response(),
+        Ok(HookReply::Output(output)) if output.is_empty() => StatusCode::OK.into_response(),
+        Ok(HookReply::Output(output)) => Json(output).into_response(),
         Err(err) => {
             tracing::debug!(error = %err, %harness, %event, "hook refused");
             status_of(&err).into_response()

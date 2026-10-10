@@ -191,8 +191,6 @@ async fn seed_records(app: &App) -> Result<(SandboxId, UserId), Box<dyn std::err
             provider: Provider::Anthropic,
             label: "Claude test".into(),
             credential: Some(app.deps.crypto.seal(b"sk-ant-oat01-test-credential")?),
-            priority: 0,
-            enabled: true,
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,
@@ -435,11 +433,7 @@ fn real_claude_tui_reaches_the_prompt_inside_ptyhost() -> TestResult {
     Ok(())
 }
 
-async fn add_account(
-    app: &App,
-    id: &str,
-    priority: i32,
-) -> Result<AccountId, Box<dyn std::error::Error>> {
+async fn add_account(app: &App, id: &str) -> Result<AccountId, Box<dyn std::error::Error>> {
     let account = AccountId::parse(id)?;
     app.deps
         .store
@@ -452,8 +446,6 @@ async fn add_account(
                     .crypto
                     .seal(b"sk-ant-oat01-second-test-credential")?,
             ),
-            priority,
-            enabled: true,
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,
@@ -527,7 +519,7 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
         };
         let app = build_full(&data, Some(&fake), agent, 8)?;
         let (sandbox, user) = seed_records(&app).await?;
-        add_account(&app, "a-claude-2", 1).await?;
+        add_account(&app, "a-claude-2").await?;
         seed_repo(&data, &sandbox)?;
         let id = new_task(&app, &sandbox, &user, "Rotation").await?;
         wait_for("the banner", Duration::from_secs(30), || {
@@ -638,7 +630,7 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
         };
         let app = build_full(&data, Some(&fake), agent, 8)?;
         let (sandbox, user) = seed_records(&app).await?;
-        add_account(&app, "a-claude-2", 1).await?;
+        add_account(&app, "a-claude-2").await?;
         seed_repo(&data, &sandbox)?;
         let id = app
             .create_task_internal(NewTask {
@@ -1077,8 +1069,8 @@ fn messages_wake_idle_tasks_and_a_normal_exit_closes_the_task() -> TestResult {
     Ok(())
 }
 
-/// The first account (seeded by [`seed_records`]) is at 99.5 % of its five-hour window; others
-/// report no usage.
+/// The first account (seeded by [`seed_records`]) is at 98 % of its five-hour window, the pool's
+/// switch threshold (F 2026-10-10); others report no usage.
 struct FirstAccountNearLimit;
 
 #[async_trait::async_trait]
@@ -1093,7 +1085,7 @@ impl UsageProbe for FirstAccountNearLimit {
         }
         Ok(AccountUsage {
             primary: Some(UsageWindow {
-                used_percent: Some(99.5),
+                used_percent: Some(98.0),
                 window_minutes: Some(300),
                 resets_at: Some(Timestamp(4_000_000_000_000)),
             }),
@@ -1102,7 +1094,7 @@ impl UsageProbe for FirstAccountNearLimit {
     }
 }
 
-/// AC-ROT-2 (proactive path): refreshed usage puts the task's account at the 99 % threshold; at
+/// AC-ROT-2 (proactive path): refreshed usage puts the task's account at the 98 % threshold; at
 /// the next turn boundary the session moves to the next Claude account with a native resume of
 /// the same session.
 #[test]
@@ -1125,7 +1117,7 @@ fn usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
             Arc::new(FirstAccountNearLimit),
         )?;
         let (sandbox, user) = seed_records(&app).await?;
-        add_account(&app, "a-claude-2", 1).await?;
+        add_account(&app, "a-claude-2").await?;
         seed_repo(&data, &sandbox)?;
         let id = new_task(&app, &sandbox, &user, "Proactive").await?;
         wait_for("the banner", Duration::from_secs(30), || {

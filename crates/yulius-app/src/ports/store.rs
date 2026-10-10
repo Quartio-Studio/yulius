@@ -341,15 +341,8 @@ pub trait AccountStore: Send + Sync {
     async fn account(&self, id: &AccountId) -> AppResult<Option<AccountRecord>>;
     /// All accounts.
     async fn accounts(&self) -> AppResult<Vec<AccountRecord>>;
-    /// Updates label/priority/enabled.
-    async fn update_account(
-        &self,
-        id: &AccountId,
-        label: Option<&str>,
-        priority: Option<i32>,
-        enabled: Option<bool>,
-        at: Timestamp,
-    ) -> AppResult<()>;
+    /// Renames an account.
+    async fn update_account(&self, id: &AccountId, label: &str, at: Timestamp) -> AppResult<()>;
     /// Stores the sealed credential and status.
     async fn set_account_credential(
         &self,

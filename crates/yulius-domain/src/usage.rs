@@ -38,13 +38,51 @@ impl UsageWindow {
     }
 }
 
+/// Which model family a task runs, for the per-model weekly caps (`seven_day_opus`,
+/// `seven_day_sonnet`). A task without an explicit Opus or Sonnet model is bound only by the
+/// account-wide windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ModelFamily {
+    /// No per-model cap applies (default model, Haiku, unknown names).
+    #[default]
+    Any,
+    /// An Opus model: the weekly Opus cap binds too.
+    Opus,
+    /// A Sonnet model: the weekly Sonnet cap binds too.
+    Sonnet,
+}
+
+impl ModelFamily {
+    /// The family of a task's model setting (`None` = the CLI's default model).
+    #[must_use]
+    pub fn of(model: Option<&str>) -> Self {
+        let Some(model) = model else {
+            return Self::Any;
+        };
+        let lower = model.to_ascii_lowercase();
+        if lower.contains("opus") {
+            Self::Opus
+        } else if lower.contains("sonnet") {
+            Self::Sonnet
+        } else {
+            Self::Any
+        }
+    }
+}
+
 /// An account's latest usage snapshot. `Default` is "nothing known".
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct AccountUsage {
-    /// Short window (for example the 5-hour window); `None` when not reported.
+    /// Short window (Claude's 5-hour window, started by the first request); `None` when not
+    /// reported.
     pub primary: Option<UsageWindow>,
-    /// Long window (for example the weekly window); `None` when not reported.
+    /// Long window (Claude's weekly window, a fixed reset per account); `None` when not
+    /// reported.
     pub secondary: Option<UsageWindow>,
+    /// Weekly cap of Opus models (`seven_day_opus`); binds only tasks that run Opus.
+    pub weekly_opus: Option<UsageWindow>,
+    /// Weekly cap of Sonnet models (`seven_day_sonnet`); binds only tasks that run Sonnet.
+    pub weekly_sonnet: Option<UsageWindow>,
     /// The provider reported that a usage limit was reached.
     pub limit_reached: bool,
     /// When the reached limit resets; `None` when unknown.
@@ -54,8 +92,32 @@ pub struct AccountUsage {
 }
 
 impl AccountUsage {
+    /// The windows that bind a task of `family`: the 5-hour and weekly windows, plus the
+    /// family's weekly cap.
+    pub fn binding_windows(&self, family: ModelFamily) -> impl Iterator<Item = &UsageWindow> {
+        let model = match family {
+            ModelFamily::Any => None,
+            ModelFamily::Opus => self.weekly_opus.as_ref(),
+            ModelFamily::Sonnet => self.weekly_sonnet.as_ref(),
+        };
+        self.primary
+            .iter()
+            .chain(self.secondary.iter())
+            .chain(model)
+    }
+
+    /// The weekly windows that bind a task of `family` (account-wide and the family's cap).
+    pub fn weekly_windows(&self, family: ModelFamily) -> impl Iterator<Item = &UsageWindow> {
+        let model = match family {
+            ModelFamily::Any => None,
+            ModelFamily::Opus => self.weekly_opus.as_ref(),
+            ModelFamily::Sonnet => self.weekly_sonnet.as_ref(),
+        };
+        self.secondary.iter().chain(model)
+    }
+
     fn windows(&self) -> impl Iterator<Item = &UsageWindow> {
-        self.primary.iter().chain(self.secondary.iter())
+        self.binding_windows(ModelFamily::Any)
     }
 
     /// Highest reported window percentage, ignoring reset times; `None` when no window
@@ -71,7 +133,13 @@ impl AccountUsage {
     /// `None` when no window percentage is known.
     #[must_use]
     pub fn current_used_percent(&self, now: Timestamp) -> Option<f64> {
-        self.windows()
+        self.current_used_percent_for(now, ModelFamily::Any)
+    }
+
+    /// [`Self::current_used_percent`] over the windows binding `family`.
+    #[must_use]
+    pub fn current_used_percent_for(&self, now: Timestamp, family: ModelFamily) -> Option<f64> {
+        self.binding_windows(family)
             .filter_map(|w| w.current_percent(now))
             .reduce(f64::max)
     }
@@ -86,9 +154,15 @@ impl AccountUsage {
     /// has not reset is at or above `threshold` percent.
     #[must_use]
     pub fn exhausted(&self, now: Timestamp, threshold: f64) -> bool {
+        self.exhausted_for(now, threshold, ModelFamily::Any)
+    }
+
+    /// [`Self::exhausted`] for a task of `family` (its model's weekly cap binds too).
+    #[must_use]
+    pub fn exhausted_for(&self, now: Timestamp, threshold: f64, family: ModelFamily) -> bool {
         self.limit_in_effect(now)
             || self
-                .current_used_percent(now)
+                .current_used_percent_for(now, family)
                 .is_some_and(|p| p >= threshold)
     }
 
@@ -100,27 +174,29 @@ impl AccountUsage {
             || self.windows().any(|w| w.is_reset(now))
     }
 
-    /// `true` when the snapshot showed the account exhausted (ignoring reset times) but every
-    /// cause of that exhaustion has reset by `now`.
-    #[must_use]
-    pub fn recovered_by_reset(&self, now: Timestamp, threshold: f64) -> bool {
-        let raw_exhausted =
-            self.limit_reached || self.max_used_percent().is_some_and(|p| p >= threshold);
-        raw_exhausted && !self.exhausted(now, threshold) && self.window_reset(now)
-    }
-
     /// When the account stops being exhausted: the latest reset among all causes still in
     /// effect at `now`. `None` when it is not exhausted or a blocking cause has no known reset.
     #[must_use]
     pub fn available_at(&self, now: Timestamp, threshold: f64) -> Option<Timestamp> {
-        if !self.exhausted(now, threshold) {
+        self.available_at_for(now, threshold, ModelFamily::Any)
+    }
+
+    /// [`Self::available_at`] for a task of `family`.
+    #[must_use]
+    pub fn available_at_for(
+        &self,
+        now: Timestamp,
+        threshold: f64,
+        family: ModelFamily,
+    ) -> Option<Timestamp> {
+        if !self.exhausted_for(now, threshold, family) {
             return None;
         }
         let mut latest: Option<Timestamp> = None;
         if self.limit_in_effect(now) {
             latest = Some(self.limit_resets_at?);
         }
-        for window in self.windows() {
+        for window in self.binding_windows(family) {
             if window.current_percent(now).is_some_and(|p| p >= threshold) {
                 let at = window.resets_at?;
                 latest = Some(latest.map_or(at, |l| l.max(at)));
@@ -231,7 +307,6 @@ mod tests {
         let later = Timestamp(2_000_000);
         assert!(!usage.exhausted(later, 99.0));
         assert!(usage.window_reset(later));
-        assert!(usage.recovered_by_reset(later, 99.0));
         assert_eq!(usage.current_used_percent(later), Some(40.0));
     }
 
@@ -246,7 +321,6 @@ mod tests {
         assert!(usage.exhausted(NOW, 99.0));
         assert_eq!(usage.available_at(NOW, 99.0), Some(Timestamp(1_500_000)));
         assert!(!usage.exhausted(Timestamp(1_500_000), 99.0));
-        assert!(usage.recovered_by_reset(Timestamp(1_500_000), 99.0));
 
         let unknown_reset = AccountUsage {
             limit_reached: true,
