@@ -11,7 +11,8 @@ use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db};
 
-const COLS: &str = "id, provider, label, credential, priority, enabled, status, usage, last_error, created_at, updated_at";
+const COLS: &str =
+    "id, provider, label, credential, status, usage, last_error, created_at, updated_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
     let id: String = row.get("id")?;
@@ -22,8 +23,6 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
         provider: Provider::parse(&provider).map_err(|_| bad_column("provider", &provider))?,
         label: row.get("label")?,
         credential: row.get::<_, Option<Vec<u8>>>("credential")?.map(Sealed),
-        priority: row.get("priority")?,
-        enabled: row.get("enabled")?,
         status: AccountStatus::parse(&status),
         usage_json: row.get("usage")?,
         last_error: row.get("last_error")?,
@@ -38,14 +37,14 @@ impl AccountStore for SqliteStore {
         let a = a.clone();
         self.call(move |c| {
             c.execute(
-                &format!("INSERT INTO accounts ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
+                &format!(
+                    "INSERT INTO accounts ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+                ),
                 params![
                     a.id.as_str(),
                     a.provider.as_str(),
                     a.label,
                     a.credential.map(|s| s.0),
-                    a.priority,
-                    a.enabled,
                     a.status.as_str(),
                     a.usage_json,
                     a.last_error,
@@ -77,7 +76,7 @@ impl AccountStore for SqliteStore {
         self.call(|c| {
             let mut stmt = c
                 .prepare(&format!(
-                    "SELECT {COLS} FROM accounts ORDER BY provider, priority, created_at"
+                    "SELECT {COLS} FROM accounts ORDER BY provider, created_at, id"
                 ))
                 .map_err(db)?;
             let rows = stmt.query_map([], from_row).map_err(db)?;
@@ -86,20 +85,12 @@ impl AccountStore for SqliteStore {
         .await
     }
 
-    async fn update_account(
-        &self,
-        id: &AccountId,
-        label: Option<&str>,
-        priority: Option<i32>,
-        enabled: Option<bool>,
-        at: Timestamp,
-    ) -> AppResult<()> {
-        let (id, label) = (id.as_str().to_owned(), label.map(str::to_owned));
+    async fn update_account(&self, id: &AccountId, label: &str, at: Timestamp) -> AppResult<()> {
+        let (id, label) = (id.as_str().to_owned(), label.to_owned());
         self.call(move |c| {
             c.execute(
-                "UPDATE accounts SET label = COALESCE(?1, label), priority = COALESCE(?2, priority), \
-                 enabled = COALESCE(?3, enabled), updated_at = ?4 WHERE id = ?5",
-                params![label, priority, enabled, at.0, id],
+                "UPDATE accounts SET label = ?1, updated_at = ?2 WHERE id = ?3",
+                params![label, at.0, id],
             )
             .map_err(db)?;
             Ok(())

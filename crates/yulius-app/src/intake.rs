@@ -291,7 +291,7 @@ impl App {
             .map_err(|_| {
                 AppError::Capacity("other split proposals are being prepared; try again".into())
             })?;
-        let account = self.choose_account(Provider::Anthropic, None).await?;
+        let account = self.pool_account(Provider::Anthropic).await?;
         let credential = self.open_credential(&account)?;
         let tasks = proposer
             .propose(&credential, prompt)

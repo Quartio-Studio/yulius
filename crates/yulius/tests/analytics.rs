@@ -129,8 +129,6 @@ async fn account(
             provider,
             label: label.into(),
             credential: Some(Sealed(vec![1, 2, 3])),
-            priority: 7,
-            enabled: true,
             status: AccountStatus::Ok,
             usage_json: usage.map(str::to_owned),
             last_error: last_error.map(str::to_owned),
@@ -751,7 +749,7 @@ async fn status_shows_vm_capacity_visible_sandboxes_and_role_scoped_accounts() -
     assert_eq!(a["status"], "ok");
     assert_eq!(a["usage"]["primary"]["used_percent"], 55.5);
     assert!(a["usage"]["secondary"].is_null());
-    for hidden in ["id", "priority", "last_error", "in_use_by"] {
+    for hidden in ["id", "last_error", "in_use_by", "priority", "enabled"] {
         assert!(
             a.get(hidden).is_none(),
             "{hidden} is for administrators only"
@@ -786,13 +784,12 @@ async fn status_shows_vm_capacity_visible_sandboxes_and_role_scoped_accounts() -
     );
     let a = by(&s["accounts"], "label", "Claude A")?;
     assert_eq!(
-        (&a["id"], &a["priority"], &a["in_use_by"], &a["last_error"]),
-        (
-            &json!("acc-a"),
-            &json!(7),
-            &json!(1),
-            &json!("synthetic failure")
-        )
+        (&a["id"], &a["in_use_by"], &a["last_error"]),
+        (&json!("acc-a"), &json!(1), &json!("synthetic failure"))
+    );
+    assert!(
+        a.get("priority").is_none() && a.get("enabled").is_none(),
+        "the pool has no priorities or switches (F 2026-10-10)"
     );
 
     let anonymous = call(

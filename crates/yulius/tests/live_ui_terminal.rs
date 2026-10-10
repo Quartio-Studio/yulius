@@ -302,8 +302,6 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
             provider: Provider::Anthropic,
             label: "Claude".into(),
             credential: Some(h.app.deps.crypto.seal(b"sk-ant-oat01-live-terminal")?),
-            priority: 0,
-            enabled: true,
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,

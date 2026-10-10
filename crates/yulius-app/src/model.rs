@@ -460,10 +460,6 @@ pub struct AccountRecord {
     pub label: String,
     /// Sealed credential (the Claude OAuth token).
     pub credential: Option<Sealed>,
-    /// Priority (lower first).
-    pub priority: i32,
-    /// Enabled.
-    pub enabled: bool,
     /// Status.
     pub status: AccountStatus,
     /// Usage snapshot JSON.
@@ -474,6 +470,88 @@ pub struct AccountRecord {
     pub created_at: Timestamp,
     /// Updated.
     pub updated_at: Timestamp,
+}
+
+/// How a task paused for lack of subscription capacity (SPEC-002 §6.1, ADR-17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PauseKind {
+    /// Held at a turn boundary (the Stop hook waits, or an agent without hooks is idle); the
+    /// process stays alive.
+    Turn,
+    /// A submitted prompt is held at the `UserPromptSubmit` hook; the process stays alive.
+    Prompt,
+    /// The CLI reported a usage limit mid-turn; the process stays alive at the limit message.
+    Limit,
+    /// No process: the task waits to start (new task, Continue, a switch that found no
+    /// account).
+    Start,
+}
+
+impl PauseKind {
+    /// Stable wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::Prompt => "prompt",
+            Self::Limit => "limit",
+            Self::Start => "start",
+        }
+    }
+
+    /// Parses a wire name (unknown names read as `start`, the kind that needs no process).
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        match text {
+            "turn" => Self::Turn,
+            "prompt" => Self::Prompt,
+            "limit" => Self::Limit,
+            _ => Self::Start,
+        }
+    }
+
+    /// Whether the agent's process stays alive during the pause.
+    #[must_use]
+    pub fn holds_process(self) -> bool {
+        !matches!(self, Self::Start)
+    }
+}
+
+/// One pause of a task for lack of capacity (`capacity_pauses`). At most one per task is open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PauseRecord {
+    /// Id.
+    pub id: String,
+    /// Task.
+    pub task_id: TaskId,
+    /// How the task is held.
+    pub kind: PauseKind,
+    /// The account the paused process runs on (`None` without a process).
+    pub account_id: Option<AccountId>,
+    /// Text for the resumed session when it resumes on another account: the held prompt
+    /// (`prompt`); `None` otherwise.
+    pub continuation: Option<String>,
+    /// When the pause began.
+    pub started_at: Timestamp,
+    /// When it ended; `None` while open.
+    pub ended_at: Option<Timestamp>,
+    /// `released`, `switched`, `started`, `cancelled`, `ended` once closed.
+    pub outcome: Option<String>,
+}
+
+/// One provider reading of one usage window (`usage_samples`), kept 8 days for the burn rate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageSampleRecord {
+    /// Account.
+    pub account_id: AccountId,
+    /// When it was read.
+    pub at: Timestamp,
+    /// `five_hour`, `seven_day`, `seven_day_opus` or `seven_day_sonnet`.
+    pub window: String,
+    /// Utilization in percent.
+    pub used_percent: f64,
+    /// When the window resets, when known.
+    pub resets_at: Option<Timestamp>,
 }
 
 /// A recorded rotation decision.

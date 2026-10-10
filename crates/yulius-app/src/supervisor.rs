@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::oneshot;
-use yulius_domain::harness::{Harness, Provider};
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
-use yulius_domain::rotation::{self, AccountView, Decision, RotationInput, Trigger};
+use yulius_domain::rotation::{self, AccountView, Decision, Trigger};
 use yulius_domain::task::{
     Activity, AttemptState, FailReason, STOP_INTERRUPT_GRACE_MS, STOP_KILL_WAIT_MS,
     STOP_TERM_GRACE_MS, StopReason, TaskEvent, TaskStatus,
@@ -30,8 +30,8 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::hub::Hub;
 use crate::model::{
-    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MetricsRecord, ProviderSessionRecord,
-    SandboxRecord, Secret, SwitchDecisionRecord, TaskMode, TaskRecord,
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MetricsRecord, PauseKind,
+    ProviderSessionRecord, SandboxRecord, Secret, SwitchDecisionRecord, TaskMode, TaskRecord,
 };
 use crate::ports::harness::{HarnessLaunch, Observation, SessionMode, UsageSnapshot};
 use crate::ports::session::{Containment, RunEvent, RunExit, RunInspection, RunWriter};
@@ -76,6 +76,9 @@ pub struct TaskRuntime {
     pub last_input_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
     pub proactive_switch: AtomicBool,
+    /// The current run called a Yulius hook: its Stop hook is the turn boundary that decides
+    /// switches and pauses, not the transcript (SPEC-002 §7.5).
+    pub(crate) hooks_seen: AtomicBool,
     /// Last seen limit reset time (ms, 0 = unknown).
     pub limit_resets_at: AtomicI64,
     /// When the current turn started (ms, 0 = no turn in progress), for active agent time.
@@ -107,6 +110,7 @@ impl TaskRuntime {
             watcher_alive: Arc::new(AtomicBool::new(false)),
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
+            hooks_seen: AtomicBool::new(false),
             limit_resets_at: AtomicI64::new(0),
             turn_started_ms: AtomicI64::new(0),
             active_ms: AtomicI64::new(0),
@@ -319,15 +323,12 @@ impl App {
             .map(|a| AccountView {
                 id: a.id.clone(),
                 provider: a.provider,
-                enabled: a.enabled,
                 healthy: matches!(a.status, AccountStatus::Ok | AccountStatus::Limited),
-                priority: a.priority,
                 usage: a
                     .usage_json
                     .as_deref()
                     .map(usage_json::from_json)
                     .unwrap_or_default(),
-                manual_resets_available: None,
                 in_use: u32::try_from(
                     live.iter()
                         .filter(|r| r.account_id.as_ref() == Some(&a.id))
@@ -338,59 +339,46 @@ impl App {
             .collect())
     }
 
-    /// When a task waiting for capacity resumes: the earliest known usage-limit reset among its
-    /// provider's accounts, as the rotation policy decides now (ROT-010). `None` while the task
-    /// is not waiting, once capacity is back, or when no reset time is known.
+    /// When a paused task resumes: the earliest known time a subscription has capacity for it
+    /// again, as the pool policy decides now (ROT-010). `None` while the task is not paused,
+    /// once capacity is back, or when no reset time is known.
     pub(crate) async fn capacity_returns_at(&self, task: &TaskRecord) -> Option<Timestamp> {
         if task.status != TaskStatus::WaitingCapacity {
             return None;
         }
-        let input = RotationInput {
-            current: None,
-            task_provider: task.harness.provider(),
-            accounts: self.account_views().await.ok()?,
-            now: self.now(),
-            threshold: rotation::DEFAULT_THRESHOLD,
-        };
+        let input = self.rotation_input(task, None).await.ok()?;
         match rotation::decide(&input, Trigger::Start).0 {
             Decision::Wait { until } => until,
             Decision::Switch { .. } | Decision::Stay => None,
         }
     }
 
+    /// The account a new attempt of `task` runs on (placement, ROT-004), or `None` when no
+    /// subscription has capacity and the task must pause (ROT-010). A requested account is
+    /// honoured when it is usable and refused otherwise (ROT-007).
     pub(crate) async fn choose_account(
         &self,
-        provider: Provider,
+        task: &TaskRecord,
         requested: Option<&AccountId>,
-    ) -> AppResult<AccountRecord> {
-        let views = self.account_views().await?;
-        if !views.iter().any(|v| v.provider == provider) {
-            return Err(AppError::Conflict(
-                "no Claude account is connected; an instance administrator can add one".into(),
-            ));
-        }
+    ) -> AppResult<Option<AccountRecord>> {
         let trigger = match requested {
             Some(id) => Trigger::Manual {
                 account: Some(id.clone()),
             },
             None => Trigger::Start,
         };
-        let input = RotationInput {
-            current: None,
-            task_provider: provider,
-            accounts: views,
-            now: self.now(),
-            threshold: rotation::DEFAULT_THRESHOLD,
-        };
+        let input = self.rotation_input(task, None).await?;
         match rotation::decide(&input, trigger) {
-            (Decision::Switch { account, .. }, _) => self
-                .deps
-                .store
-                .account(&account)
-                .await?
-                .ok_or(AppError::NotFound),
-            (_, reason) => Err(AppError::Capacity(format!(
-                "no account has capacity right now ({reason:?})"
+            (Decision::Switch { account, .. }, _) => Ok(Some(
+                self.deps
+                    .store
+                    .account(&account)
+                    .await?
+                    .ok_or(AppError::NotFound)?,
+            )),
+            (Decision::Wait { .. }, _) => Ok(None),
+            (Decision::Stay, reason) => Err(AppError::Capacity(format!(
+                "the requested account cannot take the task right now ({reason:?})"
             ))),
         }
     }
@@ -626,6 +614,9 @@ impl App {
         if task.status != TaskStatus::Switching && task.status != TaskStatus::Starting {
             let next = match task.status {
                 TaskStatus::Queued => TaskStatus::Starting,
+                TaskStatus::WaitingCapacity => TaskStatus::WaitingCapacity
+                    .apply(TaskEvent::CapacityGranted)
+                    .unwrap_or(TaskStatus::Starting),
                 s if s.is_resting() => s
                     .apply(TaskEvent::ContinueRequested)
                     .unwrap_or(TaskStatus::Starting),
@@ -648,9 +639,13 @@ impl App {
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
         let harness = task.harness;
-        let account = self
-            .choose_account(harness.provider(), requested.as_ref())
-            .await?;
+        let Some(account) = self.choose_account(&task, requested.as_ref()).await? else {
+            // No subscription has capacity: the task waits before starting, without a process
+            // (ROT-010); the resume loop starts it when capacity returns.
+            self.pause_task(&task.id, PauseKind::Start, None, None)
+                .await?;
+            return Ok(());
+        };
         let credential = self.open_credential(&account)?;
         let home = self.sandbox_home(&sandbox.id);
         std::fs::create_dir_all(&home).map_err(AppError::internal)?;
@@ -1069,6 +1064,7 @@ impl App {
                 .transition_task(task_id, Some(task.status), next, None, now)
                 .await;
         }
+        self.end_pause(task_id, "ended").await;
         if let Some(rt) = self.existing_runtime(task_id) {
             rt.watcher_alive.store(false, Ordering::SeqCst);
             *rt.run.lock().await = None;
@@ -1159,6 +1155,9 @@ impl App {
                 }
             }
         }
+        // A paused run that ended (the user left the session, or it was stopped) is no longer
+        // paused.
+        self.end_pause(task_id, "ended").await;
         let status = store
             .task(task_id)
             .await
@@ -1262,6 +1261,7 @@ impl App {
                     self.now(),
                 )
                 .await?;
+            self.end_pause(task_id, "cancelled").await;
             self.publish_task(task_id).await;
             self.advance_chains(task_id).await;
             return Ok(());
@@ -1279,6 +1279,7 @@ impl App {
                 .transition_task(task_id, Some(task.status), next, None, self.now())
                 .await?;
         }
+        self.end_pause(task_id, "cancelled").await;
         self.publish_task(task_id).await;
         let total = STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS;
         if let Some(run) = runtime.run.lock().await.as_mut() {
@@ -1327,6 +1328,8 @@ impl App {
         {
             return Err(AppError::Conflict("task state changed concurrently".into()));
         }
+        // A paused task that moves to another subscription is no longer paused.
+        self.end_pause(task_id, "switched").await;
         let from_desc = match &attempt {
             Some(a) => self.account_desc(a.harness, a.account_id.as_ref()).await,
             None => task.harness.as_str().to_owned(),
@@ -1357,6 +1360,16 @@ impl App {
                 *intent = Some(EndIntent::Switch(tx));
             }
             if let Some(run) = runtime.run.lock().await.as_mut() {
+                // An automatic switch happens at a boundary (or a held hook, or a limit): the
+                // agent is idle, so it is terminated without an interrupt that could start or
+                // cancel anything. A person's switch interrupts first, so the transcript keeps
+                // the interrupted turn.
+                if reason != "manual" {
+                    let _ = run
+                        .writer
+                        .signal(crate::ports::session::RunSignal::Terminate)
+                        .await;
+                }
                 let _ = run
                     .writer
                     .shutdown(u32::try_from(STOP_INTERRUPT_GRACE_MS).unwrap_or(5000))
@@ -1383,8 +1396,17 @@ impl App {
         let start = RunStart::Resume { prompt };
         match self.start_run(task_id, start, account).await {
             Ok(()) => {
-                store.set_switch_outcome(&decision_id, "completed").await?;
-                runtime.hub.notice(format!("↻ Continuing on {to_desc}"));
+                // The switch found no subscription with capacity: the task paused instead.
+                let paused = matches!(
+                    store.task(task_id).await,
+                    Ok(Some(t)) if t.status == TaskStatus::WaitingCapacity
+                );
+                if paused {
+                    store.set_switch_outcome(&decision_id, "waiting").await?;
+                } else {
+                    store.set_switch_outcome(&decision_id, "completed").await?;
+                    runtime.hub.notice(format!("↻ Continuing on {to_desc}"));
+                }
                 Ok(())
             }
             Err(err) => {
@@ -1554,9 +1576,11 @@ impl App {
             .store
             .set_account_state(account, status, Some(&json), None, self.now())
             .await;
+        // New usage may let paused tasks resume, or pause the pool (ROT-010).
+        self.capacity_changed();
         // At or above the threshold: tasks on this account rotate at their next turn boundary
-        // (ROT-003).
-        if usage.exhausted(self.now(), rotation::DEFAULT_THRESHOLD)
+        // (ROT-003); with hooks the Stop hook decides this itself.
+        if usage.exhausted(self.now(), rotation::THRESHOLD)
             && let Ok(live) = self.deps.store.live_attempts().await
         {
             for attempt in live
@@ -1573,6 +1597,7 @@ impl App {
     fn start_watcher(self: &Arc<Self>, task_id: &TaskId, attempt: &AttemptRecord) {
         let runtime = self.runtime(task_id);
         runtime.watcher_alive.store(true, Ordering::SeqCst);
+        runtime.hooks_seen.store(false, Ordering::SeqCst);
         if let Ok(mut u) = runtime.usage.lock() {
             *u = UsageSnapshot::default();
         }
@@ -1747,13 +1772,18 @@ impl App {
             }
             Observation::TurnComplete => {
                 runtime.end_turn(self.now());
-                self.turn_ended(task_id, attempt.account_id.clone());
+                // With hooks the Stop hook is the boundary that switches or pauses; the
+                // transcript decides only for a run without them.
+                if !runtime.hooks_seen.load(Ordering::SeqCst) {
+                    self.turn_ended(task_id, attempt.account_id.clone());
+                }
             }
             Observation::Session { .. } => {}
         }
     }
 
-    /// Applies the rotation policy for a task and acts on the decision (SPEC-001 §7.4).
+    /// Applies the pool policy for a running task and acts on the decision (SPEC-001 §7.4):
+    /// stay, move to another subscription by native resume, or pause (ROT-010).
     pub async fn rotate(
         self: &Arc<Self>,
         task_id: &TaskId,
@@ -1763,28 +1793,26 @@ impl App {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
-        if task.status != TaskStatus::Running {
+        let limit = matches!(trigger, Trigger::LimitReached);
+        // A limit can also end a turn that is already held at its boundary.
+        if task.status != TaskStatus::Running
+            && !(limit && task.status == TaskStatus::WaitingCapacity)
+        {
             return;
         }
-        let Ok(accounts) = self.account_views().await else {
+        let Ok(input) = self.rotation_input(&task, current.clone()).await else {
             return;
         };
-        let input = RotationInput {
-            current: current.clone(),
-            task_provider: task.harness.provider(),
-            accounts,
-            now: self.now(),
-            threshold: rotation::DEFAULT_THRESHOLD,
-        };
-        let (decision, reason) = rotation::decide(&input, trigger.clone());
-        let runtime = self.runtime(task_id);
-        runtime.proactive_switch.store(false, Ordering::SeqCst);
+        let (decision, reason) = rotation::decide(&input, trigger);
+        self.runtime(task_id)
+            .proactive_switch
+            .store(false, Ordering::SeqCst);
         match decision {
             Decision::Stay => {}
             Decision::Switch { account } => {
-                let prompt = matches!(trigger, Trigger::LimitReached).then(|| {
-                    "Yulius moved this session to another account because the previous one reached its usage limit. Continue the task exactly where you left off.".to_owned()
-                });
+                // Only a turn the CLI interrupted needs a message to go on, and it says nothing
+                // about accounts or limits (F 2026-10-10).
+                let prompt = limit.then(|| crate::capacity::CONTINUE_TEXT.to_owned());
                 if let Err(err) = self
                     .switch_task_now(task_id, Some(account), &format!("{reason:?}"), prompt)
                     .await
@@ -1792,104 +1820,17 @@ impl App {
                     tracing::warn!(error = %err, task = %task_id, "automatic switch failed");
                 }
             }
-            Decision::Wait { until } => {
-                if let Ok(next) = task.status.apply(TaskEvent::CapacityExhausted) {
-                    let _ = self
-                        .deps
-                        .store
-                        .transition_task(
-                            task_id,
-                            Some(task.status),
-                            next,
-                            Some(Activity::NeedsAttention),
-                            self.now(),
-                        )
-                        .await;
+            Decision::Wait { .. } => {
+                let kind = if limit {
+                    PauseKind::Limit
+                } else {
+                    PauseKind::Turn
+                };
+                if let Err(err) = self.pause_task(task_id, kind, current, None).await {
+                    tracing::warn!(error = %err, task = %task_id, "could not pause the task");
                 }
-                let when = until.map_or_else(|| "an unknown time".to_owned(), crate::auth::rfc3339);
-                runtime.hub.notice(format!(
-                    "All connected accounts are at their usage limit. Yulius will continue at {when}."
-                ));
-                self.publish_task(task_id).await;
-                let app = self.clone();
-                let tid = task_id.clone();
-                let delay = until.map_or(300_000, |t| {
-                    t.millis_since(self.now()).clamp(5_000, 3_600_000)
-                });
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(
-                        u64::try_from(delay).unwrap_or(300_000),
-                    ))
-                    .await;
-                    app.retry_waiting(&tid).await;
-                });
             }
         }
-    }
-
-    pub(crate) fn retry_waiting<'a>(self: &'a Arc<Self>, task_id: &'a TaskId) -> BoxFuture<'a, ()> {
-        Box::pin(async move {
-            let Ok(Some(task)) = self.deps.store.task(task_id).await else {
-                return;
-            };
-            if task.status != TaskStatus::WaitingCapacity {
-                return;
-            }
-            let current = self
-                .deps
-                .store
-                .live_attempt(task_id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|a| a.account_id);
-            let Ok(accounts) = self.account_views().await else {
-                return;
-            };
-            let input = RotationInput {
-                current: None,
-                task_provider: task.harness.provider(),
-                accounts,
-                now: self.now(),
-                threshold: rotation::DEFAULT_THRESHOLD,
-            };
-            match rotation::decide(&input, Trigger::Start) {
-                (Decision::Switch { account }, reason) => {
-                    let prompt = Some("Usage capacity is available again. Continue the task exactly where you left off.".to_owned());
-                    if Some(&account) == current.as_ref() {
-                        // Same account recovered: just nudge the live session.
-                        let _ = self
-                            .deps
-                            .store
-                            .transition_task(
-                                task_id,
-                                Some(task.status),
-                                TaskStatus::Running,
-                                Some(Activity::Working),
-                                self.now(),
-                            )
-                            .await;
-                        if let Some(p) = prompt {
-                            let _ = self.send_input(task_id, format!("{p}\r").as_bytes()).await;
-                        }
-                        self.publish_task(task_id).await;
-                    } else if let Err(err) = self
-                        .switch_task_now(task_id, Some(account), &format!("{reason:?}"), prompt)
-                        .await
-                    {
-                        tracing::warn!(error = %err, "resume after capacity wait failed");
-                    }
-                }
-                (_, _) => {
-                    let app = self.clone();
-                    let tid = task_id.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_millis(300_000)).await;
-                        app.retry_waiting(&tid).await;
-                    });
-                }
-            }
-        })
     }
 }
 

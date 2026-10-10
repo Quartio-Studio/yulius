@@ -1,10 +1,10 @@
-// Administration (ACC-004, ACC-009, ROT-001/002/009, ACC-006): users, provider accounts
-// with the login terminal, and the GitHub App connection (manifest flow).
+// Administration (ACC-004, ACC-009, ROT-001/002/009/013, ACC-006): users, the Claude
+// subscription pool with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
 import { h, badge, openModal, field, toast, confirmDialog, errorToast, toggle, setChildren, emptyState } from '../dom.js';
 import { createTerminalView } from '../terminal.js';
-import { accountUsage } from '../layout.js';
+import { accountUsage, capacityPanel } from '../layout.js';
 import { pageFrame, loader, dataTable } from './common.js';
 import { recoveryCodeCard } from './auth.js';
 import { BRAND } from '../brand.js';
@@ -166,77 +166,61 @@ export function openLoginTerminal(ctx, loginId, label, onFinish) {
   return modal;
 }
 
-/** Instance admin: provider accounts with usage, enable/priority, re-login, add. */
+/**
+ * Instance admin: the Claude subscriptions as one pool (ROT-009, ROT-013, F 2026-10-10). Add a
+ * subscription (Claude's own sign-in), see its usage, remove it — nothing else to manage: Yulius
+ * places, switches and pauses tasks by itself. The capacity panel on top says whether to buy more.
+ */
 export function mountAccountsPage(ctx, route) {
   if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'AI accounts');
-  const frame = pageFrame({ title: 'AI accounts', sub: `Claude subscriptions the agents run on; ${BRAND.name} rotates between them`, actions: [h('button', { type: 'button', class: 'btn btn-primary', onClick: () => add() }, 'Connect account')] });
+  const frame = pageFrame({ title: 'AI accounts', sub: `Claude subscriptions in one pool: ${BRAND.name} places, switches and pauses tasks by itself`, actions: [h('button', { type: 'button', class: 'btn btn-primary', onClick: () => add() }, 'Add subscription')] });
+  const capacityHost = h('section', { class: 'card card-pad stack', 'aria-label': 'Capacity' });
   const host = h('div');
-  frame.body.append(host, h('p', { class: 'muted xs' }, 'Rotation uses enabled AI accounts in priority order (lower first) and switches to the next one before an account is exhausted, resuming the same session.'));
+  frame.body.append(capacityHost, host, h('p', { class: 'muted xs' }, `${BRAND.name} starts each task on the subscription whose capacity expires soonest, moves it to another one at 98 % of a window at the end of a turn, and pauses it — without telling the agent — while every subscription is at 98 %. Paused tasks continue by themselves, oldest first, when a window resets or a subscription is added.`));
 
-  const patch = async (account, body) => {
-    try {
-      await ctx.api.patch(`/api/admin/accounts/${enc(account.id)}`, body);
-      Object.assign(account, body);
-      return true;
-    } catch (error) {
-      errorToast(error, 'Could not update account');
-      return false;
-    }
-  };
+  const loadCapacity = () => ctx.api.get('/api/capacity').then((view) => {
+    setChildren(capacityHost, h('h2', { class: 'card-title' }, 'Capacity'), capacityPanel(view));
+  }).catch((error) => {
+    setChildren(capacityHost, h('h2', { class: 'card-title' }, 'Capacity'), h('p', { class: 'muted small' }, `Capacity is not available: ${error.message || 'unknown error'}`));
+  });
 
   const reload = loader(host, () => ctx.api.get('/api/admin/accounts'), (list) => {
-    const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.provider || '').localeCompare(b.provider || '') || (a.priority ?? 0) - (b.priority ?? 0));
-    if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No AI accounts yet', text: 'Connect a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.' });
+    loadCapacity();
+    const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+    if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.' });
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
-      const priority = h('input', { type: 'number', min: 0, max: 10000, value: String(account.priority ?? 0), class: 'input input-priority', 'aria-label': `Priority of ${account.label}` });
-      priority.addEventListener('change', async () => {
-        const value = Number(priority.value);
-        if (!Number.isInteger(value) || value < 0 || value > 10000) { priority.value = String(account.priority ?? 0); toast('Priority is a whole number from 0 to 10000.', { kind: 'warn' }); return; }
-        if (await patch(account, { priority: value })) toast(`${account.label}: priority ${value}`, { kind: 'ok' });
-        else priority.value = String(account.priority ?? 0);
-      });
-      // Provider windows (refreshed from the provider) and what Yulius observed (ROT-009).
+      // Provider windows (refreshed in the background) and what Yulius observed (ROT-009).
       const usageHost = h('div', null, accountUsage(account), tokenTotals(account));
-      const refreshUsage = async (quiet) => {
-        try {
-          const fresh = await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`);
-          Object.assign(account, fresh);
-          if (!quiet) toast(`${account.label}: usage refreshed`, { kind: 'ok' });
-        } catch (error) {
-          if (!quiet) errorToast(error, `Could not refresh ${account.label}`);
-          account.last_error = error.message || account.last_error;
-        }
-        setChildren(usageHost, accountUsage(account), tokenTotals(account));
-      };
       const stale = !account.usage || !account.usage.observed_at || Date.now() - Date.parse(account.usage.observed_at) > 10 * 60 * 1000;
-      if (account.enabled !== false && account.status !== 'pending_login' && stale) refreshUsage(true);
+      if (account.status !== 'pending_login' && stale) {
+        ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`).then((fresh) => {
+          Object.assign(account, fresh);
+          setChildren(usageHost, accountUsage(account), tokenTotals(account));
+        }).catch(() => {});
+      }
+      const broken = ['relogin', 'error', 'pending_login'].includes(account.status);
       return h('div', { class: 'card card-pad stack' },
         usageHost,
         h('div', { class: 'row-wrap' },
-          h('button', { type: 'button', class: 'btn btn-sm', onClick: () => refreshUsage(false) }, 'Refresh usage'),
-          h('label', { class: 'row small' }, toggle({ checked: account.enabled, label: `${account.label} enabled`, onChange: async (checked, input) => {
-            if (!(await patch(account, { enabled: checked }))) input.checked = !checked;
-            else toast(`${account.label} ${checked ? 'enabled' : 'disabled'}`, { kind: 'ok' });
-          } }), 'Enabled'),
-          h('label', { class: 'row small' }, 'Priority', priority),
           h('span', { class: 'spacer' }),
-          h('button', { type: 'button', class: ['btn', 'btn-sm', account.status === 'relogin' && 'btn-primary'], onClick: async () => {
+          // A broken credential is repaired with Claude's sign-in; there is nothing else to set.
+          broken ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: async () => {
             try {
               const result = await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/relogin`);
               openLoginTerminal(ctx, result.login_id, account.label, reload);
             } catch (error) {
-              errorToast(error, 'Could not start re-login');
+              errorToast(error, 'Could not start the sign-in');
             }
-          } }, 'Re-login'),
-          // Removal is refused while tasks use the account: say so instead of offering it (UX2-12).
-          h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', disabled: account.in_use_by > 0, title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} use this account; stop them or switch them away first` : null, onClick: async () => {
-            if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: account.in_use_by ? `${account.in_use_by} live task(s) use it: removal is refused until they stop or switch away.` : 'Its stored credentials are deleted and a running login is cancelled.', confirmLabel: 'Remove', danger: true }))) return;
+          } }, 'Sign in again') : null,
+          // Removal is refused while tasks use the subscription: say so instead of offering it (UX2-12).
+          h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', disabled: account.in_use_by > 0, title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} use this subscription; they move away at their next turn end or when stopped` : null, onClick: async () => {
+            if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: 'Its stored credential is deleted and a running sign-in is cancelled. Tasks never start on it again.', confirmLabel: 'Remove', danger: true }))) return;
             try {
               await ctx.api.del(`/api/admin/accounts/${enc(account.id)}`);
               toast(`${account.label} removed`, { kind: 'ok' });
               reload();
             } catch (error) {
-              errorToast(error, 'Could not remove account');
+              errorToast(error, 'Could not remove the subscription');
             }
           } }, 'Remove')));
     }));
@@ -245,12 +229,12 @@ export function mountAccountsPage(ctx, route) {
   function add() {
     const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 80, autofocus: true });
     openModal({
-      title: 'Add Claude account',
-      body: h('div', { class: 'stack' }, field('Label', label, 'Shown in usage bars and task details.'), h('p', { class: 'muted small' }, 'Next, a login terminal opens with Claude’s own sign-in (claude setup-token). Nothing is created when the login cannot start.')),
+      title: 'Add a Claude subscription',
+      body: h('div', { class: 'stack' }, field('Name', label, 'Shown on usage bars and in task details.'), h('p', { class: 'muted small' }, 'Next, a terminal opens with Claude’s own sign-in (claude setup-token). Tasks waiting for capacity continue on it as soon as it is signed in.')),
       actions: [
         { label: 'Cancel', value: false },
         { label: 'Continue to sign-in', kind: 'primary', run: async () => {
-          if (!label.value.trim()) { toast('Give the account a label.', { kind: 'warn' }); return false; }
+          if (!label.value.trim()) { toast('Give the subscription a name.', { kind: 'warn' }); return false; }
           const result = await ctx.api.post('/api/admin/accounts', { provider: 'anthropic', label: label.value.trim() });
           reload();
           openLoginTerminal(ctx, result.login_id, result.account ? result.account.label : label.value.trim(), reload);
@@ -260,7 +244,7 @@ export function mountAccountsPage(ctx, route) {
     });
   }
 
-  const off = ctx.store.on('account', () => reload());
+  const off = ctx.store.on('account', () => reload({ quiet: true }));
   // Settings → "Connect account" lands here with ?add=1: open the dialog right away.
   if (route && route.query && route.query.get('add') === '1') {
     setTimeout(add, 0);

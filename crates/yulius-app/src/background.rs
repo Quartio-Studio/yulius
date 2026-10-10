@@ -1,6 +1,6 @@
-//! Server-lifetime background work: crash recovery, queue draining, capacity re-evaluation,
-//! account usage refresh (ROT-009) and waking idle tasks when messages arrive (SPEC-002 §6.1,
-//! §7.5, §10).
+//! Server-lifetime background work: crash recovery, queue draining, the subscription pool's
+//! resume loop (ROT-010), account usage refresh (ROT-009) and waking idle tasks when messages
+//! arrive (SPEC-002 §6.1, §7.5, §10).
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -18,8 +18,6 @@ use crate::coordination::MessageWaker;
 pub const WAKE_IDLE_MS: i64 = 30_000;
 /// Queue drain interval.
 const TICK: Duration = Duration::from_secs(60);
-/// Capacity re-evaluation interval, in ticks (5 min).
-const CAPACITY_TICKS: u64 = 5;
 /// First background usage round after start: lets the server settle first (ROT-009).
 const USAGE_FIRST: Duration = Duration::from_secs(2 * 60);
 /// Background usage rounds: modest, so the provider's usage endpoint is not hammered.
@@ -53,26 +51,15 @@ impl App {
                 tracing::error!(error = %err, "session reconciliation failed");
             }
             app.drain_queue().await;
+            // Paused tasks (also those paused before a restart) resume from here.
+            app.start_capacity_loop();
             let mut tick = tokio::time::interval(TICK);
             tick.tick().await;
-            let mut n: u64 = 0;
             loop {
                 tick.tick().await;
-                n = n.wrapping_add(1);
                 app.drain_queue().await;
                 // Chained tasks start once their predecessor is Done (TSK-012).
                 app.advance_all_chains().await;
-                if n.is_multiple_of(CAPACITY_TICKS)
-                    && let Ok(waiting) = app
-                        .deps
-                        .store
-                        .tasks_with_status(&[TaskStatus::WaitingCapacity])
-                        .await
-                {
-                    for task in waiting {
-                        app.retry_waiting(&task.id).await;
-                    }
-                }
             }
         });
         // Deliveries in progress follow GitHub, so the Git board moves without anyone looking.

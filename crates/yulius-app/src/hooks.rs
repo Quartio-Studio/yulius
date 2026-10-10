@@ -1,5 +1,7 @@
 //! Agent hook events (SPEC-002 §7.5, §7.6): briefing, message digests, the Stop discipline gate,
-//! activity tracking and the turn boundary for proactive rotation.
+//! activity tracking, and the turn boundary where the subscription pool switches or pauses a
+//! task (SPEC-002 ADR-17). A pause holds the hook ([`HookReply::Hold`]): the agent waits at its
+//! boundary and is never told anything.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,16 +12,17 @@ use yulius_domain::briefing::{
     BriefingInput, DEFAULT_BUDGET_BYTES, MAX_RECENT_CHANGES, ParallelTask, RecentChange, TaskBrief,
     build_briefing,
 };
-use yulius_domain::rotation::Trigger;
+use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
 use yulius_domain::spec_format::{DecisionsLocation, validate_spec_for};
 use yulius_domain::steps::StepStatus;
 use yulius_domain::task::{Activity, TaskStatus};
 
+use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
-use crate::model::{InboxEntry, TaskRecord};
+use crate::model::{InboxEntry, PauseKind, TaskMode, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
 
 /// Consecutive Stop-hook blocks per turn before the task needs attention (AC-DSC-3).
@@ -116,6 +119,25 @@ fn digest(entries: &[InboxEntry]) -> String {
     out
 }
 
+/// What a hook call answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookReply {
+    /// Print this output (empty = no decision) and let the CLI go on.
+    Output(HookOutput),
+    /// Keep the CLI at this boundary: the hook client asks again after `retry_after_secs`
+    /// (`202 Accepted` with `Retry-After`). Used while no subscription has capacity.
+    Hold {
+        /// Seconds until the hook client asks again.
+        retry_after_secs: u64,
+    },
+}
+
+fn hold() -> HookReply {
+    HookReply::Hold {
+        retry_after_secs: HOLD_RETRY_SECS,
+    }
+}
+
 fn is_urgent(entry: &InboxEntry) -> bool {
     !entry.read
         && !entry.delivered
@@ -134,21 +156,28 @@ impl App {
         harness: &str,
         event: &str,
         input: &HookInput,
-    ) -> AppResult<HookOutput> {
+    ) -> AppResult<HookReply> {
         if harness != "claude" {
             return Err(AppError::NotFound);
         }
         let ctx = self.agent_context(token).await?;
+        // This run reports its turn boundaries through hooks: the Stop hook decides switches
+        // and pauses, not the transcript.
+        self.runtime(&ctx.task.id)
+            .hooks_seen
+            .store(true, Ordering::SeqCst);
         match event {
-            events::SESSION_START => self.hook_session_start(&ctx, input).await,
+            events::SESSION_START => Ok(HookReply::Output(
+                self.hook_session_start(&ctx, input).await?,
+            )),
             events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(&ctx, input).await,
             events::STOP => self.hook_stop(&ctx, input).await,
             events::NOTIFICATION => {
                 self.set_task_activity(&ctx.task, Activity::NeedsAttention)
                     .await?;
-                Ok(HookOutput::default())
+                Ok(HookReply::Output(HookOutput::default()))
             }
-            _ => Ok(HookOutput::default()),
+            _ => Ok(HookReply::Output(HookOutput::default())),
         }
     }
 
@@ -307,16 +336,44 @@ impl App {
     }
 
     async fn hook_prompt_submit(
-        &self,
+        self: &Arc<Self>,
         ctx: &AgentContext,
         input: &HookInput,
-    ) -> AppResult<HookOutput> {
-        // Scope discipline (TSK-013): a held prompt never reaches the agent, so nothing below
-        // (activity, message digests) happens for it.
-        if let Some(held) = self.screen_prompt(ctx, input).await? {
-            return Ok(held);
-        }
+    ) -> AppResult<HookReply> {
         let store = &self.deps.store;
+        // A prompt held for capacity stays held while its pause lasts (also across a restart).
+        match store.open_pause(&ctx.task.id).await? {
+            Some(pause) if pause.kind == PauseKind::Prompt => return Ok(hold()),
+            // A held turn the user interrupted to type something: the new prompt replaces it.
+            Some(_) => self.end_pause(&ctx.task.id, "superseded").await,
+            None => {}
+        }
+        // Scope discipline (TSK-013): a held prompt never reaches the agent, so nothing below
+        // (capacity, activity, message digests) happens for it.
+        if let Some(held) = self.screen_prompt(ctx, input).await? {
+            return Ok(HookReply::Output(held));
+        }
+        // The start of a turn: with no subscription below the threshold, the prompt waits here
+        // until capacity returns (ROT-010). A prompt too long to carry to another account runs;
+        // a limit the CLI reports pauses it then.
+        let carried = input
+            .prompt
+            .as_deref()
+            .filter(|p| !p.trim().is_empty() && p.len() <= CONTINUATION_MAX);
+        if carried.is_some() || input.prompt.is_none() {
+            let current = ctx.attempt.account_id.clone();
+            let pool = self.rotation_input(&ctx.task, current.clone()).await?;
+            if let (Decision::Wait { .. }, _) = rotation::decide(&pool, Trigger::Proactive) {
+                self.pause_task(
+                    &ctx.task.id,
+                    PauseKind::Prompt,
+                    current,
+                    carried.map(str::to_owned),
+                )
+                .await?;
+                return Ok(hold());
+            }
+        }
         if ctx.task.gate_blocks != 0 {
             let update = TaskFieldUpdate {
                 gate_blocks: Some(0),
@@ -332,28 +389,22 @@ impl App {
             .filter(|e| !e.delivered)
             .collect();
         if pending.is_empty() {
-            return Ok(HookOutput::default());
+            return Ok(HookReply::Output(HookOutput::default()));
         }
         store.mark_delivered(&ctx.task.id, self.now()).await?;
-        Ok(HookOutput::additional_context(
+        Ok(HookReply::Output(HookOutput::additional_context(
             events::USER_PROMPT_SUBMIT,
             digest(&pending),
-        ))
+        )))
     }
 
-    async fn hook_stop(
-        self: &Arc<Self>,
-        ctx: &AgentContext,
-        _input: &HookInput,
-    ) -> AppResult<HookOutput> {
-        let store = &self.deps.store;
-        let task = &ctx.task;
-        if let Err(err) = self.sync_steps_from_spec(task).await {
-            tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
-        }
+    /// The discipline gate's reasons at a turn end (urgent unread messages, the spec gate) and
+    /// whether urgent messages are among them.
+    async fn stop_reasons(&self, task: &TaskRecord) -> AppResult<(Vec<String>, bool)> {
         let mut reasons = Vec::new();
-
-        let urgent: Vec<InboxEntry> = store
+        let urgent: Vec<InboxEntry> = self
+            .deps
+            .store
             .inbox(&task.id, true, 50)
             .await?
             .into_iter()
@@ -365,6 +416,84 @@ impl App {
         if let Some(problem) = self.spec_gate(task).await? {
             reasons.push(problem);
         }
+        Ok((reasons, !urgent.is_empty()))
+    }
+
+    /// The prompt for a session resumed on another subscription after a held turn: the gate's
+    /// reasons when the gate would have kept the agent working, else none (a goal-mode session
+    /// gets its goal again when it launches).
+    pub(crate) async fn stop_continuation(&self, task: &TaskRecord) -> Option<String> {
+        if task.gate_blocks >= MAX_GATE_BLOCKS {
+            return None;
+        }
+        let (reasons, urgent) = self.stop_reasons(task).await.ok()?;
+        if reasons.is_empty() {
+            return None;
+        }
+        if urgent {
+            let _ = self.deps.store.mark_delivered(&task.id, self.now()).await;
+        }
+        Some(reasons.join("\n\n"))
+    }
+
+    async fn hook_stop(
+        self: &Arc<Self>,
+        ctx: &AgentContext,
+        _input: &HookInput,
+    ) -> AppResult<HookReply> {
+        let store = &self.deps.store;
+        let task = &ctx.task;
+        // A turn held for capacity stays held while its pause lasts (also across a restart).
+        if let Some(pause) = store.open_pause(&task.id).await? {
+            if matches!(pause.kind, PauseKind::Turn | PauseKind::Limit) {
+                return Ok(hold());
+            }
+            self.end_pause(&task.id, "superseded").await;
+        }
+        if let Err(err) = self.sync_steps_from_spec(task).await {
+            tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
+        }
+        let (reasons, has_urgent) = self.stop_reasons(task).await?;
+        let gate_continues = !reasons.is_empty() && task.gate_blocks < MAX_GATE_BLOCKS;
+        // Would the agent work on after this boundary (a gate block, or its goal)?
+        let continues = gate_continues || task.mode == TaskMode::Goal;
+
+        // The turn boundary: stay, move to another subscription, or pause (ROT-003, ROT-010).
+        self.runtime(&task.id)
+            .proactive_switch
+            .store(false, Ordering::SeqCst);
+        let current = ctx.attempt.account_id.clone();
+        let pool = self.rotation_input(task, current.clone()).await?;
+        match rotation::decide(&pool, Trigger::Proactive) {
+            (Decision::Stay, _) => {}
+            (Decision::Switch { account }, reason) => {
+                // The agent waits here while it moves; the resumed session gets the gate's
+                // reasons as its prompt when the gate would have kept it working.
+                let continuation = gate_continues.then(|| reasons.join("\n\n"));
+                if continuation.is_some() && has_urgent {
+                    store.mark_delivered(&task.id, self.now()).await?;
+                }
+                let app = Arc::clone(self);
+                let task_id = task.id.clone();
+                let reason = format!("{reason:?}");
+                tokio::spawn(async move {
+                    if let Err(err) = app
+                        .switch_task_now(&task_id, Some(account), &reason, continuation)
+                        .await
+                    {
+                        tracing::warn!(error = %err, task = %task_id, "switch at the turn boundary failed");
+                    }
+                });
+                return Ok(hold());
+            }
+            (Decision::Wait { .. }, _) if continues => {
+                self.pause_task(&task.id, PauseKind::Turn, current, None)
+                    .await?;
+                return Ok(hold());
+            }
+            // The agent goes idle anyway; its next prompt is held if capacity is still gone.
+            (Decision::Wait { .. }, _) => {}
+        }
 
         if reasons.is_empty() {
             if task.gate_blocks != 0 {
@@ -375,7 +504,6 @@ impl App {
                 store.update_task(&task.id, &update, self.now()).await?;
             }
             self.set_task_activity(task, Activity::Waiting).await?;
-            self.turn_ended(&task.id, ctx.attempt.account_id.clone());
             // A clean stop of a finished task opens its pull request (#35).
             let app = Arc::clone(self);
             let task_id = task.id.clone();
@@ -384,7 +512,7 @@ impl App {
                 // Tasks chained after this one start once it is Done (TSK-012).
                 app.advance_chains(&task_id).await;
             });
-            return Ok(HookOutput::default());
+            return Ok(HookReply::Output(HookOutput::default()));
         }
 
         if task.gate_blocks >= MAX_GATE_BLOCKS {
@@ -394,21 +522,22 @@ impl App {
                 "Yulius: the agent stopped {MAX_GATE_BLOCKS} times without fixing: {}",
                 reasons.join(" ").chars().take(300).collect::<String>()
             ));
-            return Ok(HookOutput::default());
+            return Ok(HookReply::Output(HookOutput::default()));
         }
         let update = TaskFieldUpdate {
             gate_blocks: Some(task.gate_blocks + 1),
             ..TaskFieldUpdate::default()
         };
         store.update_task(&task.id, &update, self.now()).await?;
-        if !urgent.is_empty() {
+        if has_urgent {
             store.mark_delivered(&task.id, self.now()).await?;
         }
         self.publish_task(&task.id).await;
-        Ok(HookOutput::block(reasons.join("\n\n")))
+        Ok(HookReply::Output(HookOutput::block(reasons.join("\n\n"))))
     }
 
-    /// A turn ended: run a pending proactive rotation at this boundary (SPEC-002 §6.3).
+    /// A turn of a run without hooks ended (seen in its transcript): run a pending proactive
+    /// rotation at this boundary (SPEC-002 §6.3).
     pub(crate) fn turn_ended(
         self: &Arc<Self>,
         task_id: &yulius_domain::ids::TaskId,

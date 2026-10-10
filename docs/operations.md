@@ -303,8 +303,11 @@ sudo sh -c 'cat > /var/lib/yulius/jev.key'   # paste the key, then Ctrl-D
    instance and sees every sandbox with admin access without GitHub (SPEC-001 ACC-012); pull
    requests it opens are authored by the GitHub App, and merging or releasing, which act as a
    person on GitHub, are done on GitHub or after signing in with GitHub as an admitted user.
-5. Administration → Accounts: add Claude accounts; each login runs Claude's own sign-in in a
-   terminal in the browser. Yulius rotates between them automatically.
+5. Administration → Accounts: add Claude subscriptions; each login runs Claude's own sign-in in a
+   terminal in the browser. They form one pool with nothing to configure: Yulius places tasks on
+   the capacity that expires soonest, moves them at 98 % at a turn boundary, pauses them (without
+   telling the agent) while every subscription is exhausted and resumes them by itself. The
+   capacity panel there and on the Dashboard says when to add subscriptions (SPEC-002 ADR-17).
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
    `studio` delivery presets.
 
@@ -378,6 +381,13 @@ wanted, `sandboxes/` (clones and worktrees can be re-created from GitHub, uncomm
 Restore: stop the service, put the database copy at `yulius.db`, restore `master.key`, start.
 
 ## 8. Upgrades
+
+- Upgrading to the subscription pool (ADR-17, 2026-10-10): migration 0005 drops the accounts'
+  priority and enabled switch, so **a disabled account joins the pool**: remove accounts you do not
+  want used before restarting. Tasks that were waiting for capacity are handed to the new resume
+  loop. Sessions started before the upgrade keep their old hook settings (15 s timeout): the CLI
+  ends a held hook after 15 s and the agent goes on until the CLI reports a limit, where it pauses;
+  sessions started or continued after the upgrade get the long timeout. No configuration is needed.
 
 - Upgrading to check fallbacks (#111, 2026-10-10): new Apps request Commit statuses: read. An App
   created earlier lacks it, so its pull requests' checks come from check runs only, and the Git page
