@@ -78,6 +78,9 @@ Environment=YULIUS_BROWSER_DISPLAY=auto
 #Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
 # Optional: a token that may read Quartio-Studio/yulius, when the GitHub App cannot (see §8).
 #Environment=YULIUS_UPDATE_TOKEN_FILE=/var/lib/yulius/update.token
+# Recommended behind the proxy: the secret it shares with Yulius, so sign-in limits are per client
+# (see "Per-client sign-in limits" in §4).
+#Environment=YULIUS_PROXY_SECRET_FILE=/var/lib/yulius/proxy.secret
 # Yulius-run CI (see "CI on this machine" below): jobs at once, minutes per job, seconds between checks.
 Environment=YULIUS_CI_MAX_JOBS=4
 Environment=YULIUS_CI_JOB_TIMEOUT_MIN=30
@@ -161,6 +164,105 @@ Yulius itself sends `X-Frame-Options: DENY`, `Content-Security-Policy: frame-anc
 `Referrer-Policy: same-origin` and `X-Yulius: <process tag>` on every response (stricter route
 policies are kept). HSTS is the TLS proxy's job, as in the examples above; add it once the
 domain is meant to stay on HTTPS.
+
+### Per-client sign-in limits (trusted proxy header)
+
+Password sign-in allows 5 attempts per minute **per client** (SPEC-001 ACC-013). Behind the proxy
+every connection comes from `127.0.0.1`, so without this setup all clients share one limit and
+anyone can keep the superadmin's password sign-in locked by sending 5 wrong passwords a minute.
+The proxy therefore passes the client's address in `X-Yulius-Client-Ip` together with a secret
+that only it and Yulius know in `X-Yulius-Proxy-Secret`, overwriting whatever a client sent in
+either. Yulius uses the address only when the secret matches (a constant-time comparison);
+otherwise it keys on the TCP peer, as without the setting. An IPv6 client is limited by its /64
+network. `X-Forwarded-For` alone is not trusted: a process that reaches the listener directly
+could name a new address on every request.
+
+1. **Create the secret** once, as root, without printing it. Yulius's copy is owned by the service
+   user, mode `0600`; the proxy's copy is root's, mode `0600`:
+
+   ```sh
+   # Caddy
+   sudo sh -c 'umask 077 &&
+     openssl rand -hex 32 > /var/lib/yulius/proxy.secret &&
+     sed "s/^/YULIUS_PROXY_SECRET=/" /var/lib/yulius/proxy.secret > /etc/caddy/yulius-proxy.env &&
+     chown yulius:yulius /var/lib/yulius/proxy.secret'
+   # nginx
+   sudo sh -c 'umask 077 &&
+     openssl rand -hex 32 > /var/lib/yulius/proxy.secret &&
+     sed "s/.*/proxy_set_header X-Yulius-Proxy-Secret \"&\";/" /var/lib/yulius/proxy.secret \
+       > /etc/nginx/yulius-proxy-secret.conf &&
+     chown yulius:yulius /var/lib/yulius/proxy.secret'
+   ```
+
+2. **Yulius**: `Environment=YULIUS_PROXY_SECRET_FILE=/var/lib/yulius/proxy.secret` in the unit
+   (§3), then `systemctl daemon-reload && systemctl restart yulius` (sessions survive). The file
+   must be a regular file of 32–4096 printable characters readable by its owner only; the start
+   log says `trusted reverse proxy: …`, and an unusable file is logged (`the proxy secret file is
+   not usable: … make it 0600`) and changes nothing. `sudo -u yulius yulius doctor --proxy-secret-file
+   /var/lib/yulius/proxy.secret` checks it. The secret is never logged, returned by the API or
+   shown by `doctor`.
+
+3. **The proxy**, on the Yulius site only (sign-in is never served on preview hosts, and Yulius
+   removes both headers before a preview request reaches a sandbox's app).
+
+   Caddy reads the secret from its environment at run time, so it stays out of the Caddyfile and
+   out of Caddy's config API (which shows only the placeholder):
+
+   ```ini
+   # /etc/systemd/system/caddy.service.d/yulius-proxy.conf
+   [Service]
+   EnvironmentFile=/etc/caddy/yulius-proxy.env
+   ```
+
+   ```caddyfile
+   yulius.example.com {
+       # request_body, encode and header as above
+       reverse_proxy 127.0.0.1:8080 {
+           header_up X-Yulius-Client-Ip {remote_host}
+           header_up X-Yulius-Proxy-Secret {env.YULIUS_PROXY_SECRET}
+       }
+   }
+   ```
+
+   `systemctl daemon-reload && systemctl restart caddy` (a restart, not a reload: the environment
+   is read when Caddy starts). `header_up` replaces a header the client sent. `{remote_host}` is
+   the address that connected to Caddy; if another proxy or a CDN is in front of Caddy, configure
+   Caddy's `trusted_proxies` and use `{client_ip}` instead.
+
+   nginx (it reads its configuration as root, so the included file stays root-only;
+   `proxy_set_header` replaces the client's header of the same name, and a `location` that sets
+   any header inherits none from `server`, so keep these next to the others):
+
+   ```nginx
+       location / {
+           proxy_pass http://127.0.0.1:8080;
+           # proxy_http_version, Upgrade, Connection, Host, X-Forwarded-Proto, timeouts as above
+           proxy_set_header X-Yulius-Client-Ip $remote_addr;
+           include /etc/nginx/yulius-proxy-secret.conf;
+       }
+   ```
+
+   `nginx -t && systemctl reload nginx`.
+
+4. **Check**: five wrong passwords from one network, then signing in from another (a phone on
+   mobile data) works; the first network can try again after a minute.
+
+Either side can be configured first: until both are, requests key on the peer as before (Yulius
+logs once that it saw an untrusted `X-Yulius-Client-Ip`). To rotate the secret, repeat step 1 and
+restart Yulius and the proxy.
+
+**Sandboxes and the secret.** Isolated sandboxes (ADR-22) cannot reach Yulius's public listener at
+all: `slirp4netns` runs with `--disable-host-loopback`, so the gateway `10.0.2.2` and every host
+loopback port refuse their connections (AC-NFR-8; the opt-in `tests/isolation.rs` on the VM). Through the VM's public address they
+reach the proxy like any internet client and are limited as one client, the VM's address. Runs
+without isolation (legacy containment, `YULIUS_CONTAINED=false`, or a `YULIUS_SANDBOX_FORWARD` of
+the public port, which you should never configure) can connect to the listener directly; they do
+not know the secret, so whatever headers they send count against `127.0.0.1`. Neither copy of the
+secret is visible to contained runs: `/var/lib/yulius` is never bound into them, and root-only
+files under `/etc` are unreadable to the service user and skipped when the sandbox base is built.
+Without containment (`YULIUS_CONTAINED=false`) agents run as the service user and could read
+Yulius's copy, like `master.key`. Keep Caddy's admin API unreachable from runs without
+isolation: it can rewrite the proxy.
 
 ### Optional: live previews (wildcard DNS and TLS)
 
@@ -784,3 +886,6 @@ up. Queued tasks start when capacity allows.
 - Isolated sandboxes cannot reach the host's loopback services (Yulius's public listener, Caddy's
   admin API, DevTools ports, databases bound to 127.0.0.1). Services bound to the host's public
   addresses remain reachable like any internet host.
+- Password sign-in is limited per client only with the proxy's shared secret configured
+  (`YULIUS_PROXY_SECRET_FILE`, §4 "Per-client sign-in limits"); without it every client behind the
+  proxy shares one limit.

@@ -56,12 +56,12 @@ impl JevKey {
     }
 }
 
-/// Reads the key from `path`: a regular file readable by its owner only (mode 0600 or
-/// stricter), like every other Yulius secret file.
+/// Reads an owner-only secret file: a regular file readable by its owner only (mode 0600 or
+/// stricter), at most 8 KiB read, the rule of every Yulius secret file (`*_FILE` settings).
 ///
 /// # Errors
-/// A message naming the path and the problem, never the key.
-pub fn read_key_file(path: &Path) -> Result<JevKey, String> {
+/// A message naming the path and the problem, never the content.
+pub fn read_owner_only_file(path: &Path) -> Result<String, String> {
     use std::io::Read;
     use std::os::unix::fs::PermissionsExt;
     let shown = path.display();
@@ -79,7 +79,16 @@ pub fn read_key_file(path: &Path) -> Result<JevKey, String> {
     std::fs::File::open(path)
         .and_then(|f| f.take(MAX_KEY_FILE_BYTES).read_to_string(&mut text))
         .map_err(|e| format!("cannot read {shown}: {e}"))?;
-    JevKey::new(&text).map_err(|e| format!("{shown}: {e}"))
+    Ok(text)
+}
+
+/// Reads the key from `path`: an owner-only file ([`read_owner_only_file`]).
+///
+/// # Errors
+/// A message naming the path and the problem, never the key.
+pub fn read_key_file(path: &Path) -> Result<JevKey, String> {
+    let text = read_owner_only_file(path)?;
+    JevKey::new(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Reads a secret from an owner-only file (the same rules as the Jev key file): for

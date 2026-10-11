@@ -368,9 +368,36 @@ fn which(program: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// The reverse proxy's secret file (SPEC-001 ACC-013), when configured: usable or not, never
+/// its content.
+#[must_use]
+pub fn proxy_secret_check(path: &Path) -> Check {
+    match crate::wiring::proxy::read_proxy_secret(path) {
+        Ok(_) => check(
+            "proxy secret",
+            Level::Ok,
+            format!(
+                "{} (owner-only); sign-in limits trust the proxy's client address",
+                path.display()
+            ),
+        ),
+        Err(err) => check(
+            "proxy secret",
+            Level::Fail,
+            format!("{err}; sign-in limits would key on the TCP peer"),
+        ),
+    }
+}
+
 /// `yulius doctor`: prints the checks; exits 1 when any check fails.
-pub fn doctor(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> ExitCode {
-    let checks = run_checks(data_dir, contained, extra);
+pub fn doctor(
+    data_dir: &Path,
+    contained: bool,
+    extra: &[PathBuf],
+    proxy_secret_file: Option<&Path>,
+) -> ExitCode {
+    let mut checks = run_checks(data_dir, contained, extra);
+    checks.extend(proxy_secret_file.map(proxy_secret_check));
     for c in &checks {
         let tag = match c.level {
             Level::Ok => "ok  ",
@@ -388,8 +415,32 @@ pub fn doctor(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Level, run_checks, version_of, visible_when_contained};
+    use super::{Level, proxy_secret_check, run_checks, version_of, visible_when_contained};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn the_proxy_secret_check_never_shows_the_secret() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let secret = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("proxy.secret");
+        std::fs::write(&path, secret)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        let ok = proxy_secret_check(&path);
+        assert_eq!(ok.level, Level::Ok, "{}", ok.detail);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+        let open = proxy_secret_check(&path);
+        assert_eq!(open.level, Level::Fail);
+        assert!(open.detail.contains("mode 644"), "{}", open.detail);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::write(&path, &secret[..20])?;
+        let short = proxy_secret_check(&path);
+        assert_eq!(short.level, Level::Fail);
+        for c in [ok, open, short] {
+            assert!(!c.detail.contains(&secret[..20]), "{}", c.detail);
+        }
+        Ok(())
+    }
 
     #[test]
     fn containment_visibility_follows_system_dirs_and_extra_paths() {
