@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-11
 
+- A task whose pull request conflicts with its base is told to merge the base and resolve it;
+  GitHub runs no checks on a conflicting pull request, so the agent would otherwise wait for them.
 - Debug and test builds keep only line tables (dependencies none): a worktree's test build had
   reached 48 GB and parallel tasks filled the sandbox disk quota, so CI runs and session starts
   were refused.
