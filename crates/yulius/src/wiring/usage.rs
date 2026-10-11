@@ -20,7 +20,11 @@ use yulius_app::ports::usage::{UsageFailure, UsageFailureKind, UsageProbe};
 use yulius_domain::harness::Provider;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
 
-const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_API: &str = "https://api.anthropic.com";
+const USAGE_PATH: &str = "/api/oauth/usage";
+const MESSAGES_PATH: &str = "/v1/messages";
+/// The cheapest model, for the one-token request that reads the rate-limit headers.
+const PROBE_MODEL: &str = "claude-haiku-4-5-20251001";
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// Largest usage response accepted.
 const MAX_BODY: usize = 256 * 1024;
@@ -33,6 +37,7 @@ const REJECTED: &str =
 /// Usage of Claude accounts from the provider.
 pub struct ProviderUsage {
     http: reqwest::Client,
+    base: String,
 }
 
 impl ProviderUsage {
@@ -48,7 +53,10 @@ impl ProviderUsage {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("usage client setup failed: {e}"))?;
-        Ok(Self { http })
+        Ok(Self {
+            http,
+            base: CLAUDE_API.to_owned(),
+        })
     }
 
     async fn get_json(&self, request: reqwest::RequestBuilder) -> Result<Value, UsageFailure> {
@@ -127,6 +135,69 @@ pub fn parse_claude(body: &Value) -> Result<AccountUsage, String> {
     Ok(usage)
 }
 
+/// Claude's `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}` headers: utilization is a
+/// fraction (0.37 = 37 %), reset is Unix seconds. The same numbers Claude Code's status line shows.
+pub fn parse_rate_limit_headers(headers: &reqwest::header::HeaderMap) -> Option<AccountUsage> {
+    let get = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let window = |key: &str, minutes: u32| -> Option<UsageWindow> {
+        let used = get(&format!("anthropic-ratelimit-unified-{key}-utilization"))?
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|u| u.is_finite() && *u >= 0.0)?;
+        let resets_at = get(&format!("anthropic-ratelimit-unified-{key}-reset"))
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .and_then(|s| s.checked_mul(1000))
+            .map(yulius_domain::time::Timestamp);
+        Some(UsageWindow {
+            used_percent: Some(used * 100.0),
+            window_minutes: Some(minutes),
+            resets_at,
+        })
+    };
+    let usage = AccountUsage {
+        primary: window("5h", 5 * 60),
+        secondary: window("7d", 7 * 24 * 60),
+        ..AccountUsage::default()
+    };
+    (usage.primary.is_some() || usage.secondary.is_some()).then_some(usage)
+}
+
+impl ProviderUsage {
+    /// Reads usage the way Claude Code does: from the rate-limit headers of an API response, for
+    /// sign-ins the usage endpoint refuses (`setup-token`, no `user:profile`). One request of one
+    /// output token on the cheapest model.
+    async fn read_headers(&self, credential: &Secret) -> Result<AccountUsage, UsageFailure> {
+        let response = self
+            .http
+            .post(format!("{}{MESSAGES_PATH}", self.base))
+            .bearer_auth(credential.expose().trim())
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .header("anthropic-version", "2023-06-01")
+            .json(&serde_json::json!({
+                "model": PROBE_MODEL,
+                "max_tokens": 1,
+                "system": "You are Claude Code, Anthropic's official CLI for Claude.",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::debug!(error = %e.without_url(), "usage header request failed");
+                UsageFailure::new(TRY_AGAIN)
+            })?;
+        let status = response.status().as_u16();
+        // A limited subscription answers 429 and still carries the headers.
+        if let Some(usage) = parse_rate_limit_headers(response.headers()) {
+            return Ok(usage);
+        }
+        match failure_of(status, None) {
+            Some(failure) if failure.kind != UsageFailureKind::NotShared => Err(failure),
+            _ => Err(UsageFailure::not_shared()),
+        }
+    }
+}
+
 #[async_trait]
 impl UsageProbe for ProviderUsage {
     async fn fetch(
@@ -138,11 +209,18 @@ impl UsageProbe for ProviderUsage {
             Provider::Anthropic => {
                 let request = self
                     .http
-                    .get(CLAUDE_USAGE_URL)
+                    .get(format!("{}{USAGE_PATH}", self.base))
                     .bearer_auth(credential.expose().trim())
                     .header("anthropic-beta", "oauth-2025-04-20")
                     .header("accept", "application/json");
-                parse_claude(&self.get_json(request).await?).map_err(UsageFailure::new)
+                match self.get_json(request).await {
+                    Ok(body) => parse_claude(&body).map_err(UsageFailure::new),
+                    // A `setup-token` may not read the endpoint; its headers say the same.
+                    Err(f) if f.kind == UsageFailureKind::NotShared => {
+                        self.read_headers(credential).await
+                    }
+                    Err(f) => Err(f),
+                }
             }
         }
     }
@@ -173,6 +251,60 @@ mod tests {
             Some(81.0)
         );
         assert!(parse_claude(&json!({})).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn rate_limit_headers_become_percent_windows() -> Result<(), String> {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut h = HeaderMap::new();
+        for (k, v) in [
+            ("anthropic-ratelimit-unified-5h-utilization", "0.37"),
+            ("anthropic-ratelimit-unified-5h-reset", "1790000000"),
+            ("anthropic-ratelimit-unified-7d-utilization", "0.125"),
+        ] {
+            h.insert(k, HeaderValue::from_static(v));
+        }
+        let usage = parse_rate_limit_headers(&h).ok_or("usage")?;
+        let primary = usage.primary.ok_or("primary")?;
+        assert!((primary.used_percent.ok_or("pct")? - 37.0).abs() < 1e-9);
+        assert_eq!(primary.resets_at.map(|t| t.0), Some(1_790_000_000_000));
+        assert_eq!(usage.secondary.ok_or("weekly")?.resets_at, None);
+        assert!(parse_rate_limit_headers(&HeaderMap::new()).is_none());
+        Ok(())
+    }
+
+    /// A `setup-token` sign-in: the usage endpoint says 403, the messages answer carries the
+    /// headers, and that is the reading.
+    #[tokio::test]
+    async fn a_refused_sign_in_is_read_from_the_headers() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let reply = if head.starts_with("GET /api/oauth/usage") {
+                    "HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                } else if head.starts_with("POST /v1/messages") {
+                    "HTTP/1.1 200 OK\r\nanthropic-ratelimit-unified-5h-utilization: 0.25\r\nanthropic-ratelimit-unified-5h-reset: 1790000000\r\nanthropic-ratelimit-unified-7d-utilization: 0.5\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}"
+                } else {
+                    "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                };
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        let mut probe = ProviderUsage::new()?;
+        probe.base = base;
+        let usage = probe
+            .fetch(Provider::Anthropic, &Secret("token".into()))
+            .await
+            .map_err(|f| f.message)?;
+        assert_eq!(usage.primary.and_then(|w| w.used_percent), Some(25.0));
+        assert_eq!(usage.secondary.and_then(|w| w.used_percent), Some(50.0));
         Ok(())
     }
 

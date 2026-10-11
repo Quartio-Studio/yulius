@@ -577,6 +577,7 @@ impl App {
         let Ok(accounts) = self.deps.store.accounts().await else {
             return;
         };
+        let live = self.deps.store.live_attempts().await.unwrap_or_default();
         for account in accounts.iter().filter(|a| {
             a.credential.is_some()
                 && !matches!(
@@ -586,6 +587,10 @@ impl App {
         }) {
             let now = self.now();
             if not_before.get(&account.id).is_some_and(|at| *at > now) {
+                continue;
+            }
+            // Its running tasks report the usage already (ADR-17); no request needed.
+            if in_use_count(&account.id, &live) > 0 {
                 continue;
             }
             match self.fetch_and_record_usage(account).await {
