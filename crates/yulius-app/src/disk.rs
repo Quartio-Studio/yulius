@@ -308,7 +308,7 @@ impl App {
         }
         for (task, list) in per_task {
             if !gone.contains(&&task.id) {
-                self.tell_task(task, &list).await;
+                self.tell_freed(task, &list).await;
             }
         }
         report
@@ -366,7 +366,7 @@ impl App {
     }
 
     /// Tells the agent of `task` what Yulius freed.
-    async fn tell_task(&self, task: &TaskRecord, freed: &[(String, u64)]) {
+    async fn tell_freed(&self, task: &TaskRecord, freed: &[(String, u64)]) {
         let list: Vec<String> = freed
             .iter()
             .map(|(path, bytes)| format!("`{path}` ({})", human(*bytes)))
