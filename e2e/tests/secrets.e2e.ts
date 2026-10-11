@@ -42,7 +42,9 @@ test('team secrets reveal only after confirming it is you', async ({ app, browse
   await screen.getByLabel('Title').fill('AWS root');
   await add.getByRole('button', 'Add').click();
   await expect(add).toBeHidden();
-  await expect(screen.getByText('AWS root')).toBeVisible();
+  // Listed, and recorded in the activity trail ("added AWS root").
+  await expect(screen.getByText('AWS root').first()).toBeVisible();
+  await expect(screen.getByText(/added/).first()).toBeVisible();
 });
 
 test('agent secrets are write-only and bound to hosts', async ({ app, browser, screen }) => {
