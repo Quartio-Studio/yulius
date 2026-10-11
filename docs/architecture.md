@@ -11,7 +11,7 @@ flowchart LR
   UI["Web UI (xterm.js, Monaco)"] <--> RP["Reverse proxy (TLS)"] <--> API
   subgraph Server["yulius serve"]
     API["Public HTTP + WS API"]
-    INT["Internal loopback: MCP, hooks, git credentials"]
+    INT["Internal loopback: MCP, hooks, git and gh credentials"]
     APP["Application services"]
     SUP["Session supervisor"]
     CI["Yulius CI runner"]

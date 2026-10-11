@@ -134,6 +134,30 @@ pub fn run_credential_helper(
     }
 }
 
+/// Runs `yulius gh-token`: prints the GitHub token of this user process (one line, nothing else)
+/// for the `gh` shim, which logs the GitHub CLI in with it. The same route, token and checks
+/// as [`run_credential_helper`]; on any failure nothing is printed and the code is non-zero.
+pub fn run_gh_token(output: &mut dyn Write, env: &dyn Fn(&str) -> Option<String>) -> i32 {
+    let request = CredentialRequest {
+        protocol: Some("https".to_owned()),
+        host: Some("github.com".to_owned()),
+        path: None,
+    };
+    match credential_get(&request, env, HELPER_TIMEOUT) {
+        Ok(credential) => {
+            let written = output
+                .write_all(format!("{}\n", credential.token).as_bytes())
+                .and_then(|()| output.flush());
+            if written.is_ok() {
+                EXIT_OK
+            } else {
+                EXIT_UNAVAILABLE
+            }
+        }
+        Err(error) => error.exit_code(),
+    }
+}
+
 /// Parses Git's `key=value` credential description (until a blank line or EOF).
 pub fn read_request(input: &mut dyn Read) -> Result<CredentialRequest, CredentialError> {
     let limited = input.take(MAX_INPUT_BYTES as u64 + 1);

@@ -52,6 +52,9 @@ enum Command {
         /// Operation (`get`, `store`, `erase`).
         operation: String,
     },
+    /// Internal: print the user's GitHub token for the `gh` shim of sandbox shells.
+    #[command(name = "gh-token", hide = true)]
+    GhToken,
     /// Internal: a sandbox's namespace holder (SPEC-002 ADR-22).
     #[command(name = "sandbox-host", hide = true)]
     SandboxHost {
@@ -177,6 +180,10 @@ fn main() -> ExitCode {
                 &mut std::io::stdout(),
                 &|k| std::env::var(k).ok(),
             );
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Command::GhToken => {
+            let code = yulius_git::run_gh_token(&mut std::io::stdout(), &|k| std::env::var(k).ok());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::SandboxHost { action } => yulius::sandbox_cli::host(action),
