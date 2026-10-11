@@ -557,27 +557,27 @@ export function mountComposer(ctx, sandbox) {
         h('a', { class: 'btn btn-sm', href: href('/admin/users'), dataset: { route: '/admin/users' } }, 'Generate one')));
     }
     // Onboarding (docs/api.md "Sandboxes"): `pending` waits for a person to approve the
-    // resting preparation task (write), `preparing` runs it; admins may skip either.
-    const blocked = sb.onboarding === 'pending' || sb.onboarding === 'preparing';
-    if (blocked) {
+    // resting preparation task (write), `preparing` runs it; admins may skip either. New tasks
+    // are not refused meanwhile: they wait after the preparation task (U-08).
+    const preparing = sb.onboarding === 'pending' || sb.onboarding === 'preparing';
+    if (preparing) {
       const prep = (ctx.store.tasksOf(sb.id) || []).find((t) => t.origin === 'onboarding');
       const pending = sb.onboarding === 'pending';
       items.push(h('div', { class: 'banner banner-info' }, icon('refresh'),
         h('span', { class: 'banner-text' },
           h('strong', null, pending ? 'This sandbox needs preparation. ' : 'Preparing this sandbox. '),
           pending
-            ? `The repository does not follow the ${BRAND.name} documentation format yet. Start the preparation task to adapt it; new tasks can start once it lands.`
-            : `A preparation task adapts the imported repository to the ${BRAND.name} format; new tasks can start once it lands.`,
+            ? `The repository does not follow the ${BRAND.name} documentation format yet. Start the preparation task to adapt it. New tasks wait for it and start by themselves once it lands.`
+            : `A preparation task adapts the imported repository to the ${BRAND.name} format. New tasks wait for it and start by themselves once it lands.`,
           prep ? [' ', h('a', { href: href(`/s/${encodeURIComponent(sb.slug)}/t/${prep.number}`), dataset: { route: `/s/${encodeURIComponent(sb.slug)}/t/${prep.number}` } }, `Open #${prep.number}`)] : null),
         pending && allows(sb.access, 'write') ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: approveOnboarding }, 'Start preparation') : null,
         allows(sb.access, 'admin') ? h('button', { type: 'button', class: 'btn btn-sm', onClick: skipOnboarding }, 'Skip for now') : null));
     }
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
     setChildren(banner, items);
-    const disabled = !write || blocked;
-    startButton.disabled = disabled;
-    prompt.disabled = disabled;
-    startButton.title = blocked ? 'Blocked until the sandbox preparation finishes' : !write ? 'Requires write access' : '';
+    startButton.disabled = !write;
+    prompt.disabled = !write;
+    startButton.title = !write ? 'Requires write access' : preparing ? 'Starts once the sandbox preparation finishes' : '';
   }
 
   async function approveOnboarding() {
@@ -601,7 +601,7 @@ export function mountComposer(ctx, sandbox) {
     try {
       const updated = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/onboarding/skip`);
       if (updated && updated.id) ctx.store.upsertSandbox(updated);
-      toast('Preparation skipped; tasks can start now.', { kind: 'ok' });
+      toast('Preparation skipped. Waiting tasks start now.', { kind: 'ok' });
     } catch (error) {
       errorToast(error, 'Couldn’t skip preparation');
     }

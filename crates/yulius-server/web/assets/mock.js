@@ -629,11 +629,22 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   }
   return sandbox;
 });
+/** Starts the tasks that waited for a sandbox's preparation (U-08): it is ready or skipped. */
+function releaseWaiting(db, sandbox) {
+  const preparation = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
+  if (!preparation) return;
+  for (const task of db.tasks.filter((t) => t.status === 'chained' && t.afterLink && t.afterLink.task_id === preparation.id)) {
+    touch(db, task, { status: 'queued' });
+    later(() => touch(db, task, { status: 'starting' }), 700);
+    later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
+  }
+}
 route('POST', `/api/sandboxes/${ID}/onboarding/skip`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
   if (!['pending', 'preparing'].includes(sandbox.onboarding)) fail(409, 'conflict', 'nothing awaits preparation');
   sandbox.onboarding = 'skipped';
+  releaseWaiting(db, sandbox);
   resync(db);
   return sandbox;
 });
@@ -650,6 +661,7 @@ route('POST', `/api/sandboxes/${ID}/onboarding/approve`, ({ db, p }) => {
       task.stepsList = task.stepsList.map((s) => ({ ...s, status: 'done', updated_by: 'task #1 (claude)', updated_at: new Date().toISOString() }));
       touch(db, task, { status: 'closed', activity: null, account_label: null });
       sandbox.onboarding = 'ready';
+      releaseWaiting(db, sandbox);
       resync(db);
     }, 9000);
   }
@@ -687,7 +699,6 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
 route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
-  if (sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing') fail(409, 'conflict', 'The project is being prepared; new tasks start after the preparation task lands (or an admin skips it).');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
   if (body.harness && body.harness !== 'claude') fail(422, 'invalid', 'harness must be claude (Yulius runs Claude Code only)');
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
@@ -699,7 +710,10 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
-  const before = body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
+  // While the sandbox is being prepared a new task waits after the preparation task (U-08).
+  const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
+  const preparation = preparing ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null;
+  const before = body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : preparation;
   if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
   const task = {
     id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: before ? 'chained' : 'queued', activity: null,

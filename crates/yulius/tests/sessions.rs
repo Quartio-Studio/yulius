@@ -471,7 +471,8 @@ async fn no_task_starts_before_onboarding_is_ready_and_the_plan_says_why() -> Te
     assert_eq!(shop["onboarding"], "preparing");
     let sid = SandboxId::parse(text(&shop["id"]))?;
 
-    // Creating, continuing and chaining are all refused while preparing (U-08).
+    // While preparing, continuing a resting task is refused; new tasks, chained or not, wait
+    // after the preparation task (U-08, F 2026-10-11).
     let earlier = insert_task(
         &w.h.store,
         &sid,
@@ -504,7 +505,9 @@ async fn no_task_starts_before_onboarding_is_ready_and_the_plan_says_why() -> Te
         &carol,
     )
     .await?;
-    assert_eq!(created.status, StatusCode::CONFLICT);
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["status"], "chained");
+    assert_eq!(created.body["after"]["number"], 1);
     let prep =
         w.h.store
             .sandbox(&sid)
@@ -520,7 +523,8 @@ async fn no_task_starts_before_onboarding_is_ready_and_the_plan_says_why() -> Te
         &carol,
     )
     .await?;
-    assert_eq!(chained.status, StatusCode::CONFLICT, "{:?}", chained.body);
+    assert_eq!(chained.status, StatusCode::CREATED, "{:?}", chained.body);
+    assert_eq!(chained.body["status"], "chained");
 
     // The CLI's plan shows the state and what is pending, and which sessions are needed.
     let digest = "d".repeat(64);
