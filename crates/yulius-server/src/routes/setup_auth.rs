@@ -1,9 +1,7 @@
 //! Setup, sign-in, current user and CLI device approval.
 
-use std::net::SocketAddr;
-
 use axum::Json;
-use axum::extract::{ConnectInfo, Query, State};
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
@@ -16,6 +14,7 @@ use yulius_contracts::api::auth::{
 
 use crate::AppState;
 use crate::auth::{Auth, clear_cookie, session_cookie};
+use crate::client::ClientAddress;
 use crate::error::ApiResult;
 
 fn with_cookie(app: &AppState, session: NewSession, status: StatusCode) -> Response {
@@ -57,13 +56,15 @@ pub async fn setup(
     Ok(with_cookie(&app, session, StatusCode::CREATED))
 }
 
+/// Password sign-in, limited per client: the TCP peer, or the trusted proxy's client address
+/// (ACC-013).
 pub async fn password_login(
     State(app): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    client: ClientAddress,
     Json(req): Json<PasswordLogin>,
 ) -> ApiResult<Response> {
     let session = app
-        .password_login(&Secret(req.password), &addr.ip().to_string())
+        .password_login(&Secret(req.password), &client.limit_key())
         .await?;
     Ok(with_cookie(&app, session, StatusCode::OK))
 }

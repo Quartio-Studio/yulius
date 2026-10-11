@@ -118,6 +118,12 @@ pub struct ServeArgs {
     /// Probability Jev must give before a prompt typed into a running task is held (0.5–1).
     #[arg(long, env = "YULIUS_JEV_SCOPE_THRESHOLD", default_value_t = yulius_domain::intake::DEFAULT_SCOPE_THRESHOLD, value_parser = parse_threshold)]
     pub jev_scope_threshold: f64,
+    /// File holding the secret shared with the TLS reverse proxy (owner-only, mode 0600; 32–4096
+    /// printable characters): a request carrying it in `X-Yulius-Proxy-Secret` is limited per
+    /// client by the address in `X-Yulius-Client-Ip` (SPEC-001 ACC-013, docs/operations.md §4).
+    /// Unset or unusable: per-client limits key on the TCP peer.
+    #[arg(long, env = "YULIUS_PROXY_SECRET_FILE")]
+    pub proxy_secret_file: Option<PathBuf>,
     /// File holding a token that may read Quartio-Studio/yulius (owner-only, mode 0600), for
     /// update checks and the helper's fetch when the GitHub App cannot read that repository
     /// (SPEC-002 ADR-18).
@@ -412,6 +418,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
         poll: std::time::Duration::from_secs(args.ci_poll_secs),
     };
     config.own_ports = vec![args.bind.port(), args.internal_bind.port()];
+    config.proxy_secret = crate::wiring::proxy::load(args.proxy_secret_file.as_deref());
     config.preview = preview_config(&args.public_url, args.preview_domain.as_deref())?;
     config
         .contained_readonly

@@ -1405,7 +1405,7 @@ Hence the shared, ownership-shifted **base** under a kernel overlay with a per-s
 **Security properties (tested, §14).**
 - **Host secrets.** `master.key`, the database, `jev.key`, other sandboxes, other users' homes, run directories and the relay sockets are not in a run's mount namespace.
 - **Displays.** The X displays' sockets (private `/tmp`), abstract sockets (private network) and cookies are unreachable.
-- **Host loopback.** Yulius's public listener, Caddy's admin API, DevTools ports and other loopback services are refused. The internal listener works through its relay.
+- **Host loopback.** Yulius's public listener, Caddy's admin API, DevTools ports and other loopback services are refused. The internal listener works through its relay. So an isolated run cannot send forged client-address headers to the public listener (#88, §8 "Client address"); runs without isolation still can, which the proxy secret covers.
 - **Package installs.** A package installed in one sandbox is invisible in another and on the host.
 - **Limits and syscalls.** Limits hold; nested user namespaces and filtered calls fail.
 
@@ -2015,11 +2015,29 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   the session cookie `__Host-` prefixed over HTTPS (ADR-14); CSRF header on state-changing
   requests; a cookie session refuses requests that announce another `Origin` or come from
   another site per fetch metadata (navigations excepted); WebSocket Origin must equal the public
-  URL (or an allowlisted desktop origin); login rate limits; Argon2id for the superadmin
-  password. Every response carries `X-Frame-Options: DENY`, `Content-Security-Policy:
+  URL (or an allowlisted desktop origin); login rate limits per client (below); Argon2id for the
+  superadmin password. Every response carries `X-Frame-Options: DENY`, `Content-Security-Policy:
   frame-ancestors 'none'` (nothing frames Yulius, not even Yulius), `X-Content-Type-Options:
   nosniff`, `Referrer-Policy: same-origin` and the process tag `X-Yulius` unless the route sets a
   stricter policy (#56, ADR-14); HSTS is set by the TLS proxy.
+- Client address (ACC-013, #88; `yulius_server::client`): password sign-in allows 5 attempts per
+  minute per client key. The key is the TCP peer, except that a request carrying exactly one
+  `X-Yulius-Proxy-Secret` equal (constant time, `subtle`) to the secret of
+  `YULIUS_PROXY_SECRET_FILE` (owner-only, 32–4096 printable characters, read once at start) is keyed
+  on its single well-formed `X-Yulius-Client-Ip`; an IPv6 key is the /64, an IPv4-mapped address
+  its IPv4. The proxy overwrites both headers on the Yulius site; the preview proxy strips both
+  before a request reaches a sandbox's app. `X-Forwarded-For` is not trusted because anything that
+  reaches the listener directly could name a new address per request. **Who reaches that
+  listener (checked 2026-10-11):** isolated runs cannot (the holder starts `slirp4netns
+  --disable-host-loopback` and relays only the internal listener and `YULIUS_SANDBOX_FORWARD`
+  ports; `10.0.2.2` and unrelayed host loopback ports refused in the opt-in `tests/isolation.rs`,
+  AC-NFR-8, run on the production VM in #154); through the VM's public address they reach the
+  proxy as one client. Runs in legacy
+  containment or host mode, and a `YULIUS_SANDBOX_FORWARD` of the public port, still share the
+  host's loopback, so the secret stays as defence in depth: without it their forged headers count
+  against `127.0.0.1`. The secret is outside every contained run's mount namespace, its Caddy copy
+  is a root-only environment file (`{env.*}` placeholder, so not in Caddy's config API), and it is
+  never logged, returned, shown by `yulius doctor` or put into an error (`Secret` debug redaction).
 - Live previews (ADR-14): preview hosts are dispatched before the UI and API and only ever reach
   `127.0.0.1:<port>` of the sandbox's range (never Yulius's listeners or DevTools ports); write
   access through a single-use handshake and a per-origin grant re-checked every 30 s; credentialed
@@ -2158,6 +2176,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Spawn timeout | 30 s | fail start |
 | Update check of `main` (ADR-18) | every 60 min; "Check now" reuses a result < 30 s; 15 s and 4 MiB per GitHub request; ≤ 250 commits | error shown, nothing offered |
 | Update request / helper status files | 16 KiB / 256 KiB; request valid 15 min | refused / ignored |
+| Password sign-in (ACC-013) | 5 attempts per client key per minute; ≤ 4096 client keys tracked (keys idle for a minute forgotten first) | 429; a new key while 4096 are active also waits |
 | Helper acknowledgement | request rewritten every 20 s, given up after 90 s (not while the helper reports progress on an earlier request) | run fails or resumes, nothing installed |
 | Update build | helper 2 h; server 3 h | `failed` |
 | Pausing tasks for an update | 30 min | `cancelled`, tasks released |
@@ -2341,6 +2360,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Process supervision (NFR-001..005, AC-TSK-3, AC-NFR-3) | `crates/yulius/tests/supervision.rs`: real detached ptyhost + fake agent + real git worktrees; a server runtime is dropped and a new one reconciles and reattaches the same child pid, snapshot restores the screen, crash exit code recorded, stop escalation, queueing at the session limit, normal exit closes the task; `crates/yulius-ptyhost/tests/*` (13 + orphan watchdog). |
 | Session ends and usage from the sessions (HRN-007, ROT-007, ROT-009, AC-TSK-15, AC-ROT-15/16; #143, #144) | `tests/session_sync.rs` (real ptyhost, fake agent shaped like Claude Code 2.1.292, real `yulius hook`, keys through the terminal API): Ctrl+C during a turn → `waiting`, Ctrl+C twice and `/exit` → `closed`, crash → `stopped_crashed`, SIGTERM/SIGKILL → `stopped_killed`, Stop → `stopping` then `stopped_cancelled`; a typed new-scope prompt held by the scope check, the agent prints nothing for it, the summary carries the card; the status line prints "→ sync git:(feat/…)" and its `rate_limits` become the account's windows. `tests/subscription_pool.rs` (fake clock): status line readings (windows, caps kept, `session` samples, no write when unchanged, the 98 % switch), a hold not polled for 45 s ends `abandoned`, a prompt typed into a held turn takes the task out of the pause. `tests/account_usage.rs`: HTTP 403 is no error, clears an old note, backs off a day. Unit: `exit_event`, `TaskEvent::Killed`, the interrupt line, contracts, launch settings, usage failure kinds. `e2e/tests/subscriptions.e2e.ts` (mock UI). |
 | Rotation (AC-ROT-2 reactive, AC-ROT-6) | `supervision.rs`: a provider usage limit at turn end moves the same session to the next account with a native resume and a recorded decision; usage refreshed at 99 % moves it at the next turn boundary; with no capacity the task waits. |
+| Per-client sign-in limits behind the proxy (ACC-013, AC-ACC-9; #88) | `tests/trusted_proxy.rs` (the public router on a real loopback listener with recorded peers, raw HTTP/1.1): two proxied clients have separate buckets and an IPv6 /64 shares one; missing, wrong, partial and repeated secrets and unusable addresses count against `127.0.0.1`; forged headers rotated per request stay in the peer's bucket with and without a configured secret; at TRACE level no response, log line or configuration debug string contains the secret; the limiter stays at 4096 keys. Three of these fail against the previous peer-only handler. Unit: header parsing and keys (`yulius-server` `client`), the secret file (`wiring::proxy`), the doctor check. `tests/preview.rs`: neither header reaches a sandbox's app. |
 | Superadmin access (AC-ACC-8) | `http_auth.rs`: every sandbox with admin access and its routes with GitHub down, no cached permission; only the superadmin (a password instance admin sees nothing, GitHub users mirrored); terminal and event stream survive re-checks. `shells.rs`: shell with the App's repository token. `projects.rs`: listing and import through the App. `delivery.rs`: pull request through the App, merge/release 403. `analytics.rs`: summary and Status cover every sandbox. `e2e/tests/access.e2e.ts` (mock UI). |
 | Terminal and permissions (AC-TSK-2, AC-TSK-6, AC-ACC-5) | `terminal_ws.rs`: task created via the public API, two WebSocket viewers, read-only input refused, writer input reaches the agent, a GitHub downgrade turns an open socket read-only and revocation closes it (4003); the writer's `?cols=&rows=` is in its first state (AC-UI-38); the size follows the active viewer (alone and idle it keeps it; a newcomer takes it from an idle one; typing and `take_control` apply the typist's size at once; an idle or leaving controller hands it to the active viewer; the agent's `stty size` agrees). `hub::control` unit tests cover the policy. |
 | Terminal size, clipboard and file links (UI-018, UI-019, AC-UI-10, AC-UI-11; F 2026-10-10) | `e2e/tests/terminal.e2e.ts` (mock): the key table per platform and the path forms (unit, in the page); Ctrl+C copies a selection and interrupts without one; paste types; the right-click menu; a read-only paste refused; another viewer's 90×30 grid fills the box, centred, never cut off, with a chip and no banner, and a click takes the size; file links in the task terminal (five forms linked, four kinds left plain, a web link kept) open the editor at file, line and column; a shell's `ls` output links. `live_ui_terminal.rs` (opt-in Chrome, real server and fake agent): copy with a selection keeps the agent running, the platform's paste key types the clipboard, two windows of different sizes (the active one sets the PTY, the other fills its box; a click moves the size; an idle window hands it back), and Ctrl+C without a selection interrupts the agent. |
@@ -2373,6 +2393,10 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-11 (F 2026-10-09, decision on #88): §8 the client address of per-client limits — the
+  trusted proxy's header only with the shared secret, else the TCP peer — and the measured reach
+  of the public listener from sandboxes (ADR-22's host-loopback property cross-referenced); §9
+  sign-in limiter bounds; §14.
 - 2026-10-10 (F 2026-10-10, item 3b; #137): sessions as documents — §4 `sessions/<doc>/`, §5
   `session_docs`/`session_chunks`/`session_fts` (migration 0011), §6.5 imports store sessions as
   documents and the onboarding plan, §6.6 the gate and the self-starting preparation task, §6.10

@@ -130,6 +130,9 @@ enum Command {
         /// Extra paths visible inside containment (as for `serve`).
         #[arg(long, env = "YULIUS_CONTAINED_READONLY", value_delimiter = ':')]
         contained_readonly: Vec<PathBuf>,
+        /// The reverse proxy's secret file (as for `serve`): checked, never shown.
+        #[arg(long, env = "YULIUS_PROXY_SECRET_FILE")]
+        proxy_secret_file: Option<PathBuf>,
     },
     /// Print build information.
     Version,
@@ -207,7 +210,13 @@ fn main() -> ExitCode {
             data,
             contained,
             contained_readonly,
-        } => yulius::doctor::doctor(&data, contained, &contained_readonly),
+            proxy_secret_file,
+        } => yulius::doctor::doctor(
+            &data,
+            contained,
+            &contained_readonly,
+            proxy_secret_file.as_deref(),
+        ),
         Command::Version => {
             let commit = env!("YULIUS_BUILD_COMMIT");
             if commit.is_empty() {
