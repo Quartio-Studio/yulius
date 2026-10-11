@@ -150,6 +150,9 @@ pub struct ServeArgs {
     #[arg(long, env = "YULIUS_CI_POLL_SECS", default_value_t = 60,
           value_parser = clap::value_parser!(u64).range(10..=3600))]
     pub ci_poll_secs: u64,
+    /// Sandbox isolation (SPEC-002 ADR-22).
+    #[command(flatten)]
+    pub isolation: crate::wiring::sandbox::IsolationArgs,
 }
 
 /// Parses a probability threshold (0.5–1).
@@ -454,6 +457,8 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // An update in progress keeps every task paused from the first hook call (ADR-18).
     app.restore_update_hold().await;
     app.load_jev_key().await;
+    let _isolation =
+        crate::wiring::sandbox::install(&app, &args.isolation, args.internal_bind.port()).await?;
     app.cleanup_stale_logins().await;
     match app.reconcile_environment_runs().await {
         Ok(0) => {}

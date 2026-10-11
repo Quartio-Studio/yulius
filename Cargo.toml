@@ -5,6 +5,7 @@ members = [
     "crates/yulius-app",
     "crates/yulius-store",
     "crates/yulius-ptyhost",
+    "crates/yulius-sandbox",
     "crates/yulius-harness",
     "crates/yulius-github",
     "crates/yulius-git",
@@ -31,6 +32,7 @@ yulius-contracts = { path = "crates/yulius-contracts", version = "0.1.0" }
 yulius-app = { path = "crates/yulius-app", version = "0.1.0" }
 yulius-store = { path = "crates/yulius-store", version = "0.1.0" }
 yulius-ptyhost = { path = "crates/yulius-ptyhost", version = "0.1.0" }
+yulius-sandbox = { path = "crates/yulius-sandbox", version = "0.1.0" }
 yulius-harness = { path = "crates/yulius-harness", version = "0.1.0" }
 yulius-github = { path = "crates/yulius-github", version = "0.1.0" }
 yulius-git = { path = "crates/yulius-git", version = "0.1.0" }

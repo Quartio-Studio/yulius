@@ -36,6 +36,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 yulius-harness = { workspace = true }
 yulius-ptyhost = { workspace = true }
+yulius-sandbox = { workspace = true }
 yulius-git = { workspace = true }
 yulius-github = { workspace = true }
 yulius-import = { workspace = true }

@@ -3196,6 +3196,7 @@ dependencies = [
  "yulius-harness",
  "yulius-import",
  "yulius-ptyhost",
+ "yulius-sandbox",
  "yulius-server",
  "yulius-store",
 ]
@@ -3358,6 +3359,22 @@ dependencies = [
  "vt100",
  "yulius-contracts",
  "yulius-ptyhost",
+ "yulius-sandbox",
+]
+
+[[package]]
+name = "yulius-sandbox"
+version = "0.1.0"
+dependencies = [
+ "nix 0.31.3",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "yulius-contracts",
 ]
 
 [[package]]

@@ -36,6 +36,9 @@ fn resolver_dir(resolv_conf: &Path) -> Option<String> {
 /// inner argv. Arguments are passed as separate argv elements, never through a shell.
 #[must_use]
 pub fn bwrap_argv(c: &BubblewrapSpec, inner_argv: &[String], cwd: &str) -> Vec<String> {
+    if let Some(join) = &c.join {
+        return joined_argv(c, join, inner_argv, cwd);
+    }
     let mut argv: Vec<String> = [
         BWRAP_PROGRAM,
         "--die-with-parent",
@@ -98,6 +101,122 @@ pub fn bwrap_argv(c: &BubblewrapSpec, inner_argv: &[String], cwd: &str) -> Vec<S
     argv
 }
 
+/// Capabilities a run keeps inside its sandbox (Docker's default set; SPEC-002 ADR-22 §2).
+pub const RUN_CAPABILITIES: [&str; 13] = [
+    "CAP_CHOWN",
+    "CAP_DAC_OVERRIDE",
+    "CAP_FOWNER",
+    "CAP_FSETID",
+    "CAP_KILL",
+    "CAP_SETGID",
+    "CAP_SETUID",
+    "CAP_SETPCAP",
+    "CAP_SETFCAP",
+    "CAP_NET_BIND_SERVICE",
+    "CAP_NET_RAW",
+    "CAP_SYS_CHROOT",
+    "CAP_AUDIT_WRITE",
+];
+
+/// System directories bound writable from the sandbox's system layer.
+pub const SYSTEM_LAYER_DIRS: [&str; 9] = [
+    "/usr", "/etc", "/var", "/opt", "/root", "/home", "/srv", "/mnt", "/media",
+];
+
+/// The merged-`/usr` links of the root.
+const ROOT_LINKS: [(&str, &str); 4] = [
+    ("usr/bin", "/bin"),
+    ("usr/sbin", "/sbin"),
+    ("usr/lib", "/lib"),
+    ("usr/lib64", "/lib64"),
+];
+
+/// `bwrap` argv of a run that joined its sandbox's holder (SPEC-002 ADR-22 §2): the user,
+/// network and mount namespaces are the holder's (entered before `bwrap` starts); the run gets
+/// its own PID, IPC, UTS and cgroup namespaces, the reduced capability set, a fresh `/proc`,
+/// `/dev`, `/tmp` and `/run`, the system layer's directories writable, then the sandbox
+/// directory and the same extra mounts as before.
+fn joined_argv(
+    c: &BubblewrapSpec,
+    join: &yulius_contracts::ptyhost::SandboxJoin,
+    inner_argv: &[String],
+    cwd: &str,
+) -> Vec<String> {
+    let mut argv: Vec<String> = [
+        BWRAP_PROGRAM,
+        "--die-with-parent",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup-try",
+        "--hostname",
+        &join.hostname,
+        "--cap-drop",
+        "ALL",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    for cap in RUN_CAPABILITIES {
+        argv.extend(["--cap-add".into(), cap.into()]);
+    }
+    argv.extend(
+        [
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--perms",
+            "1777",
+            "--tmpfs",
+            "/dev/shm",
+            "--perms",
+            "1777",
+            "--tmpfs",
+            "/tmp",
+            "--perms",
+            "0755",
+            "--tmpfs",
+            "/run",
+            "--perms",
+            "1777",
+            "--dir",
+            "/run/lock",
+        ]
+        .map(str::to_owned),
+    );
+    let root = join.system_root.trim_end_matches('/');
+    for dir in SYSTEM_LAYER_DIRS {
+        argv.extend(["--bind-try".into(), format!("{root}{dir}"), dir.to_owned()]);
+    }
+    for (target, link) in ROOT_LINKS {
+        argv.extend(["--symlink".into(), target.into(), link.into()]);
+    }
+    for dir in &join.private_dirs {
+        argv.extend(["--tmpfs".into(), dir.clone()]);
+    }
+    push_bind(&mut argv, "--bind", &c.sandbox_root);
+    let home_mounted = c.binds.iter().any(|b| b.dest == c.home);
+    if !home_mounted && !Path::new(&c.home).starts_with(&c.sandbox_root) {
+        push_bind(&mut argv, "--bind", &c.home);
+    }
+    for path in &c.writable {
+        push_bind(&mut argv, "--bind", path);
+    }
+    for path in &c.readonly {
+        push_bind(&mut argv, "--ro-bind", path);
+    }
+    for bind in &c.binds {
+        let option = if bind.writable { "--bind" } else { "--ro-bind" };
+        argv.extend([option.to_owned(), bind.source.clone(), bind.dest.clone()]);
+    }
+    argv.extend(["--setenv".into(), "HOME".into(), c.home.clone()]);
+    argv.extend(["--chdir".into(), cwd.to_owned()]);
+    argv.push("--".into());
+    argv.extend(inner_argv.iter().cloned());
+    argv
+}
+
 fn push_bind(argv: &mut Vec<String>, option: &str, path: &str) {
     argv.extend([option.to_owned(), path.to_owned(), path.to_owned()]);
 }
@@ -130,6 +249,7 @@ mod tests {
             share_net: true,
             binds: Vec::new(),
             identity: None,
+            join: None,
         }
     }
 
@@ -249,6 +369,67 @@ mod tests {
         outside.home = "/data/homes/s1".into();
         let argv = bwrap_argv(&outside, &["a".into()], "/");
         assert!(position(&argv, &["--bind", "/data/homes/s1", "/data/homes/s1"]).is_some());
+    }
+
+    #[test]
+    fn joined_runs_take_the_system_layer_and_drop_capabilities() {
+        let mut c = spec();
+        c.binds = vec![yulius_contracts::ptyhost::BindMount {
+            source: "/data/users/u1/identity/passwd".into(),
+            dest: "/etc/passwd".into(),
+            writable: false,
+        }];
+        c.readonly.push("/usr/local/bin/yulius".into());
+        c.join = Some(Box::new(yulius_contracts::ptyhost::SandboxJoin {
+            holder_pid: 4242,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            cgroup: None,
+            system_root: "/data/runtime/sandboxes/s1/root".into(),
+            hostname: "fixture".into(),
+            exec_shim: None,
+            private_dirs: vec!["/data".into()],
+        }));
+        let argv = bwrap_argv(&c, &["bash".into()], "/data/sandboxes/s1/repo");
+        for flag in ["--unshare-user", "--unshare-net", "--share-net", "--uid"] {
+            assert!(!argv.contains(&flag.to_owned()), "{flag} in {argv:?}");
+        }
+        assert!(position(&argv, &["--hostname", "fixture"]).is_some());
+        let drop_all = position(&argv, &["--cap-drop", "ALL"]);
+        let chown = position(&argv, &["--cap-add", "CAP_CHOWN"]);
+        assert!(drop_all.is_some() && drop_all < chown, "{argv:?}");
+        assert!(!argv.contains(&"CAP_SYS_ADMIN".to_owned()));
+        let usr = position(
+            &argv,
+            &["--bind-try", "/data/runtime/sandboxes/s1/root/usr", "/usr"],
+        );
+        let var = position(
+            &argv,
+            &["--bind-try", "/data/runtime/sandboxes/s1/root/var", "/var"],
+        );
+        let sandbox = position(
+            &argv,
+            &["--bind", "/data/sandboxes/s1", "/data/sandboxes/s1"],
+        );
+        let exe = position(&argv, &["--ro-bind", "/usr/local/bin/yulius"]);
+        let identity = position(
+            &argv,
+            &["--ro-bind", "/data/users/u1/identity/passwd", "/etc/passwd"],
+        );
+        let private = position(&argv, &["--tmpfs", "/data"]);
+        assert!(usr.is_some() && usr < sandbox && sandbox < exe, "{argv:?}");
+        assert!(var < private && private < sandbox, "{argv:?}");
+        assert!(
+            var < identity,
+            "identity files override the system layer: {argv:?}"
+        );
+        assert!(position(&argv, &["--symlink", "usr/bin", "/bin"]).is_some());
+        assert!(position(&argv, &["--perms", "1777", "--tmpfs", "/tmp"]).is_some());
+        assert_eq!(
+            &argv[argv.len() - 2..],
+            &["--".to_owned(), "bash".to_owned()]
+        );
     }
 
     #[test]

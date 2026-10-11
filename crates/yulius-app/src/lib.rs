@@ -28,6 +28,7 @@ pub mod hub;
 pub mod identity;
 pub mod imports;
 pub mod intake;
+pub mod isolation;
 pub mod jev_key;
 pub mod lifecycle;
 pub mod mcp;

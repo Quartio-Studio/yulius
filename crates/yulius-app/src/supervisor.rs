@@ -733,6 +733,16 @@ impl App {
         // redaction.
         self.vault_run_setup(&sandbox, &run_dir, &task_token, &mut launch)
             .await?;
+        let (join, _lease) = self.isolation_join(&sandbox).await?.unzip();
+        if join.is_some() {
+            // Root of its sandbox (ADR-22): Claude Code accepts --dangerously-skip-permissions as
+            // root only inside a declared sandbox; package tools live in sbin.
+            launch.env.retain(|(k, _)| k != "PATH");
+            launch.env.extend([
+                ("IS_SANDBOX".into(), "1".into()),
+                ("PATH".into(), crate::isolation::SANDBOX_PATH.into()),
+            ]);
+        }
         launch.containment = if self.config.contained {
             let sandbox_root = self.sandbox_dir(&sandbox.id);
             // Generated per-run config (Claude settings and MCP config live in the run directory,
@@ -749,10 +759,12 @@ impl App {
                 writable: Vec::new(),
                 readonly: std::iter::once(self.config.yulius_exe.clone())
                     .chain(self.config.contained_readonly.iter().cloned())
+                    .chain(join.iter().flat_map(|j| j.extra_readonly.iter().cloned()))
                     .chain(run_files)
                     .collect(),
                 binds: Vec::new(),
                 identity: None,
+                join: join.map(Box::new),
             }
         } else {
             Containment::None
