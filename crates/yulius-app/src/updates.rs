@@ -227,9 +227,15 @@ impl App {
         {
             return false;
         }
+        let now = self.now().0;
         if let Ok(mut held) = self.updates.held_at.lock() {
-            held.insert(task.clone(), self.now().0);
+            held.insert(task.clone(), now);
         }
+        // The agent is still held: a capacity pause of the same task must not count its hook as
+        // given up (ADR-17's 45 s rule) because the update answered the polls meanwhile.
+        self.runtime(task)
+            .hold_polled_ms
+            .store(now, Ordering::SeqCst);
         true
     }
 
