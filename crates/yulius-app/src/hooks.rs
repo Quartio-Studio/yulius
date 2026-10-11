@@ -9,13 +9,12 @@ use std::sync::atomic::Ordering;
 
 use yulius_contracts::hooks::{HookInput, HookOutput, events};
 use yulius_domain::briefing::{
-    BriefingInput, DEFAULT_BUDGET_BYTES, MAX_RECENT_CHANGES, ParallelTask, RecentChange, TaskBrief,
-    build_briefing,
+    BriefingInput, DEFAULT_BUDGET_BYTES, Foundations, MAX_RECENT_CHANGES, ParallelTask,
+    RecentChange, TaskBrief, build_briefing,
 };
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
-use yulius_domain::spec_format::{DecisionsLocation, validate_spec_for};
-use yulius_domain::steps::StepStatus;
+use yulius_domain::spec_format::{DecisionsLocation, SpecPolicy, validate_spec_for};
 use yulius_domain::task::{Activity, TaskStatus};
 
 use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
@@ -313,15 +312,9 @@ impl App {
             .await
             .map_err(AppError::internal)?;
 
-        let steps = store
-            .steps(&task.id)
-            .await?
-            .into_iter()
-            .map(|s| {
-                let status = StepStatus::parse(&s.status).unwrap_or(StepStatus::Pending);
-                (s.title, status)
-            })
-            .collect();
+        let (_, steps) = self.step_states_of(&task.id).await?;
+        let workflow = self.task_workflow(task).await.ok().flatten();
+        let spec_policy = SpecPolicy::from_workflow(workflow.as_ref().map(|w| w.require_spec));
         let all = store.tasks(&task.sandbox_id, false).await?;
         let claims = store.active_claims(&task.sandbox_id).await?;
         let mut recent: Vec<&TaskRecord> = all
@@ -374,6 +367,8 @@ impl App {
                 spec_path: task.spec_path.clone().unwrap_or_default(),
                 steps,
                 branch: task.branch.clone().unwrap_or_default(),
+                workflow: workflow.map(|w| w.name),
+                spec_policy,
             },
             profile: &profile,
             layout: &repo.layout,
@@ -387,6 +382,8 @@ impl App {
             port_base: sandbox.port_base,
             port_count: sandbox.port_count,
             repo_instructions: repo.instructions.clone(),
+            foundations: repo.foundations.clone(),
+            now: self.now(),
         };
         let workflow = self.workflow_instructions(task).await.map(|text| {
             let clipped: String = text.chars().take(3_000).collect();
@@ -558,8 +555,8 @@ impl App {
             .store(false, Ordering::SeqCst);
         let current = ctx.attempt.account_id.clone();
         let pool = self.rotation_input(task, current.clone()).await?;
-        match rotation::decide(&pool, Trigger::Proactive) {
-            (Decision::Stay, _) => {}
+        let stays = match rotation::decide(&pool, Trigger::Proactive) {
+            (Decision::Stay, _) => true,
             (Decision::Switch { account }, reason) => {
                 // The agent waits here while it moves; the resumed session gets the gate's
                 // reasons as its prompt when the gate would have kept it working.
@@ -586,9 +583,18 @@ impl App {
                 return Ok(self.hold_for(&task.id));
             }
             // The agent goes idle anyway; its next prompt is held if capacity is still gone.
-            (Decision::Wait { .. }, _) => {}
-        }
+            (Decision::Wait { .. }, _) => false,
+        };
 
+        // A clean turn end on the same subscription may carry one gentle step nudge (STP-008).
+        // It is not a gate block: it is given once and never escalates to "needs attention".
+        if reasons.is_empty() && stays {
+            match self.take_turn_end_nudge(task).await {
+                Ok(Some(text)) => return Ok(HookReply::Output(HookOutput::block(text))),
+                Ok(None) => {}
+                Err(err) => tracing::warn!(error = %err, task = %task.id, "step nudge unavailable"),
+            }
+        }
         if reasons.is_empty() {
             if task.gate_blocks != 0 {
                 let update = TaskFieldUpdate {
@@ -652,8 +658,9 @@ impl App {
         }
     }
 
-    /// The discipline gate on the task spec: `Some(reason)` when the worktree has changes and
-    /// the spec is missing or invalid.
+    /// The discipline gate on the task spec: `Some(reason)` when the worktree has changes, the
+    /// task needs a spec (its workflow, or a change beyond documentation, DSC-013) and the spec
+    /// is missing or invalid.
     async fn spec_gate(&self, task: &TaskRecord) -> AppResult<Option<String>> {
         let (Some(worktree), Some(spec_path)) =
             (task.worktree_path.as_ref(), task.spec_path.as_ref())
@@ -661,25 +668,7 @@ impl App {
             return Ok(None);
         };
         let worktree = PathBuf::from(worktree);
-        let sandbox = self
-            .deps
-            .store
-            .sandbox(&task.sandbox_id)
-            .await?
-            .ok_or(AppError::NotFound)?;
-        let base = format!(
-            "origin/{}",
-            crate::delivery::delivery_profile(&sandbox).integration_branch
-        );
-        let dirty = self.deps.git.has_changes(&worktree).await.unwrap_or(false);
-        let ahead = self
-            .deps
-            .git
-            .ahead_behind(&worktree, &base, "HEAD")
-            .await
-            .map(|(ahead, _)| ahead > 0)
-            .unwrap_or(false);
-        if !dirty && !ahead {
+        if !self.branch_changed(task).await? || !self.spec_required(task).await? {
             return Ok(None);
         }
         if repo_path(&worktree, spec_path).is_none() {
@@ -691,7 +680,7 @@ impl App {
         let spec_path = spec_path.clone();
         tokio::task::spawn_blocking(move || match read_repo_doc(&worktree, &spec_path) {
             None => Some(format!(
-                "You changed code but the task spec `{spec_path}` does not exist. Create it in the Yulius format (frontmatter with `yulius-task: {expected}`, the required sections and a Plan checklist) before finishing."
+                "This task needs a spec (a feature or a fix, or a change beyond documentation) but `{spec_path}` does not exist. Create it in the Yulius format (frontmatter with `yulius-task: {expected}`, the required sections and a Plan checklist of similar-effort steps) before finishing."
             )),
             Some(text) => {
                 let report = validate_spec_for(&text, &expected);
@@ -705,10 +694,11 @@ impl App {
 
 impl App {
     /// Keeps the task's steps in sync with the Plan checklist of its spec (STP-004): the
-    /// top-level plan items become the steps in order; checked items are `done`; unchecked
-    /// items keep the status of the existing step with the same title (agents may mark them
-    /// `in_progress` before ticking the box) or start `pending`. Writes only on change. Returns
-    /// whether the steps changed.
+    /// top-level plan items (at most [`crate::coordination::MAX_STEPS`]) become the steps in
+    /// order; checked items are `done`; unchecked items keep the status and effort of the
+    /// existing step with the same title (agents may mark them `in_progress` before ticking the
+    /// box), so unticking never reopens a finished step; new items start `pending`. Writes only
+    /// on change. Returns whether the steps changed.
     ///
     /// # Errors
     /// Store failures.
@@ -729,17 +719,22 @@ impl App {
         let items: Vec<_> = plan
             .into_iter()
             .filter(|item| item.depth == 0 && !item.text.trim().is_empty())
-            .take(100)
+            .take(crate::coordination::MAX_STEPS)
             .collect();
         if items.is_empty() {
             return Ok(false);
         }
         let existing = self.deps.store.steps(&task.id).await?;
         let now = self.now();
-        let mut steps = Vec::with_capacity(items.len());
+        let mut steps: Vec<crate::model::StepRecord> = Vec::with_capacity(items.len());
         for (i, item) in items.iter().enumerate() {
-            let title: String = item.text.trim().chars().take(300).collect();
-            let previous = existing.iter().find(|s| s.title == title);
+            let title: String = yulius_domain::steps::normalize_title(&item.text)
+                .chars()
+                .take(yulius_domain::steps::MAX_TITLE_CHARS)
+                .collect();
+            // A repeated item (the spec check reports it) becomes its own step.
+            let previous = crate::discipline::step_by_title(&existing, &title)
+                .filter(|p| !steps.iter().any(|s| s.id == p.id));
             let status = if item.checked {
                 "done".to_owned()
             } else {
@@ -767,6 +762,7 @@ impl App {
                 } else {
                     Some(now)
                 },
+                effort: previous.map_or(1, |p| p.effort),
             });
         }
         let same = steps.len() == existing.len()
@@ -866,6 +862,49 @@ struct RepoDocs {
     decision_file: Option<String>,
     decision_dir: Vec<(String, String)>,
     instructions: Vec<String>,
+    foundations: Foundations,
+}
+
+/// Most entries of `.github/workflows` examined.
+const MAX_WORKFLOW_ENTRIES: usize = 200;
+
+/// GitHub Actions workflow files of the repository (a real directory inside it, not a link).
+fn actions_workflows(root: &Path) -> usize {
+    let Some(dir) = repo_path(root, ".github/workflows") else {
+        return 0;
+    };
+    let inside = std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir())
+        && std::fs::canonicalize(root)
+            .ok()
+            .zip(std::fs::canonicalize(&dir).ok())
+            .is_some_and(|(root, dir)| dir.starts_with(root));
+    if !inside {
+        return 0;
+    }
+    std::fs::read_dir(&dir).map_or(0, |entries| {
+        entries
+            .take(MAX_WORKFLOW_ENTRIES)
+            .filter_map(Result::ok)
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|name| name.ends_with(".yml") || name.ends_with(".yaml"))
+            .count()
+    })
+}
+
+/// The project's foundations as the briefing reports them (DSC-014).
+fn foundations(root: &Path, toml: Option<&str>) -> Foundations {
+    let commands = toml.and_then(|text| {
+        yulius_domain::spec_format::parse_yulius_toml(text)
+            .ok()
+            .map(|config| config.commands)
+    });
+    let set = |value: Option<&String>| value.is_some_and(|v| !v.trim().is_empty());
+    Foundations {
+        config: toml.is_some(),
+        test_command: commands.as_ref().is_some_and(|c| set(c.test.as_ref())),
+        lint_command: commands.as_ref().is_some_and(|c| set(c.lint.as_ref())),
+        actions_workflows: actions_workflows(root),
+    }
 }
 
 impl RepoDocs {
@@ -908,6 +947,7 @@ impl RepoDocs {
             .filter(|rel| repo_doc_exists(root, rel))
             .map(|rel| (*rel).to_owned())
             .collect();
+        let foundations = foundations(root, toml.as_deref());
         Self {
             layout,
             product,
@@ -916,6 +956,7 @@ impl RepoDocs {
             decision_file,
             decision_dir,
             instructions,
+            foundations,
         }
     }
 
@@ -937,7 +978,7 @@ impl RepoDocs {
 
 #[cfg(test)]
 mod tests {
-    use super::{RepoDocs, repo_path};
+    use super::{RepoDocs, foundations, repo_path};
     use std::path::Path;
 
     /// #70: a document path through a linked directory never leaves the repository (the
@@ -981,6 +1022,37 @@ mod tests {
             "[docs]\nproduct = \"docs/product.md\"\n",
         )?;
         assert_eq!(RepoDocs::read(&root).product.as_deref(), Some("# Product"));
+        Ok(())
+    }
+
+    /// DSC-014: the briefing knows which foundations a project lacks, without following links
+    /// out of the repository.
+    #[test]
+    fn foundations_are_read_from_the_repository() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(root.join(".github/workflows"))?;
+        std::fs::write(root.join(".github/workflows/ci.yml"), "on: push\n")?;
+        std::fs::write(root.join(".github/workflows/README.md"), "notes\n")?;
+        let bare = foundations(&root, None);
+        assert!(!bare.config && !bare.test_command && !bare.lint_command);
+        assert_eq!(bare.actions_workflows, 1);
+        let configured = foundations(
+            &root,
+            Some("[commands]\ntest = \"cargo test\"\nlint = \"cargo clippy\"\n"),
+        );
+        assert!(configured.config && configured.test_command && configured.lint_command);
+        std::fs::remove_dir_all(root.join(".github"))?;
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside)?;
+        std::fs::write(outside.join("deploy.yml"), "on: push\n")?;
+        std::fs::create_dir_all(root.join(".github"))?;
+        std::os::unix::fs::symlink(&outside, root.join(".github/workflows"))?;
+        assert_eq!(
+            foundations(&root, None).actions_workflows,
+            0,
+            "a linked directory is not read"
+        );
         Ok(())
     }
 

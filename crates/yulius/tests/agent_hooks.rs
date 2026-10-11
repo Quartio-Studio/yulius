@@ -48,6 +48,13 @@ struct Fixture {
 
 /// A running task with a live attempt whose worktree is a real repository with `origin/dev`.
 async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_with_workflow(None).await
+}
+
+/// [`fixture`] whose task follows a sandbox workflow `(id, require_spec)`.
+async fn fixture_with_workflow(
+    workflow: Option<(&str, bool)>,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     let h = harness_with_git(Arc::new(GitAdapter::new("git")))?;
     let repo = tempfile::tempdir()?;
     let origin = repo.path().join("origin.git");
@@ -140,6 +147,27 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
         })
     };
     let mut main = mk_task("t-main", 1, "Checkout API", TaskStatus::Running)?;
+    if let Some((id, require_spec)) = workflow {
+        store
+            .insert_workflow(
+                &yulius_app::workflows::WorkflowRecord {
+                    id: id.into(),
+                    sandbox_id: Some(sandbox.id.clone()),
+                    name: id.into(),
+                    description: String::new(),
+                    steps: Vec::new(),
+                    instructions: String::new(),
+                    require_spec,
+                    require_tests: false,
+                    created_at: Timestamp(1),
+                    builtin: false,
+                    when_to_use: String::new(),
+                },
+                10,
+            )
+            .await?;
+        main.workflow_id = Some(id.into());
+    }
     main.worktree_path = Some(worktree.to_string_lossy().into_owned());
     main.spec_path = Some("docs/specs/checkout.md".into());
     store.insert_task(&main).await?;
@@ -295,6 +323,24 @@ async fn session_start_returns_the_project_briefing() -> TestResult {
             "briefing lacks {expected}:\n{context}"
         );
     }
+    // The discipline of #139: product context first, the pipeline, the docs index, sessions as
+    // docs, and the foundations this project lacks (no yulius.toml, no test or lint command).
+    for expected in [
+        "## Read before you build",
+        "`sessions_search`",
+        "steps of similar effort",
+        "independent review in a fresh session",
+        "skill `git-hygiene`",
+        "Workflow: none",
+        "## Project foundations",
+        "a test command (`[commands] test`)",
+        "skill `infra-bootstrap`",
+    ] {
+        assert!(
+            context.contains(expected),
+            "briefing lacks {expected}:\n{context}"
+        );
+    }
     assert!(context.len() <= 12 * 1024 + 64);
     let attempt =
         f.h.app
@@ -385,6 +431,92 @@ async fn stop_gate_blocks_three_times_then_needs_attention() -> TestResult {
     assert_eq!(activity(&f).await?, Some(Activity::Waiting));
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
     assert_eq!(task.gate_blocks, 0);
+    Ok(())
+}
+
+/// DSC-013 (#139): features and fixes need a spec; research, questions, docs and chores do not.
+#[tokio::test]
+async fn stop_gate_asks_for_a_spec_only_where_it_matters() -> TestResult {
+    let f = fixture().await?;
+    // No workflow: a documentation-only change ends the turn without a spec.
+    std::fs::write(f.worktree.join("docs/setup.md"), "# Setup\n")?;
+    let body = hook(&f, "Stop", json!({})).await?;
+    assert!(body.is_null(), "docs need no spec: {body:?}");
+    // A code change does.
+    std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    let body = hook(&f, "Stop", json!({})).await?;
+    assert_eq!(body["decision"], "block", "{body:?}");
+    assert!(
+        body["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("needs a spec")),
+        "{body:?}"
+    );
+    // A research task changes code without a spec (its workflow says so).
+    let research = fixture_with_workflow(Some(("wf-research-test", false))).await?;
+    std::fs::write(research.worktree.join("probe.rs"), "fn main() {}\n")?;
+    let body = hook(&research, "Stop", json!({})).await?;
+    assert!(body.is_null(), "research needs no spec: {body:?}");
+    // A feature needs one even for documentation.
+    let feature = fixture_with_workflow(Some(("wf-feature-test", true))).await?;
+    std::fs::write(feature.worktree.join("docs/setup.md"), "# Setup\n")?;
+    let body = hook(&feature, "Stop", json!({})).await?;
+    assert_eq!(
+        body["decision"], "block",
+        "a feature needs a spec: {body:?}"
+    );
+    Ok(())
+}
+
+/// STP-008 (#139): changing the repository while no step of the plan was ever started is
+/// nudged once at a turn end; the nudge is not a gate block and never repeats.
+#[tokio::test]
+async fn untracked_work_is_nudged_once() -> TestResult {
+    let f = fixture().await?;
+    let now = f.h.app.now();
+    let step = |id: &str,
+                ordinal: u32,
+                title: &str|
+     -> Result<yulius_app::model::StepRecord, Box<dyn std::error::Error>> {
+        Ok(yulius_app::model::StepRecord {
+            id: yulius_domain::ids::StepId::parse(id)?,
+            task_id: f.task.clone(),
+            ordinal,
+            title: title.into(),
+            status: "pending".into(),
+            note: None,
+            updated_by: Some("system".into()),
+            updated_at: Some(now),
+            effort: 1,
+        })
+    };
+    f.h.app
+        .deps
+        .store
+        .replace_steps(
+            &f.task,
+            &[
+                step("st-1", 1, "Describe the setup")?,
+                step("st-2", 2, "Describe the deploy")?,
+            ],
+            "system",
+            now,
+        )
+        .await?;
+    // Nothing changed: no nudge.
+    assert!(hook(&f, "Stop", json!({})).await?.is_null());
+    std::fs::write(f.worktree.join("docs/setup.md"), "# Setup\n")?;
+    let body = hook(&f, "Stop", json!({})).await?;
+    assert_eq!(body["decision"], "block", "{body:?}");
+    let reason = body["reason"].as_str().ok_or("reason")?;
+    assert!(
+        reason.contains("no step of your plan is in progress")
+            && reason.contains("\"Describe the setup\""),
+        "{reason}"
+    );
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.gate_blocks, 0, "a nudge is not a gate block");
+    assert!(hook(&f, "Stop", json!({})).await?.is_null(), "given once");
     Ok(())
 }
 
