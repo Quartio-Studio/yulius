@@ -26,6 +26,7 @@ test('the sandbox pages open from the sandbox navigation', async ({ app, browser
     ['Skills', 'skills'],
     ['Automations', 'automations'],
     ['MCP', 'mcp'],
+    ['Secrets', 'secrets'],
     ['Dashboard', 'dashboard'],
   ]) {
     await nav.getByRole('link', page).click();

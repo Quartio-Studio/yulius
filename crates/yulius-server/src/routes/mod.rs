@@ -17,6 +17,7 @@ mod mcp_servers;
 mod previews;
 mod projects;
 mod sandboxes;
+mod secrets;
 mod setup_auth;
 mod shells;
 mod skills;
@@ -39,6 +40,7 @@ use crate::AppState;
 /// Public API routes.
 pub fn public(_app: Arc<App>) -> Router<AppState> {
     Router::new()
+        .merge(secrets::public())
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/setup/status", get(setup_auth::setup_status))
         .route("/api/setup", post(setup_auth::setup))
@@ -262,6 +264,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
 /// Internal (loopback) routes.
 pub fn internal(_app: Arc<App>) -> Router<AppState> {
     Router::new()
+        .merge(secrets::internal())
         .route("/internal/healthz", get(|| async { "ok" }))
         .route("/internal/version", get(updates::version))
         .route("/internal/preview-tls", get(previews::tls_ask))

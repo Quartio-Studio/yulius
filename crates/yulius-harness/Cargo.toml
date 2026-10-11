@@ -16,6 +16,9 @@ layer = "adapter"
 
 [dependencies]
 yulius-domain = { workspace = true }
+# Redaction fingerprints of agent secrets (SPEC-002 ADR-20).
+yulius-contracts = { workspace = true }
+sha2 = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 

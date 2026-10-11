@@ -168,6 +168,8 @@ pub struct App {
     pub(crate) intake: OnceLock<crate::intake::IntakeServices>,
     /// Instance updates: checks of `main` and the update run (SPEC-002 ADR-18).
     pub(crate) updates: crate::updates::UpdateState,
+    /// Secrets vault runtime state (SPEC-002 ADR-20).
+    pub(crate) vault: crate::vault::VaultState,
     /// Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
     pub(crate) ci: crate::ci::CiState,
 }
@@ -197,6 +199,7 @@ impl App {
             uploads: crate::uploads::UploadState::default(),
             intake: OnceLock::new(),
             updates: crate::updates::UpdateState::default(),
+            vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),
         })
     }

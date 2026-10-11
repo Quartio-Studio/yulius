@@ -51,6 +51,8 @@ pub const CLAUDE_MCP_FILE: &str = "mcp.json";
 pub const PRIVATE_FILE_MODE: u32 = 0o600;
 /// Claude hook timeout in seconds; the hook client itself gives up after 5 s (fail-open).
 pub const CLAUDE_HOOK_TIMEOUT_SECONDS: u64 = 15;
+/// Timeout of the `PostToolUse` redaction hook (large tool results take a moment to scan).
+pub const CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS: u64 = 60;
 /// Hook events Yulius may hold while no subscription has capacity (SPEC-002 ADR-17): the turn
 /// boundaries.
 pub const CLAUDE_HELD_HOOK_EVENTS: [&str; 2] = ["Stop", "UserPromptSubmit"];
@@ -417,6 +419,16 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             }] }]),
         );
     }
+    // Every tool result passes the in-sandbox redaction of agent secrets (SPEC-002 ADR-20):
+    // a result holding one is replaced by its redacted copy before the model reads it.
+    hooks.insert(
+        "PostToolUse".to_owned(),
+        json!([{ "matcher": "*", "hooks": [{
+            "type": "command",
+            "command": hook_command(request, "claude", "PostToolUse")?,
+            "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+        }] }]),
+    );
     let settings = json!({
         "hooks": hooks,
         "statusLine": {

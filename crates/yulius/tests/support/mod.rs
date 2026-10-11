@@ -887,6 +887,8 @@ pub struct HarnessOptions {
     pub harness: Option<Arc<dyn yulius_app::ports::harness::HarnessPort>>,
     /// Provider usage probe (default: unavailable).
     pub usage: Option<Arc<dyn yulius_app::ports::usage::UsageProbe>>,
+    /// Store (default: a new in-memory database).
+    pub store: Option<SqliteStore>,
 }
 
 /// Like [`harness`] with the given adapters. The data directory path is canonical.
@@ -896,7 +898,10 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         None => tempfile::tempdir()?,
     };
     let data = dir.path().canonicalize()?;
-    let store = SqliteStore::open_in_memory()?;
+    let store = match options.store {
+        Some(store) => store,
+        None => SqliteStore::open_in_memory()?,
+    };
     let github = Arc::new(FakeGitHub::default());
     let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
     let mut config = AppConfig::new(

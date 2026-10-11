@@ -24,6 +24,7 @@ const NAV = [
   ['skills', 'Skills', 'book'],
   ['automations', 'Automations', 'zap'],
   ['mcp', 'MCP', 'plug'],
+  ['secrets', 'Secrets', 'lock'],
   ['dashboard', 'Dashboard', 'chart'],
 ];
 
@@ -205,6 +206,7 @@ function openUserMenu(ctx, anchor) {
     { header: `${user.display_name || user.login || 'Signed in'}${user.login ? ` · @${user.login}` : ''}${superadmin ? ' · superadmin' : ''}` },
     { label: 'Archived tasks', icon: 'archive', onSelect: () => ctx.navigate('/archived') },
     { label: 'CLI device approval', icon: 'key', onSelect: () => ctx.navigate('/device') },
+    { label: 'Team secrets', icon: 'lock', onSelect: () => ctx.navigate(sandbox ? `/s/${encodeURIComponent(sandbox.slug)}/secrets` : '/secrets') },
   ];
   if (instanceAdmin) {
     items.push({ separator: true }, { header: 'Administration' });
