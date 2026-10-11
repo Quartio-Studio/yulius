@@ -1434,7 +1434,8 @@ summary { cursor: pointer; }
 .tl-find-text { display: inline-flex; align-items: center; gap: 4px; }
 .kbd-on-accent { margin-left: 4px; border-color: transparent; background: var(--accent-strong); color: var(--accent-ink); }
 @media (max-width: 767px) {
-  .tl-tabs { order: 1; width: 100%; }
+  /* The Tasks toolbar's order on phones; filter tabs elsewhere (Secrets, MCP, Sessions) stay where they are. */
+  .tl-toolbar > .tl-tabs { order: 1; width: 100%; }
   .tl-find { width: var(--control-xl); height: var(--control-xl); justify-content: center; padding: 0; }
   .tl-find-text { display: none; }
   .tl-chips { order: 3; }
