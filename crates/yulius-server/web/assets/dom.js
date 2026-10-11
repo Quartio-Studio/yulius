@@ -129,6 +129,8 @@ const ICONS = {
   grip: [[9, 6], [15, 6], [9, 12], [15, 12], [9, 18], [15, 18]].map(([cx, cy]) => ['circle', { cx, cy, r: 1.3, fill: 'currentColor', stroke: 'none' }]),
   // All sandboxes (the home screen): four tiles.
   grid: [[4, 4], [13.5, 4], [4, 13.5], [13.5, 13.5]].map(([x, y]) => ['rect', { x, y, width: 6.5, height: 6.5, rx: 1.6 }]),
+  // The composer's Preview (the prompt formatted).
+  eye: [['path', { d: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z' }], ['circle', { cx: 12, cy: 12, r: 3 }]],
 };
 
 /** Every icon name (the /design page shows them all). */
@@ -767,6 +769,16 @@ export function badge(text, tone = '', title) {
 /** Loading / empty / error placeholders. */
 export function placeholder(text, kind = 'empty') {
   return h('div', { class: ['placeholder', `placeholder-${kind}`] }, text);
+}
+
+/**
+ * A calm loading state (F 2026-10-10): shimmering bars where the content will appear, announced
+ * as `label`. The composer, the split card and the task view share it.
+ */
+export function skeleton(label, lines = 3) {
+  return h('div', { class: 'skeleton', role: 'status' },
+    Array.from({ length: lines }, () => h('span', { class: 'skeleton-line', 'aria-hidden': 'true' })),
+    h('span', { class: 'sr-only' }, label));
 }
 
 /** Usage/percentage meter. `percent` null renders "unknown" (never zero). */

@@ -187,15 +187,15 @@ limited to the agent's sandbox.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt","workflow_id?","model?","effort?","title?","after_task_id?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012) |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012) |
 | POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool}`: whether a new task mixes separate workstreams (TSK-011). `checked` is false — and the verdict `one` — for prompts under 40 words, without a Jev key and when Jev fails or takes over 2.5 s |
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
 | POST | `/api/tasks/{tid}/held-prompts/{hid}` | write | `{"action":"parallel|after|send|skip_after|revert|dismiss","skip_step_ids?":[…],"confirm?":bool}` → `{"task":TaskSummary,"created":TaskSummary|null,"note"}`; one decision per held prompt (409 for a second). `send` needs a running task; `skip_after` marks the given open steps `skipped`; `revert` needs `"confirm":true` (422 otherwise) — see "Task intake" below |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary` |
-| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the given Claude account or the best one |
-| POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; moves a running task to another Claude account (the best one when absent) with a native resume |
+| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends) |
+| POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
@@ -216,7 +216,8 @@ TaskSummary = {
   "resumes_at": "2026-10-09T08:20:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
   "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
-  "background_shells": "0|1|…|null"
+  "background_shells": "0|1|…|null",
+  "auto": {"mode":"jev|default|null","workflow":"jev|default|null","workflow_name":"Feature|null"}|null
 }
 ChainLink = {"task_id|null","number","title|null","status|null","blocked":"reason|null"}
 ```
@@ -254,19 +255,34 @@ Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","
 ```
 
 Status wire names (from `yulius-domain::task`): `queued`, `starting`, `running`, `switching`,
-`waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_lost`,
-`stopped_switch_failed`, `stopped_switch_timeout`, `stopped_server_lost`, `failed_spawn_error`,
-`failed_start_timeout`, `failed_precondition`, `chained`.
+`waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_killed`,
+`stopped_lost`, `stopped_switch_failed`, `stopped_switch_timeout`, `stopped_server_lost`,
+`failed_spawn_error`, `failed_start_timeout`, `failed_precondition`, `chained`.
+
+How a session's end moves its task (F 2026-10-10, SPEC-002 §6.1): leaving the session (`/exit`,
+Ctrl+C twice, Ctrl+D, `/logout` — Claude Code's `SessionEnd` reason `prompt_input_exit`/`logout`)
+or any clean exit → `closed`; ended by a signal from outside Yulius (SIGTERM, SIGKILL, SIGHUP,
+SIGINT, or the exit codes 129/130/137/143 they give) → `stopped_killed`; any other exit →
+`stopped_crashed`; Stop in the UI → `stopping` at once, then `stopped_cancelled`. Interrupting a
+turn (Esc, or Ctrl+C while the agent works) keeps the session: `activity` becomes `waiting`.
 
 ### Task intake
 
 Optional (SPEC-002 ADR-16): without a Jev key (`YULIUS_JEV_API_KEY_FILE`, docs/operations.md)
-nothing is checked and nothing is held.
+nothing is checked and nothing is held, and Auto uses its defaults.
 
-- **New tasks (TSK-011).** The composer calls `/intake/check` after Enter. On `several` it shows
-  the split card and calls `/intake/proposal`, then creates the tasks with
-  `POST /api/sandboxes/{sid}/tasks`: in parallel, or as a chain (each with `after_task_id` of the
-  one before).
+- **New tasks (TSK-011).** The composer calls `/intake/check` when a task of 40 or more words is
+  started (the ↑ button or ⌘/Ctrl+Enter; Enter adds a line). On `several` it shows the split card
+  and calls `/intake/proposal`, then creates the tasks with `POST /api/sandboxes/{sid}/tasks`: in
+  parallel, or as a chain (each with `after_task_id` of the one before).
+- **Auto mode and workflow (TSK-015).** With `"mode":"auto"` and/or `"workflow_id":"auto"` (the
+  composer's defaults) the server asks Jev before creating the task, both questions at once within
+  2.5 s: `goal` or `prompt` (followed at 75 %), and one of the sandbox's workflows from the store,
+  or none (followed at 60 %). Otherwise the defaults apply: Goal, and the workflow named "Feature"
+  (the sandbox's own first; none without one, and none for a prompt-mode task). A prompt-mode task
+  never gets a workflow that requires a spec from Auto. The summary's `auto` says who chose what
+  (`jev`, `default`, or null for a value the request picked) and the workflow's name; it is null
+  when nothing was on Auto. Without a Jev key Auto still works, with the defaults.
 - **Chains (TSK-012).** A `chained` task starts by itself (`chained → queued`) when its predecessor
   is Done: a finished turn and a pull request merged, or open with checks green or none required.
 - **Typed prompts (TSK-013).** The `UserPromptSubmit` hook classifies a person's prompt. `context`
@@ -703,7 +719,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
-| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-17); 502 with the reason (also kept as `last_error`) when the provider refuses or fails. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
+| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-17). The endpoint needs the OAuth scope `user:profile`, which a `claude setup-token` sign-in does not have: its HTTP 403 is not an error — the answer is the account as it is (its usage comes from its running sessions, `StatusLine` below), an earlier `usage: …` note is cleared and the background round asks again a day later. 502 with one plain sentence (also kept as `last_error`, prefixed `usage: `) when Claude refuses the sign-in (401) or the request fails for now. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
 | GET | `/api/capacity` | signed in | → `CapacityView`: the subscription pool, burn rate, forecast and recommendation (ROT-013, formula in SPEC-002 ADR-17 §2.4) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
@@ -844,4 +860,19 @@ decision). `Stop` and `UserPromptSubmit` may answer **`202 Accepted` with `Retry
 body while no Claude subscription has capacity (ROT-010, SPEC-002 ADR-17): the agent waits at that
 boundary and the client sends the same request again after `Retry-After` seconds (1–60), until a
 `200`, a 4xx (it fails open) or 8 days. While held it retries a refused connection or a 5xx every
-2 s, so a server restart does not release the agent. `401` means the run is unknown or finished.
+2 s, so a server restart does not release the agent; a hold nobody asks about for 45 s was given
+up by the CLI (an interrupt, its own hook timeout) and ends: the task runs again. `401` means the
+run is unknown or finished.
+
+`SessionEnd` (body `{"reason": "prompt_input_exit|clear|logout|resume|other", …}`) answers `200`
+with no output; it tells Yulius why the session ends before the process exits (above).
+
+`POST /hooks/claude/StatusLine` is Claude Code's `statusLine` command (`yulius hook claude
+StatusLine`, configured in every run's settings): the body is Claude Code's status line input, of
+which Yulius reads `session_id` and `rate_limits` (`{"five_hour"|"seven_day": {"used_percentage":
+0–100, "resets_at": <Unix seconds>}}`, present once a response of the session reported them);
+`200` is `text/plain`: the line, "→ <repository> git:(<branch>)" in 256 colours (HRN-005). The
+rate limits become the run's subscription's 5-hour and weekly windows (SPEC-002 ADR-17): stored
+when they change (at once for a move of a point or more, a reset or crossing 98 %, otherwise at
+most every 15 s) and sampled for the burn rate at most every 5 minutes (`usage_samples.source`
+`session`).

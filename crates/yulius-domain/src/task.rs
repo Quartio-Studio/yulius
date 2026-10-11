@@ -10,6 +10,9 @@ pub enum StopReason {
     Cancelled,
     /// The agent process exited abnormally.
     Crashed,
+    /// The agent process was ended by a signal from outside Yulius (`kill`, the OOM killer);
+    /// Claude Code itself exits with 128 + the signal (SIGTERM → 143, SIGHUP → 129).
+    Killed,
     /// The process could not be confirmed (server restart, reboot, unreachable host).
     Lost,
     /// A switch could not complete.
@@ -107,6 +110,8 @@ pub enum TaskEvent {
         /// Clean exit (status 0, not signalled).
         normal: bool,
     },
+    /// The agent process was ended by a signal Yulius did not send.
+    Killed,
     /// Stop requested by a user or the system.
     CancelRequested,
     /// The process tree was confirmed reaped after cancellation.
@@ -187,6 +192,9 @@ impl TaskStatus {
             (S::Running | S::Starting, E::Exited { normal: false }) => {
                 S::Stopped(StopReason::Crashed)
             }
+            (S::Running | S::Starting | S::WaitingCapacity, E::Killed) => {
+                S::Stopped(StopReason::Killed)
+            }
             (S::Running, E::SwitchStarted) | (S::WaitingCapacity, E::SwitchStarted) => S::Switching,
             (S::Running | S::Switching | S::Starting | S::Queued, E::CapacityExhausted) => {
                 S::WaitingCapacity
@@ -200,7 +208,9 @@ impl TaskStatus {
             (S::Switching, E::SwitchCompleted) => S::Running,
             (S::Switching, E::SwitchAborted(reason)) => S::Stopped(reason),
             (S::WaitingCapacity, E::CancelRequested) => S::Stopped(StopReason::Cancelled),
-            (S::Stopping, E::Reaped | E::Exited { .. }) => S::Stopped(StopReason::Cancelled),
+            (S::Stopping, E::Reaped | E::Exited { .. } | E::Killed) => {
+                S::Stopped(StopReason::Cancelled)
+            }
             (S::Starting | S::Running | S::Switching | S::Stopping, E::Lost(reason)) => {
                 S::Stopped(reason)
             }
@@ -224,6 +234,7 @@ impl TaskStatus {
             Self::Closed => "closed",
             Self::Stopped(StopReason::Cancelled) => "stopped_cancelled",
             Self::Stopped(StopReason::Crashed) => "stopped_crashed",
+            Self::Stopped(StopReason::Killed) => "stopped_killed",
             Self::Stopped(StopReason::Lost) => "stopped_lost",
             Self::Stopped(StopReason::SwitchFailed) => "stopped_switch_failed",
             Self::Stopped(StopReason::SwitchTimeout) => "stopped_switch_timeout",
@@ -246,7 +257,7 @@ impl TaskStatus {
 }
 
 /// Every task status, for exhaustive mapping.
-pub const ALL_STATUSES: [TaskStatus; 17] = [
+pub const ALL_STATUSES: [TaskStatus; 18] = [
     TaskStatus::Queued,
     TaskStatus::Starting,
     TaskStatus::Running,
@@ -256,6 +267,7 @@ pub const ALL_STATUSES: [TaskStatus; 17] = [
     TaskStatus::Closed,
     TaskStatus::Stopped(StopReason::Cancelled),
     TaskStatus::Stopped(StopReason::Crashed),
+    TaskStatus::Stopped(StopReason::Killed),
     TaskStatus::Stopped(StopReason::Lost),
     TaskStatus::Stopped(StopReason::SwitchFailed),
     TaskStatus::Stopped(StopReason::SwitchTimeout),
@@ -424,6 +436,40 @@ mod tests {
             TaskStatus::Closed
                 .apply(TaskEvent::CapacityReturned)
                 .is_err()
+        );
+        Ok(())
+    }
+
+    /// Every way a session ends has one next state (F 2026-10-10: the task follows its session).
+    #[test]
+    fn every_session_end_has_one_next_state() -> Result<(), TransitionError> {
+        let running = TaskStatus::Running;
+        assert_eq!(
+            running.apply(TaskEvent::Exited { normal: true })?,
+            TaskStatus::Closed
+        );
+        assert_eq!(
+            running.apply(TaskEvent::Exited { normal: false })?,
+            TaskStatus::Stopped(StopReason::Crashed)
+        );
+        assert_eq!(
+            running.apply(TaskEvent::Killed)?,
+            TaskStatus::Stopped(StopReason::Killed)
+        );
+        assert_eq!(
+            TaskStatus::WaitingCapacity.apply(TaskEvent::Killed)?,
+            TaskStatus::Stopped(StopReason::Killed)
+        );
+        // A person's stop wins over whatever signal ended the process.
+        let stopping = running.apply(TaskEvent::CancelRequested)?;
+        assert_eq!(
+            stopping.apply(TaskEvent::Killed)?,
+            TaskStatus::Stopped(StopReason::Cancelled)
+        );
+        assert!(TaskStatus::Closed.apply(TaskEvent::Killed).is_err());
+        assert_eq!(
+            TaskStatus::parse("stopped_killed"),
+            Some(TaskStatus::Stopped(StopReason::Killed))
         );
         Ok(())
     }

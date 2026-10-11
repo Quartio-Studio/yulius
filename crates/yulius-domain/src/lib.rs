@@ -5,6 +5,7 @@
 //! This crate performs no I/O and reads no clock or environment. Callers inject time as
 //! [`time::Timestamp`] values and identifiers as already-generated strings.
 
+pub mod auto_choice;
 pub mod briefing;
 pub mod capacity;
 pub mod cron;

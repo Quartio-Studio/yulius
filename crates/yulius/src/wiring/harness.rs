@@ -245,6 +245,9 @@ impl TranscriptWatch for Watch {
                         session_id, cwd, ..
                     } => out.push(Observation::Session { session_id, cwd }),
                     Observed::UserTurn { at } => out.push(Observation::UserTurn { at }),
+                    Observed::TurnInterrupted { at } => {
+                        out.push(Observation::TurnInterrupted { at });
+                    }
                     Observed::TurnComplete { .. } => out.push(Observation::TurnComplete),
                     Observed::Goal { outcome } => out.push(Observation::Goal(outcome)),
                     Observed::TurnEnded => out.push(Observation::TurnEnded),
