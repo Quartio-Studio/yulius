@@ -958,6 +958,38 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         .await?;
     assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
     f.h.github.set_checks(&head, ChecksState::Success);
+    // F 2026-10-11: behind its base under a strict ruleset, GitHub would refuse with "required
+    // status checks are expected"; Yulius says what that means, here and in the task's inbox.
+    let set_behind = |behind: bool| {
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+        {
+            pull.behind = behind;
+        }
+    };
+    set_behind(true);
+    let behind = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(behind.status, StatusCode::CONFLICT, "{}", behind.body);
+    assert!(
+        error_message(&behind).contains("behind `dev`"),
+        "{}",
+        behind.body
+    );
+    f.h.app.reconcile_deliveries().await;
+    f.h.app.reconcile_deliveries().await;
+    let t1 = TaskId::parse("t1")?;
+    let inbox = f.h.store.inbox(&t1, true, 50).await?;
+    let told = |subject: &str| {
+        inbox
+            .iter()
+            .filter(|m| m.message.subject == subject)
+            .count()
+    };
+    assert_eq!(told("Your pull request is behind its base: update it"), 1);
+    assert_eq!(told("Your pull request's checks are green: merge it"), 0);
+    set_behind(false);
     let merged = f
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
         .await?;
