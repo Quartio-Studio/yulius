@@ -207,6 +207,9 @@ pub struct GhPull {
     pub head: String,
     /// Head SHA.
     pub head_sha: String,
+    /// GitHub's mergeability: `Some(false)` when it conflicts with its base; `None` while GitHub
+    /// is still computing it or on list responses.
+    pub mergeable: Option<bool>,
 }
 
 /// A pull request to open.
