@@ -101,6 +101,18 @@ fn claude_sessions_inside_repo_and_worktrees_within_the_window() -> TestResult {
                 RECENT,
                 json!([{"type": "text", "text": "<system-reminder>internal</system-reminder>"}]),
             ),
+            // After a compaction and while background tasks report back: neither is a prompt.
+            serde_json::to_string(&json!({
+                "type": "user", "cwd": repo.to_string_lossy(), "timestamp": RECENT,
+                "isCompactSummary": true,
+                "message": {"role": "user", "content": "A summary of the earlier conversation"}
+            }))?,
+            claude_line(
+                "user",
+                repo,
+                RECENT,
+                json!("<task-notification> <task-id>a1</task-id> done </task-notification>"),
+            ),
             "{not json".to_owned(),
             oversized,
             claude_line(
