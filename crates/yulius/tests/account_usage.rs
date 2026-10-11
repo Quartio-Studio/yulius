@@ -332,3 +332,39 @@ async fn a_failed_refresh_keeps_a_limit_observed_meanwhile() -> TestResult {
     );
     Ok(())
 }
+
+/// A failed usage reading is a note only over no error or an earlier note: a re-login error
+/// written while it ran stays (ROT-009).
+#[tokio::test]
+async fn a_failed_refresh_keeps_a_relogin_error() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        usage: Some(Arc::new(FakeProbe)),
+        ..HarnessOptions::default()
+    })?;
+    account(&h, "a-expired", b"expired").await?;
+    let id = AccountId::parse("a-expired")?;
+    let relogin = "re-login failed: the sign-in was cancelled";
+    h.store
+        .set_account_error(&id, relogin, Timestamp(2))
+        .await?;
+    h.app.refresh_usage_round(&mut HashMap::new()).await;
+    let kept = h.store.account(&id).await?.ok_or("a-expired")?;
+    assert_eq!(kept.last_error.as_deref(), Some(relogin));
+
+    // An earlier note is replaced by the new one.
+    h.store
+        .set_account_error(&id, "usage: an older note", Timestamp(3))
+        .await?;
+    h.app.refresh_usage_round(&mut HashMap::new()).await;
+    let noted = h.store.account(&id).await?.ok_or("a-expired")?;
+    assert!(
+        noted
+            .last_error
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("usage: Claude did not accept"),
+        "{:?}",
+        noted.last_error
+    );
+    Ok(())
+}
