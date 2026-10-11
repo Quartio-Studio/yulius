@@ -33,6 +33,13 @@ pub enum Observed {
         /// When the prompt was recorded (the record's `timestamp`), if parseable.
         at: Option<Timestamp>,
     },
+    /// The person stopped the agent's turn (Esc, or Ctrl+C while it works): Claude Code records
+    /// a user line "[Request interrupted by user]" (or "… for tool use") and waits for input.
+    /// No Stop hook runs for such a turn, so this is its only end.
+    TurnInterrupted {
+        /// When it was recorded, if parseable.
+        at: Option<Timestamp>,
+    },
     /// One Claude API message (repeated once per transcript line of that message).
     AssistantMessage {
         /// Provider message id (`message.id`), the de-duplication key.

@@ -328,6 +328,16 @@ pub trait IntakeStore: Send + Sync {
         sha256: &str,
         since: Timestamp,
     ) -> AppResult<bool>;
+    /// Records how Auto chose a new task's mode and workflow (TSK-015; one row per task).
+    async fn insert_auto_choice(
+        &self,
+        choice: &crate::auto_choice::AutoChoiceRecord,
+    ) -> AppResult<()>;
+    /// The task's Auto choice, if it was created with anything on Auto.
+    async fn auto_choice(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::auto_choice::AutoChoiceRecord>>;
 }
 
 /// All extension areas.

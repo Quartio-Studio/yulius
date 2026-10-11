@@ -6,6 +6,7 @@ pub mod accounts;
 pub mod admin;
 pub mod analytics;
 pub mod auth;
+pub mod auto_choice;
 pub mod automations;
 pub mod background;
 pub mod browser;

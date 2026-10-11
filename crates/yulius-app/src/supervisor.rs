@@ -103,6 +103,11 @@ pub struct TaskRuntime {
     pub(crate) background_shells: AtomicI64,
     /// The run was reattached after a restart: the transcript it already wrote is history.
     pub(crate) replay_transcript: AtomicBool,
+    /// Why Claude Code said the current session ends (`SessionEnd` hook), until the run exits.
+    pub(crate) session_end: Mutex<Option<String>>,
+    /// When a held hook of the current run last asked again (ms, 0 = not since this server
+    /// started): a hold nobody polls any more was given up by the CLI (ADR-17).
+    pub(crate) hold_polled_ms: AtomicI64,
     /// Turn-end step nudges already given to the agent (`Nudge::key`), so each is given once.
     pub(crate) nudged: Mutex<std::collections::BTreeSet<String>>,
 }
@@ -133,6 +138,8 @@ impl TaskRuntime {
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             replay_transcript: AtomicBool::new(false),
+            session_end: Mutex::new(None),
+            hold_polled_ms: AtomicI64::new(0),
             nudged: Mutex::new(std::collections::BTreeSet::new()),
         }
     }
@@ -293,6 +300,33 @@ pub fn branch_for(number: u32, title: &str) -> String {
         format!("feat/{number}-task")
     } else {
         format!("feat/{number}-{slug}")
+    }
+}
+
+/// Exit codes of a process ended by SIGHUP, SIGINT, SIGKILL or SIGTERM as a shell — or
+/// bubblewrap for its sandboxed child — reports them (128 + the signal); Claude Code's own
+/// handlers exit with 129 (SIGHUP) and 143 (SIGTERM).
+const KILLED_EXIT_CODES: [i32; 4] = [129, 130, 137, 143];
+/// SIGHUP, SIGINT, SIGKILL and SIGTERM.
+const KILL_SIGNALS: [i32; 4] = [1, 2, 9, 15];
+
+/// The task event of a run that ended without Yulius ending it (F 2026-10-10: the task follows
+/// its session). The person left the session — `/exit`, Ctrl+C twice, Ctrl+D or `/logout`, which
+/// Claude Code reports through its `SessionEnd` hook — or the process exited cleanly: `closed`.
+/// Ended by a signal from outside (`kill`, the OOM killer): `stopped(killed)`. Anything else:
+/// `stopped(crashed)`.
+#[must_use]
+pub fn exit_event(exit: &RunExit, session_end: Option<&str>) -> TaskEvent {
+    use yulius_contracts::hooks::session_end::{LOGOUT, PROMPT_INPUT_EXIT};
+    let left = matches!(session_end, Some(PROMPT_INPUT_EXIT | LOGOUT));
+    if !exit.spawn_failed && (left || exit.is_clean()) {
+        TaskEvent::Exited { normal: true }
+    } else if exit.signal.is_some_and(|s| KILL_SIGNALS.contains(&s))
+        || exit.code.is_some_and(|c| KILLED_EXIT_CODES.contains(&c))
+    {
+        TaskEvent::Killed
+    } else {
+        TaskEvent::Exited { normal: false }
     }
 }
 
@@ -1083,6 +1117,7 @@ impl App {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
         let intent = runtime.intent.lock().ok().and_then(|mut g| g.take());
+        let session_end = runtime.session_end.lock().ok().and_then(|mut g| g.take());
         runtime.watcher_alive.store(false, Ordering::SeqCst);
         // Keep the last screen so viewers still see how the run ended after a server restart.
         if let Ok(Some(attempt)) = store.attempt(attempt_id).await {
@@ -1142,9 +1177,7 @@ impl App {
             }
             None => {
                 if let Ok(Some(task)) = store.task(task_id).await {
-                    let event = TaskEvent::Exited {
-                        normal: exit.is_clean(),
-                    };
+                    let event = exit_event(&exit, session_end.as_deref());
                     if let Ok(next) = task.status.apply(event) {
                         let _ = store
                             .transition_task(task_id, Some(task.status), next, None, now)
@@ -1342,15 +1375,17 @@ impl App {
                 reason: reason.to_owned(),
                 inputs: serde_json::json!({"account": account.as_ref().map(AccountId::as_str)})
                     .to_string(),
-                from_desc: from_desc.clone(),
-                to_desc: to_desc.clone(),
+                from_desc,
+                to_desc,
                 outcome: "started".into(),
             })
             .await?;
         let runtime = self.runtime(task_id);
-        runtime.hub.notice(format!(
-            "↻ Yulius is switching this session from {from_desc} to {to_desc}"
-        ));
+        // The subscription changes under the hood (F 2026-10-10): viewers see that the session
+        // continues, not which accounts are involved (Task details lists the switches).
+        runtime
+            .hub
+            .notice("↻ Yulius continues this session on another Claude subscription…");
         self.publish_task(task_id).await;
         if let Some(attempt) = attempt {
             let (tx, rx) = oneshot::channel();
@@ -1403,7 +1438,9 @@ impl App {
                     store.set_switch_outcome(&decision_id, "waiting").await?;
                 } else {
                     store.set_switch_outcome(&decision_id, "completed").await?;
-                    runtime.hub.notice(format!("↻ Continuing on {to_desc}"));
+                    runtime
+                        .hub
+                        .notice("↻ The session continues where it left off.");
                 }
                 Ok(())
             }
@@ -1613,6 +1650,10 @@ impl App {
         // A new attempt (or the same one after a restart) learns the goal from its transcript.
         runtime.goal_achieved.store(false, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
+        if let Ok(mut end) = runtime.session_end.lock() {
+            *end = None;
+        }
+        runtime.hold_polled_ms.store(0, Ordering::SeqCst);
         let app = self.clone();
         let tid = task_id.clone();
         let attempt = attempt.clone();
@@ -1809,6 +1850,10 @@ impl App {
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
                     return;
                 }
+                // A prompt reached the agent while its turn or prompt was held for capacity:
+                // the CLI gave the hold up (an interrupt, its own hook timeout), so the task
+                // runs again (F 2026-10-10: the task follows its session).
+                self.hold_overtaken(task_id, at, Activity::Working).await;
                 runtime.start_turn(self.now());
                 let _ = self
                     .deps
@@ -1824,6 +1869,11 @@ impl App {
                 if !runtime.hooks_seen.load(Ordering::SeqCst) {
                     self.turn_ended(task_id, attempt.account_id.clone());
                 }
+            }
+            Observation::TurnInterrupted { at } => {
+                // Esc or Ctrl+C stopped the turn: no Stop hook runs, the agent waits for input.
+                runtime.end_turn(self.now());
+                self.turn_interrupted(task_id, at).await;
             }
             Observation::Goal(outcome) => self.goal_observed(task_id, outcome).await,
             Observation::Session { .. } | Observation::TurnEnded => {}
@@ -1899,6 +1949,60 @@ mod tests {
     }
 
     use super::branch_for;
+
+    /// F 2026-10-10: every way a session ends maps to one task event. Leaving the session
+    /// (`SessionEnd` `prompt_input_exit`/`logout`) is a normal close whatever the exit code; a
+    /// signal from outside (or Claude Code's 128 + signal exit) is a kill; the rest is a crash.
+    #[test]
+    fn session_ends_map_to_one_task_event() {
+        use yulius_domain::task::TaskEvent;
+        let exit = |code: Option<i32>, signal: Option<i32>| crate::ports::session::RunExit {
+            code,
+            signal,
+            spawn_failed: false,
+        };
+        let normal = TaskEvent::Exited { normal: true };
+        let crashed = TaskEvent::Exited { normal: false };
+        assert_eq!(super::exit_event(&exit(Some(0), None), None), normal);
+        assert_eq!(
+            super::exit_event(&exit(Some(1), None), Some("prompt_input_exit")),
+            normal
+        );
+        assert_eq!(
+            super::exit_event(&exit(Some(1), None), Some("logout")),
+            normal
+        );
+        assert_eq!(super::exit_event(&exit(Some(3), None), None), crashed);
+        assert_eq!(
+            super::exit_event(&exit(Some(3), None), Some("other")),
+            crashed
+        );
+        assert_eq!(super::exit_event(&exit(None, Some(11)), None), crashed);
+        for killed in [
+            exit(Some(143), None),
+            exit(Some(137), None),
+            exit(Some(129), None),
+        ] {
+            assert_eq!(super::exit_event(&killed, Some("other")), TaskEvent::Killed);
+        }
+        assert_eq!(
+            super::exit_event(&exit(None, Some(9)), None),
+            TaskEvent::Killed
+        );
+        assert_eq!(
+            super::exit_event(&exit(None, Some(15)), None),
+            TaskEvent::Killed
+        );
+        let spawn = crate::ports::session::RunExit {
+            code: Some(0),
+            signal: None,
+            spawn_failed: true,
+        };
+        assert_eq!(
+            super::exit_event(&spawn, Some("prompt_input_exit")),
+            crashed
+        );
+    }
 
     #[test]
     fn goals_are_one_line_and_short() {

@@ -552,7 +552,14 @@ pub struct UsageSampleRecord {
     pub used_percent: f64,
     /// When the window resets, when known.
     pub resets_at: Option<Timestamp>,
+    /// Who read it: [`USAGE_FROM_PROBE`] or [`USAGE_FROM_SESSION`].
+    pub source: String,
 }
+
+/// A usage reading from the provider's usage endpoint.
+pub const USAGE_FROM_PROBE: &str = "probe";
+/// A usage reading a running session passed on (Claude Code's status line, ADR-17).
+pub const USAGE_FROM_SESSION: &str = "session";
 
 /// A recorded rotation decision.
 #[derive(Debug, Clone, PartialEq, Eq)]

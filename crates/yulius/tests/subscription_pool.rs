@@ -321,6 +321,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
                         window: "seven_day".into(),
                         used_percent: before,
                         resets_at: Some(resets),
+                        source: "probe".into(),
                     },
                     UsageSampleRecord {
                         account_id: account.clone(),
@@ -328,6 +329,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
                         window: "seven_day".into(),
                         used_percent: after,
                         resets_at: Some(resets),
+                        source: "probe".into(),
                     },
                 ],
                 at(-200),
@@ -473,5 +475,286 @@ async fn an_empty_pool_with_waiting_work_asks_for_a_subscription() -> TestResult
         "Add a subscription to start working"
     );
     let _ = Arc::clone(&h.app);
+    Ok(())
+}
+
+/// POSTs Claude Code's status line input as `yulius hook claude StatusLine` does; returns the
+/// status and the line.
+async fn status_line(
+    internal: &axum::Router,
+    body: serde_json::Value,
+) -> Result<(u16, String), Box<dyn std::error::Error>> {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri("/hooks/claude/StatusLine")
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(body.to_string()))?;
+    let response = internal.clone().oneshot(request).await?;
+    let status = response.status().as_u16();
+    let bytes = response.into_body().collect().await?.to_bytes();
+    Ok((status, String::from_utf8(bytes.to_vec())?))
+}
+
+/// The status line input of Claude Code 2.1.292 with the session's plan usage (`resets_at` in
+/// Unix seconds).
+fn rate_limits(
+    five: f64,
+    five_resets: Timestamp,
+    week: f64,
+    week_resets: Timestamp,
+) -> serde_json::Value {
+    json!({
+        "session_id": "session-1",
+        "model": {"id": "claude-opus-4-1", "display_name": "Opus"},
+        "rate_limits": {
+            "five_hour": {"used_percentage": five, "resets_at": five_resets.0 / 1000},
+            "seven_day": {"used_percentage": week, "resets_at": week_resets.0 / 1000}
+        }
+    })
+}
+
+/// F 2026-10-10 item 1(a): a `claude setup-token` sign-in cannot read the usage endpoint (HTTP
+/// 403, no `user:profile` scope), so the subscription's usage comes from its running session:
+/// Claude Code's status line carries the plan usage it read from its own API responses. The
+/// status line shows the repository and branch (HRN-005); the reading becomes the account's
+/// windows (per-model caps kept), a burn-rate sample from the session, and at 98 % it puts the
+/// pool's switch in motion; an unchanged reading writes nothing.
+#[tokio::test]
+async fn the_running_session_reports_its_subscriptions_usage() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let opus_cap = json!({
+        "weekly_opus": {"used_percent": 30.0, "window_minutes": 10080,
+            "resets_at": t0.plus_millis(80 * HOUR).0},
+    })
+    .to_string();
+    let account = add_account(&h, "acc-a", Some(opus_cap)).await?;
+    let other = add_account(&h, "acc-b", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+
+    // Before the session's first response there is nothing to report; the line is shown.
+    let (code, line) = status_line(
+        &h.internal,
+        json!({"session_id": "session-1",
+        "model": {"id": "m"}}),
+    )
+    .await?;
+    assert_eq!(code, 200);
+    assert!(
+        line.contains("fixture") && line.contains("feat/1-pool"),
+        "{line:?}"
+    );
+    assert!(h.store.usage_samples(t0).await?.is_empty());
+
+    let five_resets = t0.plus_millis(2 * HOUR);
+    let week_resets = t0.plus_millis(90 * HOUR);
+    let (code, _) = status_line(
+        &h.internal,
+        rate_limits(42.5, five_resets, 18.0, week_resets),
+    )
+    .await?;
+    assert_eq!(code, 200);
+    let record = h.store.account(&account).await?.ok_or("account")?;
+    let usage: serde_json::Value =
+        serde_json::from_str(record.usage_json.as_deref().ok_or("usage")?)?;
+    assert_eq!(usage["primary"]["used_percent"], 42.5);
+    assert_eq!(usage["primary"]["window_minutes"], 300);
+    assert_eq!(usage["primary"]["resets_at"], five_resets.0);
+    assert_eq!(usage["secondary"]["used_percent"], 18.0);
+    assert_eq!(
+        usage["weekly_opus"]["used_percent"], 30.0,
+        "per-model caps stay"
+    );
+    assert_eq!(usage["observed_at"], t0.0);
+    assert_eq!(record.last_error, None);
+    let samples = h.store.usage_samples(t0).await?;
+    assert_eq!(samples.len(), 2, "{samples:?}");
+    assert!(
+        samples
+            .iter()
+            .all(|s| s.source == "session" && s.account_id == account)
+    );
+
+    // The same reading again writes nothing; a small move within 15 s neither.
+    advance(&h, 5_000);
+    status_line(
+        &h.internal,
+        rate_limits(42.5, five_resets, 18.0, week_resets),
+    )
+    .await?;
+    status_line(
+        &h.internal,
+        rate_limits(42.8, five_resets, 18.0, week_resets),
+    )
+    .await?;
+    let usage: serde_json::Value = serde_json::from_str(
+        h.store
+            .account(&account)
+            .await?
+            .ok_or("account")?
+            .usage_json
+            .as_deref()
+            .ok_or("usage")?,
+    )?;
+    assert_eq!(usage["observed_at"], t0.0);
+    // At 98 % the pool moves the task at its next turn boundary (the Stop hook switches).
+    status_line(
+        &h.internal,
+        rate_limits(98.4, five_resets, 18.2, week_resets),
+    )
+    .await?;
+    let usage: serde_json::Value = serde_json::from_str(
+        h.store
+            .account(&account)
+            .await?
+            .ok_or("account")?
+            .usage_json
+            .as_deref()
+            .ok_or("usage")?,
+    )?;
+    assert_eq!(usage["primary"]["used_percent"], 98.4);
+    let input = h
+        .app
+        .rotation_input(
+            &h.store.task(&task).await?.ok_or("task")?,
+            Some(account.clone()),
+        )
+        .await?;
+    assert_eq!(
+        yulius_domain::rotation::decide(&input, yulius_domain::rotation::Trigger::Proactive).0,
+        yulius_domain::rotation::Decision::Switch { account: other },
+        "the reading at 98 % moves the task to the other subscription"
+    );
+
+    // Another harness, or a finished run, is refused.
+    let request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri("/hooks/codex/StatusLine")
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .body(axum::body::Body::from("{}"))?;
+    use tower::ServiceExt;
+    assert_eq!(
+        h.internal.clone().oneshot(request).await?.status().as_u16(),
+        404
+    );
+    Ok(())
+}
+
+/// F 2026-10-10: a pause that holds nothing must not read "Paused". A held Stop hook that
+/// nobody asks about for 45 s (the CLI gave it up: an interrupt, or its own 15 s hook timeout in
+/// sessions started before ADR-17) ends, and the task runs again waiting for its person; a hold
+/// that keeps polling stays.
+#[tokio::test]
+async fn a_hold_nobody_asks_about_any_more_ends() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let only = add_account(
+        &h,
+        "acc-only",
+        Some(usage(
+            98.0,
+            t0.plus_millis(2 * HOUR),
+            40.0,
+            t0.plus_millis(90 * HOUR),
+        )),
+    )
+    .await?;
+    let task = running_task(&h, TaskMode::Goal, &only).await?;
+    assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 202);
+    assert_eq!(status(&h, &task).await?, TaskStatus::WaitingCapacity);
+
+    // Polled every 10 s: still held.
+    for _ in 0..4 {
+        advance(&h, 10_000);
+        assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 202);
+        let _ = h.app.resume_round().await;
+        assert_eq!(status(&h, &task).await?, TaskStatus::WaitingCapacity);
+    }
+
+    // No poll for more than 45 s: the CLI let go of the hook.
+    advance(&h, 46_000);
+    let _ = h.app.resume_round().await;
+    let record = h.store.task(&task).await?.ok_or("task")?;
+    assert_eq!(record.status, TaskStatus::Running);
+    assert_eq!(
+        record.activity,
+        Some(yulius_domain::task::Activity::Waiting)
+    );
+    assert!(h.store.open_pause(&task).await?.is_none());
+    let pauses = h.store.pauses_since(t0).await?;
+    assert_eq!(pauses[0].outcome.as_deref(), Some("abandoned"));
+    Ok(())
+}
+
+/// F 2026-10-10: a person who interrupts a held turn and types a prompt takes the task out of
+/// the pause at once — it no longer reads "Paused" while the prompt goes on (capacity is back
+/// on its subscription) or is held again at submit (still none).
+#[tokio::test]
+async fn a_prompt_typed_into_a_held_turn_takes_the_task_out_of_the_pause() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let only = add_account(
+        &h,
+        "acc-only",
+        Some(usage(
+            98.0,
+            t0.plus_millis(2 * HOUR),
+            40.0,
+            t0.plus_millis(90 * HOUR),
+        )),
+    )
+    .await?;
+    let task = running_task(&h, TaskMode::Goal, &only).await?;
+    assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 202);
+    assert_eq!(status(&h, &task).await?, TaskStatus::WaitingCapacity);
+
+    // Still no capacity: the new prompt is held at submit instead of the turn.
+    let prompt =
+        json!({"prompt": "Now add the tests please", "hook_event_name": "UserPromptSubmit"});
+    assert_eq!(
+        hook(&h.internal, "UserPromptSubmit", prompt.clone())
+            .await?
+            .0,
+        202
+    );
+    let pause = h.store.open_pause(&task).await?.ok_or("pause")?;
+    assert_eq!(pause.kind, PauseKind::Prompt);
+    assert_eq!(status(&h, &task).await?, TaskStatus::WaitingCapacity);
+
+    // The subscription has room again before the loop ran: the prompt goes on, the task runs.
+    h.store
+        .set_account_state(
+            &only,
+            AccountStatus::Ok,
+            Some(&usage(
+                20.0,
+                t0.plus_millis(2 * HOUR),
+                40.0,
+                t0.plus_millis(90 * HOUR),
+            )),
+            None,
+            now(&h),
+        )
+        .await?;
+    // A Stop of a turn whose prompt hold the CLI gave up ends that hold too.
+    let (code, _, _) = hook(&h.internal, "Stop", json!({})).await?;
+    assert_eq!(code, 200);
+    let record = h.store.task(&task).await?.ok_or("task")?;
+    assert_eq!(record.status, TaskStatus::Running, "not Paused any more");
+    assert!(h.store.open_pause(&task).await?.is_none());
+    let outcomes: Vec<_> = h
+        .store
+        .pauses_since(t0)
+        .await?
+        .into_iter()
+        .filter_map(|p| p.outcome)
+        .collect();
+    assert_eq!(outcomes, ["superseded", "superseded"]);
     Ok(())
 }

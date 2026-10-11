@@ -524,3 +524,52 @@ async fn chain_links_and_held_prompts_persist_and_resolve_once() -> R {
     assert!(store.chain(&t2).await?.is_none());
     Ok(())
 }
+
+/// SPEC-001 TSK-015: a task's Auto choice survives a reopen, one row per task, and goes with the
+/// task when it is deleted.
+#[tokio::test]
+async fn auto_choices_persist_and_go_with_their_task() -> R {
+    use yulius_app::auto_choice::AutoChoiceRecord;
+    use yulius_app::ports::store_ext::IntakeStore;
+    use yulius_domain::auto_choice::ChosenBy;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("y.db");
+    let t1 = TaskId::parse("t1")?;
+    let choice = AutoChoiceRecord {
+        task_id: t1.clone(),
+        mode_by: Some(ChosenBy::Jev),
+        workflow_by: Some(ChosenBy::Default),
+        workflow_name: Some("Feature".into()),
+        created_at: Timestamp(5),
+    };
+    {
+        let store = SqliteStore::open(&path)?;
+        let (sid, uid) = seed(&store).await?;
+        store.insert_task(&task("t1", &sid, &uid)?).await?;
+        store.insert_task(&task("t2", &sid, &uid)?).await?;
+        store.insert_auto_choice(&choice).await?;
+        assert!(
+            store.insert_auto_choice(&choice).await.is_err(),
+            "one per task"
+        );
+        store
+            .insert_auto_choice(&AutoChoiceRecord {
+                task_id: TaskId::parse("t2")?,
+                mode_by: None,
+                workflow_by: Some(ChosenBy::Jev),
+                workflow_name: None,
+                created_at: Timestamp(6),
+            })
+            .await?;
+    }
+    let store = SqliteStore::open(&path)?;
+    assert_eq!(store.auto_choice(&t1).await?, Some(choice));
+    let t2 = store
+        .auto_choice(&TaskId::parse("t2")?)
+        .await?
+        .ok_or("t2")?;
+    assert_eq!((t2.mode_by, t2.workflow_name), (None, None));
+    assert!(store.delete_task(&t1).await?);
+    assert_eq!(store.auto_choice(&t1).await?, None);
+    Ok(())
+}

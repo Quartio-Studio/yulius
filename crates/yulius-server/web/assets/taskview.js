@@ -2,10 +2,13 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, placeholder, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround, shellsLine } from './status.js';
-import { heldPromptCard, splitCard, looksSeveral, chainCandidates } from './intake.js';
+import { heldPromptCard, splitCard, looksSeveral, chainCandidates, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
+import { attachMarkdownInput } from './mdinput.js';
+import { createMarkdownEditor } from './mdeditor.js';
+import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
 import { attachTerminalDrop, taskAttachments } from './filedrop.js';
 import { relLong, dateTime } from './format.js';
@@ -37,15 +40,16 @@ function readOnlyText(sandbox) {
 
 /**
  * What a blank terminal means while the agent has not drawn anything yet (F 2026-10-09: helpful
- * empty states instead of an empty black screen); null once it should show the session.
+ * empty states instead of an empty black screen); null once it should show the session. `busy`
+ * states shimmer like the composer's working state (F 2026-10-10).
  */
 function emptyTerminalMessage(task) {
   switch (task.status) {
-    case 'queued': return { title: 'Queued', text: 'The agent starts as soon as a session slot is free.' };
-    case 'starting': return { title: 'Starting Claude Code…', text: 'The session appears here in a moment.' };
-    case 'switching': return { title: 'Moving to another AI account…', text: 'The session continues here in a moment.' };
+    case 'queued': return { title: 'Queued', text: 'The agent starts as soon as a session slot is free.', busy: true };
+    case 'starting': return { title: 'Starting Claude Code…', text: 'The session appears here in a moment.', busy: true };
+    case 'switching': return { title: 'Continuing…', text: 'The session picks up where it left off in a moment.', busy: true };
     case 'waiting_capacity': return { title: 'Paused', text: `${pausedLine(task)}. It continues by itself.` };
-    case 'running': return { title: 'Claude Code is starting…', text: 'The session appears here in a moment.' };
+    case 'running': return { title: 'Claude Code is starting…', text: 'The session appears here in a moment.', busy: true };
     case 'chained': {
       const after = task.after;
       if (after && after.blocked) return { title: 'Waiting for you', text: after.blocked };
@@ -66,8 +70,9 @@ export function mountTaskView(ctx, sandbox, task) {
   const stripLabel = h('span', { class: 'step-label' });
   const progressFill = h('div', { class: 'step-progress-fill' });
   const progress = h('div', { class: 'step-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100 }, progressFill);
-  // The session's state in words, coloured by tone; announced when it changes. Mode and account
-  // stay beside it, in the strip's own colours.
+  // The session's state in words, coloured by tone; announced when it changes. The mode stays
+  // beside it, in the strip's own colours; the subscription is not a property of the task (F
+  // 2026-10-10) and shows only in Task details.
   const statusEl = h('span', { class: 'strip-status', role: 'status' });
   const extrasEl = h('span', { class: 'strip-extras' });
   // The pull request, its checks and the next delivery step, beside the state (UX2-18).
@@ -225,16 +230,18 @@ export function mountTaskView(ctx, sandbox, task) {
       : h('span', { class: 'chip strip-extra chain-chip', title }, icon('branch', { size: 12 }), text));
     const after = current.after ? chainLink(current.after, `After #${current.after.number}`, current.after.title ? `Runs after #${current.after.number} ${current.after.title}` : `#${current.after.number} was deleted`) : null;
     const next = (current.next || []).map((link) => chainLink(link, `Then #${link.number}`, `#${link.number} ${link.title || ''} runs after this task`));
+    // How the task runs: "Auto → Goal · Feature" when Auto chose it (TSK-015), else Goal.
+    const auto = autoChoiceLabel(current);
     setChildren(extrasEl,
-      current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
+      auto ? h('span', { class: 'chip strip-extra auto-chip', title: auto.title }, icon('zap', { size: 12 }), auto.text)
+        : current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       after,
-      next,
-      current.account_label ? h('span', { class: 'muted xs strip-extra' }, current.account_label) : null);
+      next);
   }
 
   function renderStepList() {
     if (!stripOpen) return;
-    if (!detail) { setChildren(stepList, placeholder('Loading steps…', 'loading')); return; }
+    if (!detail) { setChildren(stepList, skeleton('Loading steps…', 3)); return; }
     const steps = Array.isArray(detail.steps_list) ? [...detail.steps_list].sort((a, b) => a.ordinal - b.ordinal) : [];
     if (steps.length === 0) {
       setChildren(stepList, h('div', { class: 'muted small steplist-note' }, 'The agent has not written a plan yet. Steps appear here as soon as the task spec has a Plan checklist.'));
@@ -323,7 +330,7 @@ export function mountTaskView(ctx, sandbox, task) {
 }
 
 function pickSummary(detail) {
-  const keys = ['status', 'activity', 'title', 'steps', 'unread_messages', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt'];
+  const keys = ['status', 'activity', 'title', 'steps', 'unread_messages', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto'];
   const out = {};
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
@@ -331,23 +338,44 @@ function pickSummary(detail) {
 
 // ---------------------------------------------------------------- composer
 
+const AUTO = 'auto';
+// Auto is the default for the mode and the workflow (TSK-015): Jev decides when the task is created.
 const MODES = [
+  { id: AUTO, name: 'Auto mode', icon: 'zap', description: 'Jev decides: a goal for work to build, change or fix; a prompt for questions and research.' },
   { id: 'goal', name: 'Goal', icon: 'target', description: 'The agent keeps working until the goal is met.' },
   { id: 'prompt', name: 'Prompt', icon: 'send', description: 'Sent as a normal first message.' },
 ];
 
+/** "Auto → Goal · Feature" for a task whose mode or workflow Auto chose (TSK-015), with its why. */
+export function autoChoiceLabel(task) {
+  const auto = task && task.auto;
+  if (!auto) return null;
+  const mode = task.mode === 'prompt' ? 'Prompt' : 'Goal';
+  const workflow = auto.workflow_name || 'No workflow';
+  const why = (by) => (by === 'jev' ? 'chosen by Jev' : by === 'default' ? 'the default (Jev was unsure or is not set up)' : 'picked when it was created');
+  return {
+    text: `Auto → ${mode} · ${workflow}`,
+    title: `Mode: ${mode}, ${why(auto.mode)}. Workflow: ${workflow}, ${why(auto.workflow)}.`,
+  };
+}
+
 /**
- * New-task composer (J3, UI-021): a rounded prompt box whose bottom edge holds the task's
- * choices — mode, workflow, model (picked from a list grouped by provider) and effort — and
- * Start. Model and effort are remembered per browser.
+ * New-task composer (J3, UI-021, F 2026-10-10): a rounded prompt box whose bottom edge holds the
+ * task's choices — mode and workflow (Auto by default: Jev decides), run after, model and effort
+ * — and the ↑ Start button. Enter adds a line and continues Markdown lists (mdinput.js);
+ * ⌘/Ctrl+Enter or ↑ starts. While intake decides, a calm status shimmers below the box, and the
+ * split card takes its place there: nothing above it moves. Model and effort are remembered per
+ * browser.
  */
 export function mountComposer(ctx, sandbox) {
   const destroyers = [];
   const write = allows(sandbox.access, 'write');
-  const prompt = h('textarea', { class: 'composer-prompt', rows: 4, placeholder: 'Describe what you want to build or change — e.g. “make me an online store”…', 'aria-label': 'Task prompt', maxlength: 100000 });
-  // Goal mode is the default (TSK-010): the prompt becomes the session's /goal.
-  let mode = 'goal';
-  let workflowId = '';
+  const prompt = h('textarea', { class: 'composer-prompt', rows: 4, placeholder: 'Describe what you want to build, fix or find out. Lists and Markdown work.', 'aria-label': 'Task prompt', 'aria-keyshortcuts': SUBMIT_ARIA, maxlength: 100000 });
+  // A rendered, read-only view of the prompt (Preview), made on demand.
+  const previewEl = h('div', { class: 'composer-preview', role: 'region', hidden: true, tabindex: 0, 'aria-label': 'Prompt preview' });
+  let preview = null;
+  let mode = AUTO;
+  let workflowId = AUTO;
   let workflows = [];
   // Run after another task of this sandbox (TSK-012): the new task waits until it is Done.
   let afterTaskId = '';
@@ -361,16 +389,25 @@ export function mountComposer(ctx, sandbox) {
     button.addEventListener('click', () => onOpen(button));
     return button;
   };
+  // The sandbox's workflows (instance first), read once; Auto chooses among them on the server.
+  const workflowsRead = ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`).then((list) => {
+    workflows = Array.isArray(list) ? list : [];
+    renderChips();
+  }).catch(() => { /* workflows are optional */ });
   const modeChip = chip('Mode', openModeMenu);
   const workflowChip = chip('Workflow', openWorkflowMenu);
   const afterChip = chip('Run after', openAfterMenu);
-  const splitSlot = h('div', { class: 'split-slot' });
+  // Below the box: the intake status, then the split card, in one place (TSK-011).
+  const intakeSlot = h('div', { class: 'intake-slot' });
   const modelChip = chip('Model', openModelMenu, { class: 'plain' });
   const effortChip = chip('Effort', openEffortMenu, { class: 'plain muted-chip' });
+  const previewButton = h('button', { type: 'button', class: 'btn-icon composer-preview-toggle', 'aria-pressed': 'false', 'aria-label': 'Preview', title: 'Preview: the prompt formatted' }, icon('eye', { size: 16 }));
   const modeHint = h('span');
   const banner = h('div', { class: 'stack-sm' });
-  const startButton = h('button', { type: 'button', class: 'btn btn-primary composer-send', 'aria-label': 'Start task', title: 'Start task' }, icon('up', { size: 18 }));
-  const hint = h('span', { class: 'composer-kbd' }, ' · ', h('span', { class: 'kbd' }, 'Enter'), ' to start, ', h('span', { class: 'kbd' }, 'Shift'), ' + ', h('span', { class: 'kbd' }, 'Enter'), ' for a new line');
+  const box = h('div', { class: 'composer-box' });
+  const startButton = h('button', { type: 'button', class: 'btn btn-primary composer-send', 'aria-label': 'Start task', 'aria-keyshortcuts': SUBMIT_ARIA, title: `Start task (${SUBMIT_KEYS})` }, icon('up', { size: 18 }));
+  // The keyboard way to start, shown quietly where there is a keyboard (not on phones).
+  const hint = h('span', { class: 'composer-kbd' }, h('span', { class: 'kbd' }, SUBMIT_KEYS), ' to start');
 
   const quote = randomQuote();
   const niche = h('div', { class: 'brand-niche', 'aria-hidden': 'true' }, icon('logo', { size: 64 }));
@@ -387,24 +424,31 @@ export function mountComposer(ctx, sandbox) {
       h('a', { class: 'composer-repo-link', href: sandbox.repo.url, target: '_blank', rel: 'noopener noreferrer', title: `Open ${sandbox.repo.owner}/${sandbox.repo.name} on GitHub` },
         icon('github', { size: 18 }), h('span', null, `${sandbox.repo.owner} / ${sandbox.repo.name}`)),
       h('span', { class: 'composer-branch', title: `New tasks branch from ${baseBranch}` }, icon('branch', { size: 16 }), h('span', null, baseBranch))) : null);
+  setChildren(box,
+    prompt,
+    previewEl,
+    h('div', { class: 'composer-tools' }, modeChip, workflowChip, afterChip, h('div', { class: 'composer-right' }, previewButton, modelChip, effortChip, startButton)));
   const el = h('div', { class: 'composer' }, repoBar,
     h('div', { class: 'composer-card' },
       // A brand's niche for its mark (hidden unless a brand shows it; styles.css "Brand details").
       niche,
       h('figure', { class: 'composer-quote' }, h('blockquote', null, `“${quote.text}”`), h('figcaption', null, `— ${quote.author}`)),
       banner,
-      splitSlot,
-      h('div', { class: 'composer-box' },
-        prompt,
-        h('div', { class: 'composer-tools' }, modeChip, workflowChip, afterChip, h('div', { class: 'composer-right' }, modelChip, effortChip, startButton))),
-      h('div', { class: 'composer-hint muted xs' }, modeHint, hint)));
+      box,
+      h('div', { class: 'composer-hint muted xs' }, modeHint, h('span', { class: 'composer-hint-sep', 'aria-hidden': 'true' }, ' · '), hint),
+      intakeSlot));
 
   function renderChips() {
     const m = MODES.find((x) => x.id === mode);
     setChildren(modeChip, icon(m.icon, { size: 14 }), h('span', { class: 'sr-only' }, 'Mode: '), h('span', { class: 'chip-label' }, m.name), icon('down', { size: 12 }));
-    modeHint.textContent = m.description;
+    modeChip.title = m.description;
+    modeHint.textContent = mode !== AUTO ? m.description
+      : workflowId === AUTO ? 'Jev picks goal or prompt mode and the workflow as the task starts.' : 'Jev picks goal or prompt mode as the task starts.';
     const wf = workflows.find((w) => w.id === workflowId);
-    setChildren(workflowChip, icon('workflow', { size: 14 }), h('span', { class: 'sr-only' }, 'Workflow: '), h('span', { class: 'chip-label' }, wf ? wf.name : 'No workflow'), icon('down', { size: 12 }));
+    if (workflowId && workflowId !== AUTO && !wf && workflows.length) workflowId = AUTO; // deleted meanwhile
+    const wfLabel = workflowId === AUTO ? 'Auto workflow' : wf ? wf.name : workflowId ? 'Workflow' : 'No workflow';
+    setChildren(workflowChip, icon(workflowId === AUTO ? 'zap' : 'workflow', { size: 14 }), h('span', { class: 'sr-only' }, 'Workflow: '), h('span', { class: 'chip-label' }, wfLabel), icon('down', { size: 12 }));
+    workflowChip.title = workflowId === AUTO ? 'Jev picks the workflow that fits, or none: features get a spec, research and questions do not' : wfLabel;
     const after = (ctx.store.tasksOf(sandbox.id) || []).find((t) => t.id === afterTaskId);
     if (afterTaskId && !after) afterTaskId = '';
     setChildren(afterChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
@@ -423,11 +467,15 @@ export function mountComposer(ctx, sandbox) {
     openMenu(anchor, MODES.map((m) => ({ label: m.name, icon: m.icon, description: m.description, checked: m.id === mode, onSelect: () => { mode = m.id; renderChips(); prompt.focus(); } })));
   }
 
-  function openWorkflowMenu(anchor) {
+  async function openWorkflowMenu(anchor) {
+    // A menu opened right away still lists the sandbox's workflows: wait for their first read.
+    await workflowsRead;
+    if (!anchor.isConnected) return;
     const slug = encodeURIComponent(sandbox.slug);
     openMenu(anchor, [
+      { label: 'Auto workflow', icon: 'zap', description: 'Jev picks the workflow that fits, or none: features get a spec, research and questions do not', checked: workflowId === AUTO, onSelect: () => { workflowId = AUTO; renderChips(); } },
       { label: 'No workflow', icon: 'x', description: 'The agent plans the work itself', checked: !workflowId, onSelect: () => { workflowId = ''; renderChips(); } },
-      ...workflows.map((wf) => ({ label: `${wf.name}${wf.scope === 'instance' ? ' (instance)' : ''}`, icon: 'workflow', description: wf.description || (Array.isArray(wf.steps) ? wf.steps.join(' → ') : null), checked: wf.id === workflowId, onSelect: () => { workflowId = wf.id; renderChips(); } })),
+      ...workflows.map((wf) => ({ label: `${wf.name}${wf.builtin ? ' (default)' : wf.scope === 'instance' ? ' (instance)' : ''}`, icon: 'workflow', description: wf.description || (Array.isArray(wf.steps) ? wf.steps.join(' → ') : null), checked: wf.id === workflowId, onSelect: () => { workflowId = wf.id; renderChips(); } })),
       { separator: true },
       { label: 'Manage workflows…', icon: 'gear', onSelect: () => ctx.navigate(`/s/${slug}/workflows`) },
     ]);
@@ -451,11 +499,41 @@ export function mountComposer(ctx, sandbox) {
   }
 
   // The box grows with the prompt up to half the screen, then scrolls.
-  prompt.addEventListener('input', () => {
+  const fit = () => {
     prompt.style.height = 'auto';
     prompt.style.height = `${prompt.scrollHeight}px`;
+  };
+  prompt.addEventListener('input', () => {
+    fit();
     // Editing the prompt withdraws a split proposal made for the old text.
     if (split) clearSplit();
+  });
+  // Enter adds a line (and continues lists), ⌘/Ctrl+Enter starts; IME composition is left alone.
+  destroyers.push(attachMarkdownInput(prompt, { onSubmit: () => start() }));
+
+  // Preview: the prompt formatted, read-only, in the box's place; Edit (or a click) goes back.
+  function setPreview(on) {
+    if (on && !prompt.value.trim()) { toast('Nothing to preview yet.', { kind: 'info' }); return; }
+    if (preview) { preview.destroy(); preview = null; }
+    if (on) {
+      preview = createMarkdownEditor({ markdown: prompt.value, readOnly: true });
+      setChildren(previewEl, preview.el);
+      previewEl.style.minHeight = `${prompt.offsetHeight}px`;
+    } else {
+      setChildren(previewEl, null);
+    }
+    previewEl.hidden = !on;
+    prompt.hidden = on;
+    box.classList.toggle('previewing', on);
+    previewButton.setAttribute('aria-pressed', String(on));
+    previewButton.title = on ? 'Back to editing the prompt' : 'Preview: the prompt formatted';
+    if (!on) { prompt.focus(); fit(); }
+  }
+  previewButton.addEventListener('click', () => setPreview(prompt.hidden === false));
+  previewEl.addEventListener('dblclick', () => setPreview(false));
+  previewEl.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' || (event.key === 'Enter' && !event.metaKey && !event.ctrlKey)) { event.preventDefault(); setPreview(false); }
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); start(); }
   });
 
   // The superadmin is reminded while no recovery code exists (ACC-011).
@@ -525,7 +603,7 @@ export function mountComposer(ctx, sandbox) {
     }
   }
 
-  /** The request body of a new task with the composer's choices. */
+  /** The request body of a new task with the composer's choices (`auto`: Jev decides, TSK-015). */
   function bodyFor(text, title) {
     const body = { prompt: text, mode };
     if (title) body.title = title;
@@ -547,6 +625,7 @@ export function mountComposer(ctx, sandbox) {
 
   function opened(task) {
     prompt.value = '';
+    fit();
     afterTaskId = '';
     ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
   }
@@ -554,28 +633,55 @@ export function mountComposer(ctx, sandbox) {
   function clearSplit() {
     if (split) split.cancel();
     split = null;
-    setChildren(splitSlot, null);
+    setChildren(intakeSlot, null);
   }
 
-  /** Runs a creation from the split card with the Start button busy. */
-  async function busyRun(work) {
-    clearSplit();
+  // ---- working: the ↑ button spins at once; after a moment the box shimmers and a status line
+  // below it says what is happening, so a quick answer never flashes and a slow one never looks
+  // frozen. The prompt stays as it is (read-only) while it is being read.
+  let status = null;
+  let showTimer = 0;
+  const autoStage = () => (mode === AUTO || workflowId === AUTO ? 'Choosing mode and workflow…' : 'Starting the task…');
+  function working(text) {
     startButton.disabled = true;
     startButton.classList.add('busy');
+    prompt.readOnly = true;
+    if (status) { status.stage(text); return; }
+    status = intakeStatus(text);
+    clearTimeout(showTimer);
+    showTimer = setTimeout(() => {
+      if (!status) return;
+      box.classList.add('thinking');
+      setChildren(intakeSlot, status.el);
+    }, 150);
+  }
+  function idle() {
+    clearTimeout(showTimer);
+    box.classList.remove('thinking');
+    prompt.readOnly = false;
+    startButton.classList.remove('busy');
+    if (status && intakeSlot.contains(status.el)) setChildren(intakeSlot, null);
+    status = null;
+    renderBanner();
+  }
+
+  /** Runs a creation chosen on the split card, with the working state. */
+  async function busyRun(stage, work) {
+    clearSplit();
+    working(stage);
     try {
       await work();
     } catch (error) {
       errorToast(error, 'Could not start the task');
     } finally {
-      startButton.classList.remove('busy');
-      renderBanner();
+      idle();
     }
   }
 
-  /** The gentle split card (TSK-011): parallel tasks, a chain, or the one task asked for. */
+  /** The gentle split card (TSK-011), below the box: parallel tasks, a chain, or one task. */
   function showSplit(text) {
     split = splitCard(ctx, sandbox, text, {
-      create: (list, chain) => busyRun(async () => {
+      create: (list, chain) => busyRun(chain ? `Creating a chain of ${list.length} tasks…` : `Creating ${list.length} tasks…`, async () => {
         let first = null;
         let previous = null;
         for (const item of list) {
@@ -588,53 +694,43 @@ export function mountComposer(ctx, sandbox) {
         toast(chain ? `Created a chain of ${list.length} tasks: each starts when the one before is done.` : `Created ${list.length} tasks.`, { kind: 'ok' });
         opened(first);
       }),
-      keep: () => busyRun(async () => opened(await createTask(bodyFor(text)))),
+      keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(text)))),
       close: () => clearSplit(),
     });
-    setChildren(splitSlot, split.el);
+    setChildren(intakeSlot, split.el);
+    const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    split.el.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' });
   }
 
-  // One task per press: Enter twice must not start two sessions (singleFlight).
+  // One task per press: two presses must not start two sessions (singleFlight).
   const start = singleFlight(async () => {
     const text = prompt.value.trim();
-    if (!text) { prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
-    if (split) return; // the card is open: its buttons decide
-    startButton.disabled = true;
-    startButton.classList.add('busy');
+    if (!text) { if (prompt.hidden) setPreview(false); prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
+    if (split || prompt.disabled) return; // the card is open (its buttons decide), or starting is blocked
     try {
       // A request mixing separate workstreams gets the split card first; a chosen "Run after"
       // already decided how the work is scheduled. The check never blocks for long (≤ 4 s).
-      if (!afterTaskId && await looksSeveral(ctx, sandbox, text)) {
-        showSplit(text);
-        return;
+      if (!afterTaskId && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
+        working('Reading your request…');
+        if (await looksSeveral(ctx, sandbox, text)) {
+          showSplit(text);
+          return;
+        }
       }
+      working(autoStage());
       const body = bodyFor(text);
       if (afterTaskId) body.after_task_id = afterTaskId;
       opened(await createTask(body));
     } catch (error) {
       errorToast(error, 'Could not start the task');
     } finally {
-      startButton.classList.remove('busy');
-      renderBanner();
+      idle();
     }
   });
 
   startButton.addEventListener('click', start);
-  // Enter starts (the Claude and Codex convention), Shift+Enter adds a line, ⌘/Ctrl+Enter also
-  // starts. On touch screens Enter adds a line and the Start button sends. IME composition wins.
-  const finePointer = window.matchMedia('(pointer: fine)').matches;
-  prompt.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
-    if (event.metaKey || event.ctrlKey || (finePointer && !event.shiftKey && !event.altKey)) {
-      event.preventDefault();
-      start();
-    }
-  });
 
-  ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`).then((list) => {
-    workflows = Array.isArray(list) ? list : [];
-    renderChips();
-  }).catch(() => { /* workflows are optional */ });
+
   renderChips();
 
   destroyers.push(ctx.store.on('sandboxes', renderBanner));
@@ -648,6 +744,6 @@ export function mountComposer(ctx, sandbox) {
       if (!prompt.disabled && !isPhone()) prompt.focus();
       if (!stopSmoke) stopSmoke = brandSmoke(niche); // the brand's smoke, when its niche shows (brandfx.js)
     },
-    destroy() { destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearSplit(); },
+    destroy() { destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
   };
 }

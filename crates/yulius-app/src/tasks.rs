@@ -131,6 +131,7 @@ impl App {
             after,
             next,
             held_prompt: self.held_prompt_view(&task.id).await,
+            auto: self.auto_choice_view(&task.id).await,
             background_shells: (task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle))
             .then(|| self.background_shells_of(&task.id))

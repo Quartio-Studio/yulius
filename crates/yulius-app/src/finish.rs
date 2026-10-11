@@ -52,7 +52,9 @@ impl TranscriptFacts {
                 self.turn_open = Some(true);
                 self.goal_achieved = Some(false);
             }
-            Observation::TurnComplete | Observation::TurnEnded => self.turn_open = Some(false),
+            Observation::TurnComplete
+            | Observation::TurnEnded
+            | Observation::TurnInterrupted { .. } => self.turn_open = Some(false),
             Observation::Goal(GoalOutcome::Met) => {
                 self.goal_achieved = Some(true);
                 self.turn_open = Some(false);
@@ -88,6 +90,66 @@ impl App {
         let runtime = self.runtime(task_id);
         runtime.last_stop_ms.store(self.now().0, Ordering::SeqCst);
         Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst))
+    }
+
+    /// The person stopped the agent's turn (Esc, or Ctrl+C while it works; F 2026-10-10: "when I
+    /// stop Claude, the task status should change"). Claude Code runs no Stop hook for it, so the
+    /// transcript's interrupt line is the turn's end: a working (or approval-waiting) task waits
+    /// for its person. A turn held for capacity that the person interrupted holds nothing any
+    /// more: the task runs again.
+    pub(crate) async fn turn_interrupted(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        at: Option<yulius_domain::time::Timestamp>,
+    ) {
+        self.hold_overtaken(task_id, at, Activity::Waiting).await;
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        if task.status != TaskStatus::Running
+            || !matches!(
+                task.activity,
+                Some(Activity::Working | Activity::NeedsAttention) | None
+            )
+        {
+            return;
+        }
+        let now = self.now();
+        // Its prompt, read late, does not reopen the stopped turn.
+        self.runtime(task_id)
+            .last_stop_ms
+            .store(at.map_or(now.0, |at| at.0.max(0)), Ordering::SeqCst);
+        tracing::info!(task = %task_id, "the person interrupted the agent's turn");
+        let _ = self
+            .deps
+            .store
+            .set_activity(task_id, Some(Activity::Waiting), now)
+            .await;
+        self.publish_task(task_id).await;
+        self.probe_idle_shells(task_id).await;
+    }
+
+    /// A transcript line written after a turn or prompt of `task_id` was held for capacity (at
+    /// `at`) shows the agent is not held any more: the hold ends and the task runs again with
+    /// `activity`.
+    pub(crate) async fn hold_overtaken(
+        &self,
+        task_id: &TaskId,
+        at: Option<yulius_domain::time::Timestamp>,
+        activity: Activity,
+    ) {
+        let Some(at) = at else { return };
+        let Ok(Some(pause)) = self.deps.store.open_pause(task_id).await else {
+            return;
+        };
+        if matches!(
+            pause.kind,
+            crate::model::PauseKind::Turn | crate::model::PauseKind::Prompt
+        ) && pause.account_id.is_some()
+            && at > pause.started_at
+        {
+            self.hold_ended(task_id, "overtaken", activity).await;
+        }
     }
 
     /// A prompt was submitted: the achieved goal no longer counts.
