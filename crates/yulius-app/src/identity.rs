@@ -15,7 +15,9 @@
 //!   that the internal listener maps to the user's own GitHub token (the superadmin, who has no
 //!   GitHub identity, gets the App's token for the sandbox's repository, as agents do, ACC-012)
 //!   ([`App::workspace_git_credential`]); a grant is checked against the user's current access
-//!   on every use.
+//!   on every use;
+//! - the GitHub CLI is logged in the same way: a `gh` shim first on `PATH` fetches that token per
+//!   invocation (`yulius gh-token`) and runs the real `gh` with it ([`gh_shim`], SPEC-004).
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -61,6 +63,40 @@ fi
 # `sudo NAME=value command` sets variables like sudo does.
 exec env "$@"
 "#;
+
+/// The `gh` shim for the Yulius executable `exe`: runs the real `gh` (the first one on `PATH`
+/// outside the shim's own directory) logged in as the user. The user's token comes from
+/// `yulius gh-token` for this one process only, so it is never stored, never reaches the shell's
+/// other children and is checked against the user's current access at every use; a `GH_TOKEN`
+/// or `GITHUB_TOKEN` the user set wins, and without a token `gh` simply stays logged out.
+#[must_use]
+pub fn gh_shim(exe: &Path) -> String {
+    let exe = exe.to_string_lossy().replace('\'', "'\\''");
+    format!(
+        r#"#!/bin/sh
+# Yulius gh shim: the GitHub CLI, logged in as the GitHub user who signed in to Yulius.
+self=$(dirname "$0")
+real=
+old_ifs=$IFS
+IFS=:
+for dir in $PATH; do
+  if [ "$dir" != "$self" ] && [ -x "$dir/gh" ]; then real="$dir/gh"; break; fi
+done
+IFS=$old_ifs
+if [ -z "$real" ]; then
+  echo "gh is not installed in this sandbox" >&2
+  exit 127
+fi
+if [ -z "${{GH_TOKEN:-}}" ] && [ -z "${{GITHUB_TOKEN:-}}" ]; then
+  if token=$('{exe}' gh-token 2>/dev/null) && [ -n "$token" ]; then
+    GH_TOKEN=$token
+    export GH_TOKEN
+  fi
+fi
+exec "$real" "$@"
+"#
+    )
+}
 
 /// Registry of workspace tokens (process-local; user processes do not survive a restart).
 #[derive(Default)]
@@ -237,7 +273,27 @@ impl App {
         if current.as_deref() != Some(SUDO_SHIM.as_bytes()) {
             write_file(&sudo, SUDO_SHIM.as_bytes(), 0o755)?;
         }
+        self.write_gh_shim(&dir)?;
         Ok(dir)
+    }
+
+    /// The directory holding only the `gh` shim, for user processes that are not contained
+    /// (the `sudo` shim next to it must not shadow the host's `sudo`).
+    fn gh_bin(&self) -> AppResult<PathBuf> {
+        let dir = self.config.data_dir.join("runtime").join("gh");
+        std::fs::create_dir_all(&dir).map_err(AppError::internal)?;
+        self.write_gh_shim(&dir)?;
+        Ok(dir)
+    }
+
+    /// Writes the `gh` shim into `dir` when missing or out of date.
+    fn write_gh_shim(&self, dir: &Path) -> AppResult<()> {
+        let shim = dir.join("gh");
+        let text = gh_shim(&self.config.yulius_exe);
+        if std::fs::read(&shim).ok().as_deref() != Some(text.as_bytes()) {
+            write_file(&shim, text.as_bytes(), 0o755)?;
+        }
+        Ok(())
     }
 
     /// Prepares `user`'s space in `sandbox`: home (created and seeded once), identity files
@@ -273,6 +329,7 @@ impl App {
         ));
         if !self.config.contained {
             env.push(("HOME".into(), home_host.to_string_lossy().into_owned()));
+            let path = format!("{}:{path}", self.gh_bin()?.display());
             env.push(("PATH".into(), path));
             return Ok(UserSpace {
                 login,
@@ -510,5 +567,118 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["alice", "root", "_apt", "postgres"]);
         assert!(merged.starts_with("alice:x:0:0:"));
+    }
+
+    /// A fresh temporary directory path, unique across the tests running in parallel.
+    fn unique_dir(prefix: &str) -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+    }
+
+    /// Runs the shim for `exe` with a fake `gh` that prints its token and arguments.
+    fn run_shim(
+        exe: &str,
+        gh_present: bool,
+        env: &[(&str, &str)],
+    ) -> Result<(i32, String, String), Box<dyn std::error::Error>> {
+        let dir = unique_dir("yulius-gh-shim");
+        let _ = std::fs::remove_dir_all(&dir);
+        let shim_dir = dir.join("shim");
+        let real_dir = dir.join("real");
+        std::fs::create_dir_all(&shim_dir)?;
+        std::fs::create_dir_all(&real_dir)?;
+        write_file(
+            &shim_dir.join("gh"),
+            gh_shim(Path::new(exe)).as_bytes(),
+            0o755,
+        )?;
+        if gh_present {
+            write_file(
+                &real_dir.join("gh"),
+                b"#!/bin/sh\necho \"token=${GH_TOKEN:-none} args=$*\"\n",
+                0o755,
+            )?;
+        }
+        let path = format!(
+            "{}:{}:/usr/bin:/bin",
+            shim_dir.display(),
+            real_dir.display()
+        );
+        let mut command = std::process::Command::new("sh");
+        command
+            .arg(shim_dir.join("gh"))
+            .args(["auth", "status"])
+            .env_clear()
+            .env("PATH", path);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let out = command.output()?;
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok((
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ))
+    }
+
+    /// A fake `yulius` that prints a token for `gh-token`.
+    fn fake_exe(body: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let dir = unique_dir("yulius-fake-exe");
+        std::fs::create_dir_all(&dir)?;
+        let exe = dir.join("yulius");
+        write_file(&exe, format!("#!/bin/sh\n{body}\n").as_bytes(), 0o755)?;
+        Ok(exe)
+    }
+
+    #[test]
+    fn gh_shim_logs_gh_in_with_the_users_token() -> TestResult {
+        let exe = fake_exe(r#"[ "$1" = gh-token ] && echo ghu_Synthetic"#)?;
+        let (code, out, _) = run_shim(&exe.to_string_lossy(), true, &[])?;
+        assert_eq!(code, 0);
+        assert_eq!(out, "token=ghu_Synthetic args=auth status");
+        Ok(())
+    }
+
+    #[test]
+    fn gh_shim_keeps_a_token_the_user_set() -> TestResult {
+        let exe = fake_exe("echo ghu_Other")?;
+        let (_, out, _) = run_shim(&exe.to_string_lossy(), true, &[("GH_TOKEN", "mine")])?;
+        assert_eq!(out, "token=mine args=auth status");
+        let (_, out, _) = run_shim(&exe.to_string_lossy(), true, &[("GITHUB_TOKEN", "theirs")])?;
+        assert_eq!(out, "token=none args=auth status");
+        Ok(())
+    }
+
+    #[test]
+    fn gh_shim_leaves_gh_unauthenticated_when_no_token_is_issued() -> TestResult {
+        let exe = fake_exe("exit 1")?;
+        let (code, out, _) = run_shim(&exe.to_string_lossy(), true, &[])?;
+        assert_eq!(code, 0);
+        assert_eq!(out, "token=none args=auth status");
+        Ok(())
+    }
+
+    #[test]
+    fn gh_shim_says_so_when_gh_is_not_installed() -> TestResult {
+        let exe = fake_exe("echo ghu_Synthetic")?;
+        let (code, out, err) = run_shim(&exe.to_string_lossy(), false, &[])?;
+        assert_eq!(code, 127);
+        assert!(out.is_empty());
+        assert!(err.contains("gh is not installed"), "{err}");
+        Ok(())
+    }
+
+    #[test]
+    fn gh_shim_quotes_the_executable_path() {
+        let script = gh_shim(Path::new("/opt/it's here/yulius"));
+        assert!(
+            script.contains(r#"'/opt/it'\''s here/yulius' gh-token"#),
+            "{script}"
+        );
     }
 }

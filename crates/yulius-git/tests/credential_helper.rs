@@ -223,7 +223,10 @@ fn gh_token_prints_only_the_token_for_github_com() -> TestResult {
     assert!(request.contains("Authorization: Bearer ws_task-token"));
     assert!(request.contains(r#""host":"github.com""#));
     assert!(request.contains(r#""protocol":"https""#));
-    assert!(!request.contains(r#""path""#), "gh is not tied to one repository");
+    assert!(
+        !request.contains(r#""path""#),
+        "gh is not tied to one repository"
+    );
     Ok(())
 }
 
@@ -232,7 +235,10 @@ fn gh_token_prints_nothing_when_refused_or_misconfigured() -> TestResult {
     let (port, server) = one_shot_server(json_response("403 Forbidden", "{}"))?;
     let env = env_for(format!("http://127.0.0.1:{port}"), Some("ws_task-token"));
     let mut output = Vec::new();
-    assert_eq!(yulius_git::run_gh_token(&mut output, &env), EXIT_UNAVAILABLE);
+    assert_eq!(
+        yulius_git::run_gh_token(&mut output, &env),
+        EXIT_UNAVAILABLE
+    );
     assert!(output.is_empty());
     server.join().map_err(|_| "server thread panicked")??;
 

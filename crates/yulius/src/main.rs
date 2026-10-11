@@ -183,8 +183,7 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::GhToken => {
-            let code =
-                yulius_git::run_gh_token(&mut std::io::stdout(), &|k| std::env::var(k).ok());
+            let code = yulius_git::run_gh_token(&mut std::io::stdout(), &|k| std::env::var(k).ok());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::SandboxHost { action } => yulius::sandbox_cli::host(action),
