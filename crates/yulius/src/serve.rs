@@ -441,6 +441,12 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         Ok(files) => tracing::debug!(files, "skill catalog ready"),
         Err(err) => tracing::error!(error = %err, "cannot install the skill catalog"),
     }
+    // The defaults now come from the workflow catalog (AUT-006).
+    match app.retire_legacy_workflows().await {
+        Ok(0) => {}
+        Ok(retired) => tracing::info!(retired, "retired the workflows seeded before the catalog"),
+        Err(err) => tracing::error!(error = %err, "cannot retire the legacy workflows"),
+    }
     let scheduler = app.start_automation_scheduler();
     // Shells left running by the previous server process are adopted before serving.
     let workspace_reaper = app.start_workspace_services().await;

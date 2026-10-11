@@ -66,7 +66,7 @@ const WHEEL_MAX_NOTCHES = 10;
  *   followServerSize           render at the PTY size from `state` and never ask the server
  *                              to resize (account login terminals: fixed 500 columns so
  *                              tokens and URLs never wrap; the view scrolls horizontally)
- *   emptyMessage(state)        optional {title, text} shown over a blank screen (e.g. a task
+ *   emptyMessage(state)        optional {title, text, busy} shown over a blank screen (e.g. a task
  *                              that has not started yet); hidden as soon as there is output
  *   onReady()                  the terminal is shown (its first screen is drawn)
  *   onConnection(status)       the socket's status (connecting|open|reconnecting|failed|closed)
@@ -271,7 +271,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     const message = ready && !fatal && emptyMessage && screenEmpty() ? emptyMessage(state) : null;
     emptyShown = Boolean(message);
     emptyEl.hidden = !message;
-    setChildren(emptyEl, message ? [h('p', { class: 'term-empty-title' }, message.title), message.text ? h('p', { class: 'term-empty-text' }, message.text) : null] : null);
+    setChildren(emptyEl, message ? [h('p', { class: 'term-empty-title' }, message.title), message.text ? h('p', { class: 'term-empty-text' }, message.text) : null, message.busy ? h('span', { class: 'term-empty-bar', 'aria-hidden': 'true' }) : null] : null);
   }
 
   // A typeface that arrives after the terminal opened (slower than terminal.js waits): xterm

@@ -19,6 +19,9 @@ export const HOME_ARIA = IS_MAC ? 'Meta+Shift+H' : 'Control+Shift+H';
 export const SHEET_KEYS = `${MOD}/`;
 /** Saving in the editor. */
 export const SAVE_KEYS = `${MOD}S`;
+/** Starting a task from the composer ("⌘↵" / "Ctrl+Enter"); Enter adds a line (F 2026-10-10). */
+export const SUBMIT_KEYS = IS_MAC ? '⌘↵' : 'Ctrl+Enter';
+export const SUBMIT_ARIA = IS_MAC ? 'Meta+Enter' : 'Control+Enter';
 /** Word wrap on/off in the editor, as in VS Code: ⌥Z / Alt+Z (ARIA names the Option key Alt). */
 export const WRAP_KEYS = IS_MAC ? '⌥Z' : 'Alt+Z';
 export const WRAP_ARIA = 'Alt+Z';
@@ -35,8 +38,10 @@ function groups() {
       [['Enter'], 'In a dialog’s field: confirm the dialog'],
     ]],
     ['New task', [
-      [['Enter'], 'Start the task'],
-      [['Shift+Enter'], 'New line'],
+      [[SUBMIT_KEYS], 'Start the task (or the ↑ button)'],
+      [['Enter'], 'New line — continues a list; on an empty item ends it'],
+      [['Tab', 'Shift+Tab'], 'Indent / outdent a list item (Esc, then Tab, leaves the box)'],
+      [[`${MOD}B`, `${MOD}I`], 'Bold / italic'],
     ]],
     [singleKeys ? 'Tasks page' : 'Tasks page (single-key shortcuts are off in Settings)', [
       [['/'], 'Search'],

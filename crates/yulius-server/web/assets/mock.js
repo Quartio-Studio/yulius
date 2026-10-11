@@ -210,11 +210,12 @@ function seed(params) {
     { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', email: 'product@example.com', plan: 'Pro', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
     { id: 'acc_x3', provider: 'anthropic', label: 'Claude spare', email: null, plan: null, status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
-  // `wf-feature` and `wf-quick-task` are the built-in instance workflows the server seeds.
+  // The default workflows ship with the server (catalog/workflows/*.md, AUT-006): read-only, first.
   db.workflows = [
-    { id: 'wf-feature', sandbox: null, name: 'Feature', description: 'Default discipline: spec with plan, implementation, tests, PR.', steps: ['Write task spec', 'Implement', 'Test', 'Open PR'], instructions: 'Follow AGENTS.md. Keep the spec Plan checklist in sync.', gates: { require_spec: true, require_tests: true }, scope: 'instance' },
-    { id: 'wf-quick-task', sandbox: null, name: 'Quick task', description: 'Small change without a spec gate.', steps: ['Implement', 'Test'], instructions: '', gates: { require_spec: false, require_tests: true }, scope: 'instance' },
-    { id: 'wf_bugfix', sandbox: 'sb_studio', name: 'Bugfix', description: 'Reproduce with a failing test first.', steps: ['Reproduce with a failing test', 'Fix', 'Open PR'], instructions: '', gates: { require_spec: true, require_tests: true }, scope: 'sandbox' },
+    { id: 'wf-feature', sandbox: null, name: 'Feature', description: 'New or changed behaviour, from a spec through review and tests to production.', when_to_use: 'The task adds or changes behaviour that users or other code rely on.', steps: ['Write the spec', 'Implement', 'Review the change', 'Test', 'Deliver to the integration branch', 'Release to production'], instructions: 'Start with the task spec. Implement only what it describes, prove it with tests, review your own diff, then deliver through the delivery profile.', gates: { require_spec: true, require_tests: true }, scope: 'instance', builtin: true },
+    { id: 'wf-fix', sandbox: null, name: 'Fix', description: 'A bug fixed from a reproduction, with a regression test.', when_to_use: 'Something that used to work, or should work, behaves wrongly.', steps: ['Reproduce with a failing test', 'Fix the cause', 'Review the change', 'Deliver'], instructions: 'Reproduce the bug first, with a test that fails because of it.', gates: { require_spec: false, require_tests: true }, scope: 'instance', builtin: true },
+    { id: 'wf-research', sandbox: null, name: 'Research', description: 'Investigate a question and report findings, without changing the product.', when_to_use: 'The task is a question about the product, the code or an option to choose.', steps: ['Investigate', 'Report the findings'], instructions: 'Answer with evidence. Do not change the product’s code.', gates: { require_spec: false, require_tests: false }, scope: 'instance', builtin: true },
+    { id: 'wf_release', sandbox: 'sb_studio', name: 'Release notes', description: 'Collect what shipped and write the release notes.', when_to_use: '', steps: ['Collect merged pull requests', 'Write the notes'], instructions: '', gates: { require_spec: false, require_tests: false }, scope: 'sandbox', builtin: false },
   ];
   db.skills = [
     { name: 'yulius-rust-slice', description: 'Implement a vertical Rust slice with tests and docs.', source: 'repository', path: '.agents/skills/yulius-rust-slice/SKILL.md', enabled: true },
@@ -273,6 +274,8 @@ function summary(task) {
     next: (task.nextLinks || []).map((link) => ({ ...link })),
     held_prompt: task.heldPrompt ? { ...task.heldPrompt } : null,
     ...(task.mode ? { mode: task.mode } : {}),
+    // How Auto chose the mode and workflow (TSK-015).
+    auto: task.auto ? { ...task.auto } : null,
     // Background shells an idle agent left running (TSK-014).
     background_shells: task.status === 'running' ? task.background_shells ?? null : null,
   };
@@ -643,15 +646,20 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
   const archived = query.get('archived') === 'true';
   return db.tasks.filter((t) => t.sandbox_id === p[0] && t.archived === archived).map(summary);
 });
-route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing') fail(409, 'conflict', 'The project is being prepared; new tasks start after the preparation task lands (or an admin skips it).');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
   if (body.harness && body.harness !== 'claude') fail(422, 'invalid', 'harness must be claude (Yulius runs Claude Code only)');
+  if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
+  const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
+  if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
+  // Auto (TSK-015): the mock's stand-in for Jev answers after a moment, like the server.
+  const choice = body.mode === 'auto' || body.workflow_id === 'auto' ? await mockAutoChoice(body, visible) : null;
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
   const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
-  const wf = db.workflows.find((w) => w.id === body.workflow_id);
+  const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const before = body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
   if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
@@ -662,7 +670,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
     unread_messages: 0, archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
     model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
-    delivery: null,
+    delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
   };
   db.tasks.push(task);
   recount(db);
@@ -675,8 +683,40 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return json(201, summary(task));
 });
+/**
+ * The mock's Auto choice (TSK-015): a question ("?", or starting with how/why/what…) is a prompt
+ * with the Research workflow (never a spec-first one); "fix", "bug" or "crash" gets Fix; anything
+ * else is a goal with Feature. "maybe" makes the stand-in unsure, so the defaults apply (Goal and
+ * Feature; no workflow for a prompt).
+ */
+async function mockAutoChoice(body, workflows) {
+  await delay(700);
+  const text = String(body.prompt || '').trim();
+  const unsure = /\bmaybe\b/i.test(text);
+  const question = /\?|^(how|why|what|where|when|which|who|is|are|does|do|can|could|should)\b/i.test(text);
+  const named = (name) => workflows.find((w) => w.name.toLowerCase() === name) || null;
+  const autoMode = body.mode === 'auto';
+  const mode = autoMode ? (!unsure && question ? 'prompt' : 'goal') : body.mode || 'goal';
+  let workflow = body.workflow_id && body.workflow_id !== 'auto' ? workflows.find((w) => w.id === body.workflow_id) : null;
+  if (body.workflow_id === 'auto') {
+    const noSpec = (w) => (w && !(w.gates && w.gates.require_spec) ? w : null);
+    if (unsure) workflow = mode === 'prompt' ? null : named('feature');
+    else if (mode === 'prompt') workflow = noSpec(named('research'));
+    else workflow = /\b(fix|bug|crash)/i.test(text) ? named('fix') || named('feature') : named('feature');
+  }
+  return {
+    mode,
+    workflow,
+    auto: {
+      mode: autoMode ? (unsure ? 'default' : 'jev') : null,
+      workflow: body.workflow_id === 'auto' ? (unsure ? 'default' : 'jev') : null,
+      workflow_name: workflow ? workflow.name : null,
+    },
+  };
+}
+
 // Task intake (TSK-011): requests of 40+ words mixing UI and backend work look like several
-// tasks; the proposal groups lines by area (UX first, backend second).
+// tasks; the proposal groups lines by area (UX first, backend second), after a moment (Claude).
 const MOCK_BACKEND = /backend|api|server|database|pool|queue/i;
 route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -687,8 +727,9 @@ route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
   const several = lines.some((l) => MOCK_BACKEND.test(l)) && lines.some((l) => !MOCK_BACKEND.test(l));
   return { verdict: several ? 'several' : 'one', checked: true };
 });
-route('POST', `/api/sandboxes/${ID}/intake/proposal`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  await delay(900);
   const lines = String(body.prompt || '').split('\n').filter((l) => /^\s*(\d+[.)]|[-*•])\s/.test(l)).map((l) => l.trim());
   const backend = lines.filter((l) => MOCK_BACKEND.test(l));
   const ux = lines.filter((l) => !MOCK_BACKEND.test(l));
@@ -1418,19 +1459,25 @@ route('POST', `/api/sandboxes/${ID}/workflows`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (body.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance workflows are managed by instance administrators');
   db.nextId += 1;
-  const wf = { id: `wf_${db.nextId}`, sandbox: body.scope === 'instance' ? null : p[0], name: body.name, description: body.description || '', steps: body.steps || [], instructions: body.instructions || '', gates: { require_spec: Boolean(body.gates && body.gates.require_spec), require_tests: Boolean(body.gates && body.gates.require_tests) }, scope: body.scope === 'instance' ? 'instance' : 'sandbox' };
+  const wf = { id: `wf_${db.nextId}`, sandbox: body.scope === 'instance' ? null : p[0], name: body.name, description: body.description || '', when_to_use: '', steps: body.steps || [], instructions: body.instructions || '', gates: { require_spec: Boolean(body.gates && body.gates.require_spec), require_tests: Boolean(body.gates && body.gates.require_tests) }, scope: body.scope === 'instance' ? 'instance' : 'sandbox', builtin: false };
   db.workflows.push(wf);
   const { sandbox: _s, ...out } = wf;
   return json(201, out);
 });
-route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
-  const wf = db.workflows.find((w) => w.id === p[0]);
+// Default workflows are kept current by the server: duplicate one to customise it.
+function mutableWorkflow(db, id) {
+  const wf = db.workflows.find((w) => w.id === id);
   if (!wf) fail(404, 'not_found', 'not found');
+  if (wf.builtin) fail(409, 'conflict', `${wf.name} is a default workflow kept current by Yulius: duplicate it to customise`);
+  return wf;
+}
+route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
+  const wf = mutableWorkflow(db, p[0]);
   Object.assign(wf, { name: body.name, description: body.description, steps: body.steps, instructions: body.instructions, gates: body.gates });
   const { sandbox: _s, ...out } = wf;
   return out;
 });
-route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { db.workflows = db.workflows.filter((w) => w.id !== p[0]); return json(204); });
+route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { mutableWorkflow(db, p[0]); db.workflows = db.workflows.filter((w) => w.id !== p[0]); return json(204); });
 
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
@@ -1773,7 +1820,8 @@ async function handleFetch(db, url, init = {}) {
     const match = u.pathname.match(re);
     if (!match) continue;
     try {
-      const result = handler({ db, p: match.slice(1).map(decodeURIComponent), body, query: u.searchParams });
+      // A handler may be async (one that takes a while, like Jev or Claude on the server).
+      const result = await handler({ db, p: match.slice(1).map(decodeURIComponent), body, query: u.searchParams });
       return result instanceof Response ? result : json(200, result);
     } catch (error) {
       if (error instanceof MockError) return json(error.status, { error: { code: error.code, message: error.message } });
@@ -1924,7 +1972,8 @@ class TermSession {
         '',
       );
     }
-    this.lines.push(`${c(245, '>')} ${this.task.prompt || this.task.title}`, '');
+    // A multi-line prompt shows as lines (a bare \n would only move the cursor down).
+    this.lines.push(...`${c(245, '>')} ${this.task.prompt || this.task.title}`.split('\n'), '');
     if (this.task.number === 10 && this.task.sandbox_id === 'sb_studio') {
       this.lines.push(
         `${c(255, '⏺')} The deploy needs an AWS console session. I can't sign in for you.`,

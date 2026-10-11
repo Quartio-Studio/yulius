@@ -84,7 +84,7 @@ Principles:
 | ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
 | ADR-14 | Narrowed by ADR-15 (F 2026-10-10): the panel's live iframe tabs are removed; the preview origins and their proxy remain for one action, "Open live in a new window" on a sandbox dev server, and the no-recursion rules stay. Originally: the user browses the sandbox's apps **live in their own browser**: each (sandbox, port) has a preview origin `<port>-<key>.<yulius host>` that Yulius reverse-proxies to `127.0.0.1:<port>`, removing the iframe obstacles; the agents keep the sandbox's headless Chrome (ADR-09), whose tabs share the panel's strip and are watched remotely with the agent's cursor; Yulius never opens inside itself. Analysis and contract: §2.1. | Keep the mirror (A); pixel or video streaming (B); hybrids (D) | Native page behaviour on desktop and phone; needs wildcard DNS and TLS for the preview hosts (on-demand TLS); the app runs in the user's browser, so its absolute `localhost` URLs in page code do not reach the VM. |
 | ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Over the user's link (F 2026-10-10, later): the viewer acknowledges frames and the server keeps about a round trip on the way, the bitrate and frame rate follow the slowest viewer (VBV tiers), keyframes come on demand from a replacement encoder, wheel and pointer moves are coalesced. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
-| ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done. Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
+| ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done; a new task's mode and workflow on Auto are two more fixed questions with Goal and "Feature" as the defaults (TSK-015). Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
 | ADR-17 | Claude subscriptions are **one self-managing pool** (F 2026-10-10): use-it-or-lose-it placement (weekly headroom ÷ hours to its reset ÷ tasks on the account + 1), a proactive switch at 98 % of any binding window at the turn boundary by native resume, and a **gentle, invisible pause** held by the harness — the Stop / `UserPromptSubmit` hook answers `202 Retry-After` and `yulius hook` keeps polling — persisted in `capacity_pauses`, resumed oldest first and staggered; a burn-rate forecast says when to buy more. Analysis and contract: §2.4. | Manual priorities (before); suspending the agent (SIGSTOP); letting the CLI hit the limit and typing a resume prompt; killing and resuming | No knobs; capacity that expires is spent first; switches only when forced; the agent is never told; a hold survives restarts; the CLI shows "running hook" while paused and a held agent keeps its session slot; relies on Claude Code honouring a long hook `timeout` (fallback: the reported-limit pause). |
 | ADR-18 | **Yulius is the projects' only CI** (F 2026-10-10: "100% local … zero paid github features … deleting GitHub Actions completely"). Each sandbox's `[[ci.jobs]]`, or `[commands] gate`, is read from the integration branch; the profile's `gate` overrides it. Yulius runs the jobs for every open pull request head and every new integration and production head, once per commit, in parallel. Each job goes through the process host inside the sandbox's containment, without secrets, in a persistent per-job checkout with persistent caches. Results go to the commit status `yulius/ci`. Once a sandbox has CI, the merge gate takes the run at the exact head alone. Hygiene deletes merged branches and cleans stale branches and worktrees. Analysis and contract: §2.5. | GitHub Actions on hosted or Blacksmith runners (paid per minute, Actions workflows); a self-hosted Actions runner (still Actions, still a workflow per repository); a separate CI server (Buildkite agent, Woodpecker: another service to run and secure); running the gate in the agent's worktree (stale caches mixed with the agent's work, no isolation from the task) | One CI, on infrastructure we control, with no GitHub plan dependency. Merges are enforced by Yulius, not by rulesets. The VM pays the CPU, disk and caches. Statuses need the App's "Commit statuses: write"; pushes that delete workflows need "Workflows: write". Agents can still read a token through the Git credential helper, so the gate binds agents that merge through Yulius, not a hostile agent (§8). |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
@@ -614,6 +614,24 @@ context.
    shows the reason to the person, keeps the text in its input box and never gives it to the agent
    (verified with the CLI and a blocking hook, without credentials). The task's summary carries the
    pending hold, and the task view shows the card.
+5. *Auto mode and workflow (TSK-015, F 2026-10-10).* `mode: "auto"` and `workflow_id: "auto"` on
+   `POST /api/sandboxes/{sid}/tasks` (the composer's defaults; the API's default stays Goal without
+   a workflow). Before the task exists, Jev answers at most two questions at once, within one
+   2.5 s deadline (`crates/yulius-domain/src/auto_choice.rs`, `crates/yulius-app/src/auto_choice.rs`):
+   - `mode` (`goal` | `prompt`), threshold 0.75 — default Goal;
+   - `workflow`: a fixed question text whose options are the sandbox's workflows as
+     `App::workflows_for` lists them — the catalog's defaults (§7.10), then instance and sandbox
+     workflows — as `w1`…`w12`, each "Name (spec first | no spec): description Use when: … Steps:
+     …." (the gate first, so the 400-byte cut never drops it; never hard-coded), and `none`,
+     threshold 0.6 — default the workflow named "Feature" (the sandbox's own before the default),
+     none without one, and none for a prompt-mode task.
+   - A prompt-mode task never gets a spec-first (`require_spec`) workflow from Auto: Jev's pick
+     becomes none, recorded as the default ("features need specs; research and questions don't").
+   - Picked values are never sent to Jev; a bad mode or workflow is refused before any call. The
+     decision is a row in `task_auto_choices` (who chose the mode and the workflow: `jev` or
+     `default`; the workflow's name), audited as `task.auto_choice` with Jev's percentages, and
+     returned as the summary's `auto`. The same privacy as the split check: the prompt goes to
+     TypeSafe when a key is configured.
 
 **Rules for a typed prompt, in order** (the first match decides):
 
@@ -1019,6 +1037,7 @@ Schema version 1 (tables; columns abbreviated):
 | `audit_log` | id, at, actor, action, target, detail |
 | `task_chains` | task_id (PK), after_task_id (NULL once the predecessor is deleted), after_number, blocked_reason, created_at — ADR-16 |
 | `prompt_holds` | id, task_id, class, prompt, prompt_sha256, percent, typed_by, state (pending/sent/consumed/parallel/after/skipped_after/reverted/dismissed/superseded), created_at, resolved_by, resolved_at, new_task_id — ADR-16 |
+| `task_auto_choices` | task_id (PK), mode_by, workflow_by (`jev` / `default`; NULL when a person picked it), workflow_name, created_at — ADR-16 item 5 (TSK-015) |
 | `ci_runs` | id, sandbox_id, reference (`pr/<n>` / `branch/<name>`), sha, source (profile/yulius_toml/pull_request), state (queued/running/passed/failed/error/cancelled), reason, requested_by, status_for, status_note, status_attempts, queued_at, started_at, ended_at; partial unique index: one running run per sandbox — ADR-18 (migration `0014_local_ci.sql`) |
 | `ci_jobs` | id, run_id (cascade), ordinal, name, job_key, command, matrix, state, reason, exit_code, output (tail), started_at, ended_at — ADR-18 |
 
@@ -1209,6 +1228,20 @@ a folder-trust prompt whose default answer is "No, exit". Before each launch Yul
 `bypassPermissionsModeAccepted` for contained runs) into `<CLAUDE_CONFIG_DIR>/.claude.json`, keeping
 Claude's own keys. Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` at each launch.
 
+MCP servers (MCP-001/004) are part of every launch, not of an account: the supervisor passes the
+sandbox's effective servers (`App::mcp_attachments`: enabled instance servers, overridden by the
+sandbox's of the same name) in `HarnessLaunch.mcp` for each attempt — new, resumed, switched to
+another subscription by native resume or by hand — and the harness adapter renders them into the
+run's own `<run>/mcp.json` (`--mcp-config … --strict-mcp-config`, so nothing from a Claude home
+adds to or replaces them), with the Yulius tool server first. Secret values appear in the file
+only as `${VAR}` references (`env` of a stdio server; `Authorization: Bearer ${YULIUS_MCP_<NAME>_TOKEN}`
+for an HTTP server); the values travel in the run's secret environment. `CLAUDE_CONFIG_DIR` is
+per sandbox and the credential an environment variable, so no subscription has servers of its
+own. A harness added later receives the same harness-neutral list. A stored value
+`${secret:NAME}` is a reference to an agent secret: it is resolved for each run by
+`App::resolve_secret_ref`, the hook point of the agent-secrets vault, and left out (with a
+warning) while nothing answers to it.
+
 | Concern | Claude Code (verified 2.1.292 flags) |
 | --- | --- |
 | New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json [--model m] [--effort e] [--dangerously-skip-permissions when contained] "<prompt>"` |
@@ -1251,7 +1284,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003) |
 | `automation_create`, `automations_list`, `automation_update` | Prompt-created automations (AUT-002) |
-| `workflows_list` | Workflows available (AUT-004) |
+| `workflows_list` | Workflows available, the defaults first with `builtin` and `when_to_use` (AUT-004, AUT-006) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
 | `ci_status`, `ci_rerun` | The CI in force and recent runs (this task's pull request first), one run's job outputs (tails of 16 KiB), run a commit again (DLV-006) |
@@ -1334,7 +1367,7 @@ browser action requests) filtered by permission. Bounded per-connection queue (2
 ### 7.9 Public HTTP API (selected)
 
 `/api/setup`, `/api/auth/*` (GitHub OAuth, device approval, logout), `/api/me`, `/api/sandboxes`
-(+ create/import/remove), `/api/sandboxes/{id}/tasks` (create, list; `after_task_id` chains), `/api/sandboxes/{id}/intake/{check,proposal}` (ADR-16), `/api/tasks/{id}` (get, stop,
+(+ create/import/remove), `/api/sandboxes/{id}/tasks` (create, list; `after_task_id` chains; `mode`/`workflow_id` `auto`), `/api/sandboxes/{id}/intake/{check,proposal}` (ADR-16), `/api/tasks/{id}` (get, stop,
 continue, switch, archive, restore, feedback, steps, `start-now`, `held-prompts/{hid}`), `/api/sandboxes/{id}/git/*`,
 `/api/sandboxes/{id}/delivery/*`, `/api/sandboxes/{id}/{skills,workflows,automations,mcp}`,
 `/api/admin/{users,accounts,github,mcp,skills}`, `/api/analytics/*`, `/api/status`,
@@ -1345,6 +1378,59 @@ Dropped files (EDT-006, UI-048): `PUT /api/sandboxes/{id}/files/upload`, `POST
 per request, streamed to disk (`yulius_app::uploads`).
 All JSON bodies ≤ 1 MiB (imports use chunk endpoints ≤ 8 MiB per chunk; a dropped file is one
 raw body up to the upload limit, 25 MiB by default).
+
+### 7.10 Workflow catalog format (AUT-006)
+
+Default workflows ship with Yulius as one Markdown file per workflow, `catalog/workflows/<id>.md`.
+`crates/yulius-app/build.rs` embeds every `*.md` file of that directory except `README.md`, so
+adding a workflow needs no code change; `yulius_domain::workflow_format::parse_workflow` reads
+one, and a unit test (`workflows::catalog`) parses every shipped file and checks the embedded set
+against the directory, so a malformed file fails CI (at runtime one that does not parse is skipped
+with a warning). `<id>` is 1–40 lowercase ASCII letters, digits and `-`, not starting with `-`;
+the workflow's id is `wf-<id>`. Never rename a shipped file: tasks and automations refer to its id.
+
+```markdown
+---
+name: Feature
+description: New or changed behaviour, from a spec through review and tests to production.
+when_to_use: The task adds or changes behaviour that users or other code rely on.
+spec: required
+tests: required
+order: 10
+---
+
+## Steps
+
+1. Write the spec
+2. Implement
+
+## Instructions
+
+Markdown for the agent's briefing (### subsections allowed).
+```
+
+| Part | Rule |
+| --- | --- |
+| Frontmatter | Between `---` lines; one `key: value` per line, plain text, optionally in matching quotes, never multi-line; `#` lines are comments; an unknown or repeated key is an error |
+| `name` | Required, ≤ 80 characters |
+| `description` | Required, one line, ≤ 300 characters: what it is |
+| `when_to_use` | Required, one line, ≤ 300 characters: when to pick it (what intake reads when the workflow is chosen automatically) |
+| `spec`, `tests` | `required` or `optional` (default `optional`): the gates `require_spec`, `require_tests` |
+| `order` | 0–999 (default 100): list order, then name |
+| Body | Exactly `## Steps` then `## Instructions`; nothing before `## Steps`; no `#` title |
+| Steps | One list item (`1.`, `-`, `*`, `+`) per step, ≤ 200 characters, at most 100; no code blocks; may be empty |
+| Instructions | Everything below the heading, trimmed, ≤ 16 KiB; the briefing includes the first 3,000 characters |
+
+Defaults are never stored: `App::workflows_for` lists them first, then the stored instance and
+sandbox workflows, and lookups by id (`visible_workflow`, `task_workflow`) answer them from the
+catalog, so a release replaces their content. The API marks them `builtin: true` with
+`when_to_use`; `PUT`/`DELETE` on one answer 409 ("duplicate it to customise"), and a duplicate is
+an ordinary custom workflow. A stored row whose id a default answers to is never listed. At
+startup `App::retire_legacy_workflows` handles the two instance rows seeded before the catalog
+(`wf-feature` "Feature", `wf-quick-task` "Quick task"): one still equal to its seed is deleted
+(references to `wf-feature` stay and reach the default; those to `wf-quick-task` are cleared as by
+a delete); an edited `wf-feature` is kept as a new custom instance workflow "Feature (custom)"; an
+edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`workflow.retired`).
 
 ## 8. Security and trust model
 
@@ -1379,6 +1465,9 @@ raw body up to the upload limit, 25 MiB by default).
 - Secrets (provider credentials, GitHub App key, MCP env/headers) are encrypted at rest with the
   master key, never returned by the API, never logged (`Secret<T>` with redacted Debug), passed to
   children only via environment (SEC-002). Account login output is masked before reaching viewers.
+  An MCP value `${secret:NAME}` stores a reference, not a secret; it resolves only through the
+  vault's hook (`App::resolve_secret_ref`), never from the server's or the run's environment, so
+  it cannot pull Yulius's own credentials into an MCP server (§7.2).
 - GitHub tokens: installation tokens (1 h) fetched on demand; user tokens refreshed; git transport
   uses the credential helper over the internal listener; task worktrees get a `pre-push` hook that
   rejects pushes to the profile's integration/production branches; scaffolded repositories get
@@ -1492,7 +1581,7 @@ raw body up to the upload limit, 25 MiB by default).
 | Upload body idle | 60 s without a chunk | 422; temporary file removed |
 | Attachments per task or shell | 500 | 409 |
 | Files per drop (UI) | 1000 into the editor, 20 onto a terminal | the rest are left out with a note |
-| Jev request / answer / deadline (ADR-16) | 28 KiB / 256 KiB / 2.5 s split, 3 s scope; one request, no retries | refused before sending / typed failure → no check |
+| Jev request / answer / deadline (ADR-16) | 28 KiB / 256 KiB / 2.5 s split, 3 s scope, 2.5 s for both Auto questions (asked at once; at most 12 workflows offered); one request, no retries | refused before sending / typed failure → no check, or the Auto default |
 | Split proposals | 2 at once, 60 s each, 256 KiB output | `capacity` / failure → one task |
 | Chained tasks per sandbox | 32 | refused at creation |
 | Held prompts per task | one pending (a newer one supersedes) | — |
@@ -1626,7 +1715,9 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Streamed browser (ADR-15, 2026-10-10) | Unit: FLV parsing for every split of a stream, codec strings, GOP cache, subscriber and viewer backpressure, encoder lifecycle (on demand, idle stop, resize restart, give-up), key mapping, cookie format and permissions, device sizes. `tests/browser.rs` with a fake display: video config then a keyframe, a late viewer's instant start, viewport → display resize and encoder restart, XTest-shaped input, wheel and text through CDP, copy, release on leave, pages opened by pages come to the front, history and reload, a broken encoder falls back to JPEG, the display stops with the browser. Opt-in `live_display.rs` on the VM (Xvfb, ffmpeg, Chrome 155, as the service user): streaming from a keyframe, real clicks (also in an OAuth-style popup), typing incl. Polish letters and emoji in order, scrolling, canvas and image pixels, `navigator.webdriver === false`, agent cursor, screenshots, recursion refused, no display, cookie, abstract or TCP socket reachable from containment (both identities); figures in ADR-15; reCAPTCHA v2 demo (checkbox → image challenge, a tile selected) and Cloudflare's challenge on nopecha.com (checkbox → passed) with XTest clicks. `live_ui_browser.rs` with a display: the panel decodes H.264 in Chrome and its input reaches the page. `e2e/tests/browser.e2e.ts` (mock UI, VP8 via WebCodecs; frames acknowledged). Over a real link (F 2026-10-10, later): unit tests of the wheel coalescing, the move slot (1,000 moves then a click, in order), flow control, the media-queue policy, the tier policy, the make-before-break switch and the encoder arguments; `tests/browser.rs`: a wheel flood with Chrome not answering, a move flood without errors, an acknowledging viewer paced and stepped down a tier; opt-in `live_ui_stream.rs` (client-side fps and input → frame on Linux); the client-side measurements over the real path in ADR-15 and the PR. |
 | Dropped files (EDT-006, UI-048, 2026-10-10) | `tests/uploads.rs`: editor uploads (write users only, CSRF, folders created, byte-for-byte with SHA-256, 409 then overwrite with permissions kept, folders and links never replaced, traversal / absolute / control characters / `.git` / links out refused with nothing written outside, a repository folder linked into another sandbox refused, task worktree root, audit), bounds (declared and streamed size, an interrupted body, 8 concurrent then 429, no temporary file left), task attachments (safe unique names, read users refused, a planted link refused, removed with the task), shell attachments (owner only, removed when the shell closes or at start-up), the fake agent reading an attachment by path with a clean `git status` (uncontained; on Linux also inside bubblewrap, skipped where bubblewrap cannot run). Unit tests in `yulius_app::uploads`. `e2e/tests/filedrop.e2e.ts` (mock UI). Opt-in `live_ui_filedrop.rs` with real Chrome: real drags from disk to the explorer and to the task terminal, read by the fake agent. |
 | Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
+| Auto mode and workflow, composer (TSK-015, UI-021, 2026-10-10) | Unit: `auto_choice.rs` (thresholds, defaults, the sandbox's own Feature first, the spec-first rule for prompts, bounded options). `tests/auto_choice.rs` (fake Jev, public API): Jev's choices from the store's workflows, a question as Prompt with a no-spec workflow, the spec-first override, defaults with no key, Jev down or unsure, picked values not sent to Jev, 422 before any call, the audit entry; `yulius-store/tests/store.rs` round trip and deletion. `e2e/tests/new-task.e2e.ts`, `intake.e2e.ts` (mock): keys, lists, indent, bold/italic, fences, Preview, Auto chips and labels, the split card's loading and layout. |
 | Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
+| MCP, Git as presentation, skills, default workflows (MCP-004, GIT-002, SKL-006, AUT-006; #136, 2026-10-10) | The reported bug ("Add server does nothing"): on `dev` the empty MCP page's Add server threw `ReferenceError: edit is not defined` (headless Chrome, mock mode); `live_ui_mcp.rs` (opt-in Chrome, real server) fails on that page and passes with the fix: empty state → add page → pasted `claude mcp add` → Add (sealed, tested) → the attachments a run gets → edit → Remove. `pool_supervision.rs::mcp_servers_reach_every_run_on_every_subscription`: real processes on two subscriptions; each run's `mcp.json` and secret names, the values in the child environment, the same servers after a native-resume switch plus one added meanwhile. `skills_mcp.rs`: `${secret:NAME}` stays write-only and is left out of runs while unresolved. Workflows: `workflow_format` unit tests (every rule, line numbers), `workflows::catalog` (the shipped files parse and are all embedded), `automations.rs` (defaults first and read-only — 409 even for an administrator —, duplicate, task steps and instructions from the catalog, retirement of unchanged and edited seeded rows, `workflows_list`). UI (mock e2e): `mcp.e2e.ts`, `workflows.e2e.ts`, `skills.e2e.ts`, `git.e2e.ts`. |
 | Yulius-run CI and hygiene (ADR-18, DLV-006/007, 2026-10-11) | Unit: `yulius_domain::ci` (gate validation and precedence, job definitions and matrix expansion and their errors, run state from jobs, the plan: once per commit, supersede, no automatic retry of a cancelled reference; status descriptions within 140 characters; the merge gate; branch and worktree classification), `ci::actions` (workflow reader: jobs, block scalars, folded scripts, bounds, garbage), the `yulius.toml` `[[ci.jobs]]` parser and render round trip, `ci/exec.rs` (escape stripping across chunks, matrix checkouts), store (`ci_runs`/`ci_jobs`: transitions, one running run per sandbox, requeue after restart, status bookkeeping, retention with cascade). `yulius-github` `tests/client.rs`: commit statuses against the fake GitHub (pending then success in the combined status, description clipped, invalid state refused, 403 without the permission), branch deletion (true, then false). `tests/local_ci.rs` (real git, real detached ptyhost, fake GitHub): jobs in parallel with a matrix, outputs without escape sequences, no secret in the environment, persistent checkouts, statuses and links, the merge gate pending → passed → failed, Run again (and its refusal while active), a superseded run killed at once, a timeout, nothing left in `runs/`; statuses refused → runs still gate; hygiene scan and cleanup over a real origin. `tests/delivery.rs`: the merged branch is deleted. `e2e/tests/ci.e2e.ts` (mock UI). |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
@@ -1634,6 +1725,13 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 - 2026-10-11 (F 2026-10-10, final stage; #138): ADR-18 Yulius-run CI and repository hygiene;
   §5 `ci_runs`, `ci_jobs`; §6.8; §7.4 CI and hygiene tools; §8 CI trust; §9 bounds; §10; §14.
+- 2026-10-10 (F 2026-10-10, final stage; #136): §7.2 MCP servers in every run's own configuration
+  whatever the subscription, `${secret:NAME}` references and the vault's hook; §7.10 the workflow
+  catalog format and read-only defaults with the retirement of the seeded rows; §7.4
+  `workflows_list`; §8 references; §14.
+- 2026-10-10 (F 2026-10-10, "final stage" list; #135): ADR-16 item 5 — Auto mode and workflow
+  (two fixed Jev questions, defaults Goal and "Feature", never a spec-first workflow for a prompt),
+  `task_auto_choices`, §9 bound, §14.
 - 2026-10-10 (F 2026-10-10, later; #122): ADR-15 over the user's link — flow control by
   acknowledged frames, VBV bitrate tiers following the slowest viewer, keyframes on demand from a
   replacement encoder (make before break), coalesced wheel and pointer moves, every frame decoded

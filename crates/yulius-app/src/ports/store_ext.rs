@@ -18,9 +18,15 @@ pub trait WorkflowStore: Send + Sync {
     async fn workflows(&self, sandbox: &SandboxId) -> AppResult<Vec<WorkflowRecord>>;
     /// Workflow by id.
     async fn workflow(&self, id: &str) -> AppResult<Option<WorkflowRecord>>;
-    /// Inserts `workflows` atomically only when no instance workflow exists; returns whether
-    /// anything was inserted.
-    async fn seed_instance_workflows(&self, workflows: &[WorkflowRecord]) -> AppResult<bool>;
+    /// Atomically inserts `copy` (when given) and deletes the workflow `id`, clearing automation
+    /// references to it unless `keep_references` (another workflow now answers to the id);
+    /// `false` when `id` was absent (nothing is inserted then).
+    async fn retire_workflow(
+        &self,
+        id: &str,
+        copy: Option<&WorkflowRecord>,
+        keep_references: bool,
+    ) -> AppResult<bool>;
     /// Inserts a workflow; `Capacity` when its scope already holds `max_per_scope`.
     async fn insert_workflow(&self, workflow: &WorkflowRecord, max_per_scope: u32)
     -> AppResult<()>;
@@ -322,6 +328,16 @@ pub trait IntakeStore: Send + Sync {
         sha256: &str,
         since: Timestamp,
     ) -> AppResult<bool>;
+    /// Records how Auto chose a new task's mode and workflow (TSK-015; one row per task).
+    async fn insert_auto_choice(
+        &self,
+        choice: &crate::auto_choice::AutoChoiceRecord,
+    ) -> AppResult<()>;
+    /// The task's Auto choice, if it was created with anything on Auto.
+    async fn auto_choice(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::auto_choice::AutoChoiceRecord>>;
 }
 
 /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-18, tables `ci_runs` and `ci_jobs`).

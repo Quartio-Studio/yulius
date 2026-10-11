@@ -34,4 +34,12 @@ pub struct Workflow {
     /// `instance` or `sandbox` (read-only).
     #[serde(default)]
     pub scope: String,
+    /// A default workflow shipped with Yulius (read-only: it cannot be changed or deleted, only
+    /// duplicated). Ignored on input.
+    #[serde(default)]
+    pub builtin: bool,
+    /// When to pick it, in one line: set for default workflows, empty otherwise. Ignored on
+    /// input.
+    #[serde(default)]
+    pub when_to_use: String,
 }

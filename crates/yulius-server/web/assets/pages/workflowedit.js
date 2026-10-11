@@ -1,23 +1,25 @@
-// Workflows → one workflow (SPEC-001 UI-034): a builder with as little typing as possible. A
-// workflow is a task recipe picked when a task starts: its steps seed the task's plan, its
-// instructions go to the agent, its gates hold delivery until the task has a valid spec and/or
-// tests, and its scope says where it can be picked. Start from a template, then click or drag
+// Workflows → one workflow (SPEC-001 UI-034, AUT-006): a builder with as little typing as
+// possible. A workflow is a task recipe picked when a task starts: its steps seed the task's plan,
+// its instructions go to the agent, its gates hold delivery until the task has a valid spec and/or
+// tests, and its scope says where it can be picked. A new one starts from a default workflow (a
+// custom copy: Duplicate on a default opens this page with ?from=<id>) or Blank, then click or drag
 // steps from the library, drag to reorder (Alt+↑/↓ from the keyboard), switch the gates, click
-// instruction snippets; the summary says what a task started with it gets.
+// instruction snippets; the summary says what a task started with it gets. A default workflow
+// opens read-only: it ships with the server and stays current with it.
 
 import { enc } from '../api.js';
 import { h, icon, iconButton, setChildren, placeholder, loadError, confirmDialog, toast, invalid } from '../dom.js';
-import { href, navigate } from '../router.js';
+import { href, navigate, currentLocation } from '../router.js';
 import { allows } from '../status.js';
+import { BRAND } from '../brand.js';
+import { workflowIcon } from './workflows.js';
 
-const TEMPLATES = [
-  { id: 'feature', name: 'Feature', icon: 'zap', description: 'Spec with a plan, implementation, tests, PR.', steps: ['Write task spec', 'Implement', 'Write tests', 'Open PR'], gates: { require_spec: true, require_tests: true }, instructions: 'Follow AGENTS.md. Keep the spec Plan checklist in sync.' },
-  { id: 'bugfix', name: 'Bug fix', icon: 'target', description: 'Prove the bug with a failing test, then fix it.', steps: ['Reproduce with a failing test', 'Fix', 'Run tests', 'Open PR'], gates: { require_spec: false, require_tests: true }, instructions: 'Start from a test that fails because of the bug.' },
-  { id: 'quick', name: 'Quick change', icon: 'send', description: 'A small change straight to a pull request.', steps: ['Implement', 'Open PR'], gates: { require_spec: false, require_tests: false }, instructions: '' },
-  { id: 'ui', name: 'UI change', icon: 'globe', description: 'Build it, check it in the browser, open a PR.', steps: ['Write task spec', 'Implement', 'QA in the browser', 'Open PR'], gates: { require_spec: true, require_tests: false }, instructions: 'Check the change in the sandbox browser before opening the PR.' },
-  { id: 'research', name: 'Research', icon: 'search', description: 'Investigate and write findings; no code changes.', steps: ['Investigate', 'Write findings'], gates: { require_spec: false, require_tests: false }, instructions: 'Do not change code. Write your findings in the task spec.' },
-  { id: 'blank', name: 'Blank', icon: 'plus', description: 'Start from nothing.', steps: [], gates: { require_spec: false, require_tests: false }, instructions: '' },
-];
+const BLANK = { id: 'blank', name: 'Blank', icon: 'plus', description: 'Start from nothing.', copyName: '', steps: [], gates: { require_spec: false, require_tests: false }, instructions: '' };
+
+/** A workflow as a starting point: its content, named as a custom copy. */
+function asTemplate(wf) {
+  return { id: wf.id, name: wf.name, icon: workflowIcon(wf), description: wf.description || '', copyName: `${wf.name} (custom)`, steps: [...(wf.steps || [])], gates: { require_spec: Boolean(wf.gates && wf.gates.require_spec), require_tests: Boolean(wf.gates && wf.gates.require_tests) }, instructions: wf.instructions || '' };
+}
 const STEP_LIBRARY = ['Write task spec', 'Plan', 'Reproduce with a failing test', 'Implement', 'Fix', 'Write tests', 'Run tests', 'Review the diff', 'Update docs', 'QA in the browser', 'Investigate', 'Write findings', 'Open PR'];
 const SNIPPETS = ['Follow AGENTS.md.', 'Keep the spec Plan checklist in sync.', 'Ask before changing public APIs or the database schema.', 'Prefer small commits with clear messages.', 'Check the change in the sandbox browser before opening the PR.'];
 
@@ -30,6 +32,7 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
   let wf = null; // the stored workflow when editing
   let state = null; // { name, description, steps, instructions, gates, scope }
   let template = null;
+  let templates = [BLANK]; // the defaults, then Blank (filled by load)
   let saved = '';
   let canEdit = write;
   let alive = true;
@@ -53,10 +56,11 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
   const dirty = () => state && snapshot() !== saved;
   function changed() { renderSummary(); save.disabled = !canEdit || (!creating && !dirty()); }
 
-  // ---- start from a template (new workflows)
+  // ---- start from a default or Blank (new workflows)
   function useTemplate(t) {
     template = t.id;
-    state = { ...state, name: state.name && !TEMPLATES.some((x) => x.name === state.name) ? state.name : (t.id === 'blank' ? '' : t.name), description: t.description === 'Start from nothing.' ? '' : t.description, steps: [...t.steps], instructions: t.instructions, gates: { ...t.gates } };
+    const typed = state.name && !templates.some((x) => x.copyName === state.name);
+    state = { ...state, name: typed ? state.name : t.copyName, description: t.id === 'blank' ? '' : t.description, steps: [...t.steps], instructions: t.instructions, gates: { ...t.gates } };
     nameInput.value = state.name;
     descInput.value = state.description;
     render();
@@ -226,7 +230,7 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
     setChildren(body,
       h('div', { class: 'wf-grid' },
         h('div', { class: 'wf-main' },
-          creating ? section('Start from', 'pick one, change anything', h('div', { class: 'wf-templates', role: 'radiogroup', 'aria-label': 'Template' }, TEMPLATES.map((t) => h('button', {
+          creating ? section('Start from', 'a default, or nothing', h('div', { class: 'wf-templates', role: 'radiogroup', 'aria-label': 'Template' }, templates.map((t) => h('button', {
             type: 'button', role: 'radio', 'aria-checked': String(template === t.id), class: ['wf-template', template === t.id && 'on'], onClick: () => useTemplate(t),
           }, h('span', { class: 'wf-template-icon' }, icon(t.icon, { size: 16 })), h('span', { class: 'wf-template-name' }, t.name), h('span', { class: 'muted xs' }, t.description))))) : null,
           section('Steps', canEdit ? 'drag to reorder · Alt+↑/↓' : null, [stepList, canEdit ? library() : null]),
@@ -282,15 +286,21 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
   window.addEventListener('beforeunload', onBeforeUnload);
   document.addEventListener('click', onLink, true);
 
+  // A default workflow is read-only: Duplicate opens a custom copy in this builder.
+  const duplicate = h('button', { type: 'button', class: 'btn btn-primary', hidden: true, onClick: () => navigate(`${base}/new?from=${encodeURIComponent(id)}`) }, 'Duplicate to customise');
+  head.querySelector('.gt-title-row').append(duplicate);
+
   async function load() {
     try {
+      const list = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`);
+      if (!alive) return;
+      const all = Array.isArray(list) ? list : [];
+      templates = [...all.filter((w) => w.builtin).map(asTemplate), BLANK];
       if (!creating) {
-        const list = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`);
-        if (!alive) return;
-        wf = (Array.isArray(list) ? list : []).find((w) => w.id === id);
+        wf = all.find((w) => w.id === id);
         if (!wf) { setChildren(body, loadError('This workflow no longer exists.', () => navigate(base))); return; }
       }
-      canEdit = write && (!wf || wf.scope !== 'instance' || instanceAdmin);
+      canEdit = write && (!wf || (!wf.builtin && (wf.scope !== 'instance' || instanceAdmin)));
       state = wf
         ? { name: wf.name || '', description: wf.description || '', steps: [...(wf.steps || [])], instructions: wf.instructions || '', gates: { require_spec: Boolean(wf.gates && wf.gates.require_spec), require_tests: Boolean(wf.gates && wf.gates.require_tests) }, scope: wf.scope || 'sandbox' }
         : { name: '', description: '', steps: [], instructions: '', gates: { require_spec: false, require_tests: false }, scope: 'sandbox' };
@@ -301,9 +311,16 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
       descInput.readOnly = !canEdit;
       save.hidden = !canEdit;
       if (del) del.hidden = !canEdit;
-      setChildren(note, canEdit ? null : h('p', { class: 'banner small' }, icon('lock', { size: 14 }), h('span', { class: 'banner-text' }, !write ? 'Read-only: changing workflows needs write access to this sandbox.' : 'Read-only: workflows for every sandbox are changed by instance administrators.')));
-      if (creating) useTemplate(TEMPLATES[0]); else render();
-      if (creating) saved = JSON.stringify({ ...state, name: '' }); // a template alone is not a change worth guarding
+      duplicate.hidden = !(wf && wf.builtin && write);
+      const why = wf && wf.builtin ? `A default workflow: it ships with ${BRAND.name} and stays current with each release. Duplicate it to change it.`
+        : !write ? 'Read-only: changing workflows needs write access to this sandbox.' : 'Read-only: workflows for every sandbox are changed by instance administrators.';
+      setChildren(note, canEdit ? null : h('p', { class: 'banner small' }, icon('lock', { size: 14 }), h('span', { class: 'banner-text' }, why)));
+      if (creating) {
+        const from = currentLocation().query.get('from');
+        const source = from && all.find((w) => w.id === from);
+        useTemplate(source ? asTemplate(source) : templates[0]);
+      } else render();
+      if (creating) saved = snapshot(); // a template alone is not a change worth guarding
     } catch (error) {
       if (alive) setChildren(body, loadError(`Couldn’t load the workflow: ${error.message}`, load));
     }
