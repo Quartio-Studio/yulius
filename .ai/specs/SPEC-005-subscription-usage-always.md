@@ -57,3 +57,11 @@ Unit tests for the header parser and a mock-server test of the 403 fallback; the
 - Utilization headers are read as fractions (0.37 = 37 %); acceptance of a `setup-token` on
   `/v1/messages` and that scale are verified on the deployed instance (coordinator), not here.
 - The probe starts the 5-hour window of an idle subscription; accepted for always-visible usage.
+
+## Evidence
+
+- `cargo test -p yulius --lib wiring::usage`: 5 passed (header parser, 403 fallback against a local
+  mock server, existing status and parse tests).
+- `cargo test -p yulius --test account_usage`: 5 passed.
+- `scripts/dev check`, `cargo clippy -p yulius -p yulius-app --all-targets`, `cargo fmt --check`: clean.
+- Not run: the e2e suite; a real subscription (checked on the instance after deploy).
