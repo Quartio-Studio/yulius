@@ -10,7 +10,7 @@
 //! 4. **Upload**: one confirmation, a resumable checksummed upload with a progress bar, applied
 //!    on the server.
 //! 5. **Summary**: what landed, links to the sandbox and its Sessions page, and the onboarding
-//!    state; tasks can start once onboarding is ready.
+//!    state; new tasks wait for onboarding and start by themselves once it is ready.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -741,7 +741,7 @@ fn show_onboarding(ui: &mut dyn Ui, status: &OnboardingStatus) -> io::Result<()>
         ui.detail(&format!("Follow it: {}", task.url))?;
     }
     if !status.ready {
-        ui.detail("Tasks can start in this sandbox once onboarding is ready.")?;
+        ui.detail("New tasks wait for it and start by themselves once onboarding is ready.")?;
     }
     Ok(())
 }
