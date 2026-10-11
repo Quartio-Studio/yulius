@@ -1,4 +1,4 @@
-//! The relays across a sandbox's network boundary (SPEC-002 ADR-19 §4; frames in
+//! The relays across a sandbox's network boundary (SPEC-002 ADR-20 §4; frames in
 //! [`yulius_contracts::sandbox`]).
 //!
 //! Inside the sandbox the holder serves `in.sock` (connections into the sandbox's ports) and

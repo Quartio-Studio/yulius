@@ -271,7 +271,7 @@ impl App {
         write_file(&identity_dir.join("group"), group.as_bytes(), 0o644)?;
         let bin = self.runtime_bin()?;
         env.push(("HOME".into(), home.to_string_lossy().into_owned()));
-        // In an isolated sandbox (ADR-19) the system layer has root's tools and the sudo shim
+        // In an isolated sandbox (ADR-20) the system layer has root's tools and the sudo shim
         // as /usr/bin/sudo; package scripts may rewrite /etc/passwd, so with extrausers the
         // identity files are bound where only the name service reads them.
         let path = if join.is_some() {

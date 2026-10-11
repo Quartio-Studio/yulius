@@ -118,7 +118,7 @@ pub struct ServeArgs {
     /// Probability Jev must give before a prompt typed into a running task is held (0.5–1).
     #[arg(long, env = "YULIUS_JEV_SCOPE_THRESHOLD", default_value_t = yulius_domain::intake::DEFAULT_SCOPE_THRESHOLD, value_parser = parse_threshold)]
     pub jev_scope_threshold: f64,
-    /// Sandbox isolation (SPEC-002 ADR-19).
+    /// Sandbox isolation (SPEC-002 ADR-20).
     #[command(flatten)]
     pub isolation: crate::wiring::sandbox::IsolationArgs,
 }

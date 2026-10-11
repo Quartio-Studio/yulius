@@ -1,4 +1,4 @@
-//! Sandbox isolation port (SPEC-002 ADR-19): the per-sandbox namespace holder a contained run
+//! Sandbox isolation port (SPEC-002 ADR-20): the per-sandbox namespace holder a contained run
 //! joins. Without an adapter (development hosts, tests, missing prerequisites) contained runs
 //! keep the previous containment (ADR-03/ADR-12).
 

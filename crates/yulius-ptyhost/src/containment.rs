@@ -101,7 +101,7 @@ pub fn bwrap_argv(c: &BubblewrapSpec, inner_argv: &[String], cwd: &str) -> Vec<S
     argv
 }
 
-/// Capabilities a run keeps inside its sandbox (Docker's default set; SPEC-002 ADR-19 §2).
+/// Capabilities a run keeps inside its sandbox (Docker's default set; SPEC-002 ADR-20 §2).
 pub const RUN_CAPABILITIES: [&str; 13] = [
     "CAP_CHOWN",
     "CAP_DAC_OVERRIDE",
@@ -131,7 +131,7 @@ const ROOT_LINKS: [(&str, &str); 4] = [
     ("usr/lib64", "/lib64"),
 ];
 
-/// `bwrap` argv of a run that joined its sandbox's holder (SPEC-002 ADR-19 §2): the user,
+/// `bwrap` argv of a run that joined its sandbox's holder (SPEC-002 ADR-20 §2): the user,
 /// network and mount namespaces are the holder's (entered before `bwrap` starts); the run gets
 /// its own PID, IPC, UTS and cgroup namespaces, the reduced capability set, a fresh `/proc`,
 /// `/dev`, `/tmp` and `/run`, the system layer's directories writable, then the sandbox

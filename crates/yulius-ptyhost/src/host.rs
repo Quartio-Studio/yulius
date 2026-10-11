@@ -109,7 +109,7 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
     let attempt = launch.attempt_id.clone();
     let fail = |reason, error| record_failure(run_dir, &attempt, reason, error);
     // A run of an isolated sandbox joins its holder before anything else, while this process
-    // is still single-threaded (SPEC-002 ADR-19 §2).
+    // is still single-threaded (SPEC-002 ADR-20 §2).
     if let Containment::Bubblewrap(spec) = &launch.containment
         && let Some(join) = &spec.join
     {

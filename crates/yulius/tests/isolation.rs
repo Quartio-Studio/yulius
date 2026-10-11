@@ -1,4 +1,4 @@
-//! Sandbox isolation end to end (SPEC-002 ADR-19, SPEC-001 PRJ-011, NFR-007; F 2026-10-10)
+//! Sandbox isolation end to end (SPEC-002 ADR-20, SPEC-001 PRJ-011, NFR-007; F 2026-10-10)
 //! with the real server, the real ptyhost, `bwrap`, `newuidmap`, `slirp4netns` and a real base
 //! copied from the host. Users' shells and agents' task sessions (the fake agent's `/sh`) run
 //! inside the namespace holder.

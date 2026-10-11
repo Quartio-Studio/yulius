@@ -72,7 +72,7 @@ Principles:
 | --- | --- | --- | --- |
 | ADR-01 | One Rust binary `yulius` (axum/tokio) with subcommands `serve`, `ptyhost`, `hook`, `git-credential`, `import`, `login`, `backup`, `doctor`. Static web UI (vanilla ES modules + vendored xterm.js) embedded in the binary. | Leptos/Yew WASM UI; Node SPA build | One artifact to deploy; no Node toolchain for Yulius; UI is plain JS so a desktop shell can load it (OPS-002). JS UI lacks Rust type checking — mitigated by contracts-generated docs and UI checks. |
 | ADR-02 | Detached `ptyhost` per run, Unix-socket protocol, vt100 screen state, exit record files. | tmux/dtach; in-server PTYs | Survives server restart (NFR-001); explicit ownership and identity; more code to test (fake agent suite). Requires the systemd unit to use `KillMode=process`. |
-| ADR-03 | Extended by ADR-19 (F 2026-10-10): runs join a per-sandbox namespace holder (private network, writable system layer, limits, seccomp); this row remains the legacy mode. Linux containment per sandbox with bubblewrap (`--unshare-pid --die-with-parent`, private /tmp, only the sandbox directory writable, per-sandbox HOME). Host mode for development/tests, visibly flagged "not contained". | Docker per sandbox; gVisor; separate VMs | Cheap, fast, kills whole tree on SIGKILL of bwrap; no daemon. Network is shared (agents need it). Not a defense against kernel exploits — documented trust model §8. |
+| ADR-03 | Extended by ADR-20 (F 2026-10-10): runs join a per-sandbox namespace holder (private network, writable system layer, limits, seccomp); this row remains the legacy mode. Linux containment per sandbox with bubblewrap (`--unshare-pid --die-with-parent`, private /tmp, only the sandbox directory writable, per-sandbox HOME). Host mode for development/tests, visibly flagged "not contained". | Docker per sandbox; gVisor; separate VMs | Cheap, fast, kills whole tree on SIGKILL of bwrap; no daemon. Network is shared (agents need it). Not a defense against kernel exploits — documented trust model §8. |
 | ADR-04 | SQLite (rusqlite, bundled) in WAL mode, one write connection behind an async actor, versioned SQL migrations via `user_version`. | Postgres; sled; files | Single-VM product, simple backup (`VACUUM INTO`); write throughput ample for 2–5 users. |
 | ADR-05 | Accounts are org secrets in Yulius; provider homes are per sandbox. Claude uses long-lived OAuth tokens from `claude setup-token` passed by environment. | One global home per account; copying credentials per task | Prevents cross-sandbox transcript leakage via shared homes; an account switch needs no file copy. (Codex homes with `auth.json` write-back were removed with Codex, F 2026-10-08.) |
 | ADR-06 | Withdrawn (F 2026-10-08): no cross-provider switches. The provider-neutral transcript IR, the native transcript writers and the handoff fallback were removed; a task resumes its own session on another account. | Keep translation for a later second harness | Yulius runs Claude Code only; a returning harness gets its own decision. |
@@ -80,14 +80,15 @@ Principles:
 | ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. The App's permissions and what each is for: `docs/operations.md`; a read the App lacks the permission for degrades instead of failing (checks: §10, #111). |
 | ADR-09 | Superseded by ADR-15 (F 2026-10-10) for the user's view: the DOM mirror, its recorder, replayer and resource endpoint are removed; the per-sandbox Chromium, CDP for agents, the welcome page and the screencast (now the labelled JPEG fallback) remain. Earlier: narrowed by ADR-14 (F 2026-10-09): the mirror is now only the remote view of the sandbox Chrome's tabs (agents' tabs and hand-offs); the user's own browsing of the sandbox's apps is live (ADR-14). Per-sandbox headless Chromium; the user's view is a live DOM mirror: the rrweb recorder is injected through CDP into the page's main world (it must see the page's CSSOM patches) and reports to a CDP binding; the UI replays the events in rrweb's script-free iframe (sandbox `allow-same-origin` only — never `UNSAFE_replayCanvas`, which would let any page run script as Yulius through the binding) and paints sampled canvas frames itself; page resources the user's browser cannot reach are fetched by the server browser through a same-origin-only endpoint served with a `sandbox` CSP. The CDP screencast is the labelled fallback; input is dispatched with CDP `Input.*`; viewers learn viewport changes at once. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer; recorder in an isolated world (misses CSS-in-JS rules) | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; plugins, internal pages and pages that send no DOM need the fallback. |
 | ADR-10 | Built-in editor: Monaco (VS Code's editor component, vendored AMD build without its translations) in the web UI over a small file API (`/api/sandboxes/{sid}/files…`) on the sandbox repository or a task worktree; per-user view state stays in the browser. | openvscode-server per sandbox (original: needed a token cookie fix, ran outside containment, too heavy); per-user contained openvscode-server (built, then dropped by the founder: "much simpler, without 90% of the features"); CodeMirror (needs a bundler) | No editor process or prerequisite on the VM; 14 MB of static assets (the TypeScript worker is 7 MB, loaded only for JS/TS); no extensions, debugging or integrated terminal (shells cover that). |
-| ADR-12 | Kept by ADR-19 (F 2026-10-10): under the holder the identity files are bound at `/var/lib/extrausers/` (with `libnss-extrausers`) so package scripts can still write `/etc/passwd`, and `sudo` is a dpkg-diverted shim in the system layer. Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
+| ADR-12 | Kept by ADR-20 (F 2026-10-10): under the holder the identity files are bound at `/var/lib/extrausers/` (with `libnss-extrausers`) so package scripts can still write `/etc/passwd`, and `sudo` is a dpkg-diverted shim in the system layer. Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
 | ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
 | ADR-14 | Narrowed by ADR-15 (F 2026-10-10): the panel's live iframe tabs are removed; the preview origins and their proxy remain for one action, "Open live in a new window" on a sandbox dev server, and the no-recursion rules stay. Originally: the user browses the sandbox's apps **live in their own browser**: each (sandbox, port) has a preview origin `<port>-<key>.<yulius host>` that Yulius reverse-proxies to `127.0.0.1:<port>`, removing the iframe obstacles; the agents keep the sandbox's headless Chrome (ADR-09), whose tabs share the panel's strip and are watched remotely with the agent's cursor; Yulius never opens inside itself. Analysis and contract: §2.1. | Keep the mirror (A); pixel or video streaming (B); hybrids (D) | Native page behaviour on desktop and phone; needs wildcard DNS and TLS for the preview hosts (on-demand TLS); the app runs in the user's browser, so its absolute `localhost` URLs in page code do not reach the VM. |
 | ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Over the user's link (F 2026-10-10, later): the viewer acknowledges frames and the server keeps about a round trip on the way, the bitrate and frame rate follow the slowest viewer (VBV tiers), keyframes come on demand from a replacement encoder, wheel and pointer moves are coalesced. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
 | ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done; a new task's mode and workflow on Auto are two more fixed questions with Goal and "Feature" as the defaults (TSK-015). Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
 | ADR-17 | Claude subscriptions are **one self-managing pool** (F 2026-10-10): use-it-or-lose-it placement (weekly headroom ÷ hours to its reset ÷ tasks on the account + 1), a proactive switch at 98 % of any binding window at the turn boundary by native resume, and a **gentle, invisible pause** held by the harness — the Stop / `UserPromptSubmit` hook answers `202 Retry-After` and `yulius hook` keeps polling — persisted in `capacity_pauses`, resumed oldest first and staggered; a burn-rate forecast says when to buy more. Analysis and contract: §2.4. | Manual priorities (before); suspending the agent (SIGSTOP); letting the CLI hit the limit and typing a resume prompt; killing and resuming | No knobs; capacity that expires is spent first; switches only when forced; the agent is never told; a hold survives restarts; the CLI shows "running hook" while paused and a held agent keeps its session slot; relies on Claude Code honouring a long hook `timeout` (fallback: the reported-limit pause). |
-| ADR-19 | **Sandbox isolation** (F 2026-10-10): one namespace holder per sandbox — a user namespace with a subordinate id range, a private network namespace (`slirp4netns` egress, host loopback off, explicit relays for the internal listener and the sandbox's dev-server ports) and a mount namespace holding the sandbox's **system layer** (overlay of a Yulius-owned copy of the host system with a per-sandbox upper, so `sudo apt install` persists per sandbox); every run joins it, then gets its own PID/IPC/UTS/cgroup namespaces, a reduced capability set and a seccomp filter; per-sandbox cgroup v2 limits and a soft disk quota. Analysis and contract: §2.5. | rootless Podman; gVisor; microVMs (no KVM on the host); fuse-overlayfs over the live host system | `apt` works and persists per sandbox; host loopback services, other sandboxes and abstract sockets unreachable; limits per sandbox; needs an `/etc/subuid` range, `Delegate=` on the unit and `libnss-extrausers`; without them the previous containment stays (`legacy`); the base copy costs ~6 GB and a few minutes per host system change. |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
+| ADR-19 | **One autonomous delivery discipline** (F 2026-10-10, #139): steps of similar effort with effort-weighted progress and pure-function rules (bounds, at most 2 in progress, no reopening by agents, reasons for blocked/skipped) plus never-blocking nudges; a spec only where it matters (by workflow, else by changed paths); one pipeline for features and fixes with an independent review in a fresh session and merge on green; infra bootstrap on Yulius CI without GitHub Actions; a docs-first briefing; bundled skills adapted to be universal. Analysis and contract: §2.5. | A hard step gate at every turn; LLM-judged step sizes; specs for everything; vendoring skills byte for byte; Bartek's full N2/N3 rule set (module locks, owner flags, scripted merge lock, DORA dashboards) | Progress means something without ceremony; agents keep momentum; the harness checks what a machine can check and nudges the rest; the remaining judgment (step sizes) stays with the agent, so a dishonest plan is caught only by its pace. |
+| ADR-20 | **Sandbox isolation** (F 2026-10-10): one namespace holder per sandbox — a user namespace with a subordinate id range, a private network namespace (`slirp4netns` egress, host loopback off, explicit relays for the internal listener and the sandbox's dev-server ports) and a mount namespace holding the sandbox's **system layer** (overlay of a Yulius-owned copy of the host system with a per-sandbox upper, so `sudo apt install` persists per sandbox); every run joins it, then gets its own PID/IPC/UTS/cgroup namespaces, a reduced capability set and a seccomp filter; per-sandbox cgroup v2 limits and a soft disk quota. Analysis and contract: §2.6. | rootless Podman; gVisor; microVMs (no KVM on the host); fuse-overlayfs over the live host system | `apt` works and persists per sandbox; host loopback services, other sandboxes and abstract sockets unreachable; limits per sandbox; needs an `/etc/subuid` range, `Delegate=` on the unit and `libnss-extrausers`; without them the previous containment stays (`legacy`); the base copy costs ~6 GB and a few minutes per host system change. |
 
 ### 2.1 ADR-14: the browser panel renders the sandbox's apps live (F 2026-10-09)
 
@@ -812,7 +813,56 @@ Code honours an 8-day hook `timeout`; if it ended the hook earlier, the hook fai
 continues on a subscription at 98 % or more, and a reported limit pauses it as `limit` — work is
 never lost.
 
-### 2.5 ADR-19: sandbox isolation — one namespace holder per sandbox (F 2026-10-10)
+### 2.5 ADR-19: one autonomous delivery discipline (F 2026-10-10)
+
+**Problem.** Michał (F 2026-10-10, item 3(b)): "9/10 should mean 90%", steps must "keep arriving
+uniformly to avoid 0%->100% jumps", every feature takes the same path from spec to production
+with no human acceptance, "features must have specs but research not … robust but flexible, first
+principles", projects get senior-grade foundations on our own CI, agents know the whole product,
+and the Open Mercato skills become universal. Before: the Feature workflow seeded phases
+("Implement" was most of the work), the step tools accepted any shape, the domain step rules were
+unused, the Stop gate demanded a spec for any change, the briefing said people merge, and the
+skills assumed Open Mercato's harness.
+
+**Steps** (`yulius_domain::steps`, pure; `yulius_app::discipline` feeds them):
+
+| Rule | Where | Kind |
+| --- | --- | --- |
+| 1-30 unique, non-empty steps ≤ 200 chars; effort 1-3 (default 1); `blocked` only with a note | `steps_set` (`validate_plan`), `spec_check` (Plan ≤ 30 top-level items, no repeats) | refusal |
+| At most 2 in progress; an agent never reopens done/skipped; blocked always and skipped by an agent need a note | `step_update` (`check_update`) | refusal |
+| Effort-weighted `percent` (skipped counts as finished) | API, tools, briefing, strip | — |
+| Coarse plan (< 3 when a spec is needed), fine plan (> 12), phase-only titles, > ⅓ of steps at effort 3, none started, two open, stale (> max(45 min, 3 × typical duration per effort unit)), burst (≥ 3 steps and ≥ 30 % of the effort finished in the last 10 min) | step tool results, `spec_check`, briefing | nudge |
+| Branch changed and no step ever started; for a goal, a stale step | Stop hook, once per task and kind, only when the turn stays on its subscription, never counted as a gate block | one-shot nudge |
+
+Start and finish times are the latest `in_progress` and `done`/`skipped` events of `step_events`
+(indexed per task by migration 11), so every path that changes steps (tools, spec sync, people)
+feeds them without new bookkeeping. Effort lives in `steps.effort`; the spec sync keeps it by title.
+
+**Spec policy** (`SpecPolicy`): the task's workflow decides (`require_spec`); without one, a spec
+is required as soon as the branch's changed paths (`review_changes` against the integration
+branch, both sides of renames) include anything that is not documentation; a cut or unreadable
+list counts as code. The Stop gate, `spec_check` (`required`) and the automatic pull request (no
+plan needed when no spec is) apply it.
+
+**Pipeline.** Briefing, `delivery-pipeline` skill and workflows describe one path: ready issue →
+spec → test-first slices → gates → independent review (fresh context, read-only, verdict for the
+exact head, ≤ 3 rounds) → fixes → pull request → merge on green → deploy/verify → promote → verify
+→ cleanup. Machine-checked: base, linked ready issue, size, tests changed, gate green on the exact
+head (Yulius CI, #138), review on the exact head, up to date. Agent merge/deploy/promote and
+`issue_create` are a separate change (DLV-008).
+
+**Foundations.** The briefing reads `yulius.toml` (test, lint) and counts `.github/workflows/*.y(a)ml`
+(a real directory inside the repository) and asks a code-changing task to bootstrap first
+(workflow Infra bootstrap, skill `infra-bootstrap`); the onboarding prompt does the same.
+
+**Taken from Bartek's N2/N3 playbook:** small PRs, a test that fails without the change,
+independent review in a fresh session, machine-checked gates, flaky-test rules (no retries,
+quarantine with an issue), Definition-of-Ready labels. **Left out:** owner flags and exceptions
+(no human acceptance), module locks (scope claims and messages instead), the scripted merge lock
+and promotion records (Yulius delivery serializes merges), second-model-family review (Claude
+only, F 2026-10-08), GitHub rulesets and Actions (paid), DORA dashboards.
+
+### 2.6 ADR-20: sandbox isolation — one namespace holder per sandbox (F 2026-10-10)
 
 Status: accepted and implemented (issue #142). Extends ADR-03 (bubblewrap) and ADR-12 (user
 identity); resolves SPEC-001 U-12; narrows R-07.
@@ -893,7 +943,7 @@ Hence the shared, ownership-shifted **base** under a kernel overlay with a per-s
    - **Egress:** `slirp4netns` (`YULIUS_SANDBOX_EGRESS=direct`, default) or none (`none`: only the explicit relays).
    - **Host loopback, other sandboxes and abstract sockets** are unreachable.
    - **Relays.** The only crossings are explicit relays through Unix sockets in `runtime/sandboxes/<sid>/`, never bound into runs:
-     - **Into the sandbox:** the internal listener's port (MCP, hooks, Git credentials, the secrets proxy of ADR-18; `YULIUS_URL` unchanged), plus operator-configured `YULIUS_SANDBOX_FORWARD` ports.
+     - **Into the sandbox:** the internal listener's port (MCP, hooks, Git credentials, the secrets proxy of the vault, #141; `YULIUS_URL` unchanged), plus operator-configured `YULIUS_SANDBOX_FORWARD` ports.
      - **Out to the host's loopback:** the sandbox's dev-server ports (PRJ-010), bound on the host only while something listens on them inside (the holder polls `/proc/net/tcp*` every second). Connections reach servers bound to `127.0.0.1` or `::1` inside, so previews, the welcome page's port list and the sandbox browser keep working.
 5. **Limits.**
    - **cgroups.** With `Delegate=yes` and `DelegateSubgroup=server` on the unit, the server keeps its own processes in `server/`, moves processes left from before delegation to `legacy/`, and gives each sandbox `sandboxes/<sid>/` with `memory.max`, `cpu.max` and `pids.max`. The holder, `slirp4netns` and every run of the sandbox are in it. Defaults: half the RAM, all CPUs but two, 8192 tasks.
@@ -941,7 +991,7 @@ Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
 | `crates/yulius-app` | application | Use cases and ports: `Store`, `GitHubPort`, `GitPort`, `SessionHostPort`, `HarnessPort`, `BrowserPort`, `EditorPort`, `Clock`, `Ids`, `SecretBox`, event bus. Authorization decisions. |
 | `crates/yulius-store` | adapter | SQLite schema, migrations, repositories, backup. |
 | `crates/yulius-ptyhost` | adapter | ptyhost process (PTY, containment, vt100, socket server) and client. |
-| `crates/yulius-sandbox` | adapter | Sandbox isolation (ADR-19): the per-sandbox namespace holder, the system layer's base, relays across the network boundary, cgroup limits, disk usage, seccomp filter, entering a sandbox. |
+| `crates/yulius-sandbox` | adapter | Sandbox isolation (ADR-20): the per-sandbox namespace holder, the system layer's base, relays across the network boundary, cgroup limits, disk usage, seccomp filter, entering a sandbox. |
 | `crates/yulius-harness` | adapter | Claude Code launch specs, home layout, hook/MCP config rendering, transcript tailers and wire parsers, usage extraction, login flows. |
 | `crates/yulius-github` | adapter | GitHub REST, App JWT, OAuth, installation tokens. |
 | `crates/yulius-git` | adapter | Git CLI wrapper: clone/fetch, worktrees, branches, bundles, diff stats, hooks install. |
@@ -968,10 +1018,10 @@ sandboxes/<sandbox>/attachments/{tasks,shells}/<id>/  files dropped or pasted on
 users/<user>/home/                  user's home in their shells (bound at /home/<login>; ADR-12)
 users/<user>/identity/              generated passwd/group files of the user's sandbox identity
 runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
-runtime/sandboxes/<sandbox>/        namespace holder (ADR-19): holder.json, host.json, holder.log, in.sock,
+runtime/sandboxes/<sandbox>/        namespace holder (ADR-20): holder.json, host.json, holder.log, in.sock,
                                     out.sock, root/ (the merged system layer inside the holder only)
 system/base-<n>/, system/current.json   bases of the system layers: a copy of the host system with ids
-                                    shifted into the sandboxes' user namespace (ADR-19)
+                                    shifted into the sandboxes' user namespace (ADR-20)
 sysroots/<sandbox>/{upper,work}/    a sandbox's system layer (packages it installed); outside the sandbox
                                     directory, never bound into runs
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
@@ -981,7 +1031,8 @@ shells/<shell>/                     ptyhost run directories of sandbox shells (U
 logins/<login>/                     temporary provider login (config dir + run dir); zero-filled and removed after the login
 exports/sandbox-<slug>-<ms>.json    task export written when a sandbox is removed (PRJ-009), 0600
 transcripts/<task>/                 archived/imported provider transcripts (immutable copies)
-skills/open-mercato/                instance skill catalog extracted from the binary (vendored Open Mercato pack)
+skills/<pack>/                      bundled skill packs extracted from the binary: yulius, open-mercato,
+                                    superpowers (SKL-007; rewritten when they differ, extras removed)
 ```
 
 Unix socket paths are limited (104 bytes on macOS, 108 on Linux): `serve` refuses a data directory
@@ -1012,8 +1063,8 @@ Schema version 1 (tables; columns abbreviated):
 | `usage_samples` | account_id, at, window_name (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`), used_percent, resets_at, source; kept 8 days (ADR-17 forecast) |
 | `capacity_pauses` | id, task_id, kind (turn/prompt/limit/start), account_id, continuation (held prompt), started_at, ended_at, outcome; at most one open per task (partial unique index) |
 | `switch_decisions` | id, task_id, at, reason, inputs (json), outcome |
-| `steps` | id, task_id, ordinal, title, status, note, updated_by, updated_at |
-| `step_events` | step_id, at, actor, from_status, to_status, note |
+| `steps` | id, task_id, ordinal, title, status, note, updated_by, updated_at, effort (1-3, version 11, STP-006) |
+| `step_events` | step_id, at, actor, from_status, to_status, note; index (task_id, step_id) (version 11): start and finish times (STP-007) |
 | `messages` | id, sandbox_id, from_task, to_task (null = broadcast), kind, subject, body, created_at |
 | `message_receipts` | message_id, task_id, delivered_at, read_at |
 | `scope_claims` | id, task_id, pattern, note, created_at, released_at |
@@ -1261,8 +1312,8 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `tasks_list`, `task_get` | Previous and parallel tasks: status, harness, branch, spec, steps, summary (COM-001) |
 | `message_send`, `messages_inbox` | Harness-independent messages, direct or broadcast (COM-002) |
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
-| `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002) |
-| `spec_check` | Run the format validator on the task spec and docs (DSC-003) |
+| `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
+| `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
 | `automation_create`, `automations_list`, `automation_update` | Prompt-created automations (AUT-002) |
 | `workflows_list` | Workflows available, the defaults first with `builtin` and `when_to_use` (AUT-004, AUT-006) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
@@ -1288,9 +1339,11 @@ output) and is recorded. Responses:
   `working`; a typed prompt that passes clears an achieved goal (§6.1 Finish rule). The Jev
   deadline (3 s) fits inside the hook client's 5 s; any failure passes.
 - `Stop` → activity `waiting`, or `done` when the goal is achieved (§6.1 Finish rule); discipline
-  gate: if the worktree has changes and the task spec is
+  gate: if the worktree has changes, the task needs a spec (DSC-013) and the spec is
   missing/invalid, or there are unread urgent messages, return `{"decision":"block","reason":…}`;
-  at most 3 consecutive blocks per turn, then `needs_attention`. Also the turn boundary of the
+  at most 3 consecutive blocks per turn, then `needs_attention`. A clean turn end that stays on its
+  subscription may return one step nudge as a block (STP-008, ADR-19): given once per task and
+  kind (kept in memory), not counted as a gate block, so it never escalates. Also the turn boundary of the
   subscription pool (ADR-17): a switch at 98 %, or a hold when no subscription has capacity and the
   agent would work on.
 - Hold (ADR-17): `Stop` and `UserPromptSubmit` may answer `202 Accepted` with `Retry-After`
@@ -1317,10 +1370,14 @@ Enter into the PTY (configurable per task; never during `needs_attention`).
 ### 7.6 Briefing
 
 Assembled in domain from store data and repository files, in this order, truncating each part to
-its budget: role and discipline rules (format, branch/profile rules, Yulius tools), task (goal,
-spec path, steps), project summary (`docs/product.md` head), architecture pointer, decision index
-(titles), recent changes (last 10 delivered tasks + `docs/changes.md` head), parallel tasks and
-scope claims, unread messages count.
+its budget: role and discipline rules (know the product first, the spec policy of the task's
+workflow, steps of similar effort, tests, decisions, evidence; ADR-19), the delivery pipeline with
+Git hygiene and the profile's path, "Read before you build" (the docs index and sessions as docs:
+`sessions_search`, `session_read`), Yulius tools, dev-server ports, task (goal, workflow, spec path
+and policy, steps with weighted progress and nudges), project foundations it lacks (DSC-014), project
+summary (`docs/product.md` head), architecture pointer, decision index (titles), recent changes
+(last 10 delivered tasks + `docs/changes.md` head), parallel tasks and scope claims, unread
+messages count.
 
 ### 7.7 Terminal WebSocket (`/api/tasks/{id}/terminal`)
 
@@ -1489,7 +1546,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   shell quoting.
 - Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
   Argon2; the failure counter and permanent lock are persisted before the response is sent.
-- Sandbox isolation (ADR-19, §2.5): runs of an isolated sandbox share its holder's user, network
+- Sandbox isolation (ADR-20, §2.6): runs of an isolated sandbox share its holder's user, network
   and mount namespaces; each run has its own PID/IPC/UTS/cgroup namespaces, Docker's default
   capability set and the seccomp filter (no nested user namespaces). The network namespace reaches
   the host only through `slirp4netns` with the host loopback disabled and the explicit relays (the
@@ -1575,8 +1632,8 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Chained tasks per sandbox | 32 | refused at creation |
 | Held prompts per task | one pending (a newer one supersedes) | — |
 | Revert stop wait | 30 s | nothing reverted, conflict |
-| Sandbox memory / CPU / tasks (ADR-19, with delegation) | half the RAM / CPUs − 2 / 8192 | OOM kill inside the sandbox / throttled / `fork` fails (`EAGAIN`) |
-| Sandbox disk (soft, ADR-19) | 100 GB (directory + system layer), measured ≤ every 10 min, ≤ 4 M entries | new runs refused (409) with the figures; live runs continue |
+| Sandbox memory / CPU / tasks (ADR-20, with delegation) | half the RAM / CPUs − 2 / 8192 | OOM kill inside the sandbox / throttled / `fork` fails (`EAGAIN`) |
+| Sandbox disk (soft, ADR-20) | 100 GB (directory + system layer), measured ≤ every 10 min, ≤ 4 M entries | new runs refused (409) with the figures; live runs continue |
 | Holder start / idle stop | 60 s / 5 min without runs or leases (1 min when its base is superseded) | start error (`auto`: the run uses the previous containment) / holder stopped |
 | Relayed connections per sandbox and direction | 256 (header 5 s, connect 3 s); ports polled every 1 s | refused |
 | Base build | one at a time, 60 min; host unchanged 10 min before a rebuild; fingerprint read every 30 min | build error logged; the current base stays |
@@ -1612,7 +1669,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Jev down, slow or answering off-contract | typed adapter failure | Nothing checked: new tasks are created as written, typed prompts pass (ADR-16). |
 | Split proposal fails (no account, Claude error, timeout, unusable) | proposer failure / domain check | The composer creates the one task as written. |
 | Predecessor of a chained task ends without being Done | chain re-evaluation | The chained task needs a person (reason shown); never started silently. |
-| Sandbox holder dies (ADR-19) | upkeep tick: recorded pid without its namespaces | Record removed, `slirp4netns` stopped; live runs keep their namespaces (they lose egress); the next run starts a new holder (a second overlay is never mounted on the same layer: until the old runs end, new runs are refused, or use the previous containment in `auto`). |
+| Sandbox holder dies (ADR-20) | upkeep tick: recorded pid without its namespaces | Record removed, `slirp4netns` stopped; live runs keep their namespaces (they lose egress); the next run starts a new holder (a second overlay is never mounted on the same layer: until the old runs end, new runs are refused, or use the previous containment in `auto`). |
 | `slirp4netns` dies | upkeep tick | Restarted against the live holder; egress back within 30 s. |
 | Server restart with live holders | `host.json` + namespace inodes | Holders adopted, relays re-served; runs never notice except relayed connections in flight. |
 | Host packages change (apt upgrade, new Claude Code) | fingerprint | New base built in the background; holders move to it when idle; packages a sandbox installed stay in its layer. |
@@ -1627,7 +1684,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Integration (fake agent) | ptyhost spawn/flood/ignore-SIGTERM/descendant/early-exit/cancel races, reconnect, server restart reattach, rotation with fake usage, hooks & MCP end-to-end | `tools/fake-agent` |
 | Integration (fake GitHub) | OAuth, permissions, repo creation, PR/checks/merge/ff | axum fake server |
 | Linux-only | bubblewrap containment escape attempts | CI ubuntu job |
-| Isolation (opt-in, Linux, ADR-19) | the namespace holder end to end: apt, persistence, other sandboxes, network relays and refusals, host secrets, displays, seccomp, limits, disk quota, idle restart | `crates/yulius/tests/isolation.rs` (`YULIUS_ISOLATION_TEST=1`; limits in a delegated transient unit); run on the production VM's kernel as the service user |
+| Isolation (opt-in, Linux, ADR-20) | the namespace holder end to end: apt, persistence, other sandboxes, network relays and refusals, host secrets, displays, seccomp, limits, disk quota, idle restart | `crates/yulius/tests/isolation.rs` (`YULIUS_ISOLATION_TEST=1`; limits in a delegated transient unit); run on the production VM's kernel as the service user |
 | UI | end-to-end tests in `e2e/` (e2e by TesterArmy, Playwright) against the UI's mock mode: flows, keyboard, WCAG 2.x A/AA (axe-core), page errors, phone viewport; agent steps opt-in with a model key | Node test-only (ADR-01 unchanged); advisory CI job `Web UI e2e`. The real server, terminal rendering and panels against live agents: manual with recorded evidence |
 | Live (opt-in, never CI) | real Claude Code: launch, hooks, MCP, resume | uses local credentials; minimal prompts |
 | Live display (opt-in, Linux) | the streamed browser with Xvfb, ffmpeg and real Chrome: input, video content, popups, containment, recursion; performance figures; captcha clicks | `crates/yulius/tests/live_display.rs` (`YULIUS_LIVE_DISPLAY=1`); `live_ui_browser.rs` drives the real UI against it |
@@ -1644,7 +1701,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | R-14 | Claude Code's handling of a hook held for days is not verified live (ADR-17). | The CLI timeout is written explicitly; the hook client fails open first; a reported limit still pauses the task as `limit`. Open: a live smoke of a held Stop hook. |
 | R-05 | Browser video on phones and slow links. | Flow control by the viewer's acknowledgements, bitrate and frame-rate tiers following the slowest viewer, keyframes on demand, skip to a fresh keyframe per viewer (ADR-15, F 2026-10-10). Open: per-viewer tiers (the slowest viewer sets the shared stream). |
 | R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
-| R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; before ADR-19 sandboxes shared the loopback network, so any local process (including other sandboxes' agents) could drive a sandbox browser and its logged-in sessions; CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Isolated sandboxes (ADR-19) cannot reach the host's loopback, so the cross-sandbox path is closed; legacy containment and host processes remain exposed. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's holder. |
+| R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; before ADR-20 sandboxes shared the loopback network, so any local process (including other sandboxes' agents) could drive a sandbox browser and its logged-in sessions; CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Isolated sandboxes (ADR-20) cannot reach the host's loopback, so the cross-sandbox path is closed; legacy containment and host processes remain exposed. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's holder. |
 | R-08 | An unrestricted GitHub installation token works for every repository of the installation. | Mitigated: agents receive tokens restricted to their sandbox repository (`repositories` parameter), only for live task tokens and only for `github.com/<owner>/<repo>`; unrestricted tokens stay server-side (delivery pushes, repository creation). |
 | R-09 | Delivery environment commands run with the server's privileges outside containment, in a clone whose `.git` and the sandbox home are agent-writable (repository-local Git config such as filter drivers, tools reading `HOME`). | Hooks, fsmonitor and global/system Git config disabled for the checkout (the editor is now a file API, no process). Open: run environment commands inside the sandbox containment. |
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
@@ -1705,11 +1762,12 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Auto mode and workflow, composer (TSK-015, UI-021, 2026-10-10) | Unit: `auto_choice.rs` (thresholds, defaults, the sandbox's own Feature first, the spec-first rule for prompts, bounded options). `tests/auto_choice.rs` (fake Jev, public API): Jev's choices from the store's workflows, a question as Prompt with a no-spec workflow, the spec-first override, defaults with no key, Jev down or unsure, picked values not sent to Jev, 422 before any call, the audit entry; `yulius-store/tests/store.rs` round trip and deletion. `e2e/tests/new-task.e2e.ts`, `intake.e2e.ts` (mock): keys, lists, indent, bold/italic, fences, Preview, Auto chips and labels, the split card's loading and layout. |
 | Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
 | MCP, Git as presentation, skills, default workflows (MCP-004, GIT-002, SKL-006, AUT-006; #136, 2026-10-10) | The reported bug ("Add server does nothing"): on `dev` the empty MCP page's Add server threw `ReferenceError: edit is not defined` (headless Chrome, mock mode); `live_ui_mcp.rs` (opt-in Chrome, real server) fails on that page and passes with the fix: empty state → add page → pasted `claude mcp add` → Add (sealed, tested) → the attachments a run gets → edit → Remove. `pool_supervision.rs::mcp_servers_reach_every_run_on_every_subscription`: real processes on two subscriptions; each run's `mcp.json` and secret names, the values in the child environment, the same servers after a native-resume switch plus one added meanwhile. `skills_mcp.rs`: `${secret:NAME}` stays write-only and is left out of runs while unresolved. Workflows: `workflow_format` unit tests (every rule, line numbers), `workflows::catalog` (the shipped files parse and are all embedded), `automations.rs` (defaults first and read-only — 409 even for an administrator —, duplicate, task steps and instructions from the catalog, retirement of unchanged and edited seeded rows, `workflows_list`). UI (mock e2e): `mcp.e2e.ts`, `workflows.e2e.ts`, `skills.e2e.ts`, `git.e2e.ts`. |
+| Delivery discipline (ADR-19, #139, 2026-10-10) | Unit: `yulius-domain` `steps` (plan bounds, keeping status and effort by title, no reopening by agents, WIP limit with its message, blocked/skipped reasons, 9 of 10 = 90 % and effort weighting, phase titles, plan-shape nudges, stale and burst with a fake clock), `spec_format` (Plan bounds and repeats, `SpecPolicy`, documentation paths), `briefing` (docs index, sessions, pipeline, git hygiene, spec policy per workflow, weighted steps and nudges, foundations); `yulius-app` `discipline` (weighted progress, timings, turn-end nudges, the six default workflows' content), `skills` (every pack equals its catalog directory, unique names, licenses and upstream commits, no Open Mercato harness or manual mode in adapted skills, attribution notes, extraction of three packs), `hooks` (foundations without following links). Store: effort and timings from the history. `mcp_coordination.rs` (step rules and nudges over MCP, `spec_check` `required`), `agent_hooks.rs` (briefing sections, the spec asked only where it matters by workflow and by changed paths, the one-shot untracked-work nudge), `delivery.rs` (a docs-only task opens its pull request without a spec; a code change waits), `skills_mcp.rs` (three sources listed, run set, no `.ai/agentic.config.json`), `e2e/tests/steps.e2e.ts` (weighted progress bar, mock). Not exercised: a live agent following the briefing; agent merge/deploy/promote tools (separate change). |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
 
-- 2026-10-10 (F 2026-10-10, item 4; #142): ADR-19 — sandbox isolation with one namespace holder
+- 2026-10-10 (F 2026-10-10, item 4; #142): ADR-20 — sandbox isolation with one namespace holder
   per sandbox (subordinate id range, private network with relays, writable system layer over a
   shared base, limits, seccomp); ADR-03/ADR-12 extended; new crate `yulius-sandbox`; §3, §4, §8,
   §9, §10, §11, R-07, §14.
@@ -1726,6 +1784,11 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 - 2026-10-10 (F 2026-10-10, "final stage" list; #135): ADR-16 item 5 — Auto mode and workflow
   (two fixed Jev questions, defaults Goal and "Feature", never a spec-first workflow for a prompt),
   `task_auto_choices`, §9 bound, §14.
+- 2026-10-10 (F 2026-10-10, item 3(b), #139): ADR-19 — delivery discipline (§2.5): step rules and
+  nudges, effort-weighted progress, spec policy, the autonomous pipeline, foundations in the
+  briefing, bundled packs `yulius` / `open-mercato` (adapted) / `superpowers`; §4 skill packs, §5
+  `steps.effort` and the `step_events` index (migration 11), §7.4 step tools and `spec_check`,
+  §7.5 Stop nudge, §7.6 briefing order, §14.
 - 2026-10-10 (F 2026-10-10, later; #122): ADR-15 over the user's link — flow control by
   acknowledged frames, VBV bitrate tiers following the slowest viewer, keyframes on demand from a
   replacement encoder (make before break), coalesced wheel and pointer moves, every frame decoded

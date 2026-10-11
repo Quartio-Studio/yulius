@@ -13,7 +13,7 @@ been performed or verified** as part of the implementation work.
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
-| `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-19): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
+| `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-20): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
 | `slirp4netns` | sandbox egress (isolation) | `apt install slirp4netns`. |
 | `libnss-extrausers` | users' login names in isolated sandboxes | `apt install libnss-extrausers`; without it, package scripts that add system users fail in users' shells (they work in agents' sessions). |
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
@@ -76,7 +76,7 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=YULIUS_BROWSER_DISPLAY=auto
 # Optional task intake (see "Task intake (Jev)" below).
 #Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
-# Sandbox isolation (SPEC-002 ADR-19): auto (default), namespaces or legacy; see "Sandbox
+# Sandbox isolation (SPEC-002 ADR-20): auto (default), namespaces or legacy; see "Sandbox
 # isolation" below for limits and egress.
 #Environment=YULIUS_ISOLATION=auto
 ExecStart=/usr/local/bin/yulius serve
@@ -281,7 +281,7 @@ Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
 
 ### Sandbox isolation
 
-Each sandbox has one **namespace holder** (SPEC-002 ADR-19). Agents' task sessions and users'
+Each sandbox has one **namespace holder** (SPEC-002 ADR-20). Agents' task sessions and users'
 shells join it. A sandbox gets:
 
 - its own user namespace: root inside is the service user, ids 1–65535 come from its subordinate
@@ -494,7 +494,7 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
   "Feature" is kept as "Feature (custom)", an edited "Quick task" stays as it is. Automations that
   used "Quick task" continue without a workflow. No migration and no configuration.
 =======
-- Upgrading to sandbox isolation (ADR-19, 2026-10-10): install the packages, add the subordinate
+- Upgrading to sandbox isolation (ADR-20, 2026-10-10): install the packages, add the subordinate
   range and the two unit lines, and build the base as in [Sandbox isolation](#sandbox-isolation),
   then restart. Sessions and shells started before the upgrade keep running as they are (their
   launch records have no holder) and are adopted as usual. New sessions in the same sandbox join

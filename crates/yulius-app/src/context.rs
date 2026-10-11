@@ -163,7 +163,7 @@ pub struct App {
     pub instance_tag: String,
     /// Task intake (Jev, split proposals); unset means nothing is checked (SPEC-002 ADR-16).
     pub(crate) intake: OnceLock<crate::intake::IntakeServices>,
-    /// Sandbox isolation (SPEC-002 ADR-19); unset: contained runs keep the previous containment.
+    /// Sandbox isolation (SPEC-002 ADR-20); unset: contained runs keep the previous containment.
     pub(crate) isolation: OnceLock<Arc<dyn crate::ports::isolation::SandboxIsolation>>,
 }
 
@@ -195,7 +195,7 @@ impl App {
         })
     }
 
-    /// Installs sandbox isolation (once; SPEC-002 ADR-19). Returns whether it was set.
+    /// Installs sandbox isolation (once; SPEC-002 ADR-20). Returns whether it was set.
     pub fn set_isolation(
         &self,
         isolation: Arc<dyn crate::ports::isolation::SandboxIsolation>,

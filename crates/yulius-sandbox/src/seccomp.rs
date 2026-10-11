@@ -1,4 +1,4 @@
-//! The seccomp filter of contained runs (SPEC-002 ADR-19 §6), as the classic BPF program
+//! The seccomp filter of contained runs (SPEC-002 ADR-20 §6), as the classic BPF program
 //! `bwrap --seccomp FD` loads.
 //!
 //! x86-64 only. Calls of another architecture or the x32 ABI are refused with `EPERM`.

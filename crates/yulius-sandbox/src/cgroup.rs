@@ -1,4 +1,4 @@
-//! Per-sandbox cgroup v2 limits through systemd delegation (SPEC-002 ADR-19 §5).
+//! Per-sandbox cgroup v2 limits through systemd delegation (SPEC-002 ADR-20 §5).
 //!
 //! With `Delegate=yes` and `DelegateSubgroup=server` on `yulius.service`, systemd starts the
 //! server in `<unit>/server` and hands `<unit>` to the service user. The server then:

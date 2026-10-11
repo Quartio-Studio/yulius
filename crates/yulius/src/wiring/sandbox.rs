@@ -1,4 +1,4 @@
-//! Sandbox isolation (SPEC-002 ADR-19): settings, prerequisite checks and the
+//! Sandbox isolation (SPEC-002 ADR-20): settings, prerequisite checks and the
 //! [`SandboxIsolation`] port over `yulius-sandbox`'s [`Manager`].
 
 use std::collections::BTreeMap;
@@ -41,7 +41,7 @@ pub enum Egress {
 /// Isolation settings of `yulius serve` (environment variables in `docs/operations.md`).
 #[derive(Debug, Clone, Args)]
 pub struct IsolationArgs {
-    /// Sandbox isolation (SPEC-002 ADR-19): `auto`, `namespaces` or `legacy`.
+    /// Sandbox isolation (SPEC-002 ADR-20): `auto`, `namespaces` or `legacy`.
     #[arg(long = "isolation", env = "YULIUS_ISOLATION", value_enum, default_value_t = IsolationMode::Auto)]
     pub mode: IsolationMode,
     /// Sandbox egress: `direct` or `none`.

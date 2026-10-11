@@ -1,4 +1,4 @@
-//! `yulius sandbox-host`, `sandbox-exec` and `sandbox-base` (SPEC-002 ADR-19).
+//! `yulius sandbox-host`, `sandbox-exec` and `sandbox-base` (SPEC-002 ADR-20).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

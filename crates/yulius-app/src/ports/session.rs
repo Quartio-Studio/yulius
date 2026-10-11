@@ -45,7 +45,7 @@ pub enum Containment {
         binds: Vec<Bind>,
         /// Identity in a new user namespace (user shells and editors); `None` for agents.
         identity: Option<Identity>,
-        /// The sandbox's namespace holder to join (SPEC-002 ADR-19); `None`: the previous
+        /// The sandbox's namespace holder to join (SPEC-002 ADR-20); `None`: the previous
         /// containment.
         join: Option<Box<crate::ports::isolation::SandboxJoin>>,
     },

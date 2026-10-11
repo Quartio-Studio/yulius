@@ -51,7 +51,7 @@ enum Command {
         /// Operation (`get`, `store`, `erase`).
         operation: String,
     },
-    /// Internal: a sandbox's namespace holder (SPEC-002 ADR-19).
+    /// Internal: a sandbox's namespace holder (SPEC-002 ADR-20).
     #[command(name = "sandbox-host", hide = true)]
     SandboxHost {
         /// What to do.

@@ -1,4 +1,4 @@
-//! Entering a sandbox: what a contained run does before its `bwrap` (SPEC-002 ADR-19 §2).
+//! Entering a sandbox: what a contained run does before its `bwrap` (SPEC-002 ADR-20 §2).
 //!
 //! The ptyhost calls [`join`] first, while it is still single-threaded:
 //! - it moves into the sandbox's cgroup;

@@ -1,4 +1,4 @@
-//! The base of every sandbox's system layer (SPEC-002 ADR-19 §3): a copy of the host system
+//! The base of every sandbox's system layer (SPEC-002 ADR-20 §3): a copy of the host system
 //! owned by ids that exist in a sandbox's user namespace.
 //!
 //! `system/base-<n>/` holds `/usr`, `/etc`, `/opt` and dpkg/apt/debconf state from `/var`
