@@ -1,0 +1,257 @@
+lockfile_version: '1'
+dependencies: []
+deployments:
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-git
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-git/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:a0a64159ca970f8830fad98270a1ed93f72a83916f1ebe97857dec6c491f6cce
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-review
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-review/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:0283b3321302dd088e5907358a37e7052926818d11c4832aa72c4d2cc1f87a23
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-runner
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-runner/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:1c0745a5b44b0b8126ffde8f8ebea68e7e318e6def0d07e2f474502b56ce746b
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-rust-slice
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-rust-slice/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:276b65d41d99440aa173548804e6fe1da5bf3ed6f523b493971bb0a0eed57fd6
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-spec
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-spec/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:71bbfb4358443c18c0d9d912e77a44faa43b2e7be20e5307106d5b5aee6d8405
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-verify
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/yulius-verify/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:be07446c4095c79f80f330874171dcccc5717f456507122f7a2db4ffed03b155
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-git
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-git/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:a0a64159ca970f8830fad98270a1ed93f72a83916f1ebe97857dec6c491f6cce
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-review
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-review/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:0283b3321302dd088e5907358a37e7052926818d11c4832aa72c4d2cc1f87a23
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-runner
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-runner/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:1c0745a5b44b0b8126ffde8f8ebea68e7e318e6def0d07e2f474502b56ce746b
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-rust-slice
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-rust-slice/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:276b65d41d99440aa173548804e6fe1da5bf3ed6f523b493971bb0a0eed57fd6
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-spec
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-spec/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:71bbfb4358443c18c0d9d912e77a44faa43b2e7be20e5307106d5b5aee6d8405
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-verify
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: legacy
+  value: .agents/skills/yulius-verify/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:be07446c4095c79f80f330874171dcccc5717f456507122f7a2db4ffed03b155
+local_deployed_files:
+- .agents/skills/yulius-git
+- .agents/skills/yulius-git/SKILL.md
+- .agents/skills/yulius-review
+- .agents/skills/yulius-review/SKILL.md
+- .agents/skills/yulius-runner
+- .agents/skills/yulius-runner/SKILL.md
+- .agents/skills/yulius-rust-slice
+- .agents/skills/yulius-rust-slice/SKILL.md
+- .agents/skills/yulius-spec
+- .agents/skills/yulius-spec/SKILL.md
+- .agents/skills/yulius-verify
+- .agents/skills/yulius-verify/SKILL.md
+- .claude/skills/yulius-git
+- .claude/skills/yulius-git/SKILL.md
+- .claude/skills/yulius-review
+- .claude/skills/yulius-review/SKILL.md
+- .claude/skills/yulius-runner
+- .claude/skills/yulius-runner/SKILL.md
+- .claude/skills/yulius-rust-slice
+- .claude/skills/yulius-rust-slice/SKILL.md
+- .claude/skills/yulius-spec
+- .claude/skills/yulius-spec/SKILL.md
+- .claude/skills/yulius-verify
+- .claude/skills/yulius-verify/SKILL.md
+local_deployed_file_hashes:
+  .agents/skills/yulius-git/SKILL.md: sha256:a0a64159ca970f8830fad98270a1ed93f72a83916f1ebe97857dec6c491f6cce
+  .agents/skills/yulius-review/SKILL.md: sha256:0283b3321302dd088e5907358a37e7052926818d11c4832aa72c4d2cc1f87a23
+  .agents/skills/yulius-runner/SKILL.md: sha256:1c0745a5b44b0b8126ffde8f8ebea68e7e318e6def0d07e2f474502b56ce746b
+  .agents/skills/yulius-rust-slice/SKILL.md: sha256:276b65d41d99440aa173548804e6fe1da5bf3ed6f523b493971bb0a0eed57fd6
+  .agents/skills/yulius-spec/SKILL.md: sha256:71bbfb4358443c18c0d9d912e77a44faa43b2e7be20e5307106d5b5aee6d8405
+  .agents/skills/yulius-verify/SKILL.md: sha256:be07446c4095c79f80f330874171dcccc5717f456507122f7a2db4ffed03b155
+  .claude/skills/yulius-git/SKILL.md: sha256:a0a64159ca970f8830fad98270a1ed93f72a83916f1ebe97857dec6c491f6cce
+  .claude/skills/yulius-review/SKILL.md: sha256:0283b3321302dd088e5907358a37e7052926818d11c4832aa72c4d2cc1f87a23
+  .claude/skills/yulius-runner/SKILL.md: sha256:1c0745a5b44b0b8126ffde8f8ebea68e7e318e6def0d07e2f474502b56ce746b
+  .claude/skills/yulius-rust-slice/SKILL.md: sha256:276b65d41d99440aa173548804e6fe1da5bf3ed6f523b493971bb0a0eed57fd6
+  .claude/skills/yulius-spec/SKILL.md: sha256:71bbfb4358443c18c0d9d912e77a44faa43b2e7be20e5307106d5b5aee6d8405
+  .claude/skills/yulius-verify/SKILL.md: sha256:be07446c4095c79f80f330874171dcccc5717f456507122f7a2db4ffed03b155
