@@ -257,6 +257,7 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 
 ## Changelog
 
+- 2026-10-11: the subscription pool spreads to unknown subscriptions; usage read more often and on opening the page (ROT-004, ROT-009, `F 2026-10-11`).
 - 2026-10-11: a task acts on GitHub as its creator — commits, Git, `gh`, pushes, pull requests, merges, promotions and issues (§6 item 83, `F 2026-10-11`, GIT-003).
 - 2026-10-11: sandbox environment — preparation installs toolchains, `gh` in every sandbox, home tool directories on `PATH` (PRJ-011, DSC-010, `F 2026-10-11`).
 - 2026-10-11: idle reminders do not need a person; the preparation task needs no spec (DSC-013, `F 2026-10-11`).
