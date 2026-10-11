@@ -3,7 +3,7 @@ yulius-task: 8b2cc0ca-a8e0-4db1-b809-4ef25e745c79
 status: done
 ---
 
-# SPEC-005: Subscriptions show their usage all the time
+# SPEC-007: Subscriptions show their usage all the time
 
 Status: implemented (real-subscription check pending, see Decisions)
 Date: 2026-10-11
