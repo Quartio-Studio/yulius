@@ -451,3 +451,25 @@ async fn ci_job_caches_are_pruned_under_pressure_and_before_a_refusal() -> BoxRe
     assert!(!again.join("target").exists());
     Ok(())
 }
+
+#[tokio::test]
+async fn a_ci_cache_stays_while_a_run_executes_and_goes_once_it_ends() -> BoxResult<()> {
+    let w = world().await?;
+    let checkout = w.ci_checkout("quality")?;
+    let quota = Arc::new(Quota {
+        used: AtomicU64::new(95 * BIG as u64),
+        limit: 100 * BIG as u64,
+    });
+    assert!(w.h.app.set_isolation(quota));
+    // A run executes (or another claim holds the checkouts): nothing in them is touched.
+    assert!(w.h.app.ci_claim(&w.sandbox.id));
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(checkout.join("target").exists(), "a run is using it");
+    w.h.app.ci_release(&w.sandbox.id);
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(!checkout.join("target").exists());
+    // The upkeep released its own claim: the dispatcher can claim again.
+    assert!(w.h.app.ci_claim(&w.sandbox.id));
+    w.h.app.ci_release(&w.sandbox.id);
+    Ok(())
+}

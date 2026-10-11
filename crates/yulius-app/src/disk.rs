@@ -319,15 +319,24 @@ impl App {
             // meanwhile keeps its files.
             let unchanged = match &item.task {
                 Some(task) => self.owner_is(&task.id, item.owner).await,
-                None => !self.ci_busy(&sandbox.id),
+                None => true,
             };
             if !unchanged {
+                continue;
+            }
+            // A CI checkout is claimed while its cache goes, so no run starts in it half
+            // deleted; a run that executes (or a claim) keeps it.
+            let claimed = item.task.is_none();
+            if claimed && !self.ci_claim(&sandbox.id) {
                 continue;
             }
             let path = item.path.clone();
             let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&path))
                 .await
                 .is_ok_and(|result| result.is_ok());
+            if claimed {
+                self.ci_release(&sandbox.id);
+            }
             if !removed {
                 tracing::warn!(path = %item.path.display(), "a build cache could not be removed");
                 continue;

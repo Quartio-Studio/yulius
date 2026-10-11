@@ -71,7 +71,7 @@ pub fn cache_paths(entries: &[String], declared: &[String]) -> Vec<String> {
 /// no run is executing.
 #[must_use]
 pub fn job_cache_cap(limit: u64) -> u64 {
-    limit / 4
+    if limit == 0 { u64::MAX } else { limit / 4 }
 }
 
 /// Bytes to free so that `used` falls to [`TARGET_PERCENT`] of `limit`; 0 below
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn one_job_cache_may_hold_a_quarter_of_the_quota() {
         assert_eq!(job_cache_cap(100), 25);
-        assert_eq!(job_cache_cap(0), 0);
+        assert_eq!(job_cache_cap(0), u64::MAX, "no quota, no cap");
     }
 
     #[test]
