@@ -29,7 +29,7 @@ test('Sessions lists task and imported sessions, filters and searches them', asy
   await screen.getByRole('radiogroup', 'Kind of session').getByRole('radio', /^All/).click();
   await screen.getByRole('searchbox', 'Search sessions').fill('stripe webhook');
   await expect(list.getByRole('link')).toHaveCount(2);
-  await expect(list.locator('mark').first()).toBeVisible();
+  await expect(browser.locator('.ss-rows mark').first()).toBeVisible();
   await expect(screen.getByText('2 sessions match')).toBeVisible();
   await screen.getByRole('searchbox', 'Search sessions').fill('no such words anywhere');
   await expect(screen.getByText('Nothing found')).toBeVisible();

@@ -2034,6 +2034,7 @@ button.task-group-head:hover { color: var(--text); }
   .ss-entry { padding: 12px; }
   .ss-entry.ss-sidechain { margin-left: 12px; }
   .ss-summary { margin-left: 0; }
+}
 
 /* instance updates (updates.js, pages/instance.js; SPEC-002 ADR-18) and the Jev key (jevkey.js) */
 .update-banner { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: min(460px, 36vw); height: var(--control-md); padding: 0 6px 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); background: var(--surface-2); color: var(--text); font-size: var(--fs-xs); line-height: var(--lh-xs); }
