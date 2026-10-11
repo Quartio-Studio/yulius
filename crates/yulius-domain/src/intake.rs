@@ -9,27 +9,28 @@
 /// The exact Jev model (TypeSafe's Choice evaluator). Never `jev-latest`.
 pub const JEV_MODEL: &str = "jev-1.13.0";
 
-/// One fixed option of a Choice question.
+/// One option of a Choice question (fixed text, or built from stored records such as the
+/// sandbox's workflows for the Auto workflow question).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChoiceOption {
+pub struct ChoiceOption<'a> {
     /// Option key (`^[a-zA-Z][a-zA-Z0-9_-]{0,63}$`).
-    pub key: &'static str,
+    pub key: &'a str,
     /// What the option means, as Jev reads it.
-    pub description: &'static str,
+    pub description: &'a str,
 }
 
-/// A fixed Choice question: one question per Jev request.
+/// A Choice question with a fixed text: one question per Jev request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChoiceQuestion {
+pub struct ChoiceQuestion<'a> {
     /// Question key.
-    pub id: &'static str,
+    pub id: &'a str,
     /// The question.
-    pub instructions: &'static str,
+    pub instructions: &'a str,
     /// The complete option set (2 or more).
-    pub options: &'static [ChoiceOption],
+    pub options: &'a [ChoiceOption<'a>],
 }
 
-impl ChoiceQuestion {
+impl ChoiceQuestion<'_> {
     /// Whether `key` is one of the options.
     #[must_use]
     pub fn has_option(&self, key: &str) -> bool {
@@ -38,7 +39,7 @@ impl ChoiceQuestion {
 }
 
 /// "One task" or "several workstreams" for a new task's prompt (TSK-011).
-pub const SPLIT_QUESTION: ChoiceQuestion = ChoiceQuestion {
+pub const SPLIT_QUESTION: ChoiceQuestion<'static> = ChoiceQuestion {
     id: "split",
     instructions: "A person asks a coding agent for the work below. Is it one coherent thread of \
         work, or does it mix clearly separate workstreams in different areas of the product (for \
@@ -60,7 +61,7 @@ pub const SPLIT_QUESTION: ChoiceQuestion = ChoiceQuestion {
 };
 
 /// How a prompt typed into a running task relates to the task's scope (TSK-013).
-pub const SCOPE_QUESTION: ChoiceQuestion = ChoiceQuestion {
+pub const SCOPE_QUESTION: ChoiceQuestion<'static> = ChoiceQuestion {
     id: "scope",
     instructions: "A coding agent works on the task described under TASK. A person just typed the \
         message under NEW MESSAGE into the agent's session. How does the message relate to the \

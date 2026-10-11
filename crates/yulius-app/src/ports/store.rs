@@ -369,6 +369,9 @@ pub trait AccountStore: Send + Sync {
         last_error: &str,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Clears an account's last error when it is a note about reading its usage (`usage: …`);
+    /// any other error stays.
+    async fn clear_usage_error(&self, id: &AccountId, at: Timestamp) -> AppResult<()>;
     /// Deletes an account.
     async fn delete_account(&self, id: &AccountId) -> AppResult<()>;
     /// Token totals per account of the runs started at or after `since`.

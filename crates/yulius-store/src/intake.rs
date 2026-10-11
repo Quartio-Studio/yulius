@@ -1,10 +1,13 @@
-//! Chained tasks and held prompts (SPEC-001 TSK-012, TSK-013; SPEC-002 ADR-16).
+//! Chained tasks, held prompts and Auto choices (SPEC-001 TSK-012, TSK-013, TSK-015; SPEC-002
+//! ADR-16).
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
+use yulius_app::auto_choice::AutoChoiceRecord;
 use yulius_app::error::AppResult;
 use yulius_app::intake::{ChainRecord, HoldRecord, hold_state};
 use yulius_app::ports::store_ext::IntakeStore;
+use yulius_domain::auto_choice::ChosenBy;
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_domain::intake::PromptClass;
 use yulius_domain::time::Timestamp;
@@ -12,6 +15,7 @@ use yulius_domain::time::Timestamp;
 use crate::{SqliteStore, bad_column, db, to_u32};
 
 const CHAIN_COLS: &str = "task_id, after_task_id, after_number, blocked_reason, created_at";
+const AUTO_COLS: &str = "task_id, mode_by, workflow_by, workflow_name, created_at";
 const HOLD_COLS: &str = "id, task_id, class, prompt, prompt_sha256, percent, typed_by, state, \
     created_at, resolved_by, resolved_at, new_task_id";
 
@@ -58,6 +62,22 @@ fn hold_from_row(row: &Row<'_>) -> rusqlite::Result<HoldRecord> {
             .as_deref()
             .map(|t| task_id("new task id", t))
             .transpose()?,
+    })
+}
+
+fn chosen_by(column: &str, text: Option<String>) -> rusqlite::Result<Option<ChosenBy>> {
+    text.map(|t| ChosenBy::parse(&t).ok_or_else(|| bad_column(column, &t)))
+        .transpose()
+}
+
+fn auto_from_row(row: &Row<'_>) -> rusqlite::Result<AutoChoiceRecord> {
+    let task: String = row.get("task_id")?;
+    Ok(AutoChoiceRecord {
+        task_id: task_id("task id", &task)?,
+        mode_by: chosen_by("auto mode", row.get("mode_by")?)?,
+        workflow_by: chosen_by("auto workflow", row.get("workflow_by")?)?,
+        workflow_name: row.get("workflow_name")?,
+        created_at: Timestamp(row.get("created_at")?),
     })
 }
 
@@ -244,6 +264,39 @@ impl IntakeStore for SqliteStore {
                 )
                 .map_err(db)?;
             Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn insert_auto_choice(&self, choice: &AutoChoiceRecord) -> AppResult<()> {
+        let c = choice.clone();
+        self.call(move |conn| {
+            conn.execute(
+                &format!("INSERT INTO task_auto_choices ({AUTO_COLS}) VALUES (?1, ?2, ?3, ?4, ?5)"),
+                params![
+                    c.task_id.as_str(),
+                    c.mode_by.map(ChosenBy::as_str),
+                    c.workflow_by.map(ChosenBy::as_str),
+                    c.workflow_name,
+                    c.created_at.0,
+                ],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn auto_choice(&self, task: &TaskId) -> AppResult<Option<AutoChoiceRecord>> {
+        let task = task.as_str().to_owned();
+        self.call(move |conn| {
+            conn.query_row(
+                &format!("SELECT {AUTO_COLS} FROM task_auto_choices WHERE task_id = ?1"),
+                [task],
+                auto_from_row,
+            )
+            .optional()
+            .map_err(db)
         })
         .await
     }

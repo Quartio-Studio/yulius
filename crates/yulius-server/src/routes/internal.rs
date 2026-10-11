@@ -1,4 +1,5 @@
-//! Internal agent endpoints: `POST /hooks/{harness}/{event}` and `POST /internal/git-credential`
+//! Internal agent endpoints: `POST /hooks/{harness}/{event}` (also Claude Code's status line,
+//! `event` = `StatusLine`) and `POST /internal/git-credential`
 //! (task-token bearer auth, loopback listener only).
 
 use axum::Json;
@@ -8,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use yulius_app::error::AppError;
 use yulius_app::hooks::HookReply;
-use yulius_contracts::hooks::HookInput;
+use yulius_contracts::hooks::{HookInput, StatusLineInput, events};
 
 use crate::AppState;
 
@@ -45,6 +46,20 @@ pub async fn hook(
     let Some(token) = bearer(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    // Claude Code's status line runs the same client; its input has its own shape and its answer
+    // is the line's text (HRN-005; the plan usage it carries feeds the pool, ADR-17).
+    if event == events::STATUS_LINE {
+        let input: StatusLineInput = serde_json::from_slice(&body).unwrap_or_default();
+        return match app.status_line(token, &harness, &input).await {
+            Ok(line) => (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                line,
+            )
+                .into_response(),
+            Err(err) => status_of(&err).into_response(),
+        };
+    }
     let input: HookInput = serde_json::from_slice(&body).unwrap_or_default();
     match app.hook_event(token, &harness, &event, &input).await {
         Ok(HookReply::Hold { retry_after_secs }) => (

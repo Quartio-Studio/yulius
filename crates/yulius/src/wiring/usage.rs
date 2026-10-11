@@ -2,15 +2,21 @@
 //! from — `GET https://api.anthropic.com/api/oauth/usage` (OAuth token,
 //! `anthropic-beta: oauth-2025-04-20`; windows `five_hour` and `seven_day` with `utilization`
 //! in percent and `resets_at`, plus the per-model weekly caps `seven_day_opus` and
-//! `seven_day_sonnet` when the plan has them). Read-only: tokens are never refreshed here. Errors carry the
-//! status, never the credential or the response body.
+//! `seven_day_sonnet` when the plan has them). Read-only: tokens are never refreshed here.
+//!
+//! The endpoint needs the OAuth scope `user:profile`; a `claude setup-token` sign-in has only
+//! `user:inference` (Claude Code 2.1.292 does not even call it without that scope), so it answers
+//! HTTP 403 for every subscription Yulius signs in. That is not an error and no refresh or
+//! re-login changes it: the running sessions report the usage (Claude Code's status line,
+//! SPEC-002 ADR-17). Failures carry one plain sentence for people, never the credential, the
+//! response body or an HTTP code.
 
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
 use yulius_app::model::Secret;
-use yulius_app::ports::usage::{UsageFailure, UsageProbe};
+use yulius_app::ports::usage::{UsageFailure, UsageFailureKind, UsageProbe};
 use yulius_domain::harness::Provider;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
 
@@ -18,6 +24,11 @@ const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// Largest usage response accepted.
 const MAX_BODY: usize = 256 * 1024;
+/// What a temporary failure says.
+const TRY_AGAIN: &str = "Usage could not be read just now; it updates again in a few minutes.";
+/// What a refused sign-in says.
+const REJECTED: &str =
+    "Claude did not accept this subscription's sign-in. If its tasks fail too, sign in again.";
 
 /// Usage of Claude accounts from the provider.
 pub struct ProviderUsage {
@@ -42,62 +53,51 @@ impl ProviderUsage {
 
     async fn get_json(&self, request: reqwest::RequestBuilder) -> Result<Value, UsageFailure> {
         let response = request.send().await.map_err(|e| {
-            UsageFailure::new(format!(
-                "the provider is not reachable ({})",
-                e.without_url()
-            ))
+            tracing::debug!(error = %e.without_url(), "usage request failed");
+            UsageFailure::new(TRY_AGAIN)
         })?;
         let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Err(UsageFailure::new(format!(
-                "the provider refused this account's token for usage (HTTP {}); it refreshes on the next run or needs a re-login",
-                status.as_u16()
-            )));
-        }
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(throttled(
-                response
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok()),
-            ));
-        }
-        if !status.is_success() {
-            return Err(UsageFailure::new(format!(
-                "the provider answered HTTP {}",
-                status.as_u16()
-            )));
+        if let Some(failure) = failure_of(
+            status.as_u16(),
+            response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+        ) {
+            return Err(failure);
         }
         let bytes = response.bytes().await.map_err(|e| {
-            UsageFailure::new(format!(
-                "reading the usage answer failed ({})",
-                e.without_url()
-            ))
+            tracing::debug!(error = %e.without_url(), "reading the usage answer failed");
+            UsageFailure::new(TRY_AGAIN)
         })?;
         if bytes.len() > MAX_BODY {
-            return Err(UsageFailure::new("the usage answer is too large"));
+            return Err(UsageFailure::new(TRY_AGAIN));
         }
-        serde_json::from_slice(&bytes)
-            .map_err(|_| UsageFailure::new("the usage answer is not JSON"))
+        serde_json::from_slice(&bytes).map_err(|_| UsageFailure::new(TRY_AGAIN))
+    }
+}
+
+/// The failure an HTTP status means (`None` for success): 403 is a sign-in without the
+/// `user:profile` scope ([`UsageFailureKind::NotShared`]), 401 a refused sign-in, 429 throttling
+/// (`Retry-After` in seconds honoured), anything else unsuccessful is temporary.
+fn failure_of(status: u16, retry_after: Option<&str>) -> Option<UsageFailure> {
+    match status {
+        200..=299 => None,
+        401 => Some(UsageFailure::of(UsageFailureKind::Rejected, REJECTED)),
+        403 => Some(UsageFailure::not_shared()),
+        429 => Some(throttled(retry_after)),
+        _ => Some(UsageFailure::new(TRY_AGAIN)),
     }
 }
 
 /// HTTP 429 on the usage request: the provider throttles usage requests for this token (the
 /// account itself may be fine). `Retry-After` in seconds, when given, says when to ask again.
 fn throttled(retry_after: Option<&str>) -> UsageFailure {
-    let retry_after = retry_after
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .map(Duration::from_secs);
-    let when = retry_after.map_or_else(
-        || "later".to_owned(),
-        |d| format!("in about {} min", d.as_secs().div_ceil(60).max(1)),
-    );
-    UsageFailure {
-        message: format!(
-            "the provider is limiting usage requests for this account (HTTP 429); Yulius asks again {when}"
-        ),
-        retry_after,
-    }
+    UsageFailure::throttled(
+        retry_after
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(Duration::from_secs),
+    )
 }
 
 /// Claude's `{"five_hour": {"utilization", "resets_at"}, "seven_day": {...},
@@ -122,7 +122,7 @@ pub fn parse_claude(body: &Value) -> Result<AccountUsage, String> {
         ..AccountUsage::default()
     };
     if usage.primary.is_none() && usage.secondary.is_none() {
-        return Err("the provider reported no usage windows".into());
+        return Err("Claude reported no usage for this subscription yet.".into());
     }
     Ok(usage)
 }
@@ -180,11 +180,38 @@ mod tests {
     fn throttling_reads_retry_after_seconds() {
         let with = throttled(Some("120"));
         assert_eq!(with.retry_after, Some(Duration::from_secs(120)));
-        assert!(with.message.contains("HTTP 429"));
-        assert!(with.message.ends_with("in about 2 min"));
+        assert_eq!(with.kind, UsageFailureKind::Throttled);
+        assert_eq!(with.message, "Usage updates again in about 2 min.");
         let date = throttled(Some("Wed, 21 Oct 2026 07:28:00 GMT"));
         assert_eq!(date.retry_after, None, "only seconds are honoured");
-        assert!(date.message.ends_with("later"));
+        assert_eq!(date.message, "Usage updates again in a few minutes.");
         assert_eq!(throttled(None).retry_after, None);
+    }
+
+    /// The 403 every `setup-token` sign-in gets (no `user:profile` scope) is not an error, and
+    /// no message names an HTTP code.
+    #[test]
+    fn statuses_become_kinds_and_plain_sentences() {
+        assert!(failure_of(200, None).is_none());
+        let kinds: Vec<_> = [401, 403, 429, 500, 502, 404]
+            .into_iter()
+            .filter_map(|status| failure_of(status, None))
+            .map(|f| {
+                assert!(!f.message.contains("HTTP"), "{}", f.message);
+                assert!(f.message.ends_with('.'), "{}", f.message);
+                f.kind
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                UsageFailureKind::Rejected,
+                UsageFailureKind::NotShared,
+                UsageFailureKind::Throttled,
+                UsageFailureKind::Unavailable,
+                UsageFailureKind::Unavailable,
+                UsageFailureKind::Unavailable
+            ]
+        );
     }
 }

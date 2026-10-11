@@ -138,6 +138,11 @@ fn hold() -> HookReply {
     }
 }
 
+/// 256-colour text for the status line (the colours the web mock shows, HRN-005).
+fn colour(code: u8, text: &str) -> String {
+    format!("\x1b[38;5;{code}m{text}\x1b[39m")
+}
+
 fn is_urgent(entry: &InboxEntry) -> bool {
     !entry.read
         && !entry.delivered
@@ -177,8 +182,74 @@ impl App {
                     .await?;
                 Ok(HookReply::Output(HookOutput::default()))
             }
+            events::SESSION_END => {
+                self.session_ending(&ctx, input.reason.as_deref());
+                Ok(HookReply::Output(HookOutput::default()))
+            }
             _ => Ok(HookReply::Output(HookOutput::default())),
         }
+    }
+
+    /// A held hook answer for `task`, remembering when the hold was last asked about: a hold
+    /// nobody asks about any more was given up by the CLI (ADR-17, [`Self::resume_round`]).
+    fn hold_for(&self, task: &yulius_domain::ids::TaskId) -> HookReply {
+        self.runtime(task)
+            .hold_polled_ms
+            .store(self.now().0, Ordering::SeqCst);
+        hold()
+    }
+
+    /// `SessionEnd` (F 2026-10-10: the task follows its session): Claude Code says why the
+    /// session ends before its process exits. Leaving it (`/exit`, Ctrl+C twice, `/logout`)
+    /// makes the coming exit a normal close whatever its code; `/clear` keeps the process with
+    /// a new conversation, so an achieved goal no longer counts (the new session is adopted into
+    /// the lineage by the supervisor's drift check).
+    fn session_ending(&self, ctx: &AgentContext, reason: Option<&str>) {
+        let runtime = self.runtime(&ctx.task.id);
+        let reason = reason
+            .filter(|r| !r.is_empty() && r.len() <= 64)
+            .unwrap_or("other");
+        tracing::info!(task = %ctx.task.id, %reason, "the agent session ends");
+        if reason == yulius_contracts::hooks::session_end::CLEAR {
+            runtime.goal_achieved.store(false, Ordering::SeqCst);
+            return;
+        }
+        if let Ok(mut end) = runtime.session_end.lock() {
+            *end = Some(reason.to_owned());
+        }
+    }
+
+    /// Claude Code's status line of a run (`yulius hook claude StatusLine`): the repository and
+    /// the task's branch, "→ studio git:(feat/12-checkout)" (HRN-005); and the subscription's
+    /// plan usage it carries — read by Claude Code from its own API responses, the only usage a
+    /// `claude setup-token` sign-in can see (ADR-17).
+    ///
+    /// # Errors
+    /// `NotFound` for another harness, `Unauthenticated` for unknown or finished runs.
+    pub async fn status_line(
+        self: &Arc<Self>,
+        token: &str,
+        harness: &str,
+        input: &yulius_contracts::hooks::StatusLineInput,
+    ) -> AppResult<String> {
+        if harness != "claude" {
+            return Err(AppError::NotFound);
+        }
+        let ctx = self.agent_context(token).await?;
+        if let (Some(limits), Some(account)) = (&input.rate_limits, &ctx.attempt.account_id) {
+            self.session_usage(account, limits).await;
+        }
+        let sandbox = self.deps.store.sandbox(&ctx.task.sandbox_id).await?;
+        let repository = sandbox.map_or_else(|| "repository".to_owned(), |s| s.repo_name);
+        let branch = ctx.task.branch.clone().unwrap_or_else(|| "…".into());
+        Ok(format!(
+            "{} {} {}{}{}",
+            colour(114, "→"),
+            colour(80, &repository),
+            colour(75, "git:("),
+            colour(203, &branch),
+            colour(75, ")")
+        ))
     }
 
     async fn set_task_activity(&self, task: &TaskRecord, activity: Activity) -> AppResult<()> {
@@ -342,14 +413,27 @@ impl App {
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
         // A prompt held for capacity stays held while its pause lasts (also across a restart).
-        match store.open_pause(&ctx.task.id).await? {
-            Some(pause) if pause.kind == PauseKind::Prompt => return Ok(hold()),
-            // A held turn the user interrupted to type something: the new prompt replaces it.
-            Some(_) => self.end_pause(&ctx.task.id, "superseded").await,
-            None => {}
-        }
+        let refreshed;
+        let ctx = match store.open_pause(&ctx.task.id).await? {
+            Some(pause) if pause.kind == PauseKind::Prompt => {
+                return Ok(self.hold_for(&ctx.task.id));
+            }
+            // A held turn the user interrupted to type something: the new prompt replaces it,
+            // and the task runs again until this prompt is held or goes on.
+            Some(_) => {
+                self.hold_ended(&ctx.task.id, "superseded", Activity::Waiting)
+                    .await;
+                refreshed = AgentContext {
+                    attempt: ctx.attempt.clone(),
+                    task: store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?,
+                };
+                &refreshed
+            }
+            None => ctx,
+        };
         // Scope discipline (TSK-013): a held prompt never reaches the agent, so nothing below
-        // (capacity, activity, message digests) happens for it.
+        // (capacity, activity, message digests) happens for it. A prompt typed into a task held
+        // at its turn end (paused for capacity) is checked like any other.
         if let Some(held) = self.screen_prompt(ctx, input).await? {
             return Ok(HookReply::Output(held));
         }
@@ -371,7 +455,7 @@ impl App {
                     carried.map(str::to_owned),
                 )
                 .await?;
-                return Ok(hold());
+                return Ok(self.hold_for(&ctx.task.id));
             }
         }
         // A typed prompt starts new work: an achieved goal no longer makes the task done
@@ -447,13 +531,18 @@ impl App {
         _input: &HookInput,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
-        let task = &ctx.task;
+        let mut task = &ctx.task;
         // A turn held for capacity stays held while its pause lasts (also across a restart).
+        let refreshed;
         if let Some(pause) = store.open_pause(&task.id).await? {
             if matches!(pause.kind, PauseKind::Turn | PauseKind::Limit) {
-                return Ok(hold());
+                return Ok(self.hold_for(&task.id));
             }
-            self.end_pause(&task.id, "superseded").await;
+            // A turn ended while its prompt was held: the CLI gave that hold up and the turn ran.
+            self.hold_ended(&task.id, "superseded", Activity::Working)
+                .await;
+            refreshed = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
+            task = &refreshed;
         }
         if let Err(err) = self.sync_steps_from_spec(task).await {
             tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
@@ -489,12 +578,12 @@ impl App {
                         tracing::warn!(error = %err, task = %task_id, "switch at the turn boundary failed");
                     }
                 });
-                return Ok(hold());
+                return Ok(self.hold_for(&task.id));
             }
             (Decision::Wait { .. }, _) if continues => {
                 self.pause_task(&task.id, PauseKind::Turn, current, None)
                     .await?;
-                return Ok(hold());
+                return Ok(self.hold_for(&task.id));
             }
             // The agent goes idle anyway; its next prompt is held if capacity is still gone.
             (Decision::Wait { .. }, _) => {}

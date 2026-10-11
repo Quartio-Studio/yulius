@@ -28,7 +28,8 @@ disable`); CI sets it.
 | File | Flow |
 | --- | --- |
 | `navigation.e2e.ts` | Open a task from the sidebar, every sandbox page from the sandbox navigation, another sandbox from the tabs |
-| `new-task.e2e.ts` | The new-task shortcut focuses the composer; Enter starts the task and opens it |
+| `new-task.e2e.ts` | The new-task shortcut focuses the composer; Enter adds a line and ⌘/Ctrl+Enter starts the task and opens it with "Auto → Goal · Feature"; lists continue, end and indent, ⌘/Ctrl+B and I wrap, fences close, Preview renders (no WCAG violations); a question on Auto becomes "Auto → Prompt · Research" and picked mode and workflow show no Auto label |
+| `intake.e2e.ts` | A mixed request shows the split card below the box (shimmering rows, then "Split into 2 tasks?" with collapsed prompts, In parallel / As a chain, Create 2 tasks; no WCAG violations) and makes a chain; Keep as one task; "Run after"; a held prompt's choices; Start now |
 | `sign-in.e2e.ts` | Signed out: a wrong superadmin password is refused, the right one signs in (to the home screen) |
 | `access.e2e.ts` | Without a GitHub link the superadmin sees every sandbox (home cards and tabs); an instance admin sees none and is asked to sign in with GitHub |
 | `shortcuts.e2e.ts` | The shortcut list opens from the keyboard and closes with Escape |
@@ -49,7 +50,7 @@ disable`); CI sets it.
 | `responsive.e2e.ts` | Every main page at 768 and 390 px: no two header, toolbar or list controls overlap (bounding boxes) and nothing scrolls sideways; Tasks with a tool panel open wraps its state tabs; a task beside an open Editor, Browser or Shell keeps its step strip and the panel head apart; at 1920 px every page is centred (no empty band on the right) |
 | `task-done.e2e.ts` | A task whose goal is achieved is Done with a green check in the header, the sidebar and on Tasks (no WCAG violations); one with a background shell still running stays under Working with "1 background shell still running" |
 | `quality.e2e.ts` | Every main page: no WCAG 2.x A/AA violations (axe-core) |
-| `subscriptions.e2e.ts` | The accounts page shows the pool's capacity, burn rate, forecast and recommendation with only add, sign-in-again and remove (no priority or on/off controls); a paused task reads "Paused: waiting for subscription capacity (resets ~…)"; the dashboard shows the subscriptions card; no WCAG violations |
+| `subscriptions.e2e.ts` | The accounts page shows the pool's capacity, burn rate, forecast and recommendation with only add, sign-in-again and remove (no priority or on/off controls), and a failed usage reading as one quiet sentence without HTTP codes; a paused task reads "Paused: no subscription has capacity left (resets ~…)"; the task menu has no account choice and the task view no account; the dashboard shows the subscriptions card; no WCAG violations |
 | `agent.e2e.ts` | An agent reaches a goal written in plain English (needs a model, see below) |
 
 Every test also fails when the page reports an error: an uncaught exception, an unhandled

@@ -984,17 +984,80 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 /* The chain on both tasks (TSK-012). */
 .chain-chip { border: 1px solid var(--border); color: var(--text-2); text-decoration: none; }
 a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
-/* The composer's split proposal (TSK-011). */
-.split-card { display: flex; flex-direction: column; gap: 12px; padding: 12px 16px; border: 1px solid var(--border-strong); border-left: 3px solid var(--info); border-radius: var(--radius-lg); background: var(--surface); font-size: var(--fs-sm); line-height: var(--lh-sm); }
-.split-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.split-head .icon { flex: none; color: var(--info-fg); }
-.split-head .split-x { margin-left: auto; }
-.split-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 20px; }
-.split-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.split-item .split-title { flex: 1 1 240px; min-width: 0; }
-.split-prompt { flex-basis: 100%; }
-.split-prompt pre { margin: 4px 0 0; padding: 8px 12px; max-height: 160px; overflow: auto; border-radius: var(--radius-sm); background: var(--surface-2); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
-.split-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* The composer's split proposal (TSK-011; F 2026-10-10 layout): below the prompt box, compact rows
+   with an editable title, a one-line preview and the prompt collapsed; one primary action. */
+.split-card {
+  display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+  background: var(--surface); box-shadow: var(--shadow-raised); font-size: var(--fs-sm); line-height: var(--lh-sm);
+  animation: rise-in var(--duration) var(--ease);
+}
+.split-head { display: flex; align-items: flex-start; gap: 12px; }
+.split-head > .icon { flex: none; margin-top: 4px; color: var(--text-2); }
+.split-heading { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.split-heading strong { color: var(--text); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
+.split-head .split-x { flex: none; margin-left: auto; }
+.split-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: var(--radius); }
+.split-item { display: flex; gap: 12px; padding: 8px 12px; animation: fade-in var(--duration) var(--ease); }
+.split-item + .split-item { border-top: 1px solid var(--border); }
+.split-num {
+  display: inline-flex; flex: none; align-items: center; justify-content: center; width: 20px; height: 20px; margin-top: 4px;
+  border-radius: 50%; background: var(--surface-3); color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600;
+}
+.split-body { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.split-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* The title reads as text and edits in place. */
+.split-title {
+  flex: 1; min-width: 0; height: var(--control-md); margin-left: -8px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text); font: inherit; font-size: var(--fs); line-height: var(--lh); font-weight: 500;
+}
+.split-title:hover { border-color: var(--border); }
+.split-title:focus { border-color: var(--border-control); background: var(--surface-2); }
+/* The whole row is the disclosure's target, at least 24 px tall (WCAG 2.2 2.5.8). */
+.split-prompt summary { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: var(--control-sm); color: var(--muted); cursor: pointer; list-style: none; }
+.split-prompt summary::-webkit-details-marker { display: none; }
+.split-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.split-more { flex: none; color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.split-prompt summary:hover .split-more { color: var(--text); text-decoration: underline; }
+.split-prompt[open] .split-more-closed, .split-prompt:not([open]) .split-more-open { display: none; }
+.split-prompt[open] .split-preview { visibility: hidden; }
+.split-prompt-text {
+  margin-top: 4px; padding: 8px 12px; max-height: 160px; overflow: auto; border-radius: var(--radius-sm); background: var(--surface-2);
+  color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.split-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.split-spacer { flex: 1; }
+
+/* Calm loading (F 2026-10-10): shimmering bars where content will appear (dom.js skeleton), the
+   composer's working line, and a sheen along the prompt box while intake decides. */
+.skeleton { display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
+.skeleton-line {
+  display: block; height: 12px; border-radius: var(--radius-full);
+  background: var(--surface-3) linear-gradient(90deg, transparent, var(--overlay-active), transparent) no-repeat; background-size: 50% 100%;
+  animation: shimmer var(--duration-pulse) linear infinite;
+}
+.skeleton-line:nth-child(1) { width: 72%; }
+.skeleton-line:nth-child(2) { width: 54%; }
+.skeleton-line:nth-child(3) { width: 36%; }
+.intake-slot { display: flex; flex-direction: column; }
+.intake-status {
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--surface) linear-gradient(100deg, transparent 30%, var(--overlay-hover) 50%, transparent 70%) no-repeat; background-size: 60% 100%;
+  color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm);
+  animation: rise-in var(--duration) var(--ease), shimmer var(--duration-pulse) linear infinite;
+}
+.intake-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: breathe var(--duration-pulse) var(--ease) infinite; }
+.intake-label-in { animation: fade-in var(--duration) var(--ease); }
+.composer-box { position: relative; }
+.composer-box.thinking::after {
+  content: ""; position: absolute; left: 20px; right: 20px; bottom: -1px; height: 2px; border-radius: var(--radius-full); pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%;
+  animation: shimmer var(--duration-pulse) var(--ease) infinite;
+}
+.composer-box.thinking .composer-prompt { color: var(--text-2); }
+@keyframes shimmer { from { background-position: -150% 0; } to { background-position: 250% 0; } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(4px); } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes breathe { 50% { opacity: 0.45; transform: scale(0.7); } }
 .stepstrip { flex: none; background: var(--surface); border-bottom: 1px solid var(--border); container: strip / inline-size; }
 /* A narrow centre (a tool panel open beside it): the step name, then the state and count give way,
    so the strip's parts never overlap (UI-046). */
@@ -1066,7 +1129,11 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
    drawn the grid is laid out but hidden, under a calm placeholder of the terminal's colour. */
 .term-host.term-pending { visibility: hidden; }
 .term-skeleton { position: absolute; inset: 0; z-index: var(--z-float); display: flex; flex-direction: column; gap: 12px; padding: 16px 12px; background: var(--term-bg); pointer-events: none; opacity: 1; transition: opacity var(--duration) var(--ease); }
-.term-skeleton > span { display: block; height: var(--lh-sm); border-radius: var(--radius-sm); background: var(--surface-2); opacity: 0; animation: term-skeleton-in var(--duration-slow) var(--ease) var(--duration-slow) forwards; }
+.term-skeleton > span {
+  display: block; height: var(--lh-sm); border-radius: var(--radius-sm); opacity: 0;
+  background: var(--surface-2) linear-gradient(90deg, transparent, var(--overlay-active), transparent) no-repeat; background-size: 50% 100%;
+  animation: term-skeleton-in var(--duration-slow) var(--ease) var(--duration-slow) forwards, shimmer var(--duration-pulse) linear infinite;
+}
 .term-skeleton > span:nth-child(1) { width: 38%; }
 .term-skeleton > span:nth-child(2) { width: 62%; }
 .term-skeleton > span:nth-child(3) { width: 24%; }
@@ -1077,6 +1144,12 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .term-empty { position: absolute; inset: 0; z-index: var(--z-float); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 24px; text-align: center; pointer-events: none; }
 .term-empty-title { margin: 0; color: var(--text); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
 .term-empty-text { margin: 0; max-width: 48ch; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+/* A transient state (queued, starting, switching) shimmers like the composer's working line. */
+.term-empty-bar {
+  display: block; width: 120px; height: 2px; margin-top: 12px; border-radius: var(--radius-full);
+  background: var(--accent-track) linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%;
+  animation: shimmer var(--duration-pulse) var(--ease) infinite;
+}
 /* Connection trouble floats over the top of the terminal: it never changes the terminal's size. */
 .term-conn { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: var(--z-float); display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 4px 4px 4px 12px; border-radius: var(--radius-full); background: var(--warn-soft); border: 1px solid var(--border-strong); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow-sm); }
 .term-conn.term-conn-error { background: var(--danger-soft); color: var(--danger-fg-strong); }
@@ -1151,6 +1224,15 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .composer-send { width: var(--control-lg); height: var(--control-lg); margin-left: 4px; padding: 0; border-radius: 50%; }
 .composer-send:focus-visible { border-radius: 50%; }
 .composer-hint { padding: 0 6px; }
+.composer-kbd .kbd { margin-right: 4px; }
+/* The keyboard way to start is for keyboards: not on touch screens. */
+@media (pointer: coarse) { .composer-kbd, .composer-hint-sep { display: none; } }
+/* Preview: the prompt formatted (mdeditor.js, read-only) in the text box's place. */
+.composer-preview { max-height: 50vh; overflow: auto; padding: 16px 20px 8px; cursor: text; }
+.composer-preview .md-editor { max-width: none; margin: 0; }
+.composer-preview-toggle { width: var(--control-lg); height: var(--control-lg); border-radius: 50%; color: var(--muted); }
+.composer-preview-toggle[aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
+.auto-chip .icon { flex: none; }
 
 /* ---------------------------------------------------------------- pages */
 
@@ -1757,7 +1839,7 @@ a.dl-task:hover { text-decoration: underline; }
   .strip-state, .strip-extra, .step-count { display: none; }
   .step-current { display: none; }
   .composer { padding-top: 16px; }
-  .composer-kbd { display: none; }
+  .composer-kbd, .composer-hint-sep { display: none; }
   .page-inner { padding: 12px 12px 32px; }
   .status-pop { top: calc(var(--tabrow-h) + 2px); right: 8px; left: 8px; width: auto; }
   .modal, .modal-wide, .modal-full { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }

@@ -9,6 +9,7 @@ export const LIVE_STATUSES = new Set(['queued', 'starting', 'running', 'switchin
 const STOP_LABELS = {
   stopped_cancelled: 'Stopped',
   stopped_crashed: 'Stopped (crashed)',
+  stopped_killed: 'Stopped (process ended)',
   stopped_lost: 'Stopped (process lost)',
   stopped_switch_failed: 'Stopped (switch failed)',
   stopped_switch_timeout: 'Stopped (switch timed out)',
@@ -26,9 +27,10 @@ const ENDED_MESSAGES = {
   closed: { tone: 'info', text: 'This task is closed. Its branch and changes are kept.' },
   stopped_cancelled: { tone: 'info', text: `You stopped this task. ${SAFE}` },
   stopped_crashed: { tone: 'warn', text: `The agent stopped unexpectedly. ${SAFE}` },
+  stopped_killed: { tone: 'warn', text: `The agent's process was ended outside ${BRAND.name} (for example killed). ${SAFE}` },
   stopped_lost: { tone: 'warn', text: `The agent's process was lost. ${SAFE}` },
-  stopped_switch_failed: { tone: 'warn', text: `Moving to another AI account failed, so the agent stopped. ${SAFE}`, accounts: true },
-  stopped_switch_timeout: { tone: 'warn', text: `Moving to another AI account took too long, so the agent stopped. ${SAFE}`, accounts: true },
+  stopped_switch_failed: { tone: 'warn', text: `The session could not continue on another subscription, so the agent stopped. ${SAFE}`, accounts: true },
+  stopped_switch_timeout: { tone: 'warn', text: `Continuing on another subscription took too long, so the agent stopped. ${SAFE}`, accounts: true },
   stopped_server_lost: { tone: 'warn', text: `${BRAND.name} restarted while the agent was working. ${SAFE}` },
   failed_spawn_error: { tone: 'error', text: 'Claude Code could not start — usually an AI account must sign in again, or no slot is free.', accounts: true, retry: true },
   failed_start_timeout: { tone: 'error', text: 'Claude Code took too long to start — usually an AI account must sign in again, or the machine is busy.', accounts: true, retry: true },
@@ -90,9 +92,12 @@ export function statusInfo(task) {
   }
   if (status === 'queued') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Queued', group: 'working' };
   if (status === 'starting') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Starting', group: 'working' };
-  if (status === 'switching') return { glyph: '↻', icon: 'refresh', tone: 'switching', label: 'Switching account', group: 'working' };
-  // Every subscription is at 98 % or limited (ROT-010): Yulius paused the task at its turn
-  // boundary without telling the agent. Nothing is for the user to do: it continues by itself.
+  // The pool moves the session to another subscription at a turn end (ROT-003): under the hood,
+  // the task goes on (F 2026-10-10: tasks are subscription-agnostic).
+  if (status === 'switching') return { glyph: '↻', icon: 'refresh', tone: 'switching', label: 'Continuing', group: 'working' };
+  // No subscription has capacity left (every one at 98 % or limited, ROT-010): Yulius paused the
+  // task at its turn boundary without telling the agent. Nothing is for the user to do: it
+  // continues by itself. A task never pauses while another subscription has room.
   if (status === 'waiting_capacity') return { glyph: '⏸', icon: 'clock', tone: 'queued', label: 'Paused', group: 'working' };
   if (status === 'stopping') return { glyph: '■', icon: 'st-stopped', tone: 'stopping', label: 'Stopping', group: 'working' };
   // Waiting for another task to be Done (TSK-012); when that task ended otherwise, a person
@@ -116,10 +121,13 @@ export function resetAround(iso) {
   return label === 'Resetting now' ? 'resets now' : label.replace(/^Resets (at )?/, 'resets ~');
 }
 
-/** "Paused: waiting for subscription capacity (resets ~14:20)" for a paused task (ROT-010). */
+/**
+ * "Paused: no subscription has capacity left (resets ~14:20)" for a paused task (ROT-010): it
+ * pauses only when every subscription is used up, and continues by itself.
+ */
 export function pausedLine(task) {
   const reset = resetAround(task.resumes_at);
-  return `Paused: waiting for subscription capacity${reset ? ` (${reset})` : ''}`;
+  return `Paused: no subscription has capacity left${reset ? ` (${reset})` : ''}`;
 }
 
 /**
@@ -207,7 +215,6 @@ export function taskActions(task, access) {
     stop: write && (live || chained) && task.status !== 'stopping',
     startNow: write && chained,
     continue: write && ended && !task.archived,
-    switch: write && !task.archived && (task.status === 'running' || task.status === 'waiting_capacity' || ended),
     deliver: write && !task.archived,
     feedback: allows(access, 'read'),
     archive: write && ended && !task.archived,
