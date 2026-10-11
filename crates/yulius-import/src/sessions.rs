@@ -223,12 +223,18 @@ const SKIPPED_PREFIXES: &[&str] = &[
     "# AGENTS.md instructions",
     "Caveat: The messages below were generated",
     "[Request interrupted",
+    "<task-notification>",
+    "This session is being continued from a previous conversation",
 ];
 
 /// Turns a candidate user message into a title, or `None` when it is not a real prompt.
+///
+/// A slash command with arguments is a prompt (`/goal Build …`); one without arguments, a
+/// command's output, a background task's notice and a compaction summary are not.
 fn clean_title(text: &str) -> Option<String> {
     let stripped = strip_system_reminders(text);
-    let trimmed = stripped.trim();
+    let command = command_prompt(stripped.trim());
+    let trimmed = command.as_deref().unwrap_or(stripped.trim());
     if trimmed.is_empty()
         || SKIPPED_PREFIXES
             .iter()
@@ -240,6 +246,24 @@ fn clean_title(text: &str) -> Option<String> {
     // Titles are shown and uploaded: redact before cutting, so a secret is never half-kept.
     let redacted = yulius_domain::redact::redact(&collapsed).map_or(collapsed, |r| r.text);
     Some(truncate_chars(&redacted, MAX_TITLE_CHARS))
+}
+
+/// `/name args` of a recorded slash command with arguments (`<command-name>/goal</command-name>
+/// … <command-args>…</command-args>`).
+fn command_prompt(text: &str) -> Option<String> {
+    let inner = |tag: &str| {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        let start = text.find(&open)? + open.len();
+        let end = text[start..].find(&close)? + start;
+        Some(text[start..end].trim())
+    };
+    if !text.starts_with("<command-name>") {
+        return None;
+    }
+    let name = inner("command-name")?;
+    let args = inner("command-args").filter(|args| !args.is_empty())?;
+    Some(format!("{name} {args}"))
 }
 
 fn strip_system_reminders(text: &str) -> String {
@@ -354,6 +378,8 @@ struct ClaudeMeta {
     git_branch: Option<String>,
     #[serde(rename = "isMeta", default)]
     is_meta: Option<bool>,
+    #[serde(rename = "isCompactSummary", default)]
+    is_compact_summary: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -483,6 +509,7 @@ fn scan_claude(path: &Path, matcher: &RepoMatcher) -> io::Result<Option<Scan>> {
         if scan.title.is_none()
             && meta.kind.as_deref() == Some("user")
             && meta.is_meta != Some(true)
+            && meta.is_compact_summary != Some(true)
         {
             scan.title = claude_title(&buf);
         }
@@ -509,6 +536,31 @@ mod tests {
             Some("Fix the login bug".to_owned())
         );
         assert_eq!(clean_title("<command-name>/clear</command-name>"), None);
+        // A command with arguments is the session's prompt (a `/goal` session).
+        assert_eq!(
+            clean_title(
+                "<command-name>/goal</command-name>\n  <command-message>goal</command-message>\n  \
+                 <command-args>Build Yulius\nin the repo</command-args>"
+            ),
+            Some("/goal Build Yulius in the repo".to_owned())
+        );
+        assert_eq!(
+            clean_title(
+                "<command-name>/effort</command-name><command-message>effort</command-message>\
+                 <command-args></command-args>"
+            ),
+            None
+        );
+        assert_eq!(
+            clean_title("<task-notification> <task-id>a1</task-id> done </task-notification>"),
+            None
+        );
+        assert_eq!(
+            clean_title(
+                "This session is being continued from a previous conversation that ran out of context."
+            ),
+            None
+        );
         assert_eq!(
             clean_title("<local-command-stdout></local-command-stdout>"),
             None

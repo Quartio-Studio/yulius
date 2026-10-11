@@ -773,13 +773,15 @@ fn assignment_value(text: &str, after: usize, name: &str, flag: bool) -> Option<
         at
     };
     let spaced = skip_spaces(cursor);
-    let separator = &text[spaced..(spaced + 2).min(text.len())];
-    if separator.starts_with("==") || separator.starts_with("=~") {
+    // Bytes, not `str`: two bytes after the name can end inside a multi-byte character
+    // (`token →`), which a `str` slice would panic on.
+    let separator = &bytes[spaced..(spaced + 2).min(bytes.len())];
+    if separator.starts_with(b"==") || separator.starts_with(b"=~") {
         return None;
     }
-    cursor = if separator.starts_with(":=") || separator.starts_with("=>") {
+    cursor = if separator.starts_with(b":=") || separator.starts_with(b"=>") {
         spaced + 2
-    } else if separator.starts_with('=') || separator.starts_with(':') {
+    } else if separator.starts_with(b"=") || separator.starts_with(b":") {
         spaced + 1
     } else if flag && spaced > cursor && spaced == cursor + 1 {
         spaced
@@ -1250,5 +1252,29 @@ mod tests {
             redacted(&text),
             "Zażółć gęślą jaźń [REDACTED:github-token] — koniec"
         );
+    }
+
+    #[test]
+    fn a_secret_name_before_a_multibyte_character_is_not_a_panic() {
+        // Onboarding panicked on a transcript line like `token →`: the separator check sliced
+        // two bytes into the arrow.
+        assert_eq!(redacted("token → next"), "token → next");
+        for name in [
+            "token",
+            "password",
+            "api_key",
+            "--password",
+            "client_secret",
+        ] {
+            for gap in ["", " ", "  ", "\"", "\" ", ":", " :", "=", "= "] {
+                for ch in ['→', 'é', '—', '😀'] {
+                    for tail in ["", "x", " 1"] {
+                        let text = format!("{name}{gap}{ch}{tail}");
+                        let _ = redact(&text);
+                        let _ = redact(&format!("{text}\n{text}"));
+                    }
+                }
+            }
+        }
     }
 }

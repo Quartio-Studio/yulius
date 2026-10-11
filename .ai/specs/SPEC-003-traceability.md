@@ -256,6 +256,7 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 
 ## Changelog
 
+- 2026-10-11: onboarding this repository onto its own instance: redaction on multi-byte text and session titles (§6 item 81, `F 2026-10-11`, IMP-007).
 - 2026-10-11: the Secrets page layout and dialogs closing on a click outside (§6 item 79, `F 2026-10-11`).
 - 2026-10-11: the consistency pass's leftovers (§6 item 79, `F 2026-10-10`, #147): UI-050, AC-UI-45; TSK-014 and GIT-001 on open plan steps.
 - 2026-10-11: per-client sign-in limits behind the reverse proxy (§6 item 82, `F 2026-10-09`, #88).
