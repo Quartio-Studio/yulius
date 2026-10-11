@@ -47,4 +47,5 @@ pub mod terminal;
 pub mod updates;
 pub mod uploads;
 pub mod usage_json;
+pub mod vault;
 pub mod workflows;

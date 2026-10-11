@@ -12,6 +12,7 @@ pub mod git;
 pub mod intake;
 pub mod mcp;
 pub mod sandboxes;
+pub mod secrets;
 pub mod shells;
 pub mod skills;
 pub mod status;

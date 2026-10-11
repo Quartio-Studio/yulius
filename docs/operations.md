@@ -423,6 +423,26 @@ sudo -u yulius yulius backup --data-dir /var/lib/yulius /var/backups/yulius-$(da
 (it encrypts every stored secret; without it the database's credentials are unreadable) and, if
 wanted, `sandboxes/` (clones and worktrees can be re-created from GitHub, uncommitted work cannot).
 Restore: stop the service, put the database copy at `yulius.db`, restore `master.key`, start.
+The database copy holds the secrets vault and the egress CA key as ciphertext only; keep
+`master.key` apart from database backups (whoever has both can read every secret).
+
+### Secrets vault (agent secrets, ADR-20)
+
+Nothing to configure. On first start the server creates the egress CA (its key sealed in the
+database) and serves the agents' egress proxy on the internal listener (`YULIUS_INTERNAL_BIND`):
+agent runs get `HTTPS_PROXY` pointing there, so whatever makes that address reachable from a
+sandbox (it is loopback today; network isolation must keep it reachable) carries the agents'
+HTTP(S). Claude Code's own API traffic (`*.anthropic.com`, `claude.ai`) and loopback bypass it.
+Runs trust the CA through `<run>/egress-ca.pem`, built from the host's CA roots
+(`/etc/ssl/certs/ca-certificates.crt` on Ubuntu, from the `ca-certificates` package); if the
+server logs that the roots were not found, install `ca-certificates`. Every Bash command of an
+agent runs through `yulius --scrub-exec` and every tool result through the `PostToolUse` hook:
+a command that prints `the agent-secret fingerprints of this run cannot be loaded` means the run
+cannot reach Yulius and has no `scrub.json` — continue the task to start a fresh run.
+
+Rotation: replace a value on the Secrets page after rotating it at its provider (the page marks
+values older than 180 days). If `master.key` and a database copy may have leaked together,
+rotate every team and agent secret at its source.
 
 ## 8. Upgrades
 
@@ -548,6 +568,9 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
   adds `update_runs` and the instance's sealed Jev key. Install the update helper (above). A
   configured `YULIUS_JEV_API_KEY_FILE` keeps working ("from config"); Settings → Instance → **Save
   it here** moves the key into settings, then the variable can go.
+- Upgrading to the secrets vault (ADR-20, 2026-10-10): migration 0009 adds the vault tables. New
+  agent runs route HTTP(S) through the egress proxy and redact agent secrets; runs started earlier
+  keep their environment until they are continued. Make sure `ca-certificates` is installed.
 - Upgrading to default workflows (AUT-006, #136, 2026-10-10): the default workflows now ship with
   the binary (`catalog/workflows/`) and are read-only. On the first start the "Feature" and "Quick
   task" rows seeded by earlier releases are retired (audited as `workflow.retired`); an edited
@@ -589,7 +612,12 @@ up. Queued tasks start when capacity allows.
 
 ## 9. Security notes
 
-- The data directory is owner-only (0700); secrets are sealed with `master.key` (XChaCha20-Poly1305).
+- The data directory is owner-only (0700); secrets are sealed with `master.key` (XChaCha20-Poly1305);
+  vault secrets under envelope encryption (per-secret data keys wrapped by a key derived from
+  `master.key`), with re-authenticated, audited reveals (ADR-20).
+- Agent secrets are never given to agents: the egress proxy adds them for their bound hosts and
+  every channel an agent reads is redacted. Remaining threats (a bound host echoing a credential
+  in another form, misuse on its hosts, weak values, raw CDP): SPEC-002 ADR-20.
 - Agents receive per-run task tokens (MCP, hooks) and GitHub tokens restricted to their sandbox
   repository; provider credentials reach the agent process only through its environment.
 - Known open risks are listed in SPEC-002 §12 (notably R-07: Chromium's DevTools port is

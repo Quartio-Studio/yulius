@@ -1,6 +1,7 @@
 //! Deterministic Yulius domain: identifiers, permissions, task and attempt state machines,
 //! subscription pool policy and capacity forecast, documentation-format validation, the default
-//! workflow file format, schedules, delivery profiles and instance updates.
+//! workflow file format, schedules, delivery profiles, instance updates and the secrets vault's
+//! rules.
 //!
 //! This crate performs no I/O and reads no clock or environment. Callers inject time as
 //! [`time::Timestamp`] values and identifiers as already-generated strings.
@@ -22,4 +23,5 @@ pub mod task;
 pub mod time;
 pub mod update;
 pub mod usage;
+pub mod vault;
 pub mod workflow_format;

@@ -34,6 +34,7 @@ import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admi
 import { mountSettingsPage } from './pages/settings.js';
 import { mountInstancePage } from './pages/instance.js';
 import { createUpdateBanner } from './updates.js';
+import { mountSecretsPage } from './pages/secrets.js';
 import { mountDesignPage } from './pages/design.js';
 import { mountHomePage } from './pages/home.js';
 import { IS_MAC, showShortcuts } from './shortcuts.js';
@@ -50,6 +51,7 @@ const SANDBOX_PAGES = {
   skills: (ctx, sandbox, route) => mountSkillsPage(ctx, sandbox, route),
   automations: (ctx, sandbox) => mountAutomationsPage(ctx, sandbox),
   mcp: (ctx, sandbox, route) => mountMcpPage(ctx, sandbox, route),
+  secrets: (ctx, sandbox, route) => mountSecretsPage(ctx, sandbox, route),
   dashboard: (ctx, sandbox) => mountDashboardPage(ctx, sandbox),
 };
 
@@ -584,6 +586,10 @@ function createApp(root, transport) {
         break;
       case 'settings':
         setCenter('settings', () => mountSettingsPage(ctx));
+        break;
+      case 'secrets':
+        // Team secrets without a sandbox (the user menu); agent secrets need one.
+        setCenter('secrets', () => mountSecretsPage(ctx, null, route));
         break;
       case 'design':
         setCenter('design', () => mountDesignPage(ctx));

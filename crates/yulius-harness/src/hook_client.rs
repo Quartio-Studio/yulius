@@ -79,6 +79,11 @@ pub fn run_hook_with(
     env: &dyn Fn(&str) -> Option<String>,
     hold: HoldPolicy,
 ) -> i32 {
+    // Tool results are redacted here, inside the sandbox, from fingerprints: the result itself
+    // never goes to the server (SPEC-002 ADR-20).
+    if harness == "claude" && event == "PostToolUse" {
+        return crate::scrub_client::post_tool_use(input, output, env);
+    }
     if let Ok(body) = forward(harness, event, input, env, HOOK_TIMEOUT, hold) {
         let _ignored = output.write_all(&body).and_then(|()| output.flush());
     }
@@ -147,10 +152,10 @@ pub(crate) fn forward(
     if addrs.is_empty() || !addrs.iter().all(|a| a.ip().is_loopback()) {
         return Err(HookError::NotLoopback);
     }
+    let path = format!("/hooks/{harness}/{event}");
     let request = Request {
         target: &target,
-        harness,
-        event,
+        path: &path,
         token: &token,
         body: &body,
         timeout,
@@ -176,11 +181,44 @@ pub(crate) fn forward(
     }
 }
 
+/// POSTs `body` to `${YULIUS_URL}<path>` with the task token (no hold): the internal
+/// endpoints the in-sandbox redaction uses.
+pub(crate) fn post_internal(
+    path: &str,
+    body: &[u8],
+    env: &dyn Fn(&str) -> Option<String>,
+    timeout: Duration,
+) -> Result<Vec<u8>, HookError> {
+    let url = env(YULIUS_URL_ENV).ok_or(HookError::MissingEnv)?;
+    let token = env(TASK_TOKEN_ENV).ok_or(HookError::MissingEnv)?;
+    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(HookError::MissingEnv);
+    }
+    let target = parse_url(&url)?;
+    let addrs: Vec<SocketAddr> = (target.host.as_str(), target.port)
+        .to_socket_addrs()
+        .map_err(|_| HookError::Url)?
+        .collect();
+    if addrs.is_empty() || !addrs.iter().all(|a| a.ip().is_loopback()) {
+        return Err(HookError::NotLoopback);
+    }
+    let request = Request {
+        target: &target,
+        path,
+        token: &token,
+        body,
+        timeout,
+    };
+    match ask(&addrs, &request)? {
+        Answer::Output(response) => Ok(response),
+        Answer::Hold(_) => Err(HookError::Protocol),
+    }
+}
+
 /// One hook request's fixed parts.
 struct Request<'a> {
     target: &'a Target,
-    harness: &'a str,
-    event: &'a str,
+    path: &'a str,
     token: &'a str,
     body: &'a [u8],
     timeout: Duration,
@@ -262,8 +300,7 @@ fn remaining(deadline: Instant) -> Result<Duration, HookError> {
 fn exchange(addr: &SocketAddr, request: &Request<'_>) -> Result<Answer, HookError> {
     let Request {
         target,
-        harness,
-        event,
+        path,
         token,
         body,
         timeout,
@@ -272,7 +309,7 @@ fn exchange(addr: &SocketAddr, request: &Request<'_>) -> Result<Answer, HookErro
     let deadline = Instant::now() + timeout;
     stream.set_write_timeout(Some(remaining(deadline)?))?;
     let head = format!(
-        "POST {}/hooks/{harness}/{event} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\
+        "POST {}{path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         target.base_path,
         target.host_header,
@@ -297,6 +334,9 @@ fn exchange(addr: &SocketAddr, request: &Request<'_>) -> Result<Answer, HookErro
         return Err(HookError::Protocol);
     }
     let status: u16 = code.parse().map_err(|_| HookError::Protocol)?;
+    if status == 204 {
+        return Ok(Answer::Output(Vec::new()));
+    }
     if status != 200 && status != 202 {
         return Err(HookError::Status(status));
     }
