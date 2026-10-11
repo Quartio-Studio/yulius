@@ -80,6 +80,7 @@ Principles:
 | ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. The App's permissions and what each is for: `docs/operations.md`; a read the App lacks the permission for degrades instead of failing (checks: §10, #111). |
 | ADR-09 | Superseded by ADR-15 (F 2026-10-10) for the user's view: the DOM mirror, its recorder, replayer and resource endpoint are removed; the per-sandbox Chromium, CDP for agents, the welcome page and the screencast (now the labelled JPEG fallback) remain. Earlier: narrowed by ADR-14 (F 2026-10-09): the mirror is now only the remote view of the sandbox Chrome's tabs (agents' tabs and hand-offs); the user's own browsing of the sandbox's apps is live (ADR-14). Per-sandbox headless Chromium; the user's view is a live DOM mirror: the rrweb recorder is injected through CDP into the page's main world (it must see the page's CSSOM patches) and reports to a CDP binding; the UI replays the events in rrweb's script-free iframe (sandbox `allow-same-origin` only — never `UNSAFE_replayCanvas`, which would let any page run script as Yulius through the binding) and paints sampled canvas frames itself; page resources the user's browser cannot reach are fetched by the server browser through a same-origin-only endpoint served with a `sandbox` CSP. The CDP screencast is the labelled fallback; input is dispatched with CDP `Input.*`; viewers learn viewport changes at once. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer; recorder in an isolated world (misses CSS-in-JS rules) | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; plugins, internal pages and pages that send no DOM need the fallback. |
 | ADR-10 | Built-in editor: Monaco (VS Code's editor component, vendored AMD build without its translations) in the web UI over a small file API (`/api/sandboxes/{sid}/files…`) on the sandbox repository or a task worktree; per-user view state stays in the browser. | openvscode-server per sandbox (original: needed a token cookie fix, ran outside containment, too heavy); per-user contained openvscode-server (built, then dropped by the founder: "much simpler, without 90% of the features"); CodeMirror (needs a bundler) | No editor process or prerequisite on the VM; 14 MB of static assets (the TypeScript worker is 7 MB, loaded only for JS/TS); no extensions, debugging or integrated terminal (shells cover that). |
+| ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 | ADR-12 | Kept by ADR-22 (F 2026-10-10): under the holder the identity files are the user's line followed by the sandbox system's own users and groups, and `sudo` is also a dpkg-diverted shim in the system layer. Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
 | ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
 | ADR-14 | Narrowed by ADR-15 (F 2026-10-10): the panel's live iframe tabs are removed; the preview origins and their proxy remain for one action, "Open live in a new window" on a sandbox dev server, and the no-recursion rules stay. Originally: the user browses the sandbox's apps **live in their own browser**: each (sandbox, port) has a preview origin `<port>-<key>.<yulius host>` that Yulius reverse-proxies to `127.0.0.1:<port>`, removing the iframe obstacles; the agents keep the sandbox's headless Chrome (ADR-09), whose tabs share the panel's strip and are watched remotely with the agent's cursor; Yulius never opens inside itself. Analysis and contract: §2.1. | Keep the mirror (A); pixel or video streaming (B); hybrids (D) | Native page behaviour on desktop and phone; needs wildcard DNS and TLS for the preview hosts (on-demand TLS); the app runs in the user's browser, so its absolute `localhost` URLs in page code do not reach the VM. |
@@ -87,9 +88,8 @@ Principles:
 | ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done; a new task's mode and workflow on Auto are two more fixed questions with Goal and "Feature" as the defaults (TSK-015). Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
 | ADR-17 | Claude subscriptions are **one self-managing pool** (F 2026-10-10): use-it-or-lose-it placement (weekly headroom ÷ hours to its reset ÷ tasks on the account + 1), a proactive switch at 98 % of any binding window at the turn boundary by native resume, and a **gentle, invisible pause** held by the harness — the Stop / `UserPromptSubmit` hook answers `202 Retry-After` and `yulius hook` keeps polling — persisted in `capacity_pauses`, resumed oldest first and staggered; a burn-rate forecast says when to buy more. Analysis and contract: §2.4. | Manual priorities (before); suspending the agent (SIGSTOP); letting the CLI hit the limit and typing a resume prompt; killing and resuming | No knobs; capacity that expires is spent first; switches only when forced; the agent is never told; a hold survives restarts; the CLI shows "running hook" while paused and a held agent keeps its session slot; relies on Claude Code honouring a long hook `timeout` (fallback: the reported-limit pause). |
 | ADR-18 | **Updates from `main` through a root helper** (F 2026-10-10): the binary embeds its commit; the server reads `main` of Quartio-Studio/yulius hourly (App token, else a read token) and offers newer commits to superadmins; "Update now" runs one persisted run — **build** (tasks keep working) → **drain** (every Stop / `UserPromptSubmit` held as in ADR-17, starts queue, until every live task is at a pause point) → **install** by a oneshot root helper started by a root-owned systemd path unit (stop, back up binary and database, install, start, health check, roll back) → **resume** (staggered). Analysis and contract: §2.5. | Pausing before building (the coordinator's draft order); polkit or sudo for `systemctl start`; a shell-script helper; a separate helper binary; auto-update | Tasks pause for about a minute, not for the build; a failed build touches nothing; the helper runs code of `main` as root while building (as the manual deploy did); a held agent keeps its session; a turn longer than 30 minutes cancels the update unless the superadmin continues without waiting. The Jev key moves into sealed settings (ADM-002, §2.5). |
-| ADR-20 | **Secrets vault** (F 2026-10-10): team secrets and agent secrets under envelope encryption (per-write data keys, XChaCha20-Poly1305, KEK from the master key by HKDF); team reveals behind a 10-minute re-authentication, audited; agents use secrets without seeing them through a credential-injecting egress proxy on the internal listener (TLS interception only for hosts bound to a secret) and `browser_fill_secret`; exact values and encodings redacted from every channel an agent reads (Bash wrapper, `PostToolUse` rewrite, MCP results, proxy responses) and from the terminal. Analysis: §2.6. | `age`; `aes-gcm`; SQLCipher; an external vault; values in the environment; a request-making tool | One store for people and agents; agents' HTTP goes through Yulius; redaction is an oracle for weak values (8-character minimum); remaining threats in §2.6. |
-| ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 | ADR-19 | **One autonomous delivery discipline** (F 2026-10-10, #139): steps of similar effort with effort-weighted progress and pure-function rules (bounds, at most 2 in progress, no reopening by agents, reasons for blocked/skipped) plus never-blocking nudges; a spec only where it matters (by workflow, else by changed paths); one pipeline for features and fixes with an independent review in a fresh session and merge on green; infra bootstrap on Yulius CI without GitHub Actions; a docs-first briefing; bundled skills adapted to be universal. Analysis and contract: §2.5. | A hard step gate at every turn; LLM-judged step sizes; specs for everything; vendoring skills byte for byte; Bartek's full N2/N3 rule set (module locks, owner flags, scripted merge lock, DORA dashboards) | Progress means something without ceremony; agents keep momentum; the harness checks what a machine can check and nudges the rest; the remaining judgment (step sizes) stays with the agent, so a dishonest plan is caught only by its pace. |
+| ADR-20 | **Secrets vault** (F 2026-10-10): team secrets and agent secrets under envelope encryption (per-write data keys, XChaCha20-Poly1305, KEK from the master key by HKDF); team reveals behind a 10-minute re-authentication, audited; agents use secrets without seeing them through a credential-injecting egress proxy on the internal listener (TLS interception only for hosts bound to a secret) and `browser_fill_secret`; exact values and encodings redacted from every channel an agent reads (Bash wrapper, `PostToolUse` rewrite, MCP results, proxy responses) and from the terminal. Analysis: §2.6. | `age`; `aes-gcm`; SQLCipher; an external vault; values in the environment; a request-making tool | One store for people and agents; agents' HTTP goes through Yulius; redaction is an oracle for weak values (8-character minimum); remaining threats in §2.6. |
 | ADR-21 | **Yulius is the projects' only CI** (F 2026-10-10: "100% local … zero paid github features … deleting GitHub Actions completely"). Each sandbox's `[[ci.jobs]]`, or `[commands] gate`, is read from the integration branch; the profile's `gate` overrides it. Yulius runs the jobs for every open pull request head and every new integration and production head, once per commit, in parallel. Each job goes through the process host inside the sandbox's containment, without secrets, in a persistent per-job checkout with persistent caches. Results go to the commit status `yulius/ci`. Once a sandbox has CI, the merge gate takes the run at the exact head alone. Hygiene deletes merged branches and cleans stale branches and worktrees. Analysis and contract: §2.7. | GitHub Actions on hosted or Blacksmith runners (paid per minute, Actions workflows); a self-hosted Actions runner (still Actions, still a workflow per repository); a separate CI server (Buildkite agent, Woodpecker: another service to run and secure); running the gate in the agent's worktree (stale caches mixed with the agent's work, no isolation from the task) | One CI, on infrastructure we control, with no GitHub plan dependency. Merges are enforced by Yulius, not by rulesets. The VM pays the CPU, disk and caches. Statuses need the App's "Commit statuses: write"; pushes that delete workflows need "Workflows: write". Agents can still read a token through the Git credential helper, so the gate binds agents that merge through Yulius, not a hostile agent (§8). |
 | ADR-22 | **Sandbox isolation** (F 2026-10-10): one namespace holder per sandbox — a user namespace with a subordinate id range, a private network namespace (`slirp4netns` egress, host loopback off, explicit relays for the internal listener and the sandbox's dev-server ports) and a mount namespace holding the sandbox's **system layer** (overlay of a Yulius-owned copy of the host system with a per-sandbox upper, so `sudo apt install` persists per sandbox); every run joins it, then gets its own PID/IPC/UTS/cgroup namespaces, a reduced capability set and a seccomp filter; per-sandbox cgroup v2 limits and a soft disk quota. Analysis and contract: §2.8. | rootless Podman; gVisor; microVMs (no KVM on the host); fuse-overlayfs over the live host system | `apt` works and persists per sandbox; host loopback services, other sandboxes and abstract sockets unreachable; limits per sandbox; needs an `/etc/subuid` range and `Delegate=` on the unit; without them the previous containment stays (`legacy`); the base copy costs ~6 GB and a few minutes per host system change. |
 
@@ -816,54 +816,6 @@ Code honours an 8-day hook `timeout`; if it ended the hook earlier, the hook fai
 continues on a subscription at 98 % or more, and a reported limit pauses it as `limit` — work is
 never lost.
 
-### 2.5 ADR-19: one autonomous delivery discipline (F 2026-10-10)
-
-**Problem.** Michał (F 2026-10-10, item 3(b)): "9/10 should mean 90%", steps must "keep arriving
-uniformly to avoid 0%->100% jumps", every feature takes the same path from spec to production
-with no human acceptance, "features must have specs but research not … robust but flexible, first
-principles", projects get senior-grade foundations on our own CI, agents know the whole product,
-and the Open Mercato skills become universal. Before: the Feature workflow seeded phases
-("Implement" was most of the work), the step tools accepted any shape, the domain step rules were
-unused, the Stop gate demanded a spec for any change, the briefing said people merge, and the
-skills assumed Open Mercato's harness.
-
-**Steps** (`yulius_domain::steps`, pure; `yulius_app::discipline` feeds them):
-
-| Rule | Where | Kind |
-| --- | --- | --- |
-| 1-30 unique, non-empty steps ≤ 200 chars; effort 1-3 (default 1); `blocked` only with a note | `steps_set` (`validate_plan`), `spec_check` (Plan ≤ 30 top-level items, no repeats) | refusal |
-| At most 2 in progress; an agent never reopens done/skipped; blocked always and skipped by an agent need a note | `step_update` (`check_update`) | refusal |
-| Effort-weighted `percent` (skipped counts as finished) | API, tools, briefing, strip | — |
-| Coarse plan (< 3 when a spec is needed), fine plan (> 12), phase-only titles, > ⅓ of steps at effort 3, none started, two open, stale (> max(45 min, 3 × typical duration per effort unit)), burst (≥ 3 steps and ≥ 30 % of the effort finished in the last 10 min) | step tool results, `spec_check`, briefing | nudge |
-| Branch changed and no step ever started; for a goal, a stale step | Stop hook, once per task and kind, only when the turn stays on its subscription, never counted as a gate block | one-shot nudge |
-
-Start and finish times are the latest `in_progress` and `done`/`skipped` events of `step_events`
-(indexed per task by migration 11), so every path that changes steps (tools, spec sync, people)
-feeds them without new bookkeeping. Effort lives in `steps.effort`; the spec sync keeps it by title.
-
-**Spec policy** (`SpecPolicy`): the task's workflow decides (`require_spec`); without one, a spec
-is required as soon as the branch's changed paths (`review_changes` against the integration
-branch, both sides of renames) include anything that is not documentation; a cut or unreadable
-list counts as code. The Stop gate, `spec_check` (`required`) and the automatic pull request (no
-plan needed when no spec is) apply it.
-
-**Pipeline.** Briefing, `delivery-pipeline` skill and workflows describe one path: ready issue →
-spec → test-first slices → gates → independent review (fresh context, read-only, verdict for the
-exact head, ≤ 3 rounds) → fixes → pull request → merge on green → deploy/verify → promote → verify
-→ cleanup. Machine-checked: base, linked ready issue, size, tests changed, gate green on the exact
-head (Yulius CI, #138), review on the exact head, up to date. Agent merge/deploy/promote and
-`issue_create` are a separate change (DLV-008).
-
-**Foundations.** The briefing reads `yulius.toml` (test, lint) and counts `.github/workflows/*.y(a)ml`
-(a real directory inside the repository) and asks a code-changing task to bootstrap first
-(workflow Infra bootstrap, skill `infra-bootstrap`); the onboarding prompt does the same.
-
-**Taken from Bartek's N2/N3 playbook:** small PRs, a test that fails without the change,
-independent review in a fresh session, machine-checked gates, flaky-test rules (no retries,
-quarantine with an issue), Definition-of-Ready labels. **Left out:** owner flags and exceptions
-(no human acceptance), module locks (scope claims and messages instead), the scripted merge lock
-and promotion records (Yulius delivery serializes merges), second-model-family review (Claude
-only, F 2026-10-08), GitHub rulesets and Actions (paid), DORA dashboards.
 ### 2.5 ADR-18: Updates from main and the root update helper (F 2026-10-10)
 
 Status: accepted and implemented (issue #140).
@@ -972,7 +924,56 @@ start is discarded by a rollback. A task in a turn longer than 30 minutes cancel
 someone continues without waiting (its agent may then see a failed Yulius tool call). The first
 installation of the helper and the read credential are an operator step (`docs/operations.md` §8).
 
-### 2.6 ADR-20: the secrets vault — team secrets people reveal, agent secrets agents use but never see (F 2026-10-10)
+### 2.6 ADR-19: one autonomous delivery discipline (F 2026-10-10)
+
+**Problem.** Michał (F 2026-10-10, item 3(b)): "9/10 should mean 90%", steps must "keep arriving
+uniformly to avoid 0%->100% jumps", every feature takes the same path from spec to production
+with no human acceptance, "features must have specs but research not … robust but flexible, first
+principles", projects get senior-grade foundations on our own CI, agents know the whole product,
+and the Open Mercato skills become universal. Before: the Feature workflow seeded phases
+("Implement" was most of the work), the step tools accepted any shape, the domain step rules were
+unused, the Stop gate demanded a spec for any change, the briefing said people merge, and the
+skills assumed Open Mercato's harness.
+
+**Steps** (`yulius_domain::steps`, pure; `yulius_app::discipline` feeds them):
+
+| Rule | Where | Kind |
+| --- | --- | --- |
+| 1-30 unique, non-empty steps ≤ 200 chars; effort 1-3 (default 1); `blocked` only with a note | `steps_set` (`validate_plan`), `spec_check` (Plan ≤ 30 top-level items, no repeats) | refusal |
+| At most 2 in progress; an agent never reopens done/skipped; blocked always and skipped by an agent need a note | `step_update` (`check_update`) | refusal |
+| Effort-weighted `percent` (skipped counts as finished) | API, tools, briefing, strip | — |
+| Coarse plan (< 3 when a spec is needed), fine plan (> 12), phase-only titles, > ⅓ of steps at effort 3, none started, two open, stale (> max(45 min, 3 × typical duration per effort unit)), burst (≥ 3 steps and ≥ 30 % of the effort finished in the last 10 min) | step tool results, `spec_check`, briefing | nudge |
+| Branch changed and no step ever started; for a goal, a stale step | Stop hook, once per task and kind, only when the turn stays on its subscription, never counted as a gate block | one-shot nudge |
+
+Start and finish times are the latest `in_progress` and `done`/`skipped` events of `step_events`
+(indexed per task by migration 11), so every path that changes steps (tools, spec sync, people)
+feeds them without new bookkeeping. Effort lives in `steps.effort`; the spec sync keeps it by title.
+
+**Spec policy** (`SpecPolicy`): the task's workflow decides (`require_spec`); without one, a spec
+is required as soon as the branch's changed paths (`review_changes` against the integration
+branch, both sides of renames) include anything that is not documentation; a cut or unreadable
+list counts as code. The Stop gate, `spec_check` (`required`) and the automatic pull request (no
+plan needed when no spec is) apply it.
+
+**Pipeline.** Briefing, `delivery-pipeline` skill and workflows describe one path: ready issue →
+spec → test-first slices → gates → independent review (fresh context, read-only, verdict for the
+exact head, ≤ 3 rounds) → fixes → pull request → merge on green → deploy/verify → promote → verify
+→ cleanup. Machine-checked: base, linked ready issue, size, tests changed, gate green on the exact
+head (Yulius CI, #138), review on the exact head, up to date. Agent merge/deploy/promote and
+`issue_create` are a separate change (DLV-008).
+
+**Foundations.** The briefing reads `yulius.toml` (test, lint) and counts `.github/workflows/*.y(a)ml`
+(a real directory inside the repository) and asks a code-changing task to bootstrap first
+(workflow Infra bootstrap, skill `infra-bootstrap`); the onboarding prompt does the same.
+
+**Taken from Bartek's N2/N3 playbook:** small PRs, a test that fails without the change,
+independent review in a fresh session, machine-checked gates, flaky-test rules (no retries,
+quarantine with an issue), Definition-of-Ready labels. **Left out:** owner flags and exceptions
+(no human acceptance), module locks (scope claims and messages instead), the scripted merge lock
+and promotion records (Yulius delivery serializes merges), second-model-family review (Claude
+only, F 2026-10-08), GitHub rulesets and Actions (paid), DORA dashboards.
+
+### 2.7 ADR-20: the secrets vault — team secrets people reveal, agent secrets agents use but never see (F 2026-10-10)
 
 Status: accepted and implemented (issue #141). Requirements VLT-001..009 (SPEC-001 §5.19).
 
@@ -1146,7 +1147,8 @@ an audit trail. Not verified against a live CLI (no paid run in this change): th
 behaviour of `CLAUDE_CODE_SHELL_PREFIX` and `updatedToolOutput` inside a real Claude Code session;
 both were read from the installed 2.1.292 bundle, and the wrapper and the hook are tested
 directly.
-### 2.7 ADR-21: Yulius runs the projects' CI (F 2026-10-10)
+
+### 2.8 ADR-21: Yulius runs the projects' CI (F 2026-10-10)
 
 Status: accepted and implemented (issue #138).
 
@@ -1297,7 +1299,7 @@ needs the following, in order:
 - The gate binds merges made through Yulius. An agent that extracts a token from the credential
   helper could still merge through GitHub's API (§8).
 
-### 2.8 ADR-22: sandbox isolation — one namespace holder per sandbox (F 2026-10-10)
+### 2.9 ADR-22: sandbox isolation — one namespace holder per sandbox (F 2026-10-10)
 
 Status: accepted and implemented (issue #142). Extends ADR-03 (bubblewrap) and ADR-12 (user
 identity); resolves SPEC-001 U-12; narrows R-07.
@@ -2393,6 +2395,8 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-11: editorial — §2 decision records and their index table in ADR order (two §2.5
+  sections are now §2.5 ADR-18 and §2.6 ADR-19); no decision changed.
 - 2026-10-11 (F 2026-10-09, decision on #88): §8 the client address of per-client limits — the
   trusted proxy's header only with the shared secret, else the TCP peer — and the measured reach
   of the public listener from sandboxes (ADR-22's host-loopback property cross-referenced); §9
