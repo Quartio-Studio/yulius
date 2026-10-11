@@ -577,11 +577,10 @@ impl App {
             default_branch
         };
         let profile = import_profile(&owner, &name, yulius_toml.as_deref());
-        let onboarding = if report.is_valid() {
-            "not_needed"
-        } else {
-            "pending"
-        };
+        // Every imported repository gets an onboarding task: the full preparation when its docs
+        // do not follow the format yet, the development environment alone when they do
+        // (F 2026-10-11: "on onboarding every environmental things should be installed").
+        let onboarding = "pending";
         let record = SandboxRecord {
             id: id.clone(),
             slug: String::new(),
@@ -606,7 +605,7 @@ impl App {
                 return Err(err);
             }
         };
-        if onboarding == "pending" {
+        {
             // The sandbox exists now; a failed meta-task creation leaves it pending (an admin
             // can skip) instead of reporting the whole import as failed.
             match self.create_onboarding_task(&record, user, &report).await {

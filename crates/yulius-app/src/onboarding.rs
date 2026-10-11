@@ -49,6 +49,22 @@ const MAX_STATUS_PROBLEMS: usize = 5;
 /// Title of the preparation meta-task.
 pub const ONBOARDING_TITLE: &str = "Prepare this repository for Yulius";
 
+/// The development-environment instruction every onboarding task starts with (F 2026-10-11:
+/// the preparation agent had no Rust toolchain afterwards).
+const ENVIRONMENT_SETUP: &str = "Set up this sandbox's development environment before anything \
+else, so you and every later task can build and test: install each toolchain and system \
+package the repository needs (its bootstrap script or docs; toolchain files such as \
+rust-toolchain.toml, .nvmrc / package.json engines, .python-version / pyproject.toml, go.mod, \
+Gemfile), with `sudo apt-get install` for system packages and the official installers for \
+toolchains (for example rustup into your home: `curl https://sh.rustup.rs -sSf | sh -s -- -y`). \
+~/.cargo/bin and ~/.local/bin are on PATH for every run; installed packages and your home \
+persist in this sandbox. Then run the repository's own test, lint and build commands until they \
+work, and record them in yulius.toml [commands]. A check that still cannot run is a problem to \
+report in the pull request, never a reason to skip it silently.";
+
+/// Title of the onboarding task of a repository that already follows the Yulius format.
+pub const ENVIRONMENT_TITLE: &str = "Set up this sandbox's environment";
+
 /// Sandbox onboarding state (SPEC-002 §6.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OnboardingState {
@@ -237,17 +253,7 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          1. Read the repository's own instructions first (AGENTS.md, CLAUDE.md, .agents/skills, \
          .claude/skills, CONTRIBUTING and README). They stay authoritative: follow them for \
          branches, commits, tests and reviews.\n\
-         2. Set up this sandbox's development environment before anything else, so you and every \
-         later task can build and test: install each toolchain and system package the \
-         repository needs (its bootstrap script or docs; toolchain files such as \
-         rust-toolchain.toml, .nvmrc / package.json engines, .python-version / pyproject.toml, \
-         go.mod, Gemfile), with `sudo apt-get install` for system packages and the official \
-         installers for toolchains (for example rustup into your home: `curl \
-         https://sh.rustup.rs -sSf | sh -s -- -y`). ~/.cargo/bin and ~/.local/bin are on PATH for \
-         every run; installed packages and your home persist in this sandbox. Then run the \
-         repository's own test, lint and build commands until they work, and record them in \
-         yulius.toml [commands]. A check that still cannot run is a problem to report in the pull \
-         request, never a reason to skip it silently.\n\
+         2. {environment}\n\
          3. Reverse-engineer the existing project into these documents: the product summary, an \
          architecture document and decision records derived from the code and its history, so \
          every later task knows the whole product before it builds anything.\n\
@@ -284,7 +290,42 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          11. Before finishing, make sure every problem listed above is resolved.",
         preset = profile.preset,
         problems = problems.join("\n"),
+        environment = ENVIRONMENT_SETUP,
     )
+}
+
+/// The onboarding task of a repository that already follows the Yulius format: only the
+/// sandbox's development environment (F 2026-10-11: "on onboarding every environmental things
+/// should be installed").
+#[must_use]
+pub fn environment_prompt(repo: &str, profile: &Profile) -> String {
+    let integration = &profile.integration_branch;
+    let production = &profile.production_branch;
+    format!(
+        "Set up the sandbox of the repository {repo} for work.\n\n\
+         The repository already follows the Yulius documentation format; what this sandbox \
+         still needs is its development environment.\n\n\
+         1. Read the repository's own instructions first (AGENTS.md, CLAUDE.md, README, \
+         CONTRIBUTING and the development docs). They stay authoritative.\n\
+         2. {ENVIRONMENT_SETUP}\n\
+         3. Change only what the environment needs (yulius.toml [commands], a missing setup \
+         note in the docs), never application code. When you changed something, commit it on \
+         your task branch and mark every step done: Yulius opens the pull request into \
+         {integration} by itself. Do not open it yourself, and never push to {integration} or \
+         {production}. When nothing needed to change, just mark the steps done."
+    )
+}
+
+/// Initial steps of the environment-only onboarding task.
+fn environment_steps() -> Vec<String> {
+    [
+        "Read the repository's instructions and conventions",
+        "Install the toolchains and run the repository's own checks",
+        "Record the working commands in yulius.toml [commands]",
+    ]
+    .iter()
+    .map(|step| (*step).to_owned())
+    .collect()
 }
 
 /// Initial steps of the preparation task.
@@ -316,15 +357,29 @@ impl App {
     ) -> AppResult<TaskRecord> {
         let profile = self.profile_of(sandbox);
         let repo = format!("{}/{}", sandbox.repo_owner, sandbox.repo_name);
+        // A repository that already follows the format still needs its environment.
+        let (prompt, title, steps) = if report.is_valid() {
+            (
+                environment_prompt(&repo, &profile),
+                ENVIRONMENT_TITLE,
+                environment_steps(),
+            )
+        } else {
+            (
+                onboarding_prompt(&repo, &profile, report),
+                ONBOARDING_TITLE,
+                onboarding_steps(),
+            )
+        };
         let task = self
             .create_task_internal(NewTask {
                 sandbox: sandbox.id.clone(),
                 created_by: user.id.clone(),
-                prompt: onboarding_prompt(&repo, &profile, report),
+                prompt,
                 harness: Harness::ClaudeCode,
-                title: Some(ONBOARDING_TITLE.to_owned()),
+                title: Some(title.to_owned()),
                 workflow_id: None,
-                steps: onboarding_steps(),
+                steps,
                 model: None,
                 effort: None,
                 origin: TaskOrigin::Onboarding,
@@ -623,10 +678,9 @@ impl App {
                 "Ready: the repository already follows the Yulius format.".into(),
                 Vec::new(),
             ),
-            Some(OnboardingState::Ready) => (
-                "Ready: the preparation task adapted the repository.".into(),
-                Vec::new(),
-            ),
+            Some(OnboardingState::Ready) => {
+                ("Ready: the preparation task finished.".into(), Vec::new())
+            }
             Some(OnboardingState::Skipped) => (
                 "Ready: an admin skipped the preparation.".into(),
                 Vec::new(),
