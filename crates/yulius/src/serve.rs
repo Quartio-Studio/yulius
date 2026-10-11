@@ -134,7 +134,7 @@ pub struct ServeArgs {
     /// Minutes between automatic checks of `main` (0: only "Check now").
     #[arg(long, env = "YULIUS_UPDATE_CHECK_MINUTES", default_value_t = 60)]
     pub update_check_minutes: u64,
-    /// Yulius-run CI (SPEC-002 ADR-20): `off` stops running projects' CI jobs (merges that
+    /// Yulius-run CI (SPEC-002 ADR-21): `off` stops running projects' CI jobs (merges that
     /// require checks then wait for GitHub's checks again).
     #[arg(long, env = "YULIUS_CI", default_value = "on", value_parser = ["on", "off"])]
     pub ci: String,

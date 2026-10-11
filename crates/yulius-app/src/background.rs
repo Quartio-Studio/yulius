@@ -72,7 +72,7 @@ impl App {
                 app.reconcile_deliveries().await;
             }
         });
-        // Yulius-run CI and repository hygiene (SPEC-002 ADR-20).
+        // Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
         self.start_ci();
         // Account usage in its own loop: a slow provider never delays queue draining.
         let app = Arc::clone(self);

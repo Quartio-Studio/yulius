@@ -1,4 +1,4 @@
-//! Yulius-run CI end to end (SPEC-001 DLV-006/007, AC-DLV-4/5; SPEC-002 ADR-20): a real
+//! Yulius-run CI end to end (SPEC-001 DLV-006/007, AC-DLV-4/5; SPEC-002 ADR-21): a real
 //! repository with `[[ci.jobs]]` on the integration branch, the real Git adapter, the real
 //! detached ptyhost running the jobs, and the fake GitHub recording commit statuses and branch
 //! deletions.

@@ -1,4 +1,4 @@
-//! Yulius-run CI runs and jobs (SPEC-002 ADR-20, tables `ci_runs` and `ci_jobs`).
+//! Yulius-run CI runs and jobs (SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};

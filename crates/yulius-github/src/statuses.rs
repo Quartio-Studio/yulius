@@ -1,5 +1,5 @@
 //! Commit statuses Yulius publishes for its own CI runs, and branch deletion for repository
-//! hygiene (SPEC-001 DLV-006/007, SPEC-002 ADR-20).
+//! hygiene (SPEC-001 DLV-006/007, SPEC-002 ADR-21).
 
 use reqwest::Method;
 

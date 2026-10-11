@@ -428,7 +428,7 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 ยง6.7, ย
 
 ## CI (Yulius-run) and repository hygiene
 
-Yulius is the projects' only CI (SPEC-001 DLV-006/007, SPEC-002 ADR-20). The jobs come from
+Yulius is the projects' only CI (SPEC-001 DLV-006/007, SPEC-002 ADR-21). The jobs come from
 `yulius.toml` on the integration branch, or from the profile's `gate`:
 
 ```toml

@@ -185,7 +185,7 @@ pub trait GitPort: Send + Sync {
         unsupported("listing files at a revision")
     }
     /// Prepares a persistent detached CI checkout at `path` (inside `owned_root`) on `sha`,
-    /// keeping ignored files as a cache (SPEC-002 ADR-20).
+    /// keeping ignored files as a cache (SPEC-002 ADR-21).
     async fn ci_checkout(
         &self,
         repo: &Path,

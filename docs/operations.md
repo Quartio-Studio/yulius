@@ -397,7 +397,7 @@ passed, so merges and releases that require checks wait.
 
 ### CI on this machine
 
-Yulius is the projects' only CI (SPEC-002 ADR-20). No GitHub Actions or paid GitHub feature is
+Yulius is the projects' only CI (SPEC-002 ADR-21). No GitHub Actions or paid GitHub feature is
 involved.
 
 **What runs.** For each sandbox:

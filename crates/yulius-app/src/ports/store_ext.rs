@@ -371,7 +371,7 @@ pub trait UpdateStore: Send + Sync {
     ) -> AppResult<()>;
 }
 
-/// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-20, tables `ci_runs` and `ci_jobs`).
+/// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
 #[async_trait]
 pub trait CiStore: Send + Sync {
     /// Inserts a run with its jobs atomically.

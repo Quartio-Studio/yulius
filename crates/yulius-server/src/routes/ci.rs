@@ -1,4 +1,4 @@
-//! Yulius-run CI and repository hygiene (SPEC-001 DLV-006/007, SPEC-002 ADR-20; docs/api.md
+//! Yulius-run CI and repository hygiene (SPEC-001 DLV-006/007, SPEC-002 ADR-21; docs/api.md
 //! "CI"). Reads need read access to the sandbox; running, cancelling and cleaning up need write
 //! access.
 

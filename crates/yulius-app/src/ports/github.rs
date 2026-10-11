@@ -222,7 +222,7 @@ pub struct NewPull {
     pub body: String,
 }
 
-/// A commit status to publish (SPEC-002 ADR-20).
+/// A commit status to publish (SPEC-002 ADR-21).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewCommitStatus {
     /// `pending`, `success`, `failure` or `error`.

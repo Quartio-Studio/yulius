@@ -1,4 +1,4 @@
-// CI page (SPEC-001 DLV-006/007, SPEC-002 ADR-20): Yulius is the projects' only CI. The jobs
+// CI page (SPEC-001 DLV-006/007, SPEC-002 ADR-21): Yulius is the projects' only CI. The jobs
 // in force and where they come from, the runs of pull request heads and of the integration and
 // production branches with each job's log, Run again and Cancel, and repository hygiene (stale
 // branches and worktrees). A run opens from `?run=<id>`, the link of the `yulius/ci` commit status.

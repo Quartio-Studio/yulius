@@ -1,4 +1,4 @@
--- Yulius schema (SPEC-001 DLV-006, SPEC-002 ADR-20): Yulius is the projects' CI. A run tests one
+-- Yulius schema (SPEC-001 DLV-006, SPEC-002 ADR-21): Yulius is the projects' CI. A run tests one
 -- commit of a sandbox with the sandbox's CI jobs (in parallel) and is published as the commit
 -- status `yulius/ci`.
 CREATE TABLE ci_runs (

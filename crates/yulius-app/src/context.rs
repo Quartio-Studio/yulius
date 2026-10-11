@@ -60,7 +60,7 @@ pub struct AppConfig {
     pub own_ports: Vec<u16>,
     /// Largest file one upload may carry (SPEC-001 EDT-006, UI-048; `YULIUS_UPLOAD_MAX_MB`).
     pub upload_max_bytes: u64,
-    /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-20).
+    /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21).
     pub ci: crate::ci::CiSettings,
 }
 
@@ -168,7 +168,7 @@ pub struct App {
     pub(crate) intake: OnceLock<crate::intake::IntakeServices>,
     /// Instance updates: checks of `main` and the update run (SPEC-002 ADR-18).
     pub(crate) updates: crate::updates::UpdateState,
-    /// Yulius-run CI and repository hygiene (SPEC-002 ADR-20).
+    /// Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
     pub(crate) ci: crate::ci::CiState,
 }
 
