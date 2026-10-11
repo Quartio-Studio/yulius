@@ -141,6 +141,8 @@ pub(crate) struct WirePull {
     draft: Option<bool>,
     #[serde(default)]
     mergeable: Option<bool>,
+    #[serde(default)]
+    mergeable_state: Option<String>,
     head: WireRef,
     base: WireRef,
     #[serde(default)]
@@ -168,6 +170,7 @@ impl From<WirePull> for PullRequest {
             head_sha: pull.head.sha,
             draft: pull.draft.unwrap_or(false),
             mergeable: pull.mergeable,
+            behind: pull.mergeable_state.as_deref() == Some("behind"),
             merge_commit_sha: if merged { pull.merge_commit_sha } else { None },
         }
     }
@@ -296,6 +299,26 @@ pub(crate) fn summarize(reads: CheckReads) -> ChecksReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F 2026-10-11: a pull request behind its base under a strict ruleset is refused with
+    /// "required status checks are expected"; GitHub says so in `mergeable_state`.
+    #[test]
+    fn a_pull_request_behind_its_base_is_marked() -> Result<(), serde_json::Error> {
+        let pull = |state: &str| {
+            serde_json::from_value::<WirePull>(serde_json::json!({
+                "number": 7,
+                "state": "open",
+                "mergeable": true,
+                "mergeable_state": state,
+                "head": {"ref": "feat/7", "sha": "h"},
+                "base": {"ref": "dev", "sha": "b"},
+            }))
+            .map(PullRequest::from)
+        };
+        assert!(pull("behind")?.behind);
+        assert!(!pull("clean")?.behind);
+        Ok(())
+    }
 
     fn run(status: &str, conclusion: Option<&str>) -> WireCheckRun {
         WireCheckRun {
