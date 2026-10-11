@@ -9,6 +9,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Subscriptions show usage all the time: for a sign-in the usage endpoint refuses, an idle
   subscription is read from the rate-limit headers of a one-token request every few minutes
   instead of waiting for a task (ADR-17, #4).
+- A task whose pull request conflicts with its base is told to merge the base and resolve it;
+  GitHub runs no checks on a conflicting pull request, so the agent would otherwise wait for them.
+- Debug and test builds keep only line tables (dependencies none): a worktree's test build had
+  reached 48 GB and parallel tasks filled the sandbox disk quota, so CI runs and session starts
+  were refused.
 - Agents carry delivery through on their own: Yulius tells a task when its pull request opened and
   when its checks passed or failed, the Stop gate asks for a missing spec at once (and follows a
   renamed one), and the briefing says never to ask a person — an issue covers what only a person

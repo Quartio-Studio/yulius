@@ -2185,12 +2185,28 @@ impl App {
     }
 
     /// Tells the agent, once per pull request head and result, that its checks finished: green
-    /// means merge now, red means fix it (F 2026-10-11: agents deliver without a person).
+    /// means merge now, red means fix it (F 2026-10-11: agents deliver without a person). A pull
+    /// request that conflicts with its base comes first: GitHub runs no checks on it, so without
+    /// this the agent would wait for checks that never come.
     async fn tell_checks(&self, task: &TaskRecord, observed: &Observed) {
         let Some(pull) = observed.pr.as_ref().filter(|p| is_open(p)) else {
             return;
         };
+        let conflicts = pull.mergeable == Some(false);
         let (subject, body) = match observed.checks {
+            _ if conflicts => (
+                "Your pull request conflicts with its base: resolve it",
+                format!(
+                    "Pull request #{} conflicts with `{}` at {}, so its checks do not run. Merge \
+                     `origin/{}` into the branch, resolve the conflicts keeping both sides' \
+                     intent, run the gates and commit: Yulius pushes it and the checks run \
+                     again. Do not ask anyone.",
+                    pull.number,
+                    pull.base,
+                    pull.head_sha.chars().take(9).collect::<String>(),
+                    pull.base
+                ),
+            ),
             ChecksState::Success => (
                 "Your pull request's checks are green: merge it",
                 format!(
@@ -2213,7 +2229,11 @@ impl App {
             ),
             _ => return,
         };
-        let key = format!("{}:{:?}", pull.head_sha, observed.checks);
+        let key = if conflicts {
+            format!("{}:conflicts", pull.head_sha)
+        } else {
+            format!("{}:{:?}", pull.head_sha, observed.checks)
+        };
         let runtime = self.runtime(&task.id);
         {
             let Ok(mut told) = runtime.checks_told.lock() else {
