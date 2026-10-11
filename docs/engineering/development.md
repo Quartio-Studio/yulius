@@ -17,7 +17,8 @@ scripts/dev ci
 The compiler/components are pinned in `rust-toolchain.toml`. Exact Cargo tool
 versions are in `.config/tools.toml`. Bootstrap installs tools from locked crates.io
 packages into ignored `.tools/`, skips matching installed versions and can be rerun
-after failure. It does not change `rustup default`. First installation can take
+after failure. It does not change `rustup default`. `--install-rustup` installs rustup
+(no default toolchain, no profile edits) on a clean machine; Yulius CI uses it. First installation can take
 several minutes and requires network access. Inspect the script before executing it.
 
 `scripts/dev` invokes `rustup run <pin> cargo xtask`, so a Homebrew compiler earlier

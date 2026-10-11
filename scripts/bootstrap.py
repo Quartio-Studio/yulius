@@ -5,12 +5,25 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
+import urllib.request
 
 root = Path(__file__).resolve().parent.parent
-rustup = shutil.which("rustup")
+cargo_bin = Path.home() / ".cargo/bin"
+rustup = shutil.which("rustup") or shutil.which("rustup", path=str(cargo_bin))
+if not rustup and "--install-rustup" in sys.argv[1:]:
+    # Clean machines (CI): official installer, no toolchain yet and no shell profile edits.
+    with tempfile.TemporaryDirectory() as scratch:
+        installer = Path(scratch) / "rustup-init.sh"
+        with urllib.request.urlopen("https://sh.rustup.rs", timeout=60) as response:
+            installer.write_bytes(response.read())
+        subprocess.run(["sh", str(installer), "-y", "--default-toolchain", "none", "--no-modify-path"],
+                       check=True)
+    rustup = shutil.which("rustup", path=str(cargo_bin))
 if not rustup:
-    sys.exit("Install rustup from https://rustup.rs first. Python 3.11+ and a C linker are required.")
+    sys.exit("Install rustup from https://rustup.rs first (or pass --install-rustup). "
+             "Python 3.11+ and a C linker are required.")
 config = tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"]
 channel = config["channel"]
 command = [rustup, "toolchain", "install", channel, "--profile", config["profile"]]
