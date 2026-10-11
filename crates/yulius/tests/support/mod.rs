@@ -251,6 +251,7 @@ impl GitHubPort for FakeGitHub {
             head: pull.head.clone(),
             head_sha,
             mergeable: None,
+            behind: false,
         };
         pulls.push(created.clone());
         if let Ok(mut authors) = self.pull_authors.lock() {

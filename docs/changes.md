@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-11
 
+- A green pull request behind its base (the repository requires up-to-date branches) is not
+  mistaken for a missing permission: the task is told to merge the base, and `delivery_merge`
+  says why it refuses.
 - A task whose pull request conflicts with its base is told to merge the base and resolve it;
   GitHub runs no checks on a conflicting pull request, so the agent would otherwise wait for them.
 - Debug and test builds keep only line tables (dependencies none): a worktree's test build had

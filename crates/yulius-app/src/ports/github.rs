@@ -210,6 +210,9 @@ pub struct GhPull {
     /// GitHub's mergeability: `Some(false)` when it conflicts with its base; `None` while GitHub
     /// is still computing it or on list responses.
     pub mergeable: Option<bool>,
+    /// Behind its base where the repository requires an up-to-date branch: GitHub refuses the
+    /// merge ("required status checks are expected") until the base is merged in.
+    pub behind: bool,
 }
 
 /// A pull request to open.
