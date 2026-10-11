@@ -139,8 +139,8 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 | POST | `/api/tasks/{tid}/held-prompts/{hid}` | write | `{"action":"parallel|after|send|skip_after|revert|dismiss","skip_step_ids?":[…],"confirm?":bool}` → `{"task":TaskSummary,"created":TaskSummary|null,"note"}`; one decision per held prompt (409 for a second). `send` needs a running task; `skip_after` marks the given open steps `skipped`; `revert` needs `"confirm":true` (422 otherwise) — see "Task intake" below |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary` |
-| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the given Claude account or the best one |
-| POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; moves a running task to another Claude account (the best one when absent) with a native resume |
+| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends) |
+| POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
@@ -200,9 +200,16 @@ Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","
 ```
 
 Status wire names (from `yulius-domain::task`): `queued`, `starting`, `running`, `switching`,
-`waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_lost`,
-`stopped_switch_failed`, `stopped_switch_timeout`, `stopped_server_lost`, `failed_spawn_error`,
-`failed_start_timeout`, `failed_precondition`, `chained`.
+`waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_killed`,
+`stopped_lost`, `stopped_switch_failed`, `stopped_switch_timeout`, `stopped_server_lost`,
+`failed_spawn_error`, `failed_start_timeout`, `failed_precondition`, `chained`.
+
+How a session's end moves its task (F 2026-10-10, SPEC-002 §6.1): leaving the session (`/exit`,
+Ctrl+C twice, Ctrl+D, `/logout` — Claude Code's `SessionEnd` reason `prompt_input_exit`/`logout`)
+or any clean exit → `closed`; ended by a signal from outside Yulius (SIGTERM, SIGKILL, SIGHUP,
+SIGINT, or the exit codes 129/130/137/143 they give) → `stopped_killed`; any other exit →
+`stopped_crashed`; Stop in the UI → `stopping` at once, then `stopped_cancelled`. Interrupting a
+turn (Esc, or Ctrl+C while the agent works) keeps the session: `activity` becomes `waiting`.
 
 ### Task intake
 
@@ -657,7 +664,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
-| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-17); 502 with the reason (also kept as `last_error`) when the provider refuses or fails. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
+| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-17). The endpoint needs the OAuth scope `user:profile`, which a `claude setup-token` sign-in does not have: its HTTP 403 is not an error — the answer is the account as it is (its usage comes from its running sessions, `StatusLine` below), an earlier `usage: …` note is cleared and the background round asks again a day later. 502 with one plain sentence (also kept as `last_error`, prefixed `usage: `) when Claude refuses the sign-in (401) or the request fails for now. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
 | GET | `/api/capacity` | signed in | → `CapacityView`: the subscription pool, burn rate, forecast and recommendation (ROT-013, formula in SPEC-002 ADR-17 §2.4) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
@@ -798,4 +805,19 @@ decision). `Stop` and `UserPromptSubmit` may answer **`202 Accepted` with `Retry
 body while no Claude subscription has capacity (ROT-010, SPEC-002 ADR-17): the agent waits at that
 boundary and the client sends the same request again after `Retry-After` seconds (1–60), until a
 `200`, a 4xx (it fails open) or 8 days. While held it retries a refused connection or a 5xx every
-2 s, so a server restart does not release the agent. `401` means the run is unknown or finished.
+2 s, so a server restart does not release the agent; a hold nobody asks about for 45 s was given
+up by the CLI (an interrupt, its own hook timeout) and ends: the task runs again. `401` means the
+run is unknown or finished.
+
+`SessionEnd` (body `{"reason": "prompt_input_exit|clear|logout|resume|other", …}`) answers `200`
+with no output; it tells Yulius why the session ends before the process exits (above).
+
+`POST /hooks/claude/StatusLine` is Claude Code's `statusLine` command (`yulius hook claude
+StatusLine`, configured in every run's settings): the body is Claude Code's status line input, of
+which Yulius reads `session_id` and `rate_limits` (`{"five_hour"|"seven_day": {"used_percentage":
+0–100, "resets_at": <Unix seconds>}}`, present once a response of the session reported them);
+`200` is `text/plain`: the line, "→ <repository> git:(<branch>)" in 256 colours (HRN-005). The
+rate limits become the run's subscription's 5-hour and weekly windows (SPEC-002 ADR-17): stored
+when they change (at once for a move of a point or more, a reset or crossing 98 %, otherwise at
+most every 15 s) and sampled for the burn rate at most every 5 minutes (`usage_samples.source`
+`session`).

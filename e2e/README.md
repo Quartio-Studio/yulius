@@ -50,7 +50,7 @@ disable`); CI sets it.
 | `responsive.e2e.ts` | Every main page at 768 and 390 px: no two header, toolbar or list controls overlap (bounding boxes) and nothing scrolls sideways; Tasks with a tool panel open wraps its state tabs; a task beside an open Editor, Browser or Shell keeps its step strip and the panel head apart; at 1920 px every page is centred (no empty band on the right) |
 | `task-done.e2e.ts` | A task whose goal is achieved is Done with a green check in the header, the sidebar and on Tasks (no WCAG violations); one with a background shell still running stays under Working with "1 background shell still running" |
 | `quality.e2e.ts` | Every main page: no WCAG 2.x A/AA violations (axe-core) |
-| `subscriptions.e2e.ts` | The accounts page shows the pool's capacity, burn rate, forecast and recommendation with only add, sign-in-again and remove (no priority or on/off controls); a paused task reads "Paused: waiting for subscription capacity (resets ~…)"; the dashboard shows the subscriptions card; no WCAG violations |
+| `subscriptions.e2e.ts` | The accounts page shows the pool's capacity, burn rate, forecast and recommendation with only add, sign-in-again and remove (no priority or on/off controls), and a failed usage reading as one quiet sentence without HTTP codes; a paused task reads "Paused: no subscription has capacity left (resets ~…)"; the task menu has no account choice and the task view no account; the dashboard shows the subscriptions card; no WCAG violations |
 | `agent.e2e.ts` | An agent reaches a goal written in plain English (needs a model, see below) |
 
 Every test also fails when the page reports an error: an uncaught exception, an unhandled

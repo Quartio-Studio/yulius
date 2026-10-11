@@ -304,8 +304,12 @@ sudo sh -c 'cat > /var/lib/yulius/jev.key'   # paste the key, then Ctrl-D
   containment, with no tools, in a temporary directory under `<data>/runtime/intake/`. They use
   the account's usage like a short task.
 - Claude Code needs no extra settings. Yulius already registers its `UserPromptSubmit` hook in
-  every run's `--settings` file (`yulius hook claude UserPromptSubmit`, timeout 15 s; the hook
-  client gives up after 5 s and lets the prompt through).
+  every run's `--settings` file (`yulius hook claude UserPromptSubmit`; the scope check answers
+  within 3 s and lets the prompt through on any failure). It checks what a person types into a
+  task's terminal (the last keystroke within a minute), also into a task paused for capacity.
+- Each check of a typed prompt logs one line without the prompt: `scope check of a typed prompt
+  task=… verdict=context|new_scope|drops_scope|redirect percent=…`; a held prompt is also audited
+  as `prompt.held`. `journalctl -u yulius | grep 'scope check'` shows whether intake runs.
 
 ## 5. First run
 
@@ -322,10 +326,13 @@ sudo sh -c 'cat > /var/lib/yulius/jev.key'   # paste the key, then Ctrl-D
    requests it opens are authored by the GitHub App, and merging or releasing, which act as a
    person on GitHub, are done on GitHub or after signing in with GitHub as an admitted user.
 5. Administration → Accounts: add Claude subscriptions; each login runs Claude's own sign-in in a
-   terminal in the browser. They form one pool with nothing to configure: Yulius places tasks on
-   the capacity that expires soonest, moves them at 98 % at a turn boundary, pauses them (without
-   telling the agent) while every subscription is exhausted and resumes them by itself. The
-   capacity panel there and on the Dashboard says when to add subscriptions (SPEC-002 ADR-17).
+   terminal in the browser. They form one pool with nothing to configure: tasks are
+   subscription-agnostic; Yulius places them on the capacity that expires soonest, moves them at
+   98 % at a turn boundary, pauses them (without telling the agent) only while no subscription has
+   capacity left and resumes them by itself. The capacity panel there and on the Dashboard says
+   when to add subscriptions (SPEC-002 ADR-17). Claude's sign-in here (`claude setup-token`) may
+   not read Claude's usage endpoint (it lacks the `user:profile` scope), so a subscription's usage
+   shows once a task runs on it: the running sessions report it through Claude Code's status line.
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
    `studio` delivery presets.
 
@@ -419,6 +426,13 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
   used "Quick task" continue without a workflow. No migration and no configuration.
 - Upgrading to dropped files (EDT-006, UI-048, 2026-10-10): raise the reverse proxy's request body
   limit to 32 MB (§4) or uploads between 16 and 25 MiB fail at the proxy with 413. No migration.
+- Upgrading to usage from the sessions and session-end tracking (F 2026-10-10 items 1(a)/(c)): no
+  migration and no configuration. Every run started or continued after the upgrade gets Claude
+  Code's `statusLine` and a `SessionEnd` hook in its settings; sessions already running keep their
+  settings until they are continued, so their subscription's usage appears once a new run starts
+  on it. The old "the provider refused this account's token for usage (HTTP 403)" note disappears
+  within the first background usage round (2 minutes after the start). A task can now also end
+  as `stopped_killed` (its process was killed outside Yulius).
 - Upgrading to the subscription pool (ADR-17, 2026-10-10): migration 0005 drops the accounts'
   priority and enabled switch, so **a disabled account joins the pool**: remove accounts you do not
   want used before restarting. Tasks that were waiting for capacity are handed to the new resume
