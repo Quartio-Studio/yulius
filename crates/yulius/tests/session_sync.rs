@@ -416,7 +416,7 @@ impl ChoiceEvaluator for FakeJev {
     async fn evaluate(
         &self,
         state: &str,
-        question: &ChoiceQuestion,
+        question: &ChoiceQuestion<'_>,
         _deadline: Duration,
     ) -> Result<ChoiceAnswer, JevFailure> {
         let message = state.split("NEW MESSAGE").nth(1).unwrap_or_default();
