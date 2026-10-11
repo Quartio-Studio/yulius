@@ -115,6 +115,15 @@ pub trait GitPort: Send + Sync {
     }
     /// Whether a worktree has tracked or untracked (non-ignored) changes.
     async fn has_changes(&self, worktree: &Path) -> AppResult<bool>;
+    /// Whether `relative` inside `worktree` is ignored by Git and holds no tracked file, so
+    /// removing it loses nothing a commit has. Adapters without Git answer no.
+    async fn is_disposable(&self, _worktree: &Path, _relative: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+    /// Whether the worktree holds files Git ignores. Adapters without Git answer yes.
+    async fn has_ignored_files(&self, _worktree: &Path) -> AppResult<bool> {
+        Ok(true)
+    }
     /// Installs the pre-push guard rejecting pushes to `protected` branches.
     async fn install_push_guard(&self, worktree: &Path, protected: &[String]) -> AppResult<()>;
     /// Sets the commit identity of a worktree.

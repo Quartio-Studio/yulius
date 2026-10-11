@@ -217,19 +217,33 @@ impl App {
                     scan.ended.push((task.clone(), worktree.clone()));
                 }
                 let dir = worktree.clone();
-                let caches = tokio::task::spawn_blocking(move || {
+                let present = tokio::task::spawn_blocking(move || {
                     cache_paths(&root_entries(&dir), &declared_caches(&dir))
                         .into_iter()
                         .filter_map(|relative| {
                             let path = real_dir_below(&dir, &relative)?;
-                            let bytes = dir_size(&path);
-                            Some((relative, path, bytes))
+                            Some((relative, path))
                         })
                         .collect::<Vec<_>>()
                 })
                 .await
                 .unwrap_or_default();
-                for (relative, path, bytes) in caches {
+                for (relative, path) in present {
+                    // A path a commit has files in (or that Git does not ignore) is the
+                    // project's work, not a cache, whatever `yulius.toml` says.
+                    if !self
+                        .deps
+                        .git
+                        .is_disposable(&worktree, &relative)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    let measured = path.clone();
+                    let bytes = tokio::task::spawn_blocking(move || dir_size(&measured))
+                        .await
+                        .unwrap_or(0);
                     scan.found.push(Found {
                         task: task.clone(),
                         owner,
@@ -248,6 +262,11 @@ impl App {
         let mut per_task: Vec<(&TaskRecord, Vec<(String, u64)>)> = Vec::new();
         for &index in chosen {
             let item = &scan.found[index];
+            // The scan can be minutes old (sizes of huge caches): a task that started working
+            // meanwhile keeps its files.
+            if !self.not_working(&item.task.id).await {
+                continue;
+            }
             let path = item.path.clone();
             let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&path))
                 .await
@@ -279,6 +298,9 @@ impl App {
         // Continue recreates it).
         let mut gone: Vec<&TaskId> = Vec::new();
         for (task, worktree) in &scan.ended {
+            if !self.still_ended(&task.id).await {
+                continue;
+            }
             if self.remove_ended_worktree(sandbox, task, worktree).await {
                 report.worktrees += 1;
                 gone.push(&task.id);
@@ -292,12 +314,39 @@ impl App {
         report
     }
 
+    async fn not_working(&self, task: &TaskId) -> bool {
+        matches!(
+            self.deps.store.task(task).await,
+            Ok(Some(t)) if owner_of(t.status, t.activity).is_some()
+        )
+    }
+
+    async fn still_ended(&self, task: &TaskId) -> bool {
+        matches!(
+            self.deps.store.task(task).await,
+            Ok(Some(t)) if matches!(
+                t.status,
+                TaskStatus::Closed | TaskStatus::Stopped(StopReason::Cancelled)
+            )
+        )
+    }
+
     async fn remove_ended_worktree(
         &self,
         sandbox: &SandboxRecord,
         task: &TaskRecord,
         worktree: &Path,
     ) -> bool {
+        // Files Git ignores that are not caches (local configuration) are not Git's to lose.
+        if self
+            .deps
+            .git
+            .has_ignored_files(worktree)
+            .await
+            .unwrap_or(true)
+        {
+            return false;
+        }
         let repo = self.sandbox_repo(&sandbox.id);
         let owned = self.sandbox_dir(&sandbox.id).join("worktrees");
         match self.deps.git.remove_worktree(&repo, worktree, &owned).await {

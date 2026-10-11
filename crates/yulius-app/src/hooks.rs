@@ -572,6 +572,9 @@ impl App {
         let pool = self.rotation_input(task, current.clone()).await?;
         let stays = match rotation::decide(&pool, Trigger::Proactive) {
             (Decision::Stay, _) => true,
+            // A switch was refused moments ago (the new session could not start): the agent
+            // keeps working on its current subscription instead of being held.
+            (Decision::Switch { .. }, _) if self.switch_cooling(&task.id) => true,
             (Decision::Switch { account }, reason) => {
                 // The agent waits here while it moves; the resumed session gets the gate's
                 // reasons as its prompt when the gate would have kept it working.

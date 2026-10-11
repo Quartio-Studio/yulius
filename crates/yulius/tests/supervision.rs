@@ -825,6 +825,15 @@ fn a_switch_that_cannot_start_leaves_the_running_session_alone() -> TestResult {
         assert_eq!(switches.len(), 1);
         assert_eq!(switches[0].outcome, "refused");
         assert!(switches[0].inputs.contains("112.2 GB"));
+        // An automatic switch waits after a refusal: no second record, no second notice.
+        let again = app
+            .switch_task_now(&id, Some(other.clone()), "Proactive", None)
+            .await;
+        assert!(
+            matches!(&again, Err(e) if e.public_message().contains("tried again later")),
+            "{again:?}"
+        );
+        assert_eq!(app.deps.store.switches(&id).await?.len(), 1);
         // Space is back: the same switch now moves the session.
         refusing.0.store(false, std::sync::atomic::Ordering::SeqCst);
         app.switch_task_now(&id, Some(other), "manual", None)

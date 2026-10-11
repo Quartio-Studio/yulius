@@ -113,7 +113,14 @@ pub struct TaskRuntime {
     /// The terminal already said that this task acts on GitHub as the App, not its creator
     /// (F 2026-10-11), so it is said once.
     pub(crate) acting_as_app_said: AtomicBool,
+    /// When a switch of this task was last refused before it started (ms, 0 = never): an
+    /// automatic switch waits [`SWITCH_COOLDOWN_MS`] before it tries again.
+    pub(crate) switch_refused_ms: AtomicI64,
 }
+
+/// After a switch was refused before it started, automatic switches of the task wait this long
+/// (the agent keeps working on its current subscription meanwhile).
+pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
 impl TaskRuntime {
     /// Whether a run is attached (a process can redraw the terminal).
@@ -145,6 +152,7 @@ impl TaskRuntime {
             hold_polled_ms: AtomicI64::new(0),
             nudged: Mutex::new(std::collections::BTreeSet::new()),
             acting_as_app_said: AtomicBool::new(false),
+            switch_refused_ms: AtomicI64::new(0),
         }
     }
 
@@ -1424,6 +1432,11 @@ impl App {
             .status
             .apply(TaskEvent::SwitchStarted)
             .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?;
+        if reason != "manual" && self.switch_cooling(task_id) {
+            return Err(AppError::Conflict(
+                "a switch was refused a moment ago; it is tried again later".into(),
+            ));
+        }
         // The new session must be able to start before the running one ends (ROT-014): a
         // refusal leaves the task as it is.
         if let Err(err) = self.preflight_start(&task, account.as_ref()).await {
@@ -1583,6 +1596,12 @@ impl App {
         Ok(())
     }
 
+    /// Whether a switch of `task` was refused so recently that an automatic one waits.
+    pub(crate) fn switch_cooling(&self, task: &TaskId) -> bool {
+        let at = self.runtime(task).switch_refused_ms.load(Ordering::SeqCst);
+        at > 0 && self.now().0 - at < SWITCH_COOLDOWN_MS
+    }
+
     /// Records and shows a switch that was refused before it ended the running session.
     async fn refuse_switch(
         &self,
@@ -1592,6 +1611,9 @@ impl App {
         err: &AppError,
     ) {
         let message = err.public_message();
+        self.runtime(&task.id)
+            .switch_refused_ms
+            .store(self.now().0, Ordering::SeqCst);
         tracing::warn!(task = %task.id, error = %err, "switch refused; the running session stays");
         self.runtime(&task.id).hub.notice(format!(
             "↻ Switching subscriptions was not possible, so this session stays as it is: {message}"

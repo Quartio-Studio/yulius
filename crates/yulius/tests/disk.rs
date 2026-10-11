@@ -87,7 +87,9 @@ async fn world() -> BoxResult<World> {
     git(&repo, &["init", "-q", "-b", "main"])?;
     std::fs::write(repo.join("Cargo.toml"), "[package]\n")?;
     std::fs::write(repo.join(".gitignore"), "target\nout\n")?;
-    std::fs::write(repo.join("yulius.toml"), "[disk]\ncaches = \"out\"\n")?;
+    std::fs::write(repo.join("yulius.toml"), "[disk]\ncaches = \"out src\"\n")?;
+    std::fs::create_dir_all(repo.join("src"))?;
+    std::fs::write(repo.join("src/lib.rs"), "// tracked\n")?;
     git(&repo, &["add", "-A"])?;
     git(&repo, &["commit", "-q", "-m", "init"])?;
     Ok(World {
@@ -306,4 +308,50 @@ async fn a_refused_start_over_quota_prunes_and_asks_again() -> BoxResult<()> {
         "the cache was pruned before refusing"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn declared_paths_with_tracked_files_and_unignored_paths_are_never_pruned() -> BoxResult<()> {
+    let w = world().await?;
+    // `src` is declared in yulius.toml but holds tracked files; `docs-out` is declared too but
+    // Git does not ignore it.
+    let crashed = w
+        .task("t-crash", TaskStatus::Stopped(StopReason::Crashed), None)
+        .await?;
+    std::fs::write(
+        crashed.join("yulius.toml"),
+        "[disk]\ncaches = \"out src docs-out\"\n",
+    )?;
+    std::fs::create_dir_all(crashed.join("docs-out"))?;
+    std::fs::write(crashed.join("docs-out/page.md"), "work")?;
+    w.later();
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(
+        crashed.join("src/lib.rs").exists(),
+        "tracked files are work"
+    );
+    assert!(
+        crashed.join("docs-out/page.md").exists(),
+        "not ignored: work"
+    );
+    assert!(!crashed.join("out").exists() && !crashed.join("target").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_closed_tasks_worktree_with_ignored_local_files_is_kept() -> BoxResult<()> {
+    let w = world().await?;
+    let closed = w.task("t-env", TaskStatus::Closed, None).await?;
+    std::fs::write(repo_ignore(&closed), "target\nout\n.env\n")?;
+    std::fs::write(closed.join(".env"), "SECRET=1")?;
+    w.later();
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert_eq!(report.worktrees, 0, "{report:?}");
+    assert!(closed.join(".env").exists(), "local configuration survives");
+    assert!(!closed.join("target").exists(), "its caches still went");
+    Ok(())
+}
+
+fn repo_ignore(worktree: &Path) -> PathBuf {
+    worktree.join(".gitignore")
 }
