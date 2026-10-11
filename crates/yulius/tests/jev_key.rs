@@ -38,7 +38,7 @@ impl ChoiceEvaluator for KeyedJev {
     async fn evaluate(
         &self,
         _state: &str,
-        question: &ChoiceQuestion,
+        question: &ChoiceQuestion<'_>,
         _deadline: Duration,
     ) -> Result<ChoiceAnswer, JevFailure> {
         if let Ok(mut log) = self.log.lock() {
