@@ -3287,12 +3287,20 @@ impl App {
             .iter()
             .map(ToString::to_string)
             .collect();
+        // A task that needs no spec and has none has nothing to fix: no "No spec is
+        // registered…" problem beside "needs no spec" (F 2026-10-11).
+        let unneeded = !spec.required && spec.path.is_none();
+        let (valid, problems) = if unneeded {
+            (true, Vec::new())
+        } else {
+            (spec.valid, spec.problems.clone())
+        };
         Ok(json!({
             "spec": {
                 "required": spec.required,
                 "path": spec.path,
-                "valid": spec.valid,
-                "problems": spec.problems,
+                "valid": valid,
+                "problems": problems,
                 "message": message,
                 "plan_nudges": nudges,
             },

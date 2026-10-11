@@ -161,6 +161,16 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
         Some(v) => check("git", Level::Ok, v),
         None => check("git", Level::Fail, "`git` not found on PATH"),
     });
+    // Sandboxes copy the host system (ADR-22), so the GitHub CLI installed here is in every
+    // sandbox, logged in as the person or task creator (F 2026-10-11).
+    checks.push(match version_of(Path::new("gh"), &["--version"]) {
+        Some(v) => check("GitHub CLI", Level::Ok, v.lines().next().unwrap_or_default().to_owned()),
+        None => check(
+            "GitHub CLI",
+            Level::Warn,
+            "`gh` is not installed; sandboxes have no GitHub CLI (install it: `apt-get install gh`)",
+        ),
+    });
     checks.push(match version_of(Path::new("claude"), &["--version"]) {
         Some(v) => check("Claude Code", Level::Ok, v),
         None => check(
@@ -466,5 +476,6 @@ mod tests {
             None
         );
         assert!(checks.iter().any(|c| c.name == "git"));
+        assert!(checks.iter().any(|c| c.name == "GitHub CLI"));
     }
 }

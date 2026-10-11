@@ -49,16 +49,30 @@ fn known(value: u64) -> Option<u64> {
 }
 
 /// Total and used bytes of the mounted volume that holds `path` (longest mount-point prefix).
+/// Without a listed disk for it — inside a sandbox the path sits on a bind or overlay mount
+/// that the disk list leaves out (F 2026-10-11) — the file system's own figures (`statvfs`).
 fn volume_of(path: &Path) -> Option<(u64, u64)> {
     let path: PathBuf = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let disks = Disks::new_with_refreshed_list();
-    let disk = disks
+    let listed = disks
         .list()
         .iter()
         .filter(|d| path.starts_with(d.mount_point()))
-        .max_by_key(|d| d.mount_point().as_os_str().len())?;
-    let total = known(disk.total_space())?;
-    Some((total, total.saturating_sub(disk.available_space())))
+        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .and_then(|disk| {
+            let total = known(disk.total_space())?;
+            Some((total, total.saturating_sub(disk.available_space())))
+        });
+    listed.or_else(|| statvfs_of(&path))
+}
+
+/// Total and used bytes of the file system holding `path`, from `statvfs`.
+fn statvfs_of(path: &Path) -> Option<(u64, u64)> {
+    let stat = nix::sys::statvfs::statvfs(path).ok()?;
+    let fragment = u64::from(stat.fragment_size());
+    let total = known(u64::from(stat.blocks()).saturating_mul(fragment))?;
+    let available = u64::from(stat.blocks_available()).saturating_mul(fragment);
+    Some((total, total.saturating_sub(available)))
 }
 
 impl SystemProbe for SysinfoProbe {
@@ -96,6 +110,12 @@ impl SystemProbe for SysinfoProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_file_system_reports_its_size_when_no_disk_is_listed_for_it() {
+        let (total, used) = statvfs_of(&std::env::temp_dir()).unwrap_or((0, 1));
+        assert!(total > 0 && used <= total, "{total} {used}");
+    }
 
     #[test]
     fn reads_real_machine_metrics() -> Result<(), Box<dyn std::error::Error>> {
