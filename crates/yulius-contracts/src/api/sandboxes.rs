@@ -45,7 +45,8 @@ pub struct RepoRef {
 pub struct SandboxCounts {
     /// Tasks with a live process.
     pub running: u32,
-    /// Tasks needing a person.
+    /// Tasks needing a person, by the web UI sidebar's "Needs you" rule (SPEC-001 UI-050;
+    /// `yulius_domain::task::AttentionFacts`).
     pub needs_attention: u32,
     /// Tasks waiting for capacity.
     pub queued: u32,

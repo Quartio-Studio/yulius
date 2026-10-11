@@ -53,6 +53,7 @@ use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::spec_format::{self, MAX_CONFIG_BYTES, MAX_PATH_BYTES, SpecReport};
 use yulius_domain::steps::StepStatus;
+use yulius_domain::task::PullSignal;
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, rfc3339};
@@ -486,7 +487,7 @@ fn is_open(pull: &GhPull) -> bool {
     !pull.merged && pull.state == "open"
 }
 
-fn past_merge(stage: &DeliveryStage) -> bool {
+pub(crate) fn past_merge(stage: &DeliveryStage) -> bool {
     matches!(
         stage,
         DeliveryStage::MergedIntegration
@@ -1399,6 +1400,7 @@ impl App {
             notes.push("Git: the sandbox repository is not cloned yet.".into());
         }
         let mut tasks = Vec::new();
+        let mut observed = std::collections::HashMap::new();
         let mut git_failed = false;
         for task in self.deps.store.tasks(&sandbox.id, false).await? {
             let Some(branch) = task.branch.clone() else {
@@ -1505,8 +1507,17 @@ impl App {
                     checks: "none".into(),
                 });
             }
+            if let Some(signal) = view
+                .pr
+                .as_ref()
+                .and_then(|pr| PullSignal::from_wire(&pr.state, &pr.checks))
+            {
+                observed.insert(task.id.clone(), signal);
+            }
             tasks.push(view);
         }
+        // The "needs you" counts read what this overview said (sandboxes.rs, #147).
+        self.observed_pulls.record(&sandbox.id, observed);
 
         let mut recent_commits = Vec::new();
         if cloned {
@@ -1967,8 +1978,8 @@ impl App {
     /// Whether a task is Done (#35, the sidebar's rule; SPEC-001 TSK-012, TSK-014): its turn
     /// ended (the agent is idle, or the session was closed), no background shell of the agent is
     /// known to run, and either Claude Code recorded its goal as achieved (activity `done`) or
-    /// its pull request is merged, or open with checks green or none required. Anything unknown
-    /// (no pull request, GitHub unreachable) is not Done.
+    /// its plan is complete and its pull request is merged, or open with checks green or none
+    /// required. Anything unknown (no pull request, GitHub unreachable) is not Done.
     pub(crate) async fn task_is_done(&self, task: &TaskRecord) -> bool {
         use yulius_domain::task::{Activity, TaskStatus};
         let running = task.status == TaskStatus::Running;
@@ -1979,6 +1990,11 @@ impl App {
         }
         if running && task.activity == Some(Activity::Done) {
             return true;
+        }
+        // A pull request makes a task Done only when its plan is complete (#139, TSK-014).
+        match self.deps.store.steps(&task.id).await {
+            Ok(steps) if !crate::sandboxes::plan_open(&steps) => {}
+            _ => return false,
         }
         let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
             return false;

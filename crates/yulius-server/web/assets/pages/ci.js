@@ -56,7 +56,7 @@ export function mountCiPage(ctx, sandbox, route) {
   let destroyed = false;
   let openRun = null;
 
-  const reload = loader(runsHost, () => ctx.api.get(`${base}/ci`), (overview) => {
+  const reload = loader(runsHost, 'the CI runs', () => ctx.api.get(`${base}/ci`), (overview) => {
     schedule(overview);
     return renderOverview(overview);
   });
@@ -222,7 +222,7 @@ export function mountCiPage(ctx, sandbox, route) {
 
   // ---- hygiene
 
-  const loadHygiene = loader(hygieneHost, () => ctx.api.get(`${base}/hygiene`), renderHygiene);
+  const loadHygiene = loader(hygieneHost, 'the repository hygiene', () => ctx.api.get(`${base}/hygiene`), renderHygiene);
 
   function renderHygiene(report) {
     const items = report.items || [];

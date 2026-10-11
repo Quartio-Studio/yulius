@@ -105,6 +105,16 @@ Profile = {"preset": "standard|product|studio|custom", "integration_branch": "de
            "gate": "scripts/ci.sh|null"}
 ```
 
+`counts.running` counts tasks with a live process and `counts.queued` queued tasks.
+`counts.needs_attention` counts the tasks that need a person by the web UI sidebar's "Needs you"
+rule (SPEC-001 UI-050, `AttentionFacts` in the domain): a permission prompt or browser request
+(`needs_attention`), a finished turn waiting for input (`waiting`), a pending held prompt, a chain
+whose predecessor ended otherwise, and failing checks of the pull request of a finished turn. A
+tested, reviewed or merged pull request of a finished turn whose plan is complete counts as Done
+or In review, not as needing a person. The pull request facts are those the sandbox's Git overview
+(`GET /api/sandboxes/{sid}/git`) last read; until it is read after a start, only a merge already
+recorded counts. Paused, queued and ended tasks never count.
+
 ## Import (`yulius onboard` / `yulius import`)
 
 Bearer CLI token or cookie session. The full protocol, bounds and snapshot layout are documented
@@ -834,10 +844,9 @@ Account = {"id","provider","label",
 per-model weekly caps when the plan has them. Unknown usage is `null`, never zero. Credentials are
 never returned. `email` (the provider sign-in,
 administrators only) and `plan` (the subscription tier) are planned for UI-022: the web UI shows
-them when present, but **the server does not report them yet** (only the mock does), so today they
-are absent and the UI falls back to the label and provider. A task's overview names each session's
-account by that email when it has it, matching `TaskDetail.attempts[].account_label` to the
-Status accounts; an `account_id` on attempts (proposed) would make the match independent of labels.
+them when present, but **the server does not report them yet** (and the mock does not either, so
+it looks like production), so today they are absent and the UI shows the label and provider. A
+task's overview names each session's subscription by its label (`TaskDetail.attempts[].account_label`).
 
 **Login terminal.** Each login runs Claude Code's own sign-in (`claude setup-token`) with a
 temporary config directory in a server-owned PTY 500 columns

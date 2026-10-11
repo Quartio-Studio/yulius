@@ -11,6 +11,7 @@ import { h, icon, iconButton, setChildren, placeholder, loadError, confirmDialog
 import { href, navigate, currentLocation, replaceQuietly } from '../router.js';
 import { allows } from '../status.js';
 import { BRAND } from '../brand.js';
+import { notFound } from './common.js';
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 const NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -153,7 +154,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
 
   const nameInput = h('input', { class: 'wf-name', placeholder: 'server-name', 'aria-label': 'Server name', maxlength: 64, autocomplete: 'off', spellcheck: 'false', onInput: (e) => { state.name = e.target.value; changed(); } });
   const save = h('button', { type: 'button', class: 'btn btn-primary', onClick: () => doSave() }, creating ? 'Add server' : 'Save');
-  const del = creating ? null : h('button', { type: 'button', class: 'btn btn-quiet-danger', onClick: () => doDelete() }, icon('trash', { size: 14 }), 'Remove');
+  const del = creating ? null : h('button', { type: 'button', class: 'btn btn-quiet-danger', onClick: () => doDelete() }, icon('trash', { size: 14 }), 'Delete');
   const note = h('div');
   const body = h('div', { class: 'mc-body' }, placeholder('Loading…', 'loading'));
   const head = h('header', { class: 'gt-head wf-head' },
@@ -300,7 +301,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
     const contained = Boolean(ctx.store.state.me && ctx.store.state.me.instance && ctx.store.state.me.instance.contained);
     const allowed = canEdit && (server.transport !== 'stdio' || !contained || admin);
     return section('Test', null, h('div', { class: 'stack-sm' },
-      h('div', null, h('button', { type: 'button', class: 'btn mc-test', disabled: !allowed, title: allowed ? 'Connect and list its tools' : 'Local servers on a contained instance are tested by instance administrators', onClick: runTest }, icon('plug', { size: 14 }), 'Test connection')),
+      h('div', null, h('button', { type: 'button', class: 'btn mc-test', disabled: !allowed, title: allowed ? 'Connect and list its tools' : 'With isolation on, local-command servers are tested by instance administrators', onClick: runTest }, icon('plug', { size: 14 }), 'Test connection')),
       testResult));
   }
 
@@ -372,12 +373,13 @@ export function mountMcpEditor(ctx, sandbox, id) {
     if (state.transport === 'http' && !/^https?:\/\/\S+$/.test(state.url.trim())) { invalid(el.querySelector('.mc-conn input.input'), 'Enter the server’s address, starting with https://'); return; }
     if (state.transport === 'stdio' && !state.line.trim()) { invalid(el.querySelector('.mc-conn input.input'), 'Enter the command that starts the server.'); return; }
     let out;
-    try { out = payload(); } catch (error) { toast(error.message, { kind: 'warn' }); return; }
+    // Said at the stored-secret fields it is about, not in a toast.
+    try { out = payload(); } catch (error) { invalid(el.querySelector('.mc-secret input') || nameInput, error.message); return; }
     save.classList.add('busy');
     try {
       const result = creating ? await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/mcp`, out) : await ctx.api.put(`/api/mcp/${enc(id)}`, out);
       saved = snapshot();
-      toast(creating ? `Added ${name}` : `Saved ${name}`, { kind: 'ok' });
+      toast(creating ? `MCP server ${name} added.` : `MCP server ${name} saved.`, { kind: 'ok' });
       if (creating) navigate(`${base}/${encodeURIComponent(result.id)}?test=1`);
       else { server = result; state.token = ''; state.replaceToken = false; state.replaceEnv = !(result.env_keys || []).length; state.env = []; state.headers = []; saved = snapshot(); render(); }
     } catch (error) {
@@ -388,14 +390,14 @@ export function mountMcpEditor(ctx, sandbox, id) {
   }
 
   async function doDelete() {
-    if (!(await confirmDialog({ title: `Remove MCP server “${server.name}”?`, message: 'New sessions no longer get this server; its stored secrets are deleted.', confirmLabel: 'Remove', danger: true }))) return;
+    if (!(await confirmDialog({ title: `Delete MCP server “${server.name}”?`, message: 'New sessions no longer get this server; its stored secrets are deleted.', confirmLabel: 'Delete', danger: true }))) return;
     try {
       await ctx.api.del(`/api/mcp/${enc(id)}`);
       saved = snapshot();
-      toast('Server removed.', { kind: 'ok' });
+      toast(`MCP server ${server.name} deleted.`, { kind: 'ok' });
       navigate(base);
     } catch (error) {
-      toast(`Couldn’t remove: ${error.message}`, { kind: 'error' });
+      toast(`Couldn’t delete: ${error.message}`, { kind: 'error' });
     }
   }
 
@@ -420,7 +422,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
       servers = Array.isArray(list) ? list : [];
       if (!creating) {
         server = servers.find((s) => s.id === id);
-        if (!server) { setChildren(body, loadError('This server no longer exists.', () => navigate(base))); return; }
+        if (!server) { setChildren(el, notFound({ title: 'MCP server not found', text: `There is no MCP server “${id}” for ${sandbox.name}. It may have been deleted.`, back: ['MCP', base] })); return; }
         canEdit = write && (server.scope !== 'instance' || admin);
         Object.assign(state, {
           name: server.name, transport: server.transport, url: server.url || '', line: joinCommand([server.command, ...(server.args || [])].filter(Boolean)),

@@ -174,6 +174,8 @@ pub struct App {
     pub(crate) ci: crate::ci::CiState,
     /// Sandbox isolation (SPEC-002 ADR-22); unset: contained runs keep the previous containment.
     pub(crate) isolation: OnceLock<Arc<dyn crate::ports::isolation::SandboxIsolation>>,
+    /// Pull requests the Git overview last observed, for the "needs you" counts (#147).
+    pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
 }
 
 impl App {
@@ -204,6 +206,7 @@ impl App {
             vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),
             isolation: OnceLock::new(),
+            observed_pulls: crate::sandboxes::ObservedPulls::default(),
         })
     }
 

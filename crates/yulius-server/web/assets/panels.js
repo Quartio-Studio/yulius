@@ -367,7 +367,7 @@ function createShellView(ctx, sandbox, getTask) {
           if (updated && updated.name) shell.name = updated.name;
         } catch (error) {
           shell.name = previous;
-          errorToast(error, 'Could not rename the terminal');
+          errorToast(error, 'Couldn’t rename the terminal');
         }
       }
       renderTabs();
@@ -468,7 +468,7 @@ function createShellView(ctx, sandbox, getTask) {
       shells.push({ ...shell });
       activate(shell.id, { focus });
     } catch (error) {
-      errorToast(error, error.status === 429 ? 'Too many terminals' : 'Could not open a terminal');
+      errorToast(error, error.status === 429 ? 'Too many terminals' : 'Couldn’t open a terminal');
       renderEmpty();
     }
   });
@@ -482,7 +482,7 @@ function createShellView(ctx, sandbox, getTask) {
     try {
       await ctx.api.del(`/api/sandboxes/${enc(sandbox.id)}/shells/${enc(shell.id)}`);
     } catch (error) {
-      if (error.status !== 404) { errorToast(error, 'Could not close the terminal'); syncList(); }
+      if (error.status !== 404) { errorToast(error, 'Couldn’t close the terminal'); syncList(); }
     }
   }
 

@@ -2,11 +2,11 @@
 // the same code the app uses. Change tokens.css or brand.js and this page shows the result in both
 // themes; contrast ratios are computed live with the WCAG formula the repository check uses.
 
-import { h, icon, iconButton, badge, iconBadge, toggle, meter, statusMark, itemCard, ICON_NAMES, setChildren, toast, keepFocus } from '../dom.js';
-import { statusInfo } from '../status.js';
+import { h, icon, iconButton, badge, iconBadge, toggle, meter, statusMark, itemCard, ICON_NAMES, setChildren, toast, keepFocus, emptyState, loadError, skeleton, placeholder, filterTabs, prChip } from '../dom.js';
+import { statusInfo, taskInfo } from '../status.js';
 import { BRAND } from '../brand.js';
 import { THEME_CHOICES, themeChoice, setThemeChoice, token, onThemeChange } from '../theme.js';
-import { pageFrame } from './common.js';
+import { pageFrame, createButton, notFound } from './common.js';
 import { NEW_TASK_KEYS } from '../shortcuts.js';
 
 const COLOR_GROUPS = [
@@ -26,8 +26,22 @@ const CONTROLS = ['--control-sm', '--control-md', '--control-lg', '--control-xl'
 const SHADOWS = [['None', 'L0 canvas · L1 cards (border only)', 'none'], ['--shadow-sm', 'L2 small: labels, chips', 'var(--shadow-sm)'], ['--shadow', 'L2/L3: menus, popovers, toasts, modals', 'var(--shadow)'], ['--shadow-raised', 'Raised inputs: the composer', 'var(--shadow-raised)']];
 const STATUSES = [
   { status: 'running', activity: 'needs_attention' }, { status: 'running', activity: 'waiting' }, { status: 'running', activity: 'working' }, { status: 'running', activity: 'done' },
-  { status: 'queued' }, { status: 'waiting_capacity' }, { status: 'switching' }, { status: 'stopping' },
+  { status: 'running', activity: 'done', background_shells: 1 },
+  { status: 'queued' }, { status: 'starting' }, { status: 'waiting_capacity' }, { status: 'chained', after: { number: 4 } }, { status: 'chained', after: { number: 4, blocked: '#4 stopped' } },
+  { status: 'switching' }, { status: 'stopping' },
   { status: 'closed' }, { status: 'stopped_cancelled' }, { status: 'stopped_crashed' }, { status: 'failed_spawn_error' },
+];
+// What only the live store adds (taskInfo): a held prompt, a browser request and the pull request.
+const PR = (checks, state = 'open') => ({ number: 221, url: '#', state, checks });
+const DONE_PLAN = { done: 7, total: 7 };
+const LIVE_STATES = [
+  [{ status: 'running', activity: 'working', held_prompt: { excerpt: 'Also add dark mode' } }, null, null],
+  [{ id: 't', sandbox_id: 's', status: 'running', activity: 'needs_attention' }, new Map([['s', new Map([['tab', { reason: 'Solve the captcha', task_id: 't' }]])]]), null],
+  [{ status: 'running', activity: 'waiting', steps: DONE_PLAN }, null, PR('success')],
+  [{ status: 'running', activity: 'waiting', steps: DONE_PLAN }, null, PR('none', 'merged')],
+  [{ status: 'running', activity: 'waiting', steps: DONE_PLAN }, null, PR('pending')],
+  [{ status: 'running', activity: 'waiting', steps: DONE_PLAN }, null, PR('failure')],
+  [{ status: 'running', activity: 'waiting', steps: { done: 2, total: 7 } }, null, PR('success')],
 ];
 
 /** WCAG relative luminance contrast of two computed CSS colours ("rgb(…)" or "#…"). */
@@ -49,7 +63,12 @@ function contrast(fg, bg) {
 }
 
 function section(title, description, ...content) {
-  return h('section', { class: 'ds-section' }, h('div', { class: 'ds-head' }, h('h2', null, title), description ? h('p', { class: 'muted small' }, description) : null), content);
+  return h('section', { class: 'ds-section' }, h('div', { class: 'ds-head' }, h('h2', { class: 'card-title' }, title), description ? h('p', { class: 'muted small' }, description) : null), content);
+}
+
+/** A sample of the page header pattern (h2 here: the page has one h1). */
+function headerSample(title, sub, ...actions) {
+  return h('div', { class: 'page-head ds-sample' }, h('h2', { class: 'page-title' }, title), h('span', { class: 'page-sub' }, sub), h('div', { class: 'page-actions' }, actions));
 }
 
 /** Mount the design system page. */
@@ -91,8 +110,27 @@ export function mountDesignPage(ctx) {
         h('div', { class: 'muted small mono' }, `--duration-fast ${token('--duration-fast')} · --duration ${token('--duration')} · --duration-slow ${token('--duration-slow')} · --ease ${token('--ease')}`)),
       section('Icons', `${ICON_NAMES.length} icons on a 24-unit grid, one stroke (--icon-stroke ${token('--icon-stroke')}) at 12, 16 and 20 px.`,
         h('div', { class: 'ds-icons' }, ICON_NAMES.map((name) => h('div', { class: 'ds-icon', title: name }, icon(name, { size: 20 }), h('span', { class: 'xs muted' }, name))))),
-      section('Task states', 'statusInfo(): one shape and a word per state; colour is never the only cue.',
-        h('div', { class: 'ds-states' }, STATUSES.map((task) => { const info = statusInfo(task); return h('div', { class: 'row nowrap' }, statusMark(info, 16), h('span', null, info.label), h('span', { class: 'muted xs' }, info.group)); }))),
+      section('Task states', 'statusInfo(): one shape and a word per state; colour is never the only cue. The group is the sidebar’s: “needs” is what Home and the tabs count as needing you.',
+        h('div', { class: 'ds-states' }, STATUSES.map((task) => { const info = statusInfo(task); return h('div', { class: 'row nowrap' }, statusMark(info, 16), h('span', null, info.label), h('span', { class: 'muted xs' }, info.group)); })),
+        h('h3', { class: 'ds-sub' }, 'With what only the live view knows (taskInfo)'),
+        h('div', { class: 'ds-states' }, LIVE_STATES.map(([task, requests, pr]) => { const info = taskInfo(task, requests, pr); return h('div', { class: 'row nowrap' }, statusMark(info, 16), h('span', null, info.label), h('span', { class: 'muted xs' }, info.group)); })),
+        h('p', { class: 'muted small' }, 'A pull request answers for a finished task only when its plan is complete: with 2 of 7 steps done it stays “Your turn”, whatever the checks say; failing checks always need you.')),
+      section('Page header', 'One pattern: the title, a subtitle that says what the page is for (never the sandbox or a count), actions on the right. A primary button that adds something starts with “+”; the key hint shows only where the shortcut does the same (New task).',
+        headerSample('Workflows', 'picked when starting a task', createButton('New workflow', () => toast('New workflow'))),
+        headerSample('Tasks', 'each task is a Claude Code session on its own branch', h('button', { type: 'button', class: 'btn btn-primary', onClick: () => toast('New task') }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, NEW_TASK_KEYS)))),
+      section('Cards', 'One card title: an optional icon and the title at the item size (Settings, the task overview, Git, Dashboard, CI).',
+        h('div', { class: 'card card-pad stack-sm' }, h('h3', { class: 'card-title' }, icon('tasks', { size: 16 }), 'Plan'), h('p', { class: 'muted small' }, 'The card’s content.'))),
+      section('Empty, loading and error states', 'One empty state with the action that fills it; a calm loading state; a failed load said in place with what failed and Try again (never a toast); a missing page with a heading and the way back.',
+        emptyState({ iconName: 'workflow', title: 'No custom workflows yet', text: 'Duplicate a default to change it, or start one from Blank.', action: createButton('New workflow', () => toast('New workflow')) }),
+        h('div', { class: 'stack-sm' }, skeleton('Loading the sample…'), placeholder('Loading…', 'loading')),
+        loadError('Couldn’t load the workflows: the server is not reachable', () => toast('Try again')),
+        h('div', { class: 'ds-missing' }, notFound({ title: 'Task not found', text: 'There is no task #999 in studio. It may have been deleted.', back: ['Tasks', '/design'], level: 3 }))),
+      section('Filters, pull requests and toasts', 'filterTabs(): pills with counts. prChip(): a pull request and its checks. Toasts confirm what happened in one short sentence with a period.',
+        filterTabs({ label: 'Sample filter', options: [{ value: '', label: 'All' }, { value: 'sandbox', label: 'This sandbox', icon: 'folder' }, { value: 'instance', label: 'Every sandbox', icon: 'globe' }], onChange: () => {} }).el,
+        h('div', { class: 'row-wrap' }, prChip(PR('success')), prChip(PR('pending')), prChip(PR('failure')), prChip(PR('none', 'merged'))),
+        h('div', { class: 'row-wrap' },
+          h('button', { type: 'button', class: 'btn btn-sm', onClick: () => toast('Task #12 archived.', { kind: 'ok' }) }, 'Show a toast'),
+          h('button', { type: 'button', class: 'btn btn-sm', onClick: () => toast('Couldn’t delete the workflow: the server is not reachable', { kind: 'error' }) }, 'Show an error toast'))),
       section('Buttons and inputs', null,
         h('div', { class: 'row-wrap' },
           h('button', { type: 'button', class: 'btn btn-primary' }, 'Primary'),
@@ -113,15 +151,15 @@ export function mountDesignPage(ctx) {
           h('span', { class: 'kbd' }, NEW_TASK_KEYS))),
       section('Badges, banners, meters', null,
         h('div', { class: 'row-wrap' }, badge('neutral'), badge('accent', 'accent'), badge('ok', 'ok'), badge('warn', 'warn'), badge('danger', 'danger'), badge('violet', 'violet'),
-          iconBadge('globe', 'Whole instance', 'violet'), iconBadge('lock', 'Secret', ''), h('span', { class: 'plan-badge' }, 'Max 20x')),
+          iconBadge('globe', 'Every sandbox', 'violet'), iconBadge('folder', 'This sandbox', ''), iconBadge('lock', 'Secret', '')),
         h('div', { class: 'stack-sm' },
           h('div', { class: 'banner banner-info' }, icon('globe'), h('span', { class: 'banner-text' }, 'Info banner')),
           h('div', { class: 'banner banner-warn' }, icon('warn'), h('span', { class: 'banner-text' }, 'Warning banner')),
           h('div', { class: 'banner banner-danger' }, icon('warn'), h('span', { class: 'banner-text' }, 'Danger banner'))),
-        h('div', { class: 'status-grid' }, meter(32, { label: 'Normal', detail: 'below 70 %' }), meter(78, { label: 'Warning', detail: '70–90 %' }), meter(96, { label: 'Danger', detail: 'above 90 %' }), meter(null, { label: 'Unknown', detail: 'never shown as zero' }))),
+        h('div', { class: 'status-grid' }, meter(32, { label: 'Normal', detail: 'below 70%' }), meter(78, { label: 'Warning', detail: '70–90%' }), meter(96, { label: 'Danger', detail: 'above 90%' }), meter(null, { label: 'Unknown', detail: 'never shown as zero' }))),
       section('Item card', 'itemCard(): the whole card opens the item; controls keep their own clicks.',
         h('div', { class: 'item-list' },
-          itemCard({ iconName: 'workflow', title: 'Feature', badges: [iconBadge('globe', 'Whole instance', 'violet'), iconBadge('check', 'Tests required', '')], description: 'Spec, implementation, tests and a pull request.', extra: h('ol', { class: 'steps-line' }, ['Write spec', 'Implement', 'Test'].map((s, i) => h('li', null, h('span', { class: 'step-num' }, String(i + 1)), s))), controls: [iconButton('trash', 'Delete', () => toast('Delete'), { class: 'btn-quiet-danger' })], onOpen: () => toast('Opened') }),
+          itemCard({ iconName: 'workflow', title: 'Feature', badges: [iconBadge('globe', 'Every sandbox', 'violet'), iconBadge('check', 'Tests required', '')], description: 'Spec, implementation, tests and a pull request.', extra: h('ol', { class: 'steps-line' }, ['Write spec', 'Implement', 'Test'].map((s, i) => h('li', null, h('span', { class: 'step-num' }, String(i + 1)), s))), controls: [iconButton('trash', 'Delete', () => toast('Delete'), { class: 'btn-quiet-danger' })], onOpen: () => toast('Opened') }),
           itemCard({ iconName: 'book', title: 'A disabled item', description: 'Dimmed, still readable.', dim: true, controls: [toggle({ checked: false, label: 'A disabled item enabled', onChange: () => {} })], onOpen: () => toast('Opened') }))),
     ));
   }

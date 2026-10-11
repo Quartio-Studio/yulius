@@ -9,7 +9,7 @@
 // for instance administrators (#111).
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, toast, iconButton, placeholder, statusMark, field, openModal, keepFocus, coalesce } from '../dom.js';
+import { h, icon, setChildren, toast, iconButton, placeholder, statusMark, field, openModal, keepFocus, coalesce, loadError } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { allows, taskInfo } from '../status.js';
 import { href } from '../router.js';
@@ -76,7 +76,7 @@ export function mountGitPage(ctx, sandbox) {
   const admin = allows(sandbox.access, 'admin');
   const sb = () => ctx.store.sandboxById(sandbox.id) || sandbox;
   const repoUrl = sandbox.repo && sandbox.repo.url ? sandbox.repo.url : null;
-  const frame = pageFrame({ title: 'Git', sub: sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name, actions: [
+  const frame = pageFrame({ title: 'Git', sub: 'where each task is on its way to production', actions: [
     iconButton('refresh', 'Refresh', () => load()),
     repoUrl ? h('a', { class: 'btn', href: `${repoUrl}/pulls`, target: '_blank', rel: 'noopener noreferrer' }, 'Pull requests', icon('external', { size: 12 })) : null,
     admin ? h('button', { type: 'button', class: 'btn', onClick: () => openProfileEditor(ctx, sb()) }, icon('gear', { size: 14 }), 'Delivery profile') : null,
@@ -136,7 +136,7 @@ export function mountGitPage(ctx, sandbox) {
       render();
     } catch (error) {
       if (!current()) return;
-      setChildren(body, h('div', { class: 'banner banner-danger' }, icon('warn'), h('span', { class: 'banner-text' }, `Could not read Git: ${error.message}`), h('button', { type: 'button', class: 'btn btn-sm', onClick: load }, 'Retry')));
+      setChildren(body, loadError(`Couldn’t load the delivery overview: ${error.message}`, load));
     }
   }
 
@@ -187,7 +187,7 @@ export function mountGitPage(ctx, sandbox) {
     const titles = (list) => list.slice(0, 3).map((i) => `#${i.task ? i.task.number : '?'} ${i.row.title}`).join(', ') + (list.length > 3 ? `, +${list.length - 3}` : '');
     const lastRun = (env) => model.runs.find((r) => r.environment === env.name && r.state === 'succeeded');
     const liveCard = h('section', { class: 'dl-card', 'aria-label': 'Live in production' },
-      h('h2', { class: 'dl-eyebrow' }, icon('globe', { size: 14 }), `Live in production · ${prod}`),
+      h('h2', { class: 'card-title' }, icon('globe', { size: 14 }), `Live in production · ${prod}`),
       live.length ? h('p', { class: 'dl-big' }, plural(live.length, 'task'), h('span', { class: 'muted' }, ` went live through ${BRAND.name}`)) : h('p', { class: 'dl-big muted' }, `No task has gone live through ${BRAND.name} yet`),
       live.length ? h('p', { class: 'small text-2 ellipsis' }, titles(live)) : null,
       envs.production.map((env) => {
@@ -201,7 +201,7 @@ export function mountGitPage(ctx, sandbox) {
     let waitingCard;
     if (profile.auto_promote) {
       waitingCard = h('section', { class: 'dl-card', 'aria-label': 'Waiting to go live' },
-        h('h2', { class: 'dl-eyebrow' }, icon('zap', { size: 14 }), 'Waiting to go live'),
+        h('h2', { class: 'card-title' }, icon('zap', { size: 14 }), 'Waiting to go live'),
         h('p', { class: 'dl-big' }, 'Goes live automatically after each merge'),
         h('p', { class: 'small muted' }, `${prod} moves forward to ${int} on every merge through ${BRAND.name}; nothing waits for a release.`));
     } else {
@@ -214,7 +214,7 @@ export function mountGitPage(ctx, sandbox) {
           : pendingEnv ? ['warn', 'clock', `Released once ${pendingEnv.name} is verified`]
             : blockedRelease ? ['warn', 'clock', `Not released yet: ${blockedRelease.delivery.blocked.find((b) => b.action === 'promote').reason}`] : ['warn', 'clock', 'Not ready to release yet'];
       waitingCard = h('section', { class: 'dl-card', 'aria-label': 'Waiting to go live' },
-        h('h2', { class: 'dl-eyebrow' }, icon('clock', { size: 14 }), `Waiting to go live · on ${int}`),
+        h('h2', { class: 'card-title' }, icon('clock', { size: 14 }), `Waiting to go live · on ${int}`),
         waiting.length
           ? h('p', { class: 'dl-big' }, plural(waiting.length, 'task'), h('span', { class: 'muted' }, ` merged, not live yet`))
           : h('p', { class: 'dl-big muted' }, `${int} and ${prod} match: everything merged is live`),
@@ -384,10 +384,12 @@ async function loadPresets(ctx) {
  */
 async function openProfileEditor(ctx, sandbox) {
   let presets;
+  let presetsError = null;
   try {
     presets = await loadPresets(ctx);
   } catch (error) {
-    toast(`Could not load the delivery presets: ${error.message}`, { kind: 'error' });
+    // Said in the dialog, where the presets would be (not in a toast); the rest still works.
+    presetsError = error;
     presets = new Map();
   }
   const profile = JSON.parse(JSON.stringify(sandbox.profile || presets.get('standard') || {}));
@@ -435,6 +437,7 @@ async function openProfileEditor(ctx, sandbox) {
     title: `Delivery profile · ${sandbox.name}`,
     wide: true,
     body: h('div', { class: 'stack' },
+      presetsError ? loadError(`Couldn’t load the delivery presets: ${presetsError.message}. Edit the settings below, or close and open the profile again.`) : null,
       h('div', { class: 'form-grid' }, field('Preset', preset), field('Integration branch', integration), field('Production branch', production), field('Merge method', merge), field('Release to production', promoteSel)),
       h('label', { class: 'check' }, autoPromote, h('span', null, `Release automatically after each merge through ${BRAND.name} (continuous, like Studio)`)),
       h('label', { class: 'check' }, requireChecks, h('span', null, 'Merges wait for green checks')),

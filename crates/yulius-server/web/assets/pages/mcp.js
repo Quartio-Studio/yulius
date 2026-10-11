@@ -6,7 +6,7 @@ import { enc } from '../api.js';
 import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, toggle, setChildren, iconButton, emptyState, filterTabs } from '../dom.js';
 import { navigate } from '../router.js';
 import { allows } from '../status.js';
-import { pageFrame, loader } from './common.js';
+import { pageFrame, loader, createButton } from './common.js';
 import { BRAND } from '../brand.js';
 
 /** Logos of well-known servers (assets/logos, see its README), matched by name, URL or package. */
@@ -34,7 +34,7 @@ export function mountMcpPage(ctx, sandbox, route) {
   const frame = pageFrame({
     title: 'MCP',
     sub: 'attached once, available to every Claude Code session on every subscription',
-    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: add }, 'Add server')],
+    actions: [createButton('Add server', add, { disabled: !write, title: write ? null : 'Requires write access' })],
   });
   const host = h('div');
   frame.body.append(h('div', { class: 'toolbar' }, scopeFilter.el, h('span', { class: 'muted small' }, `The ${BRAND.name} tool server is always attached and not listed here.`)), host);
@@ -50,11 +50,11 @@ export function mountMcpPage(ctx, sandbox, route) {
     const shown = servers.filter((s) => !scopeFilter.value || s.scope === scopeFilter.value);
     if (shown.length === 0) return servers.length
       ? emptyState({ iconName: 'plug', title: 'No server in this scope', text: 'Choose All to see every server.' })
-      : emptyState({ iconName: 'plug', title: 'No MCP servers yet', text: 'Attach a tool server once and every Claude Code session gets it — for example the Quartio MCP (HTTP) or the Apify MCP (local command).', action: write ? h('button', { type: 'button', class: 'btn btn-primary', onClick: add }, 'Add server') : null });
+      : emptyState({ iconName: 'plug', title: 'No MCP servers yet', text: 'Attach a tool server once and every Claude Code session gets it — for example the Quartio MCP (HTTP) or the Apify MCP (local command).', action: write ? createButton('Add server', add) : null });
     return h('div', { class: 'item-list' }, shown.map((server) => {
       const testResult = h('div', { class: 'small' });
       const manage = canManage(server);
-      const testButton = h('button', { type: 'button', class: 'btn btn-sm', disabled: !canTest(server), title: canTest(server) ? 'Connect and list tools (HTTP ≤ 5 s, stdio ≤ 10 s)' : server.scope === 'instance' && !instanceAdmin ? 'Instance servers are tested by instance administrators' : server.transport === 'stdio' && contained ? 'On a contained instance stdio tests need an instance administrator' : 'Requires write access', onClick: async () => {
+      const testButton = h('button', { type: 'button', class: 'btn btn-sm', disabled: !canTest(server), title: canTest(server) ? 'Connect and list tools (HTTP ≤ 5 s, stdio ≤ 10 s)' : server.scope === 'instance' && !instanceAdmin ? 'Servers for every sandbox are tested by instance administrators' : server.transport === 'stdio' && contained ? 'With isolation on, local-command tests need an instance administrator' : 'Requires write access', onClick: async () => {
         if (testButton.classList.contains('busy')) return; // one test at a time
         testButton.classList.add('busy');
         try {
@@ -73,7 +73,7 @@ export function mountMcpPage(ctx, sandbox, route) {
         iconEl: serverLogo(server),
         title: server.name,
         badges: [
-          server.scope === 'instance' ? iconBadge('globe', 'Whole instance', 'violet', 'Attached to every sandbox of this instance') : iconBadge('folder', 'This sandbox', '', 'Attached to this sandbox only'),
+          server.scope === 'instance' ? iconBadge('globe', 'Every sandbox', 'violet', 'Attached in every sandbox of this instance') : iconBadge('folder', 'This sandbox', '', 'Attached to this sandbox only'),
           iconBadge(server.transport === 'http' ? 'globe' : 'terminal', server.transport === 'http' ? 'HTTP' : 'Local command', '', server.transport === 'http' ? 'Remote server over HTTP' : 'Local command over stdio'),
         ],
         description: h('span', { class: 'mono' }, server.transport === 'http' ? server.url || '' : [server.command, ...(server.args || [])].filter(Boolean).join(' ')),
@@ -86,11 +86,11 @@ export function mountMcpPage(ctx, sandbox, route) {
               input.closest('.item-card').classList.toggle('off', !checked);
             } catch (error) {
               input.checked = !checked;
-              errorToast(error, 'Could not update server');
+              errorToast(error, 'Couldn’t update the server');
             }
           } }),
           testButton,
-          iconButton('trash', `Remove ${server.name}`, () => remove(server), { class: 'btn-quiet-danger', disabled: !manage, title: manage ? `Remove ${server.name}` : 'Instance servers are managed by instance administrators' }),
+          iconButton('trash', `Delete ${server.name}`, () => remove(server), { class: 'btn-quiet-danger', disabled: !manage, title: manage ? `Delete ${server.name}` : 'Servers for every sandbox are managed by instance administrators' }),
         ],
         onOpen: () => navigate(`${base}/${encodeURIComponent(server.id)}`),
         openLabel: manage ? `Edit ${server.name}` : `Open ${server.name}`,
@@ -99,7 +99,7 @@ export function mountMcpPage(ctx, sandbox, route) {
     }));
   }
 
-  const reload = loader(host, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/mcp`), (list) => {
+  const reload = loader(host, 'the MCP servers', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/mcp`), (list) => {
     servers = Array.isArray(list) ? list : [];
     const counts = new Map();
     for (const s of servers) counts.set(s.scope, (counts.get(s.scope) || 0) + 1);
@@ -112,13 +112,13 @@ export function mountMcpPage(ctx, sandbox, route) {
   }
 
   async function remove(server) {
-    if (!(await confirmDialog({ title: `Remove MCP server “${server.name}”?`, message: 'New sessions no longer get this server; its stored secrets are deleted.', confirmLabel: 'Remove', danger: true }))) return;
+    if (!(await confirmDialog({ title: `Delete MCP server “${server.name}”?`, message: 'New sessions no longer get this server; its stored secrets are deleted.', confirmLabel: 'Delete', danger: true }))) return;
     try {
       await ctx.api.del(`/api/mcp/${enc(server.id)}`);
-      toast('Server removed.', { kind: 'ok' });
+      toast(`MCP server ${server.name} deleted.`, { kind: 'ok' });
       reload();
     } catch (error) {
-      errorToast(error, 'Could not remove server');
+      errorToast(error, 'Couldn’t delete the server');
     }
   }
 

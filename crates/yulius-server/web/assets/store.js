@@ -4,8 +4,8 @@
 // account (Account), update ({phase}), resync, events-status (status), pulls (sandbox id).
 //
 // The server sends `resync` (not `sandbox.updated`) after sandbox changes, and sandbox
-// counters (running / needs attention / queued) are not pushed at all: task events
-// schedule one debounced reload of /api/sandboxes so the tab badges stay current.
+// counters (running / needs you / queued) are not pushed at all: task events and a changed
+// pull request schedule one debounced reload of /api/sandboxes so the tab badges stay current.
 
 import { enc } from './api.js';
 import { ReconnectingSocket } from './termsocket.js';
@@ -236,7 +236,11 @@ export function createStore(api) {
     try {
       const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
+      const before = JSON.stringify([...(state.pulls.get(sandboxId) || new Map())]);
       state.pulls.set(sandboxId, new Map(rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr])));
+      // The server counts "needs you" from what this read saw (a tested or failing pull request):
+      // reload the counters, so the tab and Home agree with the sidebar (#147).
+      if (JSON.stringify([...state.pulls.get(sandboxId)]) !== before) scheduleCountsRefresh();
       state.gitRows.set(sandboxId, new Map(rows.map((t) => [t.task_id, t])));
       emit('pulls', sandboxId);
     } catch { /* the chips stay as they were; the lists work without them */ }

@@ -1,14 +1,41 @@
 //! Sandbox (project) queries and views (SPEC-001 §5.2). Creation/import lives with the Git and
 //! GitHub integration.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use yulius_contracts::api::sandboxes::{Profile, RepoRef, Sandbox, SandboxCounts};
+use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::{AccessLevel, Action};
-use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task::{AttentionFacts, PullSignal, TaskStatus};
 
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::AppResult;
-use crate::model::SandboxRecord;
+use crate::model::{SandboxRecord, TaskRecord};
+
+/// What each sandbox's Git overview last said about its tasks' pull requests (GIT-001): the same
+/// facts the web UI's sidebar reads, so the "needs you" counts agree with it without calling
+/// GitHub for every sandbox list. Replaced per sandbox on every overview read; bounded by the
+/// sandboxes' tasks; empty after a restart until the next overview read.
+#[derive(Debug, Default)]
+pub(crate) struct ObservedPulls(Mutex<HashMap<SandboxId, HashMap<TaskId, PullSignal>>>);
+
+impl ObservedPulls {
+    /// Records one overview read of a sandbox.
+    pub(crate) fn record(&self, sandbox: &SandboxId, pulls: HashMap<TaskId, PullSignal>) {
+        if let Ok(mut map) = self.0.lock() {
+            map.insert(sandbox.clone(), pulls);
+        }
+    }
+
+    /// The last observed pull request of a task: `Some(None)` when the overview listed the task
+    /// without one, `None` when its sandbox was not read since the server started.
+    fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
+        let map = self.0.lock().ok()?;
+        map.get(sandbox).map(|pulls| pulls.get(task).copied())
+    }
+}
 
 /// The default profile for new projects (SPEC-001 DLV-002).
 #[must_use]
@@ -35,11 +62,7 @@ impl App {
             if task.status == TaskStatus::Queued {
                 counts.queued += 1;
             }
-            // A task paused for subscription capacity needs nobody: it continues by itself
-            // (ROT-010, F 2026-10-10).
-            if task.activity == Some(Activity::NeedsAttention)
-                && task.status != TaskStatus::WaitingCapacity
-            {
+            if self.needs_you(task).await? {
                 counts.needs_attention += 1;
             }
         }
@@ -66,6 +89,54 @@ impl App {
         })
     }
 
+    /// Whether a task waits for a person: the sidebar's "Needs you" rule (`AttentionFacts`), so
+    /// Home's cards and the sandbox tabs count what the sidebar lists (#147). Ended tasks are
+    /// answered without reading the store.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn needs_you(&self, task: &TaskRecord) -> AppResult<bool> {
+        if task.status.is_resting() {
+            return Ok(false);
+        }
+        let store = &self.deps.store;
+        let held_prompt = store.pending_hold(&task.id).await?.is_some();
+        let chain_blocked = task.status == TaskStatus::Chained
+            && store
+                .chain(&task.id)
+                .await?
+                .is_some_and(|chain| chain.blocked_reason.is_some());
+        let finished = task.status == TaskStatus::Running
+            && task
+                .activity
+                .is_some_and(yulius_domain::task::Activity::is_idle);
+        // The pull request and the plan matter only after a finished turn.
+        let (pull, plan_open) = if finished {
+            let pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
+                Some(observed) => observed,
+                // Not read since the server started: a merge recorded earlier is still known.
+                None => store
+                    .delivery(&task.id)
+                    .await?
+                    .filter(|record| crate::delivery::past_merge(&record.stage))
+                    .map(|_| PullSignal::Merged),
+            };
+            let plan_open = pull.is_some() && plan_open(&store.steps(&task.id).await?);
+            (pull, plan_open)
+        } else {
+            (None, false)
+        };
+        Ok(AttentionFacts {
+            status: task.status,
+            activity: task.activity,
+            held_prompt,
+            chain_blocked,
+            plan_open,
+            pull,
+        }
+        .needs_you())
+    }
+
     /// Sandboxes visible to the caller.
     ///
     /// # Errors
@@ -88,4 +159,10 @@ impl App {
         let (record, level) = self.require(&ctx.user, &id, Action::View).await?;
         self.sandbox_view(&record, level).await
     }
+}
+
+/// Whether a plan has steps not done or skipped yet (STP-001, STP-005).
+pub(crate) fn plan_open(steps: &[crate::model::StepRecord]) -> bool {
+    let progress = crate::tasks::progress(steps);
+    progress.total > 0 && progress.done < progress.total
 }

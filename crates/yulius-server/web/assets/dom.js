@@ -88,6 +88,12 @@ const ICONS = {
   'st-crashed': [['path', { d: 'M12 4l9 15.5H3z' }], ['path', { d: 'M12 10v4.2' }], ['circle', { cx: 12, cy: 17, r: 1, fill: 'currentColor', stroke: 'none' }]],
   'st-failed': [['circle', { cx: 12, cy: 12, r: 8.5 }], ['path', { d: 'M9 9l6 6M15 9l-6 6' }]],
   'st-closed': [['circle', { cx: 12, cy: 12, r: 8.5 }], ['path', { d: 'M8.5 12.2l2.4 2.4 4.6-5' }]],
+  // Waiting states (#147): in line for a slot (an hourglass), starting (a ring being drawn), paused
+  // for capacity (pause bars) and queued after another task (a chain link).
+  'st-queued': [['path', { d: 'M7 3.5h10M7 20.5h10M8.2 3.5c0 4.6 3.8 5.4 3.8 8.5s-3.8 3.9-3.8 8.5M15.8 3.5c0 4.6-3.8 5.4-3.8 8.5s3.8 3.9 3.8 8.5' }]],
+  'st-starting': [['circle', { cx: 12, cy: 12, r: 8.5, 'stroke-dasharray': '2.6 3.1' }], ['circle', { cx: 12, cy: 12, r: 2, fill: 'currentColor', stroke: 'none' }]],
+  'st-paused': [['circle', { cx: 12, cy: 12, r: 8.5 }], ['path', { d: 'M10 9v6M14 9v6' }]],
+  'st-chained': [['path', { d: 'M9.5 14.5l5-5M11 7.6l1.7-1.7a3.6 3.6 0 0 1 5.1 5.1l-1.7 1.7M13 16.4l-1.7 1.7a3.6 3.6 0 0 1-5.1-5.1l1.7-1.7' }]],
   trash: [['path', { d: 'M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2' }]],
   tasks: [['path', { d: 'M9 6h11M9 12h11M9 18h11' }], ['path', { d: 'M3.5 6l1.2 1.2L7 5M3.5 12l1.2 1.2L7 11M3.5 18l1.2 1.2L7 17' }]],
   branch: [['circle', { cx: 6, cy: 5.5, r: 2.2 }], ['circle', { cx: 6, cy: 18.5, r: 2.2 }], ['circle', { cx: 18, cy: 8, r: 2.2 }], ['path', { d: 'M6 7.7v8.6M18 10.2c0 4-4.5 3.8-9.8 6.6' }]],

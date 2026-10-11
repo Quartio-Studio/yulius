@@ -265,7 +265,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
       toast(`Continuing in task #${task.number}.`, { kind: 'ok' });
       navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
     } catch (error) {
-      errorToast(error, 'Could not continue the session');
+      errorToast(error, 'Couldn’t continue the session');
     }
   }
 
@@ -277,7 +277,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
       toast('Session deleted.', { kind: 'ok' });
       navigate(back);
     } catch (error) {
-      errorToast(error, 'Could not delete the session');
+      errorToast(error, 'Couldn’t delete the session');
     }
   }
 
@@ -330,7 +330,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
     } catch (error) {
       if (!alive) return;
       if (session === null) setChildren(body, loadError(`Couldn’t load the session: ${error.message}`, () => load(start)));
-      else errorToast(error, 'Could not load more');
+      else errorToast(error, 'Couldn’t load more');
     } finally {
       loading = false;
       if (alive && session) renderMore();
