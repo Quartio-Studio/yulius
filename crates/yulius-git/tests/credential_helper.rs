@@ -207,3 +207,38 @@ fn unreachable_server_is_unavailable() -> TestResult {
     assert!(output.is_empty());
     Ok(())
 }
+
+#[test]
+fn gh_token_prints_only_the_token_for_github_com() -> TestResult {
+    let (port, server) = one_shot_server(json_response(
+        "200 OK",
+        r#"{"token":"ghu_SyntheticFixtureToken"}"#,
+    ))?;
+    let env = env_for(format!("http://127.0.0.1:{port}"), Some("ws_task-token"));
+    let mut output = Vec::new();
+    let code = yulius_git::run_gh_token(&mut output, &env);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(String::from_utf8(output)?, "ghu_SyntheticFixtureToken\n");
+    let request = server.join().map_err(|_| "server thread panicked")??;
+    assert!(request.contains("Authorization: Bearer ws_task-token"));
+    assert!(request.contains(r#""host":"github.com""#));
+    assert!(request.contains(r#""protocol":"https""#));
+    assert!(!request.contains(r#""path""#), "gh is not tied to one repository");
+    Ok(())
+}
+
+#[test]
+fn gh_token_prints_nothing_when_refused_or_misconfigured() -> TestResult {
+    let (port, server) = one_shot_server(json_response("403 Forbidden", "{}"))?;
+    let env = env_for(format!("http://127.0.0.1:{port}"), Some("ws_task-token"));
+    let mut output = Vec::new();
+    assert_eq!(yulius_git::run_gh_token(&mut output, &env), EXIT_UNAVAILABLE);
+    assert!(output.is_empty());
+    server.join().map_err(|_| "server thread panicked")??;
+
+    let env = env_for("http://127.0.0.1:1".to_owned(), None);
+    let mut output = Vec::new();
+    assert_eq!(yulius_git::run_gh_token(&mut output, &env), EXIT_USAGE);
+    assert!(output.is_empty());
+    Ok(())
+}
