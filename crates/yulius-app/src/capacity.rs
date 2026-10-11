@@ -433,6 +433,10 @@ impl App {
     /// with the configured stagger between two resumes. Returns how long to sleep before the
     /// next pass (until the earliest known reset, at most 5 minutes).
     pub async fn resume_round(self: &Arc<Self>) -> Duration {
+        // An instance update holds every task; the pool resumes them after it (ADR-18).
+        if self.update_holds_starts() {
+            return Duration::from_secs(5);
+        }
         let Ok(pauses) = self.deps.store.open_pauses().await else {
             return RECHECK;
         };

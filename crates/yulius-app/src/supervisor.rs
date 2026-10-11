@@ -564,7 +564,10 @@ impl App {
                 .ok_or(AppError::NotFound)?;
             let live =
                 u32::try_from(self.deps.store.live_attempts().await?.len()).unwrap_or(u32::MAX);
-            if live >= self.config.max_live_sessions && task.status != TaskStatus::Switching {
+            // While an update pauses the tasks, starts queue like at the session limit and run
+            // once it is over (SPEC-002 ADR-18).
+            let full = live >= self.config.max_live_sessions || self.update_holds_starts();
+            if full && task.status != TaskStatus::Switching {
                 let queued = self
                     .deps
                     .store
@@ -1228,8 +1231,11 @@ impl App {
             .await;
     }
 
-    /// Starts queued tasks while capacity allows (FIFO).
+    /// Starts queued tasks while capacity allows (FIFO); none while an update pauses tasks.
     pub async fn drain_queue(self: &Arc<Self>) {
+        if self.update_holds_starts() {
+            return;
+        }
         let Ok(queued) = self
             .deps
             .store

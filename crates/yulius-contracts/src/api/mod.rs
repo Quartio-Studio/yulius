@@ -16,4 +16,5 @@ pub mod shells;
 pub mod skills;
 pub mod status;
 pub mod tasks;
+pub mod updates;
 pub mod workflows;
