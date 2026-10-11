@@ -36,8 +36,9 @@ The source is the ML in PL workshop "agentic coding methodology" (ktfish.github.
 - **Instrumentation audit**: list conventions, classify where they live, rank by failure cost, map
   each to a primitive type (instruction, agent, skill, prompt, memory, spec, hook), write a starter
   set. Our `infra-bootstrap` skill lays gates and docs but never captures conventions as primitives.
-- **Skill frontmatter rules**: description starts with "Use when", states negative cases, and
-  changing it is a breaking change. Our checker only checks name/description shape.
+- **Skill frontmatter rules**: upstream, the description starts with "Use when", states negative cases, and
+  changing it is a breaking change. Before this change our checker only checked name/description
+  shape; now it enforces APM-003 (a "Use when/for ..." sentence, body size, deployment equality).
 - Not adopted: Genesis catalogue wrapper and `waza` benchmarks (evaluate later), `gh-aw`
   (GitHub-hosted agent workflows; conflicts with ADR-0015), the LaTeX exercise itself.
 - Yulius already discovers `.agents/skills` and `.claude/skills` in a sandbox repository
