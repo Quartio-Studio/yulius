@@ -31,7 +31,7 @@ not only onto the Claude terminal. The task's agent then reads them by path.
 | CMP-003 | Files in a user's drafts folder older than 7 days are removed when that user next uploads a draft. | code review (`prune_old_drafts`) |
 | CMP-004 | While the prompt is read-only (a task is being created), drops are refused with a short message. | code review |
 
-## Delivery and acceptance
+## Acceptance criteria
 
 - AC-CMP-1: dropping a file on the prompt shows "Drop to add to the prompt", then the stored path appears in the prompt (CMP-001).
 - AC-CMP-2: a read-only user's upload is refused; a write user's two uploads of one name get distinct files (CMP-002).
@@ -51,3 +51,10 @@ Rust integration test for the endpoint; browser e2e for drop and paste on the pr
 
 - Drafts are kept per user and sandbox and expire after a week, instead of being tied to a task that does not exist yet. Limit: a task running longer than a week may lose a file it was given.
 - The terminal drop flow was generalised (`attachPathDrop`) rather than duplicated.
+
+## Evidence
+
+- `cargo test -p yulius --test uploads composer`: 1 passed (CMP-002).
+- `npx e2e run tests/filedrop.e2e.ts`: the composer drop-and-paste test passes (CMP-001). The existing "a text file dropped on the editor opens in a tab" test failed in 2 of 3 runs and passed once; the editor drop path is untouched, and it was not checked on `dev`.
+- Not run: the full gate. `uploads` also has `the_agent_reads_a_dropped_file_by_path_and_git_stays_clean`, which fails here because fake-agent is not built.
+- CMP-003 and CMP-004 have no automated test.
