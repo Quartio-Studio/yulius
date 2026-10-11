@@ -5,9 +5,11 @@
 //! documentation fails [`validate_project`] gets a meta-task whose prompt asks the agent to adapt
 //! the repository to the Yulius format without breaking its conventions. The task starts by
 //! itself (no approval step, F 2026-10-10): at once when the repository is added in the UI, when
-//! the upload has landed when it comes through `yulius onboard`. Until the task has run and the
-//! project validates (`ready`), or an admin skips it, no other task starts in the sandbox: not
-//! created, continued, chained or run by an automation ([`App::ensure_tasks_may_start`], U-08).
+//! the upload has landed when it comes through `yulius onboard`. Until the task has finished and
+//! the project validates (`ready`), or an admin skips it, no other task starts in the sandbox: a
+//! new task — created, chained or run by an automation — waits after the preparation task and
+//! starts by itself once the sandbox is ready ([`App::onboarding_wait`], U-08); continuing a
+//! resting task or an imported session is refused meanwhile ([`App::ensure_tasks_may_start`]).
 //! [`App::onboarding_status`] says what is still pending, for the CLI and the UI.
 
 use std::fs::{self, File};
@@ -34,6 +36,7 @@ use crate::ports::store::TaskFieldUpdate;
 use crate::projects::blocking;
 use crate::supervisor::RunStart;
 use crate::tasks::progress;
+use yulius_domain::task::{Activity, TaskStatus};
 
 /// Bound on one documentation file read for validation.
 pub const MAX_DOC_BYTES: u64 = 1024 * 1024;
@@ -252,17 +255,21 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          6. Foundations (skill infra-bootstrap): CI runs only on our own machines through Yulius \
          CI, never GitHub Actions. Translate every .github/workflows/* job into the Yulius CI \
          configuration ([commands] gate or [[ci.jobs]] in yulius.toml; ci_setup lists them) so \
-         nothing is lost, run it, then delete .github/workflows/ in the same pull request. When \
-         tests, lint or environments are missing, lay them as the infra-bootstrap skill \
-         describes, as follow-up pull requests.\n\
+         nothing is lost, run it, then delete .github/workflows/ in the same pull request. If \
+         GitHub refuses that push because the Yulius GitHub App may not change workflow files \
+         (its Workflows permission), keep .github/workflows/, finish everything else, mark that \
+         step skipped with this reason, and say in the pull request that the deletion follows \
+         once an admin grants the permission. When tests, lint or environments are missing, lay \
+         them as the infra-bootstrap skill describes, as follow-up pull requests.\n\
          7. git-crypt: encrypted files stay locked. Never unlock or decrypt them, never commit \
          decrypted content, and leave encrypted files byte-for-byte unchanged.\n\
          8. Hooks: when the repository's instructions describe a hooks setup (for example \
          `git config core.hooksPath .githooks`), apply it in your worktree before committing. \
          Never bypass hooks with --no-verify.\n\
-         9. Deliver through a pull request from your task branch into {integration}; never push \
-         to {integration} or {production}. Change documentation, configuration and CI only, not \
-         application code.\n\
+         9. Commit on your task branch and mark every step done as you finish it: Yulius opens \
+         the pull request into {integration} by itself once every step is done, and pushes later \
+         commits to it. Do not open it yourself, and never push to {integration} or \
+         {production}. Change documentation, configuration and CI only, not application code.\n\
          10. Before finishing, make sure every problem listed above is resolved.",
         preset = profile.preset,
         problems = problems.join("\n"),
@@ -276,7 +283,7 @@ fn onboarding_steps() -> Vec<String> {
         "Reverse-engineer the product, architecture and decisions into the docs",
         "Map existing documents and commands in yulius.toml",
         "Move GitHub Actions into Yulius CI and delete them",
-        "Add the missing documents and open the pull request",
+        "Add the missing documents and check the format",
     ]
     .iter()
     .map(|step| (*step).to_owned())
@@ -364,8 +371,9 @@ impl App {
 
     /// Re-evaluates a `pending`/`preparing` sandbox and returns its (possibly new) onboarding
     /// state: `preparing` once the preparation task has been started (also through
-    /// `POST /api/tasks/{tid}/continue`), `ready` once it rests after running and the project
-    /// validates in its worktree or in the sandbox clone. Other states are returned unchanged.
+    /// `POST /api/tasks/{tid}/continue`), `ready` once it has finished — it rests after running,
+    /// or its turn ended with every step of its plan resolved — and the project validates in its
+    /// worktree or in the sandbox clone. Other states are returned unchanged.
     /// Cheap for settled sandboxes (one store read); call it on task close and on reads.
     ///
     /// # Errors
@@ -390,8 +398,17 @@ impl App {
         if !started {
             return Ok(record.onboarding_state);
         }
+        // An agent that has done the work waits at its prompt: a finished turn with the whole
+        // plan resolved counts as finished, so the sandbox does not wait for someone to close it.
+        let finished = resting
+            || (task.status == TaskStatus::Running
+                && task.activity.is_some_and(Activity::is_idle)
+                && {
+                    let steps = store.steps(&task.id).await?;
+                    !steps.is_empty() && !crate::sandboxes::plan_open(&steps)
+                });
         let mut next = OnboardingState::Preparing;
-        if resting {
+        if finished {
             let mut candidates: Vec<PathBuf> = Vec::new();
             if let Some(path) = &task.worktree_path {
                 candidates.push(PathBuf::from(path));
@@ -414,12 +431,16 @@ impl App {
         Ok(next.as_str().to_owned())
     }
 
-    /// `POST /api/sandboxes/{sid}/onboarding/skip` (admin): unblocks ordinary tasks; a running
-    /// preparation task keeps running.
+    /// `POST /api/sandboxes/{sid}/onboarding/skip` (admin): unblocks ordinary tasks — the ones
+    /// waiting for the preparation task start at once; a running preparation task keeps running.
     ///
     /// # Errors
     /// `NotFound` without access, `Forbidden` without admin.
-    pub async fn skip_onboarding(&self, ctx: &AuthContext, sid: &str) -> AppResult<Sandbox> {
+    pub async fn skip_onboarding(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        sid: &str,
+    ) -> AppResult<Sandbox> {
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
         let (record, level) = self.require(&ctx.user, &id, Action::Administer).await?;
         if OnboardingState::parse(&record.onboarding_state)
@@ -428,6 +449,9 @@ impl App {
             let actor = self.login_of(&ctx.user.id).await;
             self.set_onboarding_state(&record, OnboardingState::Skipped, &actor)
                 .await?;
+            if let Some(task) = &record.onboarding_task_id {
+                self.advance_chains(task).await;
+            }
         }
         let record = self
             .deps
@@ -438,9 +462,44 @@ impl App {
         self.sandbox_view(&record, level).await
     }
 
-    /// The onboarding gate (U-08): while a sandbox is `pending` or `preparing`, no task other
-    /// than its preparation task may start — not created, continued, chained or run by an
-    /// automation.
+    /// The onboarding gate for new tasks (U-08): while a sandbox is `pending` or `preparing`, a
+    /// new task does not start but waits after the preparation task, which this returns; it
+    /// starts by itself once the sandbox is ready or an admin skips preparation. `None` when the
+    /// task may start now.
+    ///
+    /// # Errors
+    /// `Conflict` when the sandbox waits for preparation without a preparation task;
+    /// `NotFound` for unknown sandboxes.
+    pub async fn onboarding_wait(
+        &self,
+        sandbox: &SandboxId,
+        origin: TaskOrigin,
+    ) -> AppResult<Option<TaskRecord>> {
+        if origin == TaskOrigin::Onboarding {
+            return Ok(None);
+        }
+        let state = self.refresh_onboarding(sandbox).await?;
+        if !OnboardingState::parse(&state).is_some_and(OnboardingState::blocks_tasks) {
+            return Ok(None);
+        }
+        let store = &self.deps.store;
+        let record = store.sandbox(sandbox).await?.ok_or(AppError::NotFound)?;
+        let task = match &record.onboarding_task_id {
+            Some(id) => store.task(id).await?,
+            None => None,
+        };
+        task.map(Some).ok_or_else(|| {
+            AppError::Conflict(
+                "this project is being prepared for Yulius; tasks can start once it is ready (or \
+                 an admin skips preparation)"
+                    .into(),
+            )
+        })
+    }
+
+    /// The onboarding gate for resuming (U-08): continuing a resting task or an imported session
+    /// is refused while the sandbox is `pending` or `preparing`; new tasks wait instead
+    /// ([`App::onboarding_wait`]).
     ///
     /// # Errors
     /// `Conflict` while the sandbox is being prepared; `NotFound` for unknown sandboxes.
@@ -455,8 +514,9 @@ impl App {
         let state = self.refresh_onboarding(sandbox).await?;
         if OnboardingState::parse(&state).is_some_and(OnboardingState::blocks_tasks) {
             return Err(AppError::Conflict(
-                "this project is being prepared for Yulius; tasks can start once the preparation \
-                 task has made it ready (or an admin skips it)"
+                "this project is being prepared for Yulius; continue this once the preparation \
+                 task has made it ready (or an admin skips it). New tasks wait for it and start by \
+                 themselves"
                     .into(),
             ));
         }
@@ -783,6 +843,15 @@ mod tests {
         assert!(prompt.contains("nobody needs to approve"));
         assert!(!prompt.contains("Ask the user"), "onboarding is autonomous");
         assert!(prompt.contains("delete .github/workflows/"));
+        // F 2026-10-11: the agent never needs the GitHub CLI and never stops on a permission.
+        assert!(prompt.contains("Yulius opens the pull request"));
+        assert!(prompt.contains("Do not open it yourself"));
+        assert!(prompt.contains("Workflows permission"));
+        assert!(
+            !onboarding_steps()
+                .iter()
+                .any(|step| step.contains("open the pull request"))
+        );
         assert!(prompt.contains("infra-bootstrap"));
         assert!(prompt.contains("--no-verify"));
         assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);

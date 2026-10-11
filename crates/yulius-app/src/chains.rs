@@ -19,7 +19,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::intake::ChainRecord;
-use crate::model::TaskRecord;
+use crate::model::{TaskOrigin, TaskRecord};
 use crate::supervisor::RunStart;
 
 /// Chained tasks waiting in one sandbox at most (the session queue's bound).
@@ -62,7 +62,15 @@ impl App {
                 task.number
             )));
         }
-        let waiting = store
+        self.ensure_chain_room(sandbox).await?;
+        Ok(task)
+    }
+
+    /// Refuses one more waiting task when the sandbox already has the most it may hold.
+    pub(crate) async fn ensure_chain_room(&self, sandbox: &SandboxId) -> AppResult<()> {
+        let waiting = self
+            .deps
+            .store
             .tasks(sandbox, false)
             .await?
             .iter()
@@ -73,7 +81,7 @@ impl App {
                 "this sandbox already has {MAX_CHAINED_PER_SANDBOX} tasks waiting in chains"
             )));
         }
-        Ok(task)
+        Ok(())
     }
 
     /// Records the link of a new chained task.
@@ -152,6 +160,25 @@ impl App {
         let Ok(Some(before)) = store.task(predecessor).await else {
             return;
         };
+        // Tasks waiting for a sandbox's preparation start once the sandbox is ready or an admin
+        // skips preparation (U-08), not when the preparation task's own pull request is green.
+        if before.origin == TaskOrigin::Onboarding {
+            let ready = self
+                .refresh_onboarding(&before.sandbox_id)
+                .await
+                .is_ok_and(|state| {
+                    !crate::onboarding::OnboardingState::parse(&state)
+                        .is_some_and(crate::onboarding::OnboardingState::blocks_tasks)
+                });
+            if ready {
+                for task in waiting {
+                    if let Err(err) = self.release_chained(&task).await {
+                        tracing::warn!(task = %task.id, error = %err, "waiting task did not start");
+                    }
+                }
+            }
+            return;
+        }
         if self.task_is_done(&before).await {
             for task in waiting {
                 if let Err(err) = self.release_chained(&task).await {

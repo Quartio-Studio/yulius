@@ -8,11 +8,12 @@ use serde_json::{Value, json};
 use support::repos::{OWNER, World, git};
 use support::{TestResult, call};
 use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord};
+use yulius_app::ports::store::CoordinationStore;
 use yulius_app::ports::store::{InstanceStore, SandboxStore, TaskFieldUpdate, TaskStore};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
 use yulius_domain::spec_format::{TemplateKind, scaffold_files};
-use yulius_domain::task::{AttemptState, TaskStatus};
+use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 type Error = Box<dyn std::error::Error>;
@@ -325,7 +326,9 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
             .ok_or("sandbox")?;
     assert_eq!(record.onboarding_task_id, Some(prep.id.clone()));
 
-    let blocked = call(
+    // A new task is not refused while the sandbox is being prepared: it waits after the
+    // preparation task (U-08, F 2026-10-11).
+    let waiting = call(
         &w.h.router,
         Method::POST,
         &format!("/api/sandboxes/{shop_id}/tasks"),
@@ -333,8 +336,10 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
         &alice,
     )
     .await?;
-    assert_eq!(blocked.status, StatusCode::CONFLICT);
-    assert!(text(&blocked.body["error"]["message"]).contains("being prepared"));
+    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
+    assert_eq!(waiting.body["status"], "chained");
+    assert_eq!(waiting.body["after"]["number"], prep.number);
+    let waiting_id = TaskId::parse(text(&waiting.body["id"]))?;
 
     // Approving is no longer needed: it changes nothing while the task is preparing.
     let approve = call(
@@ -360,6 +365,11 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     let skipped = call(&w.h.router, Method::POST, &skip, None, &alice).await?;
     assert_eq!(skipped.status, StatusCode::OK);
     assert_eq!(skipped.body["onboarding"], "skipped");
+    assert_ne!(
+        w.h.store.task(&waiting_id).await?.ok_or("task")?.status,
+        TaskStatus::Chained,
+        "the waiting task starts once preparation is skipped"
+    );
     let created = call(
         &w.h.router,
         Method::POST,
@@ -439,7 +449,7 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
         )
         .await?;
     assert_eq!(w.h.app.refresh_onboarding(&sid).await?, "preparing");
-    let blocked = call(
+    let waiting = call(
         &w.h.router,
         Method::POST,
         &format!("/api/sandboxes/{sid}/tasks"),
@@ -447,11 +457,8 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
         &alice,
     )
     .await?;
-    assert_eq!(
-        blocked.status,
-        StatusCode::CONFLICT,
-        "still blocked while preparing"
-    );
+    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
+    assert_eq!(waiting.body["status"], "chained", "waits while preparing");
 
     // The task closes; the agent delivered the docs in its worktree: ready, tasks unblocked.
     let prep = w.h.store.task(&task_id).await?.ok_or("prep")?;
@@ -751,5 +758,126 @@ async fn remove_stops_tasks_and_keeps_the_repository() -> TestResult {
     assert_eq!(again.status, StatusCode::CREATED);
     assert_eq!(again.body["slug"], "shop-2");
     assert_eq!(again.body["port_base"], 20020);
+    Ok(())
+}
+
+/// F 2026-10-11: the preparation agent did the work and waited at its prompt, so the sandbox
+/// stayed `preparing` and every other task was refused. A finished turn with the whole plan
+/// resolved and the docs in its worktree makes the sandbox ready, and the task that waited for
+/// it starts by itself.
+#[tokio::test]
+async fn a_finished_preparation_turn_makes_the_sandbox_ready_and_starts_waiting_tasks() -> TestResult
+{
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    w.remote(
+        OWNER,
+        "product",
+        &[("README.md", "# Product\n")],
+        &["quartio"],
+    )?;
+    w.grant("alice", "product", "admin");
+    let product = import(&w, &alice, "Quartio-Studio/product").await?.body;
+    let sid = SandboxId::parse(text(&product["id"]))?;
+    let task_id =
+        w.h.store
+            .sandbox(&sid)
+            .await?
+            .ok_or("sandbox")?
+            .onboarding_task_id
+            .ok_or("prep task")?;
+    let prep = w.h.store.task(&task_id).await?.ok_or("prep")?;
+
+    // "Start in parallel" during preparation: the task waits after the preparation task.
+    let waiting = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/tasks"),
+        Some(json!({"prompt": "install the GitHub CLI", "harness": "claude"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
+    assert_eq!(waiting.body["status"], "chained");
+    assert_eq!(waiting.body["after"]["number"], prep.number);
+    let waiting_id = TaskId::parse(text(&waiting.body["id"]))?;
+
+    // The agent wrote the docs in its worktree and waits at its prompt, plan still open.
+    w.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("a-prep-turn")?,
+            task_id: task_id.clone(),
+            seq: 1,
+            harness: Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            state: AttemptState::Live,
+            run_dir: "/tmp/none".into(),
+            token_hash: "x".into(),
+            host_token: Sealed(vec![0]),
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: Timestamp(2),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    let worktree = w.scratch.path().join("prep-turn-worktree");
+    for (path, contents) in scaffold("product") {
+        let target = worktree.join(path);
+        std::fs::create_dir_all(target.parent().ok_or("parent")?)?;
+        std::fs::write(target, contents)?;
+    }
+    w.h.store
+        .update_task(
+            &task_id,
+            &TaskFieldUpdate {
+                worktree_path: Some(worktree.to_string_lossy().into_owned()),
+                ..TaskFieldUpdate::default()
+            },
+            Timestamp(3),
+        )
+        .await?;
+    assert!(
+        w.h.store
+            .transition_task(
+                &task_id,
+                Some(prep.status),
+                TaskStatus::Running,
+                Some(Activity::Waiting),
+                Timestamp(4),
+            )
+            .await?
+    );
+    assert_eq!(
+        w.h.app.refresh_onboarding(&sid).await?,
+        "preparing",
+        "steps still open"
+    );
+
+    // Every step done: the turn finished the preparation.
+    let steps: Vec<_> =
+        w.h.store
+            .steps(&task_id)
+            .await?
+            .into_iter()
+            .map(|mut step| {
+                step.status = "done".into();
+                step
+            })
+            .collect();
+    assert!(!steps.is_empty(), "the preparation task has a plan");
+    w.h.store
+        .replace_steps(&task_id, &steps, "agent", Timestamp(5))
+        .await?;
+    w.h.app.advance_chains(&task_id).await;
+    assert_eq!(w.h.app.refresh_onboarding(&sid).await?, "ready");
+    assert_ne!(
+        w.h.store.task(&waiting_id).await?.ok_or("waiting")?.status,
+        TaskStatus::Chained,
+        "the waiting task starts once the sandbox is ready"
+    );
     Ok(())
 }
