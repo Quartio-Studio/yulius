@@ -11,7 +11,7 @@ Access must be narrow and revocable, and GitHub stays the source of permissions.
 
 ## Decision
 
-A GitHub App created by manifest flow provides installation tokens and user-to-server OAuth; permissions are read per user per repository with a 5-minute cache.
+A GitHub App created by manifest flow provides installation tokens and user-to-server OAuth; permissions are read per user per repository with a 5-minute cache. Since 2026-10-11 a task acts on GitHub with its creator's user-to-server token (pushes, pull requests, merges, promotions, issues, the agent's Git and `gh`); the installation token is the fallback and serves instance housekeeping (CI statuses, branch cleanup, background reads).
 
 ## Alternatives
 
@@ -19,4 +19,4 @@ An OAuth App with `repo` scope; personal access tokens.
 
 ## Consequences
 
-Needs a public callback URL. Reads the App lacks permission for degrade instead of failing. See [operations](../operations.md).
+Needs a public callback URL. Reads the App lacks permission for degrade instead of failing. GitHub shows the person who created a task as the author of its work; an agent holds its creator's reach within the installation until the token expires (SPEC-002 §8, R-08). See [operations](../operations.md).

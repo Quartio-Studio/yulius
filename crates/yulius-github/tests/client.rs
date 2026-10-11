@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
 use yulius_domain::time::Timestamp;
-use yulius_github::fake::{FakeCheckRun, FakeFault, FakeGitHub, FakeStatus};
+use yulius_github::fake::{FakeActor, FakeCheckRun, FakeFault, FakeGitHub, FakeStatus};
 use yulius_github::{
     AccessLevel, CheckSource, ChecksSummary, Clock, CommitStatus, CompareStatus, CreateRepo,
     GitHubClient, GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewIssue, NewPull,
@@ -1193,5 +1193,51 @@ async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
             .await?
     );
     assert_eq!(fake.branch_sha("acme", "app", "task/ci"), None);
+    Ok(())
+}
+
+/// F 2026-10-11: the fake records which credential made each request, so tests tell a person's
+/// own token from an installation's and the App's.
+#[tokio::test]
+async fn the_fake_records_which_credential_made_each_request() -> TestResult {
+    let (fake, client) = setup().await?;
+    let installation = fake.add_installation("acme", OwnerKind::Organization);
+    fake.add_repo("acme", "app", true);
+    fake.add_user("Dev", None);
+    fake.set_permission("acme", "app", "dev", writer());
+    let user = fake.issue_user_token("Dev");
+    let issue = NewIssue {
+        title: "As a person".into(),
+        body: String::new(),
+        labels: Vec::new(),
+    };
+    client.create_issue(&user, "acme", "app", &issue).await?;
+    let app = client.create_installation_token(installation).await?;
+    let as_app = NewIssue {
+        title: "As the App".into(),
+        ..issue.clone()
+    };
+    client
+        .create_issue(&app.token, "acme", "app", &as_app)
+        .await?;
+    let stranger = client
+        .create_issue(&Secret::new("ghu_never_issued"), "acme", "app", &issue)
+        .await;
+    assert!(stranger.is_err());
+    assert_eq!(
+        fake.actors("POST", "/repos/acme/app/issues"),
+        [
+            FakeActor::User("dev".into()),
+            FakeActor::Installation(installation),
+            FakeActor::Invalid,
+        ]
+    );
+    assert_eq!(
+        fake.actors(
+            "POST",
+            &format!("/app/installations/{installation}/access_tokens")
+        ),
+        [FakeActor::App]
+    );
     Ok(())
 }

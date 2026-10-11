@@ -79,9 +79,11 @@ fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
 }
 
 /// Test-local Git port over the real `git` command line (no network: "origin" is a local bare
-/// repository; tokens and URLs are ignored).
+/// repository; URLs are ignored, and pushes record the token they carried).
 struct RealGit {
     origin: PathBuf,
+    /// Pushes, in order: `<local>-><remote> token=<token>`.
+    pushes: std::sync::Mutex<Vec<String>>,
 }
 
 impl RealGit {
@@ -295,8 +297,14 @@ impl GitPort for RealGit {
         repo: &Path,
         local_branch: &str,
         remote_branch: &str,
-        _token: &Secret,
+        token: &Secret,
     ) -> AppResult<()> {
+        if let Ok(mut pushes) = self.pushes.lock() {
+            pushes.push(format!(
+                "{local_branch}->{remote_branch} token={}",
+                token.expose()
+            ));
+        }
         self.run(
             repo,
             &[
@@ -424,6 +432,7 @@ fn valid_spec(task: &str) -> String {
 
 struct Fixture {
     h: support::Harness,
+    git: Arc<RealGit>,
     _root: tempfile::TempDir,
     origin: PathBuf,
     repo: PathBuf,
@@ -493,9 +502,11 @@ async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
             &origin.to_string_lossy(),
         ],
     )?;
-    let h = harness_with_git(Arc::new(RealGit {
+    let real_git = Arc::new(RealGit {
         origin: origin.clone(),
-    }))?;
+        pushes: std::sync::Mutex::default(),
+    });
+    let h = harness_with_git(real_git.clone())?;
     h.github.set_remote(Arc::new(BareRemote {
         origin: origin.clone(),
     }));
@@ -583,6 +594,7 @@ async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
     .await?;
     Ok(Fixture {
         h,
+        git: real_git,
         _root: root,
         origin,
         repo,
@@ -593,13 +605,25 @@ async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
 }
 
 impl Fixture {
-    /// A task with a worktree on its own branch from the integration branch.
+    /// A task of Bob's with a worktree on its own branch from the integration branch.
     async fn add_task(
         &self,
         id: &str,
         title: &str,
         branch: &str,
         base: &str,
+    ) -> BoxResult<PathBuf> {
+        self.add_task_by(id, title, branch, base, "u-bob").await
+    }
+
+    /// [`Fixture::add_task`] created by the user `creator`.
+    async fn add_task_by(
+        &self,
+        id: &str,
+        title: &str,
+        branch: &str,
+        base: &str,
+        creator: &str,
     ) -> BoxResult<PathBuf> {
         let worktree = self
             .h
@@ -639,7 +663,7 @@ impl Fixture {
                 spec_path: None,
                 origin: TaskOrigin::Ui,
                 automation_run: None,
-                created_by: UserId::parse("u-bob")?,
+                created_by: UserId::parse(creator)?,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
                 closed_at: None,
@@ -674,6 +698,15 @@ impl Fixture {
             .await?;
         assert_eq!(r.status, StatusCode::OK, "{}", r.body);
         Ok(r.body)
+    }
+
+    /// Pushes so far (`<local>-><remote> token=<token>`).
+    fn pushes(&self) -> Vec<String> {
+        self.git
+            .pushes
+            .lock()
+            .map(|p| p.clone())
+            .unwrap_or_default()
     }
 
     fn origin_sha(&self, branch: &str) -> BoxResult<String> {
@@ -1751,6 +1784,9 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     assert_eq!(merged.body["result"]["isError"], false, "{}", merged.body);
     assert_eq!(f.delivery("t1").await?["pr"]["state"], "merged");
     assert_eq!(f.origin_sha("main")?, f.origin_sha("quartio")?);
+    // F 2026-10-11 (AC-GIT-3): on GitHub the creator merged and promoted, not the App.
+    assert_eq!(f.h.github.actors_of("merge_pull"), ["bob"]);
+    assert_eq!(f.h.github.actors_of("fast_forward"), ["bob"]);
 
     // Follow-up work becomes a ready issue (Definition of Ready), never a vague one.
     let vague = rpc(
@@ -1777,6 +1813,11 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
             .any(|w| w == "create_issue #101 Flaky landing test"),
         "{:?}",
         f.h.github.writes()
+    );
+    assert_eq!(
+        f.h.github.actors_of("create_issue"),
+        ["bob"],
+        "the issue and its labels are the creator's"
     );
     Ok(())
 }
@@ -1962,6 +2003,12 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
     assert_eq!(d["pr"]["head"], "feat/1-checkout-api");
     let head = git(&wt, &["rev-parse", "HEAD"])?;
     assert_eq!(f.origin_sha("feat/1-checkout-api")?, head, "pushed first");
+    // F 2026-10-11 (AC-GIT-3): the task's creator pushes and opens it, never the App.
+    assert_eq!(
+        f.pushes(),
+        ["feat/1-checkout-api->feat/1-checkout-api token=token-bob"]
+    );
+    assert_eq!(f.h.github.actors_of("create_pull"), ["bob"]);
     f.h.app.auto_open_pr(&t1).await;
     assert_eq!(pulls_opened(), 1, "one pull request per task");
 
@@ -1975,6 +2022,11 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
         "the open pull request gets the new commits"
     );
     assert_eq!(pulls_opened(), 1, "no second pull request");
+    assert_eq!(
+        f.pushes().last().map(String::as_str),
+        Some("feat/1-checkout-api->feat/1-checkout-api token=token-bob"),
+        "the creator pushes the follow-up too"
+    );
 
     // Merged on GitHub: the background round follows it; nobody read the task meanwhile.
     yulius_app::ports::github::GitHubPort::merge_pull(
@@ -2366,6 +2418,90 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
         .await?;
     assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
     assert_eq!(merged.body["stage"], "merged_integration");
+    Ok(())
+}
+
+/// F 2026-10-11 (AC-GIT-3): a task whose creator has no usable GitHub token — here the
+/// superadmin, with no GitHub identity — still delivers: Yulius pushes and opens its pull request
+/// as the App, and its agent merges as the App instead of being refused; the task's terminal
+/// says once why the App appears.
+#[tokio::test]
+async fn a_task_without_a_github_creator_delivers_as_the_app() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    superadmin(&f.h).await?;
+    let wt = f
+        .add_task_by("t1", "Checkout API", "feat/1-checkout-api", "dev", "u-root")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    let t1 = TaskId::parse("t1")?;
+    let mut watch = f.h.app.runtime(&t1).hub.watch();
+
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+    assert_eq!(
+        f.pushes(),
+        ["feat/1-checkout-api->feat/1-checkout-api token=inst"]
+    );
+    assert_eq!(f.h.github.actors_of("create_pull"), ["inst"]);
+
+    // Its agent merges on green, as the App.
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("a1")?,
+            task_id: t1.clone(),
+            seq: 1,
+            harness: Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            state: AttemptState::Live,
+            run_dir: "/tmp/none".into(),
+            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
+            host_token: Sealed(vec![0]),
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: Timestamp(1),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    let internal = yulius_server::internal_router(f.h.app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
+    let merged = call(
+        &internal,
+        Method::POST,
+        "/mcp",
+        Some(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": "delivery_merge",
+                "arguments": {"reviewed_head": head, "review_summary": "approve"}
+            }}),
+        ),
+        &Creds {
+            bearer: Some("tok-agent".into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(merged.body["result"]["isError"], false, "{}", merged.body);
+    assert_eq!(f.h.github.actors_of("merge_pull"), ["inst"]);
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+
+    let mut said = Vec::new();
+    while let Ok(frame) = watch.try_recv() {
+        if let yulius_app::hub::HubFrame::Notice(text) = frame
+            && text.contains("GitHub App")
+        {
+            said.push(text);
+        }
+    }
+    assert_eq!(said.len(), 1, "said once: {said:?}");
+    assert!(said[0].contains("no linked GitHub account"), "{said:?}");
     Ok(())
 }
 

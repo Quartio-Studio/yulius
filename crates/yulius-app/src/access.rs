@@ -1,12 +1,15 @@
-//! GitHub-mirrored access decisions with a bounded-staleness cache (SPEC-001 ACC-007/008), and
-//! the superadmin's access to every sandbox (ACC-012).
+//! GitHub-mirrored access decisions with a bounded-staleness cache (SPEC-001 ACC-007/008), the
+//! superadmin's access to every sandbox (ACC-012), and whose GitHub token an action uses: a
+//! person's own, or for a task its creator's (F 2026-10-11).
+
+use std::sync::atomic::Ordering;
 
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
 
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::{SandboxRecord, Secret, UserRecord};
+use crate::model::{SandboxRecord, Secret, TaskRecord, UserRecord};
 use crate::ports::github::RepoAccess;
 
 impl App {
@@ -129,6 +132,57 @@ impl App {
             )));
         }
         self.user_github_token(user).await
+    }
+
+    /// The GitHub token of the person who created `task`, for what the task does on GitHub
+    /// (F 2026-10-11): Yulius's pushes and pull requests for it, its agent's Git and `gh`, and
+    /// the agent's delivery tools, so GitHub shows that person as the actor. `None` when the
+    /// creator has no usable token — no linked GitHub account (the superadmin, ACC-012), a
+    /// disabled or deleted account, or a sign-in that can no longer be refreshed. The caller then
+    /// acts as the GitHub App, and the task's terminal says so once.
+    pub(crate) async fn creator_github_token(&self, task: &TaskRecord) -> Option<Secret> {
+        let reason = match self.deps.store.user(&task.created_by).await {
+            Ok(Some(user)) if user.disabled_at.is_some() => "its creator's account is disabled",
+            Ok(Some(user)) if user.github_login.is_none() => {
+                "its creator has no linked GitHub account"
+            }
+            Ok(Some(user)) => match self.user_github_token(&user).await {
+                Ok(token) => return Some(token),
+                Err(err) => {
+                    tracing::info!(task = %task.id, error = %err, "creator's GitHub token unusable");
+                    "its creator's GitHub sign-in has expired (signing in with GitHub renews it)"
+                }
+            },
+            Ok(None) => "its creator's account no longer exists",
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "reading the task creator failed");
+                "its creator's account could not be read"
+            }
+        };
+        let runtime = self.runtime(&task.id);
+        if !runtime.acting_as_app_said.swap(true, Ordering::SeqCst) {
+            runtime.hub.notice(format!(
+                "This task acts on GitHub as the Yulius GitHub App, not as a person: {reason}."
+            ));
+        }
+        None
+    }
+
+    /// [`App::creator_github_token`], else the App's installation token for `sandbox`'s owner:
+    /// the token for Yulius's own GitHub calls for a task (pushes, pull requests, merges,
+    /// promotions).
+    ///
+    /// # Errors
+    /// Without a usable creator token: the App is not installed; GitHub failures.
+    pub(crate) async fn task_github_token(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Secret> {
+        match self.creator_github_token(task).await {
+            Some(token) => Ok(token),
+            None => self.dlv_installation_token(sandbox).await,
+        }
     }
 
     /// Requires `action` on `sandbox`; invisible sandboxes yield `NotFound`.
