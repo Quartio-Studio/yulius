@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import re
 import unittest
-from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_errors, style_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors
 
 
 def package(name, layer, dependencies=()):
@@ -54,7 +54,7 @@ class RepositoryContracts(unittest.TestCase):
             directory = Path(tmp) / "sample-skill"
             directory.mkdir()
             skill = directory / "SKILL.md"
-            skill.write_text("---\nname: sample-skill\ndescription: Do the thing.\n---\nInstructions.\n")
+            skill.write_text("---\nname: sample-skill\ndescription: Do the thing. Use for sample work.\n---\nInstructions.\n")
             self.assertEqual(skill_errors(skill), [])
             skill.write_text(skill.read_text().replace("name: sample-skill", "name: wrong"))
             self.assertTrue(skill_errors(skill))
@@ -62,6 +62,51 @@ class RepositoryContracts(unittest.TestCase):
 
 
 class StyleContracts(unittest.TestCase):
+
+    def test_skill_description_must_say_when_to_use_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "sample-skill"
+            directory.mkdir()
+            skill = directory / "SKILL.md"
+            skill.write_text("---\nname: sample-skill\ndescription: Does the thing.\n---\nInstructions.\n")
+            self.assertTrue(any("Use when" in e for e in skill_errors(skill)))
+
+    def test_skill_body_over_the_limit_must_move_detail_to_references(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "sample-skill"
+            directory.mkdir()
+            skill = directory / "SKILL.md"
+            head = "---\nname: sample-skill\ndescription: Do it. Use for sample work.\n---\n"
+            skill.write_text(head + "line\n" * 200)
+            self.assertEqual(skill_errors(skill), [])
+            skill.write_text(head + "line\n" * 201)
+            self.assertTrue(any("references/" in e for e in skill_errors(skill)))
+
+    def deployed(self, tmp):
+        source, target = Path(tmp) / "src", Path(tmp) / "out"
+        (source / "a").mkdir(parents=True)
+        (source / "a/SKILL.md").write_text("one")
+        (target / "a").mkdir(parents=True)
+        (target / "a/SKILL.md").write_text("one")
+        return source, target
+
+    def test_deployed_skills_equal_their_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = self.deployed(tmp)
+            self.assertEqual(skill_deployment_errors(source, [target]), [])
+
+    def test_hand_edited_missing_and_extra_deployed_files_are_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = self.deployed(tmp)
+            (target / "a/SKILL.md").write_text("edited")
+            self.assertTrue(any("a/SKILL.md" in e for e in skill_deployment_errors(source, [target])))
+            (target / "a/SKILL.md").unlink()
+            self.assertTrue(any("missing" in e for e in skill_deployment_errors(source, [target])))
+            (target / "a/SKILL.md").write_text("one")
+            (target / "b").mkdir()
+            (target / "b/SKILL.md").write_text("x")
+            self.assertTrue(any("not in .apm/skills" in e for e in skill_deployment_errors(source, [target])))
+
     def test_tokens_and_scales_pass(self):
         css = ".a { color: var(--text); background: var(--surface); box-shadow: var(--shadow); font-size: var(--fs); line-height: var(--lh); border-radius: var(--radius); padding: 4px 12px; gap: 8px; margin-top: 1px; font-weight: 600; white-space: nowrap; }"
         self.assertEqual(style_errors(css), [])
