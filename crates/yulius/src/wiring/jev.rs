@@ -271,7 +271,7 @@ impl ChoiceEvaluator for JevClient {
     async fn evaluate(
         &self,
         state: &str,
-        question: &ChoiceQuestion,
+        question: &ChoiceQuestion<'_>,
         deadline: Duration,
     ) -> Result<ChoiceAnswer, JevFailure> {
         let body = self.request_body(state, question)?;

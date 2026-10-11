@@ -272,8 +272,12 @@ Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
 
 Optional (SPEC-002 ADR-16). With a TypeSafe Jev key, Yulius offers to split new tasks that mix
 separate workstreams (the proposal comes from one headless `claude -p` run on a connected
-account), and it holds prompts typed into a running task that add, drop or replace its scope until
-someone decides in the task view. Without a key both are off and nothing changes.
+account), it holds prompts typed into a running task that add, drop or replace its scope until
+someone decides in the task view, and it chooses a new task's mode and workflow when the composer
+leaves them on Auto (the default). Without a key the split and scope checks are off, and Auto
+always takes its defaults: Goal, with the workflow named "Feature" (none when there is no such
+workflow, and none for a prompt-mode task). The Auto thresholds are fixed (75 % for the mode,
+60 % for the workflow) and have no setting.
 
 | Setting (flag / environment) | Default | Meaning |
 | --- | --- | --- |
@@ -290,8 +294,12 @@ sudo sh -c 'cat > /var/lib/yulius/jev.key'   # paste the key, then Ctrl-D
 
 - The start log says `task intake is on (Jev jev-1.13.0)` or why it is off.
 - Requests go to `https://api.typesafe.ai/v1/systemone` (outbound HTTPS). Each request carries one
-  question: for a split check, the new task's prompt; for a typed prompt, the task's title, prompt
-  and step titles plus the typed text.
+  question: for a split check or an Auto choice, the new task's prompt (the workflow question also
+  carries the sandbox's workflow names, descriptions, when to use them and step titles); for a
+  typed prompt, the task's title, prompt and step titles plus the typed text.
+- Every Auto decision is in the audit log (`task.auto_choice`, for example `mode goal (jev 91%),
+  workflow Feature (default)`) and in the service log (`auto choice`); a Jev failure is logged as
+  `auto choice without Jev's answer; the default applies`.
 - Split proposals run the `claude` on the service's `PATH` (the same CLI as sessions), outside
   containment, with no tools, in a temporary directory under `<data>/runtime/intake/`. They use
   the account's usage like a short task.

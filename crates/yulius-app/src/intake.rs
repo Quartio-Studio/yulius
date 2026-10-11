@@ -181,7 +181,7 @@ impl App {
         self.intake.set(services).is_ok()
     }
 
-    fn jev(&self) -> Option<(&Arc<dyn ChoiceEvaluator>, &IntakeServices)> {
+    pub(crate) fn jev(&self) -> Option<(&Arc<dyn ChoiceEvaluator>, &IntakeServices)> {
         let services = self.intake.get()?;
         services.jev.as_ref().map(|jev| (jev, services))
     }
