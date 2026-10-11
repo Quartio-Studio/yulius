@@ -23,6 +23,7 @@ mod skills;
 mod status;
 mod tasks;
 mod terminal;
+mod updates;
 mod uploads;
 mod workflows;
 
@@ -152,6 +153,20 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/analytics/tasks", get(analytics::tasks))
         .route("/api/status", get(status::status))
         .route("/api/capacity", get(status::capacity))
+        // Instance updates and the Jev key (SPEC-002 ADR-18).
+        .route("/api/update", get(updates::view))
+        .route("/api/admin/update", post(updates::start))
+        .route("/api/admin/update/check", post(updates::check))
+        .route("/api/admin/update/cancel", post(updates::cancel))
+        .route("/api/admin/update/proceed", post(updates::proceed))
+        .route(
+            "/api/admin/jev",
+            get(updates::jev)
+                .put(updates::set_jev)
+                .delete(updates::remove_jev),
+        )
+        .route("/api/admin/jev/adopt", post(updates::adopt_jev))
+        .route("/api/admin/jev/test", post(updates::test_jev))
         .route("/api/github/repositories", get(projects::repositories))
         .route("/api/templates", get(projects::templates))
         .route("/api/sandboxes", post(projects::create))
@@ -248,6 +263,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
 pub fn internal(_app: Arc<App>) -> Router<AppState> {
     Router::new()
         .route("/internal/healthz", get(|| async { "ok" }))
+        .route("/internal/version", get(updates::version))
         .route("/internal/preview-tls", get(previews::tls_ask))
         .route("/browser/welcome", get(internal::browser_welcome))
         .route(

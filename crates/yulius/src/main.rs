@@ -91,6 +91,9 @@ enum Command {
     },
     /// Print build information.
     Version,
+    /// Root helper: build or install the commit the server requested (yulius-update.service).
+    #[command(name = "update-helper", hide = true)]
+    UpdateHelper(Box<yulius::update_helper::HelperArgs>),
 }
 
 fn main() -> ExitCode {
@@ -135,9 +138,15 @@ fn main() -> ExitCode {
             contained_readonly,
         } => yulius::doctor::doctor(&data, contained, &contained_readonly),
         Command::Version => {
-            println!("yulius {}", env!("CARGO_PKG_VERSION"));
+            let commit = env!("YULIUS_BUILD_COMMIT");
+            if commit.is_empty() {
+                println!("yulius {}", env!("CARGO_PKG_VERSION"));
+            } else {
+                println!("yulius {} ({commit})", env!("CARGO_PKG_VERSION"));
+            }
             ExitCode::SUCCESS
         }
+        Command::UpdateHelper(args) => yulius::update_helper::main(&args),
         Command::Serve(args) => run_async(yulius::serve::serve(*args)),
         Command::Backup { data_dir, dest } => run_async(yulius::serve::backup(data_dir, dest)),
     }

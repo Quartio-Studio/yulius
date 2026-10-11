@@ -1,5 +1,5 @@
 //! Executing a CI run: its jobs in parallel through the process host, inside the sandbox's
-//! containment (SPEC-002 ADR-18; RUN-001..003).
+//! containment (SPEC-002 ADR-20; RUN-001..003).
 //!
 //! A job is `/bin/sh -c <wrapper> yulius-ci <log> <command>`: the fixed wrapper sends the
 //! job's output to its log file and then runs the command as its own `/bin/sh -c` argument, so

@@ -730,7 +730,7 @@ impl App {
             return Err(err);
         }
         // Rulesets on private repositories need a paid GitHub plan. They are a second line of
-        // defence only: Yulius's own merge gate enforces the delivery rules (SPEC-002 ADR-18),
+        // defence only: Yulius's own merge gate enforces the delivery rules (SPEC-002 ADR-20),
         // so a refusal leaves the project usable.
         for ruleset in rulesets_for(&profile) {
             if let Err(err) = self

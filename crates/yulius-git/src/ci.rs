@@ -1,5 +1,5 @@
 //! Git operations for Yulius-run CI and repository hygiene (SPEC-001 DLV-006/007, SPEC-002
-//! ADR-18): persistent detached CI checkouts, reading one file or directory at a revision, and
+//! ADR-20): persistent detached CI checkouts, reading one file or directory at a revision, and
 //! listing and deleting branches.
 
 use std::path::Path;

@@ -70,8 +70,11 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 # The sandbox browser: a headful Chrome on a virtual display when xvfb and ffmpeg are installed
 # (auto, the default). See "Sandbox browser" below for the other settings.
 Environment=YULIUS_BROWSER_DISPLAY=auto
-# Optional task intake (see "Task intake (Jev)" below).
+# Optional: a Jev key file (see "Task intake (Jev)" below); the superadmin can also set the key in
+# Settings → Instance, which wins over the file.
 #Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
+# Optional: a token that may read Quartio-Studio/yulius, when the GitHub App cannot (see §8).
+#Environment=YULIUS_UPDATE_TOKEN_FILE=/var/lib/yulius/update.token
 # Yulius-run CI (see "CI on this machine" below): jobs at once, minutes per job, seconds between checks.
 Environment=YULIUS_CI_MAX_JOBS=4
 Environment=YULIUS_CI_JOB_TIMEOUT_MIN=30
@@ -283,20 +286,22 @@ always takes its defaults: Goal, with the workflow named "Feature" (none when th
 workflow, and none for a prompt-mode task). The Auto thresholds are fixed (75 % for the mode,
 60 % for the workflow) and have no setting.
 
+**The key is managed in Yulius** (SPEC-001 ADM-001, ADM-002): setup asks for it as an optional
+last step, and the superadmin sets, replaces, tests (one small request) and removes it under
+Settings → Instance. It is sealed with `master.key` like every other stored secret, takes effect
+at once (no restart), and is never logged or returned by the API. A key file is still honoured
+while no key is saved there; the page shows it as "from config" and **Save it here** moves it into
+settings, after which the variable can be removed from the unit. A key saved in settings always
+wins over the file.
+
 | Setting (flag / environment) | Default | Meaning |
 | --- | --- | --- |
-| `--jev-api-key-file` / `YULIUS_JEV_API_KEY_FILE` | unset (off) | File holding the Jev API key, owned by the service user, mode `0600` (a group- or world-readable file is refused, and intake stays off). Read at start; restart after changing it. The key is never logged. |
+| `--jev-api-key-file` / `YULIUS_JEV_API_KEY_FILE` | unset | File holding a Jev API key, owned by the service user, mode `0600` (a group- or world-readable file is refused and the page says why). Used while no key is saved in settings; read at start. The key is never logged. |
 | `--jev-split-threshold` / `YULIUS_JEV_SPLIT_THRESHOLD` | 0.9 | Probability of "several workstreams" Jev must give before a split is offered (0.5–1). |
 | `--jev-scope-threshold` / `YULIUS_JEV_SCOPE_THRESHOLD` | 0.8 | Probability Jev must give before a typed prompt is held (0.5–1). |
 
-```sh
-# The data directory is owner-only already; keep the key beside the master key.
-sudo install -o yulius -g yulius -m 0600 /dev/null /var/lib/yulius/jev.key
-sudo sh -c 'cat > /var/lib/yulius/jev.key'   # paste the key, then Ctrl-D
-# in the unit: Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
-```
-
-- The start log says `task intake is on (Jev jev-1.13.0)` or why it is off.
+- The start log says `task intake is on (Jev jev-1.13.0, key saved in settings)` (or `… key from
+  YULIUS_JEV_API_KEY_FILE`) or `task intake is off: no Jev key`.
 - Requests go to `https://api.typesafe.ai/v1/systemone` (outbound HTTPS). Each request carries one
   question: for a split check or an Auto choice, the new task's prompt (the workflow question also
   carries the sandbox's workflow names, descriptions, when to use them and step titles); for a
@@ -320,7 +325,9 @@ sudo sh -c 'cat > /var/lib/yulius/jev.key'   # paste the key, then Ctrl-D
 1. Start the service. On the first start it writes a one-time setup token to
    `/var/lib/yulius/setup.token` (0600) and logs where it is.
 2. Open the public URL, enter the token, choose the superadmin password (twice) and confirm both
-   warnings: **the password cannot be recovered** (SPEC-001 ACC-002).
+   warnings: **the password cannot be recovered** (SPEC-001 ACC-002). Store the recovery code
+   shown next. The last step asks for the Jev API key (optional; skip it to add it later in
+   Settings → Instance).
 3. Administration → GitHub: create the GitHub App with the manifest flow for the owner account or
    organization, then install it on the repositories Yulius may use. The App's callback URLs point
    at `YULIUS_PUBLIC_URL`. The manifest requests the permissions below.
@@ -390,7 +397,7 @@ passed, so merges and releases that require checks wait.
 
 ### CI on this machine
 
-Yulius is the projects' only CI (SPEC-002 ADR-18). No GitHub Actions or paid GitHub feature is
+Yulius is the projects' only CI (SPEC-002 ADR-20). No GitHub Actions or paid GitHub feature is
 involved.
 
 **What runs.** For each sandbox:
@@ -474,6 +481,128 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
 
 ## 8. Upgrades
 
+### Updates from main (the update helper)
+
+Yulius updates itself from `main` of **Quartio-Studio/yulius** (SPEC-001 OPS-006..OPS-009,
+SPEC-002 ADR-18). It knows the commit it was built from (`yulius version`, and
+`GET /internal/version` on the internal listener) and checks `main` every hour. Superadmins get a
+notification and a banner, "Update available: …", and **Settings → Instance** lists the new
+commits. Nothing updates by itself: a superadmin chooses **Update now** and confirms. Then:
+
+1. **Build** (tasks keep working): the root helper fetches `main`, checks that the commit is on it
+   and not older than the commit it installed last, and runs `cargo build --release --locked -p
+   yulius` with `YULIUS_BUILD_COMMIT` set. Several minutes; the page shows the progress.
+2. **Pause tasks**: each task pauses at its next turn boundary (its Stop or `UserPromptSubmit`
+   hook is held, as for a capacity pause) and new starts queue. The agents are told nothing. A
+   task still in a turn after 30 minutes cancels the update (nothing changes); the superadmin can
+   also **Continue without waiting** or **Cancel**.
+3. **Restart**: the helper stops `yulius.service` (with `KillMode=process` agent sessions and
+   terminals keep running), copies the binary and `yulius.db` (with its WAL) to
+   `/var/lib/yulius-update/backups/<run>/`, installs the new binary, starts the service and waits
+   up to 2 minutes until `/internal/version` reports the new commit. If it does not, it stops the
+   service, restores the previous binary **and database**, and starts them again ("rolled back").
+4. **Resume**: the server that started releases the held tasks one by one; they go on as if
+   nothing happened.
+
+The service user cannot replace `/usr/local/bin/yulius` or restart itself. A root-owned **path
+unit** starts the helper when the server writes `/var/lib/yulius/update/request.json`; the request
+can only say "build" or "install" one commit, everything else (repository, paths, service) is in
+the root-owned unit. The helper refuses a request that is not a regular file owned by the
+service user, larger than 16 KiB, malformed, older than 15 minutes or already handled. It reports in
+`/var/lib/yulius-update/status.json`, which the server reads.
+
+**Install the helper** (once, as root; the unit files are in the repository under
+`deploy/systemd/`):
+
+```sh
+install -m 0644 deploy/systemd/yulius-update.path deploy/systemd/yulius-update.service /etc/systemd/system/
+install -d -m 0755 -o root -g root /var/lib/yulius-update
+# Edit the lines marked "local" in yulius-update.service if this server differs: the data
+# directory, the internal listener (YULIUS_INTERNAL_BIND), rustup's cargo for root.
+systemctl daemon-reload
+systemctl enable --now yulius-update.path
+systemctl status yulius-update.path        # active (waiting)
+```
+
+```ini
+# /etc/systemd/system/yulius-update.path
+[Unit]
+Description=Yulius update requests
+
+[Path]
+PathChanged=/var/lib/yulius/update/request.json
+Unit=yulius-update.service
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/yulius-update.service
+[Unit]
+Description=Yulius update helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/yulius update-helper
+Environment=YULIUS_DATA=/var/lib/yulius
+Environment=YULIUS_UPDATE_HEALTH=http://127.0.0.1:8081/internal/version
+Environment=YULIUS_UPDATE_BINARY=/usr/local/bin/yulius
+Environment=YULIUS_UPDATE_SERVICE=yulius.service
+Environment=YULIUS_UPDATE_STATE=/var/lib/yulius-update
+Environment=HOME=/root
+Environment=PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+TimeoutStartSec=3h
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/yulius-update /var/lib/yulius /usr/local/bin /root/.cargo /root/.rustup
+UMask=0022
+```
+
+No sudo rule or polkit rule is needed: the path unit is the only way in, and it starts a fixed
+command. The build needs Rust through rustup for root (the checkout's `rust-toolchain.toml` picks
+the version), `git`, a C linker, and network access to GitHub and crates.io.
+
+**Reading the repository.** The repository is private. Yulius reads it, and hands the helper a
+short-lived token for its fetch, with the GitHub App's installation token when the App is
+installed on Quartio-Studio with access to `yulius` (Contents: read). Otherwise put a token that
+may read the repository (a fine-grained personal access token with Contents: read on that one
+repository) in a file:
+
+```sh
+install -o yulius -g yulius -m 0600 /dev/null /var/lib/yulius/update.token
+sh -c 'cat > /var/lib/yulius/update.token'   # paste the token, then Ctrl-D
+# in yulius.service: Environment=YULIUS_UPDATE_TOKEN_FILE=/var/lib/yulius/update.token
+```
+
+Settings → Instance says which credential read `main` and why a check failed.
+
+| Setting (flag / environment) | Default | Meaning |
+| --- | --- | --- |
+| `--update-token-file` / `YULIUS_UPDATE_TOKEN_FILE` | unset | Owner-only file with a token that may read Quartio-Studio/yulius, used when the App cannot. |
+| `--update-state-dir` / `YULIUS_UPDATE_STATE` | `/var/lib/yulius-update` | The helper's state directory; "Update now" is offered when it exists. |
+| `--update-check-minutes` / `YULIUS_UPDATE_CHECK_MINUTES` | 60 | Minutes between checks of `main` (0: only "Check now"). |
+
+**Logs and recovery.** `journalctl -u yulius-update` shows each step. A failed rollback (the
+helper says "restore by hand") leaves the previous binary and database in
+`/var/lib/yulius-update/backups/<run>/`: stop `yulius`, copy `yulius` to `/usr/local/bin/yulius`
+and `yulius.db` (and `yulius.db-wal`, if present) to `/var/lib/yulius/` owned by `yulius`, mode
+0600, remove `yulius.db-shm`, start `yulius`. The helper keeps the last 3 backups. A manual build
+should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEAD) cargo build
+--release --locked -p yulius` (a checkout does it by itself; a tarball has no Git).
+
+### Notes for specific upgrades
+
+- Upgrading to updates from main and the Jev key in settings (ADR-18, 2026-10-10): migration 0008
+  adds `update_runs` and the instance's sealed Jev key. Install the update helper (above). A
+  configured `YULIUS_JEV_API_KEY_FILE` keeps working ("from config"); Settings → Instance → **Save
+  it here** moves the key into settings, then the variable can go.
 - Upgrading to default workflows (AUT-006, #136, 2026-10-10): the default workflows now ship with
   the binary (`catalog/workflows/`) and are read-only. On the first start the "Feature" and "Quick
   task" rows seeded by earlier releases are retired (audited as `workflow.retired`); an edited
@@ -507,7 +636,7 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
   now `__Host-yulius_session`, so everyone signs in once more after the upgrade. Add the preview
   DNS and TLS configuration (§4) for live pages.
 
-Replace the binary and `systemctl restart yulius`. Live sessions keep running in their detached
+By hand (without the helper): replace the binary and `systemctl restart yulius`. Live sessions keep running in their detached
 hosts; the new server reconciles them on start (reattaches live runs, marks dead ones stopped,
 never respawns). Users' terminals keep running too and are adopted again before the server
 serves; a terminal whose host is gone (a machine reboot) or whose sandbox was removed is cleaned

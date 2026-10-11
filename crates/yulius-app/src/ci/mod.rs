@@ -1,4 +1,4 @@
-//! Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-18) and repository hygiene (DLV-007).
+//! Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-20) and repository hygiene (DLV-007).
 //!
 //! Yulius is the projects' only CI (F 2026-10-10: no GitHub Actions; "local blacksmith
 //! instance"). For every sandbox with CI configured — the profile's `gate`, else `[[ci.jobs]]`

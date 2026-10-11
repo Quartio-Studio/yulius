@@ -1,4 +1,4 @@
-//! Yulius-run CI and repository hygiene (SPEC-001 DLV-006/007, SPEC-002 ADR-18).
+//! Yulius-run CI and repository hygiene (SPEC-001 DLV-006/007, SPEC-002 ADR-20).
 //!
 //! Yulius is the projects' only CI (F 2026-10-10: no GitHub Actions): it runs each sandbox's
 //! **CI jobs** for every open pull request head into the integration branch and for the

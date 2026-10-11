@@ -1,5 +1,5 @@
 //! GitHub adapter: App JWT and installation tokens, OAuth, permissions, repositories, rulesets,
-//! pull requests, checks, commit statuses and branch deletion (SPEC-002 ADR-08, ADR-18).
+//! pull requests, checks, commit statuses and branch deletion (SPEC-002 ADR-08, ADR-20).
 //!
 //! [`GitHubClient`] is an async REST client over `reqwest` + `rustls` (ring provider, installed
 //! once per process). Every request sends `User-Agent: yulius`,

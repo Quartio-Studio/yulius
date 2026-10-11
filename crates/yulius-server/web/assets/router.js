@@ -7,7 +7,7 @@ let hashMode = false;
 let lastKey = null;
 
 const SANDBOX_PAGES = new Set(['tasks', 'git', 'ci', 'workflows', 'skills', 'automations', 'mcp', 'dashboard']);
-const ADMIN_PAGES = new Set(['users', 'accounts', 'github']);
+const ADMIN_PAGES = new Set(['users', 'accounts', 'github', 'instance']);
 
 /** Start listening to navigation. */
 export function initRouter({ hash = false } = {}) {

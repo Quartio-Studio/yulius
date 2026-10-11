@@ -1,0 +1,13 @@
+# Yulius update requests (SPEC-002 ADR-18; docs/operations.md "Updates").
+# The server (user yulius) writes /var/lib/yulius/update/request.json; this root-owned unit then
+# starts yulius-update.service, which accepts nothing but "build" or "install" one commit of main
+# of Quartio-Studio/yulius. Install: /etc/systemd/system/yulius-update.path (root, 0644).
+[Unit]
+Description=Yulius update requests
+
+[Path]
+PathChanged=/var/lib/yulius/update/request.json
+Unit=yulius-update.service
+
+[Install]
+WantedBy=multi-user.target

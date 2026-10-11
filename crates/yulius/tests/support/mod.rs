@@ -673,6 +673,8 @@ pub async fn insert_sandbox(
 pub mod agents;
 /// Repository fixtures (real Git over local remotes) for project and import tests.
 pub mod repos;
+/// A fake `main` source and update helper for instance update tests (SPEC-002 ADR-18).
+pub mod updates;
 
 /// Repository side of the fake GitHub's pull request and ref endpoints (delivery tests back it
 /// with a real bare repository).

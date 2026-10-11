@@ -1,0 +1,559 @@
+//! Instance updates through the API and the agent hooks (SPEC-001 OPS-006..OPS-009, SPEC-002
+//! ADR-18), with a fake GitHub source, a fake update helper and a fake clock: the offer reaches
+//! superadmins only, "Update now" needs the confirmed head of `main` and a helper, tasks keep
+//! working while it builds, every turn boundary is held and starts queue while it installs, the
+//! hold survives the restart, and the tasks are released one by one afterwards — or the update
+//! is cancelled, gives up or is rolled back. The real helper: `src/update_helper/tests.rs`;
+//! real processes through the hook client: `update_supervision.rs`.
+
+mod support;
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use axum::extract::connect_info::MockConnectInfo;
+use axum::http::{Method, StatusCode};
+use serde_json::{Value, json};
+use support::updates::{FakeHelper, FakeSource, MID, NEW, OLD, services};
+use support::{
+    Creds, Harness, TestResult, admit_and_sign_in, call, configure_github_app, harness,
+    seed_live_attempt, seed_sandbox, seed_task, setup_superadmin_creds,
+};
+use yulius_app::context::App;
+use yulius_app::ports::store::{TaskStore, UserStore as _};
+use yulius_app::ports::store_ext::AutomationStore as _;
+use yulius_app::ports::updates::SourceError;
+use yulius_app::supervisor::RunStart;
+use yulius_contracts::update::{HelperAction, HelperState};
+use yulius_domain::ids::TaskId;
+use yulius_domain::task::{Activity, TaskStatus};
+
+const WORKING: &str = "update-token-working-0123456789abcdef";
+const IDLE: &str = "update-token-idle-0123456789abcdefgh";
+
+struct Instance {
+    h: Harness,
+    admin: Creds,
+    member: Creds,
+    source: Arc<FakeSource>,
+    helper: Arc<FakeHelper>,
+}
+
+async fn instance() -> Result<Instance, Box<dyn std::error::Error>> {
+    let h = harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    let member = admit_and_sign_in(&h, &admin, "alice", 11, true).await?;
+    let source = FakeSource::behind();
+    let helper = FakeHelper::installed();
+    assert!(h.app.set_updates(services(OLD, &source, &helper)));
+    Ok(Instance {
+        h,
+        admin,
+        member,
+        source,
+        helper,
+    })
+}
+
+async fn get(i: &Instance, who: &Creds) -> Result<Value, Box<dyn std::error::Error>> {
+    let r = call(&i.h.router, Method::GET, "/api/update", None, who).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    Ok(r.body)
+}
+
+async fn post(
+    i: &Instance,
+    path: &str,
+    body: Option<Value>,
+    who: &Creds,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(&i.h.router, Method::POST, path, body, who).await
+}
+
+/// POSTs a hook as the agent's hook client would; returns (status, Retry-After, body).
+async fn hook(
+    internal: &axum::Router,
+    token: &str,
+    event: &str,
+) -> Result<(u16, Option<String>, String), Box<dyn std::error::Error>> {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri(format!("/hooks/claude/{event}"))
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(
+            json!({"hook_event_name": event, "session_id": "s"}).to_string(),
+        ))?;
+    let response = internal.clone().oneshot(request).await?;
+    let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get(axum::http::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let bytes = response.into_body().collect().await?.to_bytes();
+    Ok((
+        status,
+        retry_after,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    ))
+}
+
+/// Two running tasks: one mid-turn, one idle at its prompt.
+async fn two_tasks(i: &Instance) -> Result<(TaskId, TaskId), Box<dyn std::error::Error>> {
+    let alice = i.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
+    seed_sandbox(&i.h, "s1", "fixture", alice.as_str()).await?;
+    let working = seed_task(
+        &i.h,
+        "t-working",
+        "s1",
+        alice.as_str(),
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    let idle = seed_task(
+        &i.h,
+        "t-idle",
+        "s1",
+        alice.as_str(),
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    seed_live_attempt(&i.h, "t-working", WORKING).await?;
+    seed_live_attempt(&i.h, "t-idle", IDLE).await?;
+    let now = i.h.app.now();
+    i.h.store
+        .set_activity(&working.id, Some(Activity::Working), now)
+        .await?;
+    i.h.store
+        .set_activity(&idle.id, Some(Activity::Waiting), now)
+        .await?;
+    Ok((working.id, idle.id))
+}
+
+fn advance(h: &Harness, ms: i64) {
+    h.clock.0.fetch_add(ms, Ordering::SeqCst);
+}
+
+/// Starts the update to NEW and lets the fake helper finish the build.
+async fn built(i: &Instance) -> Result<String, Box<dyn std::error::Error>> {
+    post(i, "/api/admin/update/check", None, &i.admin).await?;
+    let r = post(
+        i,
+        "/api/admin/update",
+        Some(json!({"commit": NEW, "confirm": true})),
+        &i.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    let run = r.body["run"]["id"].as_str().ok_or("run id")?.to_owned();
+    let build = i.helper.last().ok_or("no build request")?;
+    i.helper.report(&build, HelperState::Done, "built", None);
+    let _ = i.h.app.update_round().await;
+    Ok(run)
+}
+
+/// AC-OPS-6: the build is known; a newer `main` is offered to superadmins only, with a summary
+/// of its new commits; "Check now" is cached; an unreadable repository is reported.
+#[tokio::test]
+async fn a_newer_main_is_offered_to_superadmins_only() -> TestResult {
+    let i = instance().await?;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["current"]["commit"], OLD);
+    assert_eq!(view["current"]["short"], "1111111");
+    assert_eq!(view["helper_installed"], true);
+    assert!(view["available"].is_null(), "nothing checked yet");
+
+    let r = post(&i, "/api/admin/update/check", None, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let available = &r.body["available"];
+    assert_eq!(available["commit"], NEW);
+    assert_eq!(available["summary"], "An update banner");
+    assert_eq!(available["count"], 1, "merges are left out");
+    assert_eq!(available["commits"][0]["title"], "An update banner");
+    assert_eq!(available["relation"], "behind");
+    assert_eq!(
+        r.body["check"]["via"], "app",
+        "the App's token read the repository"
+    );
+    assert_eq!(
+        i.source.tokens.lock().map_err(|_| "lock")?.clone(),
+        vec![Some("inst".to_owned())]
+    );
+    // A second "Check now" within 30 s reuses the result.
+    post(&i, "/api/admin/update/check", None, &i.admin).await?;
+    assert_eq!(i.source.tokens.lock().map_err(|_| "lock")?.len(), 1);
+
+    // Members (here an instance administrator) see the build only.
+    let member = get(&i, &i.member).await?;
+    assert_eq!(member["current"]["commit"], OLD);
+    for field in ["available", "check", "run", "helper_installed"] {
+        assert!(member[field].is_null(), "{field}: {member}");
+    }
+    let r = post(&i, "/api/admin/update/check", None, &i.member).await?;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+
+    // An unreadable repository is said, and offers nothing.
+    if let Ok(mut result) = i.source.result.lock() {
+        *result = Err(SourceError::NoAccess);
+    }
+    advance(&i.h, 31_000);
+    let r = post(&i, "/api/admin/update/check", None, &i.admin).await?;
+    assert!(r.body["available"].is_null());
+    let error = r.body["check"]["error"].as_str().unwrap_or_default();
+    assert!(error.contains("YULIUS_UPDATE_TOKEN_FILE"), "{error}");
+    Ok(())
+}
+
+/// AC-OPS-7: "Update now" needs the superadmin, the confirmation, the offered head of `main`
+/// and an installed helper; one run at a time; tasks keep working while it builds.
+#[tokio::test]
+async fn update_now_needs_confirmation_the_offered_commit_and_a_helper() -> TestResult {
+    let i = instance().await?;
+    let start = |commit: &str, confirm: bool| json!({"commit": commit, "confirm": confirm});
+    let r = post(&i, "/api/admin/update", Some(start(NEW, true)), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "not offered before a check");
+    post(&i, "/api/admin/update/check", None, &i.admin).await?;
+    let r = post(&i, "/api/admin/update", Some(start(NEW, true)), &i.member).await?;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let r = post(&i, "/api/admin/update", Some(start(NEW, false)), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let r = post(
+        &i,
+        "/api/admin/update",
+        Some(start("3333333", true)),
+        &i.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let r = post(&i, "/api/admin/update", Some(start(MID, true)), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "only the offered head");
+    i.helper.installed.store(false, Ordering::SeqCst);
+    let r = post(&i, "/api/admin/update", Some(start(NEW, true)), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "no helper");
+    assert!(
+        r.body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("helper")
+    );
+    i.helper.installed.store(true, Ordering::SeqCst);
+
+    let r = post(&i, "/api/admin/update", Some(start(NEW, true)), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    assert_eq!(r.body["phase"], "building");
+    assert_eq!(r.body["run"]["state"], "building");
+    assert_eq!(r.body["run"]["summary"], "An update banner");
+    assert_eq!(r.body["run"]["can_cancel"], true);
+    let request = i.helper.last().ok_or("no request")?;
+    assert_eq!(request.action, HelperAction::Build);
+    assert_eq!(request.commit, NEW);
+    assert_eq!(
+        request.token.as_deref(),
+        Some("inst"),
+        "the fetch reads with the App"
+    );
+    let id = r.body["run"]["id"].as_str().ok_or("id")?;
+    assert_eq!(request.id, format!("{id}-build"));
+    let r = post(&i, "/api/admin/update", Some(start(NEW, true)), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "one update at a time");
+    let audit = i.h.store.automation_audit(NEW, 10).await?;
+    assert!(audit.iter().any(|e| e.action == "update.started"));
+    Ok(())
+}
+
+async fn support_ctx(
+    i: &Instance,
+) -> Result<yulius_app::auth::AuthContext, Box<dyn std::error::Error>> {
+    let user = i.h.store.superadmin().await?.ok_or("superadmin")?;
+    Ok(yulius_app::auth::AuthContext {
+        user,
+        csrf_token: None,
+        session_hash: None,
+    })
+}
+
+/// AC-OPS-8: after the build, every turn boundary is held (`202`, `Retry-After`, no output) and
+/// starts queue; the install is requested once every live task is at a pause point.
+#[tokio::test]
+async fn tasks_pause_at_their_turn_boundary_before_the_install() -> TestResult {
+    let i = instance().await?;
+    let (working, idle) = two_tasks(&i).await?;
+    // While it builds, hooks answer as usual.
+    post(&i, "/api/admin/update/check", None, &i.admin).await?;
+    post(
+        &i,
+        "/api/admin/update",
+        Some(json!({"commit": NEW, "confirm": true})),
+        &i.admin,
+    )
+    .await?;
+    let (code, _, _) = hook(&i.h.internal, IDLE, "Notification").await?;
+    assert_eq!(code, 200);
+    let build = i.helper.last().ok_or("build")?;
+    i.helper.report(&build, HelperState::Done, "built", None);
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.member).await?;
+    assert_eq!(view["phase"], "pausing", "everyone sees the pause");
+
+    // The task mid-turn is not at a pause point: the install waits for it.
+    for _ in 0..3 {
+        let _ = i.h.app.update_round().await;
+    }
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "pausing");
+    assert_eq!(view["run"]["tasks"]["paused"], 1);
+    assert_eq!(view["run"]["tasks"]["total"], 2);
+    assert_eq!(view["run"]["tasks"]["waiting"][0]["id"], working.as_str());
+    assert_eq!(view["run"]["can_proceed"], true);
+    assert_eq!(
+        i.helper.last().map(|r| r.action),
+        Some(HelperAction::Build),
+        "no install yet"
+    );
+
+    // Its turn ends: the Stop hook is held with no output for the agent.
+    let (code, retry_after, body) = hook(&i.h.internal, WORKING, "Stop").await?;
+    assert_eq!(code, 202);
+    assert_eq!(retry_after.as_deref(), Some("3"));
+    assert!(body.is_empty(), "nothing reaches the agent: {body}");
+    // The idle task's next prompt waits too; other hooks answer as usual.
+    let (code, retry_after, _) = hook(&i.h.internal, IDLE, "UserPromptSubmit").await?;
+    assert_eq!((code, retry_after.as_deref()), (202, Some("3")));
+    let (code, _, _) = hook(&i.h.internal, WORKING, "PreToolUse").await?;
+    assert_eq!(code, 200);
+
+    // A start meanwhile queues.
+    let alice = i.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
+    let later = seed_task(
+        &i.h,
+        "t-later",
+        "s1",
+        alice.as_str(),
+        TaskStatus::Closed,
+        None,
+    )
+    .await?;
+    i.h.app
+        .start_run(&later.id, RunStart::Fresh { prompt: None }, None)
+        .await?;
+    assert_eq!(
+        i.h.store.task(&later.id).await?.ok_or("task")?.status,
+        TaskStatus::Queued
+    );
+    i.h.app.drain_queue().await;
+    assert_eq!(
+        i.h.store.task(&later.id).await?.ok_or("task")?.status,
+        TaskStatus::Queued,
+        "the queue waits for the update"
+    );
+
+    // Every task is at a pause point on two passes: the install is requested.
+    let _ = i.h.app.update_round().await;
+    let _ = i.h.app.update_round().await;
+    let install = i.helper.last().ok_or("install")?;
+    assert_eq!(install.action, HelperAction::Install);
+    assert_eq!(install.commit, NEW);
+    assert!(install.token.is_none(), "installing needs no credential");
+    assert_eq!(get(&i, &i.member).await?["phase"], "restarting");
+    // Task state is untouched: the agents and their tasks never learn of the pause.
+    for task in [&working, &idle] {
+        assert_eq!(
+            i.h.store.task(task).await?.ok_or("task")?.status,
+            TaskStatus::Running
+        );
+    }
+    Ok(())
+}
+
+/// AC-OPS-8/9: the server that starts after the install still holds every boundary until the
+/// helper reports, then releases the tasks one by one and ends the run; a rolled-back install
+/// releases them as well and says why.
+#[tokio::test]
+async fn the_hold_survives_the_restart_and_tasks_resume_staggered() -> TestResult {
+    let i = instance().await?;
+    let (working, _idle) = two_tasks(&i).await?;
+    let run = built(&i).await?;
+    hook(&i.h.internal, WORKING, "Stop").await?;
+    let _ = i.h.app.update_round().await;
+    let _ = i.h.app.update_round().await;
+    let install = i.helper.last().ok_or("install")?;
+    assert_eq!(install.action, HelperAction::Install);
+    i.helper
+        .report(&install, HelperState::Running, "stopping", None);
+
+    // The new build starts on the same database.
+    let restarted = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
+    restarted.set_updates(services(NEW, &i.source, &i.helper));
+    restarted.restore_update_hold().await;
+    let internal = yulius_server::internal_router(restarted.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5003))));
+    let (code, _, _) = hook(&internal, WORKING, "Stop").await?;
+    assert_eq!(code, 202, "held from the first call after the restart");
+    i.helper
+        .report(&install, HelperState::Running, "checking", None);
+    let _ = restarted.update_round().await;
+    assert_eq!(hook(&internal, WORKING, "Stop").await?.0, 202);
+
+    // The helper's check passed: the tasks are released one by one.
+    i.helper
+        .report(&install, HelperState::Done, "succeeded", None);
+    let _ = restarted.update_round().await;
+    let _ = restarted.update_round().await;
+    let (code, _, _) = hook(&internal, WORKING, "Stop").await?;
+    assert_eq!(code, 200, "the held turn goes on");
+    // (Without subscriptions the pool itself holds a new prompt, with its own Retry-After.)
+    let (_, retry_after, _) = hook(&internal, IDLE, "UserPromptSubmit").await?;
+    assert_ne!(
+        retry_after.as_deref(),
+        Some("3"),
+        "no longer held for the update"
+    );
+    let ctx = support_ctx(&i).await?;
+    let view = restarted.update_view(&ctx).await?;
+    let last = view.run.ok_or("run")?;
+    assert_eq!(last.id, run);
+    assert_eq!(last.state, "succeeded");
+    assert_eq!(last.message.as_deref(), Some("Updated to 3333333."));
+    assert!(view.phase.is_none());
+    assert_eq!(view.current.commit.as_deref(), Some(NEW));
+    assert!(
+        i.h.store
+            .automation_audit(NEW, 20)
+            .await?
+            .iter()
+            .any(|e| e.action == "update.finished" && e.detail.as_deref() == Some("succeeded"))
+    );
+    assert_eq!(
+        i.h.store.task(&working).await?.ok_or("task")?.status,
+        TaskStatus::Running
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_rolled_back_install_releases_the_tasks_and_says_why() -> TestResult {
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    built(&i).await?;
+    i.h.app.proceed_update(&support_ctx(&i).await?).await?;
+    let _ = i.h.app.update_round().await;
+    let install = i.helper.last().ok_or("install")?;
+    assert_eq!(
+        install.action,
+        HelperAction::Install,
+        "continue without waiting"
+    );
+    i.helper.report(
+        &install,
+        HelperState::RolledBack,
+        "rolled_back",
+        Some("The new server did not become healthy within 120 s."),
+    );
+    // The previous build runs again.
+    let restarted = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
+    restarted.set_updates(services(OLD, &i.source, &i.helper));
+    restarted.restore_update_hold().await;
+    let internal = yulius_server::internal_router(restarted.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5004))));
+    let _ = restarted.update_round().await;
+    let _ = restarted.update_round().await;
+    assert_eq!(hook(&internal, WORKING, "Stop").await?.0, 200);
+    let view = restarted.update_view(&support_ctx(&i).await?).await?;
+    let run = view.run.ok_or("run")?;
+    assert_eq!(run.state, "rolled_back");
+    assert!(
+        run.error
+            .unwrap_or_default()
+            .contains("did not become healthy")
+    );
+    assert_eq!(run.log_tail, vec!["error: example".to_owned()]);
+    Ok(())
+}
+
+/// AC-OPS-8: pausing is bounded (the update is cancelled after 30 minutes and nothing stays
+/// held), a person can cancel while it builds or pauses, and a helper that never answers fails
+/// the update.
+#[tokio::test]
+async fn pausing_is_bounded_and_updates_can_be_cancelled() -> TestResult {
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    advance(&i.h, 30 * 60_000 + 1);
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "cancelled");
+    assert!(
+        view["run"]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("still in a turn after 30 minutes")
+    );
+    assert!(view["phase"].is_null());
+    assert_eq!(
+        hook(&i.h.internal, WORKING, "Stop").await?.0,
+        200,
+        "nothing held"
+    );
+
+    // Cancel while building.
+    advance(&i.h, 31_000);
+    post(&i, "/api/admin/update/check", None, &i.admin).await?;
+    let r = post(
+        &i,
+        "/api/admin/update",
+        Some(json!({"commit": NEW, "confirm": true})),
+        &i.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    let cleared = i.helper.cleared.load(Ordering::SeqCst);
+    let r = post(&i, "/api/admin/update/cancel", None, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["run"]["state"], "cancelled");
+    assert!(
+        i.helper.cleared.load(Ordering::SeqCst) > cleared,
+        "the request is removed"
+    );
+    let r = post(&i, "/api/admin/update/cancel", None, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+
+    // A helper that never acknowledges: the request is written again, then the update fails.
+    let r = post(
+        &i,
+        "/api/admin/update",
+        Some(json!({"commit": NEW, "confirm": true})),
+        &i.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    if let Ok(mut status) = i.helper.status.lock() {
+        *status = None;
+    }
+    let before = i.helper.requests.lock().map_err(|_| "lock")?.len();
+    advance(&i.h, 21_000);
+    let _ = i.h.app.update_round().await;
+    assert_eq!(
+        i.helper.requests.lock().map_err(|_| "lock")?.len(),
+        before + 1,
+        "written again"
+    );
+    advance(&i.h, 70_000);
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "failed");
+    assert!(
+        view["run"]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("did not respond")
+    );
+    Ok(())
+}

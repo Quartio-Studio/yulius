@@ -62,10 +62,13 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/actions.js` | Task actions and dialogs: stop, continue, feedback, delivery details and deploy output (read-only: agents deliver, GIT-002), sandbox add/remove. No account choice: tasks are subscription-agnostic. |
 | `assets/status.js` | Status → glyph/tone/label mapping and permitted actions per access level. |
 | `assets/dom.js`, `assets/format.js` | DOM builder (text only, never `innerHTML` with data), icons, toasts, modals, menus; formatting helpers. |
-| `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), task overview (`taskinfo.js`), git and a task's review (`gittask.js`), CI (`ci.js`: runs, job logs, repository hygiene), workflows, skills, automations, MCP and their editors (`workflowedit.js`, `skilledit.js`, `skillnew.js`, `automationedit.js`, `mcpedit.js`), dashboard, admin (users, accounts, GitHub), settings, design. |
+| `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), task overview (`taskinfo.js`), git and a task's review (`gittask.js`), CI (`ci.js`: runs, job logs, repository hygiene), workflows, skills, automations, MCP and their editors (`workflowedit.js`, `skilledit.js`, `skillnew.js`, `automationedit.js`, `mcpedit.js`), dashboard, admin (users, accounts, GitHub, instance), settings, design. |
 | `assets/spotlight.js` | The search dialog (Tasks page `/`): results with ↑/↓, Enter opens, ⌘/Ctrl+Enter goes to the task. |
 | `assets/intake.js` | Task intake in the composer: the split proposal card and held prompts (SPEC-002 ADR-16). |
 | `assets/termkeys.js`, `assets/termlinks.js`, `assets/mousefilter.js` | Terminal key table per platform (copy, paste, interrupt), links in terminal output (web links and file paths to the editor), mouse-report filtering. |
+| `assets/updates.js` | Instance updates (OPS-006..009, ADR-18): the calm banner (an update running for everyone; "Update available" and a failed update for the superadmin; "Reload" once the server runs newer code) and the superadmin's notification, from `GET /api/update` and `update.updated`; polls while an update runs. |
+| `assets/jevkey.js` | The Jev key (ADM-001/002): the setup wizard's optional last step and the instance page's card (set, replace, test, remove, save a configured key here); the key is never shown back. |
+| `assets/pages/instance.js` | Settings → Instance (superadmin): the build, the update on offer with its commits, Update now with its confirmation, the progress (build → pause tasks → restart → resume) and the outcome; the Jev key card. |
 | `assets/mock.js` | In-memory backend and fake WebSockets used with `?mock=1`. |
 | `assets/brand.js` | Brand identity in one place: product name, tagline and mark (the SVG path used by the sidebar, sign-in, favicon and tab title). |
 | `assets/boot.js` | The only classic script: runs in `<head>` after the stylesheets and before the first paint, applies the stored theme (no dark flash for light or system) and sets the browser's theme colour from the tokens; notes when the page is framed, and app.js then shows only a notice (Yulius never runs inside a frame). |
@@ -234,7 +237,9 @@ the real server. Options (combine with `&`): `setup=1` (setup required; token
 (the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
 the home page asks them to sign in with GitHub), `sandboxes=0` (a fresh instance without sandboxes: the
 home screen's first steps), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
-N×M until this one types or clicks into the terminal).
+N×M until this one types or clicks into the terminal), `update=1` (a newer `main` is on offer; Update
+now walks through its phases in about six seconds) or `update=fail` (the same, rolled back),
+`helper=0` (no update helper), `jev=config` (a Jev key file is configured).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and
 documentation; the [end-to-end tests](../../../e2e/README.md) run against it). It has sandboxes with admin, write and read access (`studio` with the Studio

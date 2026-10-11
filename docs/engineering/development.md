@@ -98,7 +98,7 @@ required check, and gets no model key (agent steps are skipped).
 
 Projects that Yulius manages run their CI on Yulius itself, with no GitHub Actions
 ([SPEC-002 ADR-18](../../.ai/specs/SPEC-002-yulius-architecture.md)). This repository still uses
-the workflows above. ADR-18 lists the steps to move it.
+the workflows above. ADR-20 lists the steps to move it.
 
 ## Troubleshooting
 
