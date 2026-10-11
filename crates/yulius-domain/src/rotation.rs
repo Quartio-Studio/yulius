@@ -10,9 +10,10 @@
 //! [`THRESHOLD`] in every window binding the task (5-hour, weekly and the weekly cap of the
 //! task's model family) and has no usage limit in effect. Candidates are ranked by:
 //!
-//! 1. [`Tier`]: known headroom of at least [`MIN_ROOM`] points, then known headroom below it (a
-//!    task placed there would move again within minutes and pay for a cold prompt cache), then
-//!    unknown usage (never treated as zero, but not evidence of exhaustion either);
+//! 1. [`Tier`]: known headroom of at least [`MIN_ROOM`] points, then unknown usage (never
+//!    treated as zero, but not evidence of exhaustion either — and a subscription nobody uses is
+//!    never read, F 2026-10-11), then known headroom below [`MIN_ROOM`] (a task placed there would
+//!    move again within minutes and pay for a cold prompt cache);
 //! 2. [`score`] — use it or lose it: the weekly headroom divided by the hours until that weekly
 //!    window resets (the rate needed to spend the capacity before it expires), divided by the
 //!    live tasks already on the account plus one, so concurrent tasks spread;
@@ -114,10 +115,12 @@ pub enum Decision {
 pub enum Tier {
     /// Known headroom of at least [`MIN_ROOM`] points in every binding window.
     Roomy,
+    /// No binding window has a known percentage. Before [`Tier::Tight`]: unknown is not
+    /// exhausted, and a subscription that never gets a task never gets a reading either — the
+    /// pool collapsed onto one subscription at 97 % while six others sat idle (F 2026-10-11).
+    UnknownUsage,
     /// Known headroom below [`MIN_ROOM`] points in some binding window.
     Tight,
-    /// No binding window has a known percentage.
-    UnknownUsage,
 }
 
 /// Why a manual request was refused.
@@ -526,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn roomy_beats_tight_beats_unknown() -> Result<(), IdError> {
+    fn roomy_beats_unknown_beats_tight() -> Result<(), IdError> {
         // "tight" expires much sooner (high score) but has 2 points of 5-hour room left.
         let tight = account("tight", usage(96.0, 50.0, Some(2)))?;
         let roomy = account("roomy", usage(10.0, 10.0, Some(160)))?;
@@ -535,10 +538,13 @@ mod tests {
             start(vec![tight.clone(), roomy.clone(), unknown.clone()])?.as_deref(),
             Some("roomy")
         );
+        // F 2026-10-11: every task went to a subscription at 97 % weekly while six with unknown
+        // usage sat idle (and so were never read).
         assert_eq!(
             start(vec![tight.clone(), unknown.clone()])?.as_deref(),
-            Some("tight")
+            Some("unknown")
         );
+        assert_eq!(start(vec![tight])?.as_deref(), Some("tight"));
         assert_eq!(start(vec![unknown])?.as_deref(), Some("unknown"));
         Ok(())
     }

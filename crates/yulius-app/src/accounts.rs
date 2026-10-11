@@ -304,6 +304,11 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub const USAGE_NOTE_PREFIX: &str = "usage: ";
 /// Back-off after a failed usage request that gave no `Retry-After` (ROT-009).
 pub const USAGE_BACKOFF_MS: i64 = 30 * 60 * 1000;
+/// A usage round skips a subscription read (by a session or the provider) this recently.
+pub const USAGE_FRESH_MS: i64 = 90 * 1000;
+/// Opening the subscriptions list asks for a usage round at most this often (F 2026-10-11:
+/// "usage should be updated more often + every time someone loads its screen").
+pub const USAGE_ON_DEMAND_MS: i64 = 30 * 1000;
 /// Back-off after the usage endpoint refused a sign-in that may not read usage (a
 /// `setup-token`, ADR-17): asked again once a day in case the sign-in changed.
 pub const USAGE_NOT_SHARED_BACKOFF_MS: i64 = DAY_MS;
@@ -451,11 +456,29 @@ impl App {
     ///
     /// # Errors
     /// `Forbidden` for non-administrators.
-    pub async fn list_accounts(&self, ctx: &AuthContext) -> AppResult<Vec<AccountView>> {
+    pub async fn list_accounts(self: &Arc<Self>, ctx: &AuthContext) -> AppResult<Vec<AccountView>> {
         self.require_instance_admin(ctx)?;
         let store = &self.deps.store;
         let live = store.live_attempts().await?;
         let now = self.now();
+        // Opening the list reads usage again in the background (within each subscription's
+        // back-off); the cards update as the readings arrive.
+        let due = self
+            .capacity
+            .usage_asked
+            .lock()
+            .map(|mut last| {
+                let due = last.is_none_or(|at| now.millis_since(at) >= USAGE_ON_DEMAND_MS);
+                if due {
+                    *last = Some(now);
+                }
+                due
+            })
+            .unwrap_or(false);
+        if due {
+            let app = Arc::clone(self);
+            tokio::spawn(async move { app.refresh_usage_shared().await });
+        }
         let day = store.account_tokens(now.plus_millis(-DAY_MS)).await?;
         let week = store.account_tokens(now.plus_millis(-7 * DAY_MS)).await?;
         let find = |list: &[crate::model::AccountTokens], id: &str| {
@@ -553,6 +576,17 @@ impl App {
                     .await;
                 Err(failure)
             }
+            Err(failure) if failure.kind == UsageFailureKind::Throttled => {
+                // Not an error: the provider asks to wait (the round backs off for its
+                // Retry-After) and the last reading stays with its time. A note here sat on
+                // every subscription at once (F 2026-10-11); an earlier one goes away.
+                let _ = self
+                    .deps
+                    .store
+                    .clear_usage_error(&account.id, self.now())
+                    .await;
+                Err(failure)
+            }
             Err(failure) => {
                 // Only the error: the status and usage may have changed since `account` was
                 // read (a task's limit hit during the request), and must stay (#72). The
@@ -567,6 +601,13 @@ impl App {
                 Err(failure)
             }
         }
+    }
+
+    /// A usage round with the back-off shared by the background loop and on-demand reads; one
+    /// round at a time.
+    pub async fn refresh_usage_shared(&self) {
+        let mut not_before = self.capacity.usage_not_before.lock().await;
+        self.refresh_usage_round(&mut not_before).await;
     }
 
     /// One background usage round (ROT-009): asks the provider about every signed-in account
@@ -586,6 +627,13 @@ impl App {
         }) {
             let now = self.now();
             if not_before.get(&account.id).is_some_and(|at| *at > now) {
+                continue;
+            }
+            // Read moments ago (a running session reports it live): nothing to ask.
+            if account_usage(account)
+                .observed_at
+                .is_some_and(|at| now.millis_since(at) < USAGE_FRESH_MS)
+            {
                 continue;
             }
             match self.fetch_and_record_usage(account).await {
