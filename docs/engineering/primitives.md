@@ -24,7 +24,7 @@ optional `scripts/`, `references/`, `assets/`, `examples/`.
 
 ## Description is a contract
 
-Frontmatter is loaded every session; the body only when used. Write `Use when ...`, add a
+Frontmatter is loaded every session; the body only when used. State what the skill does, then a `Use when ...` (or `Use for ...`) sentence, add a
 negative case when skills could overlap, and treat a changed description as a breaking change.
 Keep the body under 200 lines (checked); move templates and long rules to `references/` or `assets/`.
 

@@ -70,6 +70,8 @@ class StyleContracts(unittest.TestCase):
             skill = directory / "SKILL.md"
             skill.write_text("---\nname: sample-skill\ndescription: Does the thing.\n---\nInstructions.\n")
             self.assertTrue(any("Use when" in e for e in skill_errors(skill)))
+            skill.write_text(skill.read_text().replace("Does the thing.", "Does the thing, use it often."))
+            self.assertTrue(skill_errors(skill))
 
     def test_skill_body_over_the_limit_must_move_detail_to_references(self):
         with tempfile.TemporaryDirectory() as tmp:

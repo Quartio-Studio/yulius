@@ -9,7 +9,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Agent primitives follow the agentic-coding workshop methodology (SPEC-005, ADR-0016): repository
   skills are APM packages (`.apm/skills` source, `apm.yml`, `apm.lock.yaml`, generated
   `.agents/skills` and `.claude/skills`), the repository check rejects deployment drift and skills
-  without a "Use when" description or over 200 lines, a primitive design standard
+  without a "Use when/for" sentence or over 200 lines, a primitive design standard
   (`docs/engineering/primitives.md`) and the `yulius-primitives` skill apply the pattern
   vocabulary, and `infra-bootstrap` now audits a project's conventions into primitives.
 
