@@ -3,7 +3,7 @@ yulius-task: 7fd8d053-b40c-4bc4-ab19-11bac3505999
 status: done
 ---
 
-# SPEC-005: a full sandbox disk never kills a running session; Yulius frees build caches itself
+# SPEC-008: a full sandbox disk never kills a running session; Yulius frees build caches itself
 
 Status: implemented
 Date: 2026-10-11
@@ -39,7 +39,7 @@ directories of closed and cancelled tasks (38, 46, 11 and 7 GB).
 | --- | --- | --- |
 | ROT-014 | A switch, manual or automatic, first checks that the new session can start (the task exists in a cloned repository, a subscription's credential opens, the sandbox is within its disk quota and its holder starts). If it cannot, the running session stays untouched, the task keeps its status, and the reason is written in the task's terminal and recorded as a refused switch decision; a manual switch answers with the reason. A launch that fails after the old session ended also writes its reason in the terminal and in the switch decision. | `supervisor::switch_preflight_*`, `supervision.rs` |
 | NFR-008 | A refusal over the disk quota measures the sandbox again first when its reading is older than a minute (`QUOTA_RECHECK`), so freeing space helps at once. | `manager::over_quota_*` |
-| NFR-009 | Yulius frees disk without a person: (a) build caches (a Cargo `target` next to a `Cargo.toml`, `node_modules/.cache`, `.next/cache`, and the paths of `[disk] caches` in the worktree's `yulius.toml`) of the worktrees of tasks that are not live, queued or waiting are removed every few minutes; (b) hygiene lists and removes worktrees of closed and cancelled tasks (clean ones only; the branch stays, so Continue recreates the worktree); (c) when a sandbox reaches 90 % of its quota, or a start would be refused, the caches of idle tasks (a running task at a turn boundary, paused or chained) are pruned too, ended tasks first and the largest first, until it is below 80 %, before anything is refused; (d) a task whose cache was removed gets a message saying what was freed and that it comes back with the next build. | `disk::*`, `hygiene` tests, `supervision.rs` |
+| NFR-009 | Yulius frees disk without a person: (a) build caches (a Cargo `target` next to a `Cargo.toml`, `node_modules/.cache`, `.next/cache`, and the paths of `[disk] caches` in the worktree's `yulius.toml`) of the worktrees of tasks that are not live, queued or waiting are removed every few minutes; (b) hygiene lists and removes worktrees of closed and cancelled tasks (clean ones only; the branch stays, so Continue recreates the worktree); (c) when a sandbox reaches 90 % of its quota, or a start would be refused, the caches of idle tasks (a running task at a turn boundary, paused or chained) are pruned too, ended tasks first and the largest first, until it is below 80 %, before anything is refused; (d) a task whose cache was removed gets a message saying what was freed and that it comes back with the next build; (e) persistent CI job checkouts (`ci/jobs/<job>`: Cargo never removes old artifacts there) are treated alike while no CI run of the sandbox executes: their caches are pruned at 90 % of the quota and before a refusal, and one job's cache beyond a quarter of the quota at once. | `disk::*`, `hygiene` tests, `supervision.rs` |
 
 ## Design
 
@@ -105,3 +105,6 @@ directories of closed and cancelled tasks (38, 46, 11 and 7 GB).
   crashed tasks, pressure with largest-first, working tasks untouched, links not followed, refused
   start prunes and retries, agent messaged).
 - Not run: a real 100 GB sandbox.
+- Follow-up (PR #205 review, 2026-10-11): `cargo test -p yulius --test disk`: 9 passed (2 new for CI job
+  caches: over a quarter of the quota at once, under pressure and before a refusal). Renamed from
+  SPEC-005 (taken by #194).

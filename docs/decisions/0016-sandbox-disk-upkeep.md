@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted ([SPEC-005](../../.ai/specs/SPEC-005-sandbox-disk.md), F 2026-10-11).
+Accepted ([SPEC-008](../../.ai/specs/SPEC-008-sandbox-disk.md), F 2026-10-11).
 
 ## Context
 
@@ -18,7 +18,7 @@ the running session. A quota refusal measures again when the reading is over a m
 Yulius removes recognised or declared build caches of tasks that do not work (ended tasks after a
 10-minute grace; idle tasks only from 90 % of the quota, largest first, down to 80 %), removes
 the clean worktrees of closed and cancelled tasks, and messages the agent of each task what was
-freed. A working task is never touched.
+freed. Persistent CI job checkouts, which never shrink, are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A working task is never touched.
 
 ## Alternatives
 

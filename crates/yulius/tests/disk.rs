@@ -1,4 +1,4 @@
-//! Disk upkeep end to end (SPEC-005, SPEC-001 NFR-009): a real repository with real worktrees,
+//! Disk upkeep end to end (SPEC-008, SPEC-001 NFR-009): a real repository with real worktrees,
 //! the real Git adapter and tasks in every state. Build caches of tasks that do not work are
 //! removed, the worktrees of closed and cancelled tasks go, idle tasks lose theirs only under
 //! pressure, working tasks never, and the agent is told what was freed.
@@ -377,5 +377,77 @@ async fn hygiene_keeps_an_ended_worktree_that_still_holds_ignored_files() -> Box
         result.skipped.iter().any(|s| s.reason.contains("ignores")),
         "{result:?}"
     );
+    Ok(())
+}
+
+impl World {
+    /// A persistent CI job checkout (`ci/jobs/<name>`) holding a `target` of ~256 KiB.
+    fn ci_checkout(&self, name: &str) -> BoxResult<PathBuf> {
+        let checkout = self.root.join("ci/jobs").join(name);
+        std::fs::create_dir_all(checkout.parent().ok_or("parent")?)?;
+        git(
+            &self.repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                checkout.to_str().ok_or("path")?,
+            ],
+        )?;
+        std::fs::create_dir_all(checkout.join("target"))?;
+        std::fs::write(checkout.join("target/blob"), vec![5u8; BIG])?;
+        Ok(checkout)
+    }
+}
+
+#[tokio::test]
+async fn a_ci_job_cache_beyond_a_quarter_of_the_quota_is_pruned_at_once() -> BoxResult<()> {
+    let w = world().await?;
+    let checkout = w.ci_checkout("quality")?;
+    let idle = w.task("t-idle", TaskStatus::Chained, None).await?;
+    // The quota is tiny, so a quarter of it is smaller than the cache; usage is far below 90 %.
+    let quota = Arc::new(Quota {
+        used: AtomicU64::new(1),
+        limit: 100 * BIG as u64,
+    });
+    // A quarter is 25 * BIG: the 256 KiB cache is under it and stays while nothing presses.
+    assert!(w.h.app.set_isolation(quota.clone()));
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(
+        checkout.join("target").exists(),
+        "under the cap, no pressure"
+    );
+
+    // A cache of 30 * BIG is over the quarter: gone at once. The idle task's is not.
+    std::fs::write(checkout.join("target/big"), vec![6u8; 30 * BIG])?;
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(
+        !checkout.join("target").exists(),
+        "over a quarter of the quota"
+    );
+    assert!(
+        idle.join("target").exists(),
+        "an idle task's cache needs pressure"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn ci_job_caches_are_pruned_under_pressure_and_before_a_refusal() -> BoxResult<()> {
+    let w = world().await?;
+    let checkout = w.ci_checkout("quality")?;
+    let quota = Arc::new(Quota {
+        used: AtomicU64::new(95 * BIG as u64),
+        limit: 100 * BIG as u64,
+    });
+    assert!(w.h.app.set_isolation(quota));
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(!checkout.join("target").exists(), "{report:?}");
+    assert!(checkout.exists(), "the checkout itself stays");
+    // The same through a refused start: the cache is pruned and the start asked again.
+    let again = w.ci_checkout("lint")?;
+    w.h.app.disk_upkeep(&w.sandbox, true).await?;
+    assert!(!again.join("target").exists());
     Ok(())
 }

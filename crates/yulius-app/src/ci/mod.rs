@@ -311,6 +311,14 @@ impl App {
         self.sandbox_dir(sandbox).join("ci")
     }
 
+    /// Whether a run of `sandbox` is executing: its job checkouts are in use.
+    pub(crate) fn ci_busy(&self, sandbox: &SandboxId) -> bool {
+        self.ci
+            .busy
+            .lock()
+            .map_or(true, |busy| busy.contains(sandbox.as_str()))
+    }
+
     /// Wakes the dispatcher (a run was queued or a runner freed).
     pub(crate) fn ci_wake(&self) {
         self.ci.wake.notify_one();

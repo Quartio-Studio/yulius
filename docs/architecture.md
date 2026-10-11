@@ -52,7 +52,7 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
 work every 5 minutes (ended tasks, then idle ones from 90 % of the quota), removes the worktrees
 of closed and cancelled tasks, and a switch checks the quota and the other start preconditions
-before it ends the running session ([SPEC-005](../.ai/specs/SPEC-005-sandbox-disk.md),
+before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md),
 [decision 0016](decisions/0016-sandbox-disk-upkeep.md)).
 
 ## Runtime

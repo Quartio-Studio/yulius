@@ -1,4 +1,4 @@
-//! Disk upkeep rules of a sandbox (SPEC-005, SPEC-001 NFR-009): which directories of a worktree
+//! Disk upkeep rules of a sandbox (SPEC-008, SPEC-001 NFR-009): which directories of a worktree
 //! are build caches, and which caches to prune when the sandbox nears its quota.
 //!
 //! Pure: the caller lists directories, measures sizes and removes.
@@ -64,6 +64,14 @@ pub fn cache_paths(entries: &[String], declared: &[String]) -> Vec<String> {
         }
     }
     paths
+}
+
+/// The largest cache one CI job checkout may keep: a quarter of the quota. Persistent
+/// checkouts never shrink (every commit adds artifacts), so one beyond it is pruned whenever
+/// no run is executing.
+#[must_use]
+pub fn job_cache_cap(limit: u64) -> u64 {
+    limit / 4
 }
 
 /// Bytes to free so that `used` falls to [`TARGET_PERCENT`] of `limit`; 0 below
@@ -144,6 +152,12 @@ mod tests {
             names(&["target"]),
             "no duplicates"
         );
+    }
+
+    #[test]
+    fn one_job_cache_may_hold_a_quarter_of_the_quota() {
+        assert_eq!(job_cache_cap(100), 25);
+        assert_eq!(job_cache_cap(0), 0);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Disk upkeep without a person (SPEC-005, SPEC-001 NFR-009): build caches of tasks that do not
+//! Disk upkeep without a person (SPEC-008, SPEC-001 NFR-009): build caches of tasks that do not
 //! work are removed, the worktrees of closed and cancelled tasks are cleaned up, and a sandbox
 //! near its quota gets the caches of idle tasks pruned too, before a start is refused. The
 //! agent of a task whose cache went is told what was freed.
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yulius_domain::disk::{
-    Candidate, Owner, bytes_to_free, cache_paths, human, owner_of, plan_prune,
+    Candidate, Owner, bytes_to_free, cache_paths, human, job_cache_cap, owner_of, plan_prune,
 };
 use yulius_domain::ids::{MessageId, TaskId};
 use yulius_domain::spec_format::parse_yulius_toml_caches;
@@ -48,7 +48,10 @@ pub struct DiskReport {
 }
 
 struct Found {
-    task: TaskRecord,
+    /// The task whose worktree holds it; `None` for a CI job checkout.
+    task: Option<TaskRecord>,
+    /// What to call it in the audit log.
+    label: String,
     owner: Owner,
     path: PathBuf,
     relative: String,
@@ -172,7 +175,8 @@ impl App {
             None => None,
         };
         let need = usage.map_or(0, |usage| bytes_to_free(usage.used, usage.limit));
-        let scan = self.disk_scan(sandbox, pressure || need > 0).await?;
+        let cap = usage.map(|usage| job_cache_cap(usage.limit));
+        let scan = self.disk_scan(sandbox, pressure || need > 0, cap).await?;
         let candidates: Vec<Candidate> = scan
             .found
             .iter()
@@ -191,10 +195,52 @@ impl App {
         Ok(report)
     }
 
-    /// The caches of every task that does not work, with their sizes, and the worktrees of
-    /// closed and cancelled tasks. Ended tasks inside the grace period are left out unless
-    /// `pressure`.
-    async fn disk_scan(&self, sandbox: &SandboxRecord, pressure: bool) -> AppResult<Scan> {
+    /// The cache directories of one worktree or checkout, with their sizes: recognised or
+    /// declared paths that are real directories, ignored by Git and holding no tracked file (a
+    /// path a commit has files in is the project's work, not a cache, whatever `yulius.toml`
+    /// says).
+    async fn find_caches(&self, worktree: &Path) -> Vec<(String, PathBuf, u64)> {
+        let dir = worktree.to_path_buf();
+        let present = tokio::task::spawn_blocking(move || {
+            cache_paths(&root_entries(&dir), &declared_caches(&dir))
+                .into_iter()
+                .filter_map(|relative| {
+                    let path = real_dir_below(&dir, &relative)?;
+                    Some((relative, path))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        let mut found = Vec::new();
+        for (relative, path) in present {
+            if !self
+                .deps
+                .git
+                .is_disposable(worktree, &relative)
+                .await
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let measured = path.clone();
+            let bytes = tokio::task::spawn_blocking(move || dir_size(&measured))
+                .await
+                .unwrap_or(0);
+            found.push((relative, path, bytes));
+        }
+        found
+    }
+
+    /// The caches of every task that does not work and of idle CI checkouts, with their sizes,
+    /// and the worktrees of closed and cancelled tasks. Ended tasks inside the grace period
+    /// are left out unless `pressure`; `cap` is the most one CI job may keep.
+    async fn disk_scan(
+        &self,
+        sandbox: &SandboxRecord,
+        pressure: bool,
+        cap: Option<u64>,
+    ) -> AppResult<Scan> {
         let root = self.sandbox_dir(&sandbox.id).join("worktrees");
         let now = self.now().0;
         let mut scan = Scan::default();
@@ -216,36 +262,43 @@ impl App {
                 ) {
                     scan.ended.push((task.clone(), worktree.clone()));
                 }
-                let dir = worktree.clone();
-                let present = tokio::task::spawn_blocking(move || {
-                    cache_paths(&root_entries(&dir), &declared_caches(&dir))
-                        .into_iter()
-                        .filter_map(|relative| {
-                            let path = real_dir_below(&dir, &relative)?;
-                            Some((relative, path))
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .await
-                .unwrap_or_default();
-                for (relative, path) in present {
-                    // A path a commit has files in (or that Git does not ignore) is the
-                    // project's work, not a cache, whatever `yulius.toml` says.
-                    if !self
-                        .deps
-                        .git
-                        .is_disposable(&worktree, &relative)
-                        .await
-                        .unwrap_or(false)
-                    {
-                        continue;
-                    }
-                    let measured = path.clone();
-                    let bytes = tokio::task::spawn_blocking(move || dir_size(&measured))
-                        .await
-                        .unwrap_or(0);
+                for (relative, path, bytes) in self.find_caches(&worktree).await {
                     scan.found.push(Found {
-                        task: task.clone(),
+                        label: format!("task #{}", task.number),
+                        task: Some(task.clone()),
+                        owner,
+                        path,
+                        relative,
+                        bytes,
+                    });
+                }
+            }
+        }
+        // Persistent CI job checkouts (SPEC-008): their caches go while no run executes — only
+        // under pressure, or at once when one job's cache outgrows `cap`.
+        if !self.ci_busy(&sandbox.id) {
+            let jobs = self.ci_dir(&sandbox.id).join("jobs");
+            let names: Vec<String> = std::fs::read_dir(&jobs)
+                .map(|dir| {
+                    dir.flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            for name in names {
+                let checkout = jobs.join(&name);
+                if !checkout.join(".git").exists() {
+                    continue;
+                }
+                for (relative, path, bytes) in self.find_caches(&checkout).await {
+                    let owner = if cap.is_some_and(|cap| bytes > cap) {
+                        Owner::Ended
+                    } else {
+                        Owner::Idle
+                    };
+                    scan.found.push(Found {
+                        label: format!("CI job {name}"),
+                        task: None,
                         owner,
                         path,
                         relative,
@@ -264,7 +317,11 @@ impl App {
             let item = &scan.found[index];
             // The scan can be minutes old (sizes of huge caches): a task that started working
             // meanwhile keeps its files.
-            if !self.owner_is(&item.task.id, item.owner).await {
+            let unchanged = match &item.task {
+                Some(task) => self.owner_is(&task.id, item.owner).await,
+                None => !self.ci_busy(&sandbox.id),
+            };
+            if !unchanged {
                 continue;
             }
             let path = item.path.clone();
@@ -281,17 +338,13 @@ impl App {
                 "yulius",
                 "disk.prune",
                 &sandbox.slug,
-                &format!(
-                    "{} of task #{}: {}",
-                    item.relative,
-                    item.task.number,
-                    human(item.bytes)
-                ),
+                &format!("{} of {}: {}", item.relative, item.label, human(item.bytes)),
             )
             .await;
-            match per_task.iter_mut().find(|(t, _)| t.id == item.task.id) {
+            let Some(task) = &item.task else { continue };
+            match per_task.iter_mut().find(|(t, _)| t.id == task.id) {
                 Some((_, list)) => list.push((item.relative.clone(), item.bytes)),
-                None => per_task.push((&item.task, vec![(item.relative.clone(), item.bytes)])),
+                None => per_task.push((task, vec![(item.relative.clone(), item.bytes)])),
             }
         }
         // A closed or cancelled task's clean worktree goes whole (its branch keeps the work;

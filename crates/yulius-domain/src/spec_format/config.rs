@@ -709,7 +709,7 @@ pub fn parse_yulius_toml_docs(text: &str) -> Result<DocsLayout, FormatError> {
 }
 
 /// The build-cache directories `yulius.toml` declares (`[disk] caches = "target build/cache"`,
-/// space-separated, relative to the repository root; SPEC-005). A file that does not parse
+/// space-separated, relative to the repository root; SPEC-008). A file that does not parse
 /// declares none.
 ///
 /// # Errors
