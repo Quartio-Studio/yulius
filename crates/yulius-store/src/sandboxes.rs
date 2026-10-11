@@ -187,4 +187,20 @@ impl SandboxStore for SqliteStore {
         })
         .await
     }
+
+    async fn release_removed_slug(&self, slug: &str, owner: &str, name: &str) -> AppResult<bool> {
+        let (slug, owner, name) = (slug.to_owned(), owner.to_owned(), name.to_owned());
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE sandboxes SET slug = slug || '-removed-' || removed_at \
+                     WHERE slug = ?1 AND removed_at IS NOT NULL \
+                     AND lower(repo_owner) = lower(?2) AND lower(repo_name) = lower(?3)",
+                    params![slug, owner, name],
+                )
+                .map_err(db)?;
+            Ok(changed > 0)
+        })
+        .await
+    }
 }

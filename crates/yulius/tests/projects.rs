@@ -753,10 +753,11 @@ async fn remove_stops_tasks_and_keeps_the_repository() -> TestResult {
             .exists()
     );
 
-    // The repository can be linked again; the old slug and ports stay reserved.
+    // The repository can be linked again: it gets its name back (F 2026-10-11); the old ports
+    // stay reserved.
     let again = import(&w, &alice, "Quartio-Studio/shop").await?;
     assert_eq!(again.status, StatusCode::CREATED);
-    assert_eq!(again.body["slug"], "shop-2");
+    assert_eq!(again.body["slug"], "shop");
     assert_eq!(again.body["port_base"], 20020);
     Ok(())
 }
@@ -787,6 +788,12 @@ async fn a_finished_preparation_turn_makes_the_sandbox_ready_and_starts_waiting_
             .onboarding_task_id
             .ok_or("prep task")?;
     let prep = w.h.store.task(&task_id).await?.ok_or("prep")?;
+    // Documentation, configuration and CI only: no spec, so Yulius opens its pull request once
+    // its plan is done (F 2026-10-11).
+    assert!(
+        !w.h.app.spec_required(&prep).await?,
+        "preparation needs no spec"
+    );
 
     // "Start in parallel" during preparation: the task waits after the preparation task.
     let waiting = call(
@@ -879,5 +886,51 @@ async fn a_finished_preparation_turn_makes_the_sandbox_ready_and_starts_waiting_
         TaskStatus::Chained,
         "the waiting task starts once the sandbox is ready"
     );
+    Ok(())
+}
+
+/// F 2026-10-11: deleting a sandbox and adding the same repository again gave `yulius-2`. The
+/// same repository gets its name back; the removed sandbox keeps its records under a renamed
+/// slug.
+#[tokio::test]
+async fn adding_a_removed_repository_again_gets_its_name_back() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", true).await?;
+    w.remote(
+        OWNER,
+        "product",
+        &[("README.md", "# Product\n")],
+        &["quartio"],
+    )?;
+    w.grant("alice", "product", "admin");
+    let first = import(&w, &alice, "Quartio-Studio/product").await?;
+    assert_eq!(first.status, StatusCode::CREATED, "{:?}", first.body);
+    assert_eq!(first.body["slug"], "product");
+    let first_id = text(&first.body["id"]).to_owned();
+
+    let removed = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/{first_id}"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+
+    let again = import(&w, &alice, "Quartio-Studio/product").await?;
+    assert_eq!(again.status, StatusCode::CREATED, "{:?}", again.body);
+    assert_eq!(
+        again.body["slug"], "product",
+        "the same repository gets its name back"
+    );
+    assert_ne!(text(&again.body["id"]), first_id);
+    let old =
+        w.h.store
+            .sandbox(&SandboxId::parse(&first_id)?)
+            .await?
+            .ok_or("removed sandbox")?;
+    assert!(old.removed_at.is_some());
+    assert!(old.slug.starts_with("product-removed-"), "{}", old.slug);
     Ok(())
 }

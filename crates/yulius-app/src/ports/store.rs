@@ -191,6 +191,10 @@ pub trait SandboxStore: Send + Sync {
     ) -> AppResult<()>;
     /// Marks removed.
     async fn remove_sandbox(&self, id: &SandboxId, at: Timestamp) -> AppResult<()>;
+    /// Renames the slug of a removed sandbox of `owner/name` holding `slug` to
+    /// `<slug>-removed-<removed_at ms>`, freeing it for the same repository added again; `false`
+    /// when no such removed sandbox holds it.
+    async fn release_removed_slug(&self, slug: &str, owner: &str, name: &str) -> AppResult<bool>;
 }
 
 /// Field updates for a task (only `Some` fields change).
