@@ -93,7 +93,13 @@ impl Git {
     ) -> Result<bool, GitError> {
         let tracked = self.run_ok(
             Invocation::new(self, "ls-files", Some(worktree))
-                .args(["--no-optional-locks", "ls-files", "-z", "--"])
+                .args([
+                    "--literal-pathspecs",
+                    "--no-optional-locks",
+                    "ls-files",
+                    "-z",
+                    "--",
+                ])
                 .arg(relative),
         )?;
         if !tracked.stdout.is_empty() {
@@ -119,6 +125,7 @@ impl Git {
             "--others",
             "--ignored",
             "--exclude-standard",
+            "--directory",
             "-z",
         ]))?;
         Ok(!output.stdout.is_empty())

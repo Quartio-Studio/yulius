@@ -264,7 +264,7 @@ impl App {
             let item = &scan.found[index];
             // The scan can be minutes old (sizes of huge caches): a task that started working
             // meanwhile keeps its files.
-            if !self.not_working(&item.task.id).await {
+            if !self.owner_is(&item.task.id, item.owner).await {
                 continue;
             }
             let path = item.path.clone();
@@ -314,10 +314,11 @@ impl App {
         report
     }
 
-    async fn not_working(&self, task: &TaskId) -> bool {
+    /// Whether `task` is still what the scan found it to be (ended, or idle).
+    async fn owner_is(&self, task: &TaskId, owner: Owner) -> bool {
         matches!(
             self.deps.store.task(task).await,
-            Ok(Some(t)) if owner_of(t.status, t.activity).is_some()
+            Ok(Some(t)) if owner_of(t.status, t.activity) == Some(owner)
         )
     }
 

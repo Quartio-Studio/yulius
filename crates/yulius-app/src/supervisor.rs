@@ -1432,11 +1432,6 @@ impl App {
             .status
             .apply(TaskEvent::SwitchStarted)
             .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?;
-        if reason != "manual" && self.switch_cooling(task_id) {
-            return Err(AppError::Conflict(
-                "a switch was refused a moment ago; it is tried again later".into(),
-            ));
-        }
         // The new session must be able to start before the running one ends (ROT-014): a
         // refusal leaves the task as it is.
         if let Err(err) = self.preflight_start(&task, account.as_ref()).await {
@@ -1529,6 +1524,7 @@ impl App {
                     store.set_switch_outcome(&decision_id, "waiting").await?;
                 } else {
                     store.set_switch_outcome(&decision_id, "completed").await?;
+                    runtime.switch_refused_ms.store(0, Ordering::SeqCst);
                     runtime
                         .hub
                         .notice("↻ The session continues where it left off.");
@@ -1611,10 +1607,16 @@ impl App {
         err: &AppError,
     ) {
         let message = err.public_message();
+        // A repeat of an automatic switch inside the cooldown is only logged: one record and
+        // one notice per cooldown, not one per retry.
+        let repeat = reason != "manual" && self.switch_cooling(&task.id);
         self.runtime(&task.id)
             .switch_refused_ms
             .store(self.now().0, Ordering::SeqCst);
         tracing::warn!(task = %task.id, error = %err, "switch refused; the running session stays");
+        if repeat {
+            return;
+        }
         self.runtime(&task.id).hub.notice(format!(
             "↻ Switching subscriptions was not possible, so this session stays as it is: {message}"
         ));

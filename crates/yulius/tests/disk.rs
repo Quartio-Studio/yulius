@@ -342,7 +342,14 @@ async fn declared_paths_with_tracked_files_and_unignored_paths_are_never_pruned(
 async fn a_closed_tasks_worktree_with_ignored_local_files_is_kept() -> BoxResult<()> {
     let w = world().await?;
     let closed = w.task("t-env", TaskStatus::Closed, None).await?;
-    std::fs::write(repo_ignore(&closed), "target\nout\n.env\n")?;
+    let exclude = git(&closed, &["rev-parse", "--git-path", "info/exclude"])?;
+    let exclude = if Path::new(&exclude).is_absolute() {
+        PathBuf::from(exclude)
+    } else {
+        closed.join(exclude)
+    };
+    std::fs::create_dir_all(exclude.parent().ok_or("parent")?)?;
+    std::fs::write(&exclude, ".env\n")?;
     std::fs::write(closed.join(".env"), "SECRET=1")?;
     w.later();
     let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
@@ -352,6 +359,23 @@ async fn a_closed_tasks_worktree_with_ignored_local_files_is_kept() -> BoxResult
     Ok(())
 }
 
-fn repo_ignore(worktree: &Path) -> PathBuf {
-    worktree.join(".gitignore")
+#[tokio::test]
+async fn hygiene_keeps_an_ended_worktree_that_still_holds_ignored_files() -> BoxResult<()> {
+    let w = world().await?;
+    // `target` and `out` are ignored files still in place: the upkeep has not run.
+    let closed = w.task("t-hyg", TaskStatus::Closed, None).await?;
+    let result =
+        w.h.app
+            .hygiene_cleanup_as(
+                &w.sandbox,
+                &yulius_contracts::api::ci::HygieneCleanup::default(),
+                "test",
+            )
+            .await?;
+    assert!(closed.exists(), "{result:?}");
+    assert!(
+        result.skipped.iter().any(|s| s.reason.contains("ignores")),
+        "{result:?}"
+    );
+    Ok(())
 }

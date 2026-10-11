@@ -349,7 +349,7 @@ impl App {
     }
 
     /// Removes stale items (all safe ones when `request.items` is empty), after a fresh scan.
-    pub(crate) async fn hygiene_cleanup_as(
+    pub async fn hygiene_cleanup_as(
         &self,
         sandbox: &SandboxRecord,
         request: &HygieneCleanup,
@@ -428,6 +428,17 @@ impl App {
                 WORKTREE => {
                     let path = self.sandbox_dir(&sandbox.id).join(&found.name);
                     let owned = self.sandbox_dir(&sandbox.id).join("worktrees");
+                    // An ended task's worktree with ignored files left (local configuration,
+                    // caches the disk upkeep has not removed yet) is not Git's to lose.
+                    if found.reason_code == "task_ended"
+                        && self.deps.git.has_ignored_files(&path).await.unwrap_or(true)
+                    {
+                        skipped.push(HygieneSkip {
+                            target,
+                            reason: "it still holds files Git ignores (build output or local configuration)".into(),
+                        });
+                        continue;
+                    }
                     match self.deps.git.remove_worktree(&repo, &path, &owned).await {
                         Ok(true) => Ok(()),
                         Ok(false) => Err("it has uncommitted changes or is locked".into()),
