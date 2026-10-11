@@ -222,7 +222,10 @@ async fn auto_chooses_goal_and_a_workflow_from_the_store() -> TestResult {
     let options = workflow.1.join("\n");
     assert!(options.contains("w1=Feature (spec first): "), "{options}");
     assert!(options.contains("=Fix (spec first): "), "{options}");
-    assert!(options.contains("=Research / Question (no spec): "), "{options}");
+    assert!(
+        options.contains("=Research / Question (no spec): "),
+        "{options}"
+    );
     assert!(options.contains("Use when: "), "{options}");
     assert!(workflow.1.last().is_some_and(|o| o.starts_with("none=")));
 
