@@ -39,7 +39,7 @@ impl Drop for IsolationLease {
 
 impl App {
     /// The holder a contained run of `sandbox` joins, with its lease; `None` when the run uses
-    /// the previous containment (not contained, no adapter, no base yet).
+    /// the previous containment (no adapter, no base yet).
     ///
     /// # Errors
     /// The adapter's refusal (disk quota) or failure (the holder cannot start).
@@ -47,9 +47,8 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
     ) -> AppResult<Option<(SandboxJoin, IsolationLease)>> {
-        if !self.config.contained {
-            return Ok(None);
-        }
+        // An adapter is installed only on a contained server, so none means the previous
+        // containment.
         let Some(isolation) = self.isolation.get() else {
             return Ok(None);
         };

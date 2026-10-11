@@ -748,6 +748,106 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
     Ok(())
 }
 
+/// A sandbox that refuses a start (here: over its disk quota).
+struct RefusingIsolation(std::sync::atomic::AtomicBool);
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for RefusingIsolation {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(yulius_app::error::AppError::Conflict(
+                "this sandbox uses 112.2 GB of its 100.0 GB disk quota".into(),
+            ));
+        }
+        Ok(None)
+    }
+
+    fn release(&self, _: &SandboxId) {}
+}
+
+/// ROT-014: a switch that could not start its new session leaves the running one alone and says
+/// why; once the cause is gone the switch works.
+#[test]
+fn a_switch_that_cannot_start_leaves_the_running_session_alone() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        add_account(&app, "a-claude-2").await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_task(&app, &sandbox, &user, "Over quota").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let refusing = Arc::new(RefusingIsolation(std::sync::atomic::AtomicBool::new(true)));
+        assert!(app.set_isolation(refusing.clone()));
+        let before = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("live attempt")?;
+        let mut viewer = app.runtime(&id).hub.subscribe();
+        let other = AccountId::parse("a-claude-2")?;
+        let refused = app
+            .switch_task_now(&id, Some(other.clone()), "manual", None)
+            .await;
+        assert!(
+            matches!(&refused, Err(e) if e.public_message().contains("112.2 GB")),
+            "{refused:?}"
+        );
+        let after = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("still live")?;
+        assert_eq!(after.id, before.id, "the session was not ended");
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        let mut notice = None;
+        while let Ok(frame) = viewer.rx.try_recv() {
+            if let yulius_app::hub::HubFrame::Notice(text) = frame {
+                notice = Some(text);
+            }
+        }
+        assert!(
+            notice.is_some_and(|n| n.contains("112.2 GB")),
+            "the reason reaches the terminal"
+        );
+        let switches = app.deps.store.switches(&id).await?;
+        assert_eq!(switches.len(), 1);
+        assert_eq!(switches[0].outcome, "refused");
+        assert!(switches[0].inputs.contains("112.2 GB"));
+        // Space is back: the same switch now moves the session.
+        refusing.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        app.switch_task_now(&id, Some(other), "manual", None)
+            .await?;
+        wait_for("the switched run", Duration::from_secs(90), || async {
+            app.deps
+                .store
+                .attempts(&id)
+                .await
+                .is_ok_and(|a| a.len() == 2 && a.last().is_some_and(|a| !a.state.is_terminal()))
+        })
+        .await?;
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// AC-DSC-5: a task worktree refuses the agent's pushes to the integration and production
 /// branches (the agent's own Git runs the Yulius pre-push guard) and lets the task branch go.
 /// AC-UI-3: status transitions reach the UI as task events within 2 s.

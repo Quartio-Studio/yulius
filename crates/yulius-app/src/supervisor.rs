@@ -1424,6 +1424,13 @@ impl App {
             .status
             .apply(TaskEvent::SwitchStarted)
             .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?;
+        // The new session must be able to start before the running one ends (ROT-014): a
+        // refusal leaves the task as it is.
+        if let Err(err) = self.preflight_start(&task, account.as_ref()).await {
+            self.refuse_switch(&task, account.as_ref(), reason, &err)
+                .await;
+            return Err(err);
+        }
         if !store
             .transition_task(task_id, Some(task.status), next, None, self.now())
             .await?
@@ -1517,6 +1524,11 @@ impl App {
             }
             Err(err) => {
                 store.set_switch_outcome(&decision_id, "failed").await?;
+                tracing::warn!(task = %task_id, error = %err, "the session could not continue after a switch");
+                runtime.hub.notice(format!(
+                    "↻ The session could not continue: {}",
+                    err.public_message()
+                ));
                 if let Ok(Some(current)) = store.task(task_id).await
                     && current.status == TaskStatus::Switching
                 {
@@ -1533,6 +1545,73 @@ impl App {
                 self.publish_task(task_id).await;
                 Err(err)
             }
+        }
+    }
+
+    /// What a launch would need, checked without changing anything: the repository, a usable
+    /// subscription credential and the sandbox's isolation (disk quota, holder). A switch runs
+    /// it before it ends the running session (ROT-014).
+    ///
+    /// # Errors
+    /// The reason the launch would be refused.
+    pub(crate) async fn preflight_start(
+        &self,
+        task: &TaskRecord,
+        requested: Option<&AccountId>,
+    ) -> AppResult<()> {
+        let sandbox = self
+            .deps
+            .store
+            .sandbox(&task.sandbox_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let worktree = self
+            .sandbox_dir(&sandbox.id)
+            .join("worktrees")
+            .join(task.id.as_str());
+        if !worktree.join(".git").exists() && !self.sandbox_repo(&sandbox.id).join(".git").exists()
+        {
+            return Err(AppError::Conflict(
+                "the sandbox repository is not cloned yet".into(),
+            ));
+        }
+        // No subscription with capacity is not a refusal: the switch pauses the task instead.
+        if let Some(account) = self.choose_account(task, requested).await? {
+            self.open_credential(&account)?;
+        }
+        self.isolation_join(&sandbox).await?;
+        Ok(())
+    }
+
+    /// Records and shows a switch that was refused before it ended the running session.
+    async fn refuse_switch(
+        &self,
+        task: &TaskRecord,
+        account: Option<&AccountId>,
+        reason: &str,
+        err: &AppError,
+    ) {
+        let message = err.public_message();
+        tracing::warn!(task = %task.id, error = %err, "switch refused; the running session stays");
+        self.runtime(&task.id).hub.notice(format!(
+            "↻ Switching subscriptions was not possible, so this session stays as it is: {message}"
+        ));
+        let record = SwitchDecisionRecord {
+            id: self.deps.crypto.new_id(),
+            task_id: task.id.clone(),
+            at: self.now(),
+            reason: reason.to_owned(),
+            inputs: serde_json::json!({
+                "account": account.map(AccountId::as_str),
+                "refused": message,
+            })
+            .to_string(),
+            from_desc: self.account_desc(task.harness, None).await,
+            to_desc: self.account_desc(task.harness, account).await,
+            outcome: "refused".into(),
+        };
+        if let Err(err) = self.deps.store.insert_switch(&record).await {
+            tracing::warn!(task = %task.id, error = %err, "the refused switch was not recorded");
         }
     }
 
