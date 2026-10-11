@@ -931,6 +931,10 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 ## 12. Changelog
 
+- 2026-10-11 (`F 2026-10-11`): a pull request Yulius opens gets a conventional title when the
+  task title is not one — the type and scope of the branch's oldest conventional commit before the
+  task title (`docs: prepare this repository for Yulius`) — so repositories that require
+  conventional titles accept it.
 - 2026-10-11 (`F 2026-10-11`): the preparation of `yulius-2` stalled although its agent had
   finished: Claude Code's idle reminder marked it as needing attention, and its `yulius.toml` and
   CI changes demanded a spec, so no pull request opened. The idle reminder no longer counts, and
