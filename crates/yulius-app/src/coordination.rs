@@ -275,6 +275,40 @@ impl App {
     }
 
     /// Hook for the supervisor to wake idle recipients (no-op until a supervisor is attached).
+    /// A message from Yulius itself to one task (a `request`: it reaches the agent at its next
+    /// turn end, and an agent waiting at its prompt is woken for it). Used to keep delivery
+    /// going without a person (F 2026-10-11: "the agent is autonomous").
+    pub(crate) async fn tell_task(
+        &self,
+        task: &crate::model::TaskRecord,
+        subject: &str,
+        body: String,
+    ) {
+        let Ok(id) = MessageId::parse(&self.deps.crypto.new_id()) else {
+            return;
+        };
+        let message = MessageRecord {
+            id,
+            sandbox_id: task.sandbox_id.clone(),
+            from_task: None,
+            from_user: None,
+            to_task: Some(task.id.clone()),
+            kind: "request".into(),
+            subject: subject.to_owned(),
+            body,
+            created_at: self.now(),
+        };
+        match self
+            .deps
+            .store
+            .insert_message(&message, std::slice::from_ref(&task.id))
+            .await
+        {
+            Ok(()) => self.notify_message(&task.id).await,
+            Err(err) => tracing::warn!(error = %err, task = %task.id, "could not tell the task"),
+        }
+    }
+
     pub(crate) async fn notify_message(&self, task: &TaskId) {
         if let Some(waker) = self.message_waker.get() {
             waker.message_arrived(task).await;

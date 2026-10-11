@@ -521,6 +521,10 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
     };
     format!(
         "## Git and delivery\n\n\
+         You are autonomous: never ask a person for help, a decision or an action, and never end \
+         a turn waiting for one. Decide, record why, and carry on; when only a person can do \
+         something (a credential, a paid plan, a permission outside the repository), open an issue \
+         for it (`issue_create`) and continue with everything else.\n\
          Every feature and fix takes the same path, with no human acceptance step: spec → \
          implementation, slice by slice → independent review → fixes → tests and gates → pull \
          request → merge on green → deploy and verify → promotion → verify production.\n\

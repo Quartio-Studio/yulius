@@ -680,15 +680,34 @@ impl App {
     /// task needs a spec (its workflow, or a change beyond documentation, DSC-013) and the spec
     /// is missing or invalid.
     async fn spec_gate(&self, task: &TaskRecord) -> AppResult<Option<String>> {
-        let (Some(worktree), Some(spec_path)) =
-            (task.worktree_path.as_ref(), task.spec_path.as_ref())
-        else {
+        let Some(worktree) = task.worktree_path.as_ref() else {
             return Ok(None);
         };
         let worktree = PathBuf::from(worktree);
         if !self.branch_changed(task).await? || !self.spec_required(task).await? {
             return Ok(None);
         }
+        // A required spec that does not exist yet blocks the turn here, not only the pull
+        // request later (F 2026-10-11: features finished without one, and nothing opened); a
+        // renamed spec is followed by its frontmatter.
+        let spec_path = match self.task_spec_path(task, &worktree).await {
+            Ok(path) => path,
+            Err(dir) => {
+                let place = task
+                    .spec_path
+                    .as_deref()
+                    .map_or_else(|| format!("under `{dir}`"), |path| format!("at `{path}`"));
+                return Ok(Some(format!(
+                    "This task needs a spec (a feature, a fix, or a change beyond documentation) \
+                     and none exists yet. Write it {place} in the Yulius format with \
+                     `yulius-task: {}` in its frontmatter (spec_check validates it), keep its \
+                     Plan in your steps, commit it and carry on. Decide its content yourself from \
+                     the request and the code; do not ask anyone.",
+                    task.id
+                )));
+            }
+        };
+        let spec_path = &spec_path;
         if repo_path(&worktree, spec_path).is_none() {
             return Ok(Some(format!(
                 "The task spec path `{spec_path}` is not a repository path."

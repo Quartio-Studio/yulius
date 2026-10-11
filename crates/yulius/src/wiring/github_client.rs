@@ -106,6 +106,7 @@ fn pull(p: PullRequest) -> GhPull {
         base: p.base,
         head: p.head,
         head_sha: p.head_sha,
+        mergeable: p.mergeable,
     }
 }
 

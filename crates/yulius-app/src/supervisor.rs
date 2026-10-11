@@ -89,6 +89,9 @@ pub struct TaskRuntime {
     /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
     /// not repeated every turn.
     pub(crate) auto_pr_head: Mutex<Option<String>>,
+    /// The pull request head and checks result last told to the agent ("head:state"), so a
+    /// result is told once (F 2026-10-11: agents deliver on their own).
+    pub(crate) checks_told: Mutex<Option<String>>,
     /// When a person last typed into the task's terminal (ms, 0 = never): a prompt submitted
     /// soon after is theirs (TSK-013).
     pub(crate) typed_at_ms: AtomicI64,
@@ -142,6 +145,7 @@ impl TaskRuntime {
             turn_started_ms: AtomicI64::new(0),
             active_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
+            checks_told: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
