@@ -14,6 +14,16 @@ use crate::ports::isolation::{SandboxIsolation, SandboxJoin, SandboxRef};
 /// `PATH` of runs in an isolated sandbox (root's, with `sbin` for package tools).
 pub const SANDBOX_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
+/// `PATH` for a process whose home is `home`: the per-user tool directories first — where
+/// rustup, pipx, `npm --prefix ~/.local` and similar installers put what the onboarding (or a
+/// person) installed, so it stays found by every later run without a login shell — then `rest`
+/// (F 2026-10-11).
+#[must_use]
+pub fn with_home_tools(home: &str, rest: &str) -> String {
+    let home = home.trim_end_matches('/');
+    format!("{home}/.cargo/bin:{home}/.local/bin:{rest}")
+}
+
 /// A lease on a sandbox's holder: while it lives the holder is not stopped as idle. Dropped
 /// once the run's process has joined (or failed to start).
 pub struct IsolationLease {
@@ -61,5 +71,18 @@ impl App {
                 },
             )
         }))
+    }
+}
+
+#[cfg(test)]
+mod home_tools_tests {
+    use super::*;
+
+    #[test]
+    fn home_tool_directories_come_first() {
+        assert_eq!(
+            with_home_tools("/home/ana/", SANDBOX_PATH),
+            format!("/home/ana/.cargo/bin:/home/ana/.local/bin:{SANDBOX_PATH}")
+        );
     }
 }
