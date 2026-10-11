@@ -2,7 +2,6 @@
 //! resume loop (ROT-010), account usage refresh (ROT-009) and waking idle tasks when messages
 //! arrive (SPEC-002 §6.1, §7.5, §10).
 
-use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -20,8 +19,9 @@ pub const WAKE_IDLE_MS: i64 = 30_000;
 const TICK: Duration = Duration::from_secs(60);
 /// First background usage round after start: lets the server settle first (ROT-009).
 const USAGE_FIRST: Duration = Duration::from_secs(2 * 60);
-/// Background usage rounds: modest, so the provider's usage endpoint is not hammered.
-const USAGE_EVERY: Duration = Duration::from_secs(10 * 60);
+/// Background usage rounds: every subscription in its back-off or read moments ago is skipped,
+/// so this asks the provider often without hammering it (F 2026-10-11).
+const USAGE_EVERY: Duration = Duration::from_secs(2 * 60);
 /// Delivery reconciliation with GitHub (pull requests merged or closed outside Yulius, #35).
 const DELIVERY_EVERY: Duration = Duration::from_secs(3 * 60);
 /// Text typed into an idle agent session.
@@ -78,11 +78,10 @@ impl App {
         let app = Arc::clone(self);
         tokio::spawn(async move {
             tokio::time::sleep(USAGE_FIRST).await;
-            let mut not_before = HashMap::new();
             let mut every = tokio::time::interval(USAGE_EVERY);
             loop {
                 every.tick().await;
-                app.refresh_usage_round(&mut not_before).await;
+                app.refresh_usage_shared().await;
             }
         });
     }
