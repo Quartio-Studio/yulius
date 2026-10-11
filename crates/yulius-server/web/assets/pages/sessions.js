@@ -124,6 +124,7 @@ export function mountSessionsPage(ctx, sandbox) {
     if (state.kind) params.set('kind', state.kind);
     if (state.author) params.set('author', state.author);
     list.classList.add('ss-busy');
+    list.setAttribute('aria-busy', 'true');
     try {
       const data = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/sessions?${params}`);
       if (!alive || mine !== generation) return;
@@ -143,7 +144,10 @@ export function mountSessionsPage(ctx, sandbox) {
       if (!alive || mine !== generation) return;
       setChildren(list, loadError(`Couldn’t load the sessions: ${error.message}`, () => reload()));
     } finally {
-      if (mine === generation) list.classList.remove('ss-busy');
+      if (mine === generation) {
+        list.classList.remove('ss-busy');
+        list.removeAttribute('aria-busy');
+      }
     }
   }
   reload();

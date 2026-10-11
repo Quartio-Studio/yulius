@@ -1973,8 +1973,13 @@ button.task-group-head:hover { color: var(--text); }
 .ss-search { padding-left: 32px; }
 .ss-people { max-width: 220px; }
 .ss-summary { margin-left: auto; }
-.ss-list { transition: opacity var(--duration) var(--ease); }
-.ss-list.ss-busy { opacity: 0.6; }
+.ss-list { position: relative; }
+/* Busy while a search or filter loads: a thin shimmering line above the list. The rows keep
+   full contrast (dimming them failed the contrast check mid-load). */
+.ss-list.ss-busy::before { content: ""; position: absolute; top: -6px; left: 0; right: 0; height: 2px; border-radius: var(--radius-full);
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) 0 0 / 50% 100% no-repeat var(--surface-3);
+  animation: shimmer var(--duration-pulse) linear infinite; }
+@media (prefers-reduced-motion: reduce) { .ss-list.ss-busy::before { animation: none; } }
 .ss-rows { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .ss-row-link { display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); color: var(--text); text-decoration: none; transition: background var(--duration-fast) var(--ease), border-color var(--duration-fast) var(--ease); }
 .ss-row-link:hover { background: var(--surface-hover); border-color: var(--border-strong); text-decoration: none; }
