@@ -35,7 +35,11 @@ fn text(value: &Value) -> &str {
 const AGENT_VALUE: &str = "plainvaultvalue42xyz";
 
 /// Stores `AGENT_VALUE` as the sandbox's agent secret `DEPLOY_KEY`.
-async fn agent_secret(app: &yulius_app::context::App, user: &UserRecord, sandbox: &SandboxId) -> TestResult {
+async fn agent_secret(
+    app: &yulius_app::context::App,
+    user: &UserRecord,
+    sandbox: &SandboxId,
+) -> TestResult {
     let ctx = yulius_app::auth::AuthContext {
         user: user.clone(),
         csrf_token: None,
