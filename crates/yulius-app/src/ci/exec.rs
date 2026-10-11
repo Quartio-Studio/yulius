@@ -203,6 +203,12 @@ impl App {
             // Every job task ended: an active job here lost its runner.
             state = RunState::Error;
         }
+        if cancel.borrow().is_some() {
+            // A cancelled run (superseded or stopped) ends cancelled whatever its killed jobs
+            // reported: a job killed while it was starting can end as an error (a slow host
+            // loses that race), and the run must not then read as broken.
+            state = RunState::Cancelled;
+        }
         let reason = match state {
             RunState::Cancelled => cancel
                 .borrow()
