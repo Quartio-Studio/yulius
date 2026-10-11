@@ -114,6 +114,10 @@ async fn fixture_with(contained: bool, toml: impl Fn(&Path) -> String) -> BoxRes
     let dir = tempfile::Builder::new().prefix("yci").tempdir_in("/tmp")?;
     let root = dir.path().canonicalize()?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    // Launch the freshly built binary once before anything is timed: macOS scans a new binary
+    // on its first launch (XProtect), which can take tens of seconds on a CI runner and would
+    // otherwise land inside a job's start or timeout.
+    let _ = std::process::Command::new(&exe).arg("version").output();
     let h = harness_with(HarnessOptions {
         session_host: Some(Arc::new(PtySessionHost::new(exe))),
         git: Some(Arc::new(GitAdapter::new("git"))),
