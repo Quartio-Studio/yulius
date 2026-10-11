@@ -653,10 +653,15 @@ impl App {
     }
 
     /// Inserts a new sandbox, allocating a unique slug and the next free port range; retries
-    /// with `name-2`, `name-3`, … on conflicts (slugs stay reserved by removed sandboxes).
+    /// with `name-2`, `name-3`, … on conflicts (slugs stay reserved by removed sandboxes, except
+    /// for the same repository added again: it gets its name back and the removed sandbox's slug
+    /// becomes `name-removed-<ms>`, F 2026-10-11).
     async fn insert_sandbox_unique(&self, mut record: SandboxRecord) -> AppResult<SandboxRecord> {
         let store = &self.deps.store;
         let base = slug_base(&record.repo_name);
+        store
+            .release_removed_slug(&base, &record.repo_owner, &record.repo_name)
+            .await?;
         for attempt in 0..MAX_SLUG_ATTEMPTS {
             let slug = if attempt == 0 {
                 base.clone()

@@ -256,6 +256,7 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 
 ## Changelog
 
+- 2026-10-11: a re-added repository gets its sandbox name back (PRJ-009, `F 2026-10-11`).
 - 2026-10-11: tasks wait for preparation instead of being refused; a finished preparation turn makes the sandbox ready; the preparation prompt leaves the pull request to Yulius (§6 item 81, `F 2026-10-11`, IMP-010).
 - 2026-10-11: onboarding this repository onto its own instance: redaction on multi-byte text and session titles (§6 item 81, `F 2026-10-11`, IMP-007).
 - 2026-10-11: the Secrets page layout and dialogs closing on a click outside (§6 item 79, `F 2026-10-11`).
