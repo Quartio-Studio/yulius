@@ -597,7 +597,7 @@ impl App {
 
     /// Starts an attachment for the new-task composer of `sandbox` (write access to it): the
     /// file waits in the caller's drafts folder, outside every worktree, until the prompt that
-    /// names its path starts a task. Drafts older than [`DRAFT_MAX_AGE`] are removed first.
+    /// names its path starts a task. Drafts older than a week are removed first.
     ///
     /// # Errors
     /// As [`App::begin_task_attachment`], with `NotFound`/`Forbidden` for the sandbox.
