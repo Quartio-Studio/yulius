@@ -13,7 +13,7 @@ been performed or verified** as part of the implementation work.
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
-| `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-21): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
+| `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
 | `slirp4netns` | sandbox egress (isolation) | `apt install slirp4netns`. |
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
 | `xvfb` | the sandbox browser's virtual display (SPEC-002 ADR-15) | `apt install xvfb`. Without it (or ffmpeg) the browser runs headless: JPEG frames, no real input, captchas fail. `xauth` is not needed (Yulius writes the cookie itself); `x11-utils` (`xdpyinfo`) only for diagnostics. |
@@ -78,7 +78,11 @@ Environment=YULIUS_BROWSER_DISPLAY=auto
 #Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
 # Optional: a token that may read Quartio-Studio/yulius, when the GitHub App cannot (see §8).
 #Environment=YULIUS_UPDATE_TOKEN_FILE=/var/lib/yulius/update.token
-# Sandbox isolation (SPEC-002 ADR-21): auto (default), namespaces or legacy; see "Sandbox
+# Yulius-run CI (see "CI on this machine" below): jobs at once, minutes per job, seconds between checks.
+Environment=YULIUS_CI_MAX_JOBS=4
+Environment=YULIUS_CI_JOB_TIMEOUT_MIN=30
+Environment=YULIUS_CI_POLL_SECS=60
+# Sandbox isolation (SPEC-002 ADR-22): auto (default), namespaces or legacy; see "Sandbox
 # isolation" below for limits and egress.
 #Environment=YULIUS_ISOLATION=auto
 ExecStart=/usr/local/bin/yulius serve
@@ -283,7 +287,7 @@ Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
 
 ### Sandbox isolation
 
-Each sandbox has one **namespace holder** (SPEC-002 ADR-21). Agents' task sessions and users'
+Each sandbox has one **namespace holder** (SPEC-002 ADR-22). Agents' task sessions and users'
 shells join it. A sandbox gets:
 
 - its own user namespace: root inside is the service user, ids 1–65535 come from its subordinate
@@ -426,8 +430,10 @@ manifest flow requests these repository permissions:
 | --- | --- | --- |
 | Contents | Read and write | Clone and fetch repositories; push task branches (the server, and agents through their repository-restricted token); merge pull requests; fast-forward promotions; compare branches. |
 | Pull requests | Read and write | Open, list and read pull requests. |
+| Issues | Read and write | Agents log follow-up work, bugs and flaky tests as issues with Definition-of-Ready labels (`issue_create`, DLV-008); missing labels are created. Requested since 2026-10-10; an App created before needs it added (below). |
 | Checks | Read | Read check runs on pull request heads: GitHub Actions and every other Checks API app. |
-| Commit statuses | Read | Read commit statuses on pull request heads: CI and deploy previews that report statuses. Requested since 2026-10-10. |
+| Commit statuses | Read and write | Publish the result of Yulius's own CI as the status `yulius/ci` on each tested commit (write, since 2026-10-11), and read statuses of projects without Yulius CI. |
+| Workflows | Read and write | Push the onboarding commit that deletes `.github/workflows/` (Yulius is the only CI). Requested since 2026-10-11. |
 | Administration | Read and write | Create repositories in an organization (New sandbox) and add branch rulesets to them. |
 | Metadata | Read | Mandatory for every App: repository facts and the signed-in person's permission level, which Yulius mirrors. |
 | Members (organization) | Read | Requested by the manifest; no current Yulius call uses it. |
@@ -436,10 +442,11 @@ Two more are worth knowing:
 
 - **Actions: read** is optional. It is a fallback only: when check runs can't be read, Yulius reads
   the head's GitHub Actions workflow runs in their place. With Checks granted it is never needed.
-- **Workflows** is not requested. Without it, GitHub refuses pushes made with the App's tokens that
-  change files under `.github/workflows/`. So agents cannot change the repository's CI through
-  Yulius. Grant it only if tasks must edit workflows; the task's own token can then change CI,
-  which runs with the repository's secrets.
+- **Workflows** lets the App's tokens change files under `.github/workflows/`. Without it, GitHub
+  refuses such pushes, and onboarding cannot delete a repository's GitHub Actions. With it, a
+  task could also *add* a workflow, which would run with the repository's secrets. So once a
+  repository is off Actions, also turn GitHub Actions off for it (Settings → Actions → General →
+  Disable actions; free on every plan): no workflow runs any more, whoever pushes one.
 
 **When a permission is missing.** A read GitHub refuses with 403 "Resource not accessible by
 integration" means the App lacks the permission. For checks, Yulius keeps working with the
@@ -460,6 +467,55 @@ passed, so merges and releases that require checks wait.
    Configure. Until someone accepts, the old permissions apply.
 4. New tokens carry the new permission. Installation tokens are cached for up to an hour; restart
    Yulius (`systemctl restart yulius`) to use the new permission at once.
+
+### CI on this machine
+
+Yulius is the projects' only CI (SPEC-002 ADR-21). No GitHub Actions or paid GitHub feature is
+involved.
+
+**What runs.** For each sandbox:
+
+- The CI comes from `[[ci.jobs]]`, or `[commands] gate`, in `yulius.toml` on the integration
+  branch (docs/api.md "CI").
+- An administrator can set `gate` on the sandbox profile instead (`PATCH /api/sandboxes/{sid}`).
+- Every open pull request into the integration branch and every new integration or production
+  commit is tested once.
+- The jobs run in parallel as the `yulius` user, inside the sandbox's containment when
+  `YULIUS_CONTAINED=true`, without any token.
+- Results appear on each sandbox's CI page and on GitHub as the status `yulius/ci`.
+- `YULIUS_CI=off` stops all of it. Merges then fall back to GitHub's checks.
+
+**The machine.** Jobs use the tools installed on the VM (`/usr`, `/opt` and
+`YULIUS_CONTAINED_READONLY` paths are visible read-only inside containment).
+
+- Install the toolchains the projects need system-wide, for example rustup's toolchains under
+  `/opt`, Node and Python.
+- Each sandbox keeps `<data>/sandboxes/<id>/ci/`:
+  - `jobs/<job>`: one persistent checkout per job; ignored build outputs such as `target/` and
+    `node_modules/` are its cache;
+  - `home`: `HOME` for jobs, with `~/.cargo`, `~/.npm` and `~/.cache`;
+  - `cache`: `YULIUS_CI_CACHE`.
+- Budget the disk: a Rust workspace's `target/` per job.
+- Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
+- Size `YULIUS_CI_MAX_JOBS` to the cores left after the agents. Each job gets
+  `YULIUS_CI_JOB_TIMEOUT_MIN`.
+
+**Moving a repository off GitHub Actions** (the onboarding step; agents use the `ci_setup` tool):
+
+1. Translate each workflow job's checks into `[[ci.jobs]]`.
+   - Use matrices for splits.
+   - Drop `${{ }}` expressions, Actions secrets and services.
+   - Install what `uses:` steps installed on the machine or in the job's command.
+2. `git rm -r .github/workflows` in the same commit, then open the pull request. Yulius tests it with
+   the CI it adds, because the integration branch has none yet.
+3. Merge once it passes. The App needs **Workflows: Read and write** to push step 2.
+4. Turn GitHub Actions off for the repository (see "GitHub App permissions").
+5. Rulesets that require Actions checks must switch to `yulius/ci`, or go. Yulius's own merge gate
+   enforces the delivery profile either way.
+
+**Hygiene.** After a merge through Yulius the head branch is deleted. Every 6 hours each sandbox is
+scanned for stale branches and worktrees, shown on its CI page. People clean them up there, agents
+with `repo_cleanup`.
 
 ## 6. Importing local work (`yulius import`)
 
@@ -636,7 +692,7 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
 ### Notes for specific upgrades
 
-- Upgrading to sandbox isolation (ADR-21, 2026-10-10): install the packages, add the subordinate
+- Upgrading to sandbox isolation (ADR-22, 2026-10-10): install the packages, add the subordinate
   range and the two unit lines, and build the base as in [Sandbox isolation](#sandbox-isolation),
   then restart. Sessions and shells started before the upgrade keep running as they are (their
   launch records have no holder) and are adopted as usual. New sessions in the same sandbox join

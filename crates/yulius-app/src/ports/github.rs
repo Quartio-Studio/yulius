@@ -222,6 +222,42 @@ pub struct NewPull {
     pub body: String,
 }
 
+/// A commit status to publish (SPEC-002 ADR-21).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewCommitStatus {
+    /// `pending`, `success`, `failure` or `error`.
+    pub state: String,
+    /// Context (`yulius/ci`).
+    pub context: String,
+    /// Description (at most 140 characters).
+    pub description: String,
+    /// Link to the run in Yulius.
+    pub target_url: Option<String>,
+}
+
+/// Why GitHub refused to publish a commit status.
+pub const STATUS_PERMISSION_MISSING: &str =
+    "the GitHub App needs the \u{201c}Commit statuses: Read and write\u{201d} permission";
+/// An issue to open (DLV-008).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewIssue {
+    /// Title.
+    pub title: String,
+    /// Body (Markdown).
+    pub body: String,
+    /// Label names; labels the repository lacks are created.
+    pub labels: Vec<String>,
+}
+
+/// An opened issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GhIssue {
+    /// Number.
+    pub number: u64,
+    /// Web URL.
+    pub html_url: String,
+}
+
 /// GitHub operations used by the application.
 #[async_trait]
 pub trait GitHubPort: Send + Sync {
@@ -323,6 +359,14 @@ pub trait GitHubPort: Send + Sync {
         repo: &str,
         pull: &NewPull,
     ) -> AppResult<GhPull>;
+    /// Opens an issue with its labels, creating labels the repository lacks.
+    async fn create_issue(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        issue: &NewIssue,
+    ) -> AppResult<GhIssue>;
     /// Gets a pull request.
     async fn get_pull(
         &self,
@@ -367,6 +411,57 @@ pub trait GitHubPort: Send + Sync {
         branch: &str,
         sha: &str,
     ) -> AppResult<()>;
+    /// Publishes a commit status (App permission "Commit statuses: write"). A missing
+    /// permission is `Forbidden` with [`STATUS_PERMISSION_MISSING`].
+    ///
+    /// # Errors
+    /// GitHub failures.
+    async fn create_commit_status(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+        status: &NewCommitStatus,
+    ) -> AppResult<()> {
+        let _ = (token, owner, repo, sha, status);
+        Err(crate::error::AppError::Upstream(
+            "publishing commit statuses is not available".into(),
+        ))
+    }
+    /// Deletes a branch (App permission "Contents: write"); `Ok(false)` when it did not exist.
+    ///
+    /// # Errors
+    /// GitHub failures.
+    async fn delete_branch(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> AppResult<bool> {
+        let _ = (token, owner, repo, branch);
+        Err(crate::error::AppError::Upstream(
+            "deleting branches is not available".into(),
+        ))
+    }
+    /// Pull requests (open, closed and merged) whose head is `branch` of the repository owner,
+    /// newest first.
+    ///
+    /// # Errors
+    /// GitHub failures.
+    async fn branch_pulls(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> AppResult<Vec<GhPull>> {
+        let _ = (token, owner, repo, branch);
+        Err(crate::error::AppError::Upstream(
+            "listing pull requests by branch is not available".into(),
+        ))
+    }
     /// Head SHA of a branch.
     async fn branch_sha(
         &self,

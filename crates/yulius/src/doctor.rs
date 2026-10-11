@@ -199,7 +199,7 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
     checks
 }
 
-/// Sandbox isolation (SPEC-002 ADR-21): the namespace holder's prerequisites, the base, the
+/// Sandbox isolation (SPEC-002 ADR-22): the namespace holder's prerequisites, the base, the
 /// identity module and the cgroup delegation. Missing pieces are warnings: contained runs then
 /// keep the previous containment.
 fn isolation_checks(data_dir: &Path) -> Vec<Check> {

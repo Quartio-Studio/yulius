@@ -1,5 +1,5 @@
 //! Records and relay frames between the server and a sandbox's namespace holder (SPEC-002
-//! ADR-21, §2.7).
+//! ADR-22, §2.8).
 //!
 //! A holder lives in `runtime/sandboxes/<sandbox>/` (mode 0700, never bound into runs):
 //!

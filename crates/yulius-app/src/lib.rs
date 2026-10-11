@@ -4,6 +4,7 @@
 pub mod access;
 pub mod accounts;
 pub mod admin;
+pub mod agent_delivery;
 pub mod analytics;
 pub mod auth;
 pub mod auto_choice;
@@ -12,6 +13,7 @@ pub mod background;
 pub mod browser;
 pub mod capacity;
 pub mod chains;
+pub mod ci;
 pub mod context;
 pub mod coordination;
 pub mod delivery;

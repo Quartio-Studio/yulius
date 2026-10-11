@@ -1,4 +1,4 @@
-//! Sandbox isolation (SPEC-002 ADR-21): one namespace holder per sandbox, the writable system
+//! Sandbox isolation (SPEC-002 ADR-22): one namespace holder per sandbox, the writable system
 //! layer over a shared base copy of the host system, the relays across the sandbox's network
 //! boundary, per-sandbox cgroup limits and disk usage, and the seccomp filter of runs.
 //!

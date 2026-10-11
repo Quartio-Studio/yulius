@@ -122,6 +122,7 @@ function seed(params) {
     sandboxes: [],
     tasks: [],
     messages: [],
+    recovery: { available: true, locked: false, attempts_left: 3 },
     eventSockets: new Set(),
     sessions: new Map(),
     browsers: new Map(),
@@ -255,6 +256,7 @@ function seed(params) {
     { id: 'usr_4', github_login: 'old-contractor', display_name: 'old-contractor', is_instance_admin: false, disabled: true, github_linked: true },
   ];
   db.runs = []; // EnvironmentRun records, newest last
+  db.ci = seedCi();
   const pastRun = (n, env, kind, by, ago) => ({ run_id: `run_seed_${n}`, sandbox_id: 'sb_product', environment: env, kind, state: 'succeeded', command: kind === 'manual' ? null : 'node scripts/deployer.mjs --target dev-vm', commit: 'b7e9f01c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a', requested_by: by, output: kind === 'manual' ? `${by} confirmed ${env}.` : 'deploying… done in 2m 14s', exit_code: kind === 'manual' ? null : 0, started_at: iso(ago), ended_at: iso(ago - 2 * MIN), startedMs: Date.now() - ago - 1e9 });
   db.runs.push(pastRun(1, 'dev-vm', 'command', 'mkarp', 2 * DAY + HOUR), pastRun(2, 'dev-vm', 'manual', 'mkarp', 2 * DAY + 30 * MIN), pastRun(3, 'rollout', 'manual', 'anna-q', 2 * DAY - HOUR), pastRun(4, 'dev-vm', 'command', 'mkarp', 3 * HOUR));
   db.promotionPr = new Map(); // sandbox id → open promotion PR URL (merge_commit promotion)
@@ -510,6 +512,31 @@ route('POST', '/api/auth/password', ({ db, body }) => {
 route('POST', '/api/auth/mock-github', ({ db }) => { db.signedIn = true; return db.me; });
 route('POST', '/api/auth/logout', ({ db }) => { db.signedIn = false; for (const s of db.eventSockets) s.serverClose(1000); return json(204); });
 route('GET', '/api/me', ({ db }) => db.me);
+// Superadmin recovery (ACC-011): a code is set, three attempts left.
+route('GET', '/api/auth/recovery', ({ db }) => clone(db.recovery));
+route('POST', '/api/auth/recover', ({ db, body }) => {
+  if (db.recovery.locked) fail(403, 'forbidden', 'recovery is locked');
+  if (!body || body.code !== '123456') {
+    db.recovery.attempts_left = Math.max(0, db.recovery.attempts_left - 1);
+    if (db.recovery.attempts_left === 0) { db.recovery.locked = true; db.recovery.available = false; }
+    fail(422, 'invalid', `wrong code (${db.recovery.attempts_left} attempts left; mock code: 123456)`);
+  }
+  return { recovery_code: '654321' };
+});
+route('POST', '/api/admin/recovery-code', ({ db, body }) => {
+  if (!body || body.password !== 'correct horse battery') fail(403, 'forbidden', 'Wrong password. (Mock password: correct horse battery)');
+  db.recovery = { available: true, locked: false, attempts_left: 3 };
+  return { recovery_code: '482913' };
+});
+// The instance's GitHub App (ACC-006).
+route('GET', '/api/admin/github', ({ db }) => (db.me.instance.github_configured
+  ? { configured: true, app_slug: 'yulius-quartio-studio', owner_login: db.me.instance.owner_login, install_url: 'https://github.com/apps/yulius-quartio-studio/installations/new', installed: true }
+  : { configured: false, app_slug: null, owner_login: null, install_url: null, installed: false }));
+route('POST', '/api/admin/github/manifest', ({ db, body }) => {
+  if (db.me.instance.github_configured) fail(409, 'conflict', 'a GitHub App is already configured');
+  const owner = (body && body.owner_login) || 'Quartio-Studio';
+  return { post_url: `https://github.com/organizations/${owner}/settings/apps/new?state=mock`, manifest: { name: 'Yulius (mock)', url: ORIGIN } };
+});
 route('POST', '/api/device/approve', ({ body }) => {
   if (!/^[A-Z0-9]{4}-?[A-Z0-9]{4}$/.test(body.user_code || '')) fail(404, 'not_found', 'not found');
   return json(204);
@@ -800,6 +827,15 @@ route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
   }, 2500);
   return summary(task);
 });
+route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (['starting', 'running', 'switching', 'stopping'].includes(task.status)) fail(409, 'conflict', 'stop the task before deleting it');
+  db.tasks = db.tasks.filter((t) => t.id !== task.id);
+  recount(db);
+  emit(db, { type: 'task.removed', task_id: task.id });
+  return json(204);
+});
 route('POST', `/api/tasks/${ID}/archive`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -975,6 +1011,168 @@ route('GET', `/api/sandboxes/${ID}/delivery/runs/${ID}`, ({ db, p }) => {
   const run = db.runs.find((r) => r.run_id === p[1] && r.sandbox_id === p[0]);
   if (!run) fail(404, 'not_found', 'not found');
   return runView(progressRun(db, run));
+});
+
+// ---- Yulius-run CI and repository hygiene (docs/api.md "CI")
+
+const CI_JOBS = [
+  { name: 'lint', command: 'cargo clippy --all-targets -- -D warnings', matrix: null },
+  { name: 'test (1/2)', command: 'cargo nextest run --partition "count:$YULIUS_CI_MATRIX"', matrix: '1/2' },
+  { name: 'test (2/2)', command: 'cargo nextest run --partition "count:$YULIUS_CI_MATRIX"', matrix: '2/2' },
+];
+
+function ciOutput(job, ok) {
+  const lines = [`$ ${job.command}`, '   Compiling yulius-domain v0.1.0', '   Compiling yulius-app v0.1.0', '    Finished `test` profile in 41.2s'];
+  if (job.name.startsWith('lint')) lines.push(ok ? 'lint: no warnings' : 'error: unused variable `x`');
+  else lines.push(ok ? 'Summary: 214 tests run: 214 passed, 0 skipped' : 'test delivery::merge_waits_for_ci ... FAILED\nSummary: 213 tests run: 212 passed, 1 failed');
+  return `${lines.join('\n')}\n`;
+}
+
+function ciRun(id, reference, sha, state, minutesAgo, { failJob = null, reason = null, by = 'yulius' } = {}) {
+  const queued = Date.now() - minutesAgo * 60000;
+  const started = queued + 4000;
+  const ended = state === 'running' || state === 'queued' ? null : started + 3 * 60000 + 12000;
+  const jobs = CI_JOBS.map((job, i) => {
+    const failed = failJob === job.name;
+    const jobState = state === 'passed' ? 'passed' : state === 'failed' ? (failed ? 'failed' : 'passed') : state === 'running' ? (i === 0 ? 'passed' : 'running') : state;
+    return {
+      id: `${id}_j${i}`, name: job.name, command: job.command, matrix: job.matrix, state: jobState, reason: null,
+      exit_code: jobState === 'passed' ? 0 : jobState === 'failed' ? 101 : null,
+      duration_ms: jobState === 'passed' || jobState === 'failed' ? 120000 + i * 30000 : null,
+      output: jobState === 'queued' ? '' : jobState === 'running' ? `$ ${job.command}\n   Compiling yulius-app v0.1.0\n` : ciOutput(job, !failed),
+    };
+  });
+  const pr = reference.startsWith('pr/') ? Number(reference.slice(3)) : null;
+  return {
+    id, reference, label: pr ? `PR #${pr}` : reference.slice(7), pr_number: pr, sha, state, source: 'yulius_toml', jobs, reason,
+    queued_at: new Date(queued).toISOString(), started_at: state === 'queued' ? null : new Date(started).toISOString(),
+    ended_at: ended ? new Date(ended).toISOString() : null, duration_ms: ended ? ended - started : null,
+    requested_by: by, status: state === 'running' || state === 'queued' ? 'pending' : 'published', created: Date.now(),
+  };
+}
+
+function seedCi() {
+  const studioGate = { source: 'yulius_toml', jobs: CI_JOBS.map(({ name, command, matrix }) => ({ name, command, matrix })) };
+  return {
+    sb_studio: {
+      gate: studioGate, gate_problem: null, status_access: null, actions_workflows: [],
+      runs: [
+        ciRun('ci_s4', 'branch/quartio', '9f3c2a1b7e4d', 'running', 1),
+        ciRun('ci_s3', 'pr/221', '4be81c0d2a9f', 'passed', 22),
+        ciRun('ci_s2', 'pr/218', '0d7e5f3a1c2b', 'failed', 47, { failJob: 'test (2/2)' }),
+        ciRun('ci_s1', 'pr/218', 'a1b2c3d4e5f6', 'cancelled', 63, { reason: 'superseded by 0d7e5f3' }),
+      ],
+      hygiene: {
+        scanned_at: new Date(Date.now() - 2 * 3600000).toISOString(), notes: [],
+        items: [
+          { kind: 'remote_branch', name: 'feat/12-old-landing', reason_code: 'pull_merged', reason: 'pull request #12 was merged', safe: true },
+          { kind: 'local_branch', name: 'feat/12-old-landing', reason_code: 'local_copy', reason: 'no worktree uses it and its commits are on GitHub', safe: true },
+          { kind: 'worktree', name: 'worktrees/tsk_studio_9', reason_code: 'task_archived', reason: 'task #9 is archived', safe: true },
+          { kind: 'remote_branch', name: 'spike/websocket-pool', reason_code: 'idle', reason: 'no pull request and no commit for 21 days', safe: false },
+        ],
+      },
+    },
+    sb_product: {
+      gate: null, gate_problem: null, status_access: null, actions_workflows: ['ci.yml', 'deploy.yml'], runs: [],
+      hygiene: { scanned_at: new Date(Date.now() - 3600000).toISOString(), notes: [], items: [] },
+    },
+    sb_three: {
+      gate: { source: 'profile', jobs: [{ name: 'gate', command: 'make ci', matrix: null }] }, gate_problem: null, status_access: null, actions_workflows: [],
+      runs: [ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'passed', 180)],
+      hygiene: { scanned_at: null, notes: [], items: [] },
+    },
+  };
+}
+
+function ciOf(db, sid) {
+  sandboxOf(db, sid);
+  if (!db.ci[sid]) db.ci[sid] = { gate: null, gate_problem: null, status_access: null, actions_workflows: [], runs: [], hygiene: { scanned_at: null, notes: [], items: [] } };
+  return db.ci[sid];
+}
+
+/** A running mock run finishes about 20 s after it was created. */
+function progressCi(run) {
+  if (run.state === 'running' && Date.now() - run.created > 20000) {
+    run.state = 'passed';
+    run.status = 'published';
+    run.ended_at = new Date().toISOString();
+    run.duration_ms = Date.now() - Date.parse(run.started_at);
+    for (const job of run.jobs) {
+      job.state = 'passed';
+      job.exit_code = 0;
+      job.duration_ms = job.duration_ms || 90000;
+      job.output = ciOutput(job, true);
+    }
+  }
+  return run;
+}
+
+const ciSummary = (run) => ({ ...run, created: undefined, jobs: run.jobs.map((j) => ({ ...j, output: undefined })) });
+
+function ciOverview(db, sid) {
+  const sandbox = sandboxOf(db, sid);
+  const ci = ciOf(db, sid);
+  return {
+    gate: clone(ci.gate), gate_problem: ci.gate_problem, runs: ci.runs.map((r) => ciSummary(progressCi(r))),
+    can_run: (RANK[sandbox.access] || 0) >= RANK.write, status_access: ci.status_access, actions_workflows: ci.actions_workflows.slice(),
+  };
+}
+
+route('GET', `/api/sandboxes/${ID}/ci`, ({ db, p }) => ciOverview(db, p[0]));
+route('POST', `/api/sandboxes/${ID}/ci/sync`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  return ciOverview(db, p[0]);
+});
+route('GET', `/api/sandboxes/${ID}/ci/runs/${ID}`, ({ db, p }) => {
+  const run = ciOf(db, p[0]).runs.find((r) => r.id === p[1]);
+  if (!run) fail(404, 'not_found', 'not found');
+  return { ...progressCi(run), created: undefined };
+});
+route('POST', `/api/sandboxes/${ID}/ci/runs/${ID}/cancel`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const run = ciOf(db, p[0]).runs.find((r) => r.id === p[1]);
+  if (!run) fail(404, 'not_found', 'not found');
+  if (run.state !== 'running' && run.state !== 'queued') fail(409, 'conflict', 'this run has already ended');
+  run.state = 'cancelled';
+  run.reason = `cancelled by ${db.me.user.login}`;
+  run.ended_at = new Date().toISOString();
+  for (const job of run.jobs) if (job.state === 'running' || job.state === 'queued') { job.state = 'cancelled'; job.reason = run.reason; }
+  return ciSummary(run);
+});
+route('POST', `/api/sandboxes/${ID}/ci/runs/${ID}/rerun`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const ci = ciOf(db, p[0]);
+  const run = ci.runs.find((r) => r.id === p[1]);
+  if (!run) fail(404, 'not_found', 'not found');
+  if (ci.runs.some((r) => r.sha === run.sha && (r.state === 'running' || r.state === 'queued'))) fail(409, 'conflict', 'a run of this commit is already queued or running');
+  db.nextId += 1;
+  const fresh = ciRun(`ci_${db.nextId}`, run.reference, run.sha, 'running', 0, { by: db.me.user.login });
+  ci.runs.unshift(fresh);
+  return ciSummary(fresh);
+});
+route('GET', `/api/sandboxes/${ID}/hygiene`, ({ db, p }) => clone(ciOf(db, p[0]).hygiene));
+route('POST', `/api/sandboxes/${ID}/hygiene/scan`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const hygiene = ciOf(db, p[0]).hygiene;
+  hygiene.scanned_at = new Date().toISOString();
+  return clone(hygiene);
+});
+route('POST', `/api/sandboxes/${ID}/hygiene/cleanup`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const hygiene = ciOf(db, p[0]).hygiene;
+  const force = Boolean(body && body.force);
+  const wanted = body && Array.isArray(body.items) && body.items.length ? body.items : null;
+  const removed = [];
+  const skipped = [];
+  hygiene.items = hygiene.items.filter((item) => {
+    const chosen = wanted ? wanted.some((w) => w.kind === item.kind && w.name === item.name) : (item.safe || force);
+    if (!chosen) return true;
+    if (!item.safe && !force) { skipped.push({ kind: item.kind, name: item.name, reason: `${item.reason}; pass force to delete unmerged work` }); return true; }
+    removed.push({ kind: item.kind, name: item.name });
+    return false;
+  });
+  hygiene.scanned_at = new Date().toISOString();
+  return { removed, skipped, report: clone(hygiene) };
 });
 
 // ---- Skills, workflows, automations, MCP

@@ -72,7 +72,7 @@ Principles:
 | --- | --- | --- | --- |
 | ADR-01 | One Rust binary `yulius` (axum/tokio) with subcommands `serve`, `ptyhost`, `hook`, `git-credential`, `import`, `login`, `backup`, `doctor`. Static web UI (vanilla ES modules + vendored xterm.js) embedded in the binary. | Leptos/Yew WASM UI; Node SPA build | One artifact to deploy; no Node toolchain for Yulius; UI is plain JS so a desktop shell can load it (OPS-002). JS UI lacks Rust type checking — mitigated by contracts-generated docs and UI checks. |
 | ADR-02 | Detached `ptyhost` per run, Unix-socket protocol, vt100 screen state, exit record files. | tmux/dtach; in-server PTYs | Survives server restart (NFR-001); explicit ownership and identity; more code to test (fake agent suite). Requires the systemd unit to use `KillMode=process`. |
-| ADR-03 | Extended by ADR-21 (F 2026-10-10): runs join a per-sandbox namespace holder (private network, writable system layer, limits, seccomp); this row remains the legacy mode. Linux containment per sandbox with bubblewrap (`--unshare-pid --die-with-parent`, private /tmp, only the sandbox directory writable, per-sandbox HOME). Host mode for development/tests, visibly flagged "not contained". | Docker per sandbox; gVisor; separate VMs | Cheap, fast, kills whole tree on SIGKILL of bwrap; no daemon. Network is shared (agents need it). Not a defense against kernel exploits — documented trust model §8. |
+| ADR-03 | Extended by ADR-22 (F 2026-10-10): runs join a per-sandbox namespace holder (private network, writable system layer, limits, seccomp); this row remains the legacy mode. Linux containment per sandbox with bubblewrap (`--unshare-pid --die-with-parent`, private /tmp, only the sandbox directory writable, per-sandbox HOME). Host mode for development/tests, visibly flagged "not contained". | Docker per sandbox; gVisor; separate VMs | Cheap, fast, kills whole tree on SIGKILL of bwrap; no daemon. Network is shared (agents need it). Not a defense against kernel exploits — documented trust model §8. |
 | ADR-04 | SQLite (rusqlite, bundled) in WAL mode, one write connection behind an async actor, versioned SQL migrations via `user_version`. | Postgres; sled; files | Single-VM product, simple backup (`VACUUM INTO`); write throughput ample for 2–5 users. |
 | ADR-05 | Accounts are org secrets in Yulius; provider homes are per sandbox. Claude uses long-lived OAuth tokens from `claude setup-token` passed by environment. | One global home per account; copying credentials per task | Prevents cross-sandbox transcript leakage via shared homes; an account switch needs no file copy. (Codex homes with `auth.json` write-back were removed with Codex, F 2026-10-08.) |
 | ADR-06 | Withdrawn (F 2026-10-08): no cross-provider switches. The provider-neutral transcript IR, the native transcript writers and the handoff fallback were removed; a task resumes its own session on another account. | Keep translation for a later second harness | Yulius runs Claude Code only; a returning harness gets its own decision. |
@@ -80,7 +80,7 @@ Principles:
 | ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. The App's permissions and what each is for: `docs/operations.md`; a read the App lacks the permission for degrades instead of failing (checks: §10, #111). |
 | ADR-09 | Superseded by ADR-15 (F 2026-10-10) for the user's view: the DOM mirror, its recorder, replayer and resource endpoint are removed; the per-sandbox Chromium, CDP for agents, the welcome page and the screencast (now the labelled JPEG fallback) remain. Earlier: narrowed by ADR-14 (F 2026-10-09): the mirror is now only the remote view of the sandbox Chrome's tabs (agents' tabs and hand-offs); the user's own browsing of the sandbox's apps is live (ADR-14). Per-sandbox headless Chromium; the user's view is a live DOM mirror: the rrweb recorder is injected through CDP into the page's main world (it must see the page's CSSOM patches) and reports to a CDP binding; the UI replays the events in rrweb's script-free iframe (sandbox `allow-same-origin` only — never `UNSAFE_replayCanvas`, which would let any page run script as Yulius through the binding) and paints sampled canvas frames itself; page resources the user's browser cannot reach are fetched by the server browser through a same-origin-only endpoint served with a `sandbox` CSP. The CDP screencast is the labelled fallback; input is dispatched with CDP `Input.*`; viewers learn viewport changes at once. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer; recorder in an isolated world (misses CSS-in-JS rules) | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; plugins, internal pages and pages that send no DOM need the fallback. |
 | ADR-10 | Built-in editor: Monaco (VS Code's editor component, vendored AMD build without its translations) in the web UI over a small file API (`/api/sandboxes/{sid}/files…`) on the sandbox repository or a task worktree; per-user view state stays in the browser. | openvscode-server per sandbox (original: needed a token cookie fix, ran outside containment, too heavy); per-user contained openvscode-server (built, then dropped by the founder: "much simpler, without 90% of the features"); CodeMirror (needs a bundler) | No editor process or prerequisite on the VM; 14 MB of static assets (the TypeScript worker is 7 MB, loaded only for JS/TS); no extensions, debugging or integrated terminal (shells cover that). |
-| ADR-12 | Kept by ADR-21 (F 2026-10-10): under the holder the identity files are the user's line followed by the sandbox system's own users and groups, and `sudo` is also a dpkg-diverted shim in the system layer. Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
+| ADR-12 | Kept by ADR-22 (F 2026-10-10): under the holder the identity files are the user's line followed by the sandbox system's own users and groups, and `sudo` is also a dpkg-diverted shim in the system layer. Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
 | ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
 | ADR-14 | Narrowed by ADR-15 (F 2026-10-10): the panel's live iframe tabs are removed; the preview origins and their proxy remain for one action, "Open live in a new window" on a sandbox dev server, and the no-recursion rules stay. Originally: the user browses the sandbox's apps **live in their own browser**: each (sandbox, port) has a preview origin `<port>-<key>.<yulius host>` that Yulius reverse-proxies to `127.0.0.1:<port>`, removing the iframe obstacles; the agents keep the sandbox's headless Chrome (ADR-09), whose tabs share the panel's strip and are watched remotely with the agent's cursor; Yulius never opens inside itself. Analysis and contract: §2.1. | Keep the mirror (A); pixel or video streaming (B); hybrids (D) | Native page behaviour on desktop and phone; needs wildcard DNS and TLS for the preview hosts (on-demand TLS); the app runs in the user's browser, so its absolute `localhost` URLs in page code do not reach the VM. |
 | ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Over the user's link (F 2026-10-10, later): the viewer acknowledges frames and the server keeps about a round trip on the way, the bitrate and frame rate follow the slowest viewer (VBV tiers), keyframes come on demand from a replacement encoder, wheel and pointer moves are coalesced. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
@@ -90,7 +90,8 @@ Principles:
 | ADR-20 | **Secrets vault** (F 2026-10-10): team secrets and agent secrets under envelope encryption (per-write data keys, XChaCha20-Poly1305, KEK from the master key by HKDF); team reveals behind a 10-minute re-authentication, audited; agents use secrets without seeing them through a credential-injecting egress proxy on the internal listener (TLS interception only for hosts bound to a secret) and `browser_fill_secret`; exact values and encodings redacted from every channel an agent reads (Bash wrapper, `PostToolUse` rewrite, MCP results, proxy responses) and from the terminal. Analysis: §2.6. | `age`; `aes-gcm`; SQLCipher; an external vault; values in the environment; a request-making tool | One store for people and agents; agents' HTTP goes through Yulius; redaction is an oracle for weak values (8-character minimum); remaining threats in §2.6. |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 | ADR-19 | **One autonomous delivery discipline** (F 2026-10-10, #139): steps of similar effort with effort-weighted progress and pure-function rules (bounds, at most 2 in progress, no reopening by agents, reasons for blocked/skipped) plus never-blocking nudges; a spec only where it matters (by workflow, else by changed paths); one pipeline for features and fixes with an independent review in a fresh session and merge on green; infra bootstrap on Yulius CI without GitHub Actions; a docs-first briefing; bundled skills adapted to be universal. Analysis and contract: §2.5. | A hard step gate at every turn; LLM-judged step sizes; specs for everything; vendoring skills byte for byte; Bartek's full N2/N3 rule set (module locks, owner flags, scripted merge lock, DORA dashboards) | Progress means something without ceremony; agents keep momentum; the harness checks what a machine can check and nudges the rest; the remaining judgment (step sizes) stays with the agent, so a dishonest plan is caught only by its pace. |
-| ADR-21 | **Sandbox isolation** (F 2026-10-10): one namespace holder per sandbox — a user namespace with a subordinate id range, a private network namespace (`slirp4netns` egress, host loopback off, explicit relays for the internal listener and the sandbox's dev-server ports) and a mount namespace holding the sandbox's **system layer** (overlay of a Yulius-owned copy of the host system with a per-sandbox upper, so `sudo apt install` persists per sandbox); every run joins it, then gets its own PID/IPC/UTS/cgroup namespaces, a reduced capability set and a seccomp filter; per-sandbox cgroup v2 limits and a soft disk quota. Analysis and contract: §2.7. | rootless Podman; gVisor; microVMs (no KVM on the host); fuse-overlayfs over the live host system | `apt` works and persists per sandbox; host loopback services, other sandboxes and abstract sockets unreachable; limits per sandbox; needs an `/etc/subuid` range and `Delegate=` on the unit; without them the previous containment stays (`legacy`); the base copy costs ~6 GB and a few minutes per host system change. |
+| ADR-21 | **Yulius is the projects' only CI** (F 2026-10-10: "100% local … zero paid github features … deleting GitHub Actions completely"). Each sandbox's `[[ci.jobs]]`, or `[commands] gate`, is read from the integration branch; the profile's `gate` overrides it. Yulius runs the jobs for every open pull request head and every new integration and production head, once per commit, in parallel. Each job goes through the process host inside the sandbox's containment, without secrets, in a persistent per-job checkout with persistent caches. Results go to the commit status `yulius/ci`. Once a sandbox has CI, the merge gate takes the run at the exact head alone. Hygiene deletes merged branches and cleans stale branches and worktrees. Analysis and contract: §2.7. | GitHub Actions on hosted or Blacksmith runners (paid per minute, Actions workflows); a self-hosted Actions runner (still Actions, still a workflow per repository); a separate CI server (Buildkite agent, Woodpecker: another service to run and secure); running the gate in the agent's worktree (stale caches mixed with the agent's work, no isolation from the task) | One CI, on infrastructure we control, with no GitHub plan dependency. Merges are enforced by Yulius, not by rulesets. The VM pays the CPU, disk and caches. Statuses need the App's "Commit statuses: write"; pushes that delete workflows need "Workflows: write". Agents can still read a token through the Git credential helper, so the gate binds agents that merge through Yulius, not a hostile agent (§8). |
+| ADR-22 | **Sandbox isolation** (F 2026-10-10): one namespace holder per sandbox — a user namespace with a subordinate id range, a private network namespace (`slirp4netns` egress, host loopback off, explicit relays for the internal listener and the sandbox's dev-server ports) and a mount namespace holding the sandbox's **system layer** (overlay of a Yulius-owned copy of the host system with a per-sandbox upper, so `sudo apt install` persists per sandbox); every run joins it, then gets its own PID/IPC/UTS/cgroup namespaces, a reduced capability set and a seccomp filter; per-sandbox cgroup v2 limits and a soft disk quota. Analysis and contract: §2.8. | rootless Podman; gVisor; microVMs (no KVM on the host); fuse-overlayfs over the live host system | `apt` works and persists per sandbox; host loopback services, other sandboxes and abstract sockets unreachable; limits per sandbox; needs an `/etc/subuid` range and `Delegate=` on the unit; without them the previous containment stays (`legacy`); the base copy costs ~6 GB and a few minutes per host system change. |
 
 ### 2.1 ADR-14: the browser panel renders the sandbox's apps live (F 2026-10-09)
 
@@ -1145,8 +1146,158 @@ an audit trail. Not verified against a live CLI (no paid run in this change): th
 behaviour of `CLAUDE_CODE_SHELL_PREFIX` and `updatedToolOutput` inside a real Claude Code session;
 both were read from the installed 2.1.292 bundle, and the wrapper and the hook are tested
 directly.
+### 2.7 ADR-21: Yulius runs the projects' CI (F 2026-10-10)
 
-### 2.7 ADR-21: sandbox isolation — one namespace holder per sandbox (F 2026-10-10)
+Status: accepted and implemented (issue #138).
+
+**Request.** "All tests and CI/CD should be 100% local, using local blacksmith instance. Zero paid
+github features. Keep github hygiene clean." Michał's clarification the same evening: "onboarding
+should contain deleting GitHub Actions completely and using only blacksmith". Blacksmith the
+service runs GitHub Actions workflows, so the intent is Yulius's own CI on our VM, with no GitHub
+Actions. Also: agents "create prs, merge them autonomously, then delete branches and worktrees …
+no stale branches".
+
+**Configuration.** `[[ci.jobs]]` entries (`name`, a one-line `command`, an optional `matrix` of
+space-separated values) or `[commands] gate` (one job named `gate`) in `yulius.toml`.
+
+- The configuration is read **from the integration branch head**, so a pull request cannot change
+  the CI it is tested with. Changing CI goes through a merged pull request.
+- An administrator's `gate` in the delivery profile (`PATCH /api/sandboxes/{sid}`) overrides it.
+- **Bootstrap:** while the integration branch has no CI and no configuration error, a pull request
+  that adds CI is tested with its own jobs (`source: pull_request`). The onboarding pull request
+  that replaces GitHub Actions is then tested by what it adds.
+- Matrix values reach the command as the environment variable `YULIUS_CI_MATRIX`, never by text
+  substitution.
+- Bounds: 16 definitions, 32 jobs after expansion, 16 values per matrix, 2,000 bytes per command.
+
+**Scheduling** (`yulius_app::ci`, pure plan in `yulius_domain::ci::plan`).
+
+- *Sync loop*, every 60 s (`YULIUS_CI_POLL_SECS`). For each sandbox:
+  - fetch the clone with the installation token;
+  - read the CI in force;
+  - list open pull requests into the integration branch (at most 30; heads not in the clone,
+    from forks, are not tested);
+  - resolve the integration and production heads.
+- *Plan:*
+  - a target is queued unless a run of the same commit is active or has a verdict (a commit is
+    tested once, whatever reference carries it);
+  - an active run whose reference moved to another commit, or disappeared, is cancelled with
+    "superseded by <sha>".
+- *Dispatcher* (woken on queue and on runner release, else every 15 s): starts the oldest queued
+  run of each sandbox with nothing executing. A sandbox runs one run at a time, because its jobs
+  use the sandbox's CI checkouts. A partial unique index makes a second running run impossible.
+- *Jobs* of a run run in parallel. Each holds one of `YULIUS_CI_MAX_JOBS` (default 4) instance-wide
+  slots, waiting for one cancellably.
+
+**Execution** (`ci/exec.rs`).
+
+- **Checkout:** a persistent detached worktree per job at `<sandbox>/ci/jobs/<job>`, with matrix
+  siblings at `<job>.<n>`. Each run does a forced checkout of the commit and `git clean -fd`, which
+  keeps ignored files: build outputs and dependency folders are the job's cache.
+- **Command:** `/bin/sh -c '<fixed wrapper>' yulius-ci <log> <command>`. The wrapper redirects
+  output to the job's log and runs the command as its own `sh -c` argument, so the configured text
+  is never spliced into Yulius's script.
+- **Process:** spawned through `SessionHost`, the same process and containment port as agents.
+  Contained instances use bubblewrap over the sandbox directory, with HOME = `<sandbox>/ci/home`.
+- **Environment:** `PATH`, `LANG`, `TERM=dumb`, `CI=true`, `NO_COLOR=1`, `HOME`,
+  `YULIUS_CI_CACHE=<sandbox>/ci/cache` and `YULIUS_CI_{RUN,JOB,SHA,REF,MATRIX}`. No task token,
+  provider credential or GitHub token.
+- **Output:** the log is read every 500 ms from the first byte, escape sequences are removed, the
+  last 512 KiB is kept and stored every 2 s while running.
+- **Ending:** a timeout (`YULIUS_CI_JOB_TIMEOUT_MIN`, default 30), a cancellation or a log over
+  256 MiB sends SIGKILL to the job's process group through the host. When no exit is seen within
+  10 s, the host is terminated, and it kills and reaps the group. The run directory and log are
+  removed afterwards.
+- **Run state:** running while any job is active, then failed > error > cancelled > passed.
+
+**Results.** On every state change Yulius publishes the commit status `yulius/ci`:
+
+- pending "Queued…" or "Running…";
+- success "Passed: N jobs in …";
+- failure "Failed: <job> (exit code n) in …";
+- error "Error: …" or "Cancelled: …".
+
+The status links to `<public>/s/<slug>/ci?run=<id>`. A refused publication is recorded on the run.
+A missing permission ("the GitHub App needs the Commit statuses: Read and write permission") is
+shown once to administrators. Publication is retried by the loop, at most 5 attempts within a day.
+
+**Merge gate.** `dlv_observe` asks for the CI's verdict at the pull request head.
+
+- If the sandbox has CI, or a run of that commit exists, that run alone decides:
+  - no run, queued or running → `pending`;
+  - passed → `success`;
+  - failed, error or cancelled → `failure`.
+- GitHub's checks are not read then, so leftover Actions or statuses from elsewhere do not count.
+- Without CI, or with `YULIUS_CI=off`, GitHub's checks decide as before (#111).
+- The verdict feeds the domain merge gate, the Done rule and agents' merges alike. They all go
+  through `dlv_observe` and `dlv::apply`.
+
+**Branch protection without paid rulesets.** Merges happen through Yulius (people on the Git page,
+agents through Yulius's tools), and the merge gate enforces the profile there. Creating a project
+still asks GitHub for rulesets, as a second line of defence, but a refusal (a free plan with a
+private repository) no longer fails the creation.
+
+**Hygiene** (`ci/hygiene.rs`, domain classification `yulius_domain::ci::classify_*`).
+
+- After a merge through Yulius, the head branch is deleted unless it is protected (integration,
+  production or default) or another open pull request uses it.
+- A scan runs every 6 h (first after 10 min) and on request. It is bounded to 300 remote branches,
+  oldest first, and 50 pull-request lookups.
+- It reports:
+  - remote branches whose newest pull request was merged or closed;
+  - branches contained in the integration or production branch;
+  - unmerged branches without a pull request and without commits for 14 days (`idle`, removed only
+    with `force`);
+  - local branches no worktree uses whose tip is on a remote-tracking branch;
+  - task worktrees of deleted, archived or merged tasks, and registered worktrees whose directory is
+    gone.
+- It never reports live tasks' worktrees, the CI checkouts, protected branches, or branches with an
+  open pull request.
+- Cleanup scans again first, removes worktrees only when clean (never forced), audits every removal
+  and returns what it kept and why.
+- GitHub keeps every pull request's commits, so deleting its branch loses nothing.
+
+**Onboarding off GitHub Actions.** The agent tool `ci_setup` summarizes the task worktree's
+`.github/workflows/*.yml` with a bounded line reader (`yulius_domain::ci::actions`): jobs,
+`runs-on`, the raw `strategy`, and `run:` and `uses:` steps. It returns them with the CI the
+worktree's `yulius.toml` configures and the steps:
+
+1. translate every check into `[[ci.jobs]]`;
+2. `git rm -r .github/workflows`;
+3. commit;
+4. the pull request is tested by bootstrap.
+
+The CI page names workflows still on the integration branch.
+
+**This repository (Quartio-Studio/yulius).** It keeps its Actions CI in this change. Taking it over
+needs the following, in order:
+
+1. Give the App "Commit statuses: Read and write" and "Workflows: Read and write", and accept them on
+   the installation.
+2. Add `[[ci.jobs]]` for the quality gate (`python3 scripts/bootstrap.py && scripts/dev ci`) and
+   e2e (`cd e2e && npm ci --ignore-scripts && npx e2e run`).
+   - The VM needs the Rust toolchain via rustup in the CI home, and Node ≥ 24.8 for e2e.
+   - The branch policy (`scripts/check_git_policy.py`) reads the pull request's title and base from
+     GitHub's event with a token. Jobs have neither, so the policy moves into Yulius's merge gate (a
+     follow-up) or stays a GitHub check until then.
+   - macOS becomes a manual check.
+3. Let Yulius run beside Actions until its results match for a few days.
+4. Switch the rulesets' required checks to `yulius/ci`, or drop the rulesets on a free plan.
+5. Delete `.github/workflows/`.
+
+**Consequences.**
+
+- The VM's CPU and disk carry the CI: per-job checkouts plus caches per sandbox (a Rust workspace's
+  `target/` per job). Size `YULIUS_CI_MAX_JOBS` to the machine.
+- Cache poisoning stays within a sandbox's trust domain. A pull request's job can write the caches a
+  later integration run reads, as with shared Actions caches. Agents of the sandbox can already
+  write there.
+- macOS and Windows targets are not covered (Linux VM only).
+- Forks' pull requests are not tested.
+- The gate binds merges made through Yulius. An agent that extracts a token from the credential
+  helper could still merge through GitHub's API (§8).
+
+### 2.8 ADR-22: sandbox isolation — one namespace holder per sandbox (F 2026-10-10)
 
 Status: accepted and implemented (issue #142). Extends ADR-03 (bubblewrap) and ADR-12 (user
 identity); resolves SPEC-001 U-12; narrows R-07.
@@ -1276,7 +1427,7 @@ Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
 | `crates/yulius-app` | application | Use cases and ports: `Store`, `GitHubPort`, `GitPort`, `SessionHostPort`, `HarnessPort`, `BrowserPort`, `EditorPort`, `Clock`, `Ids`, `SecretBox`, event bus. Authorization decisions. |
 | `crates/yulius-store` | adapter | SQLite schema, migrations, repositories, backup. |
 | `crates/yulius-ptyhost` | adapter | ptyhost process (PTY, containment, vt100, socket server) and client. |
-| `crates/yulius-sandbox` | adapter | Sandbox isolation (ADR-21): the per-sandbox namespace holder, the system layer's base, relays across the network boundary, cgroup limits, disk usage, seccomp filter, entering a sandbox. |
+| `crates/yulius-sandbox` | adapter | Sandbox isolation (ADR-22): the per-sandbox namespace holder, the system layer's base, relays across the network boundary, cgroup limits, disk usage, seccomp filter, entering a sandbox. |
 | `crates/yulius-harness` | adapter | Claude Code launch specs, home layout, hook/MCP config rendering, transcript tailers and wire parsers, usage extraction, login flows. |
 | `crates/yulius-github` | adapter | GitHub REST, App JWT, OAuth, installation tokens. |
 | `crates/yulius-git` | adapter | Git CLI wrapper: clone/fetch, worktrees, branches, bundles, diff stats, hooks install. |
@@ -1304,10 +1455,10 @@ sandboxes/<sandbox>/attachments/{tasks,shells}/<id>/  files dropped or pasted on
 users/<user>/home/                  user's home in their shells (bound at /home/<login>; ADR-12)
 users/<user>/identity/              generated passwd/group files of the user's sandbox identity
 runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
-runtime/sandboxes/<sandbox>/        namespace holder (ADR-21): holder.json, host.json, holder.log, in.sock,
+runtime/sandboxes/<sandbox>/        namespace holder (ADR-22): holder.json, host.json, holder.log, in.sock,
                                     out.sock, root/ (the merged system layer inside the holder only)
 system/base-<n>/, system/current.json   bases of the system layers: a copy of the host system with ids
-                                    shifted into the sandboxes' user namespace (ADR-21)
+                                    shifted into the sandboxes' user namespace (ADR-22)
 sysroots/<sandbox>/{upper,work}/    a sandbox's system layer (packages it installed); outside the sandbox
                                     directory, never bound into runs
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
@@ -1378,6 +1529,8 @@ Schema version 1 (tables; columns abbreviated):
 | `vault_meta` | name (PK), kek_id, wrapped_key, ciphertext, created_at: sealed vault key material (the egress CA) — ADR-20 |
 | `prompt_holds` | id, task_id, class, prompt, prompt_sha256, percent, typed_by, state (pending/sent/consumed/parallel/after/skipped_after/reverted/dismissed/superseded), created_at, resolved_by, resolved_at, new_task_id — ADR-16 |
 | `task_auto_choices` | task_id (PK), mode_by, workflow_by (`jev` / `default`; NULL when a person picked it), workflow_name, created_at — ADR-16 item 5 (TSK-015) |
+| `ci_runs` | id, sandbox_id, reference (`pr/<n>` / `branch/<name>`), sha, source (profile/yulius_toml/pull_request), state (queued/running/passed/failed/error/cancelled), reason, requested_by, status_for, status_note, status_attempts, queued_at, started_at, ended_at; partial unique index: one running run per sandbox — ADR-21 (migration `0011_local_ci.sql`) |
+| `ci_jobs` | id, run_id (cascade), ordinal, name, job_key, command, matrix, state, reason, exit_code, output (tail), started_at, ended_at — ADR-21 |
 
 Versioning: each migration is one transaction; startup refuses a database from a newer schema.
 Backup: `VACUUM INTO` plus copy of files excluding `runs/`.
@@ -1493,6 +1646,20 @@ heads are refused (GIT-002).
 `building → failed | cancelled` and `draining → cancelled`. Owners, exits and bounds: the table in
 §2.5. Every move is a compare-and-set on the stored state; the run survives server restarts (a
 restart during `installing` is the normal case: the new server finishes it).
+
+### 6.9 CI run and job (ADR-21)
+
+`queued → running → passed | failed | error | cancelled`; `queued → cancelled`.
+
+- *queued*: owned by the dispatcher. It leaves when the sandbox has no executing run (→ running),
+  when it is cancelled or superseded, or when a person cancels it.
+- *running*: owned by the run's executor. It leaves when every job has ended. The run's state comes
+  from its jobs.
+- A restart puts running runs back to queued after terminating their hosts.
+
+A job goes `queued → running` once it holds a slot, or straight to cancelled when the run is
+cancelled first. It leaves running on exit, timeout, cancellation, the output limit or a lost host.
+Every end is recorded once (compare-and-set).
 
 ## 7. Runtime contracts
 
@@ -1627,6 +1794,12 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
 | `secrets_list`, `browser_fill_secret` | Agent secrets: names, descriptions and bindings; typing a value, user name or TOTP code into a page of a bound host (VLT-004/005, ADR-20) |
+| `ci_status`, `ci_rerun` | The CI in force and recent runs (this task's pull request first), one run's job outputs (tails of 16 KiB), run a commit again (DLV-006) |
+| `ci_setup` | Onboarding off GitHub Actions: the worktree's workflows summarized, its `[[ci.jobs]]`, the steps (DLV-006) |
+| `repo_hygiene`, `repo_cleanup` | Stale branches and worktrees; removal of safe items, `force` for unmerged branches without a pull request (DLV-007) |
+| `delivery_status` | PR/checks/profile status and next actions (GIT-001) |
+| `issue_create` | A GitHub issue meeting the Definition of Ready (one `type:`, one `priority:`, at least one `area:` label; an `## Acceptance criteria` checklist), as the task creator or the App; labels created when missing (DLV-008) |
+| `delivery_merge`, `delivery_deploy`, `delivery_promote` | Agents deliver their own work (DLV-008, ADR-19): the person paths (`merge_task_pr`, `start_environment_run`, `promote_sandbox`) run with the task creator's authority, plus an independent review of the exact head and passed checks for a merge (`reviewed_head`), command-verified environments only for a deploy; each action is also audited as `task:<n>` |
 
 Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
 Every tool result (and error) is redacted of the sandbox's agent secrets before it is returned
@@ -1874,7 +2047,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 - Jev key (ADM-002): sealed with the master key, superadmin-only API, never returned or logged.
 - Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
   Argon2; the failure counter and permanent lock are persisted before the response is sent.
-- Sandbox isolation (ADR-21, §2.7): runs of an isolated sandbox share its holder's user, network
+- Sandbox isolation (ADR-22, §2.8): runs of an isolated sandbox share its holder's user, network
   and mount namespaces; each run has its own PID/IPC/UTS/cgroup namespaces, Docker's default
   capability set and the seccomp filter (no nested user namespaces). The network namespace reaches
   the host only through `slirp4netns` with the host loopback disabled and the explicit relays (the
@@ -1901,6 +2074,15 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   hosts, and redacted with their encodings from every channel an agent reads, from the terminal
   and from served transcripts. In-sandbox redaction holds fingerprints, never values, and fails
   closed. Remaining threats: ADR-20.
+- CI jobs (ADR-21): repository-defined shell text, run like the sandbox's agents: through the
+  process host inside the sandbox's containment, with no secret in their environment (no task
+  token, provider credential or GitHub token). The CI configuration comes from the integration
+  branch, so a pull request cannot weaken the CI it is judged by; it can still change the scripts
+  the CI calls, as in any CI. Server-side Git for checkouts runs outside containment with hooks and
+  fsmonitor disabled (#54). Commit statuses and branch deletion use the installation token, never
+  exposed to jobs. The merge gate binds merges through Yulius: an agent that obtains a token from
+  the credential helper could merge through GitHub's API, which on a free plan nothing on GitHub
+  prevents.
 
 ## 8a. Imported repository specifics (Product, Studio)
 
@@ -1981,8 +2163,17 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Chained tasks per sandbox | 32 | refused at creation |
 | Held prompts per task | one pending (a newer one supersedes) | — |
 | Revert stop wait | 30 s | nothing reverted, conflict |
-| Sandbox memory / CPU / tasks (ADR-21, with delegation) | half the RAM / CPUs − 2 / 8192 | OOM kill inside the sandbox / throttled / `fork` fails (`EAGAIN`) |
-| Sandbox disk (soft, ADR-21) | 100 GB (directory + system layer), measured ≤ every 10 min, ≤ 4 M entries | new runs refused (409) with the figures; live runs continue |
+| CI jobs at once (instance, ADR-21) | 4 (`YULIUS_CI_MAX_JOBS`) | jobs wait for a slot (cancellable) |
+| CI runs at once per sandbox | 1 | the next waits in the queue |
+| CI job time | 30 min (`YULIUS_CI_JOB_TIMEOUT_MIN`) | process group killed; job `error` "timed out" |
+| CI job output | 512 KiB kept, log ≤ 256 MiB | oldest discarded with a note / job ended "more than 256 MiB of output" |
+| CI configuration | 16 job definitions, 32 jobs, 16 matrix values, 2,000-byte commands | `yulius.toml` problem shown; no CI from it |
+| Pull requests tested per sandbox | 30 open | the rest wait for a later sync |
+| CI retention | 50 runs per sandbox, 14 days | oldest finished runs deleted hourly |
+| Commit status publication | 5 attempts within 24 h | the note stays on the run |
+| Hygiene scan | 300 remote branches, 50 pull-request lookups, every 6 h | note; the rest next scan |
+| Sandbox memory / CPU / tasks (ADR-22, with delegation) | half the RAM / CPUs − 2 / 8192 | OOM kill inside the sandbox / throttled / `fork` fails (`EAGAIN`) |
+| Sandbox disk (soft, ADR-22) | 100 GB (directory + system layer), measured ≤ every 10 min, ≤ 4 M entries | new runs refused (409) with the figures; live runs continue |
 | Holder start / idle stop | 60 s / 5 min without runs or leases (1 min when its base is superseded) | start error (`auto`: the run uses the previous containment) / holder stopped |
 | Relayed connections per sandbox and direction | 256 (header 5 s, connect 3 s); ports polled every 1 s | refused |
 | Base build | one at a time, 60 min; host unchanged 10 min before a rebuild; fingerprint read every 30 min | build error logged; the current base stays |
@@ -2027,7 +2218,12 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Jev down, slow or answering off-contract | typed adapter failure | Nothing checked: new tasks are created as written, typed prompts pass (ADR-16). |
 | Split proposal fails (no account, Claude error, timeout, unusable) | proposer failure / domain check | The composer creates the one task as written. |
 | Predecessor of a chained task ends without being Done | chain re-evaluation | The chained task needs a person (reason shown); never started silently. |
-| Sandbox holder dies (ADR-21) | upkeep tick: recorded pid without its namespaces | Record removed, `slirp4netns` stopped; live runs keep their namespaces (they lose egress); the next run starts a new holder (a second overlay is never mounted on the same layer: until the old runs end, new runs are refused, or use the previous containment in `auto`). |
+| CI job hangs or floods output | job deadline / log size | SIGKILL to its group through the host; host terminated when no exit within 10 s; job `error` with the reason; run directory and log removed. |
+| Restart with CI runs executing | active runs at start | Hosts of their jobs terminated; runs and jobs back to `queued` (outputs cleared with a note); run again. |
+| Commit status refused (permission, outage) | GitHub error | Recorded on the run (`status`), retried by the loop up to 5 times in a day; the run and the merge gate are unaffected. |
+| `yulius.toml` CI invalid on the integration branch | parse error | No CI from it (no runs), the problem shown on the CI page and to agents; a profile `gate` still applies. |
+| Head commit not in the clone (fork, force-push race) | `rev-parse` | Not queued; a queued run whose commit cannot be fetched errors with the reason. |
+| Sandbox holder dies (ADR-22) | upkeep tick: recorded pid without its namespaces | Record removed, `slirp4netns` stopped; live runs keep their namespaces (they lose egress); the next run starts a new holder (a second overlay is never mounted on the same layer: until the old runs end, new runs are refused, or use the previous containment in `auto`). |
 | `slirp4netns` dies | upkeep tick | Restarted against the live holder; egress back within 30 s. |
 | Server restart with live holders | `host.json` + namespace inodes | Holders adopted, relays re-served; runs never notice except relayed connections in flight. |
 | Host packages change (apt upgrade, new Claude Code) | fingerprint | New base built in the background; holders move to it when idle; packages a sandbox installed stay in its layer. |
@@ -2042,7 +2238,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Integration (fake agent) | ptyhost spawn/flood/ignore-SIGTERM/descendant/early-exit/cancel races, reconnect, server restart reattach, rotation with fake usage, hooks & MCP end-to-end | `tools/fake-agent` |
 | Integration (fake GitHub) | OAuth, permissions, repo creation, PR/checks/merge/ff | axum fake server |
 | Linux-only | bubblewrap containment escape attempts | CI ubuntu job |
-| Isolation (opt-in, Linux, ADR-21) | the namespace holder end to end: apt, persistence, other sandboxes, network relays and refusals, host secrets, displays, seccomp, limits, disk quota, idle restart | `crates/yulius/tests/isolation.rs` (`YULIUS_ISOLATION_TEST=1`; limits in a delegated transient unit); run on the production VM's kernel as the service user |
+| Isolation (opt-in, Linux, ADR-22) | the namespace holder end to end: apt, persistence, other sandboxes, network relays and refusals, host secrets, displays, seccomp, limits, disk quota, idle restart | `crates/yulius/tests/isolation.rs` (`YULIUS_ISOLATION_TEST=1`; limits in a delegated transient unit); run on the production VM's kernel as the service user |
 | UI | end-to-end tests in `e2e/` (e2e by TesterArmy, Playwright) against the UI's mock mode: flows, keyboard, WCAG 2.x A/AA (axe-core), page errors, phone viewport; agent steps opt-in with a model key | Node test-only (ADR-01 unchanged); advisory CI job `Web UI e2e`. The real server, terminal rendering and panels against live agents: manual with recorded evidence |
 | Live (opt-in, never CI) | real Claude Code: launch, hooks, MCP, resume | uses local credentials; minimal prompts |
 | Live display (opt-in, Linux) | the streamed browser with Xvfb, ffmpeg and real Chrome: input, video content, popups, containment, recursion; performance figures; captcha clicks | `crates/yulius/tests/live_display.rs` (`YULIUS_LIVE_DISPLAY=1`); `live_ui_browser.rs` drives the real UI against it |
@@ -2059,7 +2255,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | R-14 | Claude Code's handling of a hook held for days is not verified live (ADR-17). | The CLI timeout is written explicitly; the hook client fails open first; a reported limit still pauses the task as `limit`. Open: a live smoke of a held Stop hook. |
 | R-05 | Browser video on phones and slow links. | Flow control by the viewer's acknowledgements, bitrate and frame-rate tiers following the slowest viewer, keyframes on demand, skip to a fresh keyframe per viewer (ADR-15, F 2026-10-10). Open: per-viewer tiers (the slowest viewer sets the shared stream). |
 | R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
-| R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; before ADR-21 sandboxes shared the loopback network, so any local process (including other sandboxes' agents) could drive a sandbox browser and its logged-in sessions; CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Isolated sandboxes (ADR-21) cannot reach the host's loopback, so the cross-sandbox path is closed; legacy containment and host processes remain exposed. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's holder. |
+| R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; before ADR-22 sandboxes shared the loopback network, so any local process (including other sandboxes' agents) could drive a sandbox browser and its logged-in sessions; CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Isolated sandboxes (ADR-22) cannot reach the host's loopback, so the cross-sandbox path is closed; legacy containment and host processes remain exposed. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's holder. |
 | R-08 | An unrestricted GitHub installation token works for every repository of the installation. | Mitigated: agents receive tokens restricted to their sandbox repository (`repositories` parameter), only for live task tokens and only for `github.com/<owner>/<repo>`; unrestricted tokens stay server-side (delivery pushes, repository creation). |
 | R-09 | Delivery environment commands run with the server's privileges outside containment, in a clone whose `.git` and the sandbox home are agent-writable (repository-local Git config such as filter drivers, tools reading `HOME`). | Hooks, fsmonitor and global/system Git config disabled for the checkout (the editor is now a file API, no process). Open: run environment commands inside the sandbox containment. |
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
@@ -2124,16 +2320,19 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Secrets vault (ADR-20, 2026-10-10) | Unit: names, host bindings, placeholders, injections, encodings (base64 at every alignment), plain and fingerprinted redaction with every split point, RFC 4226/6238 vectors, envelopes (row binding, tampering, foreign key), migration and store. `yulius-egress/tests/proxy.rs`: real TLS upstream echoing the credential, interception with injection and query placeholder, opaque tunnels, 407/403/409 refusals, plain HTTP upgraded to HTTPS. `tests/secrets.rs`: team CRUD, re-authentication by password and GitHub, bearer tokens refused, activity, encryption at rest (database, WAL, backup), access control, agent secrets via the App's policy (placeholders, Basic, injection, conflicts, other sandbox), MCP `secrets_list`, MCP result redaction, MCP `${secret:NAME}`, the proxy on the internal listener through the real router (tunnel with the task token, 407 without, 403 to a local address). `tests/browser.rs`: `browser_fill_secret` against the fake CDP endpoint (typed into the bound host's page, refused on another host, snapshot redacted). `tests/secrets_redaction.rs`: the real `yulius --scrub-exec` with fingerprints (echo, file read back, base64, chunks split by sleeps), the `PostToolUse` hook, a fake agent printing a value into the task terminal, launch environment. `e2e/tests/secrets.e2e.ts` (mock UI). Not exercised: a live Claude Code session. |
 | Delivery discipline (ADR-19, #139, 2026-10-10) | Unit: `yulius-domain` `steps` (plan bounds, keeping status and effort by title, no reopening by agents, WIP limit with its message, blocked/skipped reasons, 9 of 10 = 90 % and effort weighting, phase titles, plan-shape nudges, stale and burst with a fake clock), `spec_format` (Plan bounds and repeats, `SpecPolicy`, documentation paths), `briefing` (docs index, sessions, pipeline, git hygiene, spec policy per workflow, weighted steps and nudges, foundations); `yulius-app` `discipline` (weighted progress, timings, turn-end nudges, the six default workflows' content), `skills` (every pack equals its catalog directory, unique names, licenses and upstream commits, no Open Mercato harness or manual mode in adapted skills, attribution notes, extraction of three packs), `hooks` (foundations without following links). Store: effort and timings from the history. `mcp_coordination.rs` (step rules and nudges over MCP, `spec_check` `required`), `agent_hooks.rs` (briefing sections, the spec asked only where it matters by workflow and by changed paths, the one-shot untracked-work nudge), `delivery.rs` (a docs-only task opens its pull request without a spec; a code change waits), `skills_mcp.rs` (three sources listed, run set, no `.ai/agentic.config.json`), `e2e/tests/steps.e2e.ts` (weighted progress bar, mock). Not exercised: a live agent following the briefing; agent merge/deploy/promote tools (separate change). |
 | Updates and the Jev key (ADR-18, 2026-10-10) | Unit: `yulius-domain::update` (commit ids, titles and summaries, run transitions, pause points); `wiring::release` against a local server shaped like GitHub's answers (behind, up to date, unknown build, 401/404/429/5xx, malformed head; field names checked against the real API); `wiring::update_files`; `update_helper` with real Git repositories, fake cargo, fake systemctl and a fake health endpoint (strict request parsing, owner/link/FIFO/size checks, build once per id with progress, a failed build's error and log, commits off main or older than installed refused, the token only as a header of the fetch, install with backup, rollback restoring binary, database and modes, a linked database refused, install needing the staged commit); the Jev client's test request (ok, refused, unreachable, invalid). Integration: `tests/self_update.rs` (offer to superadmins only, cached check, App token then error, Update now refusals and the build request, holds with `Retry-After: 3` and no output, queued starts, two-pass install, hold across a restart, staggered release, rollback, 30-minute bound, cancel, unresponsive helper), `tests/update_supervision.rs` (real ptyhost, fake agent through the real hook client: a prompt typed during the update waits through the server's restart on the same port and reaches the same process exactly as typed), `tests/jev_key.rs`, store migration `version_five_databases_migrate_to_updates_and_the_jev_key`. UI: headless Chrome against the mock (banner, instance page, run to success and to rollback, setup step, Jev card); `e2e/tests/update.e2e.ts` in CI. VM (2026-10-11, throwaway units and paths under `/var/tmp/yqa-update`, service as `nobody` with a fake systemctl): a transient path unit with `ProtectSystem=strict` started the helper on the request; it built the PR head in 4.5 min with progress, installed it (stop, backup, swap, start, health in 5 s), rolled back a build reporting the wrong commit after 120 s (binary, database with owner and mode, previous version running, data intact), and refused a downgrade, a root-owned request, a link to `/etc/shadow` and a stale request. |
-| Sandbox isolation (ADR-21, #142, 2026-10-11) | On the production VM (Ubuntu 24.04, kernel 6.8, bwrap 0.9.0) as `yulius` with its subordinate range, `crates/yulius/tests/isolation.rs` with the real server, ptyhost, `bwrap`, `newuidmap`, `slirp4netns` and a real base: **3/3 passed**. Base built in 217 s (74 s warm), 5.5 GB; first shell (holder start) 174–384 ms; `sudo apt-get install cowsay` from a user's shell in 9–12 s, `whoami` = the login; a second shell, an agent session (root, `IS_SANDBOX=1`, its own `apt-get install sl` and `useradd --system`) and a shell after an idle stop see the packages; the other sandbox and the host do not. Forwarded host port open; another host loopback port, the slirp gateway and a host abstract socket closed; `/tmp/.X11-unix` absent; `master.key`, `jev.key`, the other sandbox, another user's home, `runtime/`, `system/`, `sysroots/` absent; `unshare(CLONE_NEWUSER)`, `mount` and `unshare -U` refused; IPv4 and IPv6-only dev servers inside answer on the host's `127.0.0.1:<port>`, the other sandbox cannot reach them; an attachment read by path. Limits (transient unit with `Delegate=yes`, `DelegateSubgroup=server`): `pids.max` 64 → forks refused after 48 with `EAGAIN`; `memory.max` 256 MiB → the 512 MiB allocation OOM-killed (exit 137, `oom_kill 1`), the run sees `0::/`. Over the disk quota: 409 with the figures. The seccomp filter by itself (`yulius sandbox-exec -- bwrap …`): `unshare(CLONE_NEWUSER)` and `io_uring_setup` allowed without it, `EPERM` with it; `bpf`, `keyctl`, `perf_event_open` `EPERM`; `fork` works. `yulius serve` in a delegated unit: limits on (25 GB, 10 CPUs), base adopted. Unit tests: seccomp program per call, relays (in, out, refused, forbidden, following ports), `/proc/net/tcp`, cgroup files, subordinate ids, the base copy (data directory and `/var` outside the allow-list never copied, links, hard links), generated files, fingerprint, owners, identity merge, the joined `bwrap` argv, contract validation. |
+| Yulius-run CI and hygiene (ADR-21, DLV-006/007, 2026-10-11) | Unit: `yulius_domain::ci` (gate validation and precedence, job definitions and matrix expansion and their errors, run state from jobs, the plan: once per commit, supersede, no automatic retry of a cancelled reference; status descriptions within 140 characters; the merge gate; branch and worktree classification), `ci::actions` (workflow reader: jobs, block scalars, folded scripts, bounds, garbage), the `yulius.toml` `[[ci.jobs]]` parser and render round trip, `ci/exec.rs` (escape stripping across chunks, matrix checkouts), store (`ci_runs`/`ci_jobs`: transitions, one running run per sandbox, requeue after restart, status bookkeeping, retention with cascade). `yulius-github` `tests/client.rs`: commit statuses against the fake GitHub (pending then success in the combined status, description clipped, invalid state refused, 403 without the permission), branch deletion (true, then false). `tests/local_ci.rs` (real git, real detached ptyhost, fake GitHub): jobs in parallel with a matrix, outputs without escape sequences, no secret in the environment, persistent checkouts, statuses and links, the merge gate pending → passed → failed, Run again (and its refusal while active), a superseded run killed at once, a timeout, nothing left in `runs/`; statuses refused → runs still gate; hygiene scan and cleanup over a real origin. `tests/delivery.rs`: the merged branch is deleted. `e2e/tests/ci.e2e.ts` (mock UI). |
+| Sandbox isolation (ADR-22, #142, 2026-10-11) | On the production VM (Ubuntu 24.04, kernel 6.8, bwrap 0.9.0) as `yulius` with its subordinate range, `crates/yulius/tests/isolation.rs` with the real server, ptyhost, `bwrap`, `newuidmap`, `slirp4netns` and a real base: **3/3 passed**. Base built in 217 s (74 s warm), 5.5 GB; first shell (holder start) 174–384 ms; `sudo apt-get install cowsay` from a user's shell in 9–12 s, `whoami` = the login; a second shell, an agent session (root, `IS_SANDBOX=1`, its own `apt-get install sl` and `useradd --system`) and a shell after an idle stop see the packages; the other sandbox and the host do not. Forwarded host port open; another host loopback port, the slirp gateway and a host abstract socket closed; `/tmp/.X11-unix` absent; `master.key`, `jev.key`, the other sandbox, another user's home, `runtime/`, `system/`, `sysroots/` absent; `unshare(CLONE_NEWUSER)`, `mount` and `unshare -U` refused; IPv4 and IPv6-only dev servers inside answer on the host's `127.0.0.1:<port>`, the other sandbox cannot reach them; an attachment read by path. Limits (transient unit with `Delegate=yes`, `DelegateSubgroup=server`): `pids.max` 64 → forks refused after 48 with `EAGAIN`; `memory.max` 256 MiB → the 512 MiB allocation OOM-killed (exit 137, `oom_kill 1`), the run sees `0::/`. Over the disk quota: 409 with the figures. The seccomp filter by itself (`yulius sandbox-exec -- bwrap …`): `unshare(CLONE_NEWUSER)` and `io_uring_setup` allowed without it, `EPERM` with it; `bpf`, `keyctl`, `perf_event_open` `EPERM`; `fork` works. `yulius serve` in a delegated unit: limits on (25 GB, 10 CPUs), base adopted. Unit tests: seccomp program per call, relays (in, out, refused, forbidden, following ports), `/proc/net/tcp`, cgroup files, subordinate ids, the base copy (data directory and `/var` outside the allow-list never copied, links, hard links), generated files, fingerprint, owners, identity merge, the joined `bwrap` argv, contract validation. |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
 
+- 2026-10-11 (F 2026-10-10, final stage; #138): ADR-21 Yulius-run CI and repository hygiene;
+  §5 `ci_runs`, `ci_jobs`; §6.8; §7.4 CI and hygiene tools; §8 CI trust; §9 bounds; §10; §14.
 - 2026-10-10 (F 2026-10-10, final stage items 1(e) and 2; #140): ADR-18 (§2.5) updates from `main`
   through a root helper — build commit, checks of `main`, the update run (§6.8), the hook hold
   (§7.5), the path-unit helper with backup and rollback (§8), bounds (§9), failures (§10); the Jev
   key sealed in `instance` and swappable at run time; §3, §4, §5 (`update_runs`, migration 0008).
-- 2026-10-10 (F 2026-10-10, item 4; #142): ADR-21 — sandbox isolation with one namespace holder
+- 2026-10-10 (F 2026-10-10, item 4; #142): ADR-22 — sandbox isolation with one namespace holder
   per sandbox (subordinate id range, private network with relays, writable system layer over a
   shared base, limits, seccomp); ADR-03/ADR-12 extended; new crate `yulius-sandbox`; §3, §4, §8,
   §9, §10, §11, R-07, §14.
@@ -2143,6 +2342,9 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
   task (`stopped(killed)` new, `SessionEnd`), interrupts end a turn, holds the session no longer
   keeps end. §7.2 hooks and status line, the interrupt line; §7.5 `SessionEnd`, `StatusLine`, holds
   given up; §14.
+- 2026-10-10 (F 2026-10-10, #139): §7.4 agent delivery tools `delivery_merge` (passed checks and
+  an independent review of the exact head), `delivery_deploy` (command-verified environments) and
+  `delivery_promote`, on the person paths with the task creator's authority, audited as the task.
 - 2026-10-10 (F 2026-10-10, final stage; #136): §7.2 MCP servers in every run's own configuration
   whatever the subscription, `${secret:NAME}` references and the vault's hook; §7.10 the workflow
   catalog format and read-only defaults with the retirement of the seeded rows; §7.4

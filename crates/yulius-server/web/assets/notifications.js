@@ -7,7 +7,7 @@
 
 import { h, icon, iconButton, setChildren, popoverFocus, keepFocus } from './dom.js';
 import { relShort, dateTime } from './format.js';
-import { statusInfo } from './status.js';
+import { taskInfo } from './status.js';
 import { readJson, writeJson } from './store.js';
 
 const MAX_ITEMS = 100;
@@ -181,7 +181,9 @@ export function createNotificationCenter(ctx) {
   }
 
   watch('task', (task) => {
-    const info = statusInfo(task);
+    // The rule every view uses (status.js taskInfo): a tested pull request is Done, failing checks
+    // need the user.
+    const info = taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
     const previous = taskTones.get(task.id);
     taskTones.set(task.id, info.tone);
     if (previous === info.tone || !(info.tone in TASK_TONES) || watching(task.id)) return;

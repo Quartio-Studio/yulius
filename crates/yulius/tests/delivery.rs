@@ -393,6 +393,16 @@ impl FakeRemote for BareRemote {
         }
         git_sync(&self.origin, &args).map(drop)
     }
+    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
+        if self.branch_sha(branch).is_none() {
+            return Ok(false);
+        }
+        git_sync(
+            &self.origin,
+            &["update-ref", "-d", &format!("refs/heads/{branch}")],
+        )?;
+        Ok(true)
+    }
 }
 
 // ---------------------------------------------------------------- fixture
@@ -928,6 +938,26 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
             .contains(&"merge_pull #1 squash".to_owned())
     );
     assert_eq!(git(&f.origin, &["show", "dev:feature.txt"])?, "hello");
+    // Hygiene (DLV-007): the merged head branch is deleted on GitHub.
+    assert!(
+        f.h.github
+            .writes()
+            .contains(&"delete_branch feat/1-checkout-api".to_owned()),
+        "{:?}",
+        f.h.github.writes()
+    );
+    assert!(
+        git(
+            &f.origin,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/heads/feat/1-checkout-api"
+            ]
+        )
+        .is_err()
+    );
 
     // The dev checkpoint comes first and needs an explicit confirmation.
     let early = f
@@ -1378,11 +1408,11 @@ async fn studio_auto_promotes_until_the_profile_is_gated() -> TestResult {
     assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
     assert_eq!(merged.body["stage"], "merged_integration");
     assert_eq!(actions(&merged.body), ["promote"]);
-    assert_eq!(
-        f.h.github.writes().len(),
-        writes_before + 1,
-        "only the merge happened"
-    );
+    // Only the merge and the merged branch's deletion (DLV-007), no promotion.
+    let after: Vec<String> = f.h.github.writes()[writes_before..].to_vec();
+    assert_eq!(after.len(), 2, "{after:?}");
+    assert!(after[0].starts_with("merge_pull #"), "{after:?}");
+    assert_eq!(after[1], "delete_branch feat/2-pricing");
     assert_eq!(f.origin_sha("main")?, quartio, "main did not move");
 
     let promoted = f
@@ -1521,10 +1551,11 @@ async fn environment_timeout_kills_the_process_tree() -> TestResult {
     Ok(())
 }
 
-/// AC-GIT-2: reads, agents and read-only users never merge, promote or deploy — even with an
-/// auto-promoting profile and green checks, only a person's merge request moves anything.
+/// AC-GIT-2, AC-DLV-8 (#139): agents deliver their own work only through the gated delivery
+/// tools — a merge needs passed checks and an independent review of the exact head — while reads,
+/// task tokens on the REST API and read-only users never merge, promote or deploy.
 #[tokio::test]
-async fn no_api_path_merges_or_promotes_without_a_person() -> TestResult {
+async fn agents_merge_only_through_gated_tools() -> TestResult {
     let f = fixture(&DeliveryProfile::studio()).await?;
     let wt = f
         .add_task("t1", "Landing page", "feat/1-landing", "quartio")
@@ -1535,8 +1566,8 @@ async fn no_api_path_merges_or_promotes_without_a_person() -> TestResult {
         .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
         .await?;
     assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
-    f.h.github
-        .set_checks(&git(&wt, &["rev-parse", "HEAD"])?, ChecksState::Success);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Pending);
     let main_before = f.origin_sha("main")?;
 
     // An agent run of the task.
@@ -1583,15 +1614,26 @@ async fn no_api_path_merges_or_promotes_without_a_person() -> TestResult {
         .iter()
         .filter_map(|t| t["name"].as_str().map(str::to_owned))
         .collect();
-    assert!(names.contains(&"delivery_status".to_owned()));
-    for name in &names {
-        for forbidden in ["merge", "promote", "deploy", "environment", "run_env"] {
-            assert!(
-                !name.contains(forbidden),
-                "agents get no {forbidden} tool ({name})"
-            );
-        }
+    for tool in [
+        "delivery_status",
+        "delivery_merge",
+        "delivery_deploy",
+        "delivery_promote",
+    ] {
+        assert!(names.contains(&tool.to_owned()), "{tool}");
     }
+    let delivery_tools = names
+        .iter()
+        .filter(|n| {
+            ["merge", "promote", "deploy", "environment"]
+                .iter()
+                .any(|w| n.contains(w))
+        })
+        .count();
+    assert_eq!(
+        delivery_tools, 3,
+        "no other way to merge, deploy or promote: {names:?}"
+    );
     let status = rpc(
         "tools/call",
         json!({"name": "delivery_status", "arguments": {}}),
@@ -1605,12 +1647,53 @@ async fn no_api_path_merges_or_promotes_without_a_person() -> TestResult {
     assert_eq!(status["pull_request"]["number"], 1);
     assert_eq!(status["profile"]["preset"], "studio");
     assert_eq!(status["next_actions_for_people"], json!(["merge"]));
+    let tool_text = |r: &Resp| {
+        r.body["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    };
+    // No review, a review of another head, or checks still running: refused.
     let attempt = rpc(
         "tools/call",
         json!({"name": "delivery_merge", "arguments": {}}),
     )
     .await?;
     assert_eq!(attempt.body["result"]["isError"], true);
+    assert!(
+        tool_text(&attempt).contains("reviewed_head"),
+        "{}",
+        attempt.body
+    );
+    let stale = rpc(
+        "tools/call",
+        json!({"name": "delivery_merge", "arguments": {"reviewed_head": "0000000"}}),
+    )
+    .await?;
+    assert_eq!(stale.body["result"]["isError"], true);
+    assert!(
+        tool_text(&stale).contains("review the new head"),
+        "{}",
+        stale.body
+    );
+    let pending = rpc(
+        "tools/call",
+        json!({"name": "delivery_merge", "arguments": {"reviewed_head": head}}),
+    )
+    .await?;
+    assert_eq!(pending.body["result"]["isError"], true);
+    assert!(
+        tool_text(&pending).contains("merge on green only"),
+        "{}",
+        pending.body
+    );
+    // A person-verified or unknown environment is never run by an agent.
+    let deploy = rpc(
+        "tools/call",
+        json!({"name": "delivery_deploy", "arguments": {"environment": "rollout"}}),
+    )
+    .await?;
+    assert_eq!(deploy.body["result"]["isError"], true);
     let direct = call(
         &f.h.router,
         Method::POST,
@@ -1657,12 +1740,44 @@ async fn no_api_path_merges_or_promotes_without_a_person() -> TestResult {
     assert_eq!(f.origin_sha("main")?, main_before);
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
 
-    // Only the person's merge request merges (and then the explicit profile policy promotes).
-    let merged = f
-        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
-        .await?;
-    assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+    // On green, with the reviewed head, the agent merges with its creator's authority (and then
+    // the explicit profile policy promotes).
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let merged = rpc(
+        "tools/call",
+        json!({"name": "delivery_merge", "arguments": {"reviewed_head": &head[..12], "review_summary": "approve: code and tests checked"}}),
+    )
+    .await?;
+    assert_eq!(merged.body["result"]["isError"], false, "{}", merged.body);
+    assert_eq!(f.delivery("t1").await?["pr"]["state"], "merged");
     assert_eq!(f.origin_sha("main")?, f.origin_sha("quartio")?);
+
+    // Follow-up work becomes a ready issue (Definition of Ready), never a vague one.
+    let vague = rpc(
+        "tools/call",
+        json!({"name": "issue_create", "arguments": {"title": "Fix things", "body": "Stuff.", "labels": ["type: bug"]}}),
+    )
+    .await?;
+    assert_eq!(vague.body["result"]["isError"], true);
+    assert!(tool_text(&vague).contains("not ready"), "{}", vague.body);
+    let ready = rpc(
+        "tools/call",
+        json!({"name": "issue_create", "arguments": {
+            "title": "Flaky landing test",
+            "body": "Fails 1 in 20 runs.\n\n## Acceptance criteria\n- [ ] Passes 100 runs under load",
+            "labels": ["type: bug", "priority: medium", "area: frontend"]
+        }}),
+    )
+    .await?;
+    assert_eq!(ready.body["result"]["isError"], false, "{}", ready.body);
+    assert!(
+        f.h.github
+            .writes()
+            .iter()
+            .any(|w| w == "create_issue #101 Flaky landing test"),
+        "{:?}",
+        f.h.github.writes()
+    );
     Ok(())
 }
 

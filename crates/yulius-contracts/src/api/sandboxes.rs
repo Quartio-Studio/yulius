@@ -72,6 +72,11 @@ pub struct Profile {
     pub require_checks: Option<bool>,
     /// Deployment/verification environments.
     pub environments: Vec<Environment>,
+    /// The CI gate Yulius runs on every pull request head and on the integration and
+    /// production heads (SPEC-001 DLV-006): shell text set by a repository administrator.
+    /// Absent or null: the `[commands] gate` of `yulius.toml` on the integration branch, if any.
+    #[serde(default)]
+    pub gate: Option<String>,
 }
 
 /// One environment step of a profile.

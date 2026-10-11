@@ -59,6 +59,7 @@ const pages = [
   ['home', '/', 'Sandboxes'],
   ['tasks', '/s/studio/tasks', 'Tasks'],
   ['git', '/s/studio/git', 'Git'],
+  ['CI', '/s/studio/ci', 'CI'],
   ['workflows', '/s/studio/workflows', 'Workflows'],
   ['skills', '/s/studio/skills', 'Skills'],
   ['automations', '/s/studio/automations', 'Automations'],

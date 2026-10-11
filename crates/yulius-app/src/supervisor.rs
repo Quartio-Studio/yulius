@@ -735,7 +735,7 @@ impl App {
             .await?;
         let (join, _lease) = self.isolation_join(&sandbox).await?.unzip();
         if join.is_some() {
-            // Root of its sandbox (ADR-21): Claude Code accepts --dangerously-skip-permissions as
+            // Root of its sandbox (ADR-22): Claude Code accepts --dangerously-skip-permissions as
             // root only inside a declared sandbox; package tools live in sbin.
             launch.env.retain(|(k, _)| k != "PATH");
             launch.env.extend([
