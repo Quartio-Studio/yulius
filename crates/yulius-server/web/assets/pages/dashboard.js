@@ -181,14 +181,14 @@ export function renderSummary(data, previous = null, days = 30, capacity = null)
   const tokenNotes = [Number.isFinite(tokens.cache_read) ? `${compact(tokens.cache_read)} read from cache` : null, unknownRuns ? `${unknownRuns} run${unknownRuns === 1 ? '' : 's'} reported no usage` : null].filter(Boolean).join(' · ');
 
   return [
-    data.truncated ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, 'This range has more than 50 000 tasks; the figures describe the newest 50 000.')) : null,
+    data.truncated ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, `This range has more than ${int(50000)} tasks; the figures describe the newest ${int(50000)}.`)) : null,
     h('section', { class: 'card db-kpis', 'aria-label': 'Key figures' },
       kpi({ label: 'Tasks', value: int(tasks.total), change: delta(now.tasks, was('tasks'), { days }), sub: Number.isFinite(tasks.closed) ? `${int(tasks.closed)} closed` : null, extra: sparkline(perDay.map((x) => x.count || 0)) }),
       kpi({ label: 'Median duration', value: duration(d.median ?? null), change: delta(now.median, was('median'), { better: 'down', days }), sub: d.p90 !== undefined ? `9 in 10 within ${duration(d.p90)}` : null }),
       kpi({ label: 'Active agent time', value: duration(d.total_active ?? null), change: delta(now.active, was('active'), { better: null, days }), sub: d.total_wall !== undefined ? `${duration(d.total_wall)} start to end` : null }),
       kpi({ label: 'Tokens', value: compact(now.tokens), change: delta(now.tokens, was('tokens'), { better: null, days }), sub: `${compact(tokens.input)} in · ${compact(tokens.output)} out`, hint: tokenNotes || null,
         note: tokenNotes || null }),
-      kpi({ label: 'Account switches', value: int(switches(data)), change: delta(now.switches, was('switches'), { better: 'down', days }), sub: 'between AI accounts' }),
+      kpi({ label: 'Account switches', value: int(switches(data)), change: delta(now.switches, was('switches'), { better: 'down', days }), sub: 'made by the pool, between subscriptions' }),
       kpi({ label: 'Feedback correct', value: rated ? `${Math.round(now.correct * 100)}%` : '—', change: delta(now.correct, was('correct'), { points: true, days }), extra: feedbackBar, sub: rated ? `${feedback.correct || 0} of ${rated} rated` : 'no feedback yet' })),
     subscriptions(capacity),
     h('div', { class: 'db-row' },

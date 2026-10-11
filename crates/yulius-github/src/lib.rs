@@ -1,5 +1,5 @@
 //! GitHub adapter: App JWT and installation tokens, OAuth, permissions, repositories, rulesets,
-//! pull requests and checks (SPEC-002 ADR-08).
+//! pull requests, checks, commit statuses and branch deletion (SPEC-002 ADR-08, ADR-21).
 //!
 //! [`GitHubClient`] is an async REST client over `reqwest` + `rustls` (ring provider, installed
 //! once per process). Every request sends `User-Agent: yulius`,
@@ -28,6 +28,7 @@ mod oauth;
 mod pulls;
 mod repos;
 mod secret;
+mod statuses;
 mod time;
 mod types;
 mod validate;
@@ -46,6 +47,7 @@ pub use error::GitHubError;
 pub use issues::{MAX_ISSUE_LABELS, MAX_LABEL_BYTES};
 pub use reqwest::Url;
 pub use secret::Secret;
+pub use statuses::{CommitStatus, MAX_STATUS_CONTEXT_BYTES, MAX_STATUS_DESCRIPTION_CHARS};
 pub use types::{
     CheckSource, ChecksReport, ChecksSummary, CompareStatus, Comparison, CreateRepo, GitHubUser,
     InstallationToken, IssueRef, MergeMethod, MergeOutcome, NewIssue, NewPull, PullFilter,

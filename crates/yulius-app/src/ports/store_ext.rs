@@ -328,6 +328,118 @@ pub trait IntakeStore: Send + Sync {
         sha256: &str,
         since: Timestamp,
     ) -> AppResult<bool>;
+    /// Records how Auto chose a new task's mode and workflow (TSK-015; one row per task).
+    async fn insert_auto_choice(
+        &self,
+        choice: &crate::auto_choice::AutoChoiceRecord,
+    ) -> AppResult<()>;
+    /// The task's Auto choice, if it was created with anything on Auto.
+    async fn auto_choice(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::auto_choice::AutoChoiceRecord>>;
+}
+
+/// Instance updates (SPEC-002 ADR-18) and the saved Jev key (SPEC-001 ADM-002).
+#[async_trait]
+pub trait UpdateStore: Send + Sync {
+    /// Inserts a run; `false` when another run is open (at most one at a time).
+    async fn insert_update_run(&self, run: &crate::updates::UpdateRunRecord) -> AppResult<bool>;
+    /// The open run, if any.
+    async fn open_update_run(&self) -> AppResult<Option<crate::updates::UpdateRunRecord>>;
+    /// The newest run, open or not.
+    async fn last_update_run(&self) -> AppResult<Option<crate::updates::UpdateRunRecord>>;
+    /// Moves the open run `id` from `from` to `to` (compare-and-set): records `outcome` (the
+    /// state a resuming run ends in) and `error` when given, and closes the run when `to` is
+    /// terminal. `false` when the run was not in `from` any more.
+    async fn move_update_run(
+        &self,
+        id: &str,
+        from: yulius_domain::update::RunState,
+        to: yulius_domain::update::RunState,
+        outcome: Option<yulius_domain::update::RunState>,
+        error: Option<&str>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// The saved Jev key, sealed, with when and by whom it was set.
+    async fn jev_key(&self) -> AppResult<Option<crate::jev_key::StoredJevKey>>;
+    /// Saves the sealed Jev key set by `by` (`Some`) or removes it (`None`).
+    async fn set_jev_key(
+        &self,
+        key: Option<(&crate::model::Sealed, &str)>,
+        at: Timestamp,
+    ) -> AppResult<()>;
+}
+
+/// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
+#[async_trait]
+pub trait CiStore: Send + Sync {
+    /// Inserts a run with its jobs atomically.
+    async fn insert_ci_run(
+        &self,
+        run: &crate::ci::CiRunRecord,
+        jobs: &[crate::ci::CiJobRecord],
+    ) -> AppResult<()>;
+    /// One run.
+    async fn ci_run(&self, id: &str) -> AppResult<Option<crate::ci::CiRunRecord>>;
+    /// The jobs of a run in order; outputs only when `with_output`.
+    async fn ci_jobs(&self, run: &str, with_output: bool)
+    -> AppResult<Vec<crate::ci::CiJobRecord>>;
+    /// Most recent runs of a sandbox (by queue time), newest first, at most `limit`.
+    async fn ci_runs(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Runs of a sandbox for one commit, newest first.
+    async fn ci_runs_for_sha(
+        &self,
+        sandbox: &SandboxId,
+        sha: &str,
+    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Queued and running runs of every sandbox, oldest first.
+    async fn active_ci_runs(&self) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Compare-and-set of a run's state with `update`; `false` when it was in none of
+    /// `from`. `Conflict` when another run of the sandbox is already running.
+    async fn transition_ci_run(
+        &self,
+        id: &str,
+        from: &[yulius_domain::ci::RunState],
+        to: yulius_domain::ci::RunState,
+        update: &crate::ci::CiRunUpdate,
+    ) -> AppResult<bool>;
+    /// Compare-and-set of a job's state with `update`; `false` when it was in none of `from`.
+    async fn transition_ci_job(
+        &self,
+        id: &str,
+        from: &[yulius_domain::ci::RunState],
+        to: yulius_domain::ci::RunState,
+        update: &crate::ci::CiJobUpdate,
+    ) -> AppResult<bool>;
+    /// Replaces the output of a running job.
+    async fn set_ci_job_output(&self, id: &str, output: &str) -> AppResult<()>;
+    /// Puts a `running` run and all its jobs back to `queued` (after a server restart), clearing
+    /// times and outputs; `false` when the run was not running.
+    async fn requeue_ci_run(&self, id: &str) -> AppResult<bool>;
+    /// Records a commit status publication: `published` is the run state GitHub accepted the
+    /// status of, `None` on failure with `note`; counts the attempt.
+    async fn record_ci_status(
+        &self,
+        id: &str,
+        published: Option<yulius_domain::ci::RunState>,
+        note: Option<&str>,
+    ) -> AppResult<()>;
+    /// Runs whose current state's commit status was not accepted yet, queued at or after
+    /// `since`, with fewer than `max_attempts` attempts, oldest first (at most `limit`).
+    async fn unpublished_ci_runs(
+        &self,
+        since: Timestamp,
+        max_attempts: u32,
+        limit: u32,
+    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Deletes finished runs (and their jobs) beyond the newest `keep` of each sandbox and
+    /// those queued before `before`; returns how many runs were deleted.
+    async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
 }
 
 /// All extension areas.
@@ -341,6 +453,9 @@ pub trait ExtensionStores:
     + AnalyticsStore
     + CapacityStore
     + IntakeStore
+    + UpdateStore
+    + crate::ports::vault::VaultStore
+    + CiStore
 {
 }
 
@@ -354,5 +469,8 @@ impl<T> ExtensionStores for T where
         + AnalyticsStore
         + CapacityStore
         + IntakeStore
+        + UpdateStore
+        + crate::ports::vault::VaultStore
+        + CiStore
 {
 }

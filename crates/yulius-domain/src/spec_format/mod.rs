@@ -95,6 +95,9 @@ pub struct Commands {
     pub lint: Option<String>,
     /// Build command.
     pub build: Option<String>,
+    /// The gate Yulius runs as the project's CI (SPEC-001 DLV-006), read from the integration
+    /// branch.
+    pub gate: Option<String>,
 }
 
 /// The parsed `yulius.toml` project contract.
@@ -104,6 +107,8 @@ pub struct ProjectConfig {
     pub docs: DocsLayout,
     /// Verification commands.
     pub commands: Commands,
+    /// `[[ci.jobs]]` definitions (validated; see [`crate::ci::project_jobs`]).
+    pub ci: Vec<crate::ci::JobDef>,
     /// Delivery profile.
     pub delivery: DeliveryProfile,
 }
@@ -113,6 +118,7 @@ impl Default for ProjectConfig {
         Self {
             docs: DocsLayout::default(),
             commands: Commands::default(),
+            ci: Vec::new(),
             delivery: DeliveryProfile::standard(),
         }
     }
@@ -210,6 +216,17 @@ pub enum SpecProblem {
         /// Line of the item.
         line: usize,
     },
+    /// More top-level Plan items than a plan of similar-effort steps holds
+    /// ([`crate::steps::MAX_STEPS`]).
+    TooManyPlanItems {
+        /// Top-level items found.
+        count: usize,
+    },
+    /// The same top-level Plan item twice (steps are found by title).
+    DuplicatePlanItem {
+        /// Line of the second occurrence.
+        line: usize,
+    },
     /// `status: done` without an Evidence section.
     MissingEvidence,
     /// `status: done` with unchecked Plan items.
@@ -255,6 +272,15 @@ impl fmt::Display for SpecProblem {
                 "Section '## Plan' (line {line}) has no checklist item; list the steps as '- [ ] step'."
             ),
             Self::EmptyPlanItem { line } => write!(f, "Plan item at line {line} has no text."),
+            Self::TooManyPlanItems { count } => write!(
+                f,
+                "Section '## Plan' has {count} top-level items; a plan has at most {} steps of similar effort, so merge related items (details can be nested items).",
+                crate::steps::MAX_STEPS
+            ),
+            Self::DuplicatePlanItem { line } => write!(
+                f,
+                "Plan item at line {line} repeats an earlier item; give every step its own title."
+            ),
             Self::MissingEvidence => f.write_str(
                 "Status is 'done' but section '## Evidence' is missing; record the commands run and their results.",
             ),
@@ -466,6 +492,18 @@ pub fn validate_spec(markdown: &str) -> SpecReport {
             if !any_item {
                 problems.push(SpecProblem::NoPlanItems { line: section.line });
             }
+            let top: Vec<&PlanItem> = plan.iter().filter(|item| item.depth == 0).collect();
+            if top.len() > crate::steps::MAX_STEPS {
+                problems.push(SpecProblem::TooManyPlanItems { count: top.len() });
+            }
+            for (index, item) in top.iter().enumerate() {
+                let title = crate::steps::normalize_title(&item.text).to_lowercase();
+                if top[..index].iter().any(|earlier| {
+                    crate::steps::normalize_title(&earlier.text).to_lowercase() == title
+                }) {
+                    problems.push(SpecProblem::DuplicatePlanItem { line: item.line });
+                }
+            }
         } else if !section.body.iter().any(|line| is_meaningful(line)) {
             problems.push(SpecProblem::EmptySection {
                 name,
@@ -596,6 +634,73 @@ pub(crate) fn slug_or(title: &str, fallback: &str) -> String {
     } else {
         slug.to_owned()
     }
+}
+
+/// When a task needs a spec (SPEC-001 DSC-013, first principles): features and fixes do;
+/// research, questions about the product, documentation and small chores do not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SpecPolicy {
+    /// The task's workflow requires a spec (Feature, Fix, Infra bootstrap).
+    Required,
+    /// The task's workflow does not (Research / Question, Docs, Chore).
+    NotRequired,
+    /// No workflow: a spec is required as soon as the branch changes anything other than
+    /// documentation.
+    ByChange,
+}
+
+impl SpecPolicy {
+    /// The policy of a task with a workflow whose `require_spec` gate is `Some(..)`, or without
+    /// a workflow (`None`).
+    #[must_use]
+    pub fn from_workflow(require_spec: Option<bool>) -> Self {
+        match require_spec {
+            Some(true) => Self::Required,
+            Some(false) => Self::NotRequired,
+            None => Self::ByChange,
+        }
+    }
+
+    /// Whether a spec is required for a branch that changed `paths`. `complete` is false when
+    /// the list was cut (then an undecided [`SpecPolicy::ByChange`] requires one).
+    #[must_use]
+    pub fn requires_spec<'a>(
+        self,
+        paths: impl IntoIterator<Item = &'a str>,
+        complete: bool,
+    ) -> bool {
+        match self {
+            Self::Required => true,
+            Self::NotRequired => false,
+            Self::ByChange => {
+                !complete || paths.into_iter().any(|path| !is_documentation_path(path))
+            }
+        }
+    }
+}
+
+/// Documentation formats. Plain `.txt` is not one: `requirements.txt` or `robots.txt` change
+/// behavior.
+const DOC_EXTENSIONS: [&str; 6] = ["md", "mdx", "markdown", "rst", "adoc", "mmd"];
+const DOC_DIRECTORIES: [&str; 2] = ["docs", "doc"];
+
+/// Whether a repository path is documentation: a Markdown, reStructuredText, AsciiDoc or Mermaid
+/// document anywhere, or any file under a top-level `docs/` or `doc/` directory.
+#[must_use]
+pub fn is_documentation_path(path: &str) -> bool {
+    let path = path.trim_start_matches("./");
+    if path
+        .split('/')
+        .next()
+        .is_some_and(|first| DOC_DIRECTORIES.contains(&first))
+        && path.contains('/')
+    {
+        return true;
+    }
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty() && DOC_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+    })
 }
 
 /// `<specs_dir>/<YYYY-MM-DD>-<slug>.md`.
@@ -800,6 +905,58 @@ mod tests {
                 "Section '## Goal' appears more than once (again at line 35); keep one.",
                 "Plan item at line 22 has no text.",
             ]
+        );
+    }
+
+    #[test]
+    fn specs_are_required_for_features_and_code_changes_only() {
+        assert!(is_documentation_path("README.md"));
+        assert!(is_documentation_path("docs/architecture/diagram.png"));
+        assert!(is_documentation_path("./guides/Setup.MDX"));
+        assert!(is_documentation_path(".agents/skills/x/SKILL.md"));
+        assert!(!is_documentation_path("docs"));
+        assert!(!is_documentation_path("src/main.rs"));
+        assert!(!is_documentation_path("Cargo.toml"));
+        assert!(!is_documentation_path("requirements.txt"));
+        assert!(!is_documentation_path("src/docs/page.tsx"));
+        assert!(!is_documentation_path(".md"));
+        let docs = ["README.md", "docs/product.md"];
+        let code = ["README.md", "src/lib.rs"];
+        assert!(SpecPolicy::from_workflow(Some(true)).requires_spec(docs, true));
+        assert!(!SpecPolicy::from_workflow(Some(false)).requires_spec(code, true));
+        let none = SpecPolicy::from_workflow(None);
+        assert_eq!(none, SpecPolicy::ByChange);
+        assert!(!none.requires_spec(docs, true));
+        assert!(none.requires_spec(code, true));
+        assert!(
+            none.requires_spec(docs, false),
+            "a cut list could hide code"
+        );
+        assert!(!none.requires_spec([], true));
+    }
+
+    #[test]
+    fn plan_items_are_bounded_and_unique() {
+        let repeated = VALID.replace(
+            "  - [ ] Validate input",
+            "  - [ ] Validate input\n- [ ] implement   API\n  - [ ] Validate input",
+        );
+        assert_eq!(
+            texts(&validate_spec(&repeated)),
+            vec!["Plan item at line 24 repeats an earlier item; give every step its own title."]
+        );
+        let items: String = (0..=crate::steps::MAX_STEPS)
+            .map(|n| format!("- [ ] Slice {n}\n"))
+            .collect();
+        let long = VALID.replace(
+            "- [x] Write spec\n- [ ] Implement API\n  - [ ] Validate input",
+            items.trim_end(),
+        );
+        assert_eq!(
+            validate_spec(&long).problems,
+            vec![SpecProblem::TooManyPlanItems {
+                count: crate::steps::MAX_STEPS + 1
+            }]
         );
     }
 

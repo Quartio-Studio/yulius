@@ -10,11 +10,16 @@ import { relLong, dateTime, duration, compact, int, plural } from '../format.js'
 import { taskInfo, activityLine, isLive } from '../status.js';
 import { openDeliveryDialog, stageLabel } from '../actions.js';
 import { initials } from '../layout.js';
+import { modelLabel } from '../models.js';
 
 const ORIGINS = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task' };
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
 const ATTEMPT_STATE = { live: 'Running', exited: 'Ended', failed: 'Failed', lost: 'Lost' };
+// Why a session ended, in words (raw codes such as `spawn_failed` are not shown).
+const EXIT_REASON = { exited: 'exited normally', cancelled: 'stopped by a person', switched: 'moved to another subscription', spawn_failed: 'could not start', lost: 'process lost', switch_timeout: 'move timed out' };
+const LAUNCH_KIND = { resume: 'resumed', continue: 'continued' };
+const exitReason = (reason) => EXIT_REASON[reason] || (String(reason).startsWith('exited') ? 'exited with an error' : null);
 
 /** A fact tile: label, value, an optional line under it. */
 function tile(label, value, sub, extra) {
@@ -52,9 +57,12 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
     setChildren(titleEl, h('span', { class: 'muted' }, `#${current.number} `), current.title || `Task #${current.number}`);
     const pr = ctx.store.pullsOf(sandbox.id).get(current.id);
+    // The activity line starts with the state's label: show only what it adds.
+    const line = activityLine(current, info) || '';
+    const extra = line.startsWith(info.label) ? line.slice(info.label.length).replace(/^\s*·\s*/, '') : line;
     setChildren(meta,
       h('span', { class: 'gt-state' }, statusMark(info, 14), info.label),
-      h('span', { class: info.group === 'needs' ? 'ti-what ti-needs' : 'ti-what' }, activityLine(current, info)),
+      extra ? h('span', { class: info.group === 'needs' ? 'ti-what ti-needs' : 'ti-what' }, extra) : null,
       pr ? prChip(pr) : null);
   }
 
@@ -75,11 +83,11 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       h('thead', null, h('tr', null, ['#', 'Account', 'Started', 'Ended', 'Length', 'State'].map((label) => h('th', { scope: 'col' }, label)))),
       h('tbody', null, list.map((a) => h('tr', null,
         h('td', null, String(a.seq)),
-        h('td', null, accountName(a.account_label), a.launch_kind && a.launch_kind !== 'new' ? h('span', { class: 'muted xs' }, ` · ${a.launch_kind}`) : null),
+        h('td', null, accountName(a.account_label), a.launch_kind && a.launch_kind !== 'new' ? h('span', { class: 'muted xs' }, ` · ${LAUNCH_KIND[a.launch_kind] || a.launch_kind}`) : null),
         h('td', { title: dateTime(a.started_at) }, a.started_at ? relLong(a.started_at) : '—'),
         h('td', { title: a.ended_at ? dateTime(a.ended_at) : null }, a.ended_at ? relLong(a.ended_at) : 'running'),
         h('td', null, a.started_at ? duration((a.ended_at ? Date.parse(a.ended_at) : Date.now()) - Date.parse(a.started_at)) : '—'),
-        h('td', null, ATTEMPT_STATE[a.state] || a.state || '—', a.exit_reason ? h('span', { class: 'muted xs' }, ` · ${a.exit_reason}`) : a.exit_code !== null && a.exit_code !== undefined ? h('span', { class: 'muted xs' }, ` · exit ${a.exit_code}`) : null))))));
+        h('td', null, ATTEMPT_STATE[a.state] || a.state || '—', a.exit_reason && exitReason(a.exit_reason) ? h('span', { class: 'muted xs' }, ` · ${exitReason(a.exit_reason)}`) : a.exit_code !== null && a.exit_code !== undefined ? h('span', { class: 'muted xs' }, ` · exit ${a.exit_code}`) : null))))));
   }
 
   function render() {
@@ -109,11 +117,12 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       ['Origin', ORIGINS[current.origin] || current.origin || '—'],
       ['Mode', current.mode === 'prompt' ? 'Prompt' : 'Goal (works until it is met)'],
       ['Account', accountName(current.account_label)],
-      ['Models', m.models && m.models.length ? m.models.join(', ') : '—'],
+      ['Models', m.models && m.models.length ? m.models.map((id) => modelLabel(id)).join(', ') : '—'],
       ['Turns', m.turns === null || m.turns === undefined ? '—' : int(m.turns)],
       ['Account switches', String(m.switches ?? (detail.switches || []).length ?? 0)],
       ['Branch', current.branch ? h('code', null, current.branch) : 'not created yet'],
-      ['Pull request', pr ? prChip(pr) : 'none yet'],
+      // The delivery record knows the pull request before the Git overview lists it.
+      ['Pull request', pr || (delivery && delivery.pr) ? prChip(pr || delivery.pr) : 'none yet'],
       ['Delivery', delivery ? h('span', null, stageLabel(delivery.stage), ' ', h('button', { type: 'button', class: 'link-btn small', onClick: () => openDeliveryDialog(ctx, current) }, 'Details…')) : '—'],
       ['Spec', detail.spec_path ? h('code', null, detail.spec_path) : '—'],
       ['Worktree', detail.worktree ? h('code', null, detail.worktree) : '—'],

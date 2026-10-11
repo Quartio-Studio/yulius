@@ -144,6 +144,7 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
         ("UserPromptSubmit", 694_800),
         ("Stop", 694_800),
         ("Notification", 15),
+        ("SessionEnd", 15),
     ] {
         assert_eq!(
             settings["hooks"][event],
@@ -154,6 +155,16 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
             }] }])
         );
     }
+    // The status line runs the same client: it prints the task's line and forwards the plan
+    // usage Claude Code read from its own responses (ADR-17).
+    assert_eq!(
+        settings["statusLine"],
+        json!({
+            "type": "command",
+            "command": "'/opt/yulius/bin/yulius' hook claude StatusLine",
+            "padding": 0
+        })
+    );
     let mcp = json_of(file(&plan, "mcp.json")?)?;
     assert_eq!(
         mcp,

@@ -30,9 +30,19 @@ pub const YULIUS_URL_ENV: &str = "YULIUS_URL";
 pub const DISABLE_AUTOUPDATER_ENV: (&str, &str) = ("DISABLE_AUTOUPDATER", "1");
 /// Name of the always-attached Yulius MCP server.
 pub const YULIUS_MCP_NAME: &str = "yulius";
-/// Hook events registered for Claude Code.
-pub const CLAUDE_HOOK_EVENTS: [&str; 4] =
-    ["SessionStart", "UserPromptSubmit", "Stop", "Notification"];
+/// Hook events registered for Claude Code. `SessionEnd` tells Yulius at once why a session ends
+/// (`/exit`, Ctrl+C twice, `/clear`, a signal), before the process is gone.
+pub const CLAUDE_HOOK_EVENTS: [&str; 5] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+    "Notification",
+    "SessionEnd",
+];
+/// The pseudo-event of Claude Code's `statusLine` command (`yulius hook claude StatusLine`): it
+/// prints the task's status line and forwards the plan usage Claude Code read from its own API
+/// responses, the only usage a `claude setup-token` sign-in can see (SPEC-002 ADR-17).
+pub const CLAUDE_STATUS_LINE_EVENT: &str = "StatusLine";
 /// Claude settings file name inside the run directory.
 pub const CLAUDE_SETTINGS_FILE: &str = "claude-settings.json";
 /// Claude MCP config file name inside the run directory.
@@ -41,6 +51,8 @@ pub const CLAUDE_MCP_FILE: &str = "mcp.json";
 pub const PRIVATE_FILE_MODE: u32 = 0o600;
 /// Claude hook timeout in seconds; the hook client itself gives up after 5 s (fail-open).
 pub const CLAUDE_HOOK_TIMEOUT_SECONDS: u64 = 15;
+/// Timeout of the `PostToolUse` redaction hook (large tool results take a moment to scan).
+pub const CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS: u64 = 60;
 /// Hook events Yulius may hold while no subscription has capacity (SPEC-002 ADR-17): the turn
 /// boundaries.
 pub const CLAUDE_HELD_HOOK_EVENTS: [&str; 2] = ["Stop", "UserPromptSubmit"];
@@ -407,7 +419,24 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             }] }]),
         );
     }
-    let settings = json!({ "hooks": hooks });
+    // Every tool result passes the in-sandbox redaction of agent secrets (SPEC-002 ADR-20):
+    // a result holding one is replaced by its redacted copy before the model reads it.
+    hooks.insert(
+        "PostToolUse".to_owned(),
+        json!([{ "matcher": "*", "hooks": [{
+            "type": "command",
+            "command": hook_command(request, "claude", "PostToolUse")?,
+            "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+        }] }]),
+    );
+    let settings = json!({
+        "hooks": hooks,
+        "statusLine": {
+            "type": "command",
+            "command": hook_command(request, "claude", CLAUDE_STATUS_LINE_EVENT)?,
+            "padding": 0
+        }
+    });
 
     let mut servers = Map::new();
     servers.insert(

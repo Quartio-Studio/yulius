@@ -127,6 +127,8 @@ const ICONS = {
   grip: [[9, 6], [15, 6], [9, 12], [15, 12], [9, 18], [15, 18]].map(([cx, cy]) => ['circle', { cx, cy, r: 1.3, fill: 'currentColor', stroke: 'none' }]),
   // All sandboxes (the home screen): four tiles.
   grid: [[4, 4], [13.5, 4], [4, 13.5], [13.5, 13.5]].map(([x, y]) => ['rect', { x, y, width: 6.5, height: 6.5, rx: 1.6 }]),
+  // The composer's Preview (the prompt formatted).
+  eye: [['path', { d: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z' }], ['circle', { cx: 12, cy: 12, r: 3 }]],
 };
 
 /** Every icon name (the /design page shows them all). */
@@ -357,9 +359,20 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
     event.preventDefault();
     if (dismissible) close(undefined);
   });
+  // Enter in a one-line field submits the dialog, as in every form: the primary action runs.
+  let primary = null;
+  dialog.addEventListener('keydown', (event) => {
+    const field = event.target;
+    if (event.key !== 'Enter' || event.defaultPrevented || event.isComposing || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (!(field instanceof HTMLInputElement) || ['checkbox', 'radio', 'button', 'submit', 'file', 'range', 'color'].includes(field.type)) return;
+    if (!primary || primary.disabled || !primary.isConnected) return;
+    event.preventDefault();
+    primary.click();
+  });
   const modal = { dialog, body: bodyEl, footer, close, result, setActions };
   function setActions(list) {
     footer.replaceChildren();
+    primary = null;
     for (const action of list) {
       const button = h('button', { type: action.submit ? 'submit' : 'button', class: ['btn', action.kind && `btn-${action.kind}`], disabled: action.disabled, onClick: async () => {
         if (!action.run) return close(action.value);
@@ -380,6 +393,7 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
         }
       } }, action.label);
       if (action.ref) action.ref(button);
+      if (action.kind === 'primary' || action.kind === 'danger' || (!primary && action.run)) primary = button;
       footer.append(button);
     }
     footer.hidden = list.length === 0;
@@ -765,6 +779,16 @@ export function badge(text, tone = '', title) {
 /** Loading / empty / error placeholders. */
 export function placeholder(text, kind = 'empty') {
   return h('div', { class: ['placeholder', `placeholder-${kind}`] }, text);
+}
+
+/**
+ * A calm loading state (F 2026-10-10): shimmering bars where the content will appear, announced
+ * as `label`. The composer, the split card and the task view share it.
+ */
+export function skeleton(label, lines = 3) {
+  return h('div', { class: 'skeleton', role: 'status' },
+    Array.from({ length: lines }, () => h('span', { class: 'skeleton-line', 'aria-hidden': 'true' })),
+    h('span', { class: 'sr-only' }, label));
 }
 
 /** Usage/percentage meter. `percent` null renders "unknown" (never zero). */

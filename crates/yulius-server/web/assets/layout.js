@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, errorToast, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
 import { taskInfo, activityLine, allows } from './status.js';
 import { href } from './router.js';
@@ -19,10 +19,12 @@ const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
 const NAV = [
   ['tasks', 'Tasks', 'tasks'],
   ['git', 'Git', 'branch'],
+  ['ci', 'CI', 'check'],
   ['workflows', 'Workflows', 'workflow'],
   ['skills', 'Skills', 'book'],
   ['automations', 'Automations', 'zap'],
   ['mcp', 'MCP', 'plug'],
+  ['secrets', 'Secrets', 'lock'],
   ['dashboard', 'Dashboard', 'chart'],
 ];
 
@@ -107,9 +109,9 @@ export function createTabRow(ctx) {
         'aria-current': sandbox.slug === currentSlug ? 'page' : null,
       },
       h('span', { class: 'tab-name' }, sandbox.name),
-      h('span', { class: 'sr-only' }, [counts.running ? `, ${counts.running} running` : '', counts.needs_attention ? `, ${counts.needs_attention} need${counts.needs_attention === 1 ? 's' : ''} attention` : ''].join('')),
-      counts.running ? h('span', { class: 'tab-running', title: `${counts.running} running`, 'aria-hidden': 'true' }, String(counts.running)) : null,
-      counts.needs_attention ? h('span', { class: 'tab-dot', title: `${counts.needs_attention} need attention` }) : null);
+      h('span', { class: 'sr-only' }, [counts.running ? `, ${counts.running} working` : '', counts.needs_attention ? `, ${counts.needs_attention} need${counts.needs_attention === 1 ? 's' : ''} you` : ''].join('')),
+      counts.running ? h('span', { class: 'tab-running', title: `${counts.running} working`, 'aria-hidden': 'true' }, String(counts.running)) : null,
+      counts.needs_attention ? h('span', { class: 'tab-dot', title: `${counts.needs_attention} need${counts.needs_attention === 1 ? 's' : ''} you` }) : null);
       const index = sandboxes.indexOf(sandbox);
       const move = (step) => {
         const ids = sandboxes.map((sb) => sb.id);
@@ -204,6 +206,7 @@ function openUserMenu(ctx, anchor) {
     { header: `${user.display_name || user.login || 'Signed in'}${user.login ? ` · @${user.login}` : ''}${superadmin ? ' · superadmin' : ''}` },
     { label: 'Archived tasks', icon: 'archive', onSelect: () => ctx.navigate('/archived') },
     { label: 'CLI device approval', icon: 'key', onSelect: () => ctx.navigate('/device') },
+    { label: 'Team secrets', icon: 'lock', onSelect: () => ctx.navigate(sandbox ? `/s/${encodeURIComponent(sandbox.slug)}/secrets` : '/secrets') },
   ];
   if (instanceAdmin) {
     items.push({ separator: true }, { header: 'Administration' });
@@ -275,7 +278,9 @@ const STATUS_OPEN_KEY = 'yulius.statusOpen';
 /** Account states as a person reads them: icon, tone and a plain label. */
 const ACCOUNT_STATES = {
   ok: { icon: 'check', tone: 'ok', label: 'Ready' },
-  limited: { icon: 'clock', tone: 'warn', label: 'Limit reached' },
+  // At its limit until a window resets: the pool runs tasks on the others meanwhile, so it needs
+  // nobody (F 2026-10-10).
+  limited: { icon: 'clock', tone: 'muted', label: 'Limit reached' },
   relogin: { icon: 'lock', tone: 'warn', label: 'Sign in again' },
   pending_login: { icon: 'lock', tone: 'warn', label: 'Not signed in' },
   error: { icon: 'warn', tone: 'danger', label: 'Error' },
@@ -352,12 +357,15 @@ export function renderStatus(data) {
   const accounts = Array.isArray(data.accounts) ? data.accounts : [];
   const load = Array.isArray(vm.load) ? vm.load.map((v) => Number(v).toFixed(2)) : Number.isFinite(vm.load_1m) ? [Number(vm.load_1m).toFixed(2)] : null;
 
-  // One line that says whether anything needs a person; those accounts are listed first.
-  const troubled = accounts.filter((a) => a.status && a.status !== 'ok');
+  // One line that says whether anything needs a person; those accounts are listed first. A
+  // subscription at its limit needs nobody: the pool uses the others until it resets.
+  const troubled = accounts.filter((a) => ['relogin', 'pending_login', 'error'].includes(a.status));
   const hot = [vm.cpu_percent, memPct, diskPct].some((v) => Number.isFinite(v) && v >= 90);
   let health = { tone: 'ok', icon: 'check', text: 'Everything is running normally' };
   if (data.contained === false) health = { tone: 'warn', icon: 'shield', text: 'Host mode: agent sessions are not isolated' };
   if (hot) health = { tone: 'warn', icon: 'warn', text: 'The machine is under heavy load' };
+  // Every subscription at its limit: tasks wait for the first window reset (ROT-010).
+  if (accounts.length && accounts.every((a) => a.status === 'limited')) health = { tone: 'warn', icon: 'clock', text: 'No subscription has capacity left: tasks continue when a window resets' };
   if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'account needs' : 'accounts need'} attention` };
 
   const facts = [
@@ -376,7 +384,8 @@ export function renderStatus(data) {
       : h('span', { class: 'status-count' }, Number.isFinite(s.live_sessions) ? 'idle' : '—')));
 
   const ready = accounts.filter((a) => a.status === 'ok').length;
-  const accountSummary = [`${ready} ready`, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean).join(' · ');
+  const limited = accounts.filter((a) => a.status === 'limited').length;
+  const accountSummary = [`${ready} ready`, limited ? `${limited} at the limit` : null, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean).join(' · ');
 
   return [
     h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
@@ -385,7 +394,7 @@ export function renderStatus(data) {
       h('div', { class: 'stat-tiles' },
         statTile('cpu', 'CPU', percentText(vm.cpu_percent), vm.cpu_percent, vm.cpu_count ? `${vm.cpu_count} cores` : null),
         statTile('memory', 'Memory', percentText(memPct), memPct, vm.memory_total_bytes ? `${bytes(vm.memory_used_bytes)} of ${bytes(vm.memory_total_bytes)}` : null),
-        statTile('disk', 'Disk', diskPct === null ? 'unknown' : percentText(diskPct), diskPct, vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null),
+        statTile('disk', 'Disk', diskPct === null ? '—' : percentText(diskPct), diskPct, vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null),
         statTile('terminal', 'Sessions', Number.isFinite(sessions.live) ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}` : '—', sessionsPct, sessions.queued ? `${sessions.queued} queued` : 'agent sessions running')),
       h('div', { class: 'status-facts' }, facts)),
     sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
@@ -415,7 +424,7 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
     const name = limitName(w && w.window_minutes, fallback);
     const used = w ? w.used_percent : null;
     return h('div', { class: 'usage-row' },
-      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? resetLabel(w.resets_at) : Number.isFinite(used) ? '' : 'Not known yet')),
+      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? resetLabel(w.resets_at) : Number.isFinite(used) ? '' : 'Shows once a task runs')),
       usageBar(used, name),
       h('span', { class: ['usage-pct', `tone-${toneOf(used)}`] }, Number.isFinite(used) ? `${Math.round(used)}% used` : '—'));
   };
@@ -429,11 +438,12 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
     foldable ? h('span', { class: 'account-glance', title: 'Current session' }, usageBar(primary ? primary.used_percent : null, 'Current session'), h('span', { class: ['usage-pct', `tone-${toneOf(primary ? primary.used_percent : null)}`] }, primary && Number.isFinite(primary.used_percent) ? `${Math.round(primary.used_percent)}%` : '—')) : null,
     foldable ? icon('down', { size: 14 }) : null,
   ];
-  // A usage request the provider throttled or refused ("usage: …") is a note, not a broken
-  // account: tasks still run on it and the last known usage stays (ROT-009, #27).
+  // A usage reading that failed for now ("usage: …", one plain sentence) is a quiet note, not a
+  // broken account: tasks still run on it and the last known usage stays (ROT-009, #27). Usage
+  // comes from the subscription's running tasks (ADR-17), so an idle one simply has none yet.
   const usageNote = Boolean(account.last_error) && account.last_error.startsWith('usage:') && !['relogin', 'error'].includes(account.status);
   const body = h('div', { class: 'account-body' },
-    account.last_error && usageNote ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, `Usage: ${account.last_error.slice('usage:'.length).trim()}`)) : null,
+    account.last_error && usageNote ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, account.last_error.slice('usage:'.length).trim())) : null,
     account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.last_error)) : null,
     usageRow(usage.primary, 'Current session'),
     usageRow(usage.secondary, 'This week'),
@@ -442,7 +452,7 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
     usage.weekly_sonnet ? usageRow({ ...usage.weekly_sonnet, window_minutes: null }, 'Sonnet this week') : null,
     h('div', { class: 'account-foot' },
       account.in_use_by ? h('span', { class: 'status-count live' }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'} on this account`) : h('span', null, 'No tasks right now'),
-      h('span', null, usage.observed_at ? `Updated ${relLong(usage.observed_at)}` : 'Usage not known yet')));
+      h('span', null, usage.observed_at ? `Updated ${relLong(usage.observed_at)}` : 'Usage shows up when a task runs on it')));
   if (!foldable) return h('div', { class: 'account-card' }, h('div', { class: 'account-head' }, head), body);
   return rememberOpen(h('details', { class: 'account-fold' }, h('summary', { class: 'account-head' }, head), body), `account:${account.id}`, open);
 }
@@ -584,12 +594,16 @@ export function createSidebar(ctx) {
     newTask.dataset.route = target ? `/s/${encodeURIComponent(target.slug)}` : '/';
     newTask.href = href(newTask.dataset.route);
     newTask.classList.toggle('disabled', !target);
+    // Read access: the composer only explains; say so here as Home and the Tasks page do.
+    const readOnly = Boolean(target && target.access && !allows(target.access, 'write'));
+    if (readOnly) newTask.setAttribute('aria-disabled', 'true'); else newTask.removeAttribute('aria-disabled');
+    newTask.title = readOnly ? 'Requires write access' : `New task (${shortcut})`;
     // Links are built once and updated in place, so a focused link keeps focus across routes.
     if (!nav.children.length) nav.append(...NAV.map(([, label, iconName]) => h('a', { class: 'nav-item' }, h('span', { class: 'nav-slot' }, icon(iconName, { size: 20 })), h('span', null, label))));
     NAV.forEach(([page], i) => {
       const link = nav.children[i];
       const path = slug ? `/s/${slug}/${page}` : '/';
-      const active = Boolean(route && ['page', 'gitTask', 'taskInfo', 'skill'].includes(route.name) && route.page === page);
+      const active = Boolean(route && ['page', 'gitTask', 'taskInfo', 'skill', 'workflow', 'automation', 'mcpServer'].includes(route.name) && route.page === page);
       link.href = href(path);
       link.dataset.route = path;
       link.classList.toggle('active', active);
@@ -761,7 +775,3 @@ export function createSidebar(ctx) {
   };
 }
 
-/** Surface API failures from layout-level loaders without breaking rendering. */
-export function reportLoadError(error, what) {
-  errorToast(error, `Could not load ${what}`);
-}

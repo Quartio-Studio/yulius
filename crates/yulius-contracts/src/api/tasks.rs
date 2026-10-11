@@ -8,12 +8,16 @@ use super::git::Delivery;
 /// Step progress summary.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct StepProgress {
-    /// Completed steps.
+    /// Finished steps (done or skipped).
     pub done: u32,
     /// All steps.
     pub total: u32,
     /// Current step title.
     pub current: Option<String>,
+    /// Finished share of the plan's effort, 0-100, rounded down (STP-006): 9 of 10 equal steps
+    /// is 90.
+    #[serde(default)]
+    pub percent: u8,
 }
 
 /// A task in lists and events.
@@ -73,6 +77,23 @@ pub struct TaskSummary {
     /// A prompt typed into the session that Yulius held for a decision (TSK-013).
     #[serde(default)]
     pub held_prompt: Option<Box<HeldPrompt>>,
+    /// How "Auto" chose the task's mode and workflow when it was created (TSK-015); null when the
+    /// person picked both.
+    #[serde(default)]
+    pub auto: Option<AutoChoice>,
+}
+
+/// How "Auto" chose a new task's mode and workflow (SPEC-001 TSK-015).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoChoice {
+    /// How the mode was chosen: `jev` (Jev was confident), `default` (Goal: Jev not configured,
+    /// failing or unsure), or null when the person picked it.
+    pub mode: Option<String>,
+    /// How the workflow was chosen: `jev`, `default` ("Feature" or none), or null when the person
+    /// picked it.
+    pub workflow: Option<String>,
+    /// The task's workflow when it was created; null without one.
+    pub workflow_name: Option<String>,
 }
 
 /// One end of a chain (SPEC-001 TSK-012).
@@ -125,7 +146,7 @@ pub struct CreateTask {
     /// Harness: `claude` (the default and the only one supported).
     #[serde(default = "default_harness")]
     pub harness: String,
-    /// Workflow to seed steps/instructions.
+    /// Workflow to seed steps/instructions; `auto` lets Jev choose one or none (TSK-015).
     #[serde(default)]
     pub workflow_id: Option<String>,
     /// Model override.
@@ -137,7 +158,7 @@ pub struct CreateTask {
     /// Title (derived from the prompt when absent).
     #[serde(default)]
     pub title: Option<String>,
-    /// `goal` (default) or `prompt` (TSK-010).
+    /// `goal` (default), `prompt` (TSK-010) or `auto`: Jev chooses (TSK-015).
     #[serde(default)]
     pub mode: Option<String>,
     /// Run after this task of the same sandbox (SPEC-001 TSK-012): the new task waits as
@@ -194,6 +215,13 @@ pub struct StepView {
     pub updated_by: Option<String>,
     /// Last change time.
     pub updated_at: Option<String>,
+    /// Declared effort, 1-3 (STP-006).
+    #[serde(default = "one")]
+    pub effort: u8,
+}
+
+fn one() -> u8 {
+    1
 }
 
 /// Token and duration metrics; `None` means unknown, never zero.

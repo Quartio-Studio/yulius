@@ -118,6 +118,38 @@ pub struct ServeArgs {
     /// Probability Jev must give before a prompt typed into a running task is held (0.5–1).
     #[arg(long, env = "YULIUS_JEV_SCOPE_THRESHOLD", default_value_t = yulius_domain::intake::DEFAULT_SCOPE_THRESHOLD, value_parser = parse_threshold)]
     pub jev_scope_threshold: f64,
+    /// File holding a token that may read Quartio-Studio/yulius (owner-only, mode 0600), for
+    /// update checks and the helper's fetch when the GitHub App cannot read that repository
+    /// (SPEC-002 ADR-18).
+    #[arg(long, env = "YULIUS_UPDATE_TOKEN_FILE")]
+    pub update_token_file: Option<PathBuf>,
+    /// The update helper's state directory (`yulius update-helper`): updates can be installed
+    /// when it exists.
+    #[arg(
+        long,
+        env = "YULIUS_UPDATE_STATE",
+        default_value = "/var/lib/yulius-update"
+    )]
+    pub update_state_dir: PathBuf,
+    /// Minutes between automatic checks of `main` (0: only "Check now").
+    #[arg(long, env = "YULIUS_UPDATE_CHECK_MINUTES", default_value_t = 60)]
+    pub update_check_minutes: u64,
+    /// Yulius-run CI (SPEC-002 ADR-21): `off` stops running projects' CI jobs (merges that
+    /// require checks then wait for GitHub's checks again).
+    #[arg(long, env = "YULIUS_CI", default_value = "on", value_parser = ["on", "off"])]
+    pub ci: String,
+    /// CI jobs running at once on this machine, across all sandboxes.
+    #[arg(long, env = "YULIUS_CI_MAX_JOBS", default_value_t = 4,
+          value_parser = clap::value_parser!(u32).range(1..=64))]
+    pub ci_max_jobs: u32,
+    /// Wall-clock limit of one CI job, in minutes.
+    #[arg(long, env = "YULIUS_CI_JOB_TIMEOUT_MIN", default_value_t = 30,
+          value_parser = clap::value_parser!(u64).range(1..=360))]
+    pub ci_job_timeout_min: u64,
+    /// How often each sandbox is checked for new pull request heads and pushes, in seconds.
+    #[arg(long, env = "YULIUS_CI_POLL_SECS", default_value_t = 60,
+          value_parser = clap::value_parser!(u64).range(10..=3600))]
+    pub ci_poll_secs: u64,
 }
 
 /// Parses a probability threshold (0.5–1).
@@ -129,36 +161,61 @@ pub fn parse_threshold(text: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("invalid threshold {text:?}: expected a number from 0.5 to 1"))
 }
 
-/// The task-intake services (SPEC-002 ADR-16): Jev when its key file is usable, and then split
-/// proposals by headless Claude Code runs in `<data>/runtime/intake`.
+/// The task-intake services (SPEC-002 ADR-16): Jev with the key a superadmin saved or the one in
+/// `YULIUS_JEV_API_KEY_FILE` (picked by `App::load_jev_key`, changeable without a restart,
+/// SPEC-001 ADM-002), and split proposals by headless Claude Code runs in
+/// `<data>/runtime/intake`.
 fn intake_services(args: &ServeArgs) -> yulius_app::intake::IntakeServices {
-    use yulius_app::ports::intake::{ChoiceEvaluator, SplitProposer};
-    let jev: Option<Arc<dyn ChoiceEvaluator>> = match &args.jev_api_key_file {
-        None => {
-            tracing::info!("task intake is off: no Jev key file (YULIUS_JEV_API_KEY_FILE)");
-            None
-        }
-        Some(path) => match crate::wiring::jev::read_key_file(path)
-            .and_then(crate::wiring::jev::JevClient::new)
-        {
-            Ok(client) => {
-                tracing::info!(key_file = %path.display(), "task intake is on (Jev jev-1.13.0)");
-                Some(Arc::new(client))
-            }
+    use yulius_app::ports::intake::SplitProposer;
+    let config_key = crate::wiring::jev::config_key(args.jev_api_key_file.as_deref());
+    if let (Err(err), Some(path)) = (&config_key, &args.jev_api_key_file) {
+        tracing::warn!(key_file = %path.display(), "the Jev key file is not usable: {err}");
+    }
+    let proposer: Arc<dyn SplitProposer> =
+        Arc::new(crate::wiring::split::ClaudeSplitProposer::new(
+            yulius_harness::launch::CLAUDE_PROGRAM,
+            args.data_dir.join("runtime").join("intake"),
+        ));
+    yulius_app::intake::IntakeServices::new(None, Some(proposer))
+        .with_thresholds(args.jev_split_threshold, args.jev_scope_threshold)
+        .with_key_management(Arc::new(crate::wiring::jev::JevKeys::default()), config_key)
+}
+
+/// The commit this binary was built from (`build.rs`); `None` when built outside Git.
+#[must_use]
+pub fn build_commit() -> Option<String> {
+    let commit = env!("YULIUS_BUILD_COMMIT");
+    yulius_domain::update::is_commit(commit).then(|| commit.to_owned())
+}
+
+/// Instance updates (SPEC-002 ADR-18): `main` of Quartio-Studio/yulius on GitHub, the helper's
+/// files, and the read token when one is configured.
+fn update_services(args: &ServeArgs) -> Result<yulius_app::updates::UpdateServices, String> {
+    let mut services = yulius_app::updates::UpdateServices::new(build_commit());
+    services.source = Some(Arc::new(crate::wiring::release::GitHubReleases::new()?));
+    services.helper = Some(Arc::new(
+        crate::wiring::update_files::FileUpdateHelper::new(
+            &args.data_dir,
+            args.update_state_dir.clone(),
+        ),
+    ));
+    services.read_token = match &args.update_token_file {
+        None => None,
+        Some(path) => match crate::wiring::jev::read_secret_file(path) {
+            Ok(token) => Some(token),
             Err(err) => {
-                tracing::warn!("task intake is off: {err}");
+                tracing::warn!("the update token file is not usable: {err}");
                 None
             }
         },
     };
-    let proposer: Option<Arc<dyn SplitProposer>> = jev.as_ref().map(|_| {
-        Arc::new(crate::wiring::split::ClaudeSplitProposer::new(
-            yulius_harness::launch::CLAUDE_PROGRAM,
-            args.data_dir.join("runtime").join("intake"),
-        )) as Arc<dyn SplitProposer>
-    });
-    yulius_app::intake::IntakeServices::new(jev, proposer)
-        .with_thresholds(args.jev_split_threshold, args.jev_scope_threshold)
+    services.check_every = (args.update_check_minutes > 0)
+        .then(|| std::time::Duration::from_secs(args.update_check_minutes.saturating_mul(60)));
+    match services.build.as_deref() {
+        Some(commit) => tracing::info!(commit, "build"),
+        None => tracing::info!("build commit unknown (built outside Git)"),
+    }
+    Ok(services)
 }
 
 /// Rendering of the sandbox browsers (SPEC-002 ADR-15).
@@ -345,6 +402,12 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     config.max_live_sessions = args.max_live_sessions;
     config.contained = args.contained;
     config.upload_max_bytes = args.upload_max_mb * 1024 * 1024;
+    config.ci = yulius_app::ci::CiSettings {
+        enabled: args.ci == "on",
+        max_jobs: args.ci_max_jobs,
+        job_timeout: std::time::Duration::from_secs(args.ci_job_timeout_min * 60),
+        poll: std::time::Duration::from_secs(args.ci_poll_secs),
+    };
     config.own_ports = vec![args.bind.port(), args.internal_bind.port()];
     config.preview = preview_config(&args.public_url, args.preview_domain.as_deref())?;
     config
@@ -369,6 +432,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     };
     let app = App::new(config, deps);
     app.set_intake(intake_services(args));
+    app.set_updates(update_services(args)?);
     if let Some(shell) = &args.shell {
         app.set_shell_program(shell.clone());
     }
@@ -387,6 +451,9 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         return Err("the internal listener must bind a loopback address".into());
     }
     let app = build_app(&args)?;
+    // An update in progress keeps every task paused from the first hook call (ADR-18).
+    app.restore_update_hold().await;
+    app.load_jev_key().await;
     app.cleanup_stale_logins().await;
     match app.reconcile_environment_runs().await {
         Ok(0) => {}
@@ -415,6 +482,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         .map_err(|e| format!("cannot bind {}: {e}", args.internal_bind))?;
     tracing::info!(public = %args.bind, internal = %args.internal_bind, "yulius listening");
     app.start_background();
+    app.start_update_loop();
     match app.install_skill_catalog().await {
         Ok(files) => tracing::debug!(files, "skill catalog ready"),
         Err(err) => tracing::error!(error = %err, "cannot install the skill catalog"),
@@ -430,8 +498,15 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let workspace_reaper = app.start_workspace_services().await;
     let public_router = yulius_server::public_router(app.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
-    let internal_router = yulius_server::internal_router(app.clone())
-        .into_make_service_with_connect_info::<SocketAddr>();
+    // Agent runs' egress proxy shares the internal listener (SPEC-002 ADR-20).
+    let egress =
+        crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default()).await?;
+    let internal_router = crate::wiring::egress::with_egress(
+        yulius_server::internal_router(app.clone()),
+        egress,
+        &app.config.internal_url,
+    )
+    .into_make_service_with_connect_info::<SocketAddr>();
     let public_task = axum::serve(public.tap_io(no_delay), public_router)
         .with_graceful_shutdown(shutdown_signal());
     let internal_task = axum::serve(internal.tap_io(no_delay), internal_router)

@@ -2,7 +2,7 @@
 
 A stack-agnostic staff-engineer review checklist. Apply every applicable section based on which files changed; skip sections that don't apply to the diff. Each check is phrased as a question to ask of the change, with the severity a violation typically earns in parentheses. Severities and the verdict rule are defined at the end.
 
-When the pipeline config (`.ai/agentic.config.json`) sets `reviewChecklist`, apply that repo-local file in addition to this one — it extends these rules, never replaces them.
+If the repository has its own review checklist (for example `CODE_REVIEW.md`), apply it in addition to this one: it extends these rules, never replaces them.
 
 ## 1. Correctness & Edge Cases
 
@@ -236,7 +236,7 @@ Flag any of these on sight:
 | Anti-pattern | Severity | Fix |
 |---|---|---|
 | Public contract surface removed/renamed without a deprecation bridge | blocker | Keep the old surface working, add the new one, deprecate with a removal target |
-| Change contradicts a product non-goal, business rule, or decision in `product-brief.md` without a superseding entry | blocker | Add a superseding row (old id, owner, why) approved by the entry's owner, or drop the change; never silently drift |
+| Change contradicts a product non-goal, business rule or active decision record without a superseding record | blocker | Add a superseding decision record (which one it replaces, and why) in the same change, or drop the change; never silently drift |
 | Missing owning-scope filter on a query over scoped data | blocker | Add the scope filter; add a test proving isolation |
 | Permission check only in the UI | blocker | Enforce server-side; the UI merely reflects it |
 | Untrusted input concatenated into a query, command, or path | blocker | Parameterize; canonicalize paths against a base directory |
@@ -266,12 +266,12 @@ Flag any of these on sight:
 | Severity | Meaning | Examples |
 |----------|---------|----------|
 | **blocker** | Merging this causes or invites real damage: security holes, data loss or corruption, cross-scope data leaks, silently broken public contracts, failing validation gates | Missing permission check; SQL built by concatenation; dropped column consumers still read; secret in a log line |
-| **major** | A defect or debt that must be resolved before merge unless the maintainer explicitly accepts and documents the risk | Correctness bug on a realistic path; bug fix without a regression test; unbounded query; check-then-act race; weakened assertions |
+| **major** | A defect or debt that must be resolved before merge unless a recorded decision (reason and follow-up issue) accepts the risk | Correctness bug on a realistic path; bug fix without a regression test; unbounded query; check-then-act race; weakened assertions |
 | **minor** | Should be fixed, but does not block the merge on its own | Convention violation; readability problem; stale comment; missing log context |
 | **nit** | Optional polish; the author decides | Naming taste; comment phrasing; boolean-argument readability |
 
 ## Verdict Rule
 
 - Any **blocker** → **request changes**. No exceptions, no matter how green the other checks are.
-- Any **major** without an explicit, documented waiver from the maintainer → **request changes**.
+- Any **major** without a recorded decision accepting it (reason and follow-up issue) → **request changes**.
 - Only minors and nits → **approve**, and list them in the review so the author can pick them up.

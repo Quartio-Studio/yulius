@@ -393,6 +393,16 @@ impl FakeRemote for BareRemote {
         }
         git_sync(&self.origin, &args).map(drop)
     }
+    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
+        if self.branch_sha(branch).is_none() {
+            return Ok(false);
+        }
+        git_sync(
+            &self.origin,
+            &["update-ref", "-d", &format!("refs/heads/{branch}")],
+        )?;
+        Ok(true)
+    }
 }
 
 // ---------------------------------------------------------------- fixture
@@ -746,6 +756,7 @@ async fn set_steps(f: &Fixture, task: &str, statuses: &[&str]) -> BoxResult<()> 
                 note: None,
                 updated_by: None,
                 updated_at: None,
+                effort: 1,
             })
         })
         .collect::<BoxResult<Vec<_>>>()?;
@@ -927,6 +938,26 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
             .contains(&"merge_pull #1 squash".to_owned())
     );
     assert_eq!(git(&f.origin, &["show", "dev:feature.txt"])?, "hello");
+    // Hygiene (DLV-007): the merged head branch is deleted on GitHub.
+    assert!(
+        f.h.github
+            .writes()
+            .contains(&"delete_branch feat/1-checkout-api".to_owned()),
+        "{:?}",
+        f.h.github.writes()
+    );
+    assert!(
+        git(
+            &f.origin,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/heads/feat/1-checkout-api"
+            ]
+        )
+        .is_err()
+    );
 
     // The dev checkpoint comes first and needs an explicit confirmation.
     let early = f
@@ -1377,11 +1408,11 @@ async fn studio_auto_promotes_until_the_profile_is_gated() -> TestResult {
     assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
     assert_eq!(merged.body["stage"], "merged_integration");
     assert_eq!(actions(&merged.body), ["promote"]);
-    assert_eq!(
-        f.h.github.writes().len(),
-        writes_before + 1,
-        "only the merge happened"
-    );
+    // Only the merge and the merged branch's deletion (DLV-007), no promotion.
+    let after: Vec<String> = f.h.github.writes()[writes_before..].to_vec();
+    assert_eq!(after.len(), 2, "{after:?}");
+    assert!(after[0].starts_with("merge_pull #"), "{after:?}");
+    assert_eq!(after[1], "delete_branch feat/2-pricing");
     assert_eq!(f.origin_sha("main")?, quartio, "main did not move");
 
     let promoted = f
@@ -1966,6 +1997,55 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
     let row = &page.body["tasks"][0];
     assert_eq!(row["pr"]["number"], 1, "{}", page.body);
     assert_eq!(row["pr"]["state"], "merged");
+    Ok(())
+}
+
+/// DSC-013 (#139): features and fixes need a spec, documentation does not. A task without a
+/// workflow that only changed documents opens its pull request with no spec and no plan; once it
+/// changes code, it needs the spec again.
+#[tokio::test]
+async fn a_docs_only_task_needs_no_spec_to_deliver() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Fix the README", "docs/1-readme", "dev")
+        .await?;
+    let t1 = TaskId::parse("t1")?;
+    let pulls_opened = || {
+        f.h.github
+            .writes()
+            .iter()
+            .filter(|w| w.starts_with("create_pull"))
+            .count()
+    };
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 0, "nothing changed yet");
+
+    commit_file(
+        &wt,
+        "docs/setup.md",
+        "# Setup\n",
+        "docs: describe the setup",
+    )?;
+    let task = f.h.store.task(&t1).await?.ok_or("task")?;
+    assert!(!f.h.app.spec_required(&task).await?, "documentation only");
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 1, "{:?}", f.h.github.writes());
+
+    let t2_wt = f
+        .add_task("t2", "Checkout API", "feat/2-checkout-api", "dev")
+        .await?;
+    commit_file(&t2_wt, "docs/checkout.md", "# Checkout\n", "docs")?;
+    commit_file(
+        &t2_wt,
+        "src/checkout.rs",
+        "fn main() {}\n",
+        "feat: checkout",
+    )?;
+    let t2 = TaskId::parse("t2")?;
+    let task = f.h.store.task(&t2).await?.ok_or("task")?;
+    assert!(f.h.app.spec_required(&task).await?, "code changed");
+    f.h.app.auto_open_pr(&t2).await;
+    assert_eq!(pulls_opened(), 1, "a code change without a spec waits");
     Ok(())
 }
 

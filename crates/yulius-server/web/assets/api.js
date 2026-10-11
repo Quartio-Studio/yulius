@@ -121,6 +121,8 @@ export function createApi(transport, { onUnauthenticated } = {}) {
       const error = payload
         ? new ApiError(response.status, payload.code || STATUS_CODES[response.status] || 'error', payload.message || `Request failed (${response.status})`)
         : new ApiError(response.status, STATUS_CODES[response.status] || (response.status >= 500 ? 'internal' : 'error'), `Request failed (${response.status})`);
+      // Extra fields beside `error` (for example `reauth` with a `reauth_required` refusal).
+      if (data && typeof data === 'object') error.body = data;
       if (response.status === 401 && !allow401 && onUnauthenticated) onUnauthenticated(error);
       throw error;
     }

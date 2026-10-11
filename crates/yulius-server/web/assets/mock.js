@@ -9,7 +9,9 @@
 // keeps unknown usage `null`.
 //
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
-// role=member|admin|superadmin (default superadmin), contained=0 (host mode), github=0.
+// role=member|admin|superadmin (default superadmin), contained=0 (host mode), github=0,
+// update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
+// jev=config (a Jev key file is configured).
 
 const MIN = 60e3;
 const HOUR = 60 * MIN;
@@ -94,6 +96,8 @@ function makeSteps(taskId, done, current, total = PLAN.length) {
       note: status === 'in_progress' ? 'Handlers for /cart and /checkout; Stripe test keys only.' : status === 'done' && i === 0 ? 'Spec at docs/specs/2026-10-07-checkout-api.md' : '',
       updated_by: i < done ? (i % 2 ? 'task #12 (claude)' : 'mkarp') : status === 'in_progress' ? 'task #12 (claude)' : '',
       updated_at: status === 'pending' ? null : iso((total - i) * 11 * MIN),
+      // The one step that cannot be split declares a larger effort (STP-006).
+      effort: PLAN[i] === 'Implement checkout API' ? 3 : 1,
     });
   }
   return steps;
@@ -118,10 +122,22 @@ function seed(params) {
     sandboxes: [],
     tasks: [],
     messages: [],
+    recovery: { available: true, locked: false, attempts_left: 3 },
     eventSockets: new Set(),
     sessions: new Map(),
     browsers: new Map(),
     shells: new Map(), // id → {id, sandbox_id, name, task_id, created_at, session}
+    // Instance updates and the Jev key (SPEC-002 ADR-18): `update=1` (main moved on), `update=fail`
+    // (main moved on and its install is rolled back), `helper=0` (no update helper), `jev=config`.
+    update: {
+      current: '68b4f5f2c1d0e9a8b7c6d5e4f3a2b1c0d9e8f7a6',
+      offer: ['1', 'fail'].includes(params.get('update')) ? '9c1e7d3b5a2f4e6d8c0b1a3f5e7d9c2b4a6f8e0d' : null,
+      fail: params.get('update') === 'fail',
+      helper: params.get('helper') !== '0',
+      checkedAt: ['1', 'fail'].includes(params.get('update')) ? iso(10 * MIN) : null,
+      run: null,
+    },
+    jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
 
     nextId: 100,
   };
@@ -203,7 +219,7 @@ function seed(params) {
   ];
   db.accounts = [
     { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', email: 'michal.karp@example.com', plan: 'Max 20x', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
-    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', email: 'team.dev@example.com', plan: 'Max 20x', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: the provider is limiting usage requests for this account (HTTP 429); Yulius asks again in about 12 min', in_use_by: 3 },
+    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', email: 'team.dev@example.com', plan: 'Max 20x', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
     { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', email: 'ops@example.com', plan: 'Max 5x', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
     { id: 'acc_x1', provider: 'anthropic', label: 'Claude #4', email: 'studio@example.com', plan: 'Max 5x', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
     { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', email: 'product@example.com', plan: 'Pro', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
@@ -220,8 +236,9 @@ function seed(params) {
     { name: 'yulius-rust-slice', description: 'Implement a vertical Rust slice with tests and docs.', source: 'repository', path: '.agents/skills/yulius-rust-slice/SKILL.md', enabled: true },
     { name: 'design', description: 'Make UI designs consistent with the Quartio design system.', source: 'repository', path: '.claude/skills/design/SKILL.md', enabled: true },
     { name: 'quartio-brand', description: 'Brand voice and visual identity for customer-facing copy.', source: 'instance', path: 'instance/skills/quartio-brand/SKILL.md', enabled: true },
-    { name: 'om-code-review', description: 'Structured code review checklist (Open Mercato).', source: 'open-mercato', path: 'open-mercato/om-code-review/SKILL.md', enabled: true },
-    { name: 'om-testing', description: 'Write meaningful tests for every behavior change (Open Mercato).', source: 'open-mercato', path: 'open-mercato/om-testing/SKILL.md', enabled: false },
+    { name: 'delivery-pipeline', description: 'The one autonomous path every feature and fix takes, from a ready issue to verified production.', source: 'yulius', path: 'skills/yulius/delivery-pipeline/SKILL.md', enabled: true },
+    { name: 'om-code-review', description: 'Review a diff against correctness, security, contracts and tests with a mechanical verdict.', source: 'open-mercato', path: 'skills/open-mercato/om-code-review/SKILL.md', enabled: true },
+    { name: 'test-driven-development', description: 'Write the test first, watch it fail for the right reason, then the minimal code.', source: 'superpowers', path: 'skills/superpowers/test-driven-development/SKILL.md', enabled: false },
   ];
   db.automations = [
     { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
@@ -239,6 +256,7 @@ function seed(params) {
     { id: 'usr_4', github_login: 'old-contractor', display_name: 'old-contractor', is_instance_admin: false, disabled: true, github_linked: true },
   ];
   db.runs = []; // EnvironmentRun records, newest last
+  db.ci = seedCi();
   const pastRun = (n, env, kind, by, ago) => ({ run_id: `run_seed_${n}`, sandbox_id: 'sb_product', environment: env, kind, state: 'succeeded', command: kind === 'manual' ? null : 'node scripts/deployer.mjs --target dev-vm', commit: 'b7e9f01c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a', requested_by: by, output: kind === 'manual' ? `${by} confirmed ${env}.` : 'deploying… done in 2m 14s', exit_code: kind === 'manual' ? null : 0, started_at: iso(ago), ended_at: iso(ago - 2 * MIN), startedMs: Date.now() - ago - 1e9 });
   db.runs.push(pastRun(1, 'dev-vm', 'command', 'mkarp', 2 * DAY + HOUR), pastRun(2, 'dev-vm', 'manual', 'mkarp', 2 * DAY + 30 * MIN), pastRun(3, 'rollout', 'manual', 'anna-q', 2 * DAY - HOUR), pastRun(4, 'dev-vm', 'command', 'mkarp', 3 * HOUR));
   db.promotionPr = new Map(); // sandbox id → open promotion PR URL (merge_commit promotion)
@@ -257,7 +275,12 @@ function seed(params) {
 function stepsSummary(task) {
   const list = task.stepsList;
   const current = list.find((s) => s.status === 'in_progress');
-  return { done: list.filter((s) => s.status === 'done').length, total: list.length, current: current ? current.title : null };
+  // Skipped steps count as finished (STP-005); progress is weighted by declared effort (STP-006).
+  const finished = list.filter((s) => s.status === 'done' || s.status === 'skipped');
+  const effort = (s) => Math.min(3, Math.max(1, s.effort || 1));
+  const total = list.reduce((sum, s) => sum + effort(s), 0);
+  const percent = total ? Math.floor((finished.reduce((sum, s) => sum + effort(s), 0) * 100) / total) : 0;
+  return { done: finished.length, total: list.length, current: current ? current.title : null, percent };
 }
 
 function summary(task) {
@@ -272,6 +295,8 @@ function summary(task) {
     next: (task.nextLinks || []).map((link) => ({ ...link })),
     held_prompt: task.heldPrompt ? { ...task.heldPrompt } : null,
     ...(task.mode ? { mode: task.mode } : {}),
+    // How Auto chose the mode and workflow (TSK-015).
+    auto: task.auto ? { ...task.auto } : null,
     // Background shells an idle agent left running (TSK-014).
     background_shells: task.status === 'running' ? task.background_shells ?? null : null,
   };
@@ -487,6 +512,31 @@ route('POST', '/api/auth/password', ({ db, body }) => {
 route('POST', '/api/auth/mock-github', ({ db }) => { db.signedIn = true; return db.me; });
 route('POST', '/api/auth/logout', ({ db }) => { db.signedIn = false; for (const s of db.eventSockets) s.serverClose(1000); return json(204); });
 route('GET', '/api/me', ({ db }) => db.me);
+// Superadmin recovery (ACC-011): a code is set, three attempts left.
+route('GET', '/api/auth/recovery', ({ db }) => clone(db.recovery));
+route('POST', '/api/auth/recover', ({ db, body }) => {
+  if (db.recovery.locked) fail(403, 'forbidden', 'recovery is locked');
+  if (!body || body.code !== '123456') {
+    db.recovery.attempts_left = Math.max(0, db.recovery.attempts_left - 1);
+    if (db.recovery.attempts_left === 0) { db.recovery.locked = true; db.recovery.available = false; }
+    fail(422, 'invalid', `wrong code (${db.recovery.attempts_left} attempts left; mock code: 123456)`);
+  }
+  return { recovery_code: '654321' };
+});
+route('POST', '/api/admin/recovery-code', ({ db, body }) => {
+  if (!body || body.password !== 'correct horse battery') fail(403, 'forbidden', 'Wrong password. (Mock password: correct horse battery)');
+  db.recovery = { available: true, locked: false, attempts_left: 3 };
+  return { recovery_code: '482913' };
+});
+// The instance's GitHub App (ACC-006).
+route('GET', '/api/admin/github', ({ db }) => (db.me.instance.github_configured
+  ? { configured: true, app_slug: 'yulius-quartio-studio', owner_login: db.me.instance.owner_login, install_url: 'https://github.com/apps/yulius-quartio-studio/installations/new', installed: true }
+  : { configured: false, app_slug: null, owner_login: null, install_url: null, installed: false }));
+route('POST', '/api/admin/github/manifest', ({ db, body }) => {
+  if (db.me.instance.github_configured) fail(409, 'conflict', 'a GitHub App is already configured');
+  const owner = (body && body.owner_login) || 'Quartio-Studio';
+  return { post_url: `https://github.com/organizations/${owner}/settings/apps/new?state=mock`, manifest: { name: 'Yulius (mock)', url: ORIGIN } };
+});
 route('POST', '/api/device/approve', ({ body }) => {
   if (!/^[A-Z0-9]{4}-?[A-Z0-9]{4}$/.test(body.user_code || '')) fail(404, 'not_found', 'not found');
   return json(204);
@@ -617,15 +667,20 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
   const archived = query.get('archived') === 'true';
   return db.tasks.filter((t) => t.sandbox_id === p[0] && t.archived === archived).map(summary);
 });
-route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing') fail(409, 'conflict', 'The project is being prepared; new tasks start after the preparation task lands (or an admin skips it).');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
   if (body.harness && body.harness !== 'claude') fail(422, 'invalid', 'harness must be claude (Yulius runs Claude Code only)');
+  if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
+  const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
+  if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
+  // Auto (TSK-015): the mock's stand-in for Jev answers after a moment, like the server.
+  const choice = body.mode === 'auto' || body.workflow_id === 'auto' ? await mockAutoChoice(body, visible) : null;
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
   const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
-  const wf = db.workflows.find((w) => w.id === body.workflow_id);
+  const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const before = body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
   if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
@@ -636,7 +691,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
     unread_messages: 0, archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
     model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
-    delivery: null,
+    delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
   };
   db.tasks.push(task);
   recount(db);
@@ -649,8 +704,40 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return json(201, summary(task));
 });
+/**
+ * The mock's Auto choice (TSK-015): a question ("?", or starting with how/why/what…) is a prompt
+ * with the Research workflow (never a spec-first one); "fix", "bug" or "crash" gets Fix; anything
+ * else is a goal with Feature. "maybe" makes the stand-in unsure, so the defaults apply (Goal and
+ * Feature; no workflow for a prompt).
+ */
+async function mockAutoChoice(body, workflows) {
+  await delay(700);
+  const text = String(body.prompt || '').trim();
+  const unsure = /\bmaybe\b/i.test(text);
+  const question = /\?|^(how|why|what|where|when|which|who|is|are|does|do|can|could|should)\b/i.test(text);
+  const named = (name) => workflows.find((w) => w.name.toLowerCase() === name) || null;
+  const autoMode = body.mode === 'auto';
+  const mode = autoMode ? (!unsure && question ? 'prompt' : 'goal') : body.mode || 'goal';
+  let workflow = body.workflow_id && body.workflow_id !== 'auto' ? workflows.find((w) => w.id === body.workflow_id) : null;
+  if (body.workflow_id === 'auto') {
+    const noSpec = (w) => (w && !(w.gates && w.gates.require_spec) ? w : null);
+    if (unsure) workflow = mode === 'prompt' ? null : named('feature');
+    else if (mode === 'prompt') workflow = noSpec(named('research'));
+    else workflow = /\b(fix|bug|crash)/i.test(text) ? named('fix') || named('feature') : named('feature');
+  }
+  return {
+    mode,
+    workflow,
+    auto: {
+      mode: autoMode ? (unsure ? 'default' : 'jev') : null,
+      workflow: body.workflow_id === 'auto' ? (unsure ? 'default' : 'jev') : null,
+      workflow_name: workflow ? workflow.name : null,
+    },
+  };
+}
+
 // Task intake (TSK-011): requests of 40+ words mixing UI and backend work look like several
-// tasks; the proposal groups lines by area (UX first, backend second).
+// tasks; the proposal groups lines by area (UX first, backend second), after a moment (Claude).
 const MOCK_BACKEND = /backend|api|server|database|pool|queue/i;
 route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -661,8 +748,9 @@ route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
   const several = lines.some((l) => MOCK_BACKEND.test(l)) && lines.some((l) => !MOCK_BACKEND.test(l));
   return { verdict: several ? 'several' : 'one', checked: true };
 });
-route('POST', `/api/sandboxes/${ID}/intake/proposal`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  await delay(900);
   const lines = String(body.prompt || '').split('\n').filter((l) => /^\s*(\d+[.)]|[-*•])\s/.test(l)).map((l) => l.trim());
   const backend = lines.filter((l) => MOCK_BACKEND.test(l));
   const ux = lines.filter((l) => !MOCK_BACKEND.test(l));
@@ -738,6 +826,15 @@ route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
     if (session) session.notice(`↻ switched from ${from} to ${task.account_label}`);
   }, 2500);
   return summary(task);
+});
+route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (['starting', 'running', 'switching', 'stopping'].includes(task.status)) fail(409, 'conflict', 'stop the task before deleting it');
+  db.tasks = db.tasks.filter((t) => t.id !== task.id);
+  recount(db);
+  emit(db, { type: 'task.removed', task_id: task.id });
+  return json(204);
 });
 route('POST', `/api/tasks/${ID}/archive`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
@@ -914,6 +1011,168 @@ route('GET', `/api/sandboxes/${ID}/delivery/runs/${ID}`, ({ db, p }) => {
   const run = db.runs.find((r) => r.run_id === p[1] && r.sandbox_id === p[0]);
   if (!run) fail(404, 'not_found', 'not found');
   return runView(progressRun(db, run));
+});
+
+// ---- Yulius-run CI and repository hygiene (docs/api.md "CI")
+
+const CI_JOBS = [
+  { name: 'lint', command: 'cargo clippy --all-targets -- -D warnings', matrix: null },
+  { name: 'test (1/2)', command: 'cargo nextest run --partition "count:$YULIUS_CI_MATRIX"', matrix: '1/2' },
+  { name: 'test (2/2)', command: 'cargo nextest run --partition "count:$YULIUS_CI_MATRIX"', matrix: '2/2' },
+];
+
+function ciOutput(job, ok) {
+  const lines = [`$ ${job.command}`, '   Compiling yulius-domain v0.1.0', '   Compiling yulius-app v0.1.0', '    Finished `test` profile in 41.2s'];
+  if (job.name.startsWith('lint')) lines.push(ok ? 'lint: no warnings' : 'error: unused variable `x`');
+  else lines.push(ok ? 'Summary: 214 tests run: 214 passed, 0 skipped' : 'test delivery::merge_waits_for_ci ... FAILED\nSummary: 213 tests run: 212 passed, 1 failed');
+  return `${lines.join('\n')}\n`;
+}
+
+function ciRun(id, reference, sha, state, minutesAgo, { failJob = null, reason = null, by = 'yulius' } = {}) {
+  const queued = Date.now() - minutesAgo * 60000;
+  const started = queued + 4000;
+  const ended = state === 'running' || state === 'queued' ? null : started + 3 * 60000 + 12000;
+  const jobs = CI_JOBS.map((job, i) => {
+    const failed = failJob === job.name;
+    const jobState = state === 'passed' ? 'passed' : state === 'failed' ? (failed ? 'failed' : 'passed') : state === 'running' ? (i === 0 ? 'passed' : 'running') : state;
+    return {
+      id: `${id}_j${i}`, name: job.name, command: job.command, matrix: job.matrix, state: jobState, reason: null,
+      exit_code: jobState === 'passed' ? 0 : jobState === 'failed' ? 101 : null,
+      duration_ms: jobState === 'passed' || jobState === 'failed' ? 120000 + i * 30000 : null,
+      output: jobState === 'queued' ? '' : jobState === 'running' ? `$ ${job.command}\n   Compiling yulius-app v0.1.0\n` : ciOutput(job, !failed),
+    };
+  });
+  const pr = reference.startsWith('pr/') ? Number(reference.slice(3)) : null;
+  return {
+    id, reference, label: pr ? `PR #${pr}` : reference.slice(7), pr_number: pr, sha, state, source: 'yulius_toml', jobs, reason,
+    queued_at: new Date(queued).toISOString(), started_at: state === 'queued' ? null : new Date(started).toISOString(),
+    ended_at: ended ? new Date(ended).toISOString() : null, duration_ms: ended ? ended - started : null,
+    requested_by: by, status: state === 'running' || state === 'queued' ? 'pending' : 'published', created: Date.now(),
+  };
+}
+
+function seedCi() {
+  const studioGate = { source: 'yulius_toml', jobs: CI_JOBS.map(({ name, command, matrix }) => ({ name, command, matrix })) };
+  return {
+    sb_studio: {
+      gate: studioGate, gate_problem: null, status_access: null, actions_workflows: [],
+      runs: [
+        ciRun('ci_s4', 'branch/quartio', '9f3c2a1b7e4d', 'running', 1),
+        ciRun('ci_s3', 'pr/221', '4be81c0d2a9f', 'passed', 22),
+        ciRun('ci_s2', 'pr/218', '0d7e5f3a1c2b', 'failed', 47, { failJob: 'test (2/2)' }),
+        ciRun('ci_s1', 'pr/218', 'a1b2c3d4e5f6', 'cancelled', 63, { reason: 'superseded by 0d7e5f3' }),
+      ],
+      hygiene: {
+        scanned_at: new Date(Date.now() - 2 * 3600000).toISOString(), notes: [],
+        items: [
+          { kind: 'remote_branch', name: 'feat/12-old-landing', reason_code: 'pull_merged', reason: 'pull request #12 was merged', safe: true },
+          { kind: 'local_branch', name: 'feat/12-old-landing', reason_code: 'local_copy', reason: 'no worktree uses it and its commits are on GitHub', safe: true },
+          { kind: 'worktree', name: 'worktrees/tsk_studio_9', reason_code: 'task_archived', reason: 'task #9 is archived', safe: true },
+          { kind: 'remote_branch', name: 'spike/websocket-pool', reason_code: 'idle', reason: 'no pull request and no commit for 21 days', safe: false },
+        ],
+      },
+    },
+    sb_product: {
+      gate: null, gate_problem: null, status_access: null, actions_workflows: ['ci.yml', 'deploy.yml'], runs: [],
+      hygiene: { scanned_at: new Date(Date.now() - 3600000).toISOString(), notes: [], items: [] },
+    },
+    sb_three: {
+      gate: { source: 'profile', jobs: [{ name: 'gate', command: 'make ci', matrix: null }] }, gate_problem: null, status_access: null, actions_workflows: [],
+      runs: [ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'passed', 180)],
+      hygiene: { scanned_at: null, notes: [], items: [] },
+    },
+  };
+}
+
+function ciOf(db, sid) {
+  sandboxOf(db, sid);
+  if (!db.ci[sid]) db.ci[sid] = { gate: null, gate_problem: null, status_access: null, actions_workflows: [], runs: [], hygiene: { scanned_at: null, notes: [], items: [] } };
+  return db.ci[sid];
+}
+
+/** A running mock run finishes about 20 s after it was created. */
+function progressCi(run) {
+  if (run.state === 'running' && Date.now() - run.created > 20000) {
+    run.state = 'passed';
+    run.status = 'published';
+    run.ended_at = new Date().toISOString();
+    run.duration_ms = Date.now() - Date.parse(run.started_at);
+    for (const job of run.jobs) {
+      job.state = 'passed';
+      job.exit_code = 0;
+      job.duration_ms = job.duration_ms || 90000;
+      job.output = ciOutput(job, true);
+    }
+  }
+  return run;
+}
+
+const ciSummary = (run) => ({ ...run, created: undefined, jobs: run.jobs.map((j) => ({ ...j, output: undefined })) });
+
+function ciOverview(db, sid) {
+  const sandbox = sandboxOf(db, sid);
+  const ci = ciOf(db, sid);
+  return {
+    gate: clone(ci.gate), gate_problem: ci.gate_problem, runs: ci.runs.map((r) => ciSummary(progressCi(r))),
+    can_run: (RANK[sandbox.access] || 0) >= RANK.write, status_access: ci.status_access, actions_workflows: ci.actions_workflows.slice(),
+  };
+}
+
+route('GET', `/api/sandboxes/${ID}/ci`, ({ db, p }) => ciOverview(db, p[0]));
+route('POST', `/api/sandboxes/${ID}/ci/sync`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  return ciOverview(db, p[0]);
+});
+route('GET', `/api/sandboxes/${ID}/ci/runs/${ID}`, ({ db, p }) => {
+  const run = ciOf(db, p[0]).runs.find((r) => r.id === p[1]);
+  if (!run) fail(404, 'not_found', 'not found');
+  return { ...progressCi(run), created: undefined };
+});
+route('POST', `/api/sandboxes/${ID}/ci/runs/${ID}/cancel`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const run = ciOf(db, p[0]).runs.find((r) => r.id === p[1]);
+  if (!run) fail(404, 'not_found', 'not found');
+  if (run.state !== 'running' && run.state !== 'queued') fail(409, 'conflict', 'this run has already ended');
+  run.state = 'cancelled';
+  run.reason = `cancelled by ${db.me.user.login}`;
+  run.ended_at = new Date().toISOString();
+  for (const job of run.jobs) if (job.state === 'running' || job.state === 'queued') { job.state = 'cancelled'; job.reason = run.reason; }
+  return ciSummary(run);
+});
+route('POST', `/api/sandboxes/${ID}/ci/runs/${ID}/rerun`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const ci = ciOf(db, p[0]);
+  const run = ci.runs.find((r) => r.id === p[1]);
+  if (!run) fail(404, 'not_found', 'not found');
+  if (ci.runs.some((r) => r.sha === run.sha && (r.state === 'running' || r.state === 'queued'))) fail(409, 'conflict', 'a run of this commit is already queued or running');
+  db.nextId += 1;
+  const fresh = ciRun(`ci_${db.nextId}`, run.reference, run.sha, 'running', 0, { by: db.me.user.login });
+  ci.runs.unshift(fresh);
+  return ciSummary(fresh);
+});
+route('GET', `/api/sandboxes/${ID}/hygiene`, ({ db, p }) => clone(ciOf(db, p[0]).hygiene));
+route('POST', `/api/sandboxes/${ID}/hygiene/scan`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const hygiene = ciOf(db, p[0]).hygiene;
+  hygiene.scanned_at = new Date().toISOString();
+  return clone(hygiene);
+});
+route('POST', `/api/sandboxes/${ID}/hygiene/cleanup`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const hygiene = ciOf(db, p[0]).hygiene;
+  const force = Boolean(body && body.force);
+  const wanted = body && Array.isArray(body.items) && body.items.length ? body.items : null;
+  const removed = [];
+  const skipped = [];
+  hygiene.items = hygiene.items.filter((item) => {
+    const chosen = wanted ? wanted.some((w) => w.kind === item.kind && w.name === item.name) : (item.safe || force);
+    if (!chosen) return true;
+    if (!item.safe && !force) { skipped.push({ kind: item.kind, name: item.name, reason: `${item.reason}; pass force to delete unmerged work` }); return true; }
+    removed.push({ kind: item.kind, name: item.name });
+    return false;
+  });
+  hygiene.scanned_at = new Date().toISOString();
+  return { removed, skipped, report: clone(hygiene) };
 });
 
 // ---- Skills, workflows, automations, MCP
@@ -1277,6 +1536,146 @@ route('GET', `/api/automations/${ID}/runs`, ({ db, p }) => {
   return [0, 1, 2, 3, 4].map((i) => ({ scheduled_for: iso((i + 1) * DAY - 10 * HOUR), state: i === 2 ? 'skipped_previous_active' : i === 4 ? 'failed' : 'task_created', task_id: i === 2 || i === 4 ? null : 'tsk_studio_8', error: i === 4 ? 'the task could not be created: capacity reached' : null }));
 });
 
+// ------------------------------------------------------------------ secrets vault (VLT-001..009)
+// Synthetic values only. Reveals need a confirmation within 10 minutes (mock password below);
+// agent secret values are write-only and never returned.
+
+const REAUTH_MS = 10 * MIN;
+const MOCK_SUPERADMIN_PASSWORD = 'correct horse battery';
+
+function vaultOf(db) {
+  if (!db.vault) {
+    db.vault = {
+      reauthAt: 0,
+      team: [{ id: 'ts_gmail', title: 'Shared Gmail', url: 'https://mail.google.com', username: 'team@example.test', password: 'mock-not-a-real-password', notes: 'Recovery codes: mock', totp: 'JBSWY3DPEHPK3PXPJBSWY3DP', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
+      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', totp: null, created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR) }],
+      activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (password)' }],
+    };
+  }
+  return db.vault;
+}
+
+const INJECTION_TEXT = { bearer: 'Authorization: Bearer <value>', basic: 'Authorization: Basic <username:value>', none: 'no header (placeholders and browser filling only)' };
+
+function teamView(s) {
+  return { id: s.id, title: s.title, url: s.url || null, username: s.username || null, has_password: Boolean(s.password), has_notes: Boolean(s.notes), has_totp: Boolean(s.totp), created_by: s.created_by, updated_by: s.updated_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, rotate_due: false };
+}
+
+function agentView(db, s, sandbox) {
+  const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: Boolean(s.totp), created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
+}
+
+function reauthStatus(db) {
+  const vault = vaultOf(db);
+  const fresh = Date.now() - vault.reauthAt < REAUTH_MS;
+  const methods = [];
+  if (db.me.user.is_superadmin) methods.push('password');
+  if (db.me.user.github_linked) methods.push('github');
+  return { fresh, fresh_until: fresh ? new Date(vault.reauthAt + REAUTH_MS).toISOString() : null, methods };
+}
+
+function needFresh(db) {
+  const status = reauthStatus(db);
+  if (status.fresh) return null;
+  return json(403, { error: { code: 'reauth_required', message: 'Confirm it is you to reveal secrets (password or GitHub sign-in in the last 10 minutes).' }, reauth: status });
+}
+
+function audit(db, action, id, detail) {
+  vaultOf(db).activity.unshift({ at: new Date().toISOString(), actor: db.me.user.login, action, secret_id: id, detail });
+}
+
+function teamSecret(db, id) {
+  return vaultOf(db).team.find((s) => s.id === id) || fail(404, 'not_found', 'not found');
+}
+
+const AGENT_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+function validateAgent(body, creating) {
+  if (body.name !== undefined && !AGENT_NAME_RE.test(body.name)) fail(422, 'invalid', `invalid name "${body.name}"`);
+  if (body.hosts !== undefined && (!Array.isArray(body.hosts) || body.hosts.length === 0)) fail(422, 'invalid', 'bind the secret to at least one host');
+  if ((creating || body.value !== undefined) && [...(body.value || '')].length < 8) fail(422, 'invalid', 'an agent secret needs at least 8 characters');
+}
+
+route('GET', '/api/team-secrets', ({ db }) => vaultOf(db).team.map(teamView));
+route('POST', '/api/team-secrets', ({ db, body }) => {
+  if (!String(body.title || '').trim()) fail(422, 'invalid', 'a title is required');
+  const secret = { id: `ts_${db.nextId++}`, title: body.title.trim(), url: body.url || null, username: body.username || null, password: body.password || null, notes: body.notes || null, totp: body.totp || null, created_by: db.me.user.login, updated_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString() };
+  vaultOf(db).team.push(secret);
+  audit(db, 'vault.team.create', secret.id, secret.title);
+  return json(201, teamView(secret));
+});
+route('PATCH', `/api/team-secrets/${ID}`, ({ db, p, body }) => {
+  const secret = teamSecret(db, p[0]);
+  for (const key of ['title', 'url', 'username', 'password', 'notes', 'totp']) if (body[key] !== undefined) secret[key] = body[key] || (key === 'title' ? secret.title : null);
+  secret.updated_at = new Date().toISOString();
+  audit(db, 'vault.team.update', secret.id, secret.title);
+  return teamView(secret);
+});
+route('DELETE', `/api/team-secrets/${ID}`, ({ db, p }) => {
+  const secret = teamSecret(db, p[0]);
+  vaultOf(db).team = vaultOf(db).team.filter((s) => s !== secret);
+  audit(db, 'vault.team.delete', secret.id, secret.title);
+  return json(204);
+});
+route('POST', `/api/team-secrets/${ID}/reveal`, ({ db, p, body }) => {
+  const secret = teamSecret(db, p[0]);
+  const refused = needFresh(db);
+  if (refused) return refused;
+  const fields = body.fields || ['password', 'notes', 'totp'];
+  audit(db, body.purpose === 'copy' ? 'vault.team.copy' : 'vault.team.reveal', secret.id, secret.title);
+  return { password: fields.includes('password') ? secret.password : null, notes: fields.includes('notes') ? secret.notes : null, totp: fields.includes('totp') ? secret.totp : null };
+});
+route('POST', `/api/team-secrets/${ID}/totp`, ({ db, p }) => {
+  const secret = teamSecret(db, p[0]);
+  const refused = needFresh(db);
+  if (refused) return refused;
+  if (!secret.totp) fail(422, 'invalid', 'this secret has no TOTP seed');
+  audit(db, 'vault.team.totp', secret.id, secret.title);
+  return { code: String(100000 + (Math.floor(Date.now() / 30000) % 900000)), period: 30, remaining: 30 - (Math.floor(Date.now() / 1000) % 30) };
+});
+route('GET', '/api/auth/reauth', ({ db }) => reauthStatus(db));
+route('POST', '/api/auth/reauth', ({ db, body }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'this account has no password: sign in with GitHub again to confirm');
+  if (body.password !== MOCK_SUPERADMIN_PASSWORD) { audit(db, 'vault.reauth.failed', null, 'password'); fail(403, 'forbidden', `wrong password (mock: ${MOCK_SUPERADMIN_PASSWORD})`); }
+  vaultOf(db).reauthAt = Date.now();
+  audit(db, 'vault.reauth', null, 'password');
+  return reauthStatus(db);
+});
+route('GET', '/api/secrets/activity', ({ db }) => vaultOf(db).activity.slice(0, 100));
+route('GET', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  return vaultOf(db).agent.filter((s) => s.scope === 'instance' || s.sandbox === sandbox.id).map((s) => agentView(db, s, sandbox));
+});
+route('POST', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const scope = body.scope || 'sandbox';
+  if (scope === 'instance' && !(db.me.user.is_instance_admin || db.me.user.is_superadmin)) fail(403, 'forbidden', 'secrets for every sandbox are managed by instance administrators');
+  if (scope === 'sandbox') need(sandbox, 'write');
+  validateAgent(body, true);
+  if (vaultOf(db).agent.some((s) => s.name === body.name && (s.scope === 'instance' || s.sandbox === sandbox.id))) fail(409, 'conflict', `an agent secret named ${body.name} already applies here`);
+  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts, injection: body.injection || 'bearer', header_name: body.header_name || null, username: body.username || null, value: body.value, totp: body.totp || null, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null };
+  vaultOf(db).agent.push(secret);
+  audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ')}`);
+  return json(201, agentView(db, secret, sandbox));
+});
+route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
+  if (secret.scope === 'sandbox') need(sandbox, 'write');
+  validateAgent(body, false);
+  for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value', 'totp']) if (body[key] !== undefined) secret[key] = body[key];
+  secret.updated_at = new Date().toISOString();
+  audit(db, 'vault.agent.update', secret.id, secret.name);
+  return agentView(db, secret, sandbox);
+});
+route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  if (secret.scope === 'sandbox') need(sandboxOf(db, secret.sandbox), 'write');
+  vaultOf(db).agent = vaultOf(db).agent.filter((s) => s !== secret);
+  audit(db, 'vault.agent.delete', secret.id, secret.name);
+  return json(204);
+});
+
 route('GET', `/api/sandboxes/${ID}/mcp`, ({ db, p }) => db.mcp.filter((m) => m.scope === 'instance' || m.sandbox === p[0]).map(({ sandbox: _s, ...m }) => m));
 route('POST', `/api/sandboxes/${ID}/mcp`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -1519,6 +1918,151 @@ route('GET', '/api/status', ({ db }) => {
     contained: db.me.instance.contained,
   };
 });
+// ------------------------------------------------------------------ instance updates (ADR-18)
+
+const UPDATE_COMMITS = [
+  { title: 'An update banner and update now', author: 'MrFishPL' },
+  { title: 'A solid wordmark beside the mark, with a quiet tagline', author: 'MrFishPL' },
+  { title: 'Keep the streamed browser live over a real link', author: 'BartlomiejNowak04' },
+  { title: 'Drag and drop files into the editor and Claude', author: 'MrFishPL' },
+];
+/** How long each phase of a mock update takes (ms). */
+const UPDATE_STEP_MS = 1500;
+const UPDATE_STATES = ['building', 'pausing', 'restarting', 'resuming'];
+const short7 = (sha) => (sha ? sha.slice(0, 7) : null);
+
+function updateView(db) {
+  const u = db.update;
+  const superadmin = Boolean(db.me.user.is_superadmin);
+  const running = u.run && UPDATE_STATES.includes(u.run.state);
+  const view = { current: { commit: u.current, short: short7(u.current) }, phase: running ? u.run.state : null, helper_installed: null, available: null, check: null, run: null };
+  if (!superadmin) return view;
+  view.helper_installed = u.helper;
+  view.check = u.checkedAt ? { checked_at: u.checkedAt, error: null, via: 'app', relation: u.offer ? 'behind' : 'up_to_date', head: u.offer || u.current } : { checked_at: null, error: null, via: null, relation: null, head: null };
+  if (u.offer && u.checkedAt) {
+    view.available = {
+      commit: u.offer, short: short7(u.offer), relation: 'behind', count: UPDATE_COMMITS.length,
+      summary: `${UPDATE_COMMITS.slice(0, 3).map((c) => c.title).join(' · ')} and ${UPDATE_COMMITS.length - 3} more`,
+      commits: UPDATE_COMMITS.map((c, i) => ({ sha: `${i}${u.offer.slice(1)}`, short: `${i}${u.offer.slice(1, 7)}`, title: c.title, author: c.author, date: iso(i * HOUR) })),
+    };
+  }
+  if (u.run) view.run = clone(u.run);
+  return view;
+}
+
+function moveUpdate(db, state, patch = {}) {
+  const run = db.update.run;
+  if (!run) return;
+  Object.assign(run, { state, state_since: new Date().toISOString(), progress: null, tasks: null, step: null }, patch);
+  run.can_cancel = state === 'building' || state === 'pausing';
+  run.can_proceed = state === 'pausing';
+  if (!UPDATE_STATES.includes(state)) run.finished_at = new Date().toISOString();
+  emit(db, { type: 'update.updated', phase: UPDATE_STATES.includes(state) ? state : null });
+}
+
+/** Walks a started update through its phases, like the server and helper do. */
+function runUpdate(db, id) {
+  const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
+  const steps = 4;
+  for (let i = 1; i <= steps; i += 1) {
+    later(() => {
+      if (!live() || db.update.run.state !== 'building') return;
+      db.update.run.progress = { done: Math.round((340 * i) / steps), total: 340 };
+      db.update.run.step = 'compiling';
+      db.update.run.message = 'Building the new version. Tasks keep working meanwhile.';
+      emit(db, { type: 'update.updated', phase: 'building' });
+    }, (UPDATE_STEP_MS * i) / steps);
+  }
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'pausing', { step: 'pausing', message: 'Pausing tasks at their next step: 2 of 3 paused.', tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() } });
+  }, UPDATE_STEP_MS + 100);
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'restarting', { step: 'installing', message: 'Installing the new version.' });
+  }, UPDATE_STEP_MS * 2);
+  later(() => {
+    if (!live()) return;
+    if (!db.update.fail) db.update.current = db.update.run.target.commit;
+    moveUpdate(db, 'resuming', { step: 'resuming', message: 'Resuming tasks: 1 of 3.', progress: { done: 1, total: 3 } });
+  }, UPDATE_STEP_MS * 3);
+  later(() => {
+    if (!live()) return;
+    if (db.update.fail) {
+      moveUpdate(db, 'rolled_back', { message: 'The update was rolled back; the previous version runs.', error: 'The new server did not become healthy within 120 s (HTTP 500). The previous version and its database were restored.', log_tail: ['yulius update-helper: checking', 'yulius update-helper: rolling_back'] });
+    } else {
+      db.update.offer = null;
+      moveUpdate(db, 'succeeded', { message: `Updated to ${short7(db.update.current)}.` });
+    }
+  }, UPDATE_STEP_MS * 4);
+}
+
+route('GET', '/api/update', ({ db }) => updateView(db));
+route('POST', '/api/admin/update/check', ({ db }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  db.update.checkedAt = new Date().toISOString();
+  return updateView(db);
+});
+route('POST', '/api/admin/update', ({ db, body }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  if (body.confirm !== true) fail(422, 'invalid', 'confirm the update: tasks pause while the server restarts');
+  const u = db.update;
+  if (!u.helper) fail(409, 'conflict', 'the update helper is not installed on this server (see the operations guide)');
+  if (u.run && UPDATE_STATES.includes(u.run.state)) fail(409, 'conflict', 'an update is already running');
+  if (!u.offer || body.commit !== u.offer) fail(409, 'conflict', `${short7(body.commit || '')} is not the update on offer; check for updates again`);
+  const now = new Date().toISOString();
+  db.nextId += 1;
+  u.run = {
+    id: `upd_${db.nextId}`, target: { commit: u.offer, short: short7(u.offer) }, from: { commit: u.current, short: short7(u.current) },
+    summary: updateView(db).available.summary, state: 'building', step: 'fetching', message: 'Fetching the new version from GitHub.',
+    progress: null, tasks: null, error: null, log_tail: [], requested_by: db.me.user.login, started_at: now, state_since: now, finished_at: null, can_cancel: true, can_proceed: false,
+  };
+  emit(db, { type: 'update.updated', phase: 'building' });
+  runUpdate(db, u.run.id);
+  return json(202, updateView(db));
+});
+route('POST', '/api/admin/update/cancel', ({ db }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  const run = db.update.run;
+  if (!run || !['building', 'pausing'].includes(run.state)) fail(409, 'conflict', 'no update can be cancelled now (it is restarting or done)');
+  moveUpdate(db, 'cancelled', { error: `Cancelled by ${db.me.user.login}; nothing was installed.`, message: 'Cancelled; nothing was installed.' });
+  return updateView(db);
+});
+route('POST', '/api/admin/update/proceed', ({ db }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  if (!db.update.run || db.update.run.state !== 'pausing') fail(409, 'conflict', 'the update is not pausing tasks');
+  return updateView(db);
+});
+
+function jevView(db) {
+  const j = db.jev;
+  const source = j.key ? 'settings' : j.config ? 'config' : null;
+  return { configured: Boolean(source), source, set_at: j.key ? j.setAt : null, set_by: j.key ? j.setBy : null, config_present: j.config, config_error: null };
+}
+const superadminOnly = (db) => { if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only'); };
+route('GET', '/api/admin/jev', ({ db }) => { superadminOnly(db); return jevView(db); });
+route('PUT', '/api/admin/jev', ({ db, body }) => {
+  superadminOnly(db);
+  const key = String(body.key || '').trim();
+  if (key.length < 8 || /\s/.test(key)) fail(422, 'invalid', 'the Jev key must be 8-4096 printable characters without spaces');
+  Object.assign(db.jev, { key, setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return jevView(db);
+});
+route('DELETE', '/api/admin/jev', ({ db }) => { superadminOnly(db); db.jev.key = null; return jevView(db); });
+route('POST', '/api/admin/jev/adopt', ({ db }) => {
+  superadminOnly(db);
+  if (!db.jev.config) fail(409, 'conflict', 'YULIUS_JEV_API_KEY_FILE holds no usable key');
+  Object.assign(db.jev, { key: 'from-config', setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return jevView(db);
+});
+route('POST', '/api/admin/jev/test', ({ db }) => {
+  superadminOnly(db);
+  const key = db.jev.key || (db.jev.config ? 'from-config' : null);
+  if (!key) return { ok: false, result: 'none', message: 'No Jev key is set.', latency_ms: null };
+  if (key.includes('bad')) return { ok: false, result: 'refused', message: 'Jev refused this key. Check it and save it again.', latency_ms: 210 };
+  return { ok: true, result: 'ok', message: 'Jev answered: the key works.', latency_ms: 240 };
+});
+
 // GET /api/capacity (`CapacityView`, ROT-013): the pool, burn rate and forecast. The mock's pool
 // burns faster than it refills and tasks waited this week, so it recommends one more subscription.
 route('GET', '/api/capacity', ({ db }) => {
@@ -1582,7 +2126,8 @@ async function handleFetch(db, url, init = {}) {
     const match = u.pathname.match(re);
     if (!match) continue;
     try {
-      const result = handler({ db, p: match.slice(1).map(decodeURIComponent), body, query: u.searchParams });
+      // A handler may be async (one that takes a while, like Jev or Claude on the server).
+      const result = await handler({ db, p: match.slice(1).map(decodeURIComponent), body, query: u.searchParams });
       return result instanceof Response ? result : json(200, result);
     } catch (error) {
       if (error instanceof MockError) return json(error.status, { error: { code: error.code, message: error.message } });
@@ -1733,7 +2278,8 @@ class TermSession {
         '',
       );
     }
-    this.lines.push(`${c(245, '>')} ${this.task.prompt || this.task.title}`, '');
+    // A multi-line prompt shows as lines (a bare \n would only move the cursor down).
+    this.lines.push(...`${c(245, '>')} ${this.task.prompt || this.task.title}`.split('\n'), '');
     if (this.task.number === 10 && this.task.sandbox_id === 'sb_studio') {
       this.lines.push(
         `${c(255, '⏺')} The deploy needs an AWS console session. I can't sign in for you.`,

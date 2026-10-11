@@ -51,11 +51,11 @@ export function mountHomePage(ctx) {
           h('h2', { class: 'home-card-name', id: nameId }, h('a', { href: href(path), dataset: { route: path } }, sandbox.name)),
           repo ? h('span', { class: 'home-card-repo', title: repo }, icon('github', { size: 12 }), h('span', { class: 'ellipsis' }, repo)) : null),
         h('div', { class: 'home-card-badges' },
-          sandbox.access === 'read' ? badge('Read only', '', 'GitHub gives you read access: you can follow tasks but not start them') : null,
+          sandbox.access === 'read' ? badge('Read-only', '', 'GitHub gives you read access: you can follow tasks but not start them') : null,
           preparing ? badge(sandbox.onboarding === 'preparing' ? 'Preparing' : 'Needs preparation', 'warn', 'The repository is being prepared for agents') : null)),
       h('ul', { class: 'home-counts', 'aria-label': `Tasks in ${sandbox.name}` },
         count('bell', counts.needs_attention || 0, 'needs you', 'need you', 'attention'),
-        count('pulse', counts.running || 0, 'running', 'running', 'running'),
+        count('pulse', counts.running || 0, 'working', 'working', 'running'),
         count('clock', counts.queued || 0, 'queued', 'queued', '')),
       h('p', { class: 'home-activity', title: newest ? dateTime(newest) : null }, activity),
       h('div', { class: 'home-card-actions' },
@@ -64,7 +64,7 @@ export function mountHomePage(ctx) {
           type: 'button',
           class: 'btn btn-sm btn-primary',
           disabled: !write,
-          title: write ? null : 'Requires write access on GitHub',
+          title: write ? null : 'Requires write access',
           'aria-label': `New task in ${sandbox.name}`,
           onClick: () => ctx.openNewTask && ctx.openNewTask(sandbox),
         }, icon('plus', { size: 14 }), 'New task')));
@@ -126,7 +126,7 @@ export function mountHomePage(ctx) {
     const summary = [
       `${sandboxes.length} ${sandboxes.length === 1 ? 'sandbox' : 'sandboxes'}`,
       attention ? `${attention} ${attention === 1 ? 'task needs' : 'tasks need'} you` : null,
-      running ? `${running} running` : null,
+      running ? `${running} working` : null,
     ].filter(Boolean).join(' · ');
     keepFocus(el, () => setChildren(el, h('div', { class: 'page' }, h('div', { class: 'page-inner' },
       h('div', { class: 'page-head home-head' },

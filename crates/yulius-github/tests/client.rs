@@ -8,9 +8,10 @@ use std::time::{Duration, Instant};
 use yulius_domain::time::Timestamp;
 use yulius_github::fake::{FakeCheckRun, FakeFault, FakeGitHub, FakeStatus};
 use yulius_github::{
-    AccessLevel, CheckSource, ChecksSummary, Clock, CompareStatus, CreateRepo, GitHubClient,
-    GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewIssue, NewPull, OwnerKind,
-    PullFilter, PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock, Url,
+    AccessLevel, CheckSource, ChecksSummary, Clock, CommitStatus, CompareStatus, CreateRepo,
+    GitHubClient, GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewIssue, NewPull,
+    OwnerKind, PullFilter, PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock,
+    Url,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -259,7 +260,8 @@ async fn manifest_flow_builds_manifest_and_converts_code() -> TestResult {
         ("pull_requests", "write"),
         ("issues", "write"),
         ("checks", "read"),
-        ("statuses", "read"),
+        ("statuses", "write"),
+        ("workflows", "write"),
         ("administration", "write"),
         ("metadata", "read"),
         ("members", "read"),
@@ -1124,5 +1126,72 @@ async fn repository_tokens_are_restricted_and_cached_per_repository() -> TestRes
         client.create_repository_token(installation, "../x").await,
         Err(GitHubError::InvalidInput { .. })
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
+    let (fake, client) = setup().await?;
+    let root = fake.add_repo("acme", "app", true);
+    fake.set_branch("acme", "app", "dev", &root);
+    let head = fake.add_commit("acme", "app", &[&root]);
+    fake.set_branch("acme", "app", "task/ci", &head);
+    fake.add_user("dev", None);
+    fake.set_permission("acme", "app", "dev", writer());
+    let token = fake.issue_user_token("dev");
+    let status = |state: &str| CommitStatus {
+        state: state.into(),
+        context: "yulius/ci".into(),
+        description: format!("{state} {}", "x".repeat(300)),
+        target_url: Some("https://yulius.example.com/s/app/ci?run=r1".into()),
+    };
+    client
+        .create_commit_status(&token, "acme", "app", &head, &status("pending"))
+        .await?;
+    let report = client.check_status(&token, "acme", "app", &head).await?;
+    assert_eq!(report.summary, ChecksSummary::Pending);
+    client
+        .create_commit_status(&token, "acme", "app", &head, &status("success"))
+        .await?;
+    let report = client.check_status(&token, "acme", "app", &head).await?;
+    assert_eq!(report.summary, ChecksSummary::Success);
+    let sent = fake
+        .requests()
+        .into_iter()
+        .rfind(|r| r.method == "POST" && r.path.ends_with(&format!("/statuses/{head}")))
+        .ok_or("status request")?;
+    let body: serde_json::Value = serde_json::from_str(&sent.body)?;
+    assert_eq!(body["context"], "yulius/ci");
+    assert_eq!(
+        body["description"].as_str().map(|d| d.chars().count()),
+        Some(140)
+    );
+    // Invalid input never reaches GitHub.
+    assert!(matches!(
+        client
+            .create_commit_status(&token, "acme", "app", &head, &status("green"))
+            .await,
+        Err(GitHubError::InvalidInput { .. })
+    ));
+    // Without "Commit statuses: write" GitHub answers 403.
+    fake.withhold_permission("statuses");
+    assert!(matches!(
+        client
+            .create_commit_status(&token, "acme", "app", &head, &status("success"))
+            .await,
+        Err(GitHubError::Forbidden { .. })
+    ));
+    // Branch deletion: true once, false when already gone.
+    assert!(
+        client
+            .delete_branch(&token, "acme", "app", "task/ci")
+            .await?
+    );
+    assert!(
+        !client
+            .delete_branch(&token, "acme", "app", "task/ci")
+            .await?
+    );
+    assert_eq!(fake.branch_sha("acme", "app", "task/ci"), None);
     Ok(())
 }

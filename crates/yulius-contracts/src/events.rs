@@ -70,6 +70,13 @@ pub enum UiEvent {
         /// New account view.
         account: AccountView,
     },
+    /// An instance update changed (a new `main` was found, or a run moved): clients refetch
+    /// `GET /api/update` (SPEC-002 ADR-18). `phase` is the running update's phase, if any.
+    #[serde(rename = "update.updated")]
+    UpdateChanged {
+        /// `building`, `pausing`, `restarting`, `resuming`, or `None` when no update runs.
+        phase: Option<String>,
+    },
     /// Events were lost; refetch.
     #[serde(rename = "resync")]
     Resync,

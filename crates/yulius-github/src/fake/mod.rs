@@ -1196,7 +1196,9 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
     };
     let app_permission = match (method.as_str(), tail) {
         ("GET", ["commits", _, "check-runs"]) => Some("checks"),
-        ("GET", ["commits", _, "status" | "statuses"]) => Some("statuses"),
+        ("GET", ["commits", _, "status" | "statuses"]) | ("POST", ["statuses", _]) => {
+            Some("statuses")
+        }
         ("GET", ["actions", ..]) => Some("actions"),
         _ => None,
     };
@@ -1378,6 +1380,40 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
                 200,
                 json!({"total_count": runs.len(), "workflow_runs": paginate(&runs, query)}),
             )
+        }
+        ("POST", ["statuses", sha]) => {
+            let state_name = body["state"].as_str().unwrap_or_default().to_owned();
+            let context = body["context"].as_str().unwrap_or("default").to_owned();
+            if !matches!(
+                state_name.as_str(),
+                "pending" | "success" | "failure" | "error"
+            ) {
+                return error(422, "Validation Failed: state");
+            }
+            if !repo.commits.contains_key(*sha) {
+                return error(422, "No commit found for SHA");
+            }
+            let list = repo.statuses.entry((*sha).to_owned()).or_default();
+            // GitHub keeps every status; the combined view shows the latest per context.
+            list.retain(|s| s.context != context);
+            list.push(FakeStatus {
+                context: context.clone(),
+                state: state_name.clone(),
+            });
+            reply(
+                201,
+                json!({"state": state_name, "context": context, "description": body["description"], "target_url": body["target_url"]}),
+            )
+        }
+        ("DELETE", ["git", "refs", "heads", branch @ ..]) => {
+            let branch = branch.join("/");
+            if repo.branches.remove(&branch).is_none() {
+                return error(422, "Reference does not exist");
+            }
+            Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .body(axum::body::Body::empty())
+                .unwrap_or_else(|_| error(500, "response"))
         }
         ("PATCH", ["git", "refs", "heads", branch @ ..]) => {
             let branch = branch.join("/");

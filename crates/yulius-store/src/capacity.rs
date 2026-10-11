@@ -148,14 +148,16 @@ impl CapacityStore for SqliteStore {
             let tx = c.transaction().map_err(db)?;
             for s in &samples {
                 tx.execute(
-                    "INSERT INTO usage_samples (account_id, at, window_name, used_percent, resets_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    "INSERT INTO usage_samples \
+                     (account_id, at, window_name, used_percent, resets_at, source) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     params![
                         s.account_id.as_str(),
                         s.at.0,
                         s.window,
                         s.used_percent,
-                        s.resets_at.map(|t| t.0)
+                        s.resets_at.map(|t| t.0),
+                        s.source
                     ],
                 )
                 .map_err(db)?;
@@ -172,8 +174,8 @@ impl CapacityStore for SqliteStore {
         self.call(move |c| {
             let mut stmt = c
                 .prepare(
-                    "SELECT account_id, at, window_name, used_percent, resets_at FROM usage_samples \
-                     WHERE at >= ?1 ORDER BY at, account_id",
+                    "SELECT account_id, at, window_name, used_percent, resets_at, source \
+                     FROM usage_samples WHERE at >= ?1 ORDER BY at, account_id",
                 )
                 .map_err(db)?;
             let rows = stmt
@@ -186,6 +188,7 @@ impl CapacityStore for SqliteStore {
                         window: row.get(2)?,
                         used_percent: row.get(3)?,
                         resets_at: row.get::<_, Option<i64>>(4)?.map(Timestamp),
+                        source: row.get(5)?,
                     })
                 })
                 .map_err(db)?;

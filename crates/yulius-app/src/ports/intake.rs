@@ -2,6 +2,7 @@
 //! the Claude split proposer. Both are optional: without them intake checks nothing and blocks
 //! nothing.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -45,9 +46,36 @@ pub trait ChoiceEvaluator: Send + Sync {
     async fn evaluate(
         &self,
         state: &str,
-        question: &ChoiceQuestion,
+        question: &ChoiceQuestion<'_>,
         deadline: Duration,
     ) -> Result<ChoiceAnswer, JevFailure>;
+}
+
+/// What one small test request with a key showed (SPEC-001 ADM-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JevCheck {
+    /// A complete, correct answer.
+    Ok,
+    /// The key was refused (HTTP 401 or 403).
+    Refused,
+    /// Another HTTP error, or Jev could not be reached.
+    Unreachable,
+    /// No answer within the deadline.
+    Timeout,
+    /// An answer outside the contract.
+    Invalid,
+}
+
+/// Builds Jev evaluators from keys; the composition owns the HTTP client and the key format.
+#[async_trait]
+pub trait JevConnector: Send + Sync {
+    /// An evaluator that uses `key`.
+    ///
+    /// # Errors
+    /// A message (never containing the key) when the key is malformed.
+    fn connect(&self, key: &Secret) -> Result<Arc<dyn ChoiceEvaluator>, String>;
+    /// One small request with `key`.
+    async fn check(&self, key: &Secret) -> JevCheck;
 }
 
 /// Why no split proposal was produced (secret-free, short).

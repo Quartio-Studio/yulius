@@ -44,12 +44,14 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/splitter.js` | Column splitters (UI-044) for the sidebar, the editor's explorer and the tool panel: a quiet grip that is a focusable separator (←/→, Shift for 64 px steps, Home/End; double-click resets), and the widths kept per user in `localStorage` (`yulius.layout.<user id>`: `sidebar` and `explorer` in px, `panel-<tool>` as a share of the work area). Phones have none. |
 | `assets/pages/home.js` | Home (UI-045), the default view at `/`: every sandbox as a card (repository, running / needs you / queued, last activity from its tasks, Open and New task), Import and Create; with no sandbox, the first steps and the GitHub notes. |
 | `assets/notifications.js` | Notification center (UI-020, UI-028): the bell, its panel with the All / Unread filter, and entries derived from the event stream; kept per user in `localStorage`, bounded to 100; optional OS notifications while the tab is hidden. |
-| `assets/pages/gittask.js` | Git → a task's review (UI-031): Changes (file tree, unified or split diff, wrap), Commits, Branch and Go to task; reads the proposed `/api/tasks/{tid}/changes` and `/commits`. |
+| `assets/pages/gittask.js` | Git → a task's review (UI-031): Changes (file tree, unified or split diff, wrap), Commits, Branch and Go to task; reads `/api/tasks/{tid}/changes` and `/commits`. |
 | `assets/pages/taskinfo.js` | Tasks → a task's overview (UI-032): state, times, plan, changes, usage, details and sessions, with Review changes and Go to task. |
 | `assets/mdeditor.js` | A Notion-like block editor for Markdown (UI-033): formatted blocks, frontmatter as properties, "/" menu, Markdown shortcuts, selection toolbar, source view; untrusted text, no HTML parsing. |
 | `assets/pages/skilledit.js` | A skill's page: its SKILL.md in the block editor with Save (⌘S), read-only where it may not be edited, and an unsaved-changes guard. |
 | `assets/shortcuts.js` | Keyboard shortcuts (UI-029): platform key names (`NEW_TASK_KEYS`, `HOME_KEYS`, `SAVE_KEYS`, `WRAP_KEYS`, `IS_MAC`) and the ⌘/ sheet listing every shortcut — update it when a handler changes. |
-| `assets/taskview.js` | Task view (step strip, terminal, phone quick-input bar) and the new-task composer (rounded prompt box with mode, workflow, model and effort pickers). |
+| `assets/taskview.js` | Task view (step strip with the "Auto → Goal · Feature" label, terminal, phone quick-input bar) and the new-task composer (rounded prompt box with mode and workflow — Auto by default — run after, model and effort pickers, Preview and the ↑ Start button; Enter adds a line, ⌘/Ctrl+Enter starts; the working status and the split card below the box). |
+| `assets/mdinput.js` | Markdown while typing in a plain textarea (UI-021): list continuation and ending on Enter, Tab / Shift+Tab indent (Esc, then Tab, leaves), ⌘B / ⌘I wrap, code fences close, ⌘/Ctrl+Enter submits; edits through the editing command so undo works; IME-safe. |
+| `assets/intake.js` | Task intake (TSK-011..013): the split check, the split card (shimmering rows, then compact rows with collapsed prompts and one primary action), the working status line, "Run after" candidates and the held-prompt card. |
 | `assets/quotes.js` | 40 quotes about building great things (well-documented authors only); one shows at random above the composer. |
 | `assets/models.js` | Models (grouped by provider, each naming its harness) and effort levels the composer offers. |
 | `assets/panels.js` | Right rail and resizable panel: Editor, Shell (the user's own terminals in this sandbox as tabs: opens one at once, "+" for more, rename with F2 or a double-click; new ones start in the sandbox repository or the task worktree), Messages (messages between tasks and the agent's messages to people, no composer: an agent's question offers "Reply in the terminal"); hosts the browser panel. One tool is open at a time (`aria-pressed`); each tool's width is remembered per user (`splitter.js`) and re-fitted when the window narrows or the sidebar widens, so it never pushes the rail out of the window. |
@@ -57,10 +59,16 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/filedrop.js` | Dropped and pasted files (EDT-006, UI-048): files or folders dropped on the explorer go into the folder under the pointer, on the editor into the open file's folder (text files open); an upload button picks files on phones; a file already there is replaced only after asking. Files dropped on a terminal, or an image pasted into it, are uploaded as attachments and their paths typed in as a paste (xterm's bracketed paste), quoted when needed. Drop overlays, progress and errors; a file dropped elsewhere never makes the browser leave the app. Hook points: `attachEditorDrop` (editorview.js), `attachTerminalDrop` (taskview.js, panels.js); text pastes stay with the terminal. |
 | `assets/browser.js` | Browser panel (ADR-15): the sandbox Chrome's tabs in the strip, address bar, back/forward/reload, the action-request banner, notices for agents acting in another tab, "Open live in a new window" for a sandbox dev server (ADR-14 preview origins). |
 | `assets/browserstream.js` | The streamed sandbox Chrome: its socket and tab list, H.264 video decoded with WebCodecs onto a canvas (every frame acknowledged for the server's flow control and decoded, the newest drawn; JPEG frames as the labelled fallback), the shared viewport and its notice, pointer, wheel, touch and keyboard input (a hidden textarea for IME, dead keys and phone keyboards; ⌘ as Ctrl on macOS; paste and copy), the agent's cursor. |
-| `assets/actions.js` | Task actions and dialogs: stop, continue, switch, feedback, delivery details and deploy output (read-only: agents deliver, GIT-002), sandbox add/remove. |
+| `assets/actions.js` | Task actions and dialogs: stop, continue, feedback, delivery details and deploy output (read-only: agents deliver, GIT-002), sandbox add/remove. No account choice: tasks are subscription-agnostic. |
 | `assets/status.js` | Status → glyph/tone/label mapping and permitted actions per access level. |
 | `assets/dom.js`, `assets/format.js` | DOM builder (text only, never `innerHTML` with data), icons, toasts, modals, menus; formatting helpers. |
-| `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), git, workflows, skills, automations, MCP, dashboard, admin (users, accounts, GitHub), settings. |
+| `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), task overview (`taskinfo.js`), git and a task's review (`gittask.js`), CI (`ci.js`: runs, job logs, repository hygiene), workflows, skills, automations, MCP and their editors (`workflowedit.js`, `skilledit.js`, `skillnew.js`, `automationedit.js`, `mcpedit.js`), dashboard, admin (users, accounts, GitHub, instance), settings, design. |
+| `assets/spotlight.js` | The search dialog (Tasks page `/`): results with ↑/↓, Enter opens, ⌘/Ctrl+Enter goes to the task. |
+| `assets/intake.js` | Task intake in the composer: the split proposal card and held prompts (SPEC-002 ADR-16). |
+| `assets/termkeys.js`, `assets/termlinks.js`, `assets/mousefilter.js` | Terminal key table per platform (copy, paste, interrupt), links in terminal output (web links and file paths to the editor), mouse-report filtering. |
+| `assets/updates.js` | Instance updates (OPS-006..009, ADR-18): the calm banner (an update running for everyone; "Update available" and a failed update for the superadmin; "Reload" once the server runs newer code) and the superadmin's notification, from `GET /api/update` and `update.updated`; polls while an update runs. |
+| `assets/jevkey.js` | The Jev key (ADM-001/002): the setup wizard's optional last step and the instance page's card (set, replace, test, remove, save a configured key here); the key is never shown back. |
+| `assets/pages/instance.js` | Settings → Instance (superadmin): the build, the update on offer with its commits, Update now with its confirmation, the progress (build → pause tasks → restart → resume) and the outcome; the Jev key card. |
 | `assets/mock.js` | In-memory backend and fake WebSockets used with `?mock=1`. |
 | `assets/brand.js` | Brand identity in one place: product name, tagline and mark (the SVG path used by the sidebar, sign-in, favicon and tab title). |
 | `assets/boot.js` | The only classic script: runs in `<head>` after the stylesheets and before the first paint, applies the stored theme (no dark flash for light or system) and sets the browser's theme colour from the tokens; notes when the page is framed, and app.js then shows only a notice (Yulius never runs inside a frame). |
@@ -203,7 +211,9 @@ description, controls), `meter`, `openMenu` (icons, descriptions, check marks), 
 | `/s/<slug>` | New-task composer. |
 | `/s/<slug>/t/<number>` | Task: step strip + native terminal. |
 | `/s/<slug>/browser?tab=<id>` | Opens the browser panel on that tab (Yulius links, BRW-004). |
-| `/s/<slug>/tasks`, `/git`, `/workflows`, `/skills`, `/automations`, `/mcp`, `/dashboard` | Sandbox pages. `tasks?state=needs|working|stopped|closed&author=a,b&origin=automation&q=text` is a filtered task list (shareable). `skills?source=instance` and `mcp?scope=instance` are the admin "Instance skills/MCP" entries. |
+| `/s/<slug>/tasks`, `/git`, `/ci`, `/workflows`, `/skills`, `/automations`, `/mcp`, `/dashboard` | Sandbox pages. `tasks?state=needs|working|done|stopped|closed&author=a,b&origin=automation&q=text` is a filtered task list (shareable). `ci?run=<id>` opens a CI run (the link of its `yulius/ci` commit status). `skills?source=instance` and `mcp?scope=instance` are the admin "Instance skills/MCP" entries. |
+| `/s/<slug>/tasks/<number>`, `/s/<slug>/git/t/<number>` | A task's overview; a task's changes and commits. |
+| `/s/<slug>/skills/<name>`, `/workflows/<id>`, `/mcp/<id>`, `/automations/<id>` | A skill, workflow, MCP server or automation in its editor (`new` for a new one). |
 | `/archived` | Archived tasks across sandboxes, with restore. |
 | `/settings` | Settings: your account, this browser's preferences, administration tiles (user menu → Settings). |
 | `/design` | Design system: brand, colour roles with live contrast, type, spacing, radii, controls, elevation, motion, icons, task states and components, in the current theme (Settings → Design system). |
@@ -223,18 +233,22 @@ routing to `#/…` paths so a plain static server can reload deep links. The pro
 (request building, error parsing, binary frames, reconnect) is the same code used against
 the real server. Options (combine with `&`): `setup=1` (setup required; token
 `YUL-SETUP-1234`), `signedout=1` (password `correct horse battery`), `role=member|admin`,
-`contained=0` (shows "Not contained"), `github=0` (GitHub App not configured), `github_linked=0`
+`role=superadmin` (the default), `contained=0` (shows "Not contained"), `github=0` (GitHub App not configured), `github_linked=0`
 (the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
 the home page asks them to sign in with GitHub), `sandboxes=0` (a fresh instance without sandboxes: the
 home screen's first steps), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
-N×M until this one types or clicks into the terminal).
+N×M until this one types or clicks into the terminal), `update=1` (a newer `main` is on offer; Update
+now walks through its phases in about six seconds) or `update=fail` (the same, rolled back),
+`helper=0` (no update helper), `jev=config` (a Jev key file is configured).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and
 documentation; the [end-to-end tests](../../../e2e/README.md) run against it). It has sandboxes with admin, write and read access (`studio` with the Studio
 preset, `product` with a custom profile whose `dev-vm` environment has a command, read-only
 `sandbox-3` whose Git page shows a degraded-read note), tasks in every status, steps,
 messages, accounts with usage (some unknown), Git data and delivery stages, environment runs,
-workflows, skills, automations, MCP servers and analytics. Importing a repository creates a
+CI runs with job logs and repository hygiene (`studio` has jobs and runs, `product` has no CI and
+leftover GitHub Actions workflows), workflows, skills, automations, MCP servers, analytics, the
+superadmin recovery code (mock code `123456`) and the GitHub App connection. Importing a repository creates a
 sandbox whose onboarding is `pending` with a resting preparation task (Start preparation /
 Skip). Uploads report progress in steps, a dropped file lands in the editor's in-memory
 repository and attachments get server-like paths and names. Task terminals print TUI-like ANSI output (with file references in every form the terminal links
@@ -256,10 +270,8 @@ The source of truth for paths and methods is the route table in
   every imported module must be embedded, and UI routes must fall back to `index.html`.
   Keep API paths **literal** at the call site (``ctx.api.post(`/api/tasks/${enc(id)}/stop`)``):
   an interpolation may only fill a whole path segment, never choose the endpoint.
-- **Known gaps.** `GET /api/admin/github` and `POST /api/admin/github/manifest` are documented
-  but not routed yet; the GitHub page then shows the connection facts from `/api/me`
-  (`instance.github_configured`, `owner_login`). The test keeps them in an allowlist that
-  fails once the routes exist.
+- **Known gaps.** None: every documented route the UI calls is routed (`KNOWN_UNROUTED` in the
+  test is empty and fails if an entry goes stale).
 - **Events.** The server sends `resync` (not `sandbox.updated`) after sandbox changes and does
   not push sandbox counters; the store reloads `/api/sandboxes` on `resync` and once
   (debounced) after task events, and leaves a sandbox that disappeared.

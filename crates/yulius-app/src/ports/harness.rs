@@ -105,6 +105,11 @@ pub enum Observation {
         /// When the prompt was recorded, if known.
         at: Option<Timestamp>,
     },
+    /// The person interrupted the turn (Esc / Ctrl+C); the agent waits for input.
+    TurnInterrupted {
+        /// When it was recorded, if known.
+        at: Option<Timestamp>,
+    },
     /// A turn completed.
     TurnComplete,
     /// Claude Code recorded the session goal's state (TSK-014).

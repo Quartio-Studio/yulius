@@ -316,6 +316,7 @@ async fn messages_inbox_read_tracking_and_steps_history() -> R {
             note: None,
             updated_by: None,
             updated_at: None,
+            effort: if ord == 2 { 3 } else { 1 },
         })
     };
     store
@@ -340,6 +341,40 @@ async fn messages_inbox_read_tracking_and_steps_history() -> R {
         .await?;
     assert_eq!(updated.status, "done");
     assert_eq!(updated.updated_by.as_deref(), Some("task:1"));
+    // Effort is stored; start and finish times come from the step history (STP-006/007).
+    let stored = store.steps(&a.id).await?;
+    assert_eq!(
+        stored.iter().map(|s| s.effort).collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    store
+        .update_step(
+            &StepId::parse("s2")?,
+            "in_progress",
+            None,
+            "task:1",
+            Timestamp(73),
+        )
+        .await?;
+    store
+        .update_step(&StepId::parse("s2")?, "done", None, "task:1", Timestamp(79))
+        .await?;
+    let mut timings = store.step_timings(&a.id).await?;
+    timings.sort_by(|x, y| x.step_id.as_str().cmp(y.step_id.as_str()));
+    let summary: Vec<(&str, Option<i64>, Option<i64>)> = timings
+        .iter()
+        .map(|t| {
+            (
+                t.step_id.as_str(),
+                t.started_at.map(|x| x.0),
+                t.finished_at.map(|x| x.0),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        vec![("s1", None, Some(71)), ("s2", Some(73), Some(79))]
+    );
     assert!(matches!(
         store
             .update_step(&StepId::parse("nope")?, "done", None, "x", Timestamp(72))
@@ -487,5 +522,54 @@ async fn chain_links_and_held_prompts_persist_and_resolve_once() -> R {
     assert_eq!(chain.after_number, 1);
     assert!(store.delete_task(&t2).await?);
     assert!(store.chain(&t2).await?.is_none());
+    Ok(())
+}
+
+/// SPEC-001 TSK-015: a task's Auto choice survives a reopen, one row per task, and goes with the
+/// task when it is deleted.
+#[tokio::test]
+async fn auto_choices_persist_and_go_with_their_task() -> R {
+    use yulius_app::auto_choice::AutoChoiceRecord;
+    use yulius_app::ports::store_ext::IntakeStore;
+    use yulius_domain::auto_choice::ChosenBy;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("y.db");
+    let t1 = TaskId::parse("t1")?;
+    let choice = AutoChoiceRecord {
+        task_id: t1.clone(),
+        mode_by: Some(ChosenBy::Jev),
+        workflow_by: Some(ChosenBy::Default),
+        workflow_name: Some("Feature".into()),
+        created_at: Timestamp(5),
+    };
+    {
+        let store = SqliteStore::open(&path)?;
+        let (sid, uid) = seed(&store).await?;
+        store.insert_task(&task("t1", &sid, &uid)?).await?;
+        store.insert_task(&task("t2", &sid, &uid)?).await?;
+        store.insert_auto_choice(&choice).await?;
+        assert!(
+            store.insert_auto_choice(&choice).await.is_err(),
+            "one per task"
+        );
+        store
+            .insert_auto_choice(&AutoChoiceRecord {
+                task_id: TaskId::parse("t2")?,
+                mode_by: None,
+                workflow_by: Some(ChosenBy::Jev),
+                workflow_name: None,
+                created_at: Timestamp(6),
+            })
+            .await?;
+    }
+    let store = SqliteStore::open(&path)?;
+    assert_eq!(store.auto_choice(&t1).await?, Some(choice));
+    let t2 = store
+        .auto_choice(&TaskId::parse("t2")?)
+        .await?
+        .ok_or("t2")?;
+    assert_eq!((t2.mode_by, t2.workflow_name), (None, None));
+    assert!(store.delete_task(&t1).await?);
+    assert_eq!(store.auto_choice(&t1).await?, None);
     Ok(())
 }

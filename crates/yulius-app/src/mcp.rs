@@ -85,28 +85,56 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "spec_check".into(),
-            description: "Validate this task's spec in the Yulius format (frontmatter, required sections, Plan checklist) and the project documentation; returns the problems to fix. The same check runs when you stop.".into(),
+            description: "Validate this task's spec in the Yulius format (frontmatter, required sections, a Plan of at most 30 unique steps) and the project documentation; says whether this task needs a spec at all (features and fixes do; research, questions, docs and chores do not) and returns the problems to fix plus nudges about the plan. The same check runs when you stop.".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
             name: "steps_set".into(),
-            description: "Replace this task's plan with an ordered list of steps (strings or {title,status}). Keep it in sync with the Plan checklist of your spec. Statuses: pending, in_progress, done, skipped, blocked.".into(),
-            input_schema: schema(json!({"steps": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"title": {"type": "string"}, "status": {"type": "string"}}, "required": ["title"]}]}}}), &["steps"]),
+            description: "Replace this task's plan with an ordered list of 1-30 steps of similar effort (strings or {title, status, effort}), each a slice that leaves the project working, named by what it delivers. Keep it in sync with the Plan checklist of your spec. effort is 1 (default) to 3, only for a step that cannot be split; progress is weighted by it. Statuses: pending, in_progress, done, skipped (blocked needs step_update with a note). A step matching a current title keeps its status and effort; a finished step stays finished.".into(),
+            input_schema: schema(json!({"steps": {"type": "array", "maxItems": crate::coordination::MAX_STEPS, "items": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"title": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "done", "skipped"]}, "effort": {"type": "integer", "minimum": 1, "maximum": 3}}, "required": ["title"]}]}}}), &["steps"]),
         },
         ToolDescriptor {
             name: "step_update".into(),
-            description: "Update one step (by step_id, ordinal or exact title) to a new status with an optional note. Mark a step in_progress when you start it and done when finished.".into(),
+            description: "Update one step (by step_id, ordinal or title). Mark a step in_progress when you start it and done the moment it is finished, one at a time (at most 2 in progress), so progress arrives steadily. A finished step stays finished: add a follow-up step with steps_set instead. blocked and skipped need a note saying why. Returns the steps, the progress and nudges.".into(),
             input_schema: schema(json!({"step_id": {"type": "string"}, "ordinal": {"type": "integer"}, "title": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "done", "skipped", "blocked"]}, "note": {"type": "string"}}), &["status"]),
         },
         ToolDescriptor {
             name: "steps_get".into(),
-            description: "Get this task's steps and progress.".into(),
+            description: "Get this task's steps, the effort-weighted progress (percent) and nudges about the plan and its pace.".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
             name: "delivery_status".into(),
             description: "Delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and the next actions. Deliver with delivery_merge, delivery_deploy and delivery_promote.".into(),
             input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "ci_status".into(),
+            description: "This project's CI, run by Yulius (the only CI; no GitHub Actions): the jobs in force and where they come from, the latest runs (this task's pull request first) and their state. With run_id, one run with the end of each job's output. A merge that requires checks waits until the latest run at the pull request head passed.".into(),
+            input_schema: schema(json!({"run_id": {"type": "string", "description": "A run id from the list, to read its jobs' output"}}), &[]),
+        },
+        ToolDescriptor {
+            name: "ci_rerun".into(),
+            description: "Run the CI again for the commit of a finished run (for example after a failure that was not caused by the code). Refused while a run of that commit is queued or running.".into(),
+            input_schema: schema(json!({"run_id": {"type": "string"}}), &["run_id"]),
+        },
+        ToolDescriptor {
+            name: "ci_setup".into(),
+            description: "Onboarding: move the project's GitHub Actions into Yulius CI. Returns the workflows in this task's worktree (jobs, run steps, uses steps, matrices), the CI its yulius.toml configures ([[ci.jobs]] or [commands] gate) and the steps: translate every check into [[ci.jobs]], delete .github/workflows/, commit; the pull request is tested with the CI it adds.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "repo_hygiene".into(),
+            description: "Stale branches and worktrees of this project: remote branches whose pull request was merged or closed, branches already merged, local branches no worktree uses, worktrees of deleted, archived or merged tasks. Each item has a reason and whether removing it is safe.".into(),
+            input_schema: schema(json!({"refresh": {"type": "boolean", "description": "Scan now instead of returning the last scan"}}), &[]),
+        },
+        ToolDescriptor {
+            name: "repo_cleanup".into(),
+            description: "Remove stale branches and worktrees reported by repo_hygiene: the given items, or every safe item when items is omitted. Unmerged branches without a pull request (reason idle) are removed only with force. Live tasks' worktrees, protected branches and branches with an open pull request are never removed; dirty worktrees are kept.".into(),
+            input_schema: schema(json!({
+                "items": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["remote_branch", "local_branch", "worktree"]}, "name": {"type": "string"}}, "required": ["kind", "name"]}},
+                "force": {"type": "boolean"}
+            }), &[]),
         },
         ToolDescriptor {
             name: "delivery_merge".into(),
@@ -172,7 +200,29 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
     ];
     tools.extend(crate::browser::tool_descriptors());
+    tools.extend(secret_tool_descriptors());
     tools
+}
+
+/// Agent-secret tools (SPEC-002 ADR-20): names only, and typing into the sandbox browser.
+fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
+    vec![
+        ToolDescriptor {
+            name: "secrets_list".into(),
+            description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "browser_fill_secret".into(),
+            description: "Type an agent secret into the project browser without seeing it: its value (password or key), its user name, or its current two-factor (TOTP) code, into the focused field or the element matching selector, in a tab whose page is on one of the secret's bound hosts. Use browser_snapshot first to find the field.".into(),
+            input_schema: schema(json!({
+                "tab_id": {"type": "string", "description": "Tab from browser_tabs or browser_open"},
+                "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
+                "field": {"type": "string", "enum": ["value", "password", "username", "totp"], "description": "What to type (default value; password is the same as value)"},
+                "selector": {"type": "string", "description": "CSS selector of the field to focus first"}
+            }), &["tab_id", "secret"]),
+        },
+    ]
 }
 
 impl App {
@@ -209,7 +259,7 @@ impl App {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Yulius coordinates this project's tasks. Use tasks_list before starting, message_send to coordinate with other tasks, and steps_set/step_update to keep your plan visible.",
+                    "instructions": "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, message_send to coordinate with other tasks, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
                 }))
             }
             "ping" => Ok(json!({})),
@@ -249,6 +299,11 @@ impl App {
             "step_update" => self.tool_step_update(ctx, &args).await,
             "steps_get" => self.tool_steps_get(ctx).await,
             "delivery_status" => self.tool_delivery_status(ctx).await,
+            "ci_status" => self.tool_ci_status(ctx, &args).await,
+            "ci_rerun" => self.tool_ci_rerun(ctx, &args).await,
+            "ci_setup" => self.tool_ci_setup(ctx).await,
+            "repo_hygiene" => self.tool_repo_hygiene(ctx, &args).await,
+            "repo_cleanup" => self.tool_repo_cleanup(ctx, &args).await,
             "delivery_merge" => self.tool_delivery_merge(ctx, &args).await,
             "delivery_deploy" => self.tool_delivery_deploy(ctx, &args).await,
             "delivery_promote" => self.tool_delivery_promote(ctx).await,
@@ -268,11 +323,16 @@ impl App {
             "browser_request_user_action" => {
                 self.tool_browser_request_user_action(ctx, &args).await
             }
+            "secrets_list" => self.tool_secrets_list(ctx).await,
+            "browser_fill_secret" => self.tool_browser_fill_secret(ctx, &args).await,
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         };
         match outcome {
             Ok(value) => {
-                let mut text = serde_json::to_string_pretty(&value).unwrap_or_default();
+                // No tool result carries an agent secret's value (SPEC-002 ADR-20): page text,
+                // messages, task prompts and everything else are redacted before the agent.
+                let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+                let mut text = self.redact_for_sandbox(&ctx.task.sandbox_id, &text).await;
                 if text.len() > MAX_RESULT_BYTES {
                     let mut cut = MAX_RESULT_BYTES;
                     while !text.is_char_boundary(cut) {
@@ -283,7 +343,11 @@ impl App {
                 }
                 text_result(text, false)
             }
-            Err(err) => text_result(err.public_message(), true),
+            Err(err) => text_result(
+                self.redact_for_sandbox(&ctx.task.sandbox_id, &err.public_message())
+                    .await,
+                true,
+            ),
         }
     }
 }
