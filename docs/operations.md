@@ -12,6 +12,7 @@ been performed or verified** as part of the implementation work.
 | Linux x86_64 or arm64, systemd | the service | macOS works for development (runs are "not contained"). |
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
+| GitHub CLI (`gh`) | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | `apt-get install gh` on the host; sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
 | `slirp4netns` | sandbox egress (isolation) | `apt install slirp4netns`. |
@@ -404,7 +405,7 @@ shells and CI jobs join it. A sandbox gets:
 **Install once** (as root):
 
 ```sh
-apt install uidmap slirp4netns bubblewrap
+apt install uidmap slirp4netns bubblewrap gh
 # A free subordinate range of 65,536 ids for the service user (check /etc/subuid and /etc/subgid
 # for ranges already used; on the reference VM 100000–231071 are taken):
 usermod --add-subuids 231072-296607 --add-subgids 231072-296607 yulius
@@ -524,13 +525,18 @@ wins over the file.
 ### GitHub App permissions
 
 Yulius uses one GitHub App (SPEC-002 ADR-08). The App's tokens can do only what its permissions
-allow: the server's installation tokens, the repository-restricted tokens agents get, and people's
-sign-in (user-to-server) tokens, which are also capped by the person's own repository access. The
-manifest flow requests these repository permissions:
+allow: the server's installation tokens, and people's sign-in (user-to-server) tokens, which are
+also capped by the person's own repository access. Everything a task does on GitHub uses its
+creator's sign-in token, so GitHub shows that person (GIT-003): the agent's Git and `gh`,
+Yulius's push and pull request for the task, the agent's merges, promotions, issues and labels.
+Without a usable one (no linked account, as for the superadmin, or a sign-in that can no longer
+be refreshed) the App acts — with a token restricted to the sandbox's repository for the agent —
+and the task's terminal says so once. Yulius CI's statuses, branch cleanup and background reads
+stay with the App. The manifest flow requests these repository permissions:
 
 | Permission | Access | What Yulius does with it |
 | --- | --- | --- |
-| Contents | Read and write | Clone and fetch repositories; push task branches (the server, and agents through their repository-restricted token); merge pull requests; fast-forward promotions; compare branches. |
+| Contents | Read and write | Clone and fetch repositories; push task branches (as the task's creator); merge pull requests; fast-forward promotions; compare branches. |
 | Pull requests | Read and write | Open, list and read pull requests. |
 | Issues | Read and write | Agents log follow-up work, bugs and flaky tests as issues with Definition-of-Ready labels (`issue_create`, DLV-008); missing labels are created. Requested since 2026-10-10; an App created before needs it added (below). |
 | Checks | Read | Read check runs on pull request heads: GitHub Actions and every other Checks API app. |
@@ -810,6 +816,13 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
 ### Notes for specific upgrades
 
+- Upgrading to tasks acting as their creator on GitHub (GIT-003, #188, 2026-10-11): no migration
+  and no configuration. The agents' Git switches to the creator's token at its next credential
+  request; a run gets `gh` logged in as the creator when it is started or continued (`gh` itself
+  is a host prerequisite, §1). Task worktrees commit as
+  `{id}+{login}@users.noreply.github.com` from their next run. Someone whose GitHub sign-in can no
+  longer be refreshed signs in with GitHub again; until then their tasks act as the App, and the
+  task's terminal says why.
 - Upgrading to sessions as documents (#137, 2026-10-10): migration 0011 adds `session_docs`,
   `session_chunks` and the FTS5 index `session_fts` (SQLite's bundled FTS5). Existing data is kept:
   tasks imported earlier as archived tasks stay tasks (their sessions appear on the Sessions page as
@@ -878,8 +891,11 @@ up. Queued tasks start when capacity allows.
 - Agent secrets are never given to agents: the egress proxy adds them for their bound hosts and
   every channel an agent reads is redacted. Remaining threats (a bound host echoing a credential
   in another form, misuse on its hosts, weak values, raw CDP): SPEC-002 ADR-20.
-- Agents receive per-run task tokens (MCP, hooks) and GitHub tokens restricted to their sandbox
-  repository; provider credentials reach the agent process only through its environment.
+- Agents receive per-run task tokens (MCP, hooks) and, through the credential helper and `gh`,
+  their task creator's GitHub token (8 h, capped by that person's access within the App's
+  installation; an agent could read it and act as them there until it expires), or without one a
+  token restricted to their sandbox repository; provider credentials reach the agent process
+  only through its environment (SPEC-002 §8, R-08).
 - Known open risks are listed in SPEC-002 §12 (notably R-07: Chromium's DevTools port is
   unauthenticated on loopback, which isolated sandboxes cannot reach; R-09: environment commands
   run outside containment).

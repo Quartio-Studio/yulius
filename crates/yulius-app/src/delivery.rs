@@ -1726,10 +1726,11 @@ impl App {
         self.delivery_view(&task, Some(&ctx.user)).await
     }
 
-    /// Pushes the task branch with an installation token and opens its pull request into the
-    /// integration branch with `token` (its account authors the pull request); records
-    /// `pr_open`, audits it as `actor` and publishes the task. The caller has checked the domain
-    /// rules and the worktree (`open_task_pr` for a person, `try_auto_open_pr` for Yulius).
+    /// Pushes the task branch and opens its pull request into the integration branch, both with
+    /// `token` (its account pushes and authors the pull request: the person who delivers, or for
+    /// Yulius the task's creator, F 2026-10-11); records `pr_open`, audits it as `actor` and
+    /// publishes the task. The caller has checked the domain rules and the worktree
+    /// (`open_task_pr` for a person, `try_auto_open_pr` for Yulius).
     #[allow(clippy::too_many_arguments)]
     async fn dlv_open_pull(
         &self,
@@ -1748,10 +1749,9 @@ impl App {
                 "the task has no branch or worktree yet; start it first".into(),
             ));
         };
-        let installation = self.dlv_installation_token(sandbox).await?;
         self.deps
             .git
-            .push(Path::new(&worktree), &branch, &branch, &installation)
+            .push(Path::new(&worktree), &branch, &branch, token)
             .await?;
         let title = match title.map(str::trim).filter(|t| !t.is_empty()) {
             Some(title) => title.to_owned(),
@@ -1939,16 +1939,9 @@ impl App {
         if branch == profile.integration_branch || branch == profile.production_branch {
             return Ok(None);
         }
-        // The task's creator authors the pull request (their GitHub account, as if they had
-        // pressed Deliver…); without a linked account the App does.
-        let creator_token = match store.user(&task.created_by).await? {
-            Some(user) => self.user_github_token(&user).await.ok(),
-            None => None,
-        };
-        let token = match creator_token {
-            Some(token) => token,
-            None => self.dlv_installation_token(&sandbox).await?,
-        };
+        // The task's creator pushes and authors the pull request (their GitHub account, as if
+        // they had pressed Deliver…, F 2026-10-11); without a usable token the App does.
+        let token = self.task_github_token(&task, &sandbox).await?;
         let observed = self
             .dlv_observe(&sandbox, &task, &profile, Some(&token))
             .await?;
@@ -1972,15 +1965,11 @@ impl App {
             if pull.head_sha == head || !self.claim_auto_head(task_id, &head)? {
                 return Ok(None);
             }
-            let pushed = match self.dlv_installation_token(&sandbox).await {
-                Ok(installation) => {
-                    self.deps
-                        .git
-                        .push(Path::new(&worktree), &branch, &branch, &installation)
-                        .await
-                }
-                Err(err) => Err(err),
-            };
+            let pushed = self
+                .deps
+                .git
+                .push(Path::new(&worktree), &branch, &branch, &token)
+                .await;
             if let Err(err) = pushed {
                 self.release_auto_head(task_id);
                 return Err(err);
@@ -2164,13 +2153,40 @@ impl App {
     /// `Upstream` GitHub failures.
     pub async fn merge_task_pr(&self, ctx: &AuthContext, task_id: &str) -> AppResult<Delivery> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
-        let sandbox = self.dlv_sandbox_of(&task).await?;
-        let profile = delivery_profile(&sandbox);
         let token = self
             .person_github_token(&ctx.user, "Merging a pull request")
             .await?;
+        self.dlv_merge(ctx, task, &token).await
+    }
+
+    /// [`App::merge_task_pr`] for the task's agent (`delivery_merge`) under its creator's
+    /// authority `ctx`: GitHub sees the creator merge, or the App when the creator has no usable
+    /// GitHub token (F 2026-10-11).
+    ///
+    /// # Errors
+    /// As [`App::merge_task_pr`], without the refusal for an account with no GitHub identity.
+    pub(crate) async fn merge_task_pr_for_task(
+        &self,
+        ctx: &AuthContext,
+        task_id: &str,
+    ) -> AppResult<Delivery> {
+        let task = self.load_task(ctx, task_id, Action::Work).await?;
+        let sandbox = self.dlv_sandbox_of(&task).await?;
+        let token = self.task_github_token(&task, &sandbox).await?;
+        self.dlv_merge(ctx, task, &token).await
+    }
+
+    /// Merges `task`'s pull request with `token` (see [`App::merge_task_pr`]).
+    async fn dlv_merge(
+        &self,
+        ctx: &AuthContext,
+        task: TaskRecord,
+        token: &Secret,
+    ) -> AppResult<Delivery> {
+        let sandbox = self.dlv_sandbox_of(&task).await?;
+        let profile = delivery_profile(&sandbox);
         let observed = self
-            .dlv_observe(&sandbox, &task, &profile, Some(&token))
+            .dlv_observe(&sandbox, &task, &profile, Some(token))
             .await?;
         dlv::apply(
             &observed.record.stage,
@@ -2188,7 +2204,7 @@ impl App {
             .deps
             .github
             .merge_pull(
-                &token,
+                token,
                 &sandbox.repo_owner,
                 &sandbox.repo_name,
                 pull.number,
@@ -2234,7 +2250,7 @@ impl App {
             notes.push(note);
         }
         if let Some(note) = self
-            .dlv_auto_promote_if_enabled(&sandbox, &profile, &ctx.user, &token, fetched)
+            .dlv_auto_promote_if_enabled(&sandbox, &profile, &ctx.user, token, fetched)
             .await
         {
             notes.push(note);
@@ -2658,6 +2674,33 @@ impl App {
         .await
     }
 
+    /// [`App::promote_sandbox`] for `task`'s agent (`delivery_promote`) under its creator's
+    /// authority `ctx`: GitHub sees the creator promote, or the App when the creator has no
+    /// usable GitHub token (F 2026-10-11).
+    ///
+    /// # Errors
+    /// As [`App::promote_sandbox`], without the refusal for an account with no GitHub identity.
+    pub(crate) async fn promote_sandbox_for_task(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+    ) -> AppResult<PromoteResult> {
+        let sandbox = self
+            .dlv_require_sandbox(ctx, task.sandbox_id.as_str(), Action::Work)
+            .await?;
+        let profile = delivery_profile(&sandbox);
+        let token = self.task_github_token(task, &sandbox).await?;
+        self.dlv_promote(
+            &sandbox,
+            &profile,
+            Initiator::User,
+            &ctx.user,
+            &token,
+            false,
+        )
+        .await
+    }
+
     // ---------------------------------------------------------------- environments
 
     /// Tasks for which `action` applies now. When none does but some task in the
@@ -2720,6 +2763,21 @@ impl App {
         sandbox_id: &str,
         environment: &str,
         req: &RunEnvironment,
+    ) -> AppResult<EnvironmentRun> {
+        self.dlv_start_environment_run(ctx, sandbox_id, environment, req, None)
+            .await
+    }
+
+    /// [`App::start_environment_run`]; for a task's agent (`delivery_deploy`, `for_task`) the
+    /// automatic promotion after the run uses the task's GitHub token (its creator's, else the
+    /// App's, F 2026-10-11) instead of the caller's own.
+    pub(crate) async fn dlv_start_environment_run(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+        environment: &str,
+        req: &RunEnvironment,
+        for_task: Option<&TaskRecord>,
     ) -> AppResult<EnvironmentRun> {
         let sandbox = self
             .dlv_require_sandbox(ctx, sandbox_id, Action::Work)
@@ -2796,8 +2854,9 @@ impl App {
         let app = Arc::clone(self);
         let user = ctx.user.clone();
         let run_id = run.id.clone();
+        let for_task = for_task.cloned();
         tokio::spawn(async move {
-            app.dlv_execute_environment_run(sandbox, profile, env, run_id, user)
+            app.dlv_execute_environment_run(sandbox, profile, env, run_id, user, for_task)
                 .await;
         });
         self.dlv_run_view(&run, None).await
@@ -2902,7 +2961,8 @@ impl App {
 
     /// Background part of a command run: fetch, check out the stage's branch head, run the
     /// command, record the outcome and — for command-verified environments that succeeded —
-    /// advance the waiting tasks (and auto-promote when enabled).
+    /// advance the waiting tasks (and auto-promote when enabled, with `for_task`'s GitHub token
+    /// when a task's agent started the run, else `user`'s).
     async fn dlv_execute_environment_run(
         self: Arc<Self>,
         sandbox: SandboxRecord,
@@ -2910,6 +2970,7 @@ impl App {
         env: Environment,
         run_id: String,
         user: UserRecord,
+        for_task: Option<TaskRecord>,
     ) {
         let mut ring = OutputRing::new(ENVIRONMENT_OUTPUT_BYTES);
         let (tx, mut rx) = watch::channel(String::new());
@@ -2966,13 +3027,17 @@ impl App {
                 Ok(due) => advanced = self.dlv_advance(due).await.unwrap_or_default(),
                 Err(err) => note = Some(err.public_message()),
             }
-            if env.after == Stage::Integration
-                && let Ok(token) = self.user_github_token(&user).await
-            {
-                note = self
-                    .dlv_auto_promote_if_enabled(&sandbox, &profile, &user, &token, false)
-                    .await
-                    .or(note);
+            if env.after == Stage::Integration {
+                let token = match &for_task {
+                    Some(task) => self.task_github_token(task, &sandbox).await,
+                    None => self.user_github_token(&user).await,
+                };
+                if let Ok(token) = token {
+                    note = self
+                        .dlv_auto_promote_if_enabled(&sandbox, &profile, &user, &token, false)
+                        .await
+                        .or(note);
+                }
             }
         }
         if !advanced.is_empty() {
@@ -3287,12 +3352,20 @@ impl App {
             .iter()
             .map(ToString::to_string)
             .collect();
+        // A task that needs no spec and has none has nothing to fix: no "No spec is
+        // registered…" problem beside "needs no spec" (F 2026-10-11).
+        let unneeded = !spec.required && spec.path.is_none();
+        let (valid, problems) = if unneeded {
+            (true, Vec::new())
+        } else {
+            (spec.valid, spec.problems.clone())
+        };
         Ok(json!({
             "spec": {
                 "required": spec.required,
                 "path": spec.path,
-                "valid": spec.valid,
-                "problems": spec.problems,
+                "valid": valid,
+                "problems": problems,
                 "message": message,
                 "plan_nudges": nudges,
             },

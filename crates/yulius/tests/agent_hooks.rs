@@ -1,6 +1,6 @@
 //! Internal agent endpoints over HTTP: hook events (briefing, message digests, the Stop
-//! discipline gate) and repository-scoped Git credentials (SPEC-002 §7.5, §8; AC-DSC-3,
-//! AC-COM-2, AC-COM-4).
+//! discipline gate) and repository-scoped Git credentials, the task creator's own (SPEC-002
+//! §7.5, §8; AC-DSC-3, AC-COM-2, AC-COM-4, AC-GIT-3).
 
 mod support;
 
@@ -12,8 +12,10 @@ use axum::http::Method;
 use serde_json::json;
 use support::{Creds, Harness, TestResult, call, harness_with_git};
 use yulius::wiring::git::GitAdapter;
+use yulius_app::hub::HubFrame;
 use yulius_app::model::{
-    AttemptRecord, LaunchKind, MessageRecord, SandboxRecord, TaskOrigin, TaskRecord, UserRecord,
+    AttemptRecord, GitHubTokenRecord, LaunchKind, MessageRecord, SandboxRecord, TaskOrigin,
+    TaskRecord, UserRecord,
 };
 use yulius_app::ports::github::GitHubAppConfig;
 use yulius_domain::harness::Harness as Agent;
@@ -601,9 +603,8 @@ async fn the_idle_reminder_keeps_a_finished_task_waiting() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn git_credentials_are_scoped_to_the_project_repository() -> TestResult {
-    let f = fixture().await?;
+/// Stores the GitHub App with installation 7 (the fake's installation token is `inst`).
+async fn install_app(f: &Fixture) -> TestResult {
     let store = &f.h.app.deps.store;
     store.init_instance("https://yulius.test", "x").await?;
     let app_config = GitHubAppConfig {
@@ -621,17 +622,136 @@ async fn git_credentials_are_scoped_to_the_project_repository() -> TestResult {
             .seal(&serde_json::to_vec(&app_config)?)?;
     store.set_github_app(&sealed, "acme", "org").await?;
     store.set_installation(Some(7)).await?;
+    Ok(())
+}
 
-    let ok = call(
+/// Saves `user`'s GitHub token, as a GitHub sign-in does (`token-<login>` in the fake).
+async fn sign_in_with_github(f: &Fixture, user: &str, login: &str) -> TestResult {
+    let access =
+        f.h.app
+            .deps
+            .crypto
+            .seal(format!("token-{login}").as_bytes())?;
+    f.h.app
+        .deps
+        .store
+        .save_github_token(
+            &GitHubTokenRecord {
+                user_id: UserId::parse(user)?,
+                access,
+                refresh: None,
+                expires_at: None,
+                refresh_expires_at: None,
+            },
+            Timestamp(1),
+        )
+        .await?;
+    Ok(())
+}
+
+/// The token the credential helper gets for the run with task token `token`.
+async fn agent_credential(f: &Fixture, token: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let resp = call(
         &f.h.internal,
         Method::POST,
         "/internal/git-credential",
         Some(json!({"protocol": "https", "host": "github.com", "path": "acme/fixture.git"})),
+        &Creds {
+            bearer: Some(token.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    Ok(resp.body["token"].as_str().ok_or("no token")?.to_owned())
+}
+
+/// Notices the task's terminal showed since `watch` subscribed.
+fn notices(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) -> Vec<String> {
+    let mut seen = Vec::new();
+    while let Ok(frame) = watch.try_recv() {
+        if let HubFrame::Notice(text) = frame {
+            seen.push(text);
+        }
+    }
+    seen
+}
+
+/// F 2026-10-11 (AC-GIT-3): the agent's Git acts as the task's creator, with their own GitHub
+/// token; without a usable one (signed out of GitHub, or no linked account at all) the App's
+/// repository token, and the task's terminal says why the App appears, once.
+#[tokio::test]
+async fn the_agents_git_acts_as_the_task_creator() -> TestResult {
+    let f = fixture().await?;
+    install_app(&f).await?;
+    let mut watch = f.h.app.runtime(&f.task).hub.watch();
+
+    // Alice links GitHub but has no token Yulius may use: the App's token, said once.
+    assert_eq!(agent_credential(&f, TOKEN).await?, "inst");
+    assert_eq!(agent_credential(&f, TOKEN).await?, "inst");
+    let said = notices(&mut watch);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("as the Yulius GitHub App") && said[0].contains("sign-in has expired"),
+        "{said:?}"
+    );
+
+    // Signed in with GitHub: her own token from now on.
+    sign_in_with_github(&f, "u1", "alice").await?;
+    assert_eq!(agent_credential(&f, TOKEN).await?, "token-alice");
+    assert!(notices(&mut watch).is_empty());
+    // `yulius gh-token` (the agent's `gh`) asks without a repository path: the same token.
+    let gh = call(
+        &f.h.internal,
+        Method::POST,
+        "/internal/git-credential",
+        Some(json!({"protocol": "https", "host": "github.com"})),
         &agent(),
     )
     .await?;
-    assert_eq!(ok.status, 200);
-    assert_eq!(ok.body["token"], "inst");
+    assert_eq!(gh.status, 200);
+    assert_eq!(gh.body["token"], "token-alice");
+
+    // A task of a creator without a linked GitHub account acts as the App.
+    let store = &f.h.app.deps.store;
+    let unlinked = UserRecord {
+        id: UserId::parse("u-local")?,
+        github_login: None,
+        github_id: None,
+        display_name: "Local".into(),
+        avatar_url: None,
+        is_superadmin: false,
+        is_instance_admin: false,
+        password_hash: None,
+        created_at: Timestamp(1),
+        disabled_at: None,
+    };
+    store.insert_user(&unlinked).await?;
+    let mut task = store.task(&f.task).await?.ok_or("task")?;
+    task.id = TaskId::parse("t-local")?;
+    task.number = 3;
+    task.created_by = unlinked.id.clone();
+    store.insert_task(&task).await?;
+    let mut attempt = store.live_attempt(&f.task).await?.ok_or("attempt")?;
+    attempt.id = AttemptId::parse("at-local")?;
+    attempt.task_id = task.id.clone();
+    attempt.token_hash = f.h.app.deps.crypto.sha256_hex(b"local-task-token");
+    store.insert_attempt(&attempt).await?;
+    let mut local_watch = f.h.app.runtime(&task.id).hub.watch();
+    assert_eq!(agent_credential(&f, "local-task-token").await?, "inst");
+    let said = notices(&mut local_watch);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("no linked GitHub account"), "{said:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn git_credentials_are_scoped_to_the_project_repository() -> TestResult {
+    let f = fixture().await?;
+    install_app(&f).await?;
+    sign_in_with_github(&f, "u1", "alice").await?;
+
+    assert_eq!(agent_credential(&f, TOKEN).await?, "token-alice");
     for (body, status) in [
         (
             json!({"protocol": "https", "host": "github.com", "path": "acme/other.git"}),

@@ -406,6 +406,8 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     assert!(!err, "{no_tree}");
     assert_eq!(no_tree["spec"]["required"], false, "{no_tree}");
     assert_eq!(no_tree["spec"]["valid"], true);
+    // F 2026-10-11: no "No spec is registered…" problem beside "needs no spec".
+    assert_eq!(no_tree["spec"]["problems"], json!([]), "{no_tree}");
     let worktree = h._dir.path().join("wt-claude2");
     std::fs::create_dir_all(worktree.join("docs/specs"))?;
     let date = CivilDate::new(2026, 10, 9).ok_or("date")?;

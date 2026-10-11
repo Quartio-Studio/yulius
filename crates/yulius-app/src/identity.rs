@@ -17,7 +17,9 @@
 //!   ([`App::workspace_git_credential`]); a grant is checked against the user's current access
 //!   on every use;
 //! - the GitHub CLI is logged in the same way: a `gh` shim first on `PATH` fetches that token per
-//!   invocation (`yulius gh-token`) and runs the real `gh` with it ([`gh_shim`], SPEC-004).
+//!   invocation (`yulius gh-token`) and runs the real `gh` with it ([`gh_shim`], SPEC-004); agent
+//!   runs get the same shim, answered with their task token as the task's creator
+//!   (`App::add_agent_gh`, F 2026-10-11).
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -34,7 +36,7 @@ use crate::error::{AppError, AppResult};
 use crate::hooks::GitCredential;
 use crate::model::{SandboxRecord, UserRecord};
 use crate::ports::isolation::SandboxJoin;
-use crate::ports::session::{Bind, Containment, Identity};
+use crate::ports::session::{Bind, Containment, Identity, LaunchPlan};
 
 /// Directory of Yulius helper commands inside user processes.
 pub const SANDBOX_BIN: &str = "/yulius/bin";
@@ -264,6 +266,35 @@ fn seed_home(home: &Path, user: &UserRecord, login: &str) {
     let _ = write_file(&home.join(".gitconfig"), gitconfig.as_bytes(), 0o644);
 }
 
+/// Puts `host_dir`, which holds only the `gh` shim, first on `launch`'s `PATH`: bound read-only at
+/// [`SANDBOX_BIN`] in a contained run, by its host path otherwise.
+fn put_gh_first(launch: &mut LaunchPlan, host_dir: PathBuf) {
+    let dir = match &mut launch.containment {
+        Containment::Bubblewrap { binds, .. } => {
+            binds.push(Bind {
+                source: host_dir,
+                dest: PathBuf::from(SANDBOX_BIN),
+                writable: false,
+            });
+            PathBuf::from(SANDBOX_BIN)
+        }
+        Containment::None => host_dir,
+    };
+    let rest = launch
+        .env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "PATH")
+        .map_or_else(
+            || "/usr/local/bin:/usr/bin:/bin".to_owned(),
+            |(_, value)| value.clone(),
+        );
+    launch.env.retain(|(key, _)| key != "PATH");
+    launch
+        .env
+        .push(("PATH".into(), format!("{}:{rest}", dir.display())));
+}
+
 impl App {
     fn users_dir(&self) -> PathBuf {
         self.config.data_dir.join("users")
@@ -283,7 +314,7 @@ impl App {
     }
 
     /// The directory holding only the `gh` shim, for user processes that are not contained
-    /// (the `sudo` shim next to it must not shadow the host's `sudo`).
+    /// (the `sudo` shim next to it must not shadow the host's `sudo`) and for agent runs.
     fn gh_bin(&self) -> AppResult<PathBuf> {
         let dir = self.config.data_dir.join("runtime").join("gh");
         std::fs::create_dir_all(&dir).map_err(AppError::internal)?;
@@ -298,6 +329,19 @@ impl App {
         if std::fs::read(&shim).ok().as_deref() != Some(text.as_bytes()) {
             write_file(&shim, text.as_bytes(), 0o755)?;
         }
+        Ok(())
+    }
+
+    /// Puts the `gh` shim first on the `PATH` of an agent run planned with `launch`'s final
+    /// environment and containment (F 2026-10-11, SPEC-004): a contained run sees only the
+    /// shim's directory, read-only at [`SANDBOX_BIN`] (the rest of `runtime/` stays out of it); an
+    /// uncontained one gets its host directory. The shim's `yulius gh-token` answers with the
+    /// run's task token, so `gh` acts as the task's creator, exactly like the agent's Git.
+    ///
+    /// # Errors
+    /// `Internal` when the shim cannot be written.
+    pub(crate) fn add_agent_gh(&self, launch: &mut LaunchPlan) -> AppResult<()> {
+        put_gh_first(launch, self.gh_bin()?);
         Ok(())
     }
 
@@ -334,7 +378,11 @@ impl App {
         ));
         if !self.config.contained {
             env.push(("HOME".into(), home_host.to_string_lossy().into_owned()));
-            let path = format!("{}:{path}", self.gh_bin()?.display());
+            let path = format!(
+                "{}:{}",
+                self.gh_bin()?.display(),
+                crate::isolation::with_home_tools(&home_host.to_string_lossy(), &path)
+            );
             env.push(("PATH".into(), path));
             return Ok(UserSpace {
                 login,
@@ -372,6 +420,7 @@ impl App {
         } else {
             path
         };
+        let path = crate::isolation::with_home_tools(&home.to_string_lossy(), &path);
         env.push(("PATH".into(), format!("{SANDBOX_BIN}:{path}")));
         let identity_dest = PathBuf::from("/etc");
         let replace_sudo = join.is_none() && Path::new(HOST_SUDO).is_file();
@@ -745,5 +794,75 @@ mod tests {
             script.contains(r#"'/opt/it'\''s here/yulius' gh-token"#),
             "{script}"
         );
+    }
+    fn agent_launch(containment: Containment) -> LaunchPlan {
+        LaunchPlan {
+            argv: vec!["claude".into()],
+            cwd: PathBuf::from("/data/sandboxes/s1/worktrees/t1"),
+            env: vec![
+                ("HOME".into(), "/data/sandboxes/s1/home".into()),
+                ("PATH".into(), "/usr/bin:/bin".into()),
+            ],
+            secret_env: vec![("YULIUS_TASK_TOKEN".into(), "t".into())],
+            files: Vec::new(),
+            containment,
+        }
+    }
+
+    /// F 2026-10-11: an agent run finds the `gh` shim first on its `PATH` — inside containment
+    /// only the shim's directory, at /yulius/bin; on the host its own directory.
+    #[test]
+    fn agent_runs_get_the_gh_shim_first_on_path() -> TestResult {
+        let host = PathBuf::from("/data/runtime/gh");
+        let mut uncontained = agent_launch(Containment::None);
+        put_gh_first(&mut uncontained, host.clone());
+        let paths: Vec<&str> = uncontained
+            .env
+            .iter()
+            .filter(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(paths, ["/data/runtime/gh:/usr/bin:/bin"]);
+
+        let mut contained = agent_launch(Containment::Bubblewrap {
+            sandbox_root: PathBuf::from("/data/sandboxes/s1"),
+            home: PathBuf::from("/data/sandboxes/s1/home"),
+            writable: Vec::new(),
+            readonly: Vec::new(),
+            binds: Vec::new(),
+            identity: None,
+            join: None,
+        });
+        contained
+            .env
+            .push(("PATH".into(), "/usr/sbin:/usr/bin".into()));
+        put_gh_first(&mut contained, host.clone());
+        let paths: Vec<&str> = contained
+            .env
+            .iter()
+            .filter(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            ["/yulius/bin:/usr/sbin:/usr/bin"],
+            "the last PATH wins"
+        );
+        let Containment::Bubblewrap {
+            binds, readonly, ..
+        } = &contained.containment
+        else {
+            return Err("containment changed".into());
+        };
+        assert_eq!(
+            binds,
+            &[Bind {
+                source: host,
+                dest: PathBuf::from(SANDBOX_BIN),
+                writable: false,
+            }]
+        );
+        assert!(readonly.is_empty(), "the rest of runtime/ stays out");
+        Ok(())
     }
 }

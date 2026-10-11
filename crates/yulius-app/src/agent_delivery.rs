@@ -11,6 +11,10 @@
 //! passed, never merely "none" when the profile requires checks. An environment that a person
 //! must verify (`verify = "manual"`, or no command) is never confirmed by an agent. Every agent
 //! action is also audited as `task:<number>`.
+//!
+//! On GitHub an agent acts with its task creator's own token, so merges, promotions, issues and
+//! labels are theirs; when they have no usable GitHub token (no linked account, an expired
+//! sign-in), the App acts and the task's terminal says so once (F 2026-10-11).
 
 use std::sync::Arc;
 
@@ -171,7 +175,7 @@ impl App {
                 )));
             }
         }
-        let view = self.merge_task_pr(&auth, &task_id).await?;
+        let view = self.merge_task_pr_for_task(&auth, &task_id).await?;
         self.agent_audit(
             ctx,
             "delivery.agent.merge",
@@ -220,11 +224,12 @@ impl App {
         }
         let auth = self.agent_authority(ctx).await?;
         let run = self
-            .start_environment_run(
+            .dlv_start_environment_run(
                 &auth,
                 sandbox.id.as_str(),
                 name,
                 &RunEnvironment { confirm: true },
+                Some(&ctx.task),
             )
             .await?;
         self.agent_audit(
@@ -246,7 +251,7 @@ impl App {
     pub async fn tool_delivery_promote(&self, ctx: &AgentContext) -> AppResult<Value> {
         let auth = self.agent_authority(ctx).await?;
         let sandbox = ctx.task.sandbox_id.to_string();
-        let result = self.promote_sandbox(&auth, &sandbox).await?;
+        let result = self.promote_sandbox_for_task(&auth, &ctx.task).await?;
         self.agent_audit(
             ctx,
             "delivery.agent.promote",
@@ -263,8 +268,8 @@ impl App {
 }
 
 impl App {
-    /// `issue_create`: opens a GitHub issue that meets the Definition of Ready (DLV-008), as the
-    /// task's creator when they linked GitHub, else as the App.
+    /// `issue_create`: opens a GitHub issue that meets the Definition of Ready (DLV-008), and
+    /// creates its missing labels, as the task's creator, else as the App (F 2026-10-11).
     ///
     /// # Errors
     /// `Invalid` input or an issue that is not ready; GitHub failures.
@@ -296,12 +301,7 @@ impl App {
             .sandbox(&ctx.task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
-        let creator = self.deps.store.user(&ctx.task.created_by).await?;
-        let token = match creator {
-            Some(user) if user.github_login.is_some() => self.user_github_token(&user).await.ok(),
-            _ => None,
-        };
-        let token = match token {
+        let token = match self.creator_github_token(&ctx.task).await {
             Some(token) => token,
             None => self.repository_installation_token(&sandbox).await?,
         };

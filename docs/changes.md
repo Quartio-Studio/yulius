@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-11
 
+- Everything a task does on GitHub shows the person who created it: commits with the no-reply
+  address GitHub links to their account, and the agent's Git and `gh`, Yulius's pushes and pull
+  requests, the agent's merges, promotions and issues with their own token; the App only when
+  they have none, said once in the task's terminal (SPEC-001 GIT-003, #188).
 - The GitHub CLI is logged in as the user in sandbox shells and editors: a `gh` shim fetches the
   user's own GitHub token per call (nothing stored on disk), like Git's credential helper
   ([SPEC-004](../.ai/specs/SPEC-004-gh-cli-login.md)).

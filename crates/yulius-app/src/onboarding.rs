@@ -237,22 +237,33 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          1. Read the repository's own instructions first (AGENTS.md, CLAUDE.md, .agents/skills, \
          .claude/skills, CONTRIBUTING and README). They stay authoritative: follow them for \
          branches, commits, tests and reviews.\n\
-         2. Reverse-engineer the existing project into these documents: the product summary, an \
+         2. Set up this sandbox's development environment before anything else, so you and every \
+         later task can build and test: install each toolchain and system package the \
+         repository needs (its bootstrap script or docs; toolchain files such as \
+         rust-toolchain.toml, .nvmrc / package.json engines, .python-version / pyproject.toml, \
+         go.mod, Gemfile), with `sudo apt-get install` for system packages and the official \
+         installers for toolchains (for example rustup into your home: `curl \
+         https://sh.rustup.rs -sSf | sh -s -- -y`). ~/.cargo/bin and ~/.local/bin are on PATH for \
+         every run; installed packages and your home persist in this sandbox. Then run the \
+         repository's own test, lint and build commands until they work, and record them in \
+         yulius.toml [commands]. A check that still cannot run is a problem to report in the pull \
+         request, never a reason to skip it silently.\n\
+         3. Reverse-engineer the existing project into these documents: the product summary, an \
          architecture document and decision records derived from the code and its history, so \
          every later task knows the whole product before it builds anything.\n\
-         3. Map instead of moving: when equivalent documents already exist (a README summary, an \
+         4. Map instead of moving: when equivalent documents already exist (a README summary, an \
          architecture page, a decisions file, a changelog), point to them from yulius.toml [docs] \
          (product, architecture, decisions, specs_dir, changes, agents) instead of renaming or \
          duplicating them.\n\
-         4. Add only what is missing: the product summary, an architecture document with at least \
+         5. Add only what is missing: the product summary, an architecture document with at least \
          one ```mermaid diagram, decisions (a directory of NNNN-<slug>.md ADRs with Status, \
          Context, Decision, Alternatives and Consequences, or one file with a heading per \
          decision), the specs directory, the changes log, and a CLAUDE.md pointer to AGENTS.md. \
          Keep every existing rule in AGENTS.md; add a short pointer to the Yulius documents.\n\
-         5. Record the delivery profile in yulius.toml [delivery]: preset \"{preset}\" \
+         6. Record the delivery profile in yulius.toml [delivery]: preset \"{preset}\" \
          (integration branch {integration}, production branch {production}), and put the \
          repository's real test, lint and build commands in [commands].\n\
-         6. Foundations (skill infra-bootstrap): CI runs only on our own machines through Yulius \
+         7. Foundations (skill infra-bootstrap): CI runs only on our own machines through Yulius \
          CI, never GitHub Actions. Translate every .github/workflows/* job into the Yulius CI \
          configuration ([commands] gate or [[ci.jobs]] in yulius.toml; ci_setup lists them) so \
          nothing is lost, run it, then delete .github/workflows/ in the same pull request. If \
@@ -261,16 +272,16 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          step skipped with this reason, and say in the pull request that the deletion follows \
          once an admin grants the permission. When tests, lint or environments are missing, lay \
          them as the infra-bootstrap skill describes, as follow-up pull requests.\n\
-         7. git-crypt: encrypted files stay locked. Never unlock or decrypt them, never commit \
+         8. git-crypt: encrypted files stay locked. Never unlock or decrypt them, never commit \
          decrypted content, and leave encrypted files byte-for-byte unchanged.\n\
-         8. Hooks: when the repository's instructions describe a hooks setup (for example \
+         9. Hooks: when the repository's instructions describe a hooks setup (for example \
          `git config core.hooksPath .githooks`), apply it in your worktree before committing. \
          Never bypass hooks with --no-verify.\n\
-         9. Commit on your task branch and mark every step done as you finish it: Yulius opens \
+         10. Commit on your task branch and mark every step done as you finish it: Yulius opens \
          the pull request into {integration} by itself once every step is done, and pushes later \
          commits to it. Do not open it yourself, and never push to {integration} or \
          {production}. Change documentation, configuration and CI only, not application code.\n\
-         10. Before finishing, make sure every problem listed above is resolved.",
+         11. Before finishing, make sure every problem listed above is resolved.",
         preset = profile.preset,
         problems = problems.join("\n"),
     )
@@ -280,6 +291,7 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
 fn onboarding_steps() -> Vec<String> {
     [
         "Read the repository's instructions and conventions",
+        "Install the toolchains and run the repository's own checks",
         "Reverse-engineer the product, architecture and decisions into the docs",
         "Map existing documents and commands in yulius.toml",
         "Move GitHub Actions into Yulius CI and delete them",
@@ -847,6 +859,13 @@ mod tests {
         assert!(prompt.contains("Yulius opens the pull request"));
         assert!(prompt.contains("Do not open it yourself"));
         assert!(prompt.contains("Workflows permission"));
+        // F 2026-10-11: the preparation agent had no Rust toolchain afterwards.
+        assert!(prompt.contains("development environment") && prompt.contains("rustup"));
+        assert!(
+            onboarding_steps()
+                .iter()
+                .any(|step| step.contains("toolchains"))
+        );
         assert!(
             !onboarding_steps()
                 .iter()

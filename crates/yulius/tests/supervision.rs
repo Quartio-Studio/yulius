@@ -158,7 +158,7 @@ async fn seed_records(app: &App) -> Result<(SandboxId, UserId), Box<dyn std::err
     let user = UserRecord {
         id: UserId::parse("u-admin")?,
         github_login: Some("admin".into()),
-        github_id: None,
+        github_id: Some(4242),
         display_name: "Admin".into(),
         avatar_url: None,
         is_superadmin: true,
@@ -308,6 +308,18 @@ fn runs_survive_a_server_restart_and_stop_cleanly() -> TestResult {
         let worktree = PathBuf::from(record.worktree_path.ok_or("no worktree")?);
         assert!(worktree.join("README.md").is_file(), "worktree checked out");
         assert!(record.branch.is_some_and(|b| b.starts_with("feat/")));
+        // F 2026-10-11 (AC-GIT-3): commits are the creator's, with the address GitHub links to
+        // their account; the run's `gh` shim is in place.
+        let email = Command::new("git")
+            .args(["config", "user.email"])
+            .current_dir(&worktree)
+            .output()?;
+        assert_eq!(
+            String::from_utf8_lossy(&email.stdout).trim(),
+            "4242+admin@users.noreply.github.com"
+        );
+        let shim = std::fs::read_to_string(data.join("runtime/gh/gh"))?;
+        assert!(shim.starts_with("#!/bin/sh\n# Yulius gh shim"), "{shim}");
         wait_for("the secret env report", Duration::from_secs(10), || {
             screen_contains(&app, &id, "ENV YULIUS_TASK_TOKEN=set")
         })
