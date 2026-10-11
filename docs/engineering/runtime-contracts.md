@@ -90,7 +90,7 @@ Child environments pass only required values. Secret redaction is tested at ever
 logging/error boundary; avoid logging raw payloads by default. Bound transcript
 retention and access. Repository content and imported skills cannot grant permissions.
 
-SEC-004: Agents use credentials without receiving them (SPEC-002 ADR-18): a credential is
+SEC-004: Agents use credentials without receiving them (SPEC-002 ADR-20): a credential is
 added outside the sandbox (egress proxy, browser filling) only for the hosts it is bound to, and
 every channel through which an agent reads is redacted of credential values and their
 encodings. In-sandbox code redacts from fingerprints, never from values, and fails closed. A new

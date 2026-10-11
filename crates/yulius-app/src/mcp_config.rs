@@ -294,7 +294,7 @@ impl App {
     /// sandbox (its own or an instance-wide one). An unknown name does not resolve, and the
     /// referencing variable or header is left out of the run (with a warning), never passed on
     /// as the literal reference. The value reaches the run's environment for the MCP client;
-    /// every channel the agent reads redacts it (SPEC-002 ADR-18).
+    /// every channel the agent reads redacts it (SPEC-002 ADR-20).
     ///
     /// # Errors
     /// Store or decryption failures.

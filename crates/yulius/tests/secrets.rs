@@ -1,5 +1,5 @@
 //! The secrets vault over the public API, the internal listener and the egress policy
-//! (SPEC-001 VLT-001..009, SPEC-002 ADR-18): team secrets and re-authentication, encryption at
+//! (SPEC-001 VLT-001..009, SPEC-002 ADR-20): team secrets and re-authentication, encryption at
 //! rest, access control, agent secrets applied to requests for their bound hosts only, the MCP
 //! tools and redaction of MCP results, fingerprints and MCP `${secret:NAME}` references.
 
@@ -916,7 +916,7 @@ async fn nothing_is_stored_in_clear() -> TestResult {
     Ok(())
 }
 
-/// The egress proxy is served on the internal listener (SPEC-002 ADR-18): a `CONNECT` with the
+/// The egress proxy is served on the internal listener (SPEC-002 ADR-20): a `CONNECT` with the
 /// run's task token opens a tunnel, without it 407; the internal API keeps working beside it.
 #[tokio::test]
 async fn the_proxy_shares_the_internal_listener() -> TestResult {

@@ -25,7 +25,7 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 argon2 = { workspace = true }
 chacha20poly1305 = { workspace = true }
-# Vault (SPEC-002 ADR-18): HKDF for the key-encryption key and HMAC for TOTP codes; zeroed key
+# Vault (SPEC-002 ADR-20): HKDF for the key-encryption key and HMAC for TOTP codes; zeroed key
 # material; constant-time comparisons.
 ring = { workspace = true }
 zeroize = { workspace = true }

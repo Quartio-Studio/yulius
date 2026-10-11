@@ -1,4 +1,4 @@
--- Yulius schema version 8 (SPEC-001 VLT-001..009, SPEC-002 ADR-18): the secrets vault.
+-- Yulius schema version 9 (SPEC-001 VLT-001..009, SPEC-002 ADR-20): the secrets vault.
 -- Every value lives only in `ciphertext`: a JSON payload sealed with its own random data key
 -- (XChaCha20-Poly1305, the row's id and section as associated data), the data key wrapped by the
 -- vault key-encryption key derived from the master key (`kek_id` names its generation).

@@ -86,7 +86,8 @@ Principles:
 | ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Over the user's link (F 2026-10-10, later): the viewer acknowledges frames and the server keeps about a round trip on the way, the bitrate and frame rate follow the slowest viewer (VBV tiers), keyframes come on demand from a replacement encoder, wheel and pointer moves are coalesced. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
 | ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done; a new task's mode and workflow on Auto are two more fixed questions with Goal and "Feature" as the defaults (TSK-015). Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
 | ADR-17 | Claude subscriptions are **one self-managing pool** (F 2026-10-10): use-it-or-lose-it placement (weekly headroom ÷ hours to its reset ÷ tasks on the account + 1), a proactive switch at 98 % of any binding window at the turn boundary by native resume, and a **gentle, invisible pause** held by the harness — the Stop / `UserPromptSubmit` hook answers `202 Retry-After` and `yulius hook` keeps polling — persisted in `capacity_pauses`, resumed oldest first and staggered; a burn-rate forecast says when to buy more. Analysis and contract: §2.4. | Manual priorities (before); suspending the agent (SIGSTOP); letting the CLI hit the limit and typing a resume prompt; killing and resuming | No knobs; capacity that expires is spent first; switches only when forced; the agent is never told; a hold survives restarts; the CLI shows "running hook" while paused and a held agent keeps its session slot; relies on Claude Code honouring a long hook `timeout` (fallback: the reported-limit pause). |
-| ADR-18 | **Secrets vault** (F 2026-10-10): team secrets and agent secrets under envelope encryption (per-write data keys, XChaCha20-Poly1305, KEK from the master key by HKDF); team reveals behind a 10-minute re-authentication, audited; agents use secrets without seeing them through a credential-injecting egress proxy on the internal listener (TLS interception only for hosts bound to a secret) and `browser_fill_secret`; exact values and encodings redacted from every channel an agent reads (Bash wrapper, `PostToolUse` rewrite, MCP results, proxy responses) and from the terminal. Analysis: §2.6. | `age`; `aes-gcm`; SQLCipher; an external vault; values in the environment; a request-making tool | One store for people and agents; agents' HTTP goes through Yulius; redaction is an oracle for weak values (8-character minimum); remaining threats in §2.6. |
+| ADR-18 | **Updates from `main` through a root helper** (F 2026-10-10): the binary embeds its commit; the server reads `main` of Quartio-Studio/yulius hourly (App token, else a read token) and offers newer commits to superadmins; "Update now" runs one persisted run — **build** (tasks keep working) → **drain** (every Stop / `UserPromptSubmit` held as in ADR-17, starts queue, until every live task is at a pause point) → **install** by a oneshot root helper started by a root-owned systemd path unit (stop, back up binary and database, install, start, health check, roll back) → **resume** (staggered). Analysis and contract: §2.5. | Pausing before building (the coordinator's draft order); polkit or sudo for `systemctl start`; a shell-script helper; a separate helper binary; auto-update | Tasks pause for about a minute, not for the build; a failed build touches nothing; the helper runs code of `main` as root while building (as the manual deploy did); a held agent keeps its session; a turn longer than 30 minutes cancels the update unless the superadmin continues without waiting. The Jev key moves into sealed settings (ADM-002, §2.5). |
+| ADR-20 | **Secrets vault** (F 2026-10-10): team secrets and agent secrets under envelope encryption (per-write data keys, XChaCha20-Poly1305, KEK from the master key by HKDF); team reveals behind a 10-minute re-authentication, audited; agents use secrets without seeing them through a credential-injecting egress proxy on the internal listener (TLS interception only for hosts bound to a secret) and `browser_fill_secret`; exact values and encodings redacted from every channel an agent reads (Bash wrapper, `PostToolUse` rewrite, MCP results, proxy responses) and from the terminal. Analysis: §2.6. | `age`; `aes-gcm`; SQLCipher; an external vault; values in the environment; a request-making tool | One store for people and agents; agents' HTTP goes through Yulius; redaction is an oracle for weak values (8-character minimum); remaining threats in §2.6. |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 | ADR-19 | **One autonomous delivery discipline** (F 2026-10-10, #139): steps of similar effort with effort-weighted progress and pure-function rules (bounds, at most 2 in progress, no reopening by agents, reasons for blocked/skipped) plus never-blocking nudges; a spec only where it matters (by workflow, else by changed paths); one pipeline for features and fixes with an independent review in a fresh session and merge on green; infra bootstrap on Yulius CI without GitHub Actions; a docs-first briefing; bundled skills adapted to be universal. Analysis and contract: §2.5. | A hard step gate at every turn; LLM-judged step sizes; specs for everything; vendoring skills byte for byte; Bartek's full N2/N3 rule set (module locks, owner flags, scripted merge lock, DORA dashboards) | Progress means something without ceremony; agents keep momentum; the harness checks what a machine can check and nudges the rest; the remaining judgment (step sizes) stays with the agent, so a dishonest plan is caught only by its pace. |
 
@@ -861,8 +862,115 @@ quarantine with an issue), Definition-of-Ready labels. **Left out:** owner flags
 (no human acceptance), module locks (scope claims and messages instead), the scripted merge lock
 and promotion records (Yulius delivery serializes merges), second-model-family review (Claude
 only, F 2026-10-08), GitHub rulesets and Actions (paid), DORA dashboards.
+### 2.5 ADR-18: Updates from main and the root update helper (F 2026-10-10)
 
-### 2.6 ADR-18: the secrets vault — team secrets people reveal, agent secrets agents use but never see (F 2026-10-10)
+Status: accepted and implemented (issue #140).
+
+**Request.** "Add update method. The repo is here https://github.com/Quartio-Studio/yulius and
+always will be. When new thing is on prod, users who has installed it should be asked to update
+(superadmins). Do not do autoupdate at the moment. All tasks and everything should be paused for
+the update and resumed right after without agents knowing … users should be able to do that because
+developing yulius using yulius, our vm will be prod where we'll do final tests." And (item 2): "On
+installing Yulius user should be prompted for Jev key and it should be managed by superadmin later."
+
+**Know the build.** `crates/yulius/build.rs` embeds `YULIUS_BUILD_COMMIT`: the environment variable
+when it is a full commit id (the helper sets it to the commit it checked out), else
+`git rev-parse HEAD` (rebuilding when `HEAD` or its ref moves), else empty ("unknown build", e.g. a
+tarball). `yulius version` prints it; the internal listener serves `GET /internal/version`.
+
+**Detect.** `yulius-domain::update` fixes the repository (`Quartio-Studio/yulius`, `main`). The
+`ReleaseSource` port (adapter `wiring::release`, GitHub REST, 15 s per request, ≤ 4 MiB, no
+redirects) returns the head of `main` and, from `GET compare/{build}...{head}`, the relation —
+behind (an update), up to date, ahead (a development build), diverged — and the commits between
+(≤ 250); an unknown build gets the latest 20 commits. Credentials, in order: the App's
+installation token for that repository (`repository_token`), the read token of
+`YULIUS_UPDATE_TOKEN_FILE`, else anonymous; a refusal tries the next. Checks run 60 s after start
+and then every hour (`YULIUS_UPDATE_CHECK_MINUTES`), and on "Check now" (a check younger than 30 s
+is reused); the result lives in memory. A changed offer publishes `update.updated`; the UI turns it
+into the superadmin's notification and banner. The summary is the titles of the new commits
+(merges and promotions left out, conventional prefixes and `(#n)` removed): "A · B · C and N more".
+
+**Order: build first, pause second.** The draft order was pause → build → restart → resume. A
+release build takes 5–15 minutes on the VM; pausing first would stop every task for all of it, and
+a failed build would have paused them for nothing. Building first keeps tasks working, pauses them
+only for the install (about a minute), and takes the database backup at the quiet point right
+before the swap, so a rollback loses nothing. The build competes for CPU with agents; the unit runs
+it at `Nice=10`, idle I/O.
+
+**The run** (`update_runs`, at most one open; `App::update_round` every 2 s while open):
+
+| State | Owner | Exit | Bound / missing trigger |
+| --- | --- | --- | --- |
+| `building` | root helper (build request) | status `built` → `draining`; `failed` → `failed`; Cancel → `cancelled` | no acknowledgement: the request is written again every 20 s and the run fails after 90 s (a helper busy with an earlier request is waited for); 3 h → `failed` |
+| `draining` | server (hold) | every live task at a pause point on two consecutive passes, or "Continue without waiting" → `installing` (install request); Cancel → `cancelled` | 30 min → `cancelled` ("N tasks were still in a turn"), holds released |
+| `installing` | root helper (install request) | helper `succeeded` and this server runs the target → `resuming` (outcome succeeded); `rolled_back` / `failed` → `resuming` with that outcome | no acknowledgement within 90 s → `resuming` (failed, nothing installed); 15 min → `resuming` (failed) |
+| `resuming` | server | every live task released (staggered 2 s) → the outcome | a restart repeats the release |
+
+A **pause point** (`update::at_pause_point`): the task's hook was held for the update in the last
+15 s, it is paused for capacity, or its agent finished its turn (`waiting`, `done`,
+`needs_attention`). A turn in progress is not one: restarting under it could fail a Yulius tool call
+or Git credential request the agent would see.
+
+**The hold.** While a run drains, installs or resumes, `hook_event` answers every `Stop` and
+`UserPromptSubmit` with `202 Retry-After: 3` before any other logic (ADR-17's hold mechanism, a
+shorter retry so released tasks go on within seconds); other hooks answer as usual. `start_run`
+queues instead of launching (as at the session limit), `drain_queue` and the capacity resume loop
+wait. Task states are untouched: tasks and agents never learn of the pause; a banner tells the
+people. The hold flag is restored from the open run before the server serves (`restore_update_hold`),
+so the new server holds every boundary from its first hook call; the hook client retries refused
+connections while held, so the restart releases nothing. Resuming adds tasks one by one (2 s apart)
+to the released set; then the hold ends, queued tasks start and the capacity loop is woken.
+
+**The root helper** (`yulius update-helper`, `crates/yulius/src/update_helper.rs`). The service user
+cannot replace `/usr/local/bin/yulius` or restart itself. Options considered:
+
+| Option | Verdict |
+| --- | --- |
+| A root-owned systemd **path unit** (`PathChanged=<data>/update/request.json`) starting a oneshot root service with a fixed command | **Chosen**: no extra package, no sudo, works with `NoNewPrivileges`; the request is data, never a command |
+| polkit rule allowing `systemctl start yulius-update@<commit>.service` | Needs polkitd and a JavaScript rule; the token for the private repository still has to cross as a file |
+| sudoers entry for a wrapper | sudo wildcards are easy to get wrong; fails under `NoNewPrivileges` |
+| Shell script helper | JSON parsing, file checks and rollback logic are hard to test; the Rust helper is tested with real Git and fake systemctl in CI |
+| Separate helper binary | Two binaries to install and keep in step; the subcommand runs only its own small code path |
+
+The request (`yulius_contracts::update::HelperRequest`, version 1) says only `build` or `install`,
+a request id, a full commit id, an optional short-lived read token and the time. The helper reads
+it only if it is a regular file (not a link, checked before and after `open` with `O_NOFOLLOW |
+O_NONBLOCK`) owned by the data directory's (unprivileged) owner, ≤ 16 KiB, the exact schema, ≤ 15
+minutes old, and an id not handled before (`last-request`); after a run it reads the request again
+(up to three), so one written while it was busy is not lost. Everything else comes from the
+root-owned unit: repository URL, binary, service, health URL, data directory. Build: fetch
+`refs/heads/main` into its own checkout (`/var/lib/yulius-update/src`; the token only as an
+`http.extraHeader` in the environment of that one `git fetch`, never in argv or on disk); the
+commit must exist, be an ancestor of `origin/main`, and not be the installed commit or an ancestor
+of it (no downgrade); exact detached checkout and `git clean`; `cargo build --release --locked -p
+yulius` with `YULIUS_BUILD_COMMIT`, progress parsed from cargo's progress line, a 2 h bound; the
+binary is staged with its commit. Install (the staged build of that commit only): read the running
+commit, `systemctl stop` (KillMode=process: sessions and terminals survive), back up the binary and
+`yulius.db` (+ WAL) to `backups/<id>/` (only regular files of the service user, streamed; last 3
+kept), install by rename, `systemctl start`, wait ≤ 120 s for `/internal/version` to report the
+commit and the service to stay active; otherwise stop, restore the binary and the database (old
+`-wal`/`-shm` removed, new files `O_EXCL`, owner and 0600 set on the descriptor) and start, then
+report `rolled_back` (or `failed` with "restore by hand from …" when the rollback fails too). Status
+(`HelperStatus`, `<state>/status.json`, 0644, written atomically) carries the step, progress, error,
+the previous commit and the last 40 output lines.
+
+**The Jev key** (ADM-001, ADM-002). `instance.jev_key` holds the key sealed with the master key
+(`jev_key_set_at`, `jev_key_set_by`). Task intake's evaluator is swappable
+(`IntakeServices` with a `JevConnector` port, adapter `wiring::jev::JevKeys`): the saved key wins,
+else the `YULIUS_JEV_API_KEY_FILE` key ("from config"), else none; set, replace, remove and "save it
+here" take effect at once. The test sends one split question about a one-line request and reads the
+HTTP status: 401/403 → refused, other errors → unreachable, a contract violation → invalid. No log,
+audit entry or response contains the key; audit actions are `jev.key_set` / `jev.key_removed`.
+
+**Consequences.** Superadmins decide when; nothing updates by itself. Pausing costs about a minute
+of agent time; held agents keep their session slots. Building runs code of `main` as root, as the
+manual deploy already did; `main` is protected (pull requests, required checks), the unit limits the
+writable paths (`ProtectSystem=strict`). A database change made by the new version in its failed
+start is discarded by a rollback. A task in a turn longer than 30 minutes cancels the update unless
+someone continues without waiting (its agent may then see a failed Yulius tool call). The first
+installation of the helper and the read credential are an operator step (`docs/operations.md` §8).
+
+### 2.6 ADR-20: the secrets vault — team secrets people reveal, agent secrets agents use but never see (F 2026-10-10)
 
 Status: accepted and implemented (issue #141). Requirements VLT-001..009 (SPEC-001 §5.19).
 
@@ -884,7 +992,7 @@ its environment, files or tool results can be echoed, committed or sent anywhere
 never enter the sandbox in clear, and if one gets in anyway (a `.env` in the repository, an API
 echoing it), it must not reach the agent's context.
 
-**Storage (both sections).** One table, `vault_secrets` (migration 0008). Every field that is
+**Storage (both sections).** One table, `vault_secrets` (migration 0009). Every field that is
 secret — and, for team secrets, the URL and user name too — is one JSON payload under **envelope
 encryption**: a fresh random 256-bit data key per write, XChaCha20-Poly1305 with the row's id and
 section as associated data (a ciphertext copied into another row does not open), the data key
@@ -1052,10 +1160,10 @@ Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
 | `crates/yulius-github` | adapter | GitHub REST, App JWT, OAuth, installation tokens. |
 | `crates/yulius-git` | adapter | Git CLI wrapper: clone/fetch, worktrees, branches, bundles, diff stats, hooks install. |
 | `crates/yulius-browser` | adapter | Chromium lifecycle, CDP client, virtual displays (Xvfb, XTest, RandR), the H.264 encoder and video hub, screencast fallback, browser tools. |
-| `crates/yulius-egress` | adapter | The agents' egress proxy: CONNECT tunnels, TLS interception of hosts bound to agent secrets (egress CA, rcgen + rustls), verified HTTPS upstream, response redaction (ADR-18). |
+| `crates/yulius-egress` | adapter | The agents' egress proxy: CONNECT tunnels, TLS interception of hosts bound to agent secrets (egress CA, rcgen + rustls), verified HTTPS upstream, response redaction (ADR-20). |
 | `crates/yulius-server` | interface | axum routes, auth middleware, WS endpoints, MCP and hook endpoints, embedded web UI (`web/`). |
 | `crates/yulius-cli` | interface | `import`, `login`, admin client commands (HTTP client, argument parsing). |
-| `crates/yulius` | composition | Configuration, wiring, subcommand dispatch, signal handling; the Jev client and the headless Claude split proposer (ADR-16). |
+| `crates/yulius` | composition | Configuration, wiring, subcommand dispatch, signal handling; the Jev client and key connector and the headless Claude split proposer (ADR-16); the GitHub release source, the update helper's files and the root helper `yulius update-helper` (ADR-18); `build.rs` embeds the build commit. |
 | `tools/fake-agent` | tooling | Deterministic fake harness for failure tests (prints TUI-like output, writes fake transcripts, floods, ignores SIGTERM, forks descendants, simulates limits). |
 
 ## 4. Data directory and files
@@ -1078,7 +1186,7 @@ runtime/bin/                        generated helper commands bound read-only in
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
 runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files;
                                     scrub.json (redaction fingerprints) and egress-ca.pem (host roots
-                                    plus the egress CA), both bound read-only into containment (ADR-18)
+                                    plus the egress CA), both bound read-only into containment (ADR-20)
 shells/<shell>/                     ptyhost run directories of sandbox shells (UI-015); shell.json (owner,
                                     sandbox, folder, name, sealed host token) to adopt them after a restart
 logins/<login>/                     temporary provider login (config dir + run dir); zero-filled and removed after the login
@@ -1086,7 +1194,13 @@ exports/sandbox-<slug>-<ms>.json    task export written when a sandbox is remove
 transcripts/<task>/                 archived/imported provider transcripts (immutable copies)
 skills/<pack>/                      bundled skill packs extracted from the binary: yulius, open-mercato,
                                     superpowers (SKL-007; rewritten when they differ, extras removed)
+skills/open-mercato/                instance skill catalog extracted from the binary (vendored Open Mercato pack)
+update/request.json                 the update request for the root helper (0600, written atomically; ADR-18)
 ```
+
+The update helper keeps its own root-owned state outside the data directory (ADR-18):
+`/var/lib/yulius-update/` (0755) with `status.json` (0644, read by the server), `last-request`,
+`installed-commit`, `src/` (its checkout), `target/`, `staged/` and `backups/<run>/` (0700).
 
 Unix socket paths are limited (104 bytes on macOS, 108 on Linux): `serve` refuses a data directory
 whose longest socket path (`<data>/logins/<uuid>/pty.sock`) would exceed 103 bytes. A ptyhost shuts
@@ -1105,7 +1219,7 @@ Schema version 1 (tables; columns abbreviated):
 | `web_sessions` | id_hash, user_id, csrf_token, created_at, expires_at, revoked_at |
 | `api_tokens` | id, user_id, token_hash, label, created_at, last_used_at, revoked_at |
 | `device_grants` | user_code, device_code_hash, status, user_id, expires_at |
-| `instance` | singleton: owner_login, owner_kind (org/user), public_url, github_app (encrypted blob), setup_completed_at |
+| `instance` | singleton: owner_login, owner_kind (org/user), public_url, github_app (encrypted blob), setup_completed_at; jev_key (sealed), jev_key_set_at, jev_key_set_by (ADM-002) |
 | `github_tokens` | user_id, access (enc), refresh (enc), expires_at |
 | `permission_cache` | user_id, sandbox_id, level (none/read/write/admin), checked_at |
 | `sandboxes` | id, slug, repo_owner, repo_name, github_repo_id, default_branch, profile (json), port_base, created_by, onboarding_state, removed_at |
@@ -1131,9 +1245,10 @@ Schema version 1 (tables; columns abbreviated):
 | `import_jobs` | id, sandbox_id, user_id, state, manifest (json), received (json), created_at |
 | `audit_log` | id, at, actor, action, target, detail |
 | `task_chains` | task_id (PK), after_task_id (NULL once the predecessor is deleted), after_number, blocked_reason, created_at — ADR-16 |
-| `vault_secrets` | id, section (team/agent), sandbox_id (agent: one sandbox, NULL = every sandbox), name, description, hosts (json), injection, header_name, fields (json, names only), kek_id, wrapped_key, ciphertext, created/updated by and at, value_updated_at, last_used_at; agent names unique where they apply — ADR-18 (version 8) |
-| `vault_reauth` | session_hash (PK), at: a browser session's last re-authentication — ADR-18 |
-| `vault_meta` | name (PK), kek_id, wrapped_key, ciphertext, created_at: sealed vault key material (the egress CA) — ADR-18 |
+| `update_runs` | id, target_commit, from_commit, summary, state (building/draining/installing/resuming/succeeded/failed/rolled_back/cancelled), outcome (while resuming), error, requested_by, created_at, state_since, finished_at; at most one open (unique partial index) — ADR-18 |
+| `vault_secrets` | id, section (team/agent), sandbox_id (agent: one sandbox, NULL = every sandbox), name, description, hosts (json), injection, header_name, fields (json, names only), kek_id, wrapped_key, ciphertext, created/updated by and at, value_updated_at, last_used_at; agent names unique where they apply — ADR-20 (version 9) |
+| `vault_reauth` | session_hash (PK), at: a browser session's last re-authentication — ADR-20 |
+| `vault_meta` | name (PK), kek_id, wrapped_key, ciphertext, created_at: sealed vault key material (the egress CA) — ADR-20 |
 | `prompt_holds` | id, task_id, class, prompt, prompt_sha256, percent, typed_by, state (pending/sent/consumed/parallel/after/skipped_after/reverted/dismissed/superseded), created_at, resolved_by, resolved_at, new_task_id — ADR-16 |
 | `task_auto_choices` | task_id (PK), mode_by, workflow_by (`jev` / `default`; NULL when a person picked it), workflow_name, created_at — ADR-16 item 5 (TSK-015) |
 
@@ -1245,6 +1360,13 @@ sandbox are rejected with an explanatory error while `pending/preparing`, unless
 Each transition is a user action (or profile auto-promotion) verified against GitHub state; stale
 heads are refused (GIT-002).
 
+### 6.8 Update run (ADR-18)
+
+`building → draining → installing → resuming → succeeded | failed | rolled_back`, with
+`building → failed | cancelled` and `draining → cancelled`. Owners, exits and bounds: the table in
+§2.5. Every move is a compare-and-set on the stored state; the run survives server restarts (a
+restart during `installing` is the normal case: the new server finishes it).
+
 ## 7. Runtime contracts
 
 ### 7.1 ptyhost protocol (`yulius-contracts::ptyhost`, version 1)
@@ -1294,7 +1416,7 @@ home), `TERM=xterm-256color`, `COLORTERM=truecolor`, git author identity of the 
 `GIT_CONFIG_*` credential helper `yulius git-credential`, `YULIUS_PORT_BASE`/`YULIUS_PORT_COUNT`
 (per-sandbox range of 20 ports from 20000 upward, persisted on the sandbox row; SPEC-001 PRJ-010)
 and `PORT` (first port of the range). Provider secrets are environment-only. Agent secrets
-(ADR-18): `NAME=yulius-secret-NAME` placeholders, `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec`
+(ADR-20): `NAME=yulius-secret-NAME` placeholders, `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec`
 and `YULIUS_SCRUB_FILE`, and, with the egress proxy, `HTTP(S)_PROXY` (secret: it carries the task
 token), `NO_PROXY`, `NODE_USE_ENV_PROXY` and the CA bundle variables.
 
@@ -1377,7 +1499,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `workflows_list` | Workflows available, the defaults first with `builtin` and `when_to_use` (AUT-004, AUT-006) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
-| `secrets_list`, `browser_fill_secret` | Agent secrets: names, descriptions and bindings; typing a value, user name or TOTP code into a page of a bound host (VLT-004/005, ADR-18) |
+| `secrets_list`, `browser_fill_secret` | Agent secrets: names, descriptions and bindings; typing a value, user name or TOTP code into a page of a bound host (VLT-004/005, ADR-20) |
 
 Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
 Every tool result (and error) is redacted of the sandbox's agent secrets before it is returned
@@ -1424,9 +1546,12 @@ output) and is recorded. Responses:
   hold without a request for 45 s was given up by the CLI (an interrupt, its own hook timeout — 15 s
   in sessions started before ADR-17 — or a killed client); the pause closes as `abandoned` and the
   task runs again (§6.1).
+- Update hold (ADR-18): while an update drains, installs or resumes, `Stop` and `UserPromptSubmit`
+  answer `202` with `Retry-After: 3` before anything else, until the task is released; other events
+  answer as usual.
 - `PostToolUse` (matcher `*`, timeout 60 s) never reaches the server with the tool result: the hook
   client redacts it in the sandbox from the run's fingerprints and prints
-  `hookSpecificOutput.updatedToolOutput` when it held an agent secret (ADR-18); without
+  `hookSpecificOutput.updatedToolOutput` when it held an agent secret (ADR-20); without
   fingerprints in a Yulius run the result is withheld.
 
 Waking idle tasks (COM-005): when a direct message arrives for a `running` task with activity
@@ -1610,6 +1735,16 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   checks are by path (a swap racing the milliseconds between check and use is not excluded;
   `openat`-based resolution would close it). Attachment names keep only characters that need no
   shell quoting.
+- Update helper (ADR-18): the only privileged path is the root-owned path unit and its oneshot
+  service with a fixed command. The request carries no command, path or URL: only build/install,
+  an id, a commit of `main` and a read token; the helper refuses links, FIFOs, another user's or
+  oversized files, unknown fields, stale or repeated ids, commits not on `main` and downgrades. It
+  never writes into the service user's directories except the database restore (new files only,
+  owner set on the descriptor, links removed rather than followed) and never copies a database
+  file that is a link or not the service user's. Tokens stay out of argv, files and status. The
+  build runs repository code as root (as a manual deploy does); the unit sets `ProtectSystem=strict`
+  with only the needed paths writable, `NoNewPrivileges`, a private `/tmp`.
+- Jev key (ADM-002): sealed with the master key, superadmin-only API, never returned or logged.
 - Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
   Argon2; the failure counter and permanent lock are persisted before the response is sent.
 - Browser displays (ADR-15): one Xvfb per sandbox browser with `-nolisten tcp -nolisten local` and
@@ -1619,14 +1754,14 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   write-access and Origin checks. The sandbox Chrome refuses Yulius's origins and listeners
   (ADR-14, BRW-008).
 
-- Secrets vault (ADR-18): values only under envelope encryption (per-write data keys, KEK derived
+- Secrets vault (ADR-20): values only under envelope encryption (per-write data keys, KEK derived
   from the master key, row identity as associated data); team reveals need a browser session
   authenticated within 10 minutes and are audited; agent secrets are write-only, added to
   requests by the egress proxy only for their bound hosts (TLS interception only there; local
   destinations refused after resolution), typed by `browser_fill_secret` only into pages of those
   hosts, and redacted with their encodings from every channel an agent reads, from the terminal
   and from served transcripts. In-sandbox redaction holds fingerprints, never values, and fails
-  closed. Remaining threats: ADR-18.
+  closed. Remaining threats: ADR-20.
 
 ## 8a. Imported repository specifics (Product, Studio)
 
@@ -1661,6 +1796,14 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Viewer queue | 512 frames / 8 MiB | close 4008; client resyncs |
 | Event stream queue | 256 events | `resync` |
 | Spawn timeout | 30 s | fail start |
+| Update check of `main` (ADR-18) | every 60 min; "Check now" reuses a result < 30 s; 15 s and 4 MiB per GitHub request; ≤ 250 commits | error shown, nothing offered |
+| Update request / helper status files | 16 KiB / 256 KiB; request valid 15 min | refused / ignored |
+| Helper acknowledgement | request rewritten every 20 s, given up after 90 s (not while the helper reports progress on an earlier request) | run fails or resumes, nothing installed |
+| Update build | helper 2 h; server 3 h | `failed` |
+| Pausing tasks for an update | 30 min | `cancelled`, tasks released |
+| Install and health check | health 120 s; install 15 min | rollback; `failed` |
+| Update resume stagger / hold retry | 2 s / `Retry-After: 3` | — |
+| Update backups kept | 3 | oldest removed |
 | Stop escalation | 5 s + 5 s + 10 s | `lost` + alert |
 | Switch total | 120 s | `stopped(switch_timeout)` |
 | Hook call | 5 s | fail-open |
@@ -1704,10 +1847,16 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 
 | Failure | Detection | Behavior |
 | --- | --- | --- |
-| Vault unreadable (decryption or store failure) at a run's start | error from the vault | The run does not start (never without redaction); MCP and served text are withheld, not shown unredacted (ADR-18). |
+| Vault unreadable (decryption or store failure) at a run's start | error from the vault | The run does not start (never without redaction); MCP and served text are withheld, not shown unredacted (ADR-20). |
 | Yulius unreachable from the Bash wrapper or the tool hook | request fails | Fingerprints from the run's `scrub.json`; without them the command is not run (exit 126) and a tool result is withheld. |
 | Egress upstream unreachable, refused destination, compressed response from a bound host | connect error / policy / `Content-Encoding` | 502 / 403 / 502 with a plain-text reason to the agent's client; nothing forwarded. |
 | Browser disconnect | WS close | Session continues; reconnect → snapshot (AC-NFR-1). |
+| `main` unreadable (no App access, no token, rate limit) | update check error | Said on Settings → Instance; nothing offered; the next check retries (ADR-18). |
+| Update helper not installed or not running | no state directory / no acknowledgement in 90 s | "Update now" disabled / the run fails or resumes; nothing installed. |
+| Update build fails | helper status `failed` | Run `failed` with cargo's error and the last lines; tasks were never paused. |
+| A task stays in a turn while pausing for an update | not at a pause point after 30 min | Update cancelled, holds released (or "Continue without waiting"). |
+| Server restart during an update | open run on start | Hold restored before serving; held hook clients retry; the new server finishes the run. |
+| New version unhealthy after install | `/internal/version` not reporting it within 120 s | Helper restores binary and database, starts the previous version: run `rolled_back`, tasks resumed. Rollback failing too: `failed` with the backup path (manual restore, operations guide §8). |
 | Display encoder fails (ffmpeg missing, crash) | start error / output ends | Restart with backoff; after 3 failed starts viewers get JPEG frames with the reason (ADR-15). |
 | Xvfb missing or fails | resolve / exit before ready | `auto`: headless with JPEG frames; `xvfb`: the browser does not start, with the reason; a crashed display ends the browser, which restarts on next use. |
 | Slow browser viewer | acknowledgements late (flow control), video waiting 250 ms, media queue bound | Video held on the server, then dropped for a fresh keyframe asked of the encoder once the path has room; the stream steps down a tier; others unaffected except the shared tier (ADR-15). |
@@ -1766,7 +1915,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
 | R-12 | Closed (F 2026-10-08): Codex releases without `--no-daemon` (Codex removed). | — |
-| R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding, the 8-character minimum, write-only values, audit of every use; ADR-18 lists the threats. Open: a live smoke with Claude Code; R-07. |
+| R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding, the 8-character minimum, write-only values, audit of every use; ADR-20 lists the threats. Open: a live smoke with Claude Code; R-07. |
 | R-13 | The server's own Git (worktree creation, commits, status and readiness checks, fetch, delivery pushes) runs outside containment in the sandbox repository and worktrees, whose Git directories agents can write (#54). | Every server-side Git command runs with repository hooks off (`core.hooksPath=/dev/null`), fsmonitor off and `ext::` refused; agents' own Git still runs hooks, so the pre-push guard applies to them. Open (#54 part B): repository-local configuration that runs programs or redirects remotes (filter, diff and merge drivers, credential helpers, URL rewriting) — read-only Git config in containment or a Yulius-owned mirror. |
 
 ## 13. Delivery checkpoints
@@ -1822,12 +1971,17 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Auto mode and workflow, composer (TSK-015, UI-021, 2026-10-10) | Unit: `auto_choice.rs` (thresholds, defaults, the sandbox's own Feature first, the spec-first rule for prompts, bounded options). `tests/auto_choice.rs` (fake Jev, public API): Jev's choices from the store's workflows, a question as Prompt with a no-spec workflow, the spec-first override, defaults with no key, Jev down or unsure, picked values not sent to Jev, 422 before any call, the audit entry; `yulius-store/tests/store.rs` round trip and deletion. `e2e/tests/new-task.e2e.ts`, `intake.e2e.ts` (mock): keys, lists, indent, bold/italic, fences, Preview, Auto chips and labels, the split card's loading and layout. |
 | Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
 | MCP, Git as presentation, skills, default workflows (MCP-004, GIT-002, SKL-006, AUT-006; #136, 2026-10-10) | The reported bug ("Add server does nothing"): on `dev` the empty MCP page's Add server threw `ReferenceError: edit is not defined` (headless Chrome, mock mode); `live_ui_mcp.rs` (opt-in Chrome, real server) fails on that page and passes with the fix: empty state → add page → pasted `claude mcp add` → Add (sealed, tested) → the attachments a run gets → edit → Remove. `pool_supervision.rs::mcp_servers_reach_every_run_on_every_subscription`: real processes on two subscriptions; each run's `mcp.json` and secret names, the values in the child environment, the same servers after a native-resume switch plus one added meanwhile. `skills_mcp.rs`: `${secret:NAME}` stays write-only and is left out of runs while unresolved. Workflows: `workflow_format` unit tests (every rule, line numbers), `workflows::catalog` (the shipped files parse and are all embedded), `automations.rs` (defaults first and read-only — 409 even for an administrator —, duplicate, task steps and instructions from the catalog, retirement of unchanged and edited seeded rows, `workflows_list`). UI (mock e2e): `mcp.e2e.ts`, `workflows.e2e.ts`, `skills.e2e.ts`, `git.e2e.ts`. |
-| Secrets vault (ADR-18, 2026-10-10) | Unit: names, host bindings, placeholders, injections, encodings (base64 at every alignment), plain and fingerprinted redaction with every split point, RFC 4226/6238 vectors, envelopes (row binding, tampering, foreign key), migration and store. `yulius-egress/tests/proxy.rs`: real TLS upstream echoing the credential, interception with injection and query placeholder, opaque tunnels, 407/403/409 refusals, plain HTTP upgraded to HTTPS. `tests/secrets.rs`: team CRUD, re-authentication by password and GitHub, bearer tokens refused, activity, encryption at rest (database, WAL, backup), access control, agent secrets via the App's policy (placeholders, Basic, injection, conflicts, other sandbox), MCP `secrets_list`, MCP result redaction, MCP `${secret:NAME}`, the proxy on the internal listener through the real router (tunnel with the task token, 407 without, 403 to a local address). `tests/browser.rs`: `browser_fill_secret` against the fake CDP endpoint (typed into the bound host's page, refused on another host, snapshot redacted). `tests/secrets_redaction.rs`: the real `yulius --scrub-exec` with fingerprints (echo, file read back, base64, chunks split by sleeps), the `PostToolUse` hook, a fake agent printing a value into the task terminal, launch environment. `e2e/tests/secrets.e2e.ts` (mock UI). Not exercised: a live Claude Code session. |
+| Secrets vault (ADR-20, 2026-10-10) | Unit: names, host bindings, placeholders, injections, encodings (base64 at every alignment), plain and fingerprinted redaction with every split point, RFC 4226/6238 vectors, envelopes (row binding, tampering, foreign key), migration and store. `yulius-egress/tests/proxy.rs`: real TLS upstream echoing the credential, interception with injection and query placeholder, opaque tunnels, 407/403/409 refusals, plain HTTP upgraded to HTTPS. `tests/secrets.rs`: team CRUD, re-authentication by password and GitHub, bearer tokens refused, activity, encryption at rest (database, WAL, backup), access control, agent secrets via the App's policy (placeholders, Basic, injection, conflicts, other sandbox), MCP `secrets_list`, MCP result redaction, MCP `${secret:NAME}`, the proxy on the internal listener through the real router (tunnel with the task token, 407 without, 403 to a local address). `tests/browser.rs`: `browser_fill_secret` against the fake CDP endpoint (typed into the bound host's page, refused on another host, snapshot redacted). `tests/secrets_redaction.rs`: the real `yulius --scrub-exec` with fingerprints (echo, file read back, base64, chunks split by sleeps), the `PostToolUse` hook, a fake agent printing a value into the task terminal, launch environment. `e2e/tests/secrets.e2e.ts` (mock UI). Not exercised: a live Claude Code session. |
 | Delivery discipline (ADR-19, #139, 2026-10-10) | Unit: `yulius-domain` `steps` (plan bounds, keeping status and effort by title, no reopening by agents, WIP limit with its message, blocked/skipped reasons, 9 of 10 = 90 % and effort weighting, phase titles, plan-shape nudges, stale and burst with a fake clock), `spec_format` (Plan bounds and repeats, `SpecPolicy`, documentation paths), `briefing` (docs index, sessions, pipeline, git hygiene, spec policy per workflow, weighted steps and nudges, foundations); `yulius-app` `discipline` (weighted progress, timings, turn-end nudges, the six default workflows' content), `skills` (every pack equals its catalog directory, unique names, licenses and upstream commits, no Open Mercato harness or manual mode in adapted skills, attribution notes, extraction of three packs), `hooks` (foundations without following links). Store: effort and timings from the history. `mcp_coordination.rs` (step rules and nudges over MCP, `spec_check` `required`), `agent_hooks.rs` (briefing sections, the spec asked only where it matters by workflow and by changed paths, the one-shot untracked-work nudge), `delivery.rs` (a docs-only task opens its pull request without a spec; a code change waits), `skills_mcp.rs` (three sources listed, run set, no `.ai/agentic.config.json`), `e2e/tests/steps.e2e.ts` (weighted progress bar, mock). Not exercised: a live agent following the briefing; agent merge/deploy/promote tools (separate change). |
+| Updates and the Jev key (ADR-18, 2026-10-10) | Unit: `yulius-domain::update` (commit ids, titles and summaries, run transitions, pause points); `wiring::release` against a local server shaped like GitHub's answers (behind, up to date, unknown build, 401/404/429/5xx, malformed head; field names checked against the real API); `wiring::update_files`; `update_helper` with real Git repositories, fake cargo, fake systemctl and a fake health endpoint (strict request parsing, owner/link/FIFO/size checks, build once per id with progress, a failed build's error and log, commits off main or older than installed refused, the token only as a header of the fetch, install with backup, rollback restoring binary, database and modes, a linked database refused, install needing the staged commit); the Jev client's test request (ok, refused, unreachable, invalid). Integration: `tests/self_update.rs` (offer to superadmins only, cached check, App token then error, Update now refusals and the build request, holds with `Retry-After: 3` and no output, queued starts, two-pass install, hold across a restart, staggered release, rollback, 30-minute bound, cancel, unresponsive helper), `tests/update_supervision.rs` (real ptyhost, fake agent through the real hook client: a prompt typed during the update waits through the server's restart on the same port and reaches the same process exactly as typed), `tests/jev_key.rs`, store migration `version_five_databases_migrate_to_updates_and_the_jev_key`. UI: headless Chrome against the mock (banner, instance page, run to success and to rollback, setup step, Jev card); `e2e/tests/update.e2e.ts` in CI. VM (2026-10-11, throwaway units and paths under `/var/tmp/yqa-update`, service as `nobody` with a fake systemctl): a transient path unit with `ProtectSystem=strict` started the helper on the request; it built the PR head in 4.5 min with progress, installed it (stop, backup, swap, start, health in 5 s), rolled back a build reporting the wrong commit after 120 s (binary, database with owner and mode, previous version running, data intact), and refused a downgrade, a root-owned request, a link to `/etc/shadow` and a stale request. |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
 
 ## 15. Changelog
 
+- 2026-10-10 (F 2026-10-10, final stage items 1(e) and 2; #140): ADR-18 (§2.5) updates from `main`
+  through a root helper — build commit, checks of `main`, the update run (§6.8), the hook hold
+  (§7.5), the path-unit helper with backup and rollback (§8), bounds (§9), failures (§10); the Jev
+  key sealed in `instance` and swappable at run time; §3, §4, §5 (`update_runs`, migration 0008).
 - 2026-10-10 (F 2026-10-10, final stage items 1(a)/(c); #143, #144): ADR-17 "Where the readings
   come from" — `setup-token` sign-ins cannot read the usage endpoint (HTTP 403, no `user:profile`),
   so the sessions' status line reports the plan usage; R-04. §6.1: how each session end moves the
@@ -1841,7 +1995,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 - 2026-10-10 (F 2026-10-10, "final stage" list; #135): ADR-16 item 5 — Auto mode and workflow
   (two fixed Jev questions, defaults Goal and "Feature", never a spec-first workflow for a prompt),
   `task_auto_choices`, §9 bound, §14.
-- 2026-10-10 (F 2026-10-10, item 3a): ADR-18 (§2.6) — the secrets vault: envelope encryption, team
+- 2026-10-10 (F 2026-10-10, item 3a): ADR-20 (§2.6) — the secrets vault: envelope encryption, team
   secrets with re-authenticated audited reveals and TOTP, agent secrets used through the egress
   proxy and browser filling, exact-value redaction of every channel an agent reads; §3, §4, §5,
   §7.2, §7.4, §7.5, §8, §9, §10, R-15, §14.

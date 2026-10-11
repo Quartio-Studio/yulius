@@ -319,7 +319,7 @@ async fn agent_tools_drive_the_tabs_the_viewer_sees() -> TestResult {
             .filter_map(|t| t["name"].as_str())
             .filter(|n| n.starts_with("browser_"))
             .collect();
-        // The eight browser tools, plus typing an agent secret (SPEC-002 ADR-18).
+        // The eight browser tools, plus typing an agent secret (SPEC-002 ADR-20).
         assert_eq!(names.len(), 9, "{names:?}");
         assert!(names.contains(&"browser_fill_secret"));
 
@@ -432,7 +432,7 @@ async fn agent_tools_drive_the_tabs_the_viewer_sees() -> TestResult {
     .await
 }
 
-/// `browser_fill_secret` (SPEC-002 ADR-18, AC-VLT-6): an agent secret is typed into a page of a
+/// `browser_fill_secret` (SPEC-002 ADR-20, AC-VLT-6): an agent secret is typed into a page of a
 /// bound host without the agent receiving it; another host's page is refused; the page text the
 /// agent reads back is redacted.
 #[tokio::test]

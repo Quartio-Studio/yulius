@@ -1,0 +1,34 @@
+# The Yulius update helper (SPEC-002 ADR-18; docs/operations.md "Updates"), started by
+# yulius-update.path. It builds the requested commit of main in /var/lib/yulius-update, and
+# installs it: stop yulius.service (agent sessions keep running), back up the binary and the
+# database, install, start, check /internal/version, and roll back on failure.
+# Install: /etc/systemd/system/yulius-update.service (root, 0644). Adjust the paths marked
+# "local" to the server (rustup's cargo for root; the service's data directory and listener).
+[Unit]
+Description=Yulius update helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/yulius update-helper
+# local: the service's data directory, its internal listener and the binary it runs.
+Environment=YULIUS_DATA=/var/lib/yulius
+Environment=YULIUS_UPDATE_HEALTH=http://127.0.0.1:8081/internal/version
+Environment=YULIUS_UPDATE_BINARY=/usr/local/bin/yulius
+Environment=YULIUS_UPDATE_SERVICE=yulius.service
+Environment=YULIUS_UPDATE_STATE=/var/lib/yulius-update
+# local: rustup's cargo for root (rust-toolchain.toml in the checkout picks the compiler).
+Environment=HOME=/root
+Environment=PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+# A release build takes several minutes; the helper's own bound is 2 hours.
+TimeoutStartSec=3h
+# Builds run beside the agents: lower priority, private /tmp, and only these paths writable.
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/yulius-update /var/lib/yulius /usr/local/bin /root/.cargo /root/.rustup
+UMask=0022

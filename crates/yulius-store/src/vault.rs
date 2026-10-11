@@ -1,4 +1,4 @@
-//! Secrets vault storage (SPEC-002 ADR-18). Rows hold envelopes produced by the application;
+//! Secrets vault storage (SPEC-002 ADR-20). Rows hold envelopes produced by the application;
 //! nothing here sees a plaintext value.
 
 use async_trait::async_trait;

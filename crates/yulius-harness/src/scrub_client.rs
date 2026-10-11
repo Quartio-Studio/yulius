@@ -1,4 +1,4 @@
-//! In-sandbox redaction of agent secrets (SPEC-002 ADR-18, VLT-007).
+//! In-sandbox redaction of agent secrets (SPEC-002 ADR-20, VLT-007).
 //!
 //! Two entry points run inside the agent's sandbox, as the agent's own user:
 //! - `yulius --scrub-exec '<command>'` is Claude Code's `CLAUDE_CODE_SHELL_PREFIX`: every Bash

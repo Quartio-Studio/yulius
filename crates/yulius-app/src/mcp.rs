@@ -147,7 +147,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
     tools
 }
 
-/// Agent-secret tools (SPEC-002 ADR-18): names only, and typing into the sandbox browser.
+/// Agent-secret tools (SPEC-002 ADR-20): names only, and typing into the sandbox browser.
 fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
     vec![
         ToolDescriptor {
@@ -259,7 +259,7 @@ impl App {
         };
         match outcome {
             Ok(value) => {
-                // No tool result carries an agent secret's value (SPEC-002 ADR-18): page text,
+                // No tool result carries an agent secret's value (SPEC-002 ADR-20): page text,
                 // messages, task prompts and everything else are redacted before the agent.
                 let text = serde_json::to_string_pretty(&value).unwrap_or_default();
                 let mut text = self.redact_for_sandbox(&ctx.task.sandbox_id, &text).await;

@@ -334,7 +334,7 @@ impl App {
         Ok(())
     }
 
-    /// Adds the vault's part of an agent run's environment (SPEC-002 ADR-18): placeholders for
+    /// Adds the vault's part of an agent run's environment (SPEC-002 ADR-20): placeholders for
     /// every agent secret that applies, the Bash wrapper (`CLAUDE_CODE_SHELL_PREFIX`) and its
     /// fingerprint file, and — when the egress proxy is wired — the proxy variables (with the
     /// run's task token, as secret environment) and the CA bundle.

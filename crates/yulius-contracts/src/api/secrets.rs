@@ -1,4 +1,4 @@
-//! Secrets vault (SPEC-001 VLT, SPEC-002 ADR-18): team secrets people reveal after
+//! Secrets vault (SPEC-001 VLT, SPEC-002 ADR-20): team secrets people reveal after
 //! re-authenticating, and agent secrets agents use but nobody reads back.
 
 use serde::{Deserialize, Serialize};

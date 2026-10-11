@@ -20,6 +20,7 @@ mod sandboxes;
 mod sessions;
 mod skills;
 mod tasks;
+mod updates;
 mod users;
 mod vault;
 mod workflows;
@@ -44,7 +45,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0005_subscription_pool.sql"),
     include_str!("migrations/0006_task_auto_choices.sql"),
     include_str!("migrations/0007_step_effort.sql"),
-    include_str!("migrations/0008_secrets_vault.sql"),
+    include_str!("migrations/0008_updates_and_jev_key.sql"),
+    include_str!("migrations/0009_secrets_vault.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -149,7 +151,7 @@ fn prepare(conn: &mut Connection) -> Result<(), OpenError> {
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     // Deleted and replaced content (vault ciphertext, old tokens) is overwritten in the file,
-    // not left in free pages (SPEC-002 ADR-18).
+    // not left in free pages (SPEC-002 ADR-20).
     conn.pragma_update(None, "secure_delete", "ON")?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     let integrity: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
@@ -297,6 +299,111 @@ mod tests {
         assert_eq!(pauses[0].task_id.as_str(), "t1");
         assert_eq!(pauses[0].kind, yulius_app::model::PauseKind::Start);
         assert_eq!(pauses[0].started_at.0, 5);
+        Ok(())
+    }
+
+    /// A version-5 database (the subscription pool) migrates to updates and the Jev key (ADR-18,
+    /// ADM-002): the instance row keeps its values and has no saved key; at most one update run is
+    /// open at a time, and a state moves only from the expected one.
+    #[tokio::test]
+    async fn version_five_databases_migrate_to_updates_and_the_jev_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::model::Sealed;
+        use yulius_app::ports::store::InstanceStore as _;
+        use yulius_app::ports::store_ext::UpdateStore as _;
+        use yulius_app::updates::UpdateRunRecord;
+        use yulius_domain::time::Timestamp;
+        use yulius_domain::update::RunState;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v5.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..5] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 5)?;
+            conn.execute(
+                "INSERT INTO instance (singleton, public_url, owner_login) VALUES (1, 'https://yulius.test', 'Quartio-Studio')",
+                [],
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let instance = store.instance().await?.ok_or("instance")?;
+        assert_eq!(instance.owner_login.as_deref(), Some("Quartio-Studio"));
+        assert!(store.jev_key().await?.is_none());
+        store
+            .set_jev_key(Some((&Sealed(vec![1, 2, 3]), "superadmin")), Timestamp(7))
+            .await?;
+        let key = store.jev_key().await?.ok_or("key")?;
+        assert_eq!(key.sealed, Sealed(vec![1, 2, 3]));
+        assert_eq!(
+            (key.set_at, key.set_by.as_deref()),
+            (Timestamp(7), Some("superadmin"))
+        );
+        store.set_jev_key(None, Timestamp(8)).await?;
+        assert!(store.jev_key().await?.is_none());
+
+        let run = |id: &str| UpdateRunRecord {
+            id: id.into(),
+            target_commit: "3".repeat(40),
+            from_commit: None,
+            summary: "Things".into(),
+            state: RunState::Building,
+            outcome: None,
+            error: None,
+            requested_by: "superadmin".into(),
+            created_at: Timestamp(10),
+            state_since: Timestamp(10),
+            finished_at: None,
+        };
+        assert!(store.insert_update_run(&run("r1")).await?);
+        assert!(!store.insert_update_run(&run("r2")).await?, "one open run");
+        assert!(
+            !store
+                .move_update_run(
+                    "r1",
+                    RunState::Draining,
+                    RunState::Installing,
+                    None,
+                    None,
+                    Timestamp(11)
+                )
+                .await?,
+            "only from the expected state"
+        );
+        assert!(
+            store
+                .move_update_run(
+                    "r1",
+                    RunState::Building,
+                    RunState::Draining,
+                    None,
+                    None,
+                    Timestamp(12)
+                )
+                .await?
+        );
+        assert!(
+            store
+                .move_update_run(
+                    "r1",
+                    RunState::Draining,
+                    RunState::Cancelled,
+                    None,
+                    Some("Cancelled by superadmin"),
+                    Timestamp(13)
+                )
+                .await?
+        );
+        assert!(store.open_update_run().await?.is_none());
+        let last = store.last_update_run().await?.ok_or("last")?;
+        assert_eq!(last.state, RunState::Cancelled);
+        assert_eq!(last.finished_at, Some(Timestamp(13)));
+        assert_eq!(last.error.as_deref(), Some("Cancelled by superadmin"));
+        assert!(
+            store.insert_update_run(&run("r2")).await?,
+            "a new run after it ended"
+        );
         Ok(())
     }
 

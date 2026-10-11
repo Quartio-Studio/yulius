@@ -1,4 +1,4 @@
-//! The egress certificate authority (SPEC-002 ADR-18): one ECDSA P-256 CA per instance, trusted
+//! The egress certificate authority (SPEC-002 ADR-20): one ECDSA P-256 CA per instance, trusted
 //! only by agent runs (through the run's CA bundle), signing short-lived leaf certificates for
 //! the hosts bound to agent secrets. Its key is sealed in the vault (`vault_meta`), never on
 //! disk in clear.
@@ -232,7 +232,7 @@ pub fn run_ca_bundle(ca_pem: &str) -> Option<String> {
     if !bundle.ends_with('\n') {
         bundle.push('\n');
     }
-    bundle.push_str("# Yulius egress CA (agent secrets, SPEC-002 ADR-18)\n");
+    bundle.push_str("# Yulius egress CA (agent secrets, SPEC-002 ADR-20)\n");
     bundle.push_str(ca_pem);
     Some(bundle)
 }

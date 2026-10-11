@@ -51,6 +51,7 @@ disable`); CI sets it.
 | `task-done.e2e.ts` | A task whose goal is achieved is Done with a green check in the header, the sidebar and on Tasks (no WCAG violations); one with a background shell still running stays under Working with "1 background shell still running" |
 | `quality.e2e.ts` | Every main page: no WCAG 2.x A/AA violations (axe-core) |
 | `subscriptions.e2e.ts` | The accounts page shows the pool's capacity, burn rate, forecast and recommendation with only add, sign-in-again and remove (no priority or on/off controls), and a failed usage reading as one quiet sentence without HTTP codes; a paused task reads "Paused: no subscription has capacity left (resets ~…)"; the task menu has no account choice and the task view no account; the dashboard shows the subscriptions card; no WCAG violations |
+| `update.e2e.ts` | An update on offer is a banner and a notification for the superadmin only; Update now asks first, shows build → pause tasks → restart → resume and ends with the outcome and a Reload; a rolled-back update says so; setup offers the Jev key as an optional last step (save and test, or skip); the instance page sets, tests, replaces and removes the key, and moves a configured key file into settings; no WCAG violations |
 | `agent.e2e.ts` | An agent reaches a goal written in plain English (needs a model, see below) |
 
 Every test also fails when the page reports an error: an uncaught exception, an unhandled

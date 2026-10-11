@@ -91,12 +91,15 @@ enum Command {
     },
     /// Print build information.
     Version,
+    /// Root helper: build or install the commit the server requested (yulius-update.service).
+    #[command(name = "update-helper", hide = true)]
+    UpdateHelper(Box<yulius::update_helper::HelperArgs>),
 }
 
 fn main() -> ExitCode {
     // Claude Code's `CLAUDE_CODE_SHELL_PREFIX` runs `yulius --scrub-exec '<command>'` for every
     // Bash command of an agent run: the command's output is redacted of agent secrets
-    // (SPEC-002 ADR-18). Handled before argument parsing: the command is opaque text.
+    // (SPEC-002 ADR-20). Handled before argument parsing: the command is opaque text.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some(yulius_app::vault::SCRUB_EXEC_FLAG) {
         let code =
@@ -144,9 +147,15 @@ fn main() -> ExitCode {
             contained_readonly,
         } => yulius::doctor::doctor(&data, contained, &contained_readonly),
         Command::Version => {
-            println!("yulius {}", env!("CARGO_PKG_VERSION"));
+            let commit = env!("YULIUS_BUILD_COMMIT");
+            if commit.is_empty() {
+                println!("yulius {}", env!("CARGO_PKG_VERSION"));
+            } else {
+                println!("yulius {} ({commit})", env!("CARGO_PKG_VERSION"));
+            }
             ExitCode::SUCCESS
         }
+        Command::UpdateHelper(args) => yulius::update_helper::main(&args),
         Command::Serve(args) => run_async(yulius::serve::serve(*args)),
         Command::Backup { data_dir, dest } => run_async(yulius::serve::backup(data_dir, dest)),
     }

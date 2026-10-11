@@ -1,4 +1,4 @@
-//! Redaction fingerprints (SPEC-002 ADR-18, VLT-007): what processes inside a sandbox (the Bash
+//! Redaction fingerprints (SPEC-002 ADR-20, VLT-007): what processes inside a sandbox (the Bash
 //! wrapper, the `PostToolUse` hook) receive to redact agent secrets without holding them.
 //!
 //! Served by `POST /internal/scrub/fingerprints` (task token) and written at launch to

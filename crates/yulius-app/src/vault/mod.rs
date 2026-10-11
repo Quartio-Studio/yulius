@@ -1,4 +1,4 @@
-//! Secrets vault (SPEC-001 VLT-001..009, SPEC-002 ADR-18).
+//! Secrets vault (SPEC-001 VLT-001..009, SPEC-002 ADR-20).
 //!
 //! Two sections: **team secrets** (every member lists and edits them; revealing a password,
 //! notes, a TOTP seed or a code needs a re-authentication within 10 minutes, and is audited) and

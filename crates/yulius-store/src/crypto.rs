@@ -1,7 +1,7 @@
 //! Crypto adapter: master-key sealing (XChaCha20-Poly1305), the vault's envelope encryption
 //! (per-secret data keys wrapped by a key derived from the master key with HKDF-SHA256), TOTP
 //! HMACs, Argon2id password hashes, SHA-256, constant-time comparison and random identifiers
-//! (SPEC-002 §8, ADR-18).
+//! (SPEC-002 §8, ADR-20).
 
 use std::fs;
 use std::io::Write;

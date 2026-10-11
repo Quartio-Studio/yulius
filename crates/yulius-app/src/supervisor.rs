@@ -564,7 +564,10 @@ impl App {
                 .ok_or(AppError::NotFound)?;
             let live =
                 u32::try_from(self.deps.store.live_attempts().await?.len()).unwrap_or(u32::MAX);
-            if live >= self.config.max_live_sessions && task.status != TaskStatus::Switching {
+            // While an update pauses the tasks, starts queue like at the session limit and run
+            // once it is over (SPEC-002 ADR-18).
+            let full = live >= self.config.max_live_sessions || self.update_holds_starts();
+            if full && task.status != TaskStatus::Switching {
                 let queued = self
                     .deps
                     .store
@@ -726,7 +729,7 @@ impl App {
             .push(("YULIUS_TASK_TOKEN".into(), task_token.clone()));
         launch.env.extend(self.base_env(&sandbox, &home));
         // Agent secrets: placeholders, the Bash redaction wrapper and the egress proxy
-        // (SPEC-002 ADR-18). A vault that cannot be read fails the start, never a run without
+        // (SPEC-002 ADR-20). A vault that cannot be read fails the start, never a run without
         // redaction.
         self.vault_run_setup(&sandbox, &run_dir, &task_token, &mut launch)
             .await?;
@@ -973,7 +976,7 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?
             .sandbox_id;
-        // The terminal people see is redacted of agent secrets (SPEC-002 ADR-18).
+        // The terminal people see is redacted of agent secrets (SPEC-002 ADR-20).
         let scrub = crate::vault::TerminalScrub::default();
         let attached = self
             .deps
@@ -1255,8 +1258,11 @@ impl App {
             .await;
     }
 
-    /// Starts queued tasks while capacity allows (FIFO).
+    /// Starts queued tasks while capacity allows (FIFO); none while an update pauses tasks.
     pub async fn drain_queue(self: &Arc<Self>) {
+        if self.update_holds_starts() {
+            return;
+        }
         let Ok(queued) = self
             .deps
             .store

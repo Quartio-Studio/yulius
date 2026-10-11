@@ -10,6 +10,7 @@ pub mod session;
 pub mod store;
 pub mod store_ext;
 pub mod system;
+pub mod updates;
 pub mod usage;
 pub mod vault;
 
@@ -18,7 +19,7 @@ use yulius_domain::time::Timestamp;
 use crate::error::AppResult;
 use crate::model::{Sealed, Secret};
 
-/// A vault payload under envelope encryption (SPEC-002 ADR-18): the payload sealed with its own
+/// A vault payload under envelope encryption (SPEC-002 ADR-20): the payload sealed with its own
 /// random data key, and that key wrapped by the vault key-encryption key `kek_id`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Envelope {

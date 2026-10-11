@@ -80,7 +80,7 @@ pub fn run_hook_with(
     hold: HoldPolicy,
 ) -> i32 {
     // Tool results are redacted here, inside the sandbox, from fingerprints: the result itself
-    // never goes to the server (SPEC-002 ADR-18).
+    // never goes to the server (SPEC-002 ADR-20).
     if harness == "claude" && event == "PostToolUse" {
         return crate::scrub_client::post_tool_use(input, output, env);
     }

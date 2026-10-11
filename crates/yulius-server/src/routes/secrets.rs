@@ -1,4 +1,4 @@
-//! Secrets vault routes (SPEC-001 VLT, SPEC-002 ADR-18): team secrets, re-authentication, agent
+//! Secrets vault routes (SPEC-001 VLT, SPEC-002 ADR-20): team secrets, re-authentication, agent
 //! secrets, the activity trail, and the internal redaction endpoints of agent runs.
 
 use axum::extract::{Path, Query, State};

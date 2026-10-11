@@ -64,7 +64,7 @@ hex = "0.4.3"
 base64 = "0.23.1"
 tempfile = "3.27.0"
 chacha20poly1305 = "0.11.0"
-# Secrets vault (SPEC-002 ADR-18): zeroed key material and plaintexts, constant-time comparisons,
+# Secrets vault (SPEC-002 ADR-20): zeroed key material and plaintexts, constant-time comparisons,
 # and the egress proxy's certificate authority (leaf certificates for bound hosts).
 zeroize = { version = "1.9.1", features = ["std"] }
 subtle = "2.6.1"

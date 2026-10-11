@@ -1,4 +1,4 @@
-//! Exact-value redaction of agent secrets with real processes (SPEC-002 ADR-18, AC-VLT-4): the
+//! Exact-value redaction of agent secrets with real processes (SPEC-002 ADR-20, AC-VLT-4): the
 //! `yulius --scrub-exec` Bash wrapper and the `PostToolUse` hook as Claude Code runs them, and a
 //! fake agent in the real ptyhost whose terminal people watch.
 

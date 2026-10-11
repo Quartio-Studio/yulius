@@ -1,4 +1,4 @@
-//! Secrets vault rules (SPEC-001 VLT, SPEC-002 ADR-18): names and host bindings of agent
+//! Secrets vault rules (SPEC-001 VLT, SPEC-002 ADR-20): names and host bindings of agent
 //! secrets, placeholders, the encodings a value is recognised in, exact-value redaction (plain
 //! and fingerprinted), TOTP arithmetic, re-authentication freshness and the egress destination
 //! policy. Pure functions only: hashing and HMAC are injected by callers.
@@ -239,7 +239,7 @@ pub fn substitute_placeholders(
 
 /// Whether the egress proxy may connect to `ip`: never loopback (Yulius and the sandboxes'
 /// own servers), unspecified, link-local (cloud metadata), multicast or broadcast addresses,
-/// including their IPv4-mapped IPv6 forms (SPEC-002 ADR-18).
+/// including their IPv4-mapped IPv6 forms (SPEC-002 ADR-20).
 #[must_use]
 pub fn egress_destination_allowed(ip: IpAddr) -> bool {
     match ip {

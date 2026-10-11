@@ -1,4 +1,4 @@
-//! Exact-value redaction (SPEC-002 ADR-18, VLT-007): every occurrence of an agent secret's value
+//! Exact-value redaction (SPEC-002 ADR-20, VLT-007): every occurrence of an agent secret's value
 //! or of one of its encodings ([`super::encode::needles`]) becomes `[secret:NAME]`.
 //!
 //! Two matchers share one streaming redactor:

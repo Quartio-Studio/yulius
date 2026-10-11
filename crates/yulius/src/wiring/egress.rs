@@ -1,4 +1,4 @@
-//! The egress proxy of agent runs on the internal listener (SPEC-002 ADR-18): a `CONNECT` or
+//! The egress proxy of agent runs on the internal listener (SPEC-002 ADR-20): a `CONNECT` or
 //! an absolute-form request is a proxy request; everything else is the internal API.
 
 use std::sync::Arc;

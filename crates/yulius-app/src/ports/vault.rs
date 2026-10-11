@@ -1,4 +1,4 @@
-//! Vault persistence port (SPEC-002 ADR-18): sealed secrets, re-authentication times, sealed
+//! Vault persistence port (SPEC-002 ADR-20): sealed secrets, re-authentication times, sealed
 //! vault key material and the vault's audit trail. Records hold envelopes, never plaintext.
 
 use async_trait::async_trait;

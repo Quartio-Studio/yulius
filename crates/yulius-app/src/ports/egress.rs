@@ -1,4 +1,4 @@
-//! Egress policy port (SPEC-002 ADR-18): what the credential-injecting proxy asks the
+//! Egress policy port (SPEC-002 ADR-20): what the credential-injecting proxy asks the
 //! application. The proxy adapter owns sockets, TLS and HTTP; the application decides who is
 //! calling, which hosts carry agent secrets and how a request to one is rewritten.
 

@@ -1,4 +1,4 @@
-// Secrets page (SPEC-001 VLT-001..009, SPEC-002 ADR-18): two sections.
+// Secrets page (SPEC-001 VLT-001..009, SPEC-002 ADR-20): two sections.
 // Team secrets: every member's shared credentials; a password, notes, a TOTP seed or code shows
 // only after a fresh confirmation (password or GitHub sign-in in the last 10 minutes) and every
 // reveal is audited. Agent secrets: values are write-only; agents use them through Yulius' proxy

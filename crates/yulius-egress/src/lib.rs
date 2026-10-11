@@ -1,4 +1,4 @@
-//! The credential-injecting egress proxy of agent runs (SPEC-002 ADR-18, SPEC-001 VLT-004).
+//! The credential-injecting egress proxy of agent runs (SPEC-002 ADR-20, SPEC-001 VLT-004).
 //!
 //! Agent runs send HTTP(S) through Yulius (`HTTPS_PROXY` with the run's task token). A host
 //! bound to one of the run's agent secrets is intercepted: TLS ends here with a leaf
