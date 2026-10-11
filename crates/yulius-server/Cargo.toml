@@ -32,3 +32,5 @@ tracing = { workspace = true }
 # Live preview reverse proxy (HTTP/1.1 client with upgrades to the sandbox's dev servers).
 hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
+# Constant-time comparison of the reverse proxy's shared secret (SPEC-001 ACC-013).
+subtle = { workspace = true }

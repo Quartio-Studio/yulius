@@ -96,14 +96,17 @@ const HOP_BY_HOP: [&str; 8] = [
 ];
 
 /// Request headers that describe the outer proxies, never forwarded: the app sees a direct
-/// request to `localhost`.
-const FORWARDING: [&str; 6] = [
+/// request to `localhost`, and the reverse proxy's shared secret never reaches a sandbox
+/// (ACC-013).
+const FORWARDING: [&str; 8] = [
     "forwarded",
     "x-forwarded-for",
     "x-forwarded-host",
     "x-forwarded-proto",
     "x-forwarded-port",
     "x-real-ip",
+    crate::client::CLIENT_ADDRESS_HEADER,
+    crate::client::PROXY_SECRET_HEADER,
 ];
 
 /// The `Host` of a request (header, or the URI's authority).

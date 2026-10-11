@@ -9,6 +9,7 @@ pub mod github_client;
 pub mod harness;
 pub mod jev;
 pub mod pending;
+pub mod proxy;
 pub mod release;
 pub mod sandbox;
 pub mod session;
