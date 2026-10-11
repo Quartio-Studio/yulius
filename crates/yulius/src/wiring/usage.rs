@@ -150,7 +150,7 @@ pub fn parse_rate_limit_headers(headers: &reqwest::header::HeaderMap) -> Option<
             .and_then(|s| s.checked_mul(1000))
             .map(yulius_domain::time::Timestamp);
         Some(UsageWindow {
-            used_percent: Some(used * 100.0),
+            used_percent: Some(used.min(1.0) * 100.0),
             window_minutes: Some(minutes),
             resets_at,
         })
@@ -188,9 +188,15 @@ impl ProviderUsage {
             })?;
         let status = response.status().as_u16();
         // A limited subscription answers 429 and still carries the headers.
-        if let Some(usage) = parse_rate_limit_headers(response.headers()) {
+        if (response.status().is_success() || status == 429)
+            && let Some(usage) = parse_rate_limit_headers(response.headers())
+        {
             return Ok(usage);
         }
+        tracing::debug!(
+            status,
+            "the usage probe message carried no rate-limit headers"
+        );
         match failure_of(status, None) {
             Some(failure) if failure.kind != UsageFailureKind::NotShared => Err(failure),
             _ => Err(UsageFailure::not_shared()),
@@ -225,10 +231,12 @@ impl UsageProbe for ProviderUsage {
                         ) =>
                     {
                         self.read_headers(credential).await.map_err(|h| {
-                            if h.kind == UsageFailureKind::NotShared {
-                                f
-                            } else {
+                            // Only a refused probe sign-in is news; anything else keeps the
+                            // endpoint's own answer (its back-off and `Retry-After`).
+                            if h.kind == UsageFailureKind::Rejected {
                                 h
+                            } else {
+                                f
                             }
                         })
                     }
@@ -284,6 +292,19 @@ mod tests {
         assert_eq!(primary.resets_at.map(|t| t.0), Some(1_790_000_000_000));
         assert_eq!(usage.secondary.ok_or("weekly")?.resets_at, None);
         assert!(parse_rate_limit_headers(&HeaderMap::new()).is_none());
+        // Never above 100 %, never negative.
+        let mut odd = HeaderMap::new();
+        odd.insert(
+            "anthropic-ratelimit-unified-5h-utilization",
+            HeaderValue::from_static("37"),
+        );
+        odd.insert(
+            "anthropic-ratelimit-unified-7d-utilization",
+            HeaderValue::from_static("-1"),
+        );
+        let usage = parse_rate_limit_headers(&odd).ok_or("odd")?;
+        assert_eq!(usage.primary.and_then(|w| w.used_percent), Some(100.0));
+        assert!(usage.secondary.is_none());
         Ok(())
     }
 
@@ -300,6 +321,38 @@ mod tests {
     async fn a_throttled_usage_endpoint_is_read_from_the_headers()
     -> Result<(), Box<dyn std::error::Error>> {
         headers_after("429 Too Many Requests").await
+    }
+
+    /// Both the endpoint and the probe throttle: the endpoint's `Retry-After` stands.
+    #[tokio::test]
+    async fn a_failing_probe_keeps_the_endpoints_retry_after()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let reply = if head.starts_with("GET /api/oauth/usage") {
+                    "HTTP/1.1 429 Too Many Requests\r\nretry-after: 3600\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                };
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        let mut probe = ProviderUsage::new()?;
+        probe.base = base;
+        let failure = probe
+            .fetch(Provider::Anthropic, &Secret("token".into()))
+            .await
+            .err()
+            .ok_or("a failure")?;
+        assert_eq!(failure.kind, UsageFailureKind::Throttled);
+        assert_eq!(failure.retry_after, Some(Duration::from_secs(3600)));
+        Ok(())
     }
 
     async fn headers_after(usage_status: &'static str) -> Result<(), Box<dyn std::error::Error>> {
