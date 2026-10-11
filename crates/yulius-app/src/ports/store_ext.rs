@@ -456,6 +456,7 @@ pub trait ExtensionStores:
     + UpdateStore
     + crate::ports::vault::VaultStore
     + CiStore
+    + crate::ports::session_docs::SessionDocStore
 {
 }
 
@@ -472,5 +473,6 @@ impl<T> ExtensionStores for T where
         + UpdateStore
         + crate::ports::vault::VaultStore
         + CiStore
+        + crate::ports::session_docs::SessionDocStore
 {
 }

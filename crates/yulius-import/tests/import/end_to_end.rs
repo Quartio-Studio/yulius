@@ -1,30 +1,34 @@
-//! `run_import` end to end against a temporary repository, synthetic session stores and the fake
-//! server: full import, idempotent re-run (IMP-006, AC-IMP-6), interrupted run resumed
-//! (AC-IMP-1), confirmation declined and non-GitHub refusal (AC-IMP-2).
+//! `run_import` (`yulius onboard`) end to end against a temporary repository, synthetic session
+//! stores and the fake server: discovery and choice (all, recent, pick), redaction shown and
+//! applied before upload, idempotent re-runs that send only new or changed sessions (IMP-006,
+//! AC-IMP-6), an interrupted run resumed (AC-IMP-1), dry run, status, declined confirmation and
+//! refusals (AC-IMP-2, AC-IMP-7..9).
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{BufRead, Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use flate2::read::GzDecoder;
+use serde_json::json;
 use yulius_contracts::import::ImportHarness;
 use yulius_import::{
-    ApiError, ImportError, ImportIo, ImportOptions, RepoError, RetryPolicy, Secret, SessionSources,
-    UploadError, UploadTuning, Url, run_import,
+    ApiError, ImportError, ImportIo, ImportOptions, PlainUi, RepoError, RetryPolicy, Secret,
+    SessionChoice, SessionSources, Ui, UploadError, UploadTuning, Url, run_import,
 };
 
 use crate::support::server::{FakeServer, TOKEN};
 use crate::support::{
-    RECENT, RECENT_LATER, RepoFixture, TestResult, git, simple_claude_session, since, write,
+    RECENT, RECENT_LATER, RepoFixture, TestResult, claude_line, git, simple_claude_session, since,
+    write, write_claude_session,
 };
 
 const CHUNK: u64 = 512;
 
 struct TestIo {
-    input: Cursor<Vec<u8>>,
-    output: Vec<u8>,
+    ui: PlainUi<Cursor<Vec<u8>>, Vec<u8>>,
+    interactive: bool,
     token_calls: usize,
     sources: SessionSources,
 }
@@ -32,21 +36,32 @@ struct TestIo {
 impl TestIo {
     fn new(input: &str, sources: SessionSources) -> Self {
         Self {
-            input: Cursor::new(input.as_bytes().to_vec()),
-            output: Vec::new(),
+            ui: PlainUi::new(Cursor::new(input.as_bytes().to_vec()), Vec::new()),
+            interactive: true,
             token_calls: 0,
             sources,
         }
     }
 
+    fn unattended(sources: SessionSources) -> Self {
+        Self {
+            interactive: false,
+            ..Self::new("", sources)
+        }
+    }
+
     fn output(&self) -> String {
-        String::from_utf8_lossy(&self.output).into_owned()
+        String::from_utf8_lossy(self.ui.output()).into_owned()
     }
 }
 
 impl ImportIo for TestIo {
-    fn streams(&mut self) -> (&mut dyn BufRead, &mut dyn Write) {
-        (&mut self.input, &mut self.output)
+    fn ui(&mut self) -> &mut dyn Ui {
+        &mut self.ui
+    }
+
+    fn interactive(&self) -> bool {
+        self.interactive
     }
 
     fn token(&mut self, _server: &Url) -> Result<Secret, ImportError> {
@@ -73,11 +88,17 @@ impl ImportIo for TestIo {
 struct Scenario {
     fixture: RepoFixture,
     sources: SessionSources,
-    claude_transcript: PathBuf,
+    claude: PathBuf,
+    checkout_transcript: PathBuf,
 }
 
-/// A repository with an unpublished branch, an uncommitted edit, one Claude session at the root
-/// and another in a subdirectory.
+/// A synthetic GitHub token built at run time (no literal credential in the source).
+fn fake_token() -> String {
+    format!("ghp_{}", "Wv4Hn".repeat(8))
+}
+
+/// A repository with an unpublished branch and an uncommitted edit; one Claude session at the
+/// root (2026-10-01..02) and another in a subdirectory (2026-10-02).
 fn scenario() -> TestResult<Scenario> {
     let fixture = RepoFixture::new()?;
     git(&fixture.repo, &["checkout", "-q", "-b", "feature"])?;
@@ -97,7 +118,7 @@ fn scenario() -> TestResult<Scenario> {
     )?;
     let root = fixture.root()?;
     let claude = fixture.temp.path().join("claude");
-    let claude_transcript = simple_claude_session(
+    let checkout_transcript = simple_claude_session(
         &claude,
         &root,
         "aaaaaaaa-claude",
@@ -114,91 +135,97 @@ fn scenario() -> TestResult<Scenario> {
         RECENT_LATER,
     )?;
     Ok(Scenario {
-        fixture,
         sources: SessionSources {
-            claude_dir: Some(claude),
+            claude_dir: Some(claude.clone()),
         },
-        claude_transcript,
+        fixture,
+        claude,
+        checkout_transcript,
     })
 }
 
 fn options(
     scenario: &Scenario,
     server: &FakeServer,
-    since: Option<&str>,
-    assume_yes: bool,
+    sessions: Option<SessionChoice>,
 ) -> ImportOptions {
     ImportOptions {
-        path: scenario.fixture.repo.clone(),
-        server: server.url.clone(),
-        since: since.map(str::to_owned),
-        assume_yes,
+        sessions,
+        assume_yes: true,
+        ..ImportOptions::new(scenario.fixture.repo.clone(), server.url.clone())
     }
 }
 
 #[test]
-fn imports_everything_then_uploads_nothing_on_rerun() -> TestResult {
+fn onboards_everything_then_sends_nothing_new_on_rerun() -> TestResult {
     let scenario = scenario()?;
     let server = FakeServer::start()?;
-    let mut io = TestIo::new("", scenario.sources.clone());
+    server.with(|state| state.sandbox_exists = false)?;
+    let mut io = TestIo::unattended(scenario.sources.clone());
 
-    let result = run_import(&options(&scenario, &server, Some("14d"), true), &mut io)?;
+    let outcome = run_import(
+        &options(&scenario, &server, Some(SessionChoice::All)),
+        &mut io,
+    )?;
 
-    assert_eq!(result.tasks_created, 2);
-    assert_eq!(result.sessions_skipped_existing, 0);
-    assert_eq!(result.onboarding, "pending");
+    let result = outcome.result.clone().ok_or("applied")?;
+    assert_eq!(result.sessions_imported, 2);
+    assert_eq!(outcome.sessions_found, 2);
+    assert_eq!(outcome.sessions_sent, 2);
     let output = io.output();
-    assert!(
-        output.contains("Repository   Quartio-Studio/demo (main @"),
-        "{output}"
-    );
-    assert!(
-        output.contains("Unpublished  1 branch(es): feature"),
-        "{output}"
-    );
-    assert!(
-        output.contains("Uploading 4 of 4 files (0 already on the server)."),
-        "{output}"
-    );
-    assert!(
-        output.contains("Sandbox: https://yulius.example/s/demo"),
-        "{output}"
-    );
+    for expected in [
+        "[1/4] Repository",
+        "GitHub       Quartio-Studio/demo",
+        "Unpublished  1 branch: feature",
+        "[2/4] Yulius",
+        "Signed in    127.0.0.1 as @alice",
+        "new: Quartio-Studio/demo is added when you upload",
+        "[3/4] Claude Code sessions",
+        "Found        2 sessions",
+        "Secrets      none found",
+        "[4/4] Upload",
+        "Will send    2 sessions, unpublished branches, uncommitted changes",
+        "✓ Quartio-Studio/demo is on Yulius",
+        "2 new · 0 updated · 0 unchanged, attributed to @alice",
+        "Sessions     https://yulius.example/s/demo/sessions",
+        "Onboarding   ● preparing",
+        "· task #1 finishes",
+        "Tasks can start in this sandbox once onboarding is ready.",
+    ] {
+        assert!(
+            output.contains(expected),
+            "missing {expected:?} in:\n{output}"
+        );
+    }
     assert_eq!(io.token_calls, 1);
 
     let (manifest, puts_after_first) =
         server.with(|state| (state.manifests[0].clone(), state.puts.len()))?;
     assert_eq!(manifest.repo.owner, "Quartio-Studio");
-    assert_eq!(manifest.repo.name, "demo");
     assert_eq!(manifest.repo.head_branch.as_deref(), Some("main"));
-    assert_eq!(manifest.since, "2026-09-21T14:13:20.000Z");
     assert!(manifest.bundle.is_some());
-    let harnesses: Vec<ImportHarness> = manifest
+    let harnesses: Vec<ImportHarness> = manifest.sessions.iter().map(|s| s.harness).collect();
+    assert_eq!(harnesses, [ImportHarness::Claude, ImportHarness::Claude]);
+    let build = manifest
         .sessions
         .iter()
-        .map(|session| session.harness)
-        .collect();
-    assert_eq!(harnesses, [ImportHarness::Claude, ImportHarness::Claude]);
-    assert_eq!(manifest.sessions[1].cwd_relative.as_deref(), Some("dir"));
-    assert_eq!(manifest.sessions[1].title, "Speed up the build");
+        .find(|s| s.title == "Speed up the build")
+        .ok_or("build session")?;
+    assert_eq!(build.cwd_relative.as_deref(), Some("dir"));
     let Some(snapshot) = manifest.snapshot.clone() else {
         return Err("expected a snapshot".into());
     };
-
     server.with(|state| -> TestResult {
         assert_eq!(state.stored_bytes, manifest.total_bytes());
-        for file in manifest.files() {
-            assert!(
-                state.content.contains_key(&file.sha256),
-                "{} not stored",
-                file.name
-            );
-        }
-        // The uploaded transcript is the local session file; the snapshot holds the edit.
-        let transcript = &manifest.sessions[0].files[0];
+        // A clean transcript is uploaded byte for byte.
+        let checkout = manifest
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "aaaaaaaa-claude")
+            .ok_or("checkout")?;
         assert_eq!(
-            state.content.get(&transcript.sha256),
-            Some(&fs::read(&scenario.claude_transcript)?)
+            state.content.get(&checkout.files[0].sha256),
+            Some(&fs::read(&scenario.checkout_transcript)?)
         );
         let archive_bytes = state
             .content
@@ -219,28 +246,240 @@ fn imports_everything_then_uploads_nothing_on_rerun() -> TestResult {
         Ok(())
     })??;
 
-    // Same content again: nothing is uploaded and no task is duplicated (IMP-006).
-    let mut rerun = TestIo::new("", scenario.sources.clone());
-    let again = run_import(&options(&scenario, &server, Some("14d"), true), &mut rerun)?;
-    assert_eq!(again.tasks_created, 0);
-    assert_eq!(again.sessions_skipped_existing, 2);
+    // Same content again: the sessions are already there, nothing is uploaded (IMP-006).
+    let mut rerun = TestIo::unattended(scenario.sources.clone());
+    let again = run_import(
+        &options(&scenario, &server, Some(SessionChoice::All)),
+        &mut rerun,
+    )?;
+    assert_eq!(again.sessions_sent, 0);
+    let output = rerun.output();
     assert!(
-        rerun
-            .output()
-            .contains("Uploading 0 of 4 files (4 already on the server).")
+        output.contains("On Yulius    0 new · 0 changed · 2 already there"),
+        "{output}"
     );
+    assert!(output.contains("2 files already on the server"), "{output}");
     assert_eq!(server.with(|state| state.puts.len())?, puts_after_first);
+    let second = server.with(|state| state.manifests[1].clone())?;
+    assert!(
+        second.sessions.is_empty(),
+        "unchanged sessions are not offered"
+    );
+
+    // Only local sessions: with --sessions-only and nothing new there is nothing to send.
+    let mut quiet = TestIo::unattended(scenario.sources.clone());
+    let none = run_import(
+        &ImportOptions {
+            sessions_only: true,
+            ..options(&scenario, &server, Some(SessionChoice::All))
+        },
+        &mut quiet,
+    )?;
+    assert!(none.result.is_none());
+    assert!(
+        quiet
+            .output()
+            .contains("nothing new: everything is already on Yulius"),
+        "{}",
+        quiet.output()
+    );
+    assert_eq!(server.with(|state| state.manifests.len())?, 2);
     Ok(())
 }
 
 #[test]
-fn interrupted_import_resumes_on_the_next_run() -> TestResult {
+fn secrets_are_redacted_before_upload_and_listed() -> TestResult {
+    let scenario = scenario()?;
+    let root = scenario.fixture.root()?;
+    write_claude_session(
+        &scenario.claude,
+        &root,
+        "cccccccc-claude",
+        &[
+            claude_line(
+                "user",
+                &root,
+                RECENT_LATER,
+                json!(format!("Deploy with {} please", fake_token())),
+            ),
+            claude_line(
+                "assistant",
+                &root,
+                RECENT_LATER,
+                json!([{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": format!("{}/.env", root.display())}}]),
+            ),
+            claude_line(
+                "user",
+                &root,
+                RECENT_LATER,
+                json!([{"type": "tool_result", "tool_use_id": "t1", "content": "     1→DATABASE_URL=postgres://app:pw@db/app\n     2→PORT=3000\n"}]),
+            ),
+        ],
+    )?;
+    let server = FakeServer::start()?;
+    let mut io = TestIo::unattended(scenario.sources.clone());
+    let outcome = run_import(
+        &ImportOptions {
+            sessions_only: true,
+            ..options(&scenario, &server, Some(SessionChoice::All))
+        },
+        &mut io,
+    )?;
+    assert_eq!(outcome.redactions, 2);
+    let output = io.output();
+    assert!(
+        output.contains("Redacted     2 secrets in 1 session"),
+        "{output}"
+    );
+    assert!(output.contains("github-token ×1: ghp_"), "{output}");
+    assert!(output.contains("env-value ×1: DATABASE_URL"), "{output}");
+    assert!(
+        !output.contains(&fake_token()),
+        "the secret is never printed"
+    );
+    let manifest = server.with(|state| state.manifests[0].clone())?;
+    assert!(manifest.bundle.is_none() && manifest.snapshot.is_none());
+    let secret = manifest
+        .sessions
+        .iter()
+        .find(|s| s.session_id == "cccccccc-claude")
+        .ok_or("session")?;
+    assert_eq!(secret.redactions, 2);
+    let uploaded = server.with(|state| state.content.get(&secret.files[0].sha256).cloned())?;
+    let uploaded = String::from_utf8(uploaded.ok_or("uploaded")?)?;
+    assert!(!uploaded.contains(&fake_token()));
+    assert!(!uploaded.contains("postgres://app:pw"));
+    assert!(uploaded.contains("PORT=3000"));
+    for line in uploaded.lines() {
+        let _: serde_json::Value = serde_json::from_str(line)?;
+    }
+
+    // The same session redacts to the same bytes: a re-run finds it unchanged.
+    let mut rerun = TestIo::unattended(scenario.sources.clone());
+    let again = run_import(
+        &ImportOptions {
+            sessions_only: true,
+            ..options(&scenario, &server, Some(SessionChoice::All))
+        },
+        &mut rerun,
+    )?;
+    assert_eq!(again.sessions_sent, 0);
+
+    // A session that grew is sent again (changed), alone.
+    let transcript = scenario
+        .claude
+        .join("projects")
+        .read_dir()?
+        .flatten()
+        .map(|dir| dir.path().join("bbbbbbbb-claude.jsonl"))
+        .find(|path| path.exists())
+        .ok_or("build transcript")?;
+    let mut text = fs::read_to_string(&transcript)?;
+    text.push_str(&claude_line(
+        "user",
+        &root,
+        RECENT_LATER,
+        json!("one more thing"),
+    ));
+    text.push('\n');
+    fs::write(&transcript, text)?;
+    let mut grown = TestIo::unattended(scenario.sources.clone());
+    let grown_outcome = run_import(
+        &ImportOptions {
+            sessions_only: true,
+            ..options(&scenario, &server, Some(SessionChoice::All))
+        },
+        &mut grown,
+    )?;
+    assert_eq!(grown_outcome.sessions_sent, 1);
+    assert_eq!(
+        grown_outcome.result.map(|r| r.sessions_updated),
+        Some(1),
+        "{}",
+        grown.output()
+    );
+    assert!(
+        grown
+            .output()
+            .contains("0 new · 1 changed · 2 already there")
+    );
+    Ok(())
+}
+
+#[test]
+fn people_choose_recent_sessions_or_pick_them() -> TestResult {
+    let scenario = scenario()?;
+    let server = FakeServer::start()?;
+    server.with(|state| state.sandbox_exists = true)?;
+    // Recent with a window asked interactively: "1d" before now (2026-10-05T14:13:20Z) keeps
+    // nothing; the default window would keep both.
+    let mut recent = TestIo::new("1\n1d\n\n", scenario.sources.clone());
+    let none = run_import(
+        &ImportOptions {
+            assume_yes: false,
+            sessions_only: true,
+            ..ImportOptions::new(scenario.fixture.repo.clone(), server.url.clone())
+        },
+        &mut recent,
+    );
+    let output = recent.output();
+    assert!(
+        output.contains("Which Claude Code sessions should go to Yulius?"),
+        "{output}"
+    );
+    assert!(
+        output.contains("Recent: the last 14d (2 sessions)"),
+        "{output}"
+    );
+    assert!(output.contains("Chosen       0 sessions"), "{output}");
+    assert!(none.is_ok(), "{none:?}");
+    assert_eq!(
+        server.with(|state| state.manifests.len())?,
+        0,
+        "nothing to send"
+    );
+
+    // Pick: the list is newest first; "2" is the older session.
+    let mut pick = TestIo::new("3\n2\ny\n", scenario.sources.clone());
+    let picked = run_import(
+        &ImportOptions {
+            assume_yes: false,
+            sessions_only: true,
+            ..ImportOptions::new(scenario.fixture.repo.clone(), server.url.clone())
+        },
+        &mut pick,
+    )?;
+    let output = pick.output();
+    assert!(
+        output.contains("[x]   1. 2026-10-02  Speed up the build"),
+        "{output}"
+    );
+    assert!(
+        output.contains("Upload 1 session to 127.0.0.1?"),
+        "{output}"
+    );
+    assert_eq!(picked.sessions_sent, 1);
+    let manifest = server.with(|state| state.manifests[0].clone())?;
+    let ids: Vec<&str> = manifest
+        .sessions
+        .iter()
+        .map(|s| s.session_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["aaaaaaaa-claude"]);
+    Ok(())
+}
+
+#[test]
+fn interrupted_upload_resumes_on_the_next_run() -> TestResult {
     let scenario = scenario()?;
     let server = FakeServer::start()?;
     server.with(|state| state.down_after_chunks = Some(3))?;
 
-    let mut io = TestIo::new("", scenario.sources.clone());
-    let first = run_import(&options(&scenario, &server, Some("14d"), true), &mut io);
+    let mut io = TestIo::unattended(scenario.sources.clone());
+    let first = run_import(
+        &options(&scenario, &server, Some(SessionChoice::All)),
+        &mut io,
+    );
     assert!(
         matches!(
             first,
@@ -255,10 +494,17 @@ fn interrupted_import_resumes_on_the_next_run() -> TestResult {
         state.down = false;
         state.down_after_chunks = None;
     })?;
-    let mut rerun = TestIo::new("", scenario.sources.clone());
-    let result = run_import(&options(&scenario, &server, Some("14d"), true), &mut rerun)?;
-    assert_eq!(result.tasks_created, 2);
-    assert!(rerun.output().contains("resuming at"), "{}", rerun.output());
+    let mut rerun = TestIo::unattended(scenario.sources.clone());
+    let outcome = run_import(
+        &options(&scenario, &server, Some(SessionChoice::All)),
+        &mut rerun,
+    )?;
+    assert_eq!(outcome.result.map(|r| r.sessions_imported), Some(2));
+    assert!(
+        rerun.output().contains("resuming after"),
+        "{}",
+        rerun.output()
+    );
 
     server.with(|state| {
         let manifest = &state.manifests[1];
@@ -278,25 +524,63 @@ fn interrupted_import_resumes_on_the_next_run() -> TestResult {
 }
 
 #[test]
-fn declining_the_confirmation_uploads_nothing() -> TestResult {
+fn dry_runs_status_and_declined_confirmations_upload_nothing() -> TestResult {
     let scenario = scenario()?;
     let server = FakeServer::start()?;
-    let mut io = TestIo::new("7d\nn\n", scenario.sources.clone());
+    server.with(|state| state.sandbox_exists = true)?;
 
-    let result = run_import(&options(&scenario, &server, None, false), &mut io);
+    let mut dry = TestIo::unattended(scenario.sources.clone());
+    let planned = run_import(
+        &ImportOptions {
+            dry_run: true,
+            ..options(&scenario, &server, Some(SessionChoice::All))
+        },
+        &mut dry,
+    )?;
+    assert!(planned.result.is_none());
+    assert!(dry.output().contains("Dry run: nothing was uploaded."));
 
+    let mut status = TestIo::unattended(scenario.sources.clone());
+    run_import(
+        &ImportOptions {
+            status_only: true,
+            ..options(&scenario, &server, None)
+        },
+        &mut status,
+    )?;
+    let output = status.output();
+    assert!(output.contains("[2/2] Yulius"), "{output}");
+    assert!(output.contains("Onboarding   ● preparing"), "{output}");
+    assert!(output.contains("Not ready yet: tasks start once onboarding is done."));
+    assert!(
+        !output.contains("Claude Code sessions"),
+        "status reads no sessions"
+    );
+
+    let mut declined = TestIo::new("2\nn\n", scenario.sources.clone());
+    let result = run_import(
+        &ImportOptions {
+            assume_yes: false,
+            ..ImportOptions::new(scenario.fixture.repo.clone(), server.url.clone())
+        },
+        &mut declined,
+    );
     assert!(matches!(result, Err(ImportError::Cancelled)), "{result:?}");
-    let output = io.output();
-    assert!(output.contains("[14d]"), "{output}");
-    assert!(
-        output.contains("since 2026-09-28T14:13:20.000Z"),
-        "{output}"
+    assert_eq!(server.with(|state| state.manifests.len())?, 0);
+
+    // A refusal from the server stops before anything is read or sent.
+    server.with(|state| {
+        state.refusal = Some("uploading needs write access to Quartio-Studio/demo".into());
+    })?;
+    let mut refused = TestIo::unattended(scenario.sources.clone());
+    let result = run_import(
+        &options(&scenario, &server, Some(SessionChoice::All)),
+        &mut refused,
     );
     assert!(
-        output.contains("[claude] 2026-10-02 Implement checkout details"),
-        "{output}"
+        matches!(&result, Err(ImportError::Refused(message)) if message.contains("write access")),
+        "{result:?}"
     );
-    assert!(output.contains("Upload to http://127.0.0.1:"), "{output}");
     assert_eq!(server.with(|state| state.manifests.len())?, 0);
     Ok(())
 }
@@ -314,8 +598,11 @@ fn non_github_repositories_are_refused_before_authentication() -> TestResult {
         ],
     )?;
     let server = FakeServer::start()?;
-    let mut io = TestIo::new("", scenario.sources.clone());
-    let result = run_import(&options(&scenario, &server, Some("14d"), true), &mut io);
+    let mut io = TestIo::unattended(scenario.sources.clone());
+    let result = run_import(
+        &options(&scenario, &server, Some(SessionChoice::All)),
+        &mut io,
+    );
     assert!(
         matches!(result, Err(ImportError::Repo(RepoError::NotGitHub { .. }))),
         "{result:?}"

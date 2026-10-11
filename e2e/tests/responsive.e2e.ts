@@ -14,7 +14,7 @@ function layoutProblems(browser: Browser) {
     const main = document.querySelector('.app')!;
     const page = main.querySelector('#main .page');
     const selector = [
-      '.page-head > *', '.page-actions > *', '.toolbar > *', '.tl-toolbar button', '.tl-summary',
+      '.page-head > *', '.page-actions > *', '.toolbar > *', '.tl-toolbar button', '.tl-summary', '.ss-toolbar > *',
       '.tl-columns > span', '.tl-row > *', '.tl-link > *', '.item-title > *', '.item-controls > *',
       '.home-card-head > *', '.home-count', '.home-card-actions > *',
       '.stepstrip-main > *', '.stepstrip-toggle > *', '.step-label > *', '.panel-head > *', '.panel-head .row > *',
@@ -58,6 +58,7 @@ function layoutProblems(browser: Browser) {
 const pages = [
   ['home', '/', 'Sandboxes'],
   ['tasks', '/s/studio/tasks', 'Tasks'],
+  ['sessions', '/s/studio/sessions', 'Sessions'],
   ['git', '/s/studio/git', 'Git'],
   ['CI', '/s/studio/ci', 'CI'],
   ['workflows', '/s/studio/workflows', 'Workflows'],

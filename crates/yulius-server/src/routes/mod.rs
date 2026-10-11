@@ -18,6 +18,7 @@ mod previews;
 mod projects;
 mod sandboxes;
 mod secrets;
+mod sessions;
 mod setup_auth;
 mod shells;
 mod skills;
@@ -187,6 +188,17 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/import", post(imports::create))
         .route("/api/import/{job}/files/{name}", imports::chunk_route())
         .route("/api/import/{job}/complete", post(imports::complete))
+        .route("/api/onboard/plan", post(sessions::plan))
+        .route("/api/sandboxes/{sid}/sessions", get(sessions::list))
+        .route(
+            "/api/sessions/{id}",
+            get(sessions::detail).delete(sessions::delete),
+        )
+        .route("/api/sessions/{id}/transcript", get(sessions::transcript))
+        .route(
+            "/api/sessions/{id}/continue",
+            post(sessions::continue_session),
+        )
         .route("/api/sandboxes/{sid}", patch(delivery::update_sandbox))
         .route("/api/delivery/presets", get(delivery::presets))
         .route("/api/sandboxes/{sid}/git", get(git::overview))

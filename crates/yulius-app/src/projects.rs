@@ -398,7 +398,7 @@ impl App {
                     .trim()
                     .split_once('/')
                     .ok_or_else(|| AppError::Invalid("repo must be owner/name".into()))?;
-                self.import_repository(&ctx.user, owner.trim(), name.trim())
+                self.import_repository(&ctx.user, owner.trim(), name.trim(), true)
                     .await?
             }
             CreateSandbox::Create {
@@ -420,7 +420,9 @@ impl App {
     /// Links an existing repository of the instance owner as a new sandbox (import mode,
     /// IMP-002): requires `admin` or `maintain` on GitHub (the superadmin: a repository the App
     /// installation can access, ACC-012); clones it, chooses the profile, validates the
-    /// documentation format and creates the onboarding task when it fails.
+    /// documentation format and creates the onboarding task when it fails. With
+    /// `start_preparation` that task starts at once; `yulius onboard` starts it once its upload
+    /// has landed.
     ///
     /// # Errors
     /// See [`App::create_sandbox`].
@@ -429,7 +431,44 @@ impl App {
         user: &UserRecord,
         owner: &str,
         name: &str,
+        start_preparation: bool,
     ) -> AppResult<SandboxRecord> {
+        let store = &self.deps.store;
+        if let Some(existing) = store.sandbox_by_repo(owner, name).await? {
+            return Err(AppError::Conflict(format!(
+                "{owner}/{name} is already the sandbox /s/{}",
+                existing.slug
+            )));
+        }
+        let repo = self.import_permission(user, owner, name).await?;
+        let record = self.link_repository(user, owner, name, repo).await?;
+        if start_preparation && record.onboarding_task_id.is_some() {
+            let actor = self.login_of(&user.id).await;
+            if let Err(err) = self.start_onboarding(&record.id, &actor).await {
+                tracing::warn!(sandbox = %record.id, error = %err, "the preparation task did not start");
+            }
+            return self
+                .deps
+                .store
+                .sandbox(&record.id)
+                .await?
+                .ok_or(AppError::NotFound);
+        }
+        Ok(record)
+    }
+
+    /// Whether `user` may link `owner/name` as a new sandbox (IMP-002): a repository of the
+    /// instance owner on which they have `admin` or `maintain` (the superadmin: one the App
+    /// installation can access). Returns the repository.
+    ///
+    /// # Errors
+    /// `Invalid` for foreign or unknown repositories, `Forbidden` without the permission.
+    pub(crate) async fn import_permission(
+        &self,
+        user: &UserRecord,
+        owner: &str,
+        name: &str,
+    ) -> AppResult<GhRepo> {
         if !valid_owner(owner) || !valid_repo_name(name) {
             return Err(AppError::Invalid(format!(
                 "{owner}/{name} is not a GitHub repository name"
@@ -438,13 +477,6 @@ impl App {
         let (instance_owner, _) = self.instance_owner().await?;
         if !owner.eq_ignore_ascii_case(&instance_owner) {
             return Err(foreign_owner(owner, name, &instance_owner));
-        }
-        let store = &self.deps.store;
-        if let Some(existing) = store.sandbox_by_repo(owner, name).await? {
-            return Err(AppError::Conflict(format!(
-                "{owner}/{name} is already the sandbox /s/{}",
-                existing.slug
-            )));
         }
         let repo = if user.is_superadmin {
             self.installation_repo(owner, name).await?.ok_or_else(|| {
@@ -486,6 +518,29 @@ impl App {
         if !owner.eq_ignore_ascii_case(&instance_owner) {
             return Err(foreign_owner(&owner, &name, &instance_owner));
         }
+        Ok(repo)
+    }
+
+    /// Clones a permitted repository and records it as a sandbox (see
+    /// [`App::import_repository`]).
+    async fn link_repository(
+        self: &Arc<Self>,
+        user: &UserRecord,
+        owner: &str,
+        name: &str,
+        repo: GhRepo,
+    ) -> AppResult<SandboxRecord> {
+        let store = &self.deps.store;
+        let owner = if repo.owner.is_empty() {
+            owner.to_owned()
+        } else {
+            repo.owner.clone()
+        };
+        let name = if repo.name.is_empty() {
+            name.to_owned()
+        } else {
+            repo.name.clone()
+        };
         let install_token = self.installation_token().await?;
         let id = SandboxId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let dir = self.sandbox_dir(&id);

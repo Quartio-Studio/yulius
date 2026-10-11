@@ -159,6 +159,20 @@ impl AccountStore for SqliteStore {
         .await
     }
 
+    async fn set_usage_error(&self, id: &AccountId, note: &str, at: Timestamp) -> AppResult<()> {
+        let (id, note) = (id.as_str().to_owned(), note.to_owned());
+        self.call(move |c| {
+            c.execute(
+                "UPDATE accounts SET last_error = ?1, updated_at = ?2 \
+                 WHERE id = ?3 AND (last_error IS NULL OR last_error LIKE 'usage:%')",
+                params![note, at.0, id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn clear_usage_error(&self, id: &AccountId, at: Timestamp) -> AppResult<()> {
         let id = id.as_str().to_owned();
         self.call(move |c| {

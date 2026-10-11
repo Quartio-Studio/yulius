@@ -14,6 +14,7 @@ pub mod intake;
 pub mod mcp;
 pub mod sandboxes;
 pub mod secrets;
+pub mod sessions;
 pub mod shells;
 pub mod skills;
 pub mod status;

@@ -6,7 +6,7 @@ const listeners = new Set();
 let hashMode = false;
 let lastKey = null;
 
-const SANDBOX_PAGES = new Set(['tasks', 'git', 'ci', 'workflows', 'skills', 'automations', 'mcp', 'secrets', 'dashboard']);
+const SANDBOX_PAGES = new Set(['tasks', 'sessions', 'git', 'ci', 'workflows', 'skills', 'automations', 'mcp', 'secrets', 'dashboard']);
 const ADMIN_PAGES = new Set(['users', 'accounts', 'github', 'instance']);
 
 /** Start listening to navigation. */
@@ -98,6 +98,8 @@ export function matchRoute(path, query = new URLSearchParams()) {
     if (parts.length === 4 && third === 'workflows') return { ...base, name: 'workflow', slug: second, page: 'workflows', workflow: fourth };
     if (parts.length === 4 && third === 'mcp') return { ...base, name: 'mcpServer', slug: second, page: 'mcp', server: fourth };
     if (parts.length === 4 && third === 'automations') return { ...base, name: 'automation', slug: second, page: 'automations', automation: fourth };
+    // Sessions → one session's read-only transcript (SES-003).
+    if (parts.length === 4 && third === 'sessions') return { ...base, name: 'session', slug: second, page: 'sessions', session: fourth };
     if (parts.length === 5 && third === 'git' && fourth === 't' && /^\d+$/.test(parts[4])) return { ...base, name: 'gitTask', slug: second, page: 'git', number: Number(parts[4]) };
     if (parts.length === 3 && third === 'browser') return { ...base, name: 'composer', slug: second, browserTab: query.get('tab') || '' };
     if (parts.length === 3 && SANDBOX_PAGES.has(third)) return { ...base, name: 'page', slug: second, page: third };

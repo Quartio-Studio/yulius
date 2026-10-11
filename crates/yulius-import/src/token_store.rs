@@ -129,6 +129,15 @@ impl TokenStore {
         self.write(&file)
     }
 
+    /// The servers with a saved token (normalized keys, sorted), so `yulius onboard` can use the
+    /// only one without `--server`.
+    ///
+    /// # Errors
+    /// I/O failure or a corrupt file.
+    pub fn servers(&self) -> Result<Vec<String>, TokenStoreError> {
+        Ok(self.read()?.servers.into_keys().collect())
+    }
+
     /// Forgets the token for `server`; returns whether one existed.
     ///
     /// # Errors

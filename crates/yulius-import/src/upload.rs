@@ -8,7 +8,7 @@ use reqwest::Url;
 use sha2::{Digest, Sha256};
 use yulius_contracts::import::{
     CHUNK_SHA256_HEADER, CreateImportRequest, CreateImportResponse, FileProgress, FileRef,
-    ImportManifest, ImportResult, MAX_CHUNK_BYTES, ManifestError,
+    ImportManifest, ImportResult, MAX_CHUNK_BYTES, ManifestError, OnboardPlan, OnboardPlanRequest,
 };
 
 use crate::hash::{copy_into_hasher, sha256_hex};
@@ -77,6 +77,18 @@ impl Uploader {
     #[must_use]
     pub fn server(&self) -> &Url {
         self.api.base()
+    }
+
+    /// Asks for the onboarding plan: the sandbox, its onboarding state and which offered
+    /// sessions the server still needs (nothing changes on the server).
+    ///
+    /// # Errors
+    /// An API failure.
+    pub fn plan(&self, request: &OnboardPlanRequest) -> Result<OnboardPlan, UploadError> {
+        let url = self.api.endpoint(&["api", "onboard", "plan"])?;
+        Ok(self
+            .api
+            .execute(&|client| client.post(url.clone()).timeout(JSON_TIMEOUT).json(request))?)
     }
 
     /// Validates `manifest` and creates (or resumes) an import job; the response lists the files

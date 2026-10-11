@@ -18,6 +18,7 @@ mod instance;
 mod intake;
 mod mcp;
 mod sandboxes;
+mod session_docs;
 mod sessions;
 mod skills;
 mod tasks;
@@ -49,6 +50,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0008_updates_and_jev_key.sql"),
     include_str!("migrations/0009_secrets_vault.sql"),
     include_str!("migrations/0010_local_ci.sql"),
+    include_str!("migrations/0011_session_docs.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;

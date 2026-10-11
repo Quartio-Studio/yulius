@@ -2,10 +2,13 @@
 //! IMP-005, U-08; SPEC-002 §6.6, §8a).
 //!
 //! `not_needed | pending → preparing → ready | skipped`. An imported repository whose
-//! documentation fails [`validate_project`] gets a resting meta-task whose prompt asks the agent
-//! to adapt the repository to the Yulius format without breaking its conventions; the sandbox
-//! stays `pending` (other tasks are refused by the creation gate) until someone approves (starts)
-//! the task, it runs and closes with a validating project (`ready`), or an admin skips it.
+//! documentation fails [`validate_project`] gets a meta-task whose prompt asks the agent to adapt
+//! the repository to the Yulius format without breaking its conventions. The task starts by
+//! itself (no approval step, F 2026-10-10): at once when the repository is added in the UI, when
+//! the upload has landed when it comes through `yulius onboard`. Until the task has run and the
+//! project validates (`ready`), or an admin skips it, no other task starts in the sandbox: not
+//! created, continued, chained or run by an automation ([`App::ensure_tasks_may_start`], U-08).
+//! [`App::onboarding_status`] says what is still pending, for the CLI and the UI.
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -13,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yulius_contracts::api::sandboxes::{Profile, Sandbox};
+use yulius_contracts::import::{OnboardingStatus, OnboardingTask};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
@@ -29,6 +33,7 @@ use crate::model::{SandboxRecord, TaskOrigin, TaskRecord, UserRecord};
 use crate::ports::store::TaskFieldUpdate;
 use crate::projects::blocking;
 use crate::supervisor::RunStart;
+use crate::tasks::progress;
 
 /// Bound on one documentation file read for validation.
 pub const MAX_DOC_BYTES: u64 = 1024 * 1024;
@@ -36,6 +41,8 @@ pub const MAX_DOC_BYTES: u64 = 1024 * 1024;
 pub const MAX_DECISION_FILES: usize = 1_000;
 /// Problems listed in the onboarding prompt (the rest are summarized).
 const MAX_PROMPT_PROBLEMS: usize = 40;
+/// Problems listed in the onboarding status.
+const MAX_STATUS_PROBLEMS: usize = 5;
 /// Title of the preparation meta-task.
 pub const ONBOARDING_TITLE: &str = "Prepare this repository for Yulius";
 
@@ -431,11 +438,229 @@ impl App {
         self.sandbox_view(&record, level).await
     }
 
-    /// `POST /api/sandboxes/{sid}/onboarding/approve` (write): starts the preparation task
-    /// (same as continuing it) and moves the sandbox to `preparing`.
+    /// The onboarding gate (U-08): while a sandbox is `pending` or `preparing`, no task other
+    /// than its preparation task may start — not created, continued, chained or run by an
+    /// automation.
     ///
     /// # Errors
-    /// `Conflict` when nothing awaits approval or the task cannot start.
+    /// `Conflict` while the sandbox is being prepared; `NotFound` for unknown sandboxes.
+    pub async fn ensure_tasks_may_start(
+        &self,
+        sandbox: &SandboxId,
+        origin: TaskOrigin,
+    ) -> AppResult<()> {
+        if origin == TaskOrigin::Onboarding {
+            return Ok(());
+        }
+        let state = self.refresh_onboarding(sandbox).await?;
+        if OnboardingState::parse(&state).is_some_and(OnboardingState::blocks_tasks) {
+            return Err(AppError::Conflict(
+                "this project is being prepared for Yulius; tasks can start once the preparation \
+                 task has made it ready (or an admin skips it)"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Starts the preparation task of a `pending` sandbox (creating it when it is missing) and
+    /// moves the sandbox to `preparing`. Without a subscription with capacity the task waits,
+    /// paused, for one (ROT-010) and the sandbox is still `preparing`. Returns whether it started.
+    ///
+    /// # Errors
+    /// Store failures; the task's start failures (the sandbox then stays `pending`).
+    pub(crate) async fn start_onboarding(
+        self: &Arc<Self>,
+        sandbox: &SandboxId,
+        actor: &str,
+    ) -> AppResult<bool> {
+        let store = &self.deps.store;
+        let record = store.sandbox(sandbox).await?.ok_or(AppError::NotFound)?;
+        if OnboardingState::parse(&record.onboarding_state) != Some(OnboardingState::Pending) {
+            return Ok(false);
+        }
+        let existing = match &record.onboarding_task_id {
+            Some(id) => store.task(id).await?,
+            None => None,
+        };
+        let task = match existing {
+            Some(task) => task,
+            None => {
+                let root = self.sandbox_repo(&record.id);
+                let (report, _) = blocking(move || Ok(validate_checkout(&root))).await?;
+                let creator = store
+                    .user(&record.created_by)
+                    .await?
+                    .ok_or(AppError::NotFound)?;
+                let task = self
+                    .create_onboarding_task(&record, &creator, &report)
+                    .await?;
+                store
+                    .set_onboarding(
+                        &record.id,
+                        OnboardingState::Pending.as_str(),
+                        Some(&task.id),
+                    )
+                    .await?;
+                task
+            }
+        };
+        if task.status.is_resting() {
+            self.start_run(&task.id, RunStart::Resume { prompt: None }, None)
+                .await?;
+        }
+        let record = store.sandbox(sandbox).await?.ok_or(AppError::NotFound)?;
+        self.set_onboarding_state(&record, OnboardingState::Preparing, actor)
+            .await?;
+        Ok(true)
+    }
+
+    /// The onboarding state of a sandbox and what is still pending, in words (for `yulius
+    /// onboard` and the UI).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn onboarding_status(&self, sandbox: &SandboxRecord) -> AppResult<OnboardingStatus> {
+        let store = &self.deps.store;
+        let state = OnboardingState::parse(&sandbox.onboarding_state);
+        let task = match &sandbox.onboarding_task_id {
+            Some(id) => store.task(id).await?,
+            None => None,
+        };
+        let mut view = None;
+        if let Some(task) = &task {
+            let steps = progress(&store.steps(&task.id).await?);
+            view = Some(OnboardingTask {
+                number: task.number,
+                title: task.title.clone(),
+                status: task.status.as_str().to_owned(),
+                steps_done: steps.done,
+                steps_total: steps.total,
+                url: format!(
+                    "{}/s/{}/t/{}",
+                    self.config.public_url, sandbox.slug, task.number
+                ),
+            });
+        }
+        let label = task.as_ref().map_or_else(
+            || "the preparation task".to_owned(),
+            |t| format!("task #{}", t.number),
+        );
+        let (summary, pending): (String, Vec<String>) = match state {
+            Some(OnboardingState::NotNeeded) => (
+                "Ready: the repository already follows the Yulius format.".into(),
+                Vec::new(),
+            ),
+            Some(OnboardingState::Ready) => (
+                "Ready: the preparation task adapted the repository.".into(),
+                Vec::new(),
+            ),
+            Some(OnboardingState::Skipped) => (
+                "Ready: an admin skipped the preparation.".into(),
+                Vec::new(),
+            ),
+            Some(OnboardingState::Pending) => (
+                format!("Not ready yet: {label} has not started."),
+                vec![
+                    format!(
+                        "{label} starts when the upload finishes, or when someone starts it on the sandbox page"
+                    ),
+                    "the repository passes the Yulius format check".to_owned(),
+                ],
+            ),
+            Some(OnboardingState::Preparing) => {
+                let Some(task) = &task else {
+                    return Ok(OnboardingStatus {
+                        state: sandbox.onboarding_state.clone(),
+                        ready: false,
+                        summary: "Not ready yet: the preparation task is missing; an admin can skip preparation.".into(),
+                        pending: vec!["an admin skips the preparation".into()],
+                        task: view,
+                    });
+                };
+                if task.status == yulius_domain::task::TaskStatus::WaitingCapacity {
+                    (
+                        format!(
+                            "Preparing: {label} waits for a Claude subscription with capacity."
+                        ),
+                        vec![
+                            "a Claude subscription has capacity (Admin → Accounts)".to_owned(),
+                            format!("{label} adapts the repository"),
+                            "the repository passes the Yulius format check".to_owned(),
+                        ],
+                    )
+                } else if task.status.is_resting() {
+                    let mut candidates: Vec<PathBuf> = Vec::new();
+                    if let Some(path) = &task.worktree_path {
+                        candidates.push(PathBuf::from(path));
+                    }
+                    candidates.push(self.sandbox_repo(&sandbox.id));
+                    let problems = blocking(move || {
+                        Ok(candidates
+                            .iter()
+                            .find(|dir| dir.is_dir())
+                            .map(|dir| validate_checkout(dir).0)
+                            .map(|report| {
+                                report
+                                    .problems
+                                    .iter()
+                                    .take(MAX_STATUS_PROBLEMS)
+                                    .map(ToString::to_string)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default())
+                    })
+                    .await?;
+                    let mut pending = vec![format!(
+                        "{label} is continued until the repository passes the Yulius format check"
+                    )];
+                    pending.extend(problems.into_iter().map(|p| format!("fix: {p}")));
+                    (
+                        format!(
+                            "Preparing: {label} stopped before the repository passed the Yulius format check."
+                        ),
+                        pending,
+                    )
+                } else {
+                    let steps = view
+                        .as_ref()
+                        .filter(|v| v.steps_total > 0)
+                        .map(|v| {
+                            format!(
+                                " (step {} of {})",
+                                (v.steps_done + 1).min(v.steps_total),
+                                v.steps_total
+                            )
+                        })
+                        .unwrap_or_default();
+                    (
+                        format!("Preparing: {label} is adapting the repository{steps}."),
+                        vec![
+                            format!("{label} finishes"),
+                            "the repository passes the Yulius format check".to_owned(),
+                        ],
+                    )
+                }
+            }
+            None => (
+                format!("Unknown onboarding state {}.", sandbox.onboarding_state),
+                Vec::new(),
+            ),
+        };
+        Ok(OnboardingStatus {
+            state: sandbox.onboarding_state.clone(),
+            ready: !state.is_some_and(OnboardingState::blocks_tasks),
+            summary,
+            pending,
+            task: view,
+        })
+    }
+
+    /// `POST /api/sandboxes/{sid}/onboarding/approve` (write): starts the preparation task
+    /// now (it normally starts by itself) and moves the sandbox to `preparing`.
+    ///
+    /// # Errors
+    /// `Conflict` when nothing awaits preparation or the task cannot start.
     pub async fn approve_onboarding(
         self: &Arc<Self>,
         ctx: &AuthContext,
@@ -453,23 +678,8 @@ impl App {
                 )));
             }
         }
-        let task_id = record
-            .onboarding_task_id
-            .clone()
-            .ok_or_else(|| AppError::Conflict("this sandbox has no preparation task".into()))?;
-        let task = self
-            .deps
-            .store
-            .task(&task_id)
-            .await?
-            .ok_or(AppError::NotFound)?;
-        if task.status.is_resting() {
-            self.start_run(&task.id, RunStart::Resume { prompt: None }, None)
-                .await?;
-        }
         let actor = self.login_of(&ctx.user.id).await;
-        self.set_onboarding_state(&record, OnboardingState::Preparing, &actor)
-            .await?;
+        self.start_onboarding(&id, &actor).await?;
         let record = self
             .deps
             .store
