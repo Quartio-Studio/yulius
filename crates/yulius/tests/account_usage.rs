@@ -270,10 +270,8 @@ async fn background_rounds_refresh_usage_and_back_off_on_throttling() -> TestRes
         .account(&AccountId::parse("a-busy")?)
         .await?
         .ok_or("a-busy")?;
-    assert_eq!(
-        busy.last_error.as_deref(),
-        Some("usage: Usage updates again in about 2 min.")
-    );
+    // Throttling is not an error: no note on the subscription (F 2026-10-11).
+    assert_eq!(busy.last_error, None);
     assert_eq!(busy.usage_json.as_deref(), Some(known), "last usage kept");
     assert_eq!(
         busy.status,
@@ -323,13 +321,7 @@ async fn a_failed_refresh_keeps_a_limit_observed_meanwhile() -> TestResult {
         "the limit observed during the request is kept"
     );
     assert_eq!(hit.usage_json.as_deref(), Some(LIMITED_USAGE));
-    assert!(
-        hit.last_error
-            .as_deref()
-            .unwrap_or("")
-            .starts_with("usage: Usage updates again"),
-        "the failure is still reported"
-    );
+    assert_eq!(hit.last_error, None, "throttling leaves no note");
     Ok(())
 }
 
@@ -366,5 +358,40 @@ async fn a_failed_refresh_keeps_a_relogin_error() -> TestResult {
         "{:?}",
         noted.last_error
     );
+    Ok(())
+}
+
+/// F 2026-10-11: "usage should be updated more often + every time someone loads its screen".
+/// Opening the subscriptions list reads usage again in the background, at most every 30 s.
+#[tokio::test]
+async fn opening_the_subscriptions_list_reads_usage_again() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        usage: Some(Arc::new(FakeProbe)),
+        ..HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    account(&h, "a-onload", b"credential").await?;
+    let id = AccountId::parse("a-onload")?;
+    assert!(
+        h.store
+            .account(&id)
+            .await?
+            .ok_or("account")?
+            .usage_json
+            .is_none()
+    );
+
+    let listed = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
+    assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.body);
+    let mut read = false;
+    for _ in 0..100 {
+        let record = h.store.account(&id).await?.ok_or("account")?;
+        if record.usage_json.as_deref().unwrap_or("").contains("42") {
+            read = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(read, "the list read the subscription's usage by itself");
     Ok(())
 }

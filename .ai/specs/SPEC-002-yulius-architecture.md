@@ -721,7 +721,7 @@ crossing 98 %; else at most every 15 s) and sampled for the burn rate at most ev
 (`usage_samples.source` = `session`). An idle subscription has no fresh reading: its last one
 counts until its windows reset (then fresh, §2.4 policy), unknown ranks last. The probe stays for
 sign-ins that may read the endpoint; its 403 is "not shared": no error, an old note cleared, asked
-again a day later. **Idle subscriptions (F 2026-10-11, #4):** on that 403 the probe sends one
+again a day later. **Idle subscriptions (F 2026-10-11, #4):** on that 403 (or 429, which production answers) the probe sends one
 one-token message on the cheapest model and reads the same `anthropic-ratelimit-unified-5h/7d`
 headers (utilization as a fraction, reset in Unix seconds), so a subscription shows usage all the
 time, not only while a task runs; the background round skips subscriptions with a live task. The
@@ -752,7 +752,9 @@ SIGTERM instead of an interrupt that could start or cancel anything.
 **Policy** (`yulius-domain::rotation`, pure; SPEC-001 §7.4). A candidate is a signed-in subscription
 (status `ok` or `limited`) below 98 % in every window binding the task — 5-hour, weekly, and the
 weekly cap of an Opus or Sonnet task — with no reported limit in effect. Ranking: tier (≥ 5 points
-of room in every known window, then less, then no known window — unknown is never zero), then
+of room in every known window, then no known window — unknown is never zero, and is never
+exhaustion either: a subscription nobody uses is never read, so it ranks before one with less
+than 5 points left (F 2026-10-11) — then less than 5 points), then
 `score = (98 − weekly used) ÷ hours to the weekly reset ÷ (in_use + 1)` (hours clamped to
 0.25–168; unknown reset = 168), then the capacity that expires soonest (weekly reset, then 5-hour
 reset), fewer tasks, id. Triggers: *Start* (no process: placement), *Proactive* (a boundary or a
@@ -2428,6 +2430,8 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-11 (F 2026-10-11): ADR-17 ranking — unknown usage before less than 5 points of room;
+  usage rounds every 2 minutes with a shared back-off, and on opening the Subscriptions page.
 - 2026-10-11 (F 2026-10-11, #188): ADR-08 and §8 — a task acts on GitHub with its creator's
   user-to-server token (the agent's Git and `gh`, Yulius's pushes and pull requests for it, the
   agent's merges, promotions and issues); the App's token is the fallback and stays for CI

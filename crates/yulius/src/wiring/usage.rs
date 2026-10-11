@@ -215,9 +215,22 @@ impl UsageProbe for ProviderUsage {
                     .header("accept", "application/json");
                 match self.get_json(request).await {
                     Ok(body) => parse_claude(&body).map_err(UsageFailure::new),
-                    // A `setup-token` may not read the endpoint; its headers say the same.
-                    Err(f) if f.kind == UsageFailureKind::NotShared => {
-                        self.read_headers(credential).await
+                    // A `setup-token` may not read the endpoint (403, or 429 on production);
+                    // the headers of an API response say the same. When those fail too, the
+                    // endpoint's own answer (and its `Retry-After`) stands.
+                    Err(f)
+                        if matches!(
+                            f.kind,
+                            UsageFailureKind::NotShared | UsageFailureKind::Throttled
+                        ) =>
+                    {
+                        self.read_headers(credential).await.map_err(|h| {
+                            if h.kind == UsageFailureKind::NotShared {
+                                f
+                            } else {
+                                h
+                            }
+                        })
                     }
                     Err(f) => Err(f),
                 }
@@ -279,6 +292,17 @@ mod tests {
     #[tokio::test]
     async fn a_refused_sign_in_is_read_from_the_headers() -> Result<(), Box<dyn std::error::Error>>
     {
+        headers_after("403 Forbidden").await
+    }
+
+    /// Production answers the usage endpoint with 429 for every subscription: same fallback.
+    #[tokio::test]
+    async fn a_throttled_usage_endpoint_is_read_from_the_headers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        headers_after("429 Too Many Requests").await
+    }
+
+    async fn headers_after(usage_status: &'static str) -> Result<(), Box<dyn std::error::Error>> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let base = format!("http://{}", listener.local_addr()?);
@@ -287,8 +311,11 @@ mod tests {
                 let mut buf = vec![0u8; 8192];
                 let n = sock.read(&mut buf).await.unwrap_or(0);
                 let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let throttle = format!(
+                    "HTTP/1.1 {usage_status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                );
                 let reply = if head.starts_with("GET /api/oauth/usage") {
-                    "HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    throttle.as_str()
                 } else if head.starts_with("POST /v1/messages") {
                     "HTTP/1.1 200 OK\r\nanthropic-ratelimit-unified-5h-utilization: 0.25\r\nanthropic-ratelimit-unified-5h-reset: 1790000000\r\nanthropic-ratelimit-unified-7d-utilization: 0.5\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}"
                 } else {

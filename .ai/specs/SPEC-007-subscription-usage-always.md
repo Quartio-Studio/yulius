@@ -30,8 +30,9 @@ window, weekly window) at all times, not only after a task ran on it.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| USG-001 | When the usage endpoint refuses a sign-in (403), the probe reads the 5-hour and weekly windows from the `anthropic-ratelimit-unified-5h/7d` headers of a one-token message on the cheapest model. | `wiring::usage::tests::a_refused_sign_in_is_read_from_the_headers`, `rate_limit_headers_become_percent_windows` |
+| USG-001 | When the usage endpoint refuses a sign-in (403) or throttles it (429, what production answers), the probe reads the 5-hour and weekly windows from the `anthropic-ratelimit-unified-5h/7d` headers of a one-token message on the cheapest model. | `wiring::usage::tests::a_refused_sign_in_is_read_from_the_headers`, `a_throttled_usage_endpoint_is_read_from_the_headers`, `rate_limit_headers_become_percent_windows` |
 | USG-002 | Subscriptions with a live task are not probed: their sessions already report usage. | `accounts.rs::refresh_usage_round` |
+| USG-004 | After a reading the subscription is asked again no sooner than 5 minutes (each reading is a real request); #195's 90 s freshness skip and shared back-off still apply. | `accounts.rs::refresh_usage_round` |
 | USG-003 | The page no longer says usage "shows once a task runs"; an unread window says "Reading usage…" and the footer says usage is read every few minutes. | `layout.js` |
 
 ## Plan
