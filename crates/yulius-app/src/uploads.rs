@@ -671,7 +671,7 @@ impl App {
             .count();
         if count >= MAX_ATTACHMENTS_PER_FOLDER {
             return Err(AppError::Conflict(format!(
-                "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal"
+                "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal or draft"
             )));
         }
         let shown_dir = owner

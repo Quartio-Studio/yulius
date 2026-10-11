@@ -28,7 +28,7 @@ not only onto the Claude terminal. The task's agent then reads them by path.
 | --- | --- | --- |
 | CMP-001 | Files dropped on the new-task prompt box, or an image pasted into it, are uploaded and their paths (quoted when needed, space-separated) are written into the prompt at the cursor. Text pastes are unchanged. | e2e `filedrop.e2e.ts` composer test |
 | CMP-002 | `POST /api/sandboxes/{sid}/attachments?name` stores a file in `sandboxes/<sid>/attachments/drafts/<user>/` with a safe, never-clashing name, outside every worktree; it needs write access to the sandbox (403 otherwise, 404 for an unknown sandbox) and is bounded by the upload limit. | `composer_drafts_are_kept_per_user_outside_git_and_need_write_access` in uploads.rs |
-| CMP-003 | Files in a user's drafts folder older than 7 days are removed when that user next uploads a draft. | code review (`prune_old_drafts`) |
+| CMP-003 | Files in a user's drafts folder older than 7 days are removed when that user next uploads a draft. | the same test (a backdated draft is removed by the next upload) |
 | CMP-004 | While the prompt is read-only (a task is being created), drops are refused with a short message. | code review |
 
 ## Acceptance criteria
@@ -57,4 +57,4 @@ Rust integration test for the endpoint; browser e2e for drop and paste on the pr
 - `cargo test -p yulius --test uploads composer`: 1 passed (CMP-002).
 - `npx e2e run tests/filedrop.e2e.ts`: the composer drop-and-paste test passes (CMP-001). The existing "a text file dropped on the editor opens in a tab" test failed in 2 of 3 runs and passed once; the editor drop path is untouched, and it was not checked on `dev`.
 - Not run: the full gate. `uploads` also has `the_agent_reads_a_dropped_file_by_path_and_git_stays_clean`, which fails here because fake-agent is not built.
-- CMP-003 and CMP-004 have no automated test.
+- CMP-004 has no automated test. A failed upload no longer inserts an empty path (review finding, fixed).

@@ -539,7 +539,7 @@ function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwri
     const stored = await uploadAll(jobs, status, (index, job) => `Uploading ${jobs.length > 1 ? `${index + 1} of ${jobs.length}: ` : ''}${job.path}`);
     if (!canWrite()) {
       if (stored.length) status.error(unwritable);
-    } else {
+    } else if (stored.length) {
       insert(stored.map(({ result }) => result.path));
     }
     status.end(stored.length === 1 && jobs.length === 1 ? `Added ${stored[0].result.name}` : `Added ${counted(stored.length, jobs.length)}`);

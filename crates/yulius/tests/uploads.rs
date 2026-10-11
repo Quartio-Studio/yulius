@@ -683,6 +683,27 @@ async fn composer_drafts_are_kept_per_user_outside_git_and_need_write_access() -
         "{:?}",
         second.body
     );
+
+    // A draft older than a week is removed by the owner's next upload; a fresh one stays.
+    let old = std::fs::File::options()
+        .write(true)
+        .open(folder.join("Screen-Shot.png"))?;
+    old.set_modified(std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 3600))?;
+    drop(old);
+    let third = upload(&h, Method::POST, url, b"\x89PNG three", &alice).await?;
+    assert_eq!(third.status, StatusCode::CREATED, "{:?}", third.body);
+    assert_eq!(
+        third.body["name"], "Screen-Shot.png",
+        "the old draft's name is free again"
+    );
+    assert_eq!(
+        std::fs::read(folder.join("Screen-Shot.png"))?,
+        b"\x89PNG three"
+    );
+    assert_eq!(
+        std::fs::read(folder.join("Screen-Shot-2.png"))?,
+        b"\x89PNG two"
+    );
     Ok(())
 }
 
