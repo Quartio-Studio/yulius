@@ -132,7 +132,7 @@ returns the three presets `standard`, `product` and `studio` as `[Profile]`.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt","workflow_id?","model?","effort?","title?","after_task_id?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012) |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012) |
 | POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool}`: whether a new task mixes separate workstreams (TSK-011). `checked` is false — and the verdict `one` — for prompts under 40 words, without a Jev key and when Jev fails or takes over 2.5 s |
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
@@ -161,7 +161,8 @@ TaskSummary = {
   "resumes_at": "2026-10-09T08:20:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
   "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
-  "background_shells": "0|1|…|null"
+  "background_shells": "0|1|…|null",
+  "auto": {"mode":"jev|default|null","workflow":"jev|default|null","workflow_name":"Feature|null"}|null
 }
 ChainLink = {"task_id|null","number","title|null","status|null","blocked":"reason|null"}
 ```
@@ -206,12 +207,20 @@ Status wire names (from `yulius-domain::task`): `queued`, `starting`, `running`,
 ### Task intake
 
 Optional (SPEC-002 ADR-16): without a Jev key (`YULIUS_JEV_API_KEY_FILE`, docs/operations.md)
-nothing is checked and nothing is held.
+nothing is checked and nothing is held, and Auto uses its defaults.
 
-- **New tasks (TSK-011).** The composer calls `/intake/check` after Enter. On `several` it shows
-  the split card and calls `/intake/proposal`, then creates the tasks with
-  `POST /api/sandboxes/{sid}/tasks`: in parallel, or as a chain (each with `after_task_id` of the
-  one before).
+- **New tasks (TSK-011).** The composer calls `/intake/check` when a task of 40 or more words is
+  started (the ↑ button or ⌘/Ctrl+Enter; Enter adds a line). On `several` it shows the split card
+  and calls `/intake/proposal`, then creates the tasks with `POST /api/sandboxes/{sid}/tasks`: in
+  parallel, or as a chain (each with `after_task_id` of the one before).
+- **Auto mode and workflow (TSK-015).** With `"mode":"auto"` and/or `"workflow_id":"auto"` (the
+  composer's defaults) the server asks Jev before creating the task, both questions at once within
+  2.5 s: `goal` or `prompt` (followed at 75 %), and one of the sandbox's workflows from the store,
+  or none (followed at 60 %). Otherwise the defaults apply: Goal, and the workflow named "Feature"
+  (the sandbox's own first; none without one, and none for a prompt-mode task). A prompt-mode task
+  never gets a workflow that requires a spec from Auto. The summary's `auto` says who chose what
+  (`jev`, `default`, or null for a value the request picked) and the workflow's name; it is null
+  when nothing was on Auto. Without a Jev key Auto still works, with the defaults.
 - **Chains (TSK-012).** A `chained` task starts by itself (`chained → queued`) when its predecessor
   is Done: a finished turn and a pull request merged, or open with checks green or none required.
 - **Typed prompts (TSK-013).** The `UserPromptSubmit` hook classifies a person's prompt. `context`

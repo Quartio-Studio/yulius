@@ -45,7 +45,7 @@ pub trait ChoiceEvaluator: Send + Sync {
     async fn evaluate(
         &self,
         state: &str,
-        question: &ChoiceQuestion,
+        question: &ChoiceQuestion<'_>,
         deadline: Duration,
     ) -> Result<ChoiceAnswer, JevFailure>;
 }

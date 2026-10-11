@@ -272,6 +272,8 @@ function summary(task) {
     next: (task.nextLinks || []).map((link) => ({ ...link })),
     held_prompt: task.heldPrompt ? { ...task.heldPrompt } : null,
     ...(task.mode ? { mode: task.mode } : {}),
+    // How Auto chose the mode and workflow (TSK-015).
+    auto: task.auto ? { ...task.auto } : null,
     // Background shells an idle agent left running (TSK-014).
     background_shells: task.status === 'running' ? task.background_shells ?? null : null,
   };
@@ -617,15 +619,20 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
   const archived = query.get('archived') === 'true';
   return db.tasks.filter((t) => t.sandbox_id === p[0] && t.archived === archived).map(summary);
 });
-route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing') fail(409, 'conflict', 'The project is being prepared; new tasks start after the preparation task lands (or an admin skips it).');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
   if (body.harness && body.harness !== 'claude') fail(422, 'invalid', 'harness must be claude (Yulius runs Claude Code only)');
+  if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
+  const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
+  if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
+  // Auto (TSK-015): the mock's stand-in for Jev answers after a moment, like the server.
+  const choice = body.mode === 'auto' || body.workflow_id === 'auto' ? await mockAutoChoice(body, visible) : null;
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
   const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
-  const wf = db.workflows.find((w) => w.id === body.workflow_id);
+  const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const before = body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
   if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
@@ -636,7 +643,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
     unread_messages: 0, archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
     model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
-    delivery: null,
+    delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
   };
   db.tasks.push(task);
   recount(db);
@@ -649,8 +656,40 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return json(201, summary(task));
 });
+/**
+ * The mock's Auto choice (TSK-015): a question ("?", or starting with how/why/what…) is a prompt
+ * with the Research workflow (never a spec-first one); "fix", "bug" or "crash" gets Fix; anything
+ * else is a goal with Feature. "maybe" makes the stand-in unsure, so the defaults apply (Goal and
+ * Feature; no workflow for a prompt).
+ */
+async function mockAutoChoice(body, workflows) {
+  await delay(700);
+  const text = String(body.prompt || '').trim();
+  const unsure = /\bmaybe\b/i.test(text);
+  const question = /\?|^(how|why|what|where|when|which|who|is|are|does|do|can|could|should)\b/i.test(text);
+  const named = (name) => workflows.find((w) => w.name.toLowerCase() === name) || null;
+  const autoMode = body.mode === 'auto';
+  const mode = autoMode ? (!unsure && question ? 'prompt' : 'goal') : body.mode || 'goal';
+  let workflow = body.workflow_id && body.workflow_id !== 'auto' ? workflows.find((w) => w.id === body.workflow_id) : null;
+  if (body.workflow_id === 'auto') {
+    const noSpec = (w) => (w && !(w.gates && w.gates.require_spec) ? w : null);
+    if (unsure) workflow = mode === 'prompt' ? null : named('feature');
+    else if (mode === 'prompt') workflow = noSpec(named('research'));
+    else workflow = /\b(fix|bug|crash)/i.test(text) ? named('fix') || named('feature') : named('feature');
+  }
+  return {
+    mode,
+    workflow,
+    auto: {
+      mode: autoMode ? (unsure ? 'default' : 'jev') : null,
+      workflow: body.workflow_id === 'auto' ? (unsure ? 'default' : 'jev') : null,
+      workflow_name: workflow ? workflow.name : null,
+    },
+  };
+}
+
 // Task intake (TSK-011): requests of 40+ words mixing UI and backend work look like several
-// tasks; the proposal groups lines by area (UX first, backend second).
+// tasks; the proposal groups lines by area (UX first, backend second), after a moment (Claude).
 const MOCK_BACKEND = /backend|api|server|database|pool|queue/i;
 route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -661,8 +700,9 @@ route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
   const several = lines.some((l) => MOCK_BACKEND.test(l)) && lines.some((l) => !MOCK_BACKEND.test(l));
   return { verdict: several ? 'several' : 'one', checked: true };
 });
-route('POST', `/api/sandboxes/${ID}/intake/proposal`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  await delay(900);
   const lines = String(body.prompt || '').split('\n').filter((l) => /^\s*(\d+[.)]|[-*•])\s/.test(l)).map((l) => l.trim());
   const backend = lines.filter((l) => MOCK_BACKEND.test(l));
   const ux = lines.filter((l) => !MOCK_BACKEND.test(l));
@@ -1582,7 +1622,8 @@ async function handleFetch(db, url, init = {}) {
     const match = u.pathname.match(re);
     if (!match) continue;
     try {
-      const result = handler({ db, p: match.slice(1).map(decodeURIComponent), body, query: u.searchParams });
+      // A handler may be async (one that takes a while, like Jev or Claude on the server).
+      const result = await handler({ db, p: match.slice(1).map(decodeURIComponent), body, query: u.searchParams });
       return result instanceof Response ? result : json(200, result);
     } catch (error) {
       if (error instanceof MockError) return json(error.status, { error: { code: error.code, message: error.message } });
@@ -1733,7 +1774,8 @@ class TermSession {
         '',
       );
     }
-    this.lines.push(`${c(245, '>')} ${this.task.prompt || this.task.title}`, '');
+    // A multi-line prompt shows as lines (a bare \n would only move the cursor down).
+    this.lines.push(...`${c(245, '>')} ${this.task.prompt || this.task.title}`.split('\n'), '');
     if (this.task.number === 10 && this.task.sandbox_id === 'sb_studio') {
       this.lines.push(
         `${c(255, '⏺')} The deploy needs an AWS console session. I can't sign in for you.`,
