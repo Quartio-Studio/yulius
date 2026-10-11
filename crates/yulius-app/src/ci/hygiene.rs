@@ -23,6 +23,7 @@ use yulius_domain::ci::{
 };
 use yulius_domain::ids::TaskId;
 use yulius_domain::permission::Action;
+use yulius_domain::task::{StopReason, TaskStatus};
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
@@ -314,6 +315,10 @@ impl App {
                                 Err(_) => false,
                             },
                             live: task.status.is_live(),
+                            ended: matches!(
+                                task.status,
+                                TaskStatus::Closed | TaskStatus::Stopped(StopReason::Cancelled)
+                            ),
                         },
                     }
                 }

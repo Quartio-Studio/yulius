@@ -774,6 +774,27 @@ impl Manager {
         }
     }
 
+    /// The last measured usage and the quota (bytes); `None` before the first measurement or
+    /// without a quota.
+    pub async fn disk(&self, sandbox: &str) -> Option<(u64, u64)> {
+        let limit = self.config.disk_max?;
+        let entry = self.entry(sandbox);
+        let state = entry.lock().await;
+        state.usage.as_ref().map(|(usage, _)| (usage.bytes, limit))
+    }
+
+    /// Measures a sandbox now and keeps the reading (after space was freed).
+    pub async fn measure_disk(&self, request: &SandboxRequest) -> Option<(u64, u64)> {
+        let limit = self.config.disk_max?;
+        let (dir, upper) = (request.dir.clone(), self.sysroot(&request.id).join("upper"));
+        let usage = tokio::task::spawn_blocking(move || crate::usage::measure(&[&dir, &upper]))
+            .await
+            .ok()?;
+        let entry = self.entry(&request.id);
+        entry.lock().await.usage = Some((usage, Instant::now()));
+        Some((usage.bytes, limit))
+    }
+
     /// Seeds a sandbox's measured usage (tests).
     pub async fn set_usage(&self, sandbox: &str, bytes: u64) {
         self.set_usage_aged(sandbox, bytes, Duration::ZERO).await;

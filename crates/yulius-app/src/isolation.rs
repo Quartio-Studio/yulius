@@ -6,10 +6,9 @@ use std::sync::Arc;
 use yulius_domain::ids::SandboxId;
 
 use crate::context::App;
-use crate::error::AppResult;
-use crate::identity::sandbox_hostname;
+use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
-use crate::ports::isolation::{SandboxIsolation, SandboxJoin, SandboxRef};
+use crate::ports::isolation::{SandboxIsolation, SandboxJoin};
 
 /// `PATH` of runs in an isolated sandbox (root's, with `sbin` for package tools).
 pub const SANDBOX_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -52,16 +51,28 @@ impl App {
         let Some(isolation) = self.isolation.get() else {
             return Ok(None);
         };
-        let first = sandbox.port_base;
-        let last = first.saturating_add(sandbox.port_count.saturating_sub(1));
-        let request = SandboxRef {
-            id: sandbox.id.clone(),
-            hostname: sandbox_hostname(&sandbox.slug),
-            dir: self.sandbox_dir(&sandbox.id),
-            port_first: first,
-            port_last: last,
+        let request = self.sandbox_ref(sandbox);
+        // Over the quota: free what can be freed (caches of tasks that do not work) and ask
+        // once more before refusing (NFR-009).
+        let prepared = match isolation.prepare(&request).await {
+            Err(AppError::Conflict(reason)) => {
+                let over = isolation
+                    .disk(&request)
+                    .await
+                    .is_some_and(|usage| usage.used > usage.limit);
+                let freed = over
+                    && self
+                        .disk_upkeep(sandbox, true)
+                        .await
+                        .is_ok_and(|report| report.freed > 0 || report.worktrees > 0);
+                if !freed {
+                    return Err(AppError::Conflict(reason));
+                }
+                isolation.prepare(&request).await?
+            }
+            other => other?,
         };
-        Ok(isolation.prepare(&request).await?.map(|join| {
+        Ok(prepared.map(|join| {
             (
                 join,
                 IsolationLease {

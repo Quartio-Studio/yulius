@@ -1554,7 +1554,7 @@ impl App {
     ///
     /// # Errors
     /// The reason the launch would be refused.
-    pub(crate) async fn preflight_start(
+    pub async fn preflight_start(
         &self,
         task: &TaskRecord,
         requested: Option<&AccountId>,
