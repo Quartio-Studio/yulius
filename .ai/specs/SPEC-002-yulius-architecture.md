@@ -1670,6 +1670,9 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `ci_status`, `ci_rerun` | The CI in force and recent runs (this task's pull request first), one run's job outputs (tails of 16 KiB), run a commit again (DLV-006) |
 | `ci_setup` | Onboarding off GitHub Actions: the worktree's workflows summarized, its `[[ci.jobs]]`, the steps (DLV-006) |
 | `repo_hygiene`, `repo_cleanup` | Stale branches and worktrees; removal of safe items, `force` for unmerged branches without a pull request (DLV-007) |
+| `delivery_status` | PR/checks/profile status and next actions (GIT-001) |
+| `issue_create` | A GitHub issue meeting the Definition of Ready (one `type:`, one `priority:`, at least one `area:` label; an `## Acceptance criteria` checklist), as the task creator or the App; labels created when missing (DLV-008) |
+| `delivery_merge`, `delivery_deploy`, `delivery_promote` | Agents deliver their own work (DLV-008, ADR-19): the person paths (`merge_task_pr`, `start_environment_run`, `promote_sandbox`) run with the task creator's authority, plus an independent review of the exact head and passed checks for a merge (`reviewed_head`), command-verified environments only for a deploy; each action is also audited as `task:<n>` |
 
 Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
 Every tool result (and error) is redacted of the sandbox's agent secrets before it is returned
@@ -2184,6 +2187,9 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
   task (`stopped(killed)` new, `SessionEnd`), interrupts end a turn, holds the session no longer
   keeps end. §7.2 hooks and status line, the interrupt line; §7.5 `SessionEnd`, `StatusLine`, holds
   given up; §14.
+- 2026-10-10 (F 2026-10-10, #139): §7.4 agent delivery tools `delivery_merge` (passed checks and
+  an independent review of the exact head), `delivery_deploy` (command-verified environments) and
+  `delivery_promote`, on the person paths with the task creator's authority, audited as the task.
 - 2026-10-10 (F 2026-10-10, final stage; #136): §7.2 MCP servers in every run's own configuration
   whatever the subscription, `${secret:NAME}` references and the vault's hook; §7.10 the workflow
   catalog format and read-only defaults with the retirement of the seeded rows; §7.4

@@ -22,6 +22,7 @@ pub mod client;
 mod config;
 mod error;
 pub mod http;
+mod issues;
 mod jwt;
 mod oauth;
 mod pulls;
@@ -43,12 +44,13 @@ pub use config::{
     RetryPolicy, SystemClock,
 };
 pub use error::GitHubError;
+pub use issues::{MAX_ISSUE_LABELS, MAX_LABEL_BYTES};
 pub use reqwest::Url;
 pub use secret::Secret;
 pub use statuses::{CommitStatus, MAX_STATUS_CONTEXT_BYTES, MAX_STATUS_DESCRIPTION_CHARS};
 pub use types::{
     CheckSource, ChecksReport, ChecksSummary, CompareStatus, Comparison, CreateRepo, GitHubUser,
-    InstallationToken, MergeMethod, MergeOutcome, NewPull, PullFilter, PullRequest, PullState,
-    Repo, RepoAccess, RulesetSpec, UserToken,
+    InstallationToken, IssueRef, MergeMethod, MergeOutcome, NewIssue, NewPull, PullFilter,
+    PullRequest, PullState, Repo, RepoAccess, RulesetSpec, UserToken,
 };
 pub use yulius_domain::permission::{AccessLevel, GitHubPermissions};

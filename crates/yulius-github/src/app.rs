@@ -219,6 +219,7 @@ impl GitHubClient {
             "default_permissions": {
                 "contents": "write",
                 "pull_requests": "write",
+                "issues": "write",
                 "checks": "read",
                 "statuses": "write",
                 "workflows": "write",

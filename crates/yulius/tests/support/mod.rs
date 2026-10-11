@@ -19,8 +19,9 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::Clock;
 use yulius_app::ports::github::{
-    ChecksReport, ChecksState, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort,
-    NewCommitStatus, NewPull, RepoAccess, RulesetRequest, STATUS_PERMISSION_MISSING,
+    ChecksReport, ChecksState, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
+    GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess, RulesetRequest,
+    STATUS_PERMISSION_MISSING,
 };
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::time::Timestamp;
@@ -60,6 +61,8 @@ pub struct FakeGitHub {
     pub statuses: Mutex<Vec<(String, NewCommitStatus)>>,
     /// When set, publishing a commit status fails as without the App permission.
     pub statuses_forbidden: std::sync::atomic::AtomicBool,
+    /// Issues opened (DLV-008).
+    pub issues: Mutex<Vec<(String, NewIssue)>>,
 }
 
 impl FakeGitHub {
@@ -197,6 +200,23 @@ impl GitHubPort for FakeGitHub {
             client_secret: "secret".into(),
             private_key_pem: "pem".into(),
             webhook_secret: None,
+        })
+    }
+    async fn create_issue(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        issue: &NewIssue,
+    ) -> AppResult<GhIssue> {
+        let mut issues = self.issues.lock().map_err(AppError::internal)?;
+        issues.push((login_of(token), issue.clone()));
+        let number = u64::try_from(issues.len()).unwrap_or(0) + 100;
+        drop(issues);
+        self.record(format!("create_issue #{number} {}", issue.title));
+        Ok(GhIssue {
+            number,
+            html_url: format!("https://github.test/{owner}/{repo}/issues/{number}"),
         })
     }
     async fn create_pull(

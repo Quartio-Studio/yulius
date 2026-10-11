@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::github::{
-    ChecksReport, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort, NewPull,
-    RepoAccess, RulesetRequest,
+    ChecksReport, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort,
+    NewIssue, NewPull, RepoAccess, RulesetRequest,
 };
 
 /// GitHub port that reports the integration as unavailable.
@@ -73,6 +73,9 @@ impl GitHubPort for UnavailableGitHub {
         unavailable()
     }
     async fn create_pull(&self, _: &Secret, _: &str, _: &str, _: &NewPull) -> AppResult<GhPull> {
+        unavailable()
+    }
+    async fn create_issue(&self, _: &Secret, _: &str, _: &str, _: &NewIssue) -> AppResult<GhIssue> {
         unavailable()
     }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, _: u64) -> AppResult<GhPull> {
