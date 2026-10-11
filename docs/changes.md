@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-11
 
+- Agents carry delivery through on their own: Yulius tells a task when its pull request opened and
+  when its checks passed or failed, the Stop gate asks for a missing spec at once (and follows a
+  renamed one), and the briefing says never to ask a person — an issue covers what only a person
+  can do.
+- Yulius CI `quality` job failed at once on a clean machine (no rustup): `scripts/bootstrap.py`
+  installs it when the run is unattended or given `--install-rustup` (no default toolchain, no
+  profile edits).
 - Everything a task does on GitHub shows the person who created it: commits with the no-reply
   address GitHub links to their account, and the agent's Git and `gh`, Yulius's pushes and pull
   requests, the agent's merges, promotions and issues with their own token; the App only when

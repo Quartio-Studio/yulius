@@ -748,7 +748,9 @@ SIGTERM instead of an interrupt that could start or cancel anything.
 **Policy** (`yulius-domain::rotation`, pure; SPEC-001 §7.4). A candidate is a signed-in subscription
 (status `ok` or `limited`) below 98 % in every window binding the task — 5-hour, weekly, and the
 weekly cap of an Opus or Sonnet task — with no reported limit in effect. Ranking: tier (≥ 5 points
-of room in every known window, then less, then no known window — unknown is never zero), then
+of room in every known window, then no known window — unknown is never zero, and is never
+exhaustion either: a subscription nobody uses is never read, so it ranks before one with less
+than 5 points left (F 2026-10-11) — then less than 5 points), then
 `score = (98 − weekly used) ÷ hours to the weekly reset ÷ (in_use + 1)` (hours clamped to
 0.25–168; unknown reset = 168), then the capacity that expires soonest (weekly reset, then 5-hour
 reset), fewer tasks, id. Triggers: *Start* (no process: placement), *Proactive* (a boundary or a
@@ -953,7 +955,18 @@ feeds them without new bookkeeping. Effort lives in `steps.effort`; the spec syn
 is required as soon as the branch's changed paths (`review_changes` against the integration
 branch, both sides of renames) include anything that is not documentation; a cut or unreadable
 list counts as code. The Stop gate, `spec_check` (`required`) and the automatic pull request (no
-plan needed when no spec is) apply it.
+plan needed when no spec is) apply it. A required spec that does not exist yet blocks the turn at
+the Stop gate, not only the pull request later, with a reason that has the agent write it without
+asking anyone; a spec moved after it was registered is found again by its `yulius-task`
+frontmatter and registered under its new path (F 2026-10-11: features finished without a spec and
+nothing opened; a renamed spec blocked every Stop).
+
+**Delivery loop** (F 2026-10-11). Yulius opens a ready task's pull request after its turn, so the
+agent would otherwise rest at the open pull request. The task gets an inbox request (`tell_task`,
+which wakes an idle agent) when its pull request opens, and once per head and result when the
+background reconciliation sees its checks pass (review the exact head, `delivery_merge`) or fail
+(fix test-first, push). The briefing says agents never ask a person and open an issue for what
+only a person can do.
 
 **Pipeline.** Briefing, `delivery-pipeline` skill and workflows describe one path: ready issue →
 spec → test-first slices → gates → independent review (fresh context, read-only, verdict for the
@@ -2424,6 +2437,11 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-11 (F 2026-10-11): spec policy and the delivery loop — a missing required spec blocks
+  the Stop gate, a moved spec is re-registered by its frontmatter, and a task is told when its pull
+  request opens and when its checks pass or fail; the briefing makes agents autonomous.
+- 2026-10-11 (F 2026-10-11): ADR-17 ranking — unknown usage before less than 5 points of room;
+  usage rounds every 2 minutes with a shared back-off, and on opening the Subscriptions page.
 - 2026-10-11 (F 2026-10-11, #188): ADR-08 and §8 — a task acts on GitHub with its creator's
   user-to-server token (the agent's Git and `gh`, Yulius's pushes and pull requests for it, the
   agent's merges, promotions and issues); the App's token is the fallback and stays for CI

@@ -24,7 +24,7 @@ production_branch = "main"
 # token, which CI jobs do not have; scripts/check_git_policy.py stays a manual/merge-gate check).
 [[ci.jobs]]
 name = "quality"
-command = "python3 scripts/bootstrap.py && scripts/dev ci"
+command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
 
 [[ci.jobs]]
 name = "e2e"
