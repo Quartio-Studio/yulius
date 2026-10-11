@@ -18,6 +18,7 @@ use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord};
 use yulius_app::ports::store::{SandboxStore, TaskStore};
 use yulius_app::ports::store_ext::{AutomationStore, WorkflowStore};
+use yulius_app::supervisor::RunStart;
 use yulius_app::workflows::{WorkflowRecord, catalog};
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::Harness;
@@ -868,6 +869,16 @@ async fn startup_catches_up_at_most_one_recent_run() -> TestResult {
         w.h.store
             .transition_task(&task.id, None, TaskStatus::Closed, None, Timestamp(BASE))
             .await?;
+        // The start spawned at the task's creation may run only now: it must not bring the
+        // closed task back (it did, and the 13:00 run was skipped as "previous active").
+        w.h.app
+            .start_run(&task.id, RunStart::Fresh { prompt: None }, None)
+            .await?;
+        assert_eq!(
+            w.h.store.task(&task.id).await?.ok_or("task")?.status,
+            TaskStatus::Closed,
+            "a late fresh start leaves a closed task closed"
+        );
     }
     set_clock(&w.h, BASE + 12 * HOUR + 10_000);
     let stale = w.h.app.automation_tick().await?;

@@ -562,6 +562,17 @@ impl App {
                 .task(task_id)
                 .await?
                 .ok_or(AppError::NotFound)?;
+            // A fresh start is for a task that waits to start (queued, paused for capacity). One
+            // that ended meanwhile — closed before the start spawned at its creation ran — stays
+            // ended: only Continue (a resume) brings a resting task back.
+            if task.status.is_resting() && matches!(start, RunStart::Fresh { .. }) {
+                tracing::info!(
+                    task = %task.id,
+                    status = task.status.as_str(),
+                    "fresh start of an ended task skipped"
+                );
+                return Ok(());
+            }
             let live =
                 u32::try_from(self.deps.store.live_attempts().await?.len()).unwrap_or(u32::MAX);
             // While an update pauses the tasks, starts queue like at the session limit and run
