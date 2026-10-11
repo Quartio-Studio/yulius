@@ -60,10 +60,12 @@ const pages = [
   ['tasks', '/s/studio/tasks', 'Tasks'],
   ['sessions', '/s/studio/sessions', 'Sessions'],
   ['git', '/s/studio/git', 'Git'],
+  ['CI', '/s/studio/ci', 'CI'],
   ['workflows', '/s/studio/workflows', 'Workflows'],
   ['skills', '/s/studio/skills', 'Skills'],
   ['automations', '/s/studio/automations', 'Automations'],
   ['MCP', '/s/studio/mcp', 'MCP'],
+  ['secrets', '/s/studio/secrets', 'Secrets'],
   ['dashboard', '/s/studio/dashboard', 'Dashboard'],
   ['settings', '/settings', 'Settings'],
 ] as const;

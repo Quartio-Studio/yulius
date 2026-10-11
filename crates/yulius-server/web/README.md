@@ -44,7 +44,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/splitter.js` | Column splitters (UI-044) for the sidebar, the editor's explorer and the tool panel: a quiet grip that is a focusable separator (←/→, Shift for 64 px steps, Home/End; double-click resets), and the widths kept per user in `localStorage` (`yulius.layout.<user id>`: `sidebar` and `explorer` in px, `panel-<tool>` as a share of the work area). Phones have none. |
 | `assets/pages/home.js` | Home (UI-045), the default view at `/`: every sandbox as a card (repository, running / needs you / queued, last activity from its tasks, Open and New task), Import and Create; with no sandbox, the first steps and the GitHub notes. |
 | `assets/notifications.js` | Notification center (UI-020, UI-028): the bell, its panel with the All / Unread filter, and entries derived from the event stream; kept per user in `localStorage`, bounded to 100; optional OS notifications while the tab is hidden. |
-| `assets/pages/gittask.js` | Git → a task's review (UI-031): Changes (file tree, unified or split diff, wrap), Commits, Branch and Go to task; reads the proposed `/api/tasks/{tid}/changes` and `/commits`. |
+| `assets/pages/gittask.js` | Git → a task's review (UI-031): Changes (file tree, unified or split diff, wrap), Commits, Branch and Go to task; reads `/api/tasks/{tid}/changes` and `/commits`. |
 | `assets/pages/sessions.js` | Sessions (UI-049): the sandbox's task and imported Claude Code sessions with kind and person filters and full-text search (matches marked), and one session's read-only transcript — prompts, Claude's messages, folded thinking and tool calls with their results inside, edits as diffs, a search match opened at its line; Continue in a new task and Delete for imported sessions; "Add your sessions" explains `yulius onboard`. |
 | `assets/pages/taskinfo.js` | Tasks → a task's overview (UI-032): state, times, plan, changes, usage, details and sessions, with Review changes and Go to task. |
 | `assets/mdeditor.js` | A Notion-like block editor for Markdown (UI-033): formatted blocks, frontmatter as properties, "/" menu, Markdown shortcuts, selection toolbar, source view; untrusted text, no HTML parsing. |
@@ -63,7 +63,10 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/actions.js` | Task actions and dialogs: stop, continue, feedback, delivery details and deploy output (read-only: agents deliver, GIT-002), sandbox add/remove. No account choice: tasks are subscription-agnostic. |
 | `assets/status.js` | Status → glyph/tone/label mapping and permitted actions per access level. |
 | `assets/dom.js`, `assets/format.js` | DOM builder (text only, never `innerHTML` with data), icons, toasts, modals, menus; formatting helpers. |
-| `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), git, workflows, skills, automations, MCP, dashboard, admin (users, accounts, GitHub), settings. |
+| `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), task overview (`taskinfo.js`), git and a task's review (`gittask.js`), CI (`ci.js`: runs, job logs, repository hygiene), workflows, skills, automations, MCP and their editors (`workflowedit.js`, `skilledit.js`, `skillnew.js`, `automationedit.js`, `mcpedit.js`), dashboard, admin (users, accounts, GitHub, instance), settings, design. |
+| `assets/spotlight.js` | The search dialog (Tasks page `/`): results with ↑/↓, Enter opens, ⌘/Ctrl+Enter goes to the task. |
+| `assets/intake.js` | Task intake in the composer: the split proposal card and held prompts (SPEC-002 ADR-16). |
+| `assets/termkeys.js`, `assets/termlinks.js`, `assets/mousefilter.js` | Terminal key table per platform (copy, paste, interrupt), links in terminal output (web links and file paths to the editor), mouse-report filtering. |
 | `assets/updates.js` | Instance updates (OPS-006..009, ADR-18): the calm banner (an update running for everyone; "Update available" and a failed update for the superadmin; "Reload" once the server runs newer code) and the superadmin's notification, from `GET /api/update` and `update.updated`; polls while an update runs. |
 | `assets/jevkey.js` | The Jev key (ADM-001/002): the setup wizard's optional last step and the instance page's card (set, replace, test, remove, save a configured key here); the key is never shown back. |
 | `assets/pages/instance.js` | Settings → Instance (superadmin): the build, the update on offer with its commits, Update now with its confirmation, the progress (build → pause tasks → restart → resume) and the outcome; the Jev key card. |
@@ -209,7 +212,9 @@ description, controls), `meter`, `openMenu` (icons, descriptions, check marks), 
 | `/s/<slug>` | New-task composer. |
 | `/s/<slug>/t/<number>` | Task: step strip + native terminal. |
 | `/s/<slug>/browser?tab=<id>` | Opens the browser panel on that tab (Yulius links, BRW-004). |
-| `/s/<slug>/tasks`, `/git`, `/workflows`, `/skills`, `/automations`, `/mcp`, `/dashboard` | Sandbox pages. `tasks?state=needs|working|stopped|closed&author=a,b&origin=automation&q=text` is a filtered task list (shareable). `skills?source=instance` and `mcp?scope=instance` are the admin "Instance skills/MCP" entries. |
+| `/s/<slug>/tasks`, `/git`, `/ci`, `/workflows`, `/skills`, `/automations`, `/mcp`, `/dashboard` | Sandbox pages. `tasks?state=needs|working|done|stopped|closed&author=a,b&origin=automation&q=text` is a filtered task list (shareable). `ci?run=<id>` opens a CI run (the link of its `yulius/ci` commit status). `skills?source=instance` and `mcp?scope=instance` are the admin "Instance skills/MCP" entries. |
+| `/s/<slug>/tasks/<number>`, `/s/<slug>/git/t/<number>` | A task's overview; a task's changes and commits. |
+| `/s/<slug>/skills/<name>`, `/workflows/<id>`, `/mcp/<id>`, `/automations/<id>` | A skill, workflow, MCP server or automation in its editor (`new` for a new one). |
 | `/archived` | Archived tasks across sandboxes, with restore. |
 | `/settings` | Settings: your account, this browser's preferences, administration tiles (user menu → Settings). |
 | `/design` | Design system: brand, colour roles with live contrast, type, spacing, radii, controls, elevation, motion, icons, task states and components, in the current theme (Settings → Design system). |
@@ -229,7 +234,7 @@ routing to `#/…` paths so a plain static server can reload deep links. The pro
 (request building, error parsing, binary frames, reconnect) is the same code used against
 the real server. Options (combine with `&`): `setup=1` (setup required; token
 `YUL-SETUP-1234`), `signedout=1` (password `correct horse battery`), `role=member|admin`,
-`contained=0` (shows "Not contained"), `github=0` (GitHub App not configured), `github_linked=0`
+`role=superadmin` (the default), `contained=0` (shows "Not contained"), `github=0` (GitHub App not configured), `github_linked=0`
 (the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
 the home page asks them to sign in with GitHub), `sandboxes=0` (a fresh instance without sandboxes: the
 home screen's first steps), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
@@ -242,7 +247,9 @@ documentation; the [end-to-end tests](../../../e2e/README.md) run against it). I
 preset, `product` with a custom profile whose `dev-vm` environment has a command, read-only
 `sandbox-3` whose Git page shows a degraded-read note), tasks in every status, steps,
 messages, accounts with usage (some unknown), Git data and delivery stages, environment runs,
-workflows, skills, automations, MCP servers and analytics. Importing a repository creates a
+CI runs with job logs and repository hygiene (`studio` has jobs and runs, `product` has no CI and
+leftover GitHub Actions workflows), workflows, skills, automations, MCP servers, analytics, the
+superadmin recovery code (mock code `123456`) and the GitHub App connection. Importing a repository creates a
 sandbox whose onboarding is `pending` with a resting preparation task (Start preparation /
 Skip). Uploads report progress in steps, a dropped file lands in the editor's in-memory
 repository and attachments get server-like paths and names. Task terminals print TUI-like ANSI output (with file references in every form the terminal links
@@ -264,10 +271,8 @@ The source of truth for paths and methods is the route table in
   every imported module must be embedded, and UI routes must fall back to `index.html`.
   Keep API paths **literal** at the call site (``ctx.api.post(`/api/tasks/${enc(id)}/stop`)``):
   an interpolation may only fill a whole path segment, never choose the endpoint.
-- **Known gaps.** `GET /api/admin/github` and `POST /api/admin/github/manifest` are documented
-  but not routed yet; the GitHub page then shows the connection facts from `/api/me`
-  (`instance.github_configured`, `owner_login`). The test keeps them in an allowlist that
-  fails once the routes exist.
+- **Known gaps.** None: every documented route the UI calls is routed (`KNOWN_UNROUTED` in the
+  test is empty and fails if an entry goes stale).
 - **Events.** The server sends `resync` (not `sandbox.updated`) after sandbox changes and does
   not push sandbox counters; the store reloads `/api/sandboxes` on `resync` and once
   (debounced) after task events, and leaves a sandbox that disappeared.

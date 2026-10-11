@@ -31,6 +31,30 @@ fn text(value: &Value) -> &str {
     value.as_str().unwrap_or_default()
 }
 
+/// An agent secret's value (VLT): plain text no pattern catches, only the vault's matcher.
+const AGENT_VALUE: &str = "plainvaultvalue42xyz";
+
+/// Stores `AGENT_VALUE` as the sandbox's agent secret `DEPLOY_KEY`.
+async fn agent_secret(app: &yulius_app::context::App, user: &UserRecord, sandbox: &SandboxId) -> TestResult {
+    let ctx = yulius_app::auth::AuthContext {
+        user: user.clone(),
+        csrf_token: None,
+        session_hash: None,
+    };
+    app.create_agent_secret(
+        &ctx,
+        sandbox.as_str(),
+        &yulius_contracts::api::secrets::AgentSecretInput {
+            name: "DEPLOY_KEY".into(),
+            hosts: vec!["deploy.example.test".into()],
+            value: AGENT_VALUE.into(),
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 /// A synthetic GitHub token built at run time (no literal credential in the source).
 fn fake_token() -> String {
     format!("ghp_{}", "Zq7Rx".repeat(8))
@@ -52,7 +76,7 @@ fn task_transcript() -> String {
         line(&json!({"type": "user", "message": {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "r1", "content": "     1→WEBHOOK_SIGNING=whsec_plain\n"}
         ]}})),
-        line(&json!({"type": "user", "message": {"role": "user", "content": format!("use this token {}", fake_token())}})),
+        line(&json!({"type": "user", "message": {"role": "user", "content": format!("use this token {} and the deploy code {AGENT_VALUE}", fake_token())}})),
         line(&json!({"type": "assistant", "message": {"role": "assistant", "content": [
             {"type": "tool_use", "id": "e1", "name": "Edit", "input": {"file_path": "src/webhooks.ts", "old_string": "todo()", "new_string": "verifySignature(req)"}}
         ]}})),
@@ -224,6 +248,7 @@ async fn people_list_search_and_read_sessions_by_sandbox_access() -> TestResult 
     let ready = import(&w, &alice, "Quartio-Studio/ready").await?;
     assert_eq!(ready["onboarding"], "not_needed");
     let sid = SandboxId::parse(text(&ready["id"]))?;
+    agent_secret(&w.h.app, &alice_user, &sid).await?;
     let task = insert_task(
         &w.h.store,
         &sid,
@@ -337,6 +362,10 @@ async fn people_list_search_and_read_sessions_by_sandbox_access() -> TestResult 
         "a .env file read is redacted"
     );
     assert!(body.contains("[REDACTED:github-token]"));
+    assert!(
+        !body.contains(AGENT_VALUE) && body.contains("[secret:DEPLOY_KEY]"),
+        "the sandbox's agent secrets are redacted by the vault: {body}"
+    );
     let entries = page.body["entries"].as_array().ok_or("entries")?;
     assert_eq!(entries.len(), 5);
     assert_eq!(entries[1]["blocks"][1]["type"], "tool_call");
@@ -724,6 +753,20 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
         &imported_transcript("queue"),
     )
     .await?;
+    let owner = UserRecord {
+        id: UserId::parse("u-owner")?,
+        github_login: Some("owner".into()),
+        github_id: None,
+        display_name: "Owner".into(),
+        avatar_url: None,
+        is_superadmin: true,
+        is_instance_admin: true,
+        password_hash: None,
+        created_at: Timestamp(1),
+        disabled_at: None,
+    };
+    h.store.insert_user(&owner).await?;
+    agent_secret(&h.app, &owner, &SandboxId::parse("s1")?).await?;
     let internal = yulius_server::internal_router(h.app.clone())
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
 
@@ -789,6 +832,18 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
     assert!(body.contains("WEBHOOK_SIGNING=[REDACTED:"), "{body}");
     assert!(!body.contains("whsec_plain"));
     assert_eq!(by_task["next_from"], 3);
+    let (whole, _) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": other.number}),
+    )
+    .await?;
+    let whole = text(&whole["text"]);
+    assert!(
+        !whole.contains(AGENT_VALUE) && whole.contains("[secret:DEPLOY_KEY]"),
+        "{whole}"
+    );
     let (bounded, _) = mcp_tool(
         &internal,
         "tok-me",

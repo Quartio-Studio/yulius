@@ -393,6 +393,16 @@ impl FakeRemote for BareRemote {
         }
         git_sync(&self.origin, &args).map(drop)
     }
+    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
+        if self.branch_sha(branch).is_none() {
+            return Ok(false);
+        }
+        git_sync(
+            &self.origin,
+            &["update-ref", "-d", &format!("refs/heads/{branch}")],
+        )?;
+        Ok(true)
+    }
 }
 
 // ---------------------------------------------------------------- fixture
@@ -928,6 +938,26 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
             .contains(&"merge_pull #1 squash".to_owned())
     );
     assert_eq!(git(&f.origin, &["show", "dev:feature.txt"])?, "hello");
+    // Hygiene (DLV-007): the merged head branch is deleted on GitHub.
+    assert!(
+        f.h.github
+            .writes()
+            .contains(&"delete_branch feat/1-checkout-api".to_owned()),
+        "{:?}",
+        f.h.github.writes()
+    );
+    assert!(
+        git(
+            &f.origin,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/heads/feat/1-checkout-api"
+            ]
+        )
+        .is_err()
+    );
 
     // The dev checkpoint comes first and needs an explicit confirmation.
     let early = f
@@ -1378,11 +1408,11 @@ async fn studio_auto_promotes_until_the_profile_is_gated() -> TestResult {
     assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
     assert_eq!(merged.body["stage"], "merged_integration");
     assert_eq!(actions(&merged.body), ["promote"]);
-    assert_eq!(
-        f.h.github.writes().len(),
-        writes_before + 1,
-        "only the merge happened"
-    );
+    // Only the merge and the merged branch's deletion (DLV-007), no promotion.
+    let after: Vec<String> = f.h.github.writes()[writes_before..].to_vec();
+    assert_eq!(after.len(), 2, "{after:?}");
+    assert!(after[0].starts_with("merge_pull #"), "{after:?}");
+    assert_eq!(after[1], "delete_branch feat/2-pricing");
     assert_eq!(f.origin_sha("main")?, quartio, "main did not move");
 
     let promoted = f

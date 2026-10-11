@@ -5,6 +5,7 @@ mod admin;
 mod analytics;
 mod automations;
 mod browser;
+mod ci;
 mod delivery;
 mod events;
 mod files;
@@ -16,6 +17,7 @@ mod mcp_servers;
 mod previews;
 mod projects;
 mod sandboxes;
+mod secrets;
 mod sessions;
 mod setup_auth;
 mod shells;
@@ -39,6 +41,7 @@ use crate::AppState;
 /// Public API routes.
 pub fn public(_app: Arc<App>) -> Router<AppState> {
     Router::new()
+        .merge(secrets::public())
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/setup/status", get(setup_auth::setup_status))
         .route("/api/setup", post(setup_auth::setup))
@@ -217,6 +220,20 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             post(delivery::confirm_environment),
         )
         .route("/api/sandboxes/{sid}/delivery/runs", get(delivery::runs))
+        .route("/api/sandboxes/{sid}/ci", get(ci::overview))
+        .route("/api/sandboxes/{sid}/ci/sync", post(ci::sync))
+        .route("/api/sandboxes/{sid}/ci/runs/{rid}", get(ci::run))
+        .route(
+            "/api/sandboxes/{sid}/ci/runs/{rid}/cancel",
+            post(ci::cancel),
+        )
+        .route("/api/sandboxes/{sid}/ci/runs/{rid}/rerun", post(ci::rerun))
+        .route("/api/sandboxes/{sid}/hygiene", get(ci::hygiene))
+        .route("/api/sandboxes/{sid}/hygiene/scan", post(ci::hygiene_scan))
+        .route(
+            "/api/sandboxes/{sid}/hygiene/cleanup",
+            post(ci::hygiene_cleanup),
+        )
         .route(
             "/api/sandboxes/{sid}/delivery/runs/{run_id}",
             get(delivery::run),
@@ -259,6 +276,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
 /// Internal (loopback) routes.
 pub fn internal(_app: Arc<App>) -> Router<AppState> {
     Router::new()
+        .merge(secrets::internal())
         .route("/internal/healthz", get(|| async { "ok" }))
         .route("/internal/version", get(updates::version))
         .route("/internal/preview-tls", get(previews::tls_ask))

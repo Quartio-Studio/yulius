@@ -41,6 +41,7 @@ yulius-github = { workspace = true }
 yulius-import = { workspace = true }
 console = { workspace = true }
 yulius-browser = { workspace = true }
+yulius-egress = { workspace = true }
 rustls = { workspace = true }
 reqwest = { workspace = true }
 sysinfo = { workspace = true }

@@ -13,10 +13,13 @@ const pages = [
   ['sessions', '/s/studio/sessions', 'Sessions'],
   ['session', '/s/studio/sessions/ses_imp_checkout', 'Add Stripe checkout to the cart page'],
   ['git', '/s/studio/git', 'Git'],
+  ['CI', '/s/studio/ci', 'CI'],
   ['workflows', '/s/studio/workflows', 'Workflows'],
   ['skills', '/s/studio/skills', 'Skills'],
   ['automations', '/s/studio/automations', 'Automations'],
   ['MCP', '/s/studio/mcp', 'MCP'],
+  ['secrets', '/s/studio/secrets', 'Secrets'],
+  ['agent secrets', '/s/studio/secrets?section=agents', 'Secrets'],
   ['dashboard', '/s/studio/dashboard', 'Dashboard'],
   ['settings', '/settings', 'Settings'],
 ] as const;

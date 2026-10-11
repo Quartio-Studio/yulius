@@ -22,10 +22,12 @@ test('the sandbox pages open from the sandbox navigation', async ({ app, browser
     ['Tasks', 'tasks'],
     ['Sessions', 'sessions'],
     ['Git', 'git'],
+    ['CI', 'ci'],
     ['Workflows', 'workflows'],
     ['Skills', 'skills'],
     ['Automations', 'automations'],
     ['MCP', 'mcp'],
+    ['Secrets', 'secrets'],
     ['Dashboard', 'dashboard'],
   ]) {
     await nav.getByRole('link', page).click();

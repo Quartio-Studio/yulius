@@ -101,7 +101,8 @@ Profile = {"preset": "standard|product|studio|custom", "integration_branch": "de
            "promote": "merge_commit|fast_forward", "auto_promote": false,
            "require_checks": true,
            "environments": [{"name": "dev", "after": "integration|production",
-                             "command": "…|null", "verify": "manual|command"}]}
+                             "command": "…|null", "verify": "manual|command"}],
+           "gate": "scripts/ci.sh|null"}
 ```
 
 ## Import (`yulius onboard` / `yulius import`)
@@ -148,7 +149,9 @@ defaults, otherwise it becomes `custom` (so switching Studio's `auto_promote` of
 `require_checks` absent or null means the preset's default (`false` for `studio`, else `true`);
 responses always carry it; blank commands mean "no command". The sandbox profile is the only
 source of environment commands (never the repository). `GET /api/delivery/presets` (signed in)
-returns the three presets `standard`, `product` and `studio` as `[Profile]`.
+returns the three presets `standard`, `product` and `studio` as `[Profile]`. `gate` (single line,
+≤ 2000 bytes; blank or null clears it) is a CI command an administrator sets for the sandbox: it
+overrides the CI of `yulius.toml` (see "CI" below) and does not change the preset label.
 
 ## Sessions
 
@@ -477,6 +480,69 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   ignores global/system Git config and disables hooks and fsmonitor (repository-local config
   such as filter drivers is still read). Commands are visible to every reader of the sandbox:
   keep secrets out of them. Runs left `running` by a server restart become `error`.
+
+## CI (Yulius-run) and repository hygiene
+
+Yulius is the projects' only CI (SPEC-001 DLV-006/007, SPEC-002 ADR-21). The jobs come from
+`yulius.toml` on the integration branch, or from the profile's `gate`:
+
+```toml
+[[ci.jobs]]                 # one per independent check; the jobs of a run run in parallel
+name = "test"               # [a-z0-9][a-z0-9_-]*, at most 32 bytes, unique
+command = "cargo test"      # one line, run as /bin/sh -c in the job's CI checkout
+matrix = "1/2 2/2"          # optional: one job per value, as $YULIUS_CI_MATRIX ("test (1/2)")
+# or, for one job: [commands] gate = "…"   (not both)
+```
+
+Jobs get `CI=true`, `HOME` (persistent), `YULIUS_CI_CACHE` (persistent), `YULIUS_CI_RUN`,
+`YULIUS_CI_JOB`, `YULIUS_CI_SHA`, `YULIUS_CI_REF`, `YULIUS_CI_MATRIX` and no secrets.
+
+| Method and path | Access | Result |
+| --- | --- | --- |
+| `GET /api/sandboxes/{sid}/ci` | read | `CiOverview` |
+| `POST /api/sandboxes/{sid}/ci/sync` | write | looks for new heads now; `CiOverview` |
+| `GET /api/sandboxes/{sid}/ci/runs/{rid}` | read | `CiRun` with each job's `output` |
+| `POST /api/sandboxes/{sid}/ci/runs/{rid}/cancel` | write | `CiRun`; `conflict` when it ended |
+| `POST /api/sandboxes/{sid}/ci/runs/{rid}/rerun` | write | the new queued `CiRun`; `conflict` while a run of that commit is active or without CI |
+| `GET /api/sandboxes/{sid}/hygiene` | read | `HygieneReport` (the last scan; scans when none) |
+| `POST /api/sandboxes/{sid}/hygiene/scan` | write | `HygieneReport` |
+| `POST /api/sandboxes/{sid}/hygiene/cleanup` | write | `{"removed": [Target], "skipped": [Target + "reason"], "report": HygieneReport}` |
+
+```text
+CiOverview = {"gate": {"source": "profile|yulius_toml", "jobs": [{"name", "command", "matrix"}]} | null,
+              "gate_problem": "yulius.toml line 7: …" | null,
+              "runs": [CiRun] (newest 30, without outputs), "can_run": true,
+              "status_access": "for administrators: commit statuses cannot be published …" | null,
+              "actions_workflows": ["ci.yml"]}   // GitHub Actions still on the integration branch
+CiRun = {"id", "reference": "pr/12|branch/dev", "label": "PR #12|dev", "pr_number": 12|null,
+         "sha", "state": "queued|running|passed|failed|error|cancelled",
+         "source": "profile|yulius_toml|pull_request",
+         "jobs": [{"id", "name", "command", "matrix", "state", "reason", "exit_code",
+                   "duration_ms", "output" (run detail only: last 512 KiB, escapes removed)}],
+         "reason": "superseded by 0d7e5f3|…" | null, "queued_at", "started_at", "ended_at",
+         "duration_ms", "requested_by": "yulius|<login>|task:<n>",
+         "status": "published|pending|not published: …"}
+HygieneReport = {"scanned_at": "…" | null, "items": [{"kind": "remote_branch|local_branch|worktree",
+                 "name", "reason_code": "pull_merged|pull_closed|merged|local_copy|idle|task_deleted|task_archived|task_merged|missing",
+                 "reason", "safe": true}], "notes": ["…"]}
+Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force": false}
+```
+
+- **Runs.** Every open pull request into the integration branch (same repository, at most 30) and
+  every new integration and production head is tested once per commit. The integration branch's
+  configuration applies; while it has none, a pull request that adds CI is tested with its own
+  (`source: pull_request`). A newer head cancels the active run of the same reference ("superseded
+  by …"). One run per sandbox runs at a time; its jobs share the instance's job slots.
+- **Commit status** `yulius/ci` on the commit: `pending` (queued, running), `success`, `failure`
+  (names the failed job and exit code), `error` (errors and cancellations), linking to
+  `/s/<slug>/ci?run=<id>`. It needs the App's "Commit statuses: Read and write"; without it `status`
+  says so and the run still gates merges.
+- **Merge gate.** Once a sandbox has CI, the latest run at the pull request head alone decides the
+  delivery checks (`pending` / `success` / `failure`); GitHub's other checks are not read.
+- **Hygiene.** After a merge through Yulius the head branch is deleted (not the integration,
+  production or default branch, nor one another open pull request uses). Cleanup never forces a
+  worktree removal, never removes a live task's worktree, a protected branch or one with an open
+  pull request, and removes `idle` branches (unmerged, no pull request) only with `force`.
 
 ## Skills, workflows, automations, MCP
 
@@ -882,6 +948,40 @@ point while pausing. `log_tail` is filled only for a failed or rolled-back run. 
 listener also serves `GET /internal/version` → `{"commit|null","version"}` for the update
 helper's health check.
 
+## Secrets vault
+
+SPEC-001 VLT-001..009, SPEC-002 ADR-20. Values are never logged; responses that carry one have
+`Cache-Control: no-store`.
+
+**Team secrets** — every signed-in member.
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/team-secrets` | → `[TeamSecret]`: `{id, title, url, username, has_password, has_notes, has_totp, created_by, updated_by, updated_at, value_updated_at, rotate_due}` (never a password, notes or seed) |
+| POST | `/api/team-secrets` | `{title, url?, username?, password?, notes?, totp?}` → 201 `TeamSecret`. `totp`: base32 or `otpauth://totp/…` (422 otherwise) |
+| PATCH | `/api/team-secrets/{id}` | the same fields, each optional: absent keeps, `""` clears → `TeamSecret` |
+| DELETE | `/api/team-secrets/{id}` | → 204 |
+| POST | `/api/team-secrets/{id}/reveal` | `{purpose?: "show"\|"copy", fields?: ["password","notes","totp"]}` → `{password, notes, totp}` (only the asked, stored fields). Audited (`vault.team.reveal` / `vault.team.copy`) |
+| POST | `/api/team-secrets/{id}/totp` | → `{code, period, remaining}`. Audited (`vault.team.totp`) |
+| GET | `/api/auth/reauth` | → `{fresh, fresh_until, methods}`; `methods` ⊆ `["password", "github"]` |
+| POST | `/api/auth/reauth` | `{password}` (the superadmin) → the status; 403 for a wrong password (audited; the session stays signed in) or an account without a password, 429 after 5 attempts a minute |
+| GET | `/api/secrets/activity?limit=100` | → `[{at, actor, action, secret_id, detail}]`, newest first (≤ 500); an agent secret's entries only for members who can view its sandbox |
+
+Reveal and TOTP need a **fresh re-authentication**: the browser session was created, or
+re-authenticated, within the last 10 minutes. Otherwise they answer `403`
+`{"error": {"code": "reauth_required", …}, "reauth": {fresh, fresh_until, methods}}`; the client
+confirms with `POST /api/auth/reauth` (password) or by signing in with GitHub again
+(`/api/auth/github/start?next=<page>`), then retries. Bearer tokens never reveal (403).
+
+**Agent secrets** — values are write-only (never returned).
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, can_manage}` — the sandbox's and the instance-wide ones |
+| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts: [..], injection?: "none"\|"bearer"\|"basic"\|"header", header_name?, username?, value, totp?}` → 201. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 1–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks; `basic` needs `username`. 409 when the name already applies to the sandbox |
+| PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, totp` → `AgentSecret` (`value` replaces it; `""` clears `username`/`totp`) |
+| DELETE | `/api/agent-secrets/{id}` | → 204 |
+
 ## UI event stream
 
 `WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.removed",
@@ -925,3 +1025,21 @@ most every 15 s) and sampled for the burn rate at most every 5 minutes (`usage_s
 While an instance update pauses the tasks (SPEC-002 ADR-18) every `Stop` and `UserPromptSubmit`
 answers `202` with `Retry-After: 3` until the server that runs after the update releases the
 task; other hooks answer as usual.
+
+`PostToolUse` is not forwarded: the hook client redacts the tool result inside the sandbox
+(below).
+
+### Agent secrets on the internal listener (SPEC-002 ADR-20)
+
+- **Egress proxy**: a `CONNECT host:port` or an absolute-form `http://` request to the internal
+  listener is a proxy request, authenticated with `Proxy-Authorization: Basic
+  base64("yulius:" + task token)` (407 otherwise). Hosts bound to an agent secret of the run's
+  sandbox are intercepted (credential added, placeholders `yulius-secret-NAME` replaced,
+  `X-Yulius-Secret: NAME` chooses between secrets adding the same header, 409 when ambiguous;
+  the response redacted); other hosts are tunneled. Local destinations answer 403.
+- `POST /internal/scrub/fingerprints` (task token) → `{version, base, salt, names, needles:
+  [{secret, len, rolling, digest}]}`: the run's redaction fingerprints (no values).
+- `POST /internal/scrub/report` (task token) `{channel: "bash"|"tool", names}` → 204; audited
+  once per run, secret and channel (`vault.agent.redacted`).
+- MCP: `secrets_list` and `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
+  selector?}`; every MCP result is redacted.

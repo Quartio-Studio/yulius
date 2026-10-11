@@ -127,6 +127,34 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
+            name: "ci_status".into(),
+            description: "This project's CI, run by Yulius (the only CI; no GitHub Actions): the jobs in force and where they come from, the latest runs (this task's pull request first) and their state. With run_id, one run with the end of each job's output. A merge that requires checks waits until the latest run at the pull request head passed.".into(),
+            input_schema: schema(json!({"run_id": {"type": "string", "description": "A run id from the list, to read its jobs' output"}}), &[]),
+        },
+        ToolDescriptor {
+            name: "ci_rerun".into(),
+            description: "Run the CI again for the commit of a finished run (for example after a failure that was not caused by the code). Refused while a run of that commit is queued or running.".into(),
+            input_schema: schema(json!({"run_id": {"type": "string"}}), &["run_id"]),
+        },
+        ToolDescriptor {
+            name: "ci_setup".into(),
+            description: "Onboarding: move the project's GitHub Actions into Yulius CI. Returns the workflows in this task's worktree (jobs, run steps, uses steps, matrices), the CI its yulius.toml configures ([[ci.jobs]] or [commands] gate) and the steps: translate every check into [[ci.jobs]], delete .github/workflows/, commit; the pull request is tested with the CI it adds.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "repo_hygiene".into(),
+            description: "Stale branches and worktrees of this project: remote branches whose pull request was merged or closed, branches already merged, local branches no worktree uses, worktrees of deleted, archived or merged tasks. Each item has a reason and whether removing it is safe.".into(),
+            input_schema: schema(json!({"refresh": {"type": "boolean", "description": "Scan now instead of returning the last scan"}}), &[]),
+        },
+        ToolDescriptor {
+            name: "repo_cleanup".into(),
+            description: "Remove stale branches and worktrees reported by repo_hygiene: the given items, or every safe item when items is omitted. Unmerged branches without a pull request (reason idle) are removed only with force. Live tasks' worktrees, protected branches and branches with an open pull request are never removed; dirty worktrees are kept.".into(),
+            input_schema: schema(json!({
+                "items": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["remote_branch", "local_branch", "worktree"]}, "name": {"type": "string"}}, "required": ["kind", "name"]}},
+                "force": {"type": "boolean"}
+            }), &[]),
+        },
+        ToolDescriptor {
             name: "automation_create".into(),
             description: "Create a scheduled automation in this project: on a five-field cron schedule (minute hour day-of-month month day-of-week, evaluated at utc_offset_minutes from UTC) Yulius creates and starts a new task with the given prompt. Use it when the user asks for recurring work, e.g. \"every day at 9 implement yesterday's customer feedback\". The automation appears on the project's Automations page.".into(),
             input_schema: schema(json!({
@@ -163,7 +191,29 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
     ];
     tools.extend(crate::browser::tool_descriptors());
+    tools.extend(secret_tool_descriptors());
     tools
+}
+
+/// Agent-secret tools (SPEC-002 ADR-20): names only, and typing into the sandbox browser.
+fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
+    vec![
+        ToolDescriptor {
+            name: "secrets_list".into(),
+            description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "browser_fill_secret".into(),
+            description: "Type an agent secret into the project browser without seeing it: its value (password or key), its user name, or its current two-factor (TOTP) code, into the focused field or the element matching selector, in a tab whose page is on one of the secret's bound hosts. Use browser_snapshot first to find the field.".into(),
+            input_schema: schema(json!({
+                "tab_id": {"type": "string", "description": "Tab from browser_tabs or browser_open"},
+                "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
+                "field": {"type": "string", "enum": ["value", "password", "username", "totp"], "description": "What to type (default value; password is the same as value)"},
+                "selector": {"type": "string", "description": "CSS selector of the field to focus first"}
+            }), &["tab_id", "secret"]),
+        },
+    ]
 }
 
 impl App {
@@ -238,6 +288,11 @@ impl App {
             "step_update" => self.tool_step_update(ctx, &args).await,
             "steps_get" => self.tool_steps_get(ctx).await,
             "delivery_status" => self.tool_delivery_status(ctx).await,
+            "ci_status" => self.tool_ci_status(ctx, &args).await,
+            "ci_rerun" => self.tool_ci_rerun(ctx, &args).await,
+            "ci_setup" => self.tool_ci_setup(ctx).await,
+            "repo_hygiene" => self.tool_repo_hygiene(ctx, &args).await,
+            "repo_cleanup" => self.tool_repo_cleanup(ctx, &args).await,
             "automation_create" => self.tool_automation_create(ctx, &args).await,
             "automations_list" => self.tool_automations_list(ctx).await,
             "automation_update" => self.tool_automation_update(ctx, &args).await,
@@ -253,11 +308,16 @@ impl App {
             "browser_request_user_action" => {
                 self.tool_browser_request_user_action(ctx, &args).await
             }
+            "secrets_list" => self.tool_secrets_list(ctx).await,
+            "browser_fill_secret" => self.tool_browser_fill_secret(ctx, &args).await,
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         };
         match outcome {
             Ok(value) => {
-                let mut text = serde_json::to_string_pretty(&value).unwrap_or_default();
+                // No tool result carries an agent secret's value (SPEC-002 ADR-20): page text,
+                // messages, task prompts and everything else are redacted before the agent.
+                let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+                let mut text = self.redact_for_sandbox(&ctx.task.sandbox_id, &text).await;
                 if text.len() > MAX_RESULT_BYTES {
                     let mut cut = MAX_RESULT_BYTES;
                     while !text.is_char_boundary(cut) {
@@ -268,7 +328,11 @@ impl App {
                 }
                 text_result(text, false)
             }
-            Err(err) => text_result(err.public_message(), true),
+            Err(err) => text_result(
+                self.redact_for_sandbox(&ctx.task.sandbox_id, &err.public_message())
+                    .await,
+                true,
+            ),
         }
     }
 }

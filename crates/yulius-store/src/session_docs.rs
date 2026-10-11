@@ -1,4 +1,4 @@
-//! Session documents and their full-text index (SPEC-001 SES-001..005; migration 0010).
+//! Session documents and their full-text index (SPEC-001 SES-001..005; migration 0011).
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};

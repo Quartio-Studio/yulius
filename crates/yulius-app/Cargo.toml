@@ -31,6 +31,10 @@ rustls = { workspace = true }
 sha2 = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
+# Zeroed plaintexts of vault secrets (SPEC-002 ADR-20).
+zeroize = { workspace = true }
+# Basic credentials and fingerprint digests of the egress proxy and redaction (ADR-20).
+base64 = { workspace = true }
 # Process-group kill for bounded delivery environment runs (delivery::runner).
 nix = { workspace = true }
 

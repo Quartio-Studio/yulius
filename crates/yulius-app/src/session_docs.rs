@@ -617,8 +617,12 @@ impl App {
             }
         };
         let total = u32::try_from(sessions.len()).unwrap_or(u32::MAX);
+        let mut sessions: Vec<SessionDoc> = sessions.into_iter().take(limit).collect();
+        for view in &mut sessions {
+            self.redact_view_secrets(view).await;
+        }
         Ok(SessionList {
-            sessions: sessions.into_iter().take(limit).collect(),
+            sessions,
             authors,
             total,
             query: query.map(str::to_owned),
@@ -648,9 +652,11 @@ impl App {
     pub async fn session_detail(&self, ctx: &AuthContext, id: &str) -> AppResult<SessionDoc> {
         let (doc, level) = self.readable_doc(ctx, id, Action::View).await?;
         let tasks = self.sandbox_tasks(&doc.sandbox_id).await?;
-        Ok(self
+        let mut view = self
             .doc_view(&doc, &tasks, &mut HashMap::new(), Some((&ctx.user, level)))
-            .await)
+            .await;
+        self.redact_view_secrets(&mut view).await;
+        Ok(view)
     }
 
     /// `GET /api/sessions/{id}/transcript?from=&limit=` (read): a bounded, redacted page.
@@ -683,6 +689,8 @@ impl App {
         let mut entries = page.entries;
         self.redact_page_secrets(&doc.sandbox_id, &mut entries)
             .await;
+        let mut session = session;
+        self.redact_view_secrets(&mut session).await;
         Ok(TranscriptPage {
             session,
             entries,
@@ -691,12 +699,30 @@ impl App {
         })
     }
 
-    /// The sandbox's agent secrets in text served from its sessions (SES-004). This is the one
-    /// place the agent-secrets vault plugs in: with the vault on `dev` (#153) the body becomes
-    /// `self.redact_for_sandbox(sandbox, &text).await`. Agent reads (`sessions_search`,
-    /// `session_read`) already pass through the vault's redaction of every MCP result.
-    async fn redact_agent_secrets(&self, _sandbox: &SandboxId, text: String) -> String {
-        text
+    /// The sandbox's agent secrets (exact values and encodings, the vault's matcher) in text
+    /// served from its sessions to people (SES-004, VLT): pages, titles and search passages.
+    /// Agent reads (`sessions_search`, `session_read`) pass through the same redaction of every
+    /// MCP result in `mcp_call`.
+    async fn redact_agent_secrets(&self, sandbox: &SandboxId, text: String) -> String {
+        if text.is_empty() {
+            return text;
+        }
+        self.redact_for_sandbox(sandbox, &text).await
+    }
+
+    /// [`App::redact_agent_secrets`] on a session's title and search passages.
+    async fn redact_view_secrets(&self, view: &mut SessionDoc) {
+        let Ok(sandbox) = SandboxId::parse(&view.sandbox_id) else {
+            return;
+        };
+        let title = std::mem::take(&mut view.title);
+        view.title = self.redact_agent_secrets(&sandbox, title).await;
+        for hit in &mut view.hits {
+            for part in &mut hit.snippet {
+                let text = std::mem::take(&mut part.text);
+                part.text = self.redact_agent_secrets(&sandbox, text).await;
+            }
+        }
     }
 
     async fn redact_page_secrets(&self, sandbox: &SandboxId, entries: &mut [TranscriptEntry]) {
