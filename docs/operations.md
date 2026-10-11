@@ -13,13 +13,17 @@ been performed or verified** as part of the implementation work.
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
+| `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-19): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
+| `slirp4netns` | sandbox egress (isolation) | `apt install slirp4netns`. |
+| `libnss-extrausers` | users' login names in isolated sandboxes | `apt install libnss-extrausers`; without it, package scripts that add system users fail in users' shells (they work in agents' sessions). |
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
 | `xvfb` | the sandbox browser's virtual display (SPEC-002 ADR-15) | `apt install xvfb`. Without it (or ffmpeg) the browser runs headless: JPEG frames, no real input, captchas fail. `xauth` is not needed (Yulius writes the cookie itself); `x11-utils` (`xdpyinfo`) only for diagnostics. |
 | `ffmpeg` with libx264 and x11grab | the browser video | `apt install ffmpeg` (Ubuntu's build has both; `yulius doctor` checks). |
 | Fonts | pages in the sandbox browser | at least `fonts-noto-core fonts-noto-color-emoji fonts-liberation` (Ubuntu 24.04 names); add `fonts-noto-cjk` for CJK pages. |
 
 Inside containment an agent sees only `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/opt`, its own
-sandbox directory and the `yulius` binary. Install Claude Code system-wide under `/usr/local` or
+sandbox directory and the `yulius` binary (with isolation, `/usr`, `/etc`, `/var` and `/opt` come
+from the sandbox's own system layer, a copy-on-write view of the host system). Install Claude Code system-wide under `/usr/local` or
 `/opt`; a per-user install such as Claude Code's
 default `~/.local/bin/claude` is invisible to contained runs unless its directories are added with
 `--contained-readonly <dir>[:<dir>…]` (`YULIUS_CONTAINED_READONLY`).
@@ -72,8 +76,15 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=YULIUS_BROWSER_DISPLAY=auto
 # Optional task intake (see "Task intake (Jev)" below).
 #Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
+# Sandbox isolation (SPEC-002 ADR-19): auto (default), namespaces or legacy; see "Sandbox
+# isolation" below for limits and egress.
+#Environment=YULIUS_ISOLATION=auto
 ExecStart=/usr/local/bin/yulius serve
 KillMode=process
+# Per-sandbox CPU, memory and task limits: the server keeps itself in server/ and gives every
+# sandbox its own cgroup under the unit (systemd 254 or later).
+Delegate=yes
+DelegateSubgroup=server
 Restart=on-failure
 RestartSec=2
 LimitNOFILE=65536
@@ -268,6 +279,63 @@ the unit works too.
 
 Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
 
+### Sandbox isolation
+
+Each sandbox has one **namespace holder** (SPEC-002 ADR-19). Agents' task sessions and users'
+shells join it. A sandbox gets:
+
+- its own user namespace: root inside is the service user, ids 1–65535 come from its subordinate
+  range;
+- a private network: egress through `slirp4netns`; the host's loopback services and other
+  sandboxes are unreachable; the internal listener and the sandbox's dev-server ports are relayed;
+- a writable **system layer** over a shared, Yulius-owned copy of the host system (the *base*), so
+  `sudo apt-get install …` works and persists for that sandbox only;
+- limits (CPU, memory, tasks) through the unit's delegated cgroup, and a soft disk quota;
+- a seccomp filter: no nested user namespaces, `io_uring`, `bpf`, keyrings, module or mount calls.
+
+**Install once** (as root):
+
+```sh
+apt install uidmap slirp4netns libnss-extrausers bubblewrap
+# A free subordinate range of 65,536 ids for the service user (check /etc/subuid and /etc/subgid
+# for ranges already used; on the reference VM 100000–231071 are taken):
+usermod --add-subuids 231072-296607 --add-subgids 231072-296607 yulius
+# Delegate=yes and DelegateSubgroup=server in the unit (§3), then:
+systemctl daemon-reload
+# Build the first base before restarting, so new sessions are isolated at once (a few minutes,
+# about 6 GB under <data>/system):
+sudo -u yulius yulius sandbox-base build --data-dir /var/lib/yulius
+sudo -u yulius yulius doctor --data-dir /var/lib/yulius --contained
+systemctl restart yulius
+```
+
+**Settings** (environment of the unit):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `YULIUS_ISOLATION` | `auto` | `auto`: the holder when its prerequisites hold, else the previous containment (and a failing holder never blocks work); `namespaces`: refuse runs without it; `legacy`: the previous containment. |
+| `YULIUS_SANDBOX_EGRESS` | `direct` | `none`: no egress, only the relayed endpoints (the internal listener, which also serves the secrets proxy, and `YULIUS_SANDBOX_FORWARD`). |
+| `YULIUS_SANDBOX_MEMORY_GB` | half the RAM | `memory.max` per sandbox. |
+| `YULIUS_SANDBOX_CPUS` | all CPUs but two | `cpu.max` per sandbox. |
+| `YULIUS_SANDBOX_PIDS` | 8192 | `pids.max` per sandbox. |
+| `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes; above it, new sessions are refused (live ones continue). `0` turns it off. |
+| `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
+| `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. |
+
+**Where things live.**
+- `<data>/system/base-<n>/`: the base (`current.json` names it). The server rebuilds it when the host's packages, `/usr/local` or `/opt` change; it waits until they have been unchanged for 10 minutes and checks every 30 minutes. A sandbox moves to the new base the next time its holder starts; the packages it installed stay.
+- `<data>/sysroots/<sandbox>/`: a sandbox's installed packages (the overlay's upper layer).
+- `<data>/runtime/sandboxes/<sandbox>/`: the holder's records and relay sockets.
+
+`yulius sandbox-base status` tells whether the base matches the host.
+
+**Ports.** A sandbox's dev servers are reachable on the host's loopback only on its port range
+(PRJ-010, `YULIUS_PORT_BASE`…), and only while something listens on them inside. Other ports
+stay private to the sandbox. Two sandboxes can both use 3000 inside.
+
+**Without the prerequisites** (`yulius doctor` lists what is missing), contained runs keep the
+previous containment: read-only host system, the host's network, no limits.
+
 ### Task intake (Jev)
 
 Optional (SPEC-002 ADR-16). With a TypeSafe Jev key, Yulius offers to split new tasks that mix
@@ -419,11 +487,23 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
 
 ## 8. Upgrades
 
+<<<<<<< HEAD
 - Upgrading to default workflows (AUT-006, #136, 2026-10-10): the default workflows now ship with
   the binary (`catalog/workflows/`) and are read-only. On the first start the "Feature" and "Quick
   task" rows seeded by earlier releases are retired (audited as `workflow.retired`); an edited
   "Feature" is kept as "Feature (custom)", an edited "Quick task" stays as it is. Automations that
   used "Quick task" continue without a workflow. No migration and no configuration.
+=======
+- Upgrading to sandbox isolation (ADR-19, 2026-10-10): install the packages, add the subordinate
+  range and the two unit lines, and build the base as in [Sandbox isolation](#sandbox-isolation),
+  then restart. Sessions and shells started before the upgrade keep running as they are (their
+  launch records have no holder) and are adopted as usual. New sessions in the same sandbox join
+  its holder. A dev server an old session still runs keeps its host port until it ends; the
+  relay skips that port meanwhile. Processes left in the unit's cgroup from before delegation are
+  moved to `legacy/`. Files written in either mode belong to the service user, so repositories,
+  worktrees and homes need no migration. Each sandbox's system layer starts empty. No database
+  migration.
+>>>>>>> 19c40a2 (feat(sandbox): isolate each sandbox behind a namespace holder with apt, a private network and limits)
 - Upgrading to dropped files (EDT-006, UI-048, 2026-10-10): raise the reverse proxy's request body
   limit to 32 MB (§4) or uploads between 16 and 25 MiB fail at the proxy with 413. No migration.
 - Upgrading to usage from the sessions and session-end tracking (F 2026-10-10 items 1(a)/(c)): no
@@ -464,4 +544,8 @@ up. Queued tasks start when capacity allows.
 - Agents receive per-run task tokens (MCP, hooks) and GitHub tokens restricted to their sandbox
   repository; provider credentials reach the agent process only through its environment.
 - Known open risks are listed in SPEC-002 §12 (notably R-07: Chromium's DevTools port is
-  unauthenticated on loopback; R-09: environment commands run outside containment).
+  unauthenticated on loopback, which isolated sandboxes cannot reach; R-09: environment commands
+  run outside containment).
+- Isolated sandboxes cannot reach the host's loopback services (Yulius's public listener, Caddy's
+  admin API, DevTools ports, databases bound to 127.0.0.1). Services bound to the host's public
+  addresses remain reachable like any internet host.

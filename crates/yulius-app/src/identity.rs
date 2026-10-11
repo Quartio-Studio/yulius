@@ -31,6 +31,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::hooks::GitCredential;
 use crate::model::{SandboxRecord, UserRecord};
+use crate::ports::isolation::SandboxJoin;
 use crate::ports::session::{Bind, Containment, Identity};
 
 /// Directory of Yulius helper commands inside user processes.
@@ -40,7 +41,7 @@ const HOST_SUDO: &str = "/usr/bin/sudo";
 
 /// The `sudo` shim: the user already is root (uid 0) inside the sandbox, so `sudo` only drops
 /// its own options and runs the command (`sudo -i`/`-s` or no command start a shell).
-const SUDO_SHIM: &str = r#"#!/bin/sh
+pub const SUDO_SHIM: &str = r#"#!/bin/sh
 # Yulius sandbox sudo: you are already root (uid 0) inside this sandbox.
 shell=0
 while [ $# -gt 0 ]; do
@@ -225,7 +226,12 @@ impl App {
     ///
     /// # Errors
     /// `Internal` when the directories or files cannot be written.
-    pub fn user_space(&self, user: &UserRecord, sandbox: &SandboxRecord) -> AppResult<UserSpace> {
+    pub fn user_space(
+        &self,
+        user: &UserRecord,
+        sandbox: &SandboxRecord,
+        join: Option<SandboxJoin>,
+    ) -> AppResult<UserSpace> {
         let login = sandbox_login(user);
         let root = self.users_dir().join(user.id.as_str());
         let home_host = root.join("home");
@@ -265,13 +271,32 @@ impl App {
         write_file(&identity_dir.join("group"), group.as_bytes(), 0o644)?;
         let bin = self.runtime_bin()?;
         env.push(("HOME".into(), home.to_string_lossy().into_owned()));
+        // In an isolated sandbox (ADR-19) the system layer has root's tools and the sudo shim
+        // as /usr/bin/sudo; package scripts may rewrite /etc/passwd, so with extrausers the
+        // identity files are bound where only the name service reads them.
+        let path = if join.is_some() {
+            crate::isolation::SANDBOX_PATH.to_owned()
+        } else {
+            path
+        };
         env.push(("PATH".into(), format!("{SANDBOX_BIN}:{path}")));
+        let identity_dest = if join.as_ref().is_some_and(|j| j.extrausers) {
+            PathBuf::from("/var/lib/extrausers")
+        } else {
+            PathBuf::from("/etc")
+        };
+        let replace_sudo = join.is_none() && Path::new(HOST_SUDO).is_file();
+        let extra_readonly: Vec<PathBuf> = join
+            .as_ref()
+            .map(|j| j.extra_readonly.clone())
+            .unwrap_or_default();
         let containment = Containment::Bubblewrap {
             sandbox_root: self.sandbox_dir(&sandbox.id),
             home: home.clone(),
             writable: Vec::new(),
             readonly: std::iter::once(self.config.yulius_exe.clone())
                 .chain(self.config.contained_readonly.iter().cloned())
+                .chain(extra_readonly)
                 .collect(),
             binds: vec![
                 Bind {
@@ -281,12 +306,12 @@ impl App {
                 },
                 Bind {
                     source: identity_dir.join("passwd"),
-                    dest: PathBuf::from("/etc/passwd"),
+                    dest: identity_dest.join("passwd"),
                     writable: false,
                 },
                 Bind {
                     source: identity_dir.join("group"),
-                    dest: PathBuf::from("/etc/group"),
+                    dest: identity_dest.join("group"),
                     writable: false,
                 },
                 Bind {
@@ -298,7 +323,7 @@ impl App {
             .into_iter()
             // Login shells of uid 0 get a fresh PATH from /etc/profile; the shim also replaces
             // the host's setuid sudo, which cannot work in an unprivileged namespace.
-            .chain(Path::new(HOST_SUDO).is_file().then(|| Bind {
+            .chain(replace_sudo.then(|| Bind {
                 source: bin.join("sudo"),
                 dest: PathBuf::from(HOST_SUDO),
                 writable: false,
@@ -309,6 +334,7 @@ impl App {
                 gid: 0,
                 hostname: sandbox_hostname(&sandbox.slug),
             }),
+            join: join.map(Box::new),
         };
         Ok(UserSpace {
             login,

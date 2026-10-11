@@ -100,11 +100,26 @@ fn io_error(context: &'static str) -> impl FnOnce(io::Error) -> HostError {
 /// # Errors
 /// Returns the failure that prevented or ended the run abnormally.
 pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
+    // Joining a sandbox changes the working directory: keep the run directory absolute.
+    let absolute = std::path::absolute(run_dir).unwrap_or_else(|_| run_dir.to_path_buf());
+    let run_dir = absolute.as_path();
     // Taken first: a run directory removed while the host starts is still detected as orphaned.
     let identity = dir_identity(run_dir);
     let launch = load_launch(run_dir)?;
     let attempt = launch.attempt_id.clone();
     let fail = |reason, error| record_failure(run_dir, &attempt, reason, error);
+    // A run of an isolated sandbox joins its holder before anything else, while this process
+    // is still single-threaded (SPEC-002 ADR-19 §2).
+    if let Containment::Bubblewrap(spec) = &launch.containment
+        && let Some(join) = &spec.join
+    {
+        yulius_sandbox::enter::join(join).map_err(|e| {
+            fail(
+                ExitReason::SpawnFailed,
+                HostError::Spawn(format!("cannot enter the sandbox: {e}")),
+            )
+        })?;
+    }
 
     let socket_path = run_dir.join(SOCKET_FILE);
     let listener = UnixListener::bind(&socket_path)
@@ -213,7 +228,12 @@ fn prepare_command(launch: &LaunchSpec) -> Result<CommandBuilder, HostError> {
                     "bubblewrap containment is only supported on Linux hosts".into(),
                 ));
             }
-            (bwrap_argv(spec, &launch.argv, &launch.cwd), "/".to_owned())
+            let mut argv = bwrap_argv(spec, &launch.argv, &launch.cwd);
+            // `yulius sandbox-exec` hands bwrap the seccomp filter and execs it (same pid).
+            if let Some(shim) = spec.join.as_ref().and_then(|j| j.exec_shim.as_ref()) {
+                argv.splice(0..0, [shim.clone(), "sandbox-exec".into(), "--".into()]);
+            }
+            (argv, "/".to_owned())
         }
     };
     let mut command = CommandBuilder::from_argv(argv.into_iter().map(OsString::from).collect());

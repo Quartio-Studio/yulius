@@ -18,7 +18,8 @@
 //!   `ECHO: <line>`. `/exit` exits 0, `/crash` exits 3, `/later <ms> <text>` prints `<text>` after
 //!   a delay (≤ 60 s), `/size` prints `SIZE <rows> <cols>` of its terminal (via `stty size`),
 //!   `/read <path>` prints `READ <file name> OK <n>` or `READ <file name> ERR <kind>` (containment
-//!   probe; never the contents),
+//!   probe; never the contents), `/sh <command>` runs `/bin/sh -c <command>` on the terminal and
+//!   prints `SH EXIT <code>` (like an agent's Bash tool),
 //!   `/flood <n>` floods like `--mode flood` on demand.
 //! - `flood --bytes N`: writes N bytes to stdout and N bytes to stderr, prints `FLOOD DONE`, then
 //!   behaves like `echo`.
@@ -869,6 +870,17 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                     Ok(bytes) => say(&format!("READ {name} OK {}", bytes.len()))?,
                     Err(err) => say(&format!("READ {name} ERR {:?}", err.kind()))?,
                 }
+            }
+            _ if line.starts_with("/sh ") => {
+                // Runs a shell command like an agent's Bash tool (containment tests): its output
+                // goes to the terminal, then `SH EXIT <code>`.
+                let command = line["/sh ".len()..].trim();
+                let status = Command::new("/bin/sh")
+                    .args(["-c", command])
+                    .stdin(Stdio::null())
+                    .status();
+                let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+                say(&format!("SH EXIT {code}"))?;
             }
             _ if line.starts_with("/later ") => {
                 let mut parts = line.splitn(3, ' ').skip(1);

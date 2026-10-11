@@ -642,7 +642,11 @@ resolves to nothing, the run gets the server without that variable or token.
     `Shell`: a login shell in the sandbox repository or that task's worktree, as the caller's
     sandbox identity (their home; uid 0 with `sudo` when contained). The name defaults to
     "Terminal N", the lowest number free among the caller's shells there. At most 8 live shells
-    per user and sandbox (429); 409 before the repository is cloned.
+    per user and sandbox (429); 409 before the repository is cloned. In an isolated sandbox
+    (SPEC-002 ADR-19) the shell joins the sandbox's namespace holder (its own system layer, where
+    `sudo apt-get install` persists, and private network); 409 when the sandbox is over its disk
+    quota (the message gives the figures); a task started then fails with that reason in its
+    terminal ("Could not start: …").
   - `PATCH /api/sandboxes/{sid}/shells/{id}` (write) `{"name"}` → `Shell`: 1–40 characters, no
     control characters (422). `DELETE /api/sandboxes/{sid}/shells/{id}` (write) → 204: the shell
     leaves the list at once and its process is ended (Ctrl-C, SIGTERM, SIGKILL). Both are 404 for

@@ -193,7 +193,105 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
     });
     checks.extend(browser_display_checks());
     checks.extend(containment_visibility(contained, extra));
+    if contained && cfg!(target_os = "linux") {
+        checks.extend(isolation_checks(data_dir));
+    }
     checks
+}
+
+/// Sandbox isolation (SPEC-002 ADR-19): the namespace holder's prerequisites, the base, the
+/// identity module and the cgroup delegation. Missing pieces are warnings: contained runs then
+/// keep the previous containment.
+fn isolation_checks(data_dir: &Path) -> Vec<Check> {
+    use crate::wiring::sandbox::{IsolationArgs, resolve};
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yulius"));
+    let mut checks = Vec::new();
+    match resolve(&IsolationArgs::default(), data_dir, &exe, 8081) {
+        Ok(config) => checks.push(check(
+            "sandbox isolation",
+            Level::Ok,
+            format!(
+                "namespace holder available (ids {}–{} mapped, egress through slirp4netns)",
+                config.uid.sub_start,
+                config.uid.sub_start + config.uid.count - 1
+            ),
+        )),
+        Err(missing) => checks.push(check(
+            "sandbox isolation",
+            Level::Warn,
+            format!(
+                "previous containment (no apt, shared network, no limits): {}",
+                missing.join("; ")
+            ),
+        )),
+    }
+    let bases = yulius_sandbox::base::Bases::new(data_dir);
+    match bases.current() {
+        Some(base) => {
+            let fresh = base.fingerprint
+                == yulius_sandbox::base::fingerprint(
+                    Path::new("/"),
+                    yulius_app::identity::SUDO_SHIM,
+                );
+            checks.push(check(
+                "sandbox base",
+                Level::Ok,
+                format!(
+                    "{}{}",
+                    base.id,
+                    if fresh {
+                        ""
+                    } else {
+                        " (the host changed; the server rebuilds it)"
+                    }
+                ),
+            ));
+            if !base.extrausers {
+                checks.push(check(
+                    "libnss-extrausers",
+                    Level::Warn,
+                    "not in the base: in users' shells, packages that add system users fail \
+                     (install libnss-extrausers, then `yulius sandbox-base build`)",
+                ));
+            }
+        }
+        None => checks.push(check(
+            "sandbox base",
+            Level::Warn,
+            "none yet: the server builds it in the background, or run `yulius sandbox-base build` as the service user",
+        )),
+    }
+    checks.push(delegation_check());
+    checks
+}
+
+fn delegation_check() -> Check {
+    if let Ok(found) = crate::wiring::sandbox::delegation_detect() {
+        return check("sandbox limits", Level::Ok, format!("delegated: {found}"));
+    }
+    let unit = output_of(
+        Path::new("systemctl"),
+        &[
+            "show",
+            "yulius.service",
+            "--property=Delegate,DelegateSubgroup",
+        ],
+    )
+    .unwrap_or_default();
+    if unit.contains("Delegate=yes") && unit.contains("DelegateSubgroup=server") {
+        check(
+            "sandbox limits",
+            Level::Ok,
+            "yulius.service delegates its cgroup (Delegate=yes, DelegateSubgroup=server)",
+        )
+    } else {
+        check(
+            "sandbox limits",
+            Level::Warn,
+            "no per-sandbox CPU, memory and task limits: add Delegate=yes and \
+             DelegateSubgroup=server to yulius.service",
+        )
+    }
 }
 
 /// The virtual display's prerequisites (SPEC-002 ADR-15): Xvfb, and ffmpeg with x11grab and

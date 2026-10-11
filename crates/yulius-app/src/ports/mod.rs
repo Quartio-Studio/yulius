@@ -5,6 +5,7 @@ pub mod git;
 pub mod github;
 pub mod harness;
 pub mod intake;
+pub mod isolation;
 pub mod session;
 pub mod store;
 pub mod store_ext;

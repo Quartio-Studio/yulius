@@ -72,7 +72,7 @@ Principles:
 | --- | --- | --- | --- |
 | ADR-01 | One Rust binary `yulius` (axum/tokio) with subcommands `serve`, `ptyhost`, `hook`, `git-credential`, `import`, `login`, `backup`, `doctor`. Static web UI (vanilla ES modules + vendored xterm.js) embedded in the binary. | Leptos/Yew WASM UI; Node SPA build | One artifact to deploy; no Node toolchain for Yulius; UI is plain JS so a desktop shell can load it (OPS-002). JS UI lacks Rust type checking — mitigated by contracts-generated docs and UI checks. |
 | ADR-02 | Detached `ptyhost` per run, Unix-socket protocol, vt100 screen state, exit record files. | tmux/dtach; in-server PTYs | Survives server restart (NFR-001); explicit ownership and identity; more code to test (fake agent suite). Requires the systemd unit to use `KillMode=process`. |
-| ADR-03 | Linux containment per sandbox with bubblewrap (`--unshare-pid --die-with-parent`, private /tmp, only the sandbox directory writable, per-sandbox HOME). Host mode for development/tests, visibly flagged "not contained". | Docker per sandbox; gVisor; separate VMs | Cheap, fast, kills whole tree on SIGKILL of bwrap; no daemon. Network is shared (agents need it). Not a defense against kernel exploits — documented trust model §8. |
+| ADR-03 | Extended by ADR-19 (F 2026-10-10): runs join a per-sandbox namespace holder (private network, writable system layer, limits, seccomp); this row remains the legacy mode. Linux containment per sandbox with bubblewrap (`--unshare-pid --die-with-parent`, private /tmp, only the sandbox directory writable, per-sandbox HOME). Host mode for development/tests, visibly flagged "not contained". | Docker per sandbox; gVisor; separate VMs | Cheap, fast, kills whole tree on SIGKILL of bwrap; no daemon. Network is shared (agents need it). Not a defense against kernel exploits — documented trust model §8. |
 | ADR-04 | SQLite (rusqlite, bundled) in WAL mode, one write connection behind an async actor, versioned SQL migrations via `user_version`. | Postgres; sled; files | Single-VM product, simple backup (`VACUUM INTO`); write throughput ample for 2–5 users. |
 | ADR-05 | Accounts are org secrets in Yulius; provider homes are per sandbox. Claude uses long-lived OAuth tokens from `claude setup-token` passed by environment. | One global home per account; copying credentials per task | Prevents cross-sandbox transcript leakage via shared homes; an account switch needs no file copy. (Codex homes with `auth.json` write-back were removed with Codex, F 2026-10-08.) |
 | ADR-06 | Withdrawn (F 2026-10-08): no cross-provider switches. The provider-neutral transcript IR, the native transcript writers and the handoff fallback were removed; a task resumes its own session on another account. | Keep translation for a later second harness | Yulius runs Claude Code only; a returning harness gets its own decision. |
@@ -80,12 +80,13 @@ Principles:
 | ADR-08 | GitHub App (created by manifest flow) for installation tokens and user-to-server OAuth; permissions read per user per repository with a 5-minute cache. | OAuth App with `repo` scope; PATs | Narrow, revocable access; repository creation via installation (orgs) or the owner's user token (personal accounts). Requires a public callback URL. The App's permissions and what each is for: `docs/operations.md`; a read the App lacks the permission for degrades instead of failing (checks: §10, #111). |
 | ADR-09 | Superseded by ADR-15 (F 2026-10-10) for the user's view: the DOM mirror, its recorder, replayer and resource endpoint are removed; the per-sandbox Chromium, CDP for agents, the welcome page and the screencast (now the labelled JPEG fallback) remain. Earlier: narrowed by ADR-14 (F 2026-10-09): the mirror is now only the remote view of the sandbox Chrome's tabs (agents' tabs and hand-offs); the user's own browsing of the sandbox's apps is live (ADR-14). Per-sandbox headless Chromium; the user's view is a live DOM mirror: the rrweb recorder is injected through CDP into the page's main world (it must see the page's CSSOM patches) and reports to a CDP binding; the UI replays the events in rrweb's script-free iframe (sandbox `allow-same-origin` only — never `UNSAFE_replayCanvas`, which would let any page run script as Yulius through the binding) and paints sampled canvas frames itself; page resources the user's browser cannot reach are fetched by the server browser through a same-origin-only endpoint served with a `sandbox` CSP. The CDP screencast is the labelled fallback; input is dispatched with CDP `Input.*`; viewers learn viewport changes at once. Agents use Yulius browser tools and may attach CDP-capable MCPs to the same endpoint. New tabs open a welcome page served by the internal listener (BRW-006). | Pixel screencast only (original choice, rejected by F 2026-10-07); noVNC desktop; own DOM serializer; recorder in an isolated world (misses CSS-in-JS rules) | Crisp, selectable, phone-friendly view of the real browser (BRW-005); rrweb handles CSSOM/CSS-in-JS, inputs and iframes; plugins, internal pages and pages that send no DOM need the fallback. |
 | ADR-10 | Built-in editor: Monaco (VS Code's editor component, vendored AMD build without its translations) in the web UI over a small file API (`/api/sandboxes/{sid}/files…`) on the sandbox repository or a task worktree; per-user view state stays in the browser. | openvscode-server per sandbox (original: needed a token cookie fix, ran outside containment, too heavy); per-user contained openvscode-server (built, then dropped by the founder: "much simpler, without 90% of the features"); CodeMirror (needs a bundler) | No editor process or prerequisite on the VM; 14 MB of static assets (the TypeScript worker is 7 MB, loaded only for JS/TS); no extensions, debugging or integrated terminal (shells cover that). |
-| ADR-12 | Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
+| ADR-12 | Kept by ADR-19 (F 2026-10-10): under the holder the identity files are bound at `/var/lib/extrausers/` (with `libnss-extrausers`) so package scripts can still write `/etc/passwd`, and `sudo` is a dpkg-diverted shim in the system layer. Sandbox identity for user processes (shells): bubblewrap user namespace with `--uid 0 --gid 0`, generated `/etc/passwd`/`/etc/group` naming uid 0 after the user's login, the user's home `users/<user>/home` bound at `/home/<login>`, a `sudo` shim on `PATH`, hostname = sandbox slug. Agent runs keep the sandbox identity. | Real Unix accounts per user (needs a privileged helper); fake root via LD_PRELOAD | Separate users with root inside the sandbox without host privileges (UI-016); host system directories stay read-only (U-12). |
 | ADR-13 | Superadmin recovery code: 6 random digits, Argon2id hash in `instance`, persistent failure counter; 3 failures clear the hash and set a permanent lock; regenerate requires a superadmin session plus the password. | No recovery (original ACC-002); email reset | Recovery possible without email (ACC-011); 3 tries bound guessing to 3·10⁻⁶; an attacker can deliberately lock recovery, which the founders accepted. |
 | ADR-14 | Narrowed by ADR-15 (F 2026-10-10): the panel's live iframe tabs are removed; the preview origins and their proxy remain for one action, "Open live in a new window" on a sandbox dev server, and the no-recursion rules stay. Originally: the user browses the sandbox's apps **live in their own browser**: each (sandbox, port) has a preview origin `<port>-<key>.<yulius host>` that Yulius reverse-proxies to `127.0.0.1:<port>`, removing the iframe obstacles; the agents keep the sandbox's headless Chrome (ADR-09), whose tabs share the panel's strip and are watched remotely with the agent's cursor; Yulius never opens inside itself. Analysis and contract: §2.1. | Keep the mirror (A); pixel or video streaming (B); hybrids (D) | Native page behaviour on desktop and phone; needs wildcard DNS and TLS for the preview hosts (on-demand TLS); the app runs in the user's browser, so its absolute `localhost` URLs in page code do not reach the VM. |
 | ADR-15 | The panel **streams the real sandbox Chrome**: a headful Chrome per sandbox on its own `Xvfb` (no TCP or abstract socket, a cookie outside the sandbox directories), shown as H.264 video (ffmpeg x11grab + libx264 `ultrafast`/`zerolatency`, FLV framing, GOP cache, keyframe-aware backpressure) over the viewer WebSocket and decoded with WebCodecs; the user's input is real (XTest through x11rb); CDP stays for agents. Over the user's link (F 2026-10-10, later): the viewer acknowledges frames and the server keeps about a round trip on the way, the bitrate and frame rate follow the slowest viewer (VBV tiers), keyframes come on demand from a replacement encoder, wheel and pointer moves are coalesced. Analysis and contract: §2.2. | Fix the mirror (A); CDP screencast only (B); VNC/noVNC (C); WebRTC (D); in-process capture and encoder (E) | Scrolling and typing at video latency, captchas and cross-origin frames work because input is real and the browser is not headless; needs `xvfb` and `ffmpeg` with libx264 on the VM (else headless with JPEG frames); about one core per watched browser at 60 fps; the page is pixels (no text selection in the user's browser; copy goes through the clipboard). |
 | ADR-16 | **Task intake and chains** (F 2026-10-10): TypeSafe's Jev (`jev-1.13.0`, one fixed Choice question per request, fixed thresholds) decides whether a new task mixes separate workstreams and whether a prompt typed into a running task is context, new scope, dropped scope or a redirect; a headless Claude Code run proposes the smallest split; the `UserPromptSubmit` hook holds non-context prompts for a decision in the task view; a task can wait as `chained` until another is Done; a new task's mode and workflow on Auto are two more fixed questions with Goal and "Feature" as the defaults (TSK-015). Analysis, rules and edge cases: §2.3. | An LLM in the hook; classifying every prompt; one task per listed item; an approval queue | Deterministic and optional (no key = no checks); prompts and task text go to TypeSafe when configured; one click to override a wrong hold. |
 | ADR-17 | Claude subscriptions are **one self-managing pool** (F 2026-10-10): use-it-or-lose-it placement (weekly headroom ÷ hours to its reset ÷ tasks on the account + 1), a proactive switch at 98 % of any binding window at the turn boundary by native resume, and a **gentle, invisible pause** held by the harness — the Stop / `UserPromptSubmit` hook answers `202 Retry-After` and `yulius hook` keeps polling — persisted in `capacity_pauses`, resumed oldest first and staggered; a burn-rate forecast says when to buy more. Analysis and contract: §2.4. | Manual priorities (before); suspending the agent (SIGSTOP); letting the CLI hit the limit and typing a resume prompt; killing and resuming | No knobs; capacity that expires is spent first; switches only when forced; the agent is never told; a hold survives restarts; the CLI shows "running hook" while paused and a held agent keeps its session slot; relies on Claude Code honouring a long hook `timeout` (fallback: the reported-limit pause). |
+| ADR-19 | **Sandbox isolation** (F 2026-10-10): one namespace holder per sandbox — a user namespace with a subordinate id range, a private network namespace (`slirp4netns` egress, host loopback off, explicit relays for the internal listener and the sandbox's dev-server ports) and a mount namespace holding the sandbox's **system layer** (overlay of a Yulius-owned copy of the host system with a per-sandbox upper, so `sudo apt install` persists per sandbox); every run joins it, then gets its own PID/IPC/UTS/cgroup namespaces, a reduced capability set and a seccomp filter; per-sandbox cgroup v2 limits and a soft disk quota. Analysis and contract: §2.5. | rootless Podman; gVisor; microVMs (no KVM on the host); fuse-overlayfs over the live host system | `apt` works and persists per sandbox; host loopback services, other sandboxes and abstract sockets unreachable; limits per sandbox; needs an `/etc/subuid` range, `Delegate=` on the unit and `libnss-extrausers`; without them the previous containment stays (`legacy`); the base copy costs ~6 GB and a few minutes per host system change. |
 | ADR-11 | Delivery profiles in `yulius.toml` with presets `standard`, `product`, `studio`; merges/promotions are explicit user actions unless a profile enables auto-promotion. | Hard-coded dev/main | Fits Product and Studio without forcing their branches (K). |
 
 ### 2.1 ADR-14: the browser panel renders the sandbox's apps live (F 2026-10-09)
@@ -811,6 +812,124 @@ Code honours an 8-day hook `timeout`; if it ended the hook earlier, the hook fai
 continues on a subscription at 98 % or more, and a reported limit pauses it as `limit` — work is
 never lost.
 
+### 2.5 ADR-19: sandbox isolation — one namespace holder per sandbox (F 2026-10-10)
+
+Status: accepted and implemented (issue #142). Extends ADR-03 (bubblewrap) and ADR-12 (user
+identity); resolves SPEC-001 U-12; narrows R-07.
+
+**Request.** "Make sure isolation is good enough — think how sandboxes should be isolated etc, we
+want to have best practices here. Also we'd like to run sudo apt update etc by users in case we
+need some weird library."
+
+**The host.** Contabo VPS, Ubuntu 24.04, kernel 6.8, 12 vCPU, 47 GB RAM, ext4 root.
+- **No nested virtualization:** no `/dev/kvm`, no `svm` flag.
+- **Sandboxing tools:** bubblewrap 0.9.0 (no `--overlay`); `slirp4netns` 1.2.1, `uidmap` and `fuse-overlayfs` installed.
+- **AppArmor:** `kernel.apparmor_restrict_unprivileged_userns=1`; only `/usr/bin/bwrap` has a `userns` profile.
+- **cgroups:** v2 with `nsdelegate`.
+- **Before this ADR:** no `/etc/subuid` range for `yulius`, and `yulius.service` had no `Delegate=`.
+
+**Measured before this change.** Every run was its own `bwrap`: PID/IPC/UTS namespaces, a private `/tmp`, the host's `/usr`, `/etc` and `/opt` read-only, and the sandbox directory writable. Shells also had a single-uid user namespace. Every sandbox shared the **host network namespace**, so from inside one you could reach:
+- Yulius's listeners;
+- Caddy's admin API (`127.0.0.1:2019`, which rewrites the reverse proxy);
+- every sandbox Chrome's DevTools port (R-07);
+- other sandboxes' dev servers;
+- abstract Unix sockets.
+
+There were no resource limits and no syscall filter. `apt` could not work: the system directories were read-only, and one mapped uid cannot `chown` to `_apt` or package owners.
+
+**Options.**
+
+| | (a) bubblewrap + per-sandbox system layer | (b) rootless Podman per sandbox | (c) gVisor (`runsc`) | (d) microVMs (Firecracker, Cloud Hypervisor, Kata) |
+| --- | --- | --- | --- | --- |
+| Available here | yes: `bwrap`, `newuidmap`, `slirp4netns` present; kernel overlayfs in a user namespace allowed for `bwrap`'s AppArmor profile (measured) | packages `podman`, `passt`, `crun`/`conmon`, a systemd user instance with linger for cgroup delegation | `runsc` package; systrap platform without KVM; rootless mode limited (no sandbox network) | **no** (no KVM) |
+| Filesystem, `apt` persisting per sandbox | overlay: lower = a Yulius-owned copy of the host system (ids shifted into the namespace), upper = per sandbox; native dpkg/apt | container layer per sandbox over an image | gofer/overlay per sandbox, persisted upper possible | own disk per VM |
+| Process, PID, IPC | namespaces per run, shared user/net/mount namespaces per sandbox | namespaces per container | separate kernel (Sentry) | separate kernel |
+| uid mapping (`_apt`, dpkg chowns) | `newuidmap`: root inside = service user, 1–65535 = a subordinate range | same (`/etc/subuid`) | same plus Sentry users | full |
+| Limits | cgroup v2 via `Delegate=` on `yulius.service` | via the user systemd instance | via cgroups | VM size |
+| Network | private namespace, `slirp4netns` egress with host loopback off, explicit relays | pasta/slirp, `-p` publishes | netstack; rootless only host or none | tap/bridge (root) |
+| Kernel attack surface | host kernel, reduced by capabilities and seccomp | host kernel + Podman's seccomp | small (Sentry intercepts syscalls) | smallest |
+| Fit with ptyhost (ADR-02: PTY, `--die-with-parent`, process-tree probe, survive restarts) | unchanged: `ptyhost → bwrap → agent` | `podman exec` client between ptyhost and agent; killing it does not kill the agent; pids are conmon's | `runsc exec`, same issue | agent behind a VM console/vsock |
+| Performance | native CPU/memory; kernel overlay for system files, direct binds for the repository | native | file- and syscall-heavy work (git, npm, cargo, Claude Code's own tooling) several times slower on systrap | near native, needs KVM |
+| Operations | one `/etc/subuid` line, two unit lines, `libnss-extrausers`; no daemon | Podman stack, user manager + linger, image builds, storage migrations | `runsc` install, AppArmor profile, root or limited rootless | not possible here |
+| Upgrade path | toward (b)/(c) if needed: the holder already owns a container-shaped root | — | as a later runtime under (a)'s holder | when the VM gets KVM or moves to bare metal |
+
+**Within (a), the writable root.** Three ways to give a sandbox a writable root were measured on the VM:
+- **Kernel overlayfs straight over the host's `/usr`.** The mount succeeds (inside `bwrap`'s profile), but any change under a host-root-owned directory fails with `EOVERFLOW`/`EACCES`: the copy-up must `chown` to host uid 0, which is not mapped in the namespace. Measured.
+- **fuse-overlayfs over the live host directories.** It needs ownership squashing or xattr-stored owners (`squash_to_root`, `xattr_permissions`), which breaks dpkg's ownership semantics. It puts a userspace hop on every read of `/usr` (compilers, `node_modules` in `/usr/lib`). Its lower layer changes under it at every host upgrade, which overlayfs does not define.
+- **A full rootfs copy per sandbox.** About 5.7 GB per sandbox.
+
+Hence the shared, ownership-shifted **base** under a kernel overlay with a per-sandbox upper: native speed, real ownership (`apt-get install` ran as `_apt`/root in the experiment, with files owned by the shifted ids on the host), and one copy per host system state.
+
+**Decision: (a).** It is the only option that keeps the process model every other guarantee rests on (ADR-02; NFR-001..005), costs no performance, and runs on this host without a daemon. Namespaces share the host kernel. The mitigations are a reduced capability set, a seccomp filter against the usual escalation paths, no nested user namespaces, and no host services reachable over the network. gVisor stays the documented next step if the threat model grows; it can run under the same holder later.
+
+**Design.**
+
+1. **Namespace holder (one per sandbox).** `yulius sandbox-host start` (a short-lived helper) runs:
+   ```
+   bwrap --unshare-user --unshare-net --unshare-ipc --userns-block-fd … --dev-bind / / -- yulius sandbox-host inner
+   ```
+   - It maps root to the service user and 1–65535 to the service user's `/etc/subuid`/`/etc/subgid` range, writing the map with `newuidmap`/`newgidmap` while `bwrap` blocks.
+   - Then it attaches `slirp4netns --configure --disable-host-loopback` to the new network namespace and records `runtime/sandboxes/<sid>/host.json`: pids, namespace inodes, boot id, base.
+   - The inner process mounts the **system layer** (kernel overlayfs, `userxattr`) at `runtime/sandboxes/<sid>/root` inside its mount namespace, writes `/etc/hosts` and `/etc/hostname`, serves the relays and waits.
+   - The holder is detached like a ptyhost (it survives server restarts). The server adopts it again by verifying the pids and namespace inodes. It is stopped after 5 minutes without runs, or when its base is superseded and it is idle; the next run starts a fresh one.
+2. **Runs join the sandbox.** A run is an agent or a shell.
+   - The ptyhost first joins the sandbox's cgroup, then `setns` into the holder's user, network and mount namespaces, after checking that `/proc/<pid>/ns/*` still has the recorded inodes, so a reused pid cannot be joined.
+   - It then starts `yulius sandbox-exec` (seccomp shim) → `bwrap` with its own PID/IPC/UTS/cgroup namespaces, `--cap-drop ALL` plus Docker's default set (`CHOWN DAC_OVERRIDE FOWNER FSETID KILL SETGID SETUID SETPCAP SETFCAP NET_BIND_SERVICE NET_RAW SYS_CHROOT AUDIT_WRITE`), `--die-with-parent`, fresh `/proc` and `/dev`, private `/tmp` and `/run`.
+   - Binds:
+     - the system layer's `/usr` `/etc` `/var` `/opt` `/root` `/home` `/srv` (writable), with `/bin`, `/lib`, `/lib64` and `/sbin` as links;
+     - the sandbox directory at its host path (unchanged: repository, worktrees, home, attachments);
+     - read-only: the `yulius` executable, the agent CLI's package directory, `--contained-readonly` paths and the run's own files.
+   - Everything inside runs as uid 0 of the sandbox. Agents get `IS_SANDBOX=1`, which Claude Code requires for `--dangerously-skip-permissions` as root.
+3. **System layer.**
+   - **The base.** `system/base-<n>/` is built by `yulius sandbox-base build`, by the server in the background, or by the operator before a deploy. It holds `/usr`, `/etc`, `/opt` and dpkg/apt/debconf state from `/var`, copied as the service user with ownership shifted into the namespace in a second pass inside it. Unreadable files are skipped: shadow, sudoers, private keys. `/var/lib/yulius` and everything else under `/var` are never copied (allow-list).
+   - **Generated in the base:**
+     - `resolv.conf` (slirp's DNS) and `policy-rc.d` (no service starts);
+     - `shadow`/`gshadow`;
+     - the `sudo` shim as `/usr/bin/sudo`, with a local dpkg diversion so upgrading `sudo` does not replace it;
+     - with `libnss-extrausers`, `nsswitch.conf` listing `extrausers` first.
+   - **Upper.** `sysroots/<sid>/{upper,work}` is per sandbox, outside the sandbox directory, so sandbox processes cannot touch the overlay's internals.
+   - **Rebuilds.** The base is rebuilt when the host's dpkg status, `/usr/local` or `/opt` changes (a fingerprint checked every 30 minutes, debounced 10 minutes). A holder moves to the new base the next time it starts. The upper is kept: packages a sandbox installed stay installed, and files it never changed follow the new base. Unreferenced bases are deleted.
+4. **Network.** Each sandbox has a private network namespace.
+   - **Egress:** `slirp4netns` (`YULIUS_SANDBOX_EGRESS=direct`, default) or none (`none`: only the explicit relays).
+   - **Host loopback, other sandboxes and abstract sockets** are unreachable.
+   - **Relays.** The only crossings are explicit relays through Unix sockets in `runtime/sandboxes/<sid>/`, never bound into runs:
+     - **Into the sandbox:** the internal listener's port (MCP, hooks, Git credentials, the secrets proxy of ADR-18; `YULIUS_URL` unchanged), plus operator-configured `YULIUS_SANDBOX_FORWARD` ports.
+     - **Out to the host's loopback:** the sandbox's dev-server ports (PRJ-010), bound on the host only while something listens on them inside (the holder polls `/proc/net/tcp*` every second). Connections reach servers bound to `127.0.0.1` or `::1` inside, so previews, the welcome page's port list and the sandbox browser keep working.
+5. **Limits.**
+   - **cgroups.** With `Delegate=yes` and `DelegateSubgroup=server` on the unit, the server keeps its own processes in `server/`, moves processes left from before delegation to `legacy/`, and gives each sandbox `sandboxes/<sid>/` with `memory.max`, `cpu.max` and `pids.max`. The holder, `slirp4netns` and every run of the sandbox are in it. Defaults: half the RAM, all CPUs but two, 8192 tasks.
+   - **Disk.** ext4 project quotas need the filesystem unmounted, so disk is a **soft quota**: the sandbox directory plus its upper layer, measured in the background (bounded walk). Over `YULIUS_SANDBOX_DISK_GB` (default 100), new runs are refused with the figures; live runs continue.
+6. **Seccomp** (x86-64; other architectures: none, logged).
+   - **Refused with `EPERM`:** kernel modules, kexec, `bpf`, `perf_event_open`, `userfaultfd`, keyrings, `io_uring_*`, `open_by_handle_at`, mount APIs, `pivot_root`, swap, reboot, `syslog`, `acct`, `quotactl`, `iopl`/`ioperm`, x32 calls.
+   - **Nested user namespaces:** `unshare`/`clone` with `CLONE_NEWUSER` are refused; `clone3` answers `ENOSYS`, so libc falls back to `clone`.
+   - **Other architectures' calls** are refused.
+7. **Identity (ADR-12 kept).**
+   - **Users.** A user's shell binds the per-user `passwd`/`group` files at `/var/lib/extrausers/` when the base has `libnss-extrausers`, else over `/etc/passwd` and `/etc/group` as before. With extrausers, `whoami` is the login while `useradd` from package scripts keeps writing the real `/etc/passwd`.
+   - **Agents** run as `root`.
+8. **Modes and migration.** `YULIUS_ISOLATION=auto` (default) uses this design when its prerequisites hold:
+   - Linux and containment on;
+   - `bwrap`, `newuidmap`/`newgidmap` and a subordinate range of at least 65,536 ids;
+   - `slirp4netns` (unless egress is `none`);
+   - a built base.
+
+   Otherwise runs use the previous containment (`legacy`), and `yulius doctor` names what is missing. `namespaces` refuses runs without the prerequisites; `legacy` keeps the old behaviour.
+   - **Runs from before the deploy.** Their `launch.json` has no join, so they are re-adopted and keep running as they are. New runs in the same sandbox use the holder. Ports a legacy run still holds on the host are skipped by the relay until they are free.
+   - **Files.** The service user owns files written by uid 0 in either mode, so the repository, worktrees and homes need no migration. The system layer of an existing sandbox starts empty.
+   - **cgroups.** Processes from before delegation are moved to `legacy/`.
+
+**Security properties (tested, §14).**
+- **Host secrets.** `master.key`, the database, `jev.key`, other sandboxes, other users' homes, run directories and the relay sockets are not in a run's mount namespace.
+- **Displays.** The X displays' sockets (private `/tmp`), abstract sockets (private network) and cookies are unreachable.
+- **Host loopback.** Yulius's public listener, Caddy's admin API, DevTools ports and other loopback services are refused. The internal listener works through its relay.
+- **Package installs.** A package installed in one sandbox is invisible in another and on the host.
+- **Limits and syscalls.** Limits hold; nested user namespaces and filtered calls fail.
+
+**Not covered.**
+- **The kernel.** Kernel bugs reachable through allowed syscalls; gVisor is the upgrade.
+- **Root inside a sandbox is the service user on host files.** Anything that user owns and that is bound into the sandbox (the sandbox directory, the `yulius` binary read-only) is that sandbox's to change, as before. The Chrome profile under the sandbox directory stays readable to that sandbox's agents (R-07).
+- **The subordinate range is shared by every sandbox.** Mount, PID and network namespaces separate them; per-sandbox ranges are a later refinement.
+- **Disk is a soft quota.** It needs project quotas on a dedicated data volume to become hard.
+- **The secrets proxy is a way out, not the only one,** unless `YULIUS_SANDBOX_EGRESS=none`.
+
 ## 3. Code organization
 
 Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
@@ -822,6 +941,7 @@ Layers follow [dependency boundaries](../../docs/engineering/architecture.md).
 | `crates/yulius-app` | application | Use cases and ports: `Store`, `GitHubPort`, `GitPort`, `SessionHostPort`, `HarnessPort`, `BrowserPort`, `EditorPort`, `Clock`, `Ids`, `SecretBox`, event bus. Authorization decisions. |
 | `crates/yulius-store` | adapter | SQLite schema, migrations, repositories, backup. |
 | `crates/yulius-ptyhost` | adapter | ptyhost process (PTY, containment, vt100, socket server) and client. |
+| `crates/yulius-sandbox` | adapter | Sandbox isolation (ADR-19): the per-sandbox namespace holder, the system layer's base, relays across the network boundary, cgroup limits, disk usage, seccomp filter, entering a sandbox. |
 | `crates/yulius-harness` | adapter | Claude Code launch specs, home layout, hook/MCP config rendering, transcript tailers and wire parsers, usage extraction, login flows. |
 | `crates/yulius-github` | adapter | GitHub REST, App JWT, OAuth, installation tokens. |
 | `crates/yulius-git` | adapter | Git CLI wrapper: clone/fetch, worktrees, branches, bundles, diff stats, hooks install. |
@@ -848,6 +968,12 @@ sandboxes/<sandbox>/attachments/{tasks,shells}/<id>/  files dropped or pasted on
 users/<user>/home/                  user's home in their shells (bound at /home/<login>; ADR-12)
 users/<user>/identity/              generated passwd/group files of the user's sandbox identity
 runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
+runtime/sandboxes/<sandbox>/        namespace holder (ADR-19): holder.json, host.json, holder.log, in.sock,
+                                    out.sock, root/ (the merged system layer inside the holder only)
+system/base-<n>/, system/current.json   bases of the system layers: a copy of the host system with ids
+                                    shifted into the sandboxes' user namespace (ADR-19)
+sysroots/<sandbox>/{upper,work}/    a sandbox's system layer (packages it installed); outside the sandbox
+                                    directory, never bound into runs
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
 runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files
 shells/<shell>/                     ptyhost run directories of sandbox shells (UI-015); shell.json (owner,
@@ -1363,6 +1489,18 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   shell quoting.
 - Recovery code (ADR-13): stored as Argon2id hash only; verification is constant-time via
   Argon2; the failure counter and permanent lock are persisted before the response is sent.
+- Sandbox isolation (ADR-19, §2.5): runs of an isolated sandbox share its holder's user, network
+  and mount namespaces; each run has its own PID/IPC/UTS/cgroup namespaces, Docker's default
+  capability set and the seccomp filter (no nested user namespaces). The network namespace reaches
+  the host only through `slirp4netns` with the host loopback disabled and the explicit relays (the
+  internal listener's port into the sandbox, the sandbox's dev-server ports out to the host's
+  loopback); abstract sockets, other sandboxes, Yulius's public listener, Caddy's admin API and
+  DevTools ports are unreachable (R-07's cross-sandbox path closed). A run's mount namespace holds
+  the system layer, its sandbox directory and read-only the `yulius` binary, the agent CLI's
+  package and the run's files; `master.key`, the database, `runtime/`, `system/`, `sysroots/`,
+  other sandboxes and other users' homes are absent. Root inside is the service user on host
+  files: what a sandbox may write (its directory) is unchanged. A pid is joined only while
+  `/proc/<pid>/ns/*` has the recorded inodes.
 - Browser displays (ADR-15): one Xvfb per sandbox browser with `-nolisten tcp -nolisten local` and
   a per-display cookie in `<data>/displays/<sandbox>/Xauthority` (0600, outside every directory
   containment binds); contained processes have a private `/tmp`, so no X socket, cookie,
@@ -1437,6 +1575,11 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Chained tasks per sandbox | 32 | refused at creation |
 | Held prompts per task | one pending (a newer one supersedes) | — |
 | Revert stop wait | 30 s | nothing reverted, conflict |
+| Sandbox memory / CPU / tasks (ADR-19, with delegation) | half the RAM / CPUs − 2 / 8192 | OOM kill inside the sandbox / throttled / `fork` fails (`EAGAIN`) |
+| Sandbox disk (soft, ADR-19) | 100 GB (directory + system layer), measured ≤ every 10 min, ≤ 4 M entries | new runs refused (409) with the figures; live runs continue |
+| Holder start / idle stop | 60 s / 5 min without runs or leases (1 min when its base is superseded) | start error (`auto`: the run uses the previous containment) / holder stopped |
+| Relayed connections per sandbox and direction | 256 (header 5 s, connect 3 s); ports polled every 1 s | refused |
+| Base build | one at a time, 60 min; host unchanged 10 min before a rebuild; fingerprint read every 30 min | build error logged; the current base stays |
 
 ## 10. Failure and recovery matrix
 
@@ -1469,6 +1612,11 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Jev down, slow or answering off-contract | typed adapter failure | Nothing checked: new tasks are created as written, typed prompts pass (ADR-16). |
 | Split proposal fails (no account, Claude error, timeout, unusable) | proposer failure / domain check | The composer creates the one task as written. |
 | Predecessor of a chained task ends without being Done | chain re-evaluation | The chained task needs a person (reason shown); never started silently. |
+| Sandbox holder dies (ADR-19) | upkeep tick: recorded pid without its namespaces | Record removed, `slirp4netns` stopped; live runs keep their namespaces (they lose egress); the next run starts a new holder (a second overlay is never mounted on the same layer: until the old runs end, new runs are refused, or use the previous containment in `auto`). |
+| `slirp4netns` dies | upkeep tick | Restarted against the live holder; egress back within 30 s. |
+| Server restart with live holders | `host.json` + namespace inodes | Holders adopted, relays re-served; runs never notice except relayed connections in flight. |
+| Host packages change (apt upgrade, new Claude Code) | fingerprint | New base built in the background; holders move to it when idle; packages a sandbox installed stay in its layer. |
+| Over the disk quota | background measurement | New sessions refused with the figures; live ones continue. |
 
 ## 11. Testing and evidence plan
 
@@ -1479,6 +1627,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Integration (fake agent) | ptyhost spawn/flood/ignore-SIGTERM/descendant/early-exit/cancel races, reconnect, server restart reattach, rotation with fake usage, hooks & MCP end-to-end | `tools/fake-agent` |
 | Integration (fake GitHub) | OAuth, permissions, repo creation, PR/checks/merge/ff | axum fake server |
 | Linux-only | bubblewrap containment escape attempts | CI ubuntu job |
+| Isolation (opt-in, Linux, ADR-19) | the namespace holder end to end: apt, persistence, other sandboxes, network relays and refusals, host secrets, displays, seccomp, limits, disk quota, idle restart | `crates/yulius/tests/isolation.rs` (`YULIUS_ISOLATION_TEST=1`; limits in a delegated transient unit); run on the production VM's kernel as the service user |
 | UI | end-to-end tests in `e2e/` (e2e by TesterArmy, Playwright) against the UI's mock mode: flows, keyboard, WCAG 2.x A/AA (axe-core), page errors, phone viewport; agent steps opt-in with a model key | Node test-only (ADR-01 unchanged); advisory CI job `Web UI e2e`. The real server, terminal rendering and panels against live agents: manual with recorded evidence |
 | Live (opt-in, never CI) | real Claude Code: launch, hooks, MCP, resume | uses local credentials; minimal prompts |
 | Live display (opt-in, Linux) | the streamed browser with Xvfb, ffmpeg and real Chrome: input, video content, popups, containment, recursion; performance figures; captcha clicks | `crates/yulius/tests/live_display.rs` (`YULIUS_LIVE_DISPLAY=1`); `live_ui_browser.rs` drives the real UI against it |
@@ -1495,7 +1644,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | R-14 | Claude Code's handling of a hook held for days is not verified live (ADR-17). | The CLI timeout is written explicitly; the hook client fails open first; a reported limit still pauses the task as `limit`. Open: a live smoke of a held Stop hook. |
 | R-05 | Browser video on phones and slow links. | Flow control by the viewer's acknowledgements, bitrate and frame-rate tiers following the slowest viewer, keyframes on demand, skip to a fresh keyframe per viewer (ADR-15, F 2026-10-10). Open: per-viewer tiers (the slowest viewer sets the shared stream). |
 | R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
-| R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; sandboxes share the loopback network, so any local process (including other sandboxes' agents) can drive a sandbox browser and its logged-in sessions; in contained mode CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's containment/network namespace. |
+| R-07 | Chromium's DevTools endpoint is unauthenticated on loopback; before ADR-19 sandboxes shared the loopback network, so any local process (including other sandboxes' agents) could drive a sandbox browser and its logged-in sessions; CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Port stays on 127.0.0.1. Isolated sandboxes (ADR-19) cannot reach the host's loopback, so the cross-sandbox path is closed; legacy containment and host processes remain exposed. Open: an authenticated CDP proxy over a pipe, or Chromium inside the sandbox's holder. |
 | R-08 | An unrestricted GitHub installation token works for every repository of the installation. | Mitigated: agents receive tokens restricted to their sandbox repository (`repositories` parameter), only for live task tokens and only for `github.com/<owner>/<repo>`; unrestricted tokens stay server-side (delivery pushes, repository creation). |
 | R-09 | Delivery environment commands run with the server's privileges outside containment, in a clone whose `.git` and the sandbox home are agent-writable (repository-local Git config such as filter drivers, tools reading `HOME`). | Hooks, fsmonitor and global/system Git config disabled for the checkout (the editor is now a file API, no process). Open: run environment commands inside the sandbox containment. |
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
@@ -1560,6 +1709,10 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-10 (F 2026-10-10, item 4; #142): ADR-19 — sandbox isolation with one namespace holder
+  per sandbox (subordinate id range, private network with relays, writable system layer over a
+  shared base, limits, seccomp); ADR-03/ADR-12 extended; new crate `yulius-sandbox`; §3, §4, §8,
+  §9, §10, §11, R-07, §14.
 - 2026-10-10 (F 2026-10-10, final stage items 1(a)/(c); #143, #144): ADR-17 "Where the readings
   come from" — `setup-token` sign-ins cannot read the usage endpoint (HTTP 403, no `user:profile`),
   so the sessions' status line reports the plan usage; R-04. §6.1: how each session end moves the

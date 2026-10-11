@@ -504,9 +504,21 @@ impl App {
             map.insert(id.clone(), Arc::clone(&runtime));
             runtime
         };
-        let space = self.user_space(&ctx.user, &record)?;
-        let launched = match self.launch_shell(&record, &space, &runtime, &cwd).await {
-            Ok(reader) => self.save_shell(&runtime).map(|()| reader),
+        let launched = match self.isolation_join(&record).await {
+            Ok(joined) => {
+                let (join, lease) = joined.unzip();
+                match self.user_space(&ctx.user, &record, join) {
+                    Ok(space) => {
+                        let launched = self.launch_shell(&record, &space, &runtime, &cwd).await;
+                        drop(lease);
+                        match launched {
+                            Ok(reader) => self.save_shell(&runtime).map(|()| reader),
+                            Err(err) => Err(err),
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            }
             Err(err) => Err(err),
         };
         match launched {

@@ -163,6 +163,8 @@ pub struct App {
     pub instance_tag: String,
     /// Task intake (Jev, split proposals); unset means nothing is checked (SPEC-002 ADR-16).
     pub(crate) intake: OnceLock<crate::intake::IntakeServices>,
+    /// Sandbox isolation (SPEC-002 ADR-19); unset: contained runs keep the previous containment.
+    pub(crate) isolation: OnceLock<Arc<dyn crate::ports::isolation::SandboxIsolation>>,
 }
 
 impl App {
@@ -189,7 +191,16 @@ impl App {
             previews: crate::preview::PreviewState::default(),
             uploads: crate::uploads::UploadState::default(),
             intake: OnceLock::new(),
+            isolation: OnceLock::new(),
         })
+    }
+
+    /// Installs sandbox isolation (once; SPEC-002 ADR-19). Returns whether it was set.
+    pub fn set_isolation(
+        &self,
+        isolation: Arc<dyn crate::ports::isolation::SandboxIsolation>,
+    ) -> bool {
+        self.isolation.set(isolation).is_ok()
     }
 
     /// Whether a browser `Origin` may use the API: the public URL or an allowlisted origin.

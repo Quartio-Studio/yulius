@@ -1,5 +1,6 @@
 //! Versioned external contracts of Yulius: HTTP API DTOs, UI events, terminal WebSocket frames,
-//! the ptyhost wire protocol, MCP and hook payloads, import manifests and browser frames.
+//! the ptyhost wire protocol, MCP and hook payloads, import manifests, browser frames and the
+//! sandbox namespace holder's records.
 
 pub mod api;
 pub mod browser;
@@ -8,4 +9,5 @@ pub mod hooks;
 pub mod import;
 pub mod mcp;
 pub mod ptyhost;
+pub mod sandbox;
 pub mod terminal;

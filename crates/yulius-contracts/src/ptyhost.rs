@@ -397,9 +397,43 @@ pub struct BubblewrapSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub binds: Vec<BindMount>,
     /// Run as this identity in a new user namespace (user shells and editors, SPEC-002
-    /// ADR-12); `None` keeps the caller's identity.
+    /// ADR-12); `None` keeps the caller's identity. Ignored when `join` is set (the holder's
+    /// namespace already makes the run uid 0; its host name is `join.hostname`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<SandboxIdentity>,
+    /// Join the sandbox's namespace holder (SPEC-002 ADR-19) instead of creating a user and
+    /// network namespace: the run gets the sandbox's network, its writable system layer, its
+    /// cgroup, a reduced capability set and the seccomp filter. `None`: the previous containment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<Box<SandboxJoin>>,
+}
+
+/// The sandbox namespace holder a contained run joins (SPEC-002 ADR-19).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxJoin {
+    /// The holder process inside the namespaces.
+    pub holder_pid: u32,
+    /// Expected inode of its user namespace (a reused pid is refused).
+    pub user_ns: u64,
+    /// Expected inode of its network namespace.
+    pub net_ns: u64,
+    /// Expected inode of its mount namespace.
+    pub mnt_ns: u64,
+    /// The sandbox's cgroup directory, joined first; `None` without delegation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cgroup: Option<String>,
+    /// The merged system layer in the holder's mount namespace.
+    pub system_root: String,
+    /// Host name inside the run (the sandbox slug).
+    pub hostname: String,
+    /// `yulius` executable whose `sandbox-exec` installs the seccomp filter and execs `bwrap`;
+    /// `None`: no filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_shim: Option<String>,
+    /// Directories covered by an empty tmpfs before the run's own binds (Yulius's data
+    /// directory), so their mount points never land in the sandbox's system layer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub private_dirs: Vec<String>,
 }
 
 /// A bind mount at a different path inside the sandbox.
@@ -675,6 +709,29 @@ fn validate_bubblewrap(spec: &BubblewrapSpec) -> Result<(), LaunchSpecError> {
             "containment.binds",
             "sources and destinations must be absolute; the destination is not /",
         ));
+    }
+    if let Some(join) = &spec.join {
+        let paths_ok = valid_abs_path(&join.system_root)
+            && join.system_root != "/"
+            && join.cgroup.as_deref().is_none_or(valid_abs_path)
+            && join.exec_shim.as_deref().is_none_or(valid_abs_path)
+            && join.private_dirs.len() <= 8
+            && join
+                .private_dirs
+                .iter()
+                .all(|d| valid_abs_path(d) && d != "/");
+        if join.holder_pid <= 1 || !paths_ok {
+            return Err(spec_err(
+                "containment.join",
+                "needs a holder pid and absolute paths",
+            ));
+        }
+        if !crate::sandbox::valid_hostname(&join.hostname) {
+            return Err(spec_err(
+                "containment.join.hostname",
+                "must be 1..=63 letters, digits or dashes",
+            ));
+        }
     }
     if let Some(identity) = &spec.identity {
         let host_ok = (1..=63).contains(&identity.hostname.len())
@@ -1620,6 +1677,17 @@ mod tests {
                 gid: 0,
                 hostname: "s1".into(),
             }),
+            join: Some(Box::new(SandboxJoin {
+                holder_pid: 4242,
+                user_ns: 4_026_531_837,
+                net_ns: 4_026_531_840,
+                mnt_ns: 4_026_531_841,
+                cgroup: Some("/sys/fs/cgroup/system.slice/yulius.service/sandboxes/s1".into()),
+                system_root: "/data/runtime/sandboxes/s1/root".into(),
+                hostname: "s1".into(),
+                exec_shim: Some("/usr/local/bin/yulius".into()),
+                private_dirs: vec!["/data".into()],
+            })),
         });
         spec.validate()?;
         let json = serde_json::to_string(&spec)?;
@@ -1680,9 +1748,35 @@ mod tests {
                         share_net: false,
                         binds: vec![],
                         identity: None,
+                        join: None,
                     });
                 },
                 "containment.sandbox_root",
+            ),
+            (
+                |s| {
+                    s.containment = Containment::Bubblewrap(BubblewrapSpec {
+                        sandbox_root: "/data/s1".into(),
+                        home: "/data/s1/home".into(),
+                        writable: vec![],
+                        readonly: vec![],
+                        share_net: true,
+                        binds: vec![],
+                        identity: None,
+                        join: Some(Box::new(SandboxJoin {
+                            holder_pid: 1,
+                            user_ns: 1,
+                            net_ns: 2,
+                            mnt_ns: 3,
+                            cgroup: None,
+                            system_root: "/data/runtime/sandboxes/s1/root".into(),
+                            hostname: "s1".into(),
+                            exec_shim: None,
+                            private_dirs: Vec::new(),
+                        })),
+                    });
+                },
+                "containment.join",
             ),
         ];
         for (mutate, field) in cases {

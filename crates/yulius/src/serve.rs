@@ -118,6 +118,9 @@ pub struct ServeArgs {
     /// Probability Jev must give before a prompt typed into a running task is held (0.5–1).
     #[arg(long, env = "YULIUS_JEV_SCOPE_THRESHOLD", default_value_t = yulius_domain::intake::DEFAULT_SCOPE_THRESHOLD, value_parser = parse_threshold)]
     pub jev_scope_threshold: f64,
+    /// Sandbox isolation (SPEC-002 ADR-19).
+    #[command(flatten)]
+    pub isolation: crate::wiring::sandbox::IsolationArgs,
 }
 
 /// Parses a probability threshold (0.5–1).
@@ -387,6 +390,8 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         return Err("the internal listener must bind a loopback address".into());
     }
     let app = build_app(&args)?;
+    let _isolation =
+        crate::wiring::sandbox::install(&app, &args.isolation, args.internal_bind.port()).await?;
     app.cleanup_stale_logins().await;
     match app.reconcile_environment_runs().await {
         Ok(0) => {}
