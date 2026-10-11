@@ -641,6 +641,51 @@ async fn wait_for(what: &str, timeout: Duration, mut check: impl FnMut() -> bool
     Err(format!("timed out waiting for {what}").into())
 }
 
+#[tokio::test]
+async fn composer_drafts_are_kept_per_user_outside_git_and_need_write_access() -> TestResult {
+    let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    let bob = seed_github_user(&h, "u-bob", "bob").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    h.github.set_perm("bob", "acme/fixture", perms("read"));
+    let data = h.app.config.data_dir.clone();
+    std::fs::create_dir_all(data.join("sandboxes/s1/repo"))?;
+    let folder = data.join("sandboxes/s1/attachments/drafts/u-alice");
+    let url = "/api/sandboxes/s1/attachments?name=Screen%20Shot.png";
+
+    let refused = upload(&h, Method::POST, url, b"png", &bob).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    let unknown = upload(
+        &h,
+        Method::POST,
+        "/api/sandboxes/nope/attachments?name=a.png",
+        b"png",
+        &alice,
+    )
+    .await?;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+
+    let first = upload(&h, Method::POST, url, b"\x89PNG one", &alice).await?;
+    assert_eq!(first.status, StatusCode::CREATED, "{:?}", first.body);
+    assert_eq!(first.body["name"], "Screen-Shot.png");
+    assert_eq!(
+        first.body["path"],
+        folder.join("Screen-Shot.png").to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        std::fs::read(folder.join("Screen-Shot.png"))?,
+        b"\x89PNG one"
+    );
+    let second = upload(&h, Method::POST, url, b"\x89PNG two", &alice).await?;
+    assert_eq!(
+        second.body["name"], "Screen-Shot-2.png",
+        "{:?}",
+        second.body
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() -> TestResult {
     let dir = tempfile::Builder::new().prefix("yup").tempdir_in("/tmp")?;

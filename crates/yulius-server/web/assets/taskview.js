@@ -10,7 +10,7 @@ import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
-import { attachTerminalDrop, taskAttachments } from './filedrop.js';
+import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments } from './filedrop.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -441,6 +441,8 @@ export function mountComposer(ctx, sandbox) {
       box,
       h('div', { class: 'composer-hint muted xs' }, modeHint, h('span', { class: 'composer-hint-sep', 'aria-hidden': 'true' }, ' · '), hint),
       intakeSlot));
+  // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
+  attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id) });
 
   function renderChips() {
     const m = MODES.find((x) => x.id === mode);

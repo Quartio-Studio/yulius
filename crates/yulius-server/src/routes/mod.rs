@@ -268,6 +268,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             post(uploads::task_attachment),
         )
         .route(
+            "/api/sandboxes/{sid}/attachments",
+            post(uploads::draft_attachment),
+        )
+        .route(
             "/api/sandboxes/{sid}/shells/{id}/attachments",
             post(uploads::shell_attachment),
         )
