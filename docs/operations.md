@@ -12,6 +12,7 @@ been performed or verified** as part of the implementation work.
 | Linux x86_64 or arm64, systemd | the service | macOS works for development (runs are "not contained"). |
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
+| GitHub CLI (`gh`) | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | `apt-get install gh` on the host; sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
 | `slirp4netns` | sandbox egress (isolation) | `apt install slirp4netns`. |
@@ -404,7 +405,7 @@ shells and CI jobs join it. A sandbox gets:
 **Install once** (as root):
 
 ```sh
-apt install uidmap slirp4netns bubblewrap
+apt install uidmap slirp4netns bubblewrap gh
 # A free subordinate range of 65,536 ids for the service user (check /etc/subuid and /etc/subgid
 # for ranges already used; on the reference VM 100000–231071 are taken):
 usermod --add-subuids 231072-296607 --add-subgids 231072-296607 yulius
@@ -817,8 +818,8 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
 - Upgrading to tasks acting as their creator on GitHub (GIT-003, #188, 2026-10-11): no migration
   and no configuration. The agents' Git switches to the creator's token at its next credential
-  request; a run gets `gh` logged in as the creator when it is started or continued (install `gh`
-  in the sandbox with `sudo apt install gh`). Task worktrees commit as
+  request; a run gets `gh` logged in as the creator when it is started or continued (`gh` itself
+  is a host prerequisite, §1). Task worktrees commit as
   `{id}+{login}@users.noreply.github.com` from their next run. Someone whose GitHub sign-in can no
   longer be refreshed signs in with GitHub again; until then their tasks act as the App, and the
   task's terminal says why.

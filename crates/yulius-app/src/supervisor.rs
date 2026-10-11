@@ -754,7 +754,13 @@ impl App {
             launch.env.retain(|(k, _)| k != "PATH");
             launch.env.extend([
                 ("IS_SANDBOX".into(), "1".into()),
-                ("PATH".into(), crate::isolation::SANDBOX_PATH.into()),
+                (
+                    "PATH".into(),
+                    crate::isolation::with_home_tools(
+                        &home.to_string_lossy(),
+                        crate::isolation::SANDBOX_PATH,
+                    ),
+                ),
             ]);
         }
         launch.containment = if self.config.contained {
@@ -929,9 +935,13 @@ impl App {
 
     fn base_env(&self, sandbox: &SandboxRecord, home: &Path) -> Vec<(String, String)> {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
+        let home_text = home.to_string_lossy().into_owned();
         let mut env = vec![
-            ("HOME".into(), home.to_string_lossy().into_owned()),
-            ("PATH".into(), path),
+            ("HOME".into(), home_text.clone()),
+            (
+                "PATH".into(),
+                crate::isolation::with_home_tools(&home_text, &path),
+            ),
             ("TERM".into(), "xterm-256color".into()),
             ("COLORTERM".into(), "truecolor".into()),
             ("LANG".into(), "C.UTF-8".into()),

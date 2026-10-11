@@ -378,7 +378,11 @@ impl App {
         ));
         if !self.config.contained {
             env.push(("HOME".into(), home_host.to_string_lossy().into_owned()));
-            let path = format!("{}:{path}", self.gh_bin()?.display());
+            let path = format!(
+                "{}:{}",
+                self.gh_bin()?.display(),
+                crate::isolation::with_home_tools(&home_host.to_string_lossy(), &path)
+            );
             env.push(("PATH".into(), path));
             return Ok(UserSpace {
                 login,
@@ -416,6 +420,7 @@ impl App {
         } else {
             path
         };
+        let path = crate::isolation::with_home_tools(&home.to_string_lossy(), &path);
         env.push(("PATH".into(), format!("{SANDBOX_BIN}:{path}")));
         let identity_dest = PathBuf::from("/etc");
         let replace_sudo = join.is_none() && Path::new(HOST_SUDO).is_file();
