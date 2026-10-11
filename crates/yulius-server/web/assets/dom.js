@@ -367,6 +367,20 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
     event.preventDefault();
     if (dismissible) close(undefined);
   });
+  // A click outside the dialog (on its backdrop) closes it like Esc and ×, as every menu and
+  // popover does. Only a press that also starts outside counts: selecting text in a field and
+  // releasing past the edge keeps the dialog.
+  const outside = (event) => {
+    if (event.target !== dialog) return false;
+    const r = dialog.getBoundingClientRect();
+    return event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom;
+  };
+  let pressedOutside = false;
+  dialog.addEventListener('pointerdown', (event) => { pressedOutside = outside(event); });
+  dialog.addEventListener('click', (event) => {
+    if (dismissible && pressedOutside && outside(event)) close(undefined);
+    pressedOutside = false;
+  });
   // Enter in a one-line field submits the dialog, as in every form: the primary action runs.
   let primary = null;
   dialog.addEventListener('keydown', (event) => {

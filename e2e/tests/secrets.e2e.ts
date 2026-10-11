@@ -81,3 +81,48 @@ test('members who only read a sandbox cannot add agent secrets', async ({ app, s
   await app.open(mock('/s/sandbox-3/secrets?section=agents'));
   await expect(screen.getByRole('button', 'Add agent secret')).toBeDisabled();
 });
+
+// Founder feedback 2026-10-11 ("ux is a little broken"): the add button sat in a row glued to the
+// banner and the list. Like every list page, the header holds the shown section's add button, and
+// the section's parts keep the page's spacing.
+test('each section adds from the page header and its parts keep their spacing', async ({ app, browser, screen }) => {
+  const headerButton = () => browser.evaluate(() => [...document.querySelectorAll('.page-head .page-actions button')].map((b) => b.textContent!.trim()));
+  const gaps = () => browser.evaluate(() => {
+    const parts = [...document.querySelector('.page-inner > .stack > .stack')!.children].map((el) => el.getBoundingClientRect());
+    return parts.slice(1).map((r, i) => Math.round(r.top - parts[i].bottom));
+  });
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  await expect(screen.getByText('STRIPE_KEY')).toBeVisible();
+  expect(await headerButton()).toEqual(['Add agent secret']);
+  for (const gap of await gaps()) expect(gap).toBeGreaterThanOrEqual(8);
+
+  await screen.getByRole('radio', 'Team secrets').click();
+  await expect(screen.getByText('Shared Gmail')).toBeVisible();
+  expect(await headerButton()).toEqual(['Add team secret']);
+  for (const gap of await gaps()) expect(gap).toBeGreaterThanOrEqual(8);
+});
+
+// Founder feedback 2026-10-11: "when i click outside any popup i want it to close".
+test('a click outside a dialog closes it; a click or a selection inside does not', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets'));
+  await screen.getByRole('button', 'Add team secret').first().click();
+  const add = screen.getByRole('dialog', 'Add team secret');
+  await expect(add).toBeVisible();
+  await screen.getByLabel('Title').fill('Draft');
+  await screen.getByLabel('Title').click();
+  await expect(add).toBeVisible();
+
+  // Selecting text in a field and releasing past the dialog's edge keeps it open.
+  const field = await browser.locator('dialog.modal input').first().boundingBox();
+  await browser.mouse.move(field!.x + 8, field!.y + field!.height / 2);
+  await browser.mouse.down();
+  await browser.mouse.move(4, 4);
+  await browser.mouse.up();
+  await expect(add).toBeVisible();
+
+  // A click on the backdrop, outside the dialog.
+  await browser.mouse.move(4, 4);
+  await browser.mouse.down();
+  await browser.mouse.up();
+  await expect(add).toBeHidden();
+});

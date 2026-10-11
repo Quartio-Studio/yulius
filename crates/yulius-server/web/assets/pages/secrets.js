@@ -139,12 +139,12 @@ function showTeamSecret(ctx, secret, revealed) {
   openModal({ title: secret.title, body: h('div', { class: 'stack' }, ...rows), actions: [{ label: 'Done', kind: 'primary' }], onClose: () => clearInterval(countdown) });
 }
 
-function mountTeam(ctx, host) {
+function mountTeam(ctx, host, actions) {
   const list = h('div');
   const activity = h('div');
-  const add = createButton('Add team secret', () => edit(null));
+  setChildren(actions, createButton('Add team secret', () => edit(null)));
   setChildren(host,
-    h('div', { class: 'toolbar' }, h('span', { class: 'muted small' }, 'Shared by everyone on this instance. Passwords, notes and codes show after you confirm it’s you; every reveal is recorded.'), add),
+    h('p', { class: 'muted small' }, 'Shared by everyone on this instance. Passwords, notes and codes show after you confirm it’s you; every reveal is recorded.'),
     list,
     h('h2', { class: 'section-title' }, 'Activity'),
     activity);
@@ -291,19 +291,20 @@ function agentForm(ctx, secret) {
   return { body, values, name, hosts, value, header };
 }
 
-function mountAgents(ctx, sandbox, host) {
+function mountAgents(ctx, sandbox, host, actions) {
   if (!sandbox) {
+    setChildren(actions);
     setChildren(host, emptyState({ iconName: 'lock', title: 'Open a sandbox', text: 'Agent secrets belong to a sandbox (or to every sandbox). Open one to see and add them.' }));
     return;
   }
   const write = allows(sandbox.access, 'write');
   const list = h('div');
-  const add = createButton('Add agent secret', () => edit(null), { disabled: !write, title: write ? null : 'Requires write access' });
+  setChildren(actions, createButton('Add agent secret', () => edit(null), { disabled: !write, title: write ? null : 'Requires write access' }));
   setChildren(host,
+    h('p', { class: 'muted small' }, `Agents in ${sandbox.name} use this sandbox’s secrets and those for every sandbox.`),
     h('div', { class: 'banner banner-info' }, icon('shield'), h('div', { class: 'banner-text small' },
       `Agents use these without seeing them: ${BRAND.name} adds a secret to HTTPS requests for its hosts and types it into sign-in pages of those hosts. Anything that would show a value to an agent — command output, files, web pages, tool results — shows `,
       h('code', null, '[secret:NAME]'), ' instead.')),
-    h('div', { class: 'toolbar' }, h('span', { class: 'muted small' }, `For ${sandbox.name} and every sandbox.`), add),
     list);
 
   function render(secrets) {
@@ -362,7 +363,7 @@ function mountAgents(ctx, sandbox, host) {
 export function mountSecretsPage(ctx, sandbox, route) {
   const frame = pageFrame({ title: 'Secrets', sub: 'team logins for people, keys agents use without seeing them' });
   const base = sandbox ? `/s/${encodeURIComponent(sandbox.slug)}/secrets` : '/secrets';
-  const host = h('div');
+  const host = h('div', { class: 'stack' });
   let current = route.query.get('section') === 'agents' ? 'agents' : '';
   const tabs = h('div', { class: 'tl-tabs ftabs', role: 'radiogroup', 'aria-label': 'Section' });
   const options = [{ value: '', label: 'Team secrets', icon: 'users' }, { value: 'agents', label: 'Agent secrets', icon: 'key' }];
@@ -389,8 +390,8 @@ export function mountSecretsPage(ctx, sandbox, route) {
   renderTabs();
   frame.body.append(tabs, host);
   function show() {
-    if (current === 'agents') mountAgents(ctx, sandbox, host);
-    else mountTeam(ctx, host);
+    if (current === 'agents') mountAgents(ctx, sandbox, host, frame.actions);
+    else mountTeam(ctx, host, frame.actions);
   }
   show();
   return { el: frame.el, key: `secrets:${sandbox ? sandbox.id : ''}` };
