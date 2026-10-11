@@ -556,12 +556,13 @@ impl App {
             Err(failure) => {
                 // Only the error: the status and usage may have changed since `account` was
                 // read (a task's limit hit during the request), and must stay (#72). The
-                // `usage:` prefix marks it as a note about usage, not a broken account.
+                // `usage:` prefix marks it as a note about usage, not a broken account; it never
+                // replaces a sign-in or re-login error written meanwhile.
                 let message = format!("{USAGE_NOTE_PREFIX}{}", failure.message);
                 let _ = self
                     .deps
                     .store
-                    .set_account_error(&account.id, &message, self.now())
+                    .set_usage_error(&account.id, &message, self.now())
                     .await;
                 Err(failure)
             }
