@@ -12,8 +12,10 @@ import urllib.request
 root = Path(__file__).resolve().parent.parent
 cargo_bin = Path.home() / ".cargo/bin"
 rustup = shutil.which("rustup") or shutil.which("rustup", path=str(cargo_bin))
-if not rustup and "--install-rustup" in sys.argv[1:]:
-    # Clean machines (CI): official installer, no toolchain yet and no shell profile edits.
+unattended = bool(os.environ.get("CI")) or not sys.stdin.isatty()
+if not rustup and ("--install-rustup" in sys.argv[1:] or unattended):
+    # Clean machines (CI, which takes this script's command from the integration branch): official
+    # installer, no toolchain yet and no shell profile edits. An interactive terminal keeps the message.
     with tempfile.TemporaryDirectory() as scratch:
         installer = Path(scratch) / "rustup-init.sh"
         with urllib.request.urlopen("https://sh.rustup.rs", timeout=60) as response:
@@ -22,7 +24,7 @@ if not rustup and "--install-rustup" in sys.argv[1:]:
                        check=True)
     rustup = shutil.which("rustup", path=str(cargo_bin))
 if not rustup:
-    sys.exit("Install rustup from https://rustup.rs first (or pass --install-rustup). "
+    sys.exit("Install rustup from https://rustup.rs first (or pass --install-rustup; unattended runs install it). "
              "Python 3.11+ and a C linker are required.")
 config = tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"]
 channel = config["channel"]
