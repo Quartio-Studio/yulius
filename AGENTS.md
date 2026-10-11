@@ -9,6 +9,14 @@ engineering discipline. The accepted product brief is
 assumptions, not user requirements. Check the specs' evidence sections for what is
 implemented; do not invent features beyond them.
 
+## Yulius documents
+
+Project map for Yulius, configured in [yulius.toml](yulius.toml): [product](docs/product.md),
+[architecture](docs/architecture.md), [decisions](docs/decisions/README.md), specs in
+[.ai/specs](.ai/specs), [changes](docs/changes.md). They summarise and point to the specs
+above; the rules in this file stay authoritative. CI runs through Yulius CI
+(`[[ci.jobs]]` in `yulius.toml`), not GitHub Actions.
+
 ## Start here
 
 1. Read `git status --short` and the nearest applicable `AGENTS.md`. Preserve others' work.

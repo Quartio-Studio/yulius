@@ -3,7 +3,7 @@
 ## Bootstrap
 
 Supported development hosts: macOS and Linux. Python 3.11+, rustup, Git and a C linker
-are required. GitHub CI is configured on Ubuntu and macOS. Windows support for a
+are required. CI runs through Yulius CI (`[[ci.jobs]]` in `yulius.toml`); macOS is checked by running `scripts/dev ci` locally. Windows support for a
 future process supervisor is undecided; the shell entry point is not a Windows promise.
 
 ```sh

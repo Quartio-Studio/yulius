@@ -1,0 +1,31 @@
+# Yulius project contract. Existing documents are mapped, not moved.
+
+[docs]
+product = "docs/product.md"
+architecture = "docs/architecture.md"
+decisions = "docs/decisions"
+specs_dir = ".ai/specs"
+changes = "docs/changes.md"
+agents = "AGENTS.md"
+
+[commands]
+test = "scripts/dev test"
+lint = "scripts/dev lint"
+build = "scripts/dev check"
+
+[delivery]
+preset = "standard"
+integration_branch = "dev"
+production_branch = "main"
+
+# Translated from .github/workflows (ci.yml quality-linux, e2e.yml web-ui).
+# Not carried over: quality-macos (macOS has no Yulius runner; run `scripts/dev ci` on a Mac
+# before promotion) and policy.yml branch-policy (needs the pull request event and a GitHub
+# token, which CI jobs do not have; scripts/check_git_policy.py stays a manual/merge-gate check).
+[[ci.jobs]]
+name = "quality"
+command = "python3 scripts/bootstrap.py && scripts/dev ci"
+
+[[ci.jobs]]
+name = "e2e"
+command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium --with-deps && E2E_TELEMETRY_DISABLED=1 npx e2e run --reporter list,junit"
