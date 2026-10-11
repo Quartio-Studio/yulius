@@ -9,7 +9,7 @@ import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, emptyState, filterTabs, badge, toast, errorToast, confirmDialog, openModal, loadError, coalesce } from '../dom.js';
 import { href, navigate, replaceQuietly, currentLocation } from '../router.js';
 import { relLong, dateTime, bytes, plural } from '../format.js';
-import { pageFrame } from './common.js';
+import { pageFrame, notFound } from './common.js';
 import { BRAND } from '../brand.js';
 
 const KIND_OPTIONS = [
@@ -329,7 +329,9 @@ export function mountSessionView(ctx, sandbox, id, route) {
       }
     } catch (error) {
       if (!alive) return;
-      if (session === null) setChildren(body, loadError(`Couldn’t load the session: ${error.message}`, () => load(start)));
+      // A session that is not there (deleted, or a wrong link) is a missing page, not a retry (#147).
+      if (session === null && error.status === 404) setChildren(el, notFound({ title: 'Session not found', text: `There is no such session in ${sandbox.name}. It may have been deleted.`, back: ['Sessions', sessionsPath(sandbox)] }));
+      else if (session === null) setChildren(body, loadError(`Couldn’t load the session: ${error.message}`, () => load(start)));
       else errorToast(error, 'Couldn’t load more');
     } finally {
       loading = false;

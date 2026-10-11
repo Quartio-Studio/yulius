@@ -14,6 +14,15 @@ const cardCount = (browser: Browser, name: string) =>
     return card ? Number(card.querySelector('.home-count strong')?.textContent) : null;
   }, name);
 
+/** A sandbox tab's "needs you" count (its accessible text says it), 0 without one. */
+const tabCount = (browser: Browser, name: string) =>
+  browser.evaluate((n: string) => {
+    const tab = [...document.querySelectorAll('.tabrow-tabs .tab')].find((t) => t.querySelector('.tab-name')?.textContent === n);
+    if (!tab) return null;
+    const match = (tab.querySelector('.sr-only')?.textContent || '').match(/(\d+) needs? you/);
+    return match ? Number(match[1]) : 0;
+  }, name);
+
 /** The sidebar's "Needs you" count (0 without the group), once its tasks are listed. */
 const sidebarNeeds = (browser: Browser) =>
   browser.evaluate(() => {
@@ -21,20 +30,26 @@ const sidebarNeeds = (browser: Browser) =>
     return Number(document.querySelector('.task-group.group-needs .task-group-count')?.textContent || 0);
   });
 
+/** Both sides at the same moment (the mock's tasks change while the test runs). */
+const agree = async (a: () => Promise<number | null>, b: () => Promise<number | null>) => {
+  const [x, y] = [await a(), await b()];
+  return x !== null && x === y;
+};
+
 test('Home cards, the sandbox tabs and the sidebar count “needs you” the same way', async ({ app, browser, screen }) => {
   await app.open(mock('/'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
-  // studio: a permission prompt; product: a prompt held for a decision (not an activity the
-  // server's old count saw); sandbox-3: nothing.
-  const expected: Record<string, number> = { studio: 1, product: 1, 'sandbox-3': 0 };
-  for (const [name, count] of Object.entries(expected)) {
-    await expect.poll(() => cardCount(browser, name)).toBe(count);
-    expect(await browser.evaluate((n: string) => Boolean([...document.querySelectorAll('.tab')].find((t) => t.querySelector('.tab-name')?.textContent === n)?.querySelector('.tab-dot')), name)).toBe(count > 0);
+  // product's one is a prompt held for a decision, which the old count (activity only) missed;
+  // sandbox-3 has nothing waiting.
+  await expect.poll(() => cardCount(browser, 'product')).toBe(1);
+  await expect.poll(() => cardCount(browser, 'sandbox-3')).toBe(0);
+  for (const name of ['studio', 'product', 'sandbox-3']) {
+    await expect.poll(() => agree(() => cardCount(browser, name), () => tabCount(browser, name))).toBe(true);
   }
-  for (const [name, count] of Object.entries(expected)) {
+  for (const name of ['studio', 'product', 'sandbox-3']) {
     await app.open(mock(`/s/${name}/tasks`));
     await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
-    await expect.poll(() => sidebarNeeds(browser)).toBe(count);
+    await expect.poll(() => agree(() => sidebarNeeds(browser), () => tabCount(browser, name))).toBe(true);
   }
 });
 
@@ -104,6 +119,17 @@ test('a missing page, sandbox, task or workflow has a heading and a way back', a
   await expect(screen.getByRole('textbox', 'Workflow name')).toBeHidden();
   await browser.locator('.not-found').getByRole('link', 'Workflows').click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Workflows');
+
+  // Nothing to edit means nothing to guard: the way back leaves without "Leave without saving?".
+  await app.open(mock('/s/studio/automations/nope'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Automation not found');
+  await browser.locator('.not-found').getByRole('link', 'Automations').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Automations');
+  await expect(screen.getByRole('dialog')).toBeHidden();
+
+  await app.open(mock('/s/studio/skills/nope'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Skill not found');
+  await expect(screen.getByRole('button', 'Try again')).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
 });
 
@@ -162,6 +188,7 @@ test('the task overview fits a 390 px phone: no part of it scrolls sideways', as
     return out.slice(0, 5);
   });
   await expect.poll(problems).toEqual([]);
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 test('an ended task offers what its menu offers: no Continue when archived; Check subscriptions opens them', async ({ app, browser, screen }) => {

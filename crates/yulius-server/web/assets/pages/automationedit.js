@@ -326,7 +326,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
       workflows = Array.isArray(wfs) ? wfs : [];
       if (!creating) {
         automation = (Array.isArray(list) ? list : []).find((a) => a.id === id);
-        if (!automation) { setChildren(el, notFound({ title: 'Automation not found', text: `There is no automation “${id}” in ${sandbox.name}. It may have been deleted.`, back: ['Automations', base] })); return; }
+        if (!automation) { saved = snapshot(); setChildren(el, notFound({ title: 'Automation not found', text: `There is no automation “${id}” in ${sandbox.name}. It may have been deleted.`, back: ['Automations', base] })); return; }
         Object.assign(state, { name: automation.name, prompt: automation.prompt || '', workflow_id: automation.workflow_id || null, enabled: automation.enabled, cron: automation.cron, offset: automation.utc_offset_minutes, custom: !readSchedule(automation.cron) });
         nameInput.value = automation.name;
         showZone = state.offset !== -new Date().getTimezoneOffset();

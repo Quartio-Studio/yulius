@@ -66,9 +66,9 @@ function section(title, description, ...content) {
   return h('section', { class: 'ds-section' }, h('div', { class: 'ds-head' }, h('h2', { class: 'card-title' }, title), description ? h('p', { class: 'muted small' }, description) : null), content);
 }
 
-/** A sample of the page header pattern (h2 here: the page has one h1). */
+/** A sample of the page header pattern (h3 here: inside a section of a page with one h1). */
 function headerSample(title, sub, ...actions) {
-  return h('div', { class: 'page-head ds-sample' }, h('h2', { class: 'page-title' }, title), h('span', { class: 'page-sub' }, sub), h('div', { class: 'page-actions' }, actions));
+  return h('div', { class: 'page-head ds-sample' }, h('h3', { class: 'page-title' }, title), h('span', { class: 'page-sub' }, sub), h('div', { class: 'page-actions' }, actions));
 }
 
 /** Mount the design system page. */

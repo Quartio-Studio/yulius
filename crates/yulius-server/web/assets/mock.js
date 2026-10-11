@@ -443,7 +443,8 @@ function recount(db) {
   for (const sandbox of db.sandboxes) {
     const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived);
     sandbox.counts = {
-      running: tasks.filter((t) => t.status === 'running').length,
+      // A live process, as the server counts it (TaskStatus::is_live).
+      running: tasks.filter((t) => ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length,
       needs_attention: tasks.filter((t) => taskInfo(summary(t), null, pullOf(t)).group === 'needs').length,
       queued: tasks.filter((t) => t.status === 'queued').length,
     };

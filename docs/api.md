@@ -107,13 +107,15 @@ Profile = {"preset": "standard|product|studio|custom", "integration_branch": "de
 
 `counts.running` counts tasks with a live process and `counts.queued` queued tasks.
 `counts.needs_attention` counts the tasks that need a person by the web UI sidebar's "Needs you"
-rule (SPEC-001 UI-050, `AttentionFacts` in the domain): a permission prompt or browser request
-(`needs_attention`), a finished turn waiting for input (`waiting`), a pending held prompt, a chain
-whose predecessor ended otherwise, and failing checks of the pull request of a finished turn. A
-tested, reviewed or merged pull request of a finished turn whose plan is complete counts as Done
-or In review, not as needing a person. The pull request facts are those the sandbox's Git overview
+rule (SPEC-001 UI-050, `AttentionFacts` in the domain): a permission prompt (`needs_attention`),
+a finished turn waiting for input (`waiting`), a pending held prompt, a pending request to act in
+the sandbox browser (read from the running browser's tabs), a chain whose predecessor ended
+otherwise, and failing checks of the pull request of a finished turn. A tested, reviewed or merged
+pull request of a finished turn whose plan is complete counts as Done or In review, not as needing
+a person. The pull request facts are those the sandbox's Git overview
 (`GET /api/sandboxes/{sid}/git`) last read; until it is read after a start, only a merge already
-recorded counts. Paused, queued and ended tasks never count.
+recorded counts (the UI reads it with the sidebar and reloads the counters after each read). An
+ended task never counts; a paused or queued one only for a held prompt or a browser request.
 
 ## Import (`yulius onboard` / `yulius import`)
 

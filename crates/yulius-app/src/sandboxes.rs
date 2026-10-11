@@ -1,7 +1,7 @@
 //! Sandbox (project) queries and views (SPEC-001 §5.2). Creation/import lives with the Git and
 //! GitHub integration.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use yulius_contracts::api::sandboxes::{Profile, RepoRef, Sandbox, SandboxCounts};
@@ -54,6 +54,7 @@ impl App {
         access: AccessLevel,
     ) -> AppResult<Sandbox> {
         let tasks = self.deps.store.tasks(&record.id, false).await?;
+        let requested = self.browser_requests(&record.id).await;
         let mut counts = SandboxCounts::default();
         for task in &tasks {
             if task.status.is_live() {
@@ -62,7 +63,7 @@ impl App {
             if task.status == TaskStatus::Queued {
                 counts.queued += 1;
             }
-            if self.needs_you(task).await? {
+            if self.needs_you(task, &requested).await? {
                 counts.needs_attention += 1;
             }
         }
@@ -95,7 +96,11 @@ impl App {
     ///
     /// # Errors
     /// Store failures.
-    pub(crate) async fn needs_you(&self, task: &TaskRecord) -> AppResult<bool> {
+    pub(crate) async fn needs_you(
+        &self,
+        task: &TaskRecord,
+        requested: &HashSet<String>,
+    ) -> AppResult<bool> {
         if task.status.is_resting() {
             return Ok(false);
         }
@@ -130,11 +135,25 @@ impl App {
             status: task.status,
             activity: task.activity,
             held_prompt,
+            browser_request: requested.contains(task.id.as_str()),
             chain_blocked,
             plan_open,
             pull,
         }
         .needs_you())
+    }
+
+    /// Tasks with a pending request to act in the sandbox's browser (BRW-004), read from its
+    /// tabs; none while the browser does not run (its requests went with it).
+    async fn browser_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
+        match self.deps.browser.running(sandbox).await {
+            Some(session) => session
+                .tabs()
+                .into_iter()
+                .filter_map(|tab| tab.action_requested.and_then(|request| request.task_id))
+                .collect(),
+            None => HashSet::new(),
+        }
     }
 
     /// Sandboxes visible to the caller.

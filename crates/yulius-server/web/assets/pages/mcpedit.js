@@ -422,7 +422,8 @@ export function mountMcpEditor(ctx, sandbox, id) {
       servers = Array.isArray(list) ? list : [];
       if (!creating) {
         server = servers.find((s) => s.id === id);
-        if (!server) { setChildren(el, notFound({ title: 'MCP server not found', text: `There is no MCP server “${id}” for ${sandbox.name}. It may have been deleted.`, back: ['MCP', base] })); return; }
+        // Nothing to edit, so nothing to guard: the way back leaves without asking.
+        if (!server) { saved = snapshot(); setChildren(el, notFound({ title: 'MCP server not found', text: `There is no MCP server “${id}” for ${sandbox.name}. It may have been deleted.`, back: ['MCP', base] })); return; }
         canEdit = write && (server.scope !== 'instance' || admin);
         Object.assign(state, {
           name: server.name, transport: server.transport, url: server.url || '', line: joinCommand([server.command, ...(server.args || [])].filter(Boolean)),

@@ -358,6 +358,9 @@ pub struct AttentionFacts {
     pub activity: Option<Activity>,
     /// A prompt typed into the session is held for a person's decision (TSK-013).
     pub held_prompt: bool,
+    /// The task asked a person to act in the sandbox browser and the request is pending
+    /// (BRW-004).
+    pub browser_request: bool,
     /// A chained task whose predecessor ended other than Done (TSK-012).
     pub chain_blocked: bool,
     /// The task has a plan with steps not done or skipped yet (STP-001).
@@ -370,17 +373,17 @@ impl AttentionFacts {
     /// Whether the task waits for a person: the sidebar's "Needs you" group, counted the same way
     /// on Home and the sandbox tabs (`taskInfo` in the web UI's `status.js` is the same rule).
     ///
-    /// An ended task needs nobody. A held prompt does. After a finished turn, failing checks do,
-    /// and a tested, reviewed or merged pull request answers for a task whose plan is complete
-    /// (Done or In review). Otherwise: a permission prompt or browser request (`needs_attention`),
-    /// "Your turn" (`waiting`), or a chain whose predecessor ended otherwise. A browser request
-    /// marks the task `needs_attention` on the server, so it is covered by the activity.
+    /// An ended task needs nobody. A held prompt or a pending browser request does, whatever the
+    /// task's state. After a finished turn, failing checks do, and a tested, reviewed or merged
+    /// pull request answers for a task whose plan is complete (Done or In review). Otherwise: a
+    /// permission prompt (`needs_attention`), "Your turn" (`waiting`), or a chain whose
+    /// predecessor ended otherwise.
     #[must_use]
     pub fn needs_you(&self) -> bool {
         if self.status.is_resting() {
             return false;
         }
-        if self.held_prompt {
+        if self.held_prompt || self.browser_request {
             return true;
         }
         let finished =
@@ -643,6 +646,7 @@ mod tests {
             status,
             activity,
             held_prompt: false,
+            browser_request: false,
             chain_blocked: false,
             plan_open: false,
             pull: None,
@@ -699,6 +703,27 @@ mod tests {
             .needs_you()
         );
         assert!(!facts(TaskStatus::Stopped(StopReason::Crashed), Some(A::Waiting)).needs_you());
+        // A pending browser request needs a person whatever the activity or pull request says.
+        let asked = |activity| AttentionFacts {
+            browser_request: true,
+            pull: Some(P::Tested),
+            ..running(activity)
+        };
+        assert!(asked(A::Done).needs_you() && asked(A::Working).needs_you());
+        assert!(
+            AttentionFacts {
+                browser_request: true,
+                ..facts(TaskStatus::WaitingCapacity, None)
+            }
+            .needs_you()
+        );
+        assert!(
+            !AttentionFacts {
+                browser_request: true,
+                ..facts(TaskStatus::Closed, None)
+            }
+            .needs_you()
+        );
         // After a finished turn the pull request speaks: failing checks need you; a tested,
         // reviewed or merged one makes the task Done or In review while the plan is complete.
         let with = |activity, pull, plan_open| AttentionFacts {

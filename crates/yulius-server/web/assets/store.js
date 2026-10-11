@@ -51,6 +51,7 @@ export function createStore(api) {
   let events = null;
   let countsTimer = null;
   let countsInFlight = false;
+  let countsAgain = false; // asked for while a reload ran: run once more after it
 
   function on(topic, fn) {
     if (!subscribers.has(topic)) subscribers.set(topic, new Set());
@@ -183,9 +184,14 @@ export function createStore(api) {
     if (countsTimer || !state.me) return;
     countsTimer = setTimeout(async () => {
       countsTimer = null;
-      if (countsInFlight || !state.me) return;
+      if (!state.me) return;
+      // A reload already running may have read the server before the change: one more after it.
+      if (countsInFlight) { countsAgain = true; return; }
       countsInFlight = true;
-      try { await loadSandboxes(); } catch { /* the next event or resync retries */ } finally { countsInFlight = false; }
+      try { await loadSandboxes(); } catch { /* the next event or resync retries */ } finally {
+        countsInFlight = false;
+        if (countsAgain) { countsAgain = false; scheduleCountsRefresh(); }
+      }
     }, COUNTS_REFRESH_MS);
   }
 
@@ -236,11 +242,11 @@ export function createStore(api) {
     try {
       const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
-      const before = JSON.stringify([...(state.pulls.get(sandboxId) || new Map())]);
       state.pulls.set(sandboxId, new Map(rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr])));
-      // The server counts "needs you" from what this read saw (a tested or failing pull request):
-      // reload the counters, so the tab and Home agree with the sidebar (#147).
-      if (JSON.stringify([...state.pulls.get(sandboxId)]) !== before) scheduleCountsRefresh();
+      // The server counts "needs you" from what this read saw (a tested or failing pull request),
+      // and after a restart it had seen nothing yet: reload the counters after every read, so the
+      // tab and Home agree with the sidebar (#147). One debounced request per burst.
+      scheduleCountsRefresh();
       state.gitRows.set(sandboxId, new Map(rows.map((t) => [t.task_id, t])));
       emit('pulls', sandboxId);
     } catch { /* the chips stay as they were; the lists work without them */ }
@@ -267,6 +273,9 @@ export function createStore(api) {
   };
   document.addEventListener('visibilitychange', refreshPulls);
   window.addEventListener('focus', refreshPulls);
+  // After lost events or a restart, read the watched pull requests again at once: the server's
+  // "needs you" counts start from what such a read sees (#147).
+  on('resync', () => { for (const id of pullWatch.keys()) loadPulls(id); });
 
   function stopEvents() {
     if (events) events.stop();

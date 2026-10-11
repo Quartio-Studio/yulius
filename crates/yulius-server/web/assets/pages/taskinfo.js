@@ -73,10 +73,11 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     if (!list.length) return h('p', { class: 'muted small' }, 'No session has started yet.');
     // A narrow page stacks each session's cells under its number (each cell names its column), so
     // the overview never scrolls sideways at 390 px (#147).
-    const cell = (label, content, attrs = {}) => h('td', { ...attrs, dataset: { label } }, h('span', null, content));
-    return h('table', { class: 'table ti-sessions' },
-      h('thead', null, h('tr', null, ['#', 'Subscription', 'Started', 'Ended', 'Length', 'State'].map((label) => h('th', { scope: 'col' }, label)))),
-      h('tbody', null, list.map((a) => h('tr', null,
+    // Explicit roles keep the table a table for screen readers when a narrow page stacks it.
+    const cell = (label, content, attrs = {}) => h('td', { ...attrs, role: 'cell', dataset: { label } }, h('span', null, content));
+    return h('table', { class: 'table ti-sessions', role: 'table', 'aria-label': 'Sessions' },
+      h('thead', { role: 'rowgroup' }, h('tr', { role: 'row' }, ['#', 'Subscription', 'Started', 'Ended', 'Length', 'State'].map((label) => h('th', { scope: 'col', role: 'columnheader' }, label)))),
+      h('tbody', { role: 'rowgroup' }, list.map((a) => h('tr', { role: 'row' },
         cell('#', String(a.seq)),
         cell('Subscription', [a.account_label || '—', a.launch_kind && a.launch_kind !== 'new' ? h('span', { class: 'muted xs' }, ` · ${LAUNCH_KIND[a.launch_kind] || a.launch_kind}`) : null]),
         cell('Started', a.started_at ? relLong(a.started_at) : '—', { title: dateTime(a.started_at) }),
