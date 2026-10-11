@@ -41,6 +41,9 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(60);
 pub const TICK: Duration = Duration::from_secs(30);
 /// Disk usage is measured at most this often per sandbox.
 pub const USAGE_EVERY: Duration = Duration::from_secs(10 * 60);
+/// A refusal over the disk quota measures again when its reading is older than this, so freeing
+/// space helps at once.
+pub const QUOTA_RECHECK: Duration = Duration::from_secs(60);
 /// The host system must stay unchanged this long before a rebuild.
 pub const REBUILD_DEBOUNCE: Duration = Duration::from_secs(10 * 60);
 /// The host's fingerprint is read at most this often.
@@ -284,13 +287,8 @@ impl Manager {
         let entry = self.entry(&request.id);
         let mut state = entry.lock().await;
         state.request = Some(request.clone());
-        if let (Some(limit), Some((usage, _))) = (self.config.disk_max, &state.usage)
-            && usage.bytes > limit
-        {
-            return Err(PrepareError::OverQuota {
-                used: human(usage.bytes),
-                limit: human(limit),
-            });
+        if let Some(refusal) = self.quota_refusal(request, &mut state).await {
+            return Err(refusal);
         }
         let reusable = state.live.as_ref().is_some_and(|live| alive(&live.record));
         if !reusable {
@@ -609,6 +607,32 @@ impl Manager {
         self.maybe_build(in_use);
     }
 
+    /// The refusal when the sandbox is over its quota. A reading older than [`QUOTA_RECHECK`]
+    /// that says "over" is replaced by a fresh measurement first (space may have been freed).
+    async fn quota_refusal(
+        &self,
+        request: &SandboxRequest,
+        state: &mut SandboxState,
+    ) -> Option<PrepareError> {
+        let limit = self.config.disk_max?;
+        let (usage, at) = state.usage.as_ref()?;
+        if usage.bytes <= limit {
+            return None;
+        }
+        if at.elapsed() >= QUOTA_RECHECK {
+            let (dir, upper) = (request.dir.clone(), self.sysroot(&request.id).join("upper"));
+            let fresh = tokio::task::spawn_blocking(move || crate::usage::measure(&[&dir, &upper]))
+                .await
+                .ok()?;
+            state.usage = Some((fresh, Instant::now()));
+        }
+        let (usage, _) = state.usage.as_ref()?;
+        (usage.bytes > limit).then(|| PrepareError::OverQuota {
+            used: human(usage.bytes),
+            limit: human(limit),
+        })
+    }
+
     fn refresh_usage(self: &Arc<Self>, sandbox: &str, state: &mut SandboxState) {
         if self.config.disk_max.is_none() || state.measuring {
             return;
@@ -752,6 +776,11 @@ impl Manager {
 
     /// Seeds a sandbox's measured usage (tests).
     pub async fn set_usage(&self, sandbox: &str, bytes: u64) {
+        self.set_usage_aged(sandbox, bytes, Duration::ZERO).await;
+    }
+
+    /// Seeds a measurement taken `age` ago (tests).
+    pub async fn set_usage_aged(&self, sandbox: &str, bytes: u64, age: Duration) {
         let entry = self.entry(sandbox);
         entry.lock().await.usage = Some((
             Usage {
@@ -759,7 +788,7 @@ impl Manager {
                 entries: 0,
                 truncated: false,
             },
-            Instant::now(),
+            Instant::now().checked_sub(age).unwrap_or_else(Instant::now),
         ));
     }
 }
@@ -812,6 +841,109 @@ mod tests {
         assert_eq!(manager.prepare(&request).await, Ok(None));
         let status = manager.status().await;
         assert!(status.base.is_none() && !status.limits && !status.egress);
+        Ok(())
+    }
+
+    fn manager(data: &Path, disk_max: u64) -> Arc<Manager> {
+        let map = IdMap {
+            host: 1000,
+            sub_start: 100_000,
+            count: 65_535,
+        };
+        Manager::new(IsolationConfig {
+            data_dir: data.to_path_buf(),
+            exe: PathBuf::from("/usr/local/bin/yulius"),
+            bwrap: PathBuf::from("/usr/bin/bwrap"),
+            newuidmap: PathBuf::from("/usr/bin/newuidmap"),
+            newgidmap: PathBuf::from("/usr/bin/newgidmap"),
+            slirp4netns: None,
+            uid: map,
+            gid: map,
+            delegation: None,
+            limits: Limits::default(),
+            disk_max: Some(disk_max),
+            forwards: BTreeMap::new(),
+            sudo_shim: String::new(),
+            idle: IdleConfig {
+                stop_after: Duration::from_secs(300),
+            },
+            auto_build: false,
+        })
+    }
+
+    fn request(data: &Path) -> SandboxRequest {
+        SandboxRequest {
+            id: "s1".into(),
+            hostname: "s1".into(),
+            dir: data.join("sandboxes/s1"),
+            port_first: 20_000,
+            port_last: 20_019,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_old_over_quota_reading_is_measured_again_before_it_refuses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 10_000_000);
+        let request = request(data.path());
+        std::fs::create_dir_all(&request.dir)?;
+        // The old reading says 112 GB; the directory is nearly empty now.
+        manager
+            .set_usage_aged(
+                "s1",
+                112_000_000_000,
+                QUOTA_RECHECK + Duration::from_secs(1),
+            )
+            .await;
+        let entry = manager.entry("s1");
+        let mut state = entry.lock().await;
+        assert!(manager.quota_refusal(&request, &mut state).await.is_none());
+        let fresh = state
+            .usage
+            .as_ref()
+            .map(|(u, _)| u.bytes)
+            .unwrap_or(u64::MAX);
+        assert!(fresh < 10_000_000, "the reading was replaced: {fresh}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_fresh_over_quota_reading_refuses_without_measuring()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 10_000_000);
+        let request = request(data.path());
+        std::fs::create_dir_all(&request.dir)?;
+        manager.set_usage("s1", 112_000_000_000).await;
+        let entry = manager.entry("s1");
+        let mut state = entry.lock().await;
+        let refusal = manager.quota_refusal(&request, &mut state).await;
+        assert!(matches!(refusal, Some(PrepareError::OverQuota { .. })));
+        assert_eq!(
+            state.usage.as_ref().map(|(u, _)| u.bytes),
+            Some(112_000_000_000)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_old_reading_that_is_still_over_quota_still_refuses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1);
+        let request = request(data.path());
+        std::fs::create_dir_all(&request.dir)?;
+        std::fs::write(request.dir.join("big"), vec![1u8; 64 * 1024])?;
+        manager
+            .set_usage_aged("s1", 5, QUOTA_RECHECK + Duration::from_secs(1))
+            .await;
+        let entry = manager.entry("s1");
+        let mut state = entry.lock().await;
+        assert!(matches!(
+            manager.quota_refusal(&request, &mut state).await,
+            Some(PrepareError::OverQuota { .. })
+        ));
         Ok(())
     }
 }
