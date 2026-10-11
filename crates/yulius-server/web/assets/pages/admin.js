@@ -3,9 +3,10 @@
 
 import { enc } from '../api.js';
 import { h, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState } from '../dom.js';
+import { compact } from '../format.js';
 import { createTerminalView } from '../terminal.js';
 import { accountUsage, capacityPanel } from '../layout.js';
-import { pageFrame, loader, dataTable } from './common.js';
+import { pageFrame, loader, dataTable, createButton } from './common.js';
 import { recoveryCodeCard } from './auth.js';
 import { BRAND } from '../brand.js';
 
@@ -20,7 +21,7 @@ function forbidden(ctx, what) {
 /** Superadmin: admit users by GitHub login, disable them, mark instance admins. */
 export function mountUsersPage(ctx) {
   if (!ctx.isSuperadmin()) return forbidden(ctx, 'Users');
-  const frame = pageFrame({ title: 'Users', sub: 'only admitted GitHub users can sign in', actions: [h('button', { type: 'button', class: 'btn btn-primary', onClick: () => add() }, 'Admit user')] });
+  const frame = pageFrame({ title: 'Users', sub: 'who may sign in: only admitted GitHub users', actions: [createButton('Admit user', () => add())] });
   const host = h('div');
   frame.body.append(recoveryCard(ctx), host);
 
@@ -37,7 +38,7 @@ export function mountUsersPage(ctx) {
 
   // AdminUser = {id, github_login, display_name, is_instance_admin, disabled, github_linked};
   // the superadmin is not listed.
-  const reload = loader(host, () => ctx.api.get('/api/admin/users'), (list) => dataTable([
+  const reload = loader(host, 'the users', () => ctx.api.get('/api/admin/users'), (list) => dataTable([
     { label: 'GitHub login', render: (u) => h('strong', null, `@${u.github_login || '?'}`) },
     { label: 'Name', render: (u) => u.display_name || '—', phoneHide: true },
     { label: 'Instance admin', render: (u) => toggle({ checked: Boolean(u.is_instance_admin), label: `Instance admin for ${u.github_login}`, onChange: async (checked, input) => {
@@ -49,7 +50,7 @@ export function mountUsersPage(ctx) {
       else u.disabled = !checked;
     } }) },
     { label: 'GitHub sign-in', render: (u) => (u.github_linked ? badge('Signed in before', 'ok') : badge('Never signed in')), phoneHide: true },
-  ], Array.isArray(list) ? list : [], { empty: 'No users yet. Admit teammates by their GitHub login.' }));
+  ], Array.isArray(list) ? list : [], { empty: emptyState({ iconName: 'users', title: 'No users yet', text: 'Admit teammates by their GitHub login; they sign in with GitHub.', action: createButton('Admit user', () => add()) }) }));
 
   function add() {
     const login = h('input', { class: 'input', placeholder: 'octocat', autocomplete: 'off', autofocus: true });
@@ -57,7 +58,7 @@ export function mountUsersPage(ctx) {
     const admin = h('input', { type: 'checkbox' });
     openModal({
       title: 'Admit user',
-      body: h('div', { class: 'stack' }, field('GitHub login', login), field('Display name', name), h('label', { class: 'check' }, admin, h('span', null, 'Instance administrator (accounts, instance MCP and skills; never grants repository access)'))),
+      body: h('div', { class: 'stack' }, field('GitHub login', login), field('Display name', name), h('label', { class: 'check' }, admin, h('span', null, 'Instance administrator (subscriptions, MCP and skills for every sandbox; never grants repository access)'))),
       actions: [
         { label: 'Cancel', value: false },
         { label: 'Admit', kind: 'primary', run: async () => {
@@ -77,9 +78,9 @@ export function mountUsersPage(ctx) {
   return { el: frame.el, key: 'admin:users' };
 }
 
-/** Tokens Yulius observed on an account (24 h, 7 d); unknown stays unknown. */
+/** Tokens Yulius observed on an account (24 h, 7 d); unknown stays unknown. Numbers as everywhere (compact: 23.4K). */
 function tokenTotals(account) {
-  const fmt = (n) => (n == null ? 'unknown' : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
+  const fmt = (n) => (n == null ? 'unknown' : compact(n));
   const row = (label, t) => {
     if (!t) return null;
     const total = [t.input, t.output, t.cache_read, t.cache_write].some((v) => v != null)
@@ -97,13 +98,13 @@ function tokenTotals(account) {
 export function recoveryCard(ctx) {
   const state = h('p', { class: 'text-2' }, 'Checking…');
   const generate = h('button', { type: 'button', class: 'btn btn-sm' }, 'Generate new code…');
-  const card = h('div', { class: 'card card-pad stack-sm' }, h('strong', null, 'Superadmin recovery code'), state, h('div', { class: 'row' }, generate));
+  const card = h('div', { class: 'card card-pad stack-sm' }, h('h2', { class: 'card-title' }, 'Superadmin recovery code'), state, h('div', { class: 'row' }, generate));
   const refresh = () => ctx.api.get('/api/auth/recovery').then((s) => {
     state.textContent = s.available
       ? `A recovery code is set (${s.attempts_left} of 3 attempts left). Generating a new one replaces it.`
       : s.locked
         ? 'Recovery is disabled after three wrong codes. Generate a new code to enable it again.'
-        : 'No recovery code yet: without one, a forgotten superadmin password cannot be reset. Generate one and keep it perfectly safe.';
+        : 'No recovery code yet: without one, a forgotten superadmin password can’t be reset. Generate one and keep it perfectly safe.';
     card.classList.toggle('card-warn', !s.available);
   }).catch(() => { state.textContent = 'Couldn’t load the recovery status.'; });
   generate.addEventListener('click', async () => {
@@ -154,10 +155,10 @@ export function openLoginTerminal(ctx, loginId, label, onFinish) {
       const ok = exit.status === 'ok';
       const code = exit.code !== undefined && exit.code !== null ? `, exit code ${exit.code}` : '';
       status.textContent = ok
-        ? 'Signed in: the credential is stored encrypted for this account. You can close this window.'
+        ? 'Signed in: the credential is stored encrypted for this subscription. You can close this window.'
         : exit.status === 'cancelled'
           ? `The login was cancelled${code}.`
-          : `The login ended without a credential (${exit.status}${code}). See the account's last error.`;
+          : `The login ended without a credential (${exit.status}${code}). See the subscription's last error.`;
       status.className = ok ? 'small' : 'field-error';
     },
   });
@@ -172,11 +173,12 @@ export function openLoginTerminal(ctx, loginId, label, onFinish) {
  * places, switches and pauses tasks by itself. The capacity panel on top says whether to buy more.
  */
 export function mountAccountsPage(ctx, route) {
-  if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'AI accounts');
-  const frame = pageFrame({ title: 'AI accounts', sub: `Claude subscriptions in one pool: ${BRAND.name} places, switches and pauses tasks by itself`, actions: [h('button', { type: 'button', class: 'btn btn-primary', onClick: () => add() }, 'Add subscription')] });
+  if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'Subscriptions');
+  // One name for one thing (#147): a Claude "subscription" (the API's account).
+  const frame = pageFrame({ title: 'Subscriptions', sub: `Claude subscriptions in one pool: ${BRAND.name} places, switches and pauses tasks by itself`, actions: [createButton('Add subscription', () => add())] });
   const capacityHost = h('section', { class: 'card card-pad stack', 'aria-label': 'Capacity' });
   const host = h('div');
-  frame.body.append(capacityHost, host, h('p', { class: 'muted xs' }, `Tasks don't belong to a subscription: ${BRAND.name} starts each one on the subscription whose capacity expires soonest and moves it to another one by itself, at the end of a turn, when its subscription reaches 98 %. A task pauses only when no subscription has capacity left — without telling the agent — and continues by itself, oldest first, when a window resets or a subscription is added. Usage comes from the running tasks, so an idle subscription shows it once a task runs on it.`));
+  frame.body.append(capacityHost, host, h('p', { class: 'muted xs' }, `Tasks don't belong to a subscription: ${BRAND.name} starts each one on the subscription whose capacity expires soonest and moves it to another one by itself, at the end of a turn, when its subscription reaches 98%. A task pauses only when no subscription has capacity left — without telling the agent — and continues by itself, oldest first, when a window resets or a subscription is added. Usage comes from the running tasks, so an idle subscription shows it once a task runs on it.`));
 
   const loadCapacity = () => ctx.api.get('/api/capacity').then((view) => {
     setChildren(capacityHost, h('h2', { class: 'card-title' }, 'Capacity'), capacityPanel(view));
@@ -184,10 +186,10 @@ export function mountAccountsPage(ctx, route) {
     setChildren(capacityHost, h('h2', { class: 'card-title' }, 'Capacity'), h('p', { class: 'muted small' }, `Capacity is not available: ${error.message || 'unknown error'}`));
   });
 
-  const reload = loader(host, () => ctx.api.get('/api/admin/accounts'), (list) => {
+  const reload = loader(host, 'the subscriptions', () => ctx.api.get('/api/admin/accounts'), (list) => {
     loadCapacity();
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.label || '').localeCompare(b.label || ''));
-    if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.' });
+    if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.', action: createButton('Add subscription', () => add()) });
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
       // Provider windows (refreshed in the background) and what Yulius observed (ROT-009).
       const usageHost = h('div', null, accountUsage(account), tokenTotals(account));
@@ -209,7 +211,7 @@ export function mountAccountsPage(ctx, route) {
               const result = await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/relogin`);
               openLoginTerminal(ctx, result.login_id, account.label, reload);
             } catch (error) {
-              errorToast(error, 'Could not start the sign-in');
+              errorToast(error, 'Couldn’t start the sign-in');
             }
           } }, 'Sign in again') : null,
           // Removal is refused while tasks use the subscription: say so instead of offering it (UX2-12).
@@ -217,10 +219,10 @@ export function mountAccountsPage(ctx, route) {
             if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: 'Its stored credential is deleted and a running sign-in is cancelled. Tasks never start on it again.', confirmLabel: 'Remove', danger: true }))) return;
             try {
               await ctx.api.del(`/api/admin/accounts/${enc(account.id)}`);
-              toast(`${account.label} removed`, { kind: 'ok' });
+              toast(`Subscription ${account.label} removed.`, { kind: 'ok' });
               reload();
             } catch (error) {
-              errorToast(error, 'Could not remove the subscription');
+              errorToast(error, 'Couldn’t remove the subscription');
             }
           } }, 'Remove')));
     }));
@@ -234,7 +236,7 @@ export function mountAccountsPage(ctx, route) {
       actions: [
         { label: 'Cancel', value: false },
         { label: 'Continue to sign-in', kind: 'primary', run: async () => {
-          if (!label.value.trim()) { toast('Give the subscription a name.', { kind: 'warn' }); return false; }
+          if (!label.value.trim()) return invalid(label, 'Give the subscription a name.');
           const result = await ctx.api.post('/api/admin/accounts', { provider: 'anthropic', label: label.value.trim() });
           reload();
           openLoginTerminal(ctx, result.login_id, result.account ? result.account.label : label.value.trim(), reload);
@@ -245,7 +247,7 @@ export function mountAccountsPage(ctx, route) {
   }
 
   const off = ctx.store.on('account', () => reload({ quiet: true }));
-  // Settings → "Connect account" lands here with ?add=1: open the dialog right away.
+  // Settings → "Add subscription" lands here with ?add=1: open the dialog right away.
   if (route && route.query && route.query.get('add') === '1') {
     setTimeout(add, 0);
     ctx.navigate('/admin/accounts', { replace: true });
@@ -258,7 +260,7 @@ export function mountAccountsPage(ctx, route) {
 /** Superadmin: GitHub App connection via the manifest flow (J1 step 3, ACC-006). */
 export function mountGithubPage(ctx) {
   if (!ctx.isSuperadmin()) return forbidden(ctx, 'GitHub connection');
-  const frame = pageFrame({ title: 'GitHub connection', sub: 'the instance is bound to one GitHub organization or personal account' });
+  const frame = pageFrame({ title: 'GitHub connection', sub: 'the GitHub organization or account this instance is bound to' });
   const host = h('div');
   frame.body.append(host);
   // The manifest callback returns here with ?error=… when GitHub's conversion failed. The text is
@@ -267,13 +269,13 @@ export function mountGithubPage(ctx) {
     frame.body.prepend(h('div', { class: 'banner banner-danger', role: 'alert' }, badge('Setup failed', 'danger'),
       h('span', { class: 'banner-text' }, 'Creating the GitHub App did not finish. Start again below; the server log has the details.')));
   }
-  loader(host, () => ctx.api.get('/api/admin/github'), (config) => {
+  loader(host, 'the GitHub connection', () => ctx.api.get('/api/admin/github'), (config) => {
     if (config && config.configured) {
-      return h('div', { class: 'card card-pad stack narrow' },
+      return h('div', { class: 'card card-pad stack' },
         h('div', { class: 'row' }, badge('Connected', 'ok'), h('strong', null, config.owner_login || '?')),
         h('dl', { class: 'kv' }, h('dt', null, 'GitHub App'), h('dd', null, config.app_slug || '—'), h('dt', null, 'Owner'), h('dd', null, config.owner_login || '—')),
         config.install_url ? h('div', null, h('a', { class: 'btn btn-primary', href: config.install_url, target: '_blank', rel: 'noopener noreferrer' }, 'Install / configure repositories')) : null,
-        h('p', { class: 'muted small' }, 'Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and connect AI accounts.'));
+        h('p', { class: 'muted small' }, 'Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and add subscriptions.'));
     }
     return manifestForm(ctx);
   });
@@ -304,7 +306,7 @@ function manifestForm(ctx) {
       submit.classList.remove('busy');
     }
   });
-  return h('div', { class: 'card card-pad stack narrow' },
+  return h('div', { class: 'card card-pad stack' },
     h('div', { class: 'row' }, badge('Not connected', 'warn')),
     h('p', { class: 'text-2' }, `${BRAND.name} creates a GitHub App for this instance using GitHub’s manifest flow. You confirm the app on GitHub, then install it on the repositories ${BRAND.name} may manage.`),
     field('Owner (organization or user)', owner),

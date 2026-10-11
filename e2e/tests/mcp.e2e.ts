@@ -11,10 +11,11 @@ failOnPageErrors();
 test('with no MCP server attached, the empty state’s Add server opens the add page', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/mcp'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('MCP');
+  // One verb behind the trash icon, as for workflows and automations (#147).
   for (const name of ['quartio', 'apify']) {
-    await screen.getByRole('button', `Remove ${name}`).click();
-    await screen.getByRole('dialog', `Remove MCP server “${name}”?`).getByRole('button', 'Remove').click();
-    await expect(screen.getByRole('button', `Remove ${name}`)).toBeHidden();
+    await screen.getByRole('button', `Delete ${name}`).click();
+    await screen.getByRole('dialog', `Delete MCP server “${name}”?`).getByRole('button', 'Delete').click();
+    await expect(screen.getByRole('button', `Delete ${name}`)).toBeHidden();
   }
   await expect(screen.getByText('No MCP servers yet')).toBeVisible();
   await browser.locator('.empty-state .btn-primary').click();
@@ -23,7 +24,7 @@ test('with no MCP server attached, the empty state’s Add server opens the add 
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-test('a server is added from the catalog, tested, edited and removed', async ({ app, browser, screen }) => {
+test('a server is added from the catalog, tested, edited and deleted', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/mcp'));
   await screen.getByRole('button', 'Add server').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/mcp\/new$/);
@@ -39,7 +40,8 @@ test('a server is added from the catalog, tested, edited and removed', async ({ 
   await expect(command).toHaveValue('npx -y @upstash/context7-mcp');
   await command.fill('npx -y @upstash/context7-mcp --verbose');
   await screen.getByRole('button', 'Save').click();
-  await expect(screen.getByText(/Saved context7/)).toBeVisible();
+  // A toast is one short sentence with a period, as elsewhere (#147).
+  await expect(screen.getByText('MCP server context7 saved.')).toBeVisible();
 
   // The list shows the change; the server reads it back.
   await browser.locator('a.gt-back').click();
@@ -48,8 +50,8 @@ test('a server is added from the catalog, tested, edited and removed', async ({ 
   await screen.getByRole('button', 'Edit context7').click();
   await expect(screen.getByRole('textbox', 'Command line')).toHaveValue('npx -y @upstash/context7-mcp --verbose');
 
-  await screen.getByRole('button', 'Remove').click();
-  await screen.getByRole('dialog', 'Remove MCP server “context7”?').getByRole('button', 'Remove').click();
+  await screen.getByRole('button', 'Delete').click();
+  await screen.getByRole('dialog', 'Delete MCP server “context7”?').getByRole('button', 'Delete').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/mcp$/);
   await expect(screen.getByRole('button', 'Edit context7')).toBeHidden();
   await expect(screen.getByRole('button', 'Edit apify')).toBeVisible();

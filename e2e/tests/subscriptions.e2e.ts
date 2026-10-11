@@ -6,9 +6,10 @@ failOnPageErrors();
 
 // Claude subscriptions as one pool (SPEC-001 ROT-009, ROT-010, ROT-013; F 2026-10-10).
 
-test('the accounts page shows the pool capacity and nothing to manage but add and remove', async ({ app, browser, screen }) => {
+test('the subscriptions page shows the pool capacity and nothing to manage but add and remove', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/accounts'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('AI accounts');
+  // One name for one thing (#147): the page, the menu and Settings say "Subscriptions".
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Subscriptions');
   const capacity = screen.getByRole('region', 'Capacity');
   await expect(capacity.getByText(/Add about 1 subscription to stop pausing/)).toBeVisible();
   for (const figure of ['Available now', 'Left this week', 'Burn rate', 'Runs out', 'Paused (7 days)']) {

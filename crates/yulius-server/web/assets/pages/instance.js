@@ -154,7 +154,7 @@ export function mountInstancePage(ctx) {
       await ctx.api.post('/api/admin/update/check', {});
       await ctx.updates.refresh();
     } catch (error) {
-      errorToast(error, 'Could not check for updates');
+      errorToast(error, 'Couldn’t check for updates');
     } finally {
       checkButton.disabled = false;
       checkButton.classList.remove('busy');
@@ -178,7 +178,7 @@ export function mountInstancePage(ctx) {
       toast('Update started. Tasks keep working while it builds.', { kind: 'ok' });
       await ctx.updates.refresh();
     } catch (error) {
-      errorToast(error, 'Could not start the update');
+      errorToast(error, 'Couldn’t start the update');
     }
   }
 
@@ -188,7 +188,7 @@ export function mountInstancePage(ctx) {
       await ctx.api.post('/api/admin/update/cancel', {});
       await ctx.updates.refresh();
     } catch (error) {
-      errorToast(error, 'Could not cancel the update');
+      errorToast(error, 'Couldn’t cancel the update');
     }
   }
 
@@ -204,7 +204,7 @@ export function mountInstancePage(ctx) {
       await ctx.api.post('/api/admin/update/proceed', {});
       await ctx.updates.refresh();
     } catch (error) {
-      errorToast(error, 'Could not continue the update');
+      errorToast(error, 'Couldn’t continue the update');
     }
   }
 

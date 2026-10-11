@@ -691,6 +691,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     cancelAnimationFrame(resizeFrame);
     resizeFrame = requestAnimationFrame(() => { if (!destroyed) applySize(); });
   });
+  // The floating corner (notices, the size chip, the mouse switch) sits below the banner, never over
+  // its buttons (Continue, Try again, Check subscriptions; #147).
+  const bannerObserver = new ResizeObserver(() => el.style.setProperty('--term-banner-h', `${banner.offsetHeight}px`));
 
   return {
     el,
@@ -710,6 +713,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       opened = true;
       fontPending = !fontLoaded();
       observer.observe(fitBox);
+      bannerObserver.observe(banner);
       applySize();
       render();
       socket.start();
@@ -755,6 +759,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       document.removeEventListener('visibilitychange', updatePresence);
       cancelAnimationFrame(resizeFrame);
       observer.disconnect();
+      bannerObserver.disconnect();
       if (document.fonts && document.fonts.removeEventListener) document.fonts.removeEventListener('loadingdone', onFontsLoaded);
       socket.close();
       offTheme();

@@ -15,7 +15,7 @@ import { BRAND } from '../brand.js';
 
 function section(iconName, title, description, ...content) {
   return h('section', { class: 'settings-section' },
-    h('div', { class: 'settings-head' }, icon(iconName, { size: 16 }), h('h2', null, title), description ? h('span', { class: 'muted small' }, description) : null),
+    h('div', { class: 'settings-head' }, h('h2', { class: 'card-title' }, icon(iconName, { size: 16 }), title), description ? h('span', { class: 'muted small' }, description) : null),
     h('div', { class: 'settings-body' }, content));
 }
 
@@ -102,12 +102,12 @@ export function mountSettingsPage(ctx) {
         h('div', null, h('div', { class: 'settings-name' }, name), h('div', { class: 'muted small' }, [user.login ? `@${user.login}` : null, role].filter(Boolean).join(' · ')))),
       row('archive', 'Archived tasks', 'Tasks you archived, with restore', open('/archived', 'archived tasks')),
       row('key', 'CLI device approval', 'Approve “yulius login” from a terminal', open('/device', 'CLI device approval')),
-      row('logout', 'Sign out', 'End this session in this browser', h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.signOut() }, 'Sign out'))),
+      row('logout', 'Sign out', `Sign out of ${BRAND.name} in this browser`, h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.signOut() }, 'Sign out'))),
     section('gear', 'Preferences', 'kept in this browser',
       row('contrast', 'Appearance', 'Dark, light, or follow your system', appearance),
       row('target', 'Default model for new tasks', 'What the composer starts with', modelButton),
       row('pulse', 'Default effort for new tasks', 'How hard the agent thinks by default', effortButton),
-      row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right', railToggle)),
+      row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right of a sandbox', railToggle)),
     section('key', 'Keyboard and accessibility', 'kept in this browser',
       row('key', 'Keyboard shortcuts', `Every shortcut in one list (${SHEET_KEYS})`, h('button', { type: 'button', class: 'btn btn-sm', onClick: showShortcuts }, 'Show')),
       row('target', 'Single-key shortcuts', 'On the Tasks page: / to search, j and k to move, . for a task’s menu', keysToggle),
@@ -120,21 +120,22 @@ export function mountSettingsPage(ctx) {
   );
 
   if (instanceAdmin) {
-    const sandbox = ctx.currentSandbox() || ctx.store.state.sandboxes[0] || null;
+    // Settings is outside any sandbox: the per-sandbox tiles open the sandbox used last.
+    const sandbox = ctx.defaultSandbox ? ctx.defaultSandbox() : ctx.store.state.sandboxes[0] || null;
     const slug = sandbox ? encodeURIComponent(sandbox.slug) : null;
     const tile = (iconName, title, description, path) => path
       ? h('a', { class: 'settings-tile', href: href(path), dataset: { route: path } }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, description)))
       // Unavailable: the reason is written on the tile (not only in a tooltip) and the text stays readable.
       : h('div', { class: 'settings-tile disabled', 'aria-disabled': 'true' }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, `${description} — open a sandbox first`)));
     frame.body.append(section('shield', 'Administration', `this ${BRAND.name} instance`,
-      row('user', 'Connect an AI account', 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here', h('a', { class: 'btn btn-primary btn-sm', href: href('/admin/accounts?add=1'), dataset: { route: '/admin/accounts?add=1' } }, icon('plus', { size: 14 }), 'Connect account')),
+      row('user', 'Add a subscription', 'A Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here', h('a', { class: 'btn btn-primary btn-sm', href: href('/admin/accounts?add=1'), dataset: { route: '/admin/accounts?add=1' } }, icon('plus', { size: 14 }), 'Add subscription')),
       h('div', { class: 'settings-tiles' },
         superadmin ? tile('users', 'Users', 'Who may sign in', '/admin/users') : null,
-        tile('user', 'AI accounts', 'Claude subscriptions, their usage and when to add more', '/admin/accounts'),
+        tile('user', 'Subscriptions', 'Claude subscriptions, their usage and when to add more', '/admin/accounts'),
         superadmin ? tile('github', 'GitHub connection', 'The GitHub App and its installations', '/admin/github') : null,
         superadmin ? tile('download', 'Instance', 'Version, updates and the Jev key', '/admin/instance') : null,
-        tile('plug', 'Instance MCP', 'Tool servers for every sandbox', slug ? `/s/${slug}/mcp?scope=instance` : null),
-        tile('book', 'Instance skills', 'Skills for every sandbox', slug ? `/s/${slug}/skills?source=instance` : null))));
+        tile('plug', 'MCP for every sandbox', 'Tool servers attached in every sandbox', slug ? `/s/${slug}/mcp?scope=instance` : null),
+        tile('book', 'Skills for every sandbox', 'Skills available in every sandbox', slug ? `/s/${slug}/skills?source=instance` : null))));
   }
 
   return { el: frame.el };

@@ -238,7 +238,7 @@ export function createNotificationCenter(ctx) {
     const previous = accountStatus.get(account.id);
     accountStatus.set(account.id, account.status);
     if (previous === account.status || !(account.status in ACCOUNT_PROBLEMS)) return;
-    add({ kind: 'warn', title: `${account.label || 'An account'} ${ACCOUNT_PROBLEMS[account.status]}`, detail: account.last_error || null, route: '/admin/accounts', key: `account:${account.id}` });
+    add({ kind: 'warn', title: `${account.label || 'A subscription'} ${ACCOUNT_PROBLEMS[account.status]}`, detail: account.last_error || null, route: '/admin/accounts', key: `account:${account.id}` });
   });
 
   render();

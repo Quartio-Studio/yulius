@@ -9,9 +9,11 @@
 // keeps unknown usage `null`.
 //
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
-// role=member|admin|superadmin (default superadmin), contained=0 (host mode), github=0,
+// role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
-// jev=config (a Jev key file is configured).
+// jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500).
+
+import { taskInfo } from './status.js';
 
 const MIN = 60e3;
 const HOUR = 60 * MIN;
@@ -138,6 +140,9 @@ function seed(params) {
       run: null,
     },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
+    // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
+    // failed (in place, naming what failed, with Try again; #147).
+    failPath: params.get('fail') || null,
 
     nextId: 100,
   };
@@ -157,7 +162,8 @@ function seed(params) {
       id, sandbox_id: sandbox, number, title, harness, status, activity,
       branch: extra.branch === null ? null : `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`,
       origin: extra.origin || 'ui', created_by: { login: extra.author || 'mkarp' },
-      created_at: iso(extra.age || number * 3 * HOUR), updated_at: iso(extra.updated ?? number * 7 * MIN),
+      // Created before its last change (an old task's sessions never last a negative time).
+      created_at: iso(Math.max(extra.age || number * 3 * HOUR, (extra.updated ?? number * 7 * MIN) + HOUR)), updated_at: iso(extra.updated ?? number * 7 * MIN),
       unread_messages: extra.unread || 0, archived: Boolean(extra.archived),
       account_label: LIVE.has(status) ? 'Claude #2' : null,
       stepsList: extra.noSteps ? [] : makeSteps(id, done, current),
@@ -179,8 +185,8 @@ function seed(params) {
     // Goal achieved, but a background shell (a dev server) still runs: Working, with the shell said.
     t('sb_studio', 14, 'Start the preview server', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 2 * MIN, shells: 1 }),
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, unread: 2, updated: 20e3 }),
-    // Finished its turn with a tested pull request (checks green): "Done" (#35).
-    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 2, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
+    // Finished its turn with a tested pull request (checks green) and a complete plan: "Done" (#35, #139).
+    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
     t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3 }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
@@ -218,12 +224,12 @@ function seed(params) {
     { id: 'msg_3', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_12', login: null, title: '#12 Checkout API' }, to_task_id: null, kind: 'question', subject: 'Stripe keys', body: 'Should checkout use the Stripe test keys or the live ones? The AWS sign-in tab is open: ' + `${ORIGIN}/s/studio/browser?tab=tab-aws`, created_at: iso(3 * MIN), read: true },
   ];
   db.accounts = [
-    { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', email: 'michal.karp@example.com', plan: 'Max 20x', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
-    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', email: 'team.dev@example.com', plan: 'Max 20x', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
-    { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', email: 'ops@example.com', plan: 'Max 5x', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
-    { id: 'acc_x1', provider: 'anthropic', label: 'Claude #4', email: 'studio@example.com', plan: 'Max 5x', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
-    { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', email: 'product@example.com', plan: 'Pro', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
-    { id: 'acc_x3', provider: 'anthropic', label: 'Claude spare', email: null, plan: null, status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
+    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
+    { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
+    { id: 'acc_x1', provider: 'anthropic', label: 'Claude #4', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
+    { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_x3', provider: 'anthropic', label: 'Claude spare', status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
   // The default workflows ship with the server (catalog/workflows/*.md, AUT-006): read-only, first.
   db.workflows = [
@@ -423,12 +429,23 @@ function detail(db, task) {
   };
 }
 
+/** A task's pull request as the Git overview shows it (`TaskBranch.pr`), or null. */
+function pullOf(task) {
+  const pr = task.branch && task.delivery && task.delivery.pr;
+  return pr ? { ...pr, checks: pr.state === 'open' ? pr.checks : 'none' } : null;
+}
+
+/**
+ * The sandbox counters. "Needs you" is the sidebar's rule (status.js taskInfo, the server's
+ * `AttentionFacts`), so a card, a tab and the sidebar never disagree (#147).
+ */
 function recount(db) {
   for (const sandbox of db.sandboxes) {
     const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived);
     sandbox.counts = {
-      running: tasks.filter((t) => t.status === 'running').length,
-      needs_attention: tasks.filter((t) => t.status === 'running' && t.activity === 'needs_attention').length,
+      // A live process, as the server counts it (TaskStatus::is_live).
+      running: tasks.filter((t) => ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length,
+      needs_attention: tasks.filter((t) => taskInfo(summary(t), null, pullOf(t)).group === 'needs').length,
       queued: tasks.filter((t) => t.status === 'queued').length,
     };
   }
@@ -869,7 +886,7 @@ route('GET', '/api/delivery/presets', () => [clone(PRESETS.standard), clone(PRES
 route('GET', `/api/sandboxes/${ID}/git`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived && t.branch);
-  const pull = (t) => (t.delivery && t.delivery.pr ? { ...t.delivery.pr, checks: t.delivery.pr.state === 'open' ? t.delivery.pr.checks : 'none' } : null);
+  const pull = pullOf;
   return {
     integration_branch: sandbox.profile.integration_branch, production_branch: sandbox.profile.production_branch, default_branch: sandbox.default_branch,
     tasks: tasks.map((t) => ({ task_id: t.id, title: t.title, branch: t.branch, ahead: (t.number * 3) % 11 + 1, behind: t.number % 3, files_changed: (t.number * 7) % 23 + 1, insertions: (t.number * 131) % 900 + 12, deletions: (t.number * 37) % 200, pr: pull(t) })),
@@ -1913,8 +1930,8 @@ route('GET', '/api/status', ({ db }) => {
     sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: 8, queued: db.tasks.filter((t) => t.status === 'queued').length },
     sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: s.counts.running })),
     accounts: db.accounts.map((a) => (admin
-      ? { label: a.label, provider: a.provider, plan: a.plan, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by, email: a.email }
-      : { label: a.label, provider: a.provider, plan: a.plan, status: a.status, usage: a.usage })),
+      ? { label: a.label, provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
+      : { label: a.label, provider: a.provider, status: a.status, usage: a.usage })),
     contained: db.me.instance.contained,
   };
 });
@@ -2271,6 +2288,7 @@ async function handleFetch(db, url, init = {}) {
     try { body = JSON.parse(init.body); } catch { return json(422, { error: { code: 'invalid', message: 'Malformed JSON' } }); }
   }
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
+  if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
   const headers = init.headers || {};
   if (method !== 'GET' && !PUBLIC.includes(u.pathname) && headers['X-Yulius-CSRF'] !== db.me.csrf_token) {
     return json(403, { error: { code: 'forbidden', message: 'Missing or wrong CSRF token.' } });

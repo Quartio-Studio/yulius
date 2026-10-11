@@ -202,6 +202,14 @@ Shared building blocks live in `assets/dom.js`: `iconButton`, `toggle`, `badge`,
 description, controls), `meter`, `openMenu` (icons, descriptions, check marks), `openModal`,
 `toast`. Prefer them to new one-off markup; anything new should appear on `/design`.
 
+One pattern per kind of state (SPEC-001 UI-050): `emptyState` for every empty list (with the action
+that fills it), `loadError` for a failed load said in place (`loader(container, 'the users', …)` in
+`pages/common.js` names what failed: "Couldn’t load the users: …"), `skeleton` while loading, and
+`notFound` (`pages/common.js`) for a missing page, sandbox, task or item: a heading and the way
+back. Page headers come from `pageFrame`: a title, a subtitle that says what the page is for, and
+actions; `createButton` is the primary "add" button with its "+". "Needs you" is `taskInfo`'s
+group `needs` (`status.js`), the rule the server counts with too.
+
 ## Routes
 
 | Path | View |
@@ -212,14 +220,14 @@ description, controls), `meter`, `openMenu` (icons, descriptions, check marks), 
 | `/s/<slug>` | New-task composer. |
 | `/s/<slug>/t/<number>` | Task: step strip + native terminal. |
 | `/s/<slug>/browser?tab=<id>` | Opens the browser panel on that tab (Yulius links, BRW-004). |
-| `/s/<slug>/tasks`, `/git`, `/ci`, `/workflows`, `/skills`, `/automations`, `/mcp`, `/dashboard` | Sandbox pages. `tasks?state=needs|working|done|stopped|closed&author=a,b&origin=automation&q=text` is a filtered task list (shareable). `ci?run=<id>` opens a CI run (the link of its `yulius/ci` commit status). `skills?source=instance` and `mcp?scope=instance` are the admin "Instance skills/MCP" entries. |
+| `/s/<slug>/tasks`, `/git`, `/ci`, `/workflows`, `/skills`, `/automations`, `/mcp`, `/dashboard` | Sandbox pages. `tasks?state=needs|working|done|stopped|closed&author=a,b&origin=automation&q=text` is a filtered task list (shareable). `ci?run=<id>` opens a CI run (the link of its `yulius/ci` commit status). `skills?source=instance` and `mcp?scope=instance` are the admin "Skills/MCP for every sandbox" entries. |
 | `/s/<slug>/tasks/<number>`, `/s/<slug>/git/t/<number>` | A task's overview; a task's changes and commits. |
 | `/s/<slug>/skills/<name>`, `/workflows/<id>`, `/mcp/<id>`, `/automations/<id>` | A skill, workflow, MCP server or automation in its editor (`new` for a new one). |
 | `/archived` | Archived tasks across sandboxes, with restore. |
 | `/settings` | Settings: your account, this browser's preferences, administration tiles (user menu → Settings). |
 | `/design` | Design system: brand, colour roles with live contrast, type, spacing, radii, controls, elevation, motion, icons, task states and components, in the current theme (Settings → Design system). |
 | `/device?code=<user_code>` | CLI device approval. |
-| `/admin/users`, `/admin/accounts`, `/admin/github` | Administration (superadmin / instance admin). |
+| `/admin/users`, `/admin/accounts`, `/admin/github`, `/admin/instance` | Administration (superadmin / instance admin): Users, Subscriptions, GitHub connection, Instance. Like Home, Settings, Archived, Device and Design, these pages are outside any sandbox: no sandbox navigation or tools. |
 
 ## Run the mock locally
 
@@ -234,13 +242,14 @@ routing to `#/…` paths so a plain static server can reload deep links. The pro
 (request building, error parsing, binary frames, reconnect) is the same code used against
 the real server. Options (combine with `&`): `setup=1` (setup required; token
 `YUL-SETUP-1234`), `signedout=1` (password `correct horse battery`), `role=member|admin`,
-`role=superadmin` (the default), `contained=0` (shows "Not contained"), `github=0` (GitHub App not configured), `github_linked=0`
+`role=superadmin` (the default), `contained=0` (shows "Not isolated"), `github=0` (GitHub App not configured), `github_linked=0`
 (the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
 the home page asks them to sign in with GitHub), `sandboxes=0` (a fresh instance without sandboxes: the
 home screen's first steps), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
 N×M until this one types or clicks into the terminal), `update=1` (a newer `main` is on offer; Update
 now walks through its phases in about six seconds) or `update=fail` (the same, rolled back),
-`helper=0` (no update helper), `jev=config` (a Jev key file is configured).
+`helper=0` (no update helper), `jev=config` (a Jev key file is configured), `fail=<path>` (GET
+requests of that exact API path answer 500, to see a view say what failed to load).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and
 documentation; the [end-to-end tests](../../../e2e/README.md) run against it). It has sandboxes with admin, write and read access (`studio` with the Studio

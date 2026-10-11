@@ -3,6 +3,7 @@
 
 mod assets;
 pub mod auth;
+pub mod client;
 pub mod error;
 pub mod preview;
 mod routes;

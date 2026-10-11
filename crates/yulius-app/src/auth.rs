@@ -13,8 +13,13 @@ use crate::ports::github::{GhUserToken, GitHubAppConfig};
 
 /// Minimum superadmin password length.
 pub const MIN_PASSWORD_LEN: usize = 12;
-/// Password-login attempts allowed per client key per minute.
+/// Password-login attempts allowed per client key per minute (SPEC-001 ACC-013).
 pub const LOGIN_ATTEMPTS_PER_MINUTE: usize = 5;
+/// Clients the sign-in limiter tracks at once. Clients without an attempt in the last minute are
+/// forgotten first; when that many still have one, a client not yet tracked waits a minute.
+pub const MAX_LOGIN_CLIENTS: usize = 4096;
+/// The window of [`LOGIN_ATTEMPTS_PER_MINUTE`].
+const LOGIN_WINDOW_MS: i64 = 60_000;
 const DEVICE_TTL_MS: i64 = 10 * 60 * 1000;
 const OAUTH_STATE_TTL_MS: i64 = 10 * 60 * 1000;
 const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ23456789";
@@ -195,7 +200,9 @@ impl App {
         Ok(session)
     }
 
-    /// Superadmin password sign-in with per-client rate limiting.
+    /// Superadmin password sign-in with per-client rate limiting (ACC-013). `client_key` is the
+    /// client's limit key, chosen by the interface from the TCP peer or the trusted proxy's
+    /// client address; it is also the detail of a failed attempt's audit entry.
     ///
     /// # Errors
     /// `Capacity` when rate limited, `Unauthenticated` for wrong credentials.
@@ -210,8 +217,19 @@ impl App {
                 .login_attempts
                 .lock()
                 .map_err(|_| AppError::Internal("rate limiter poisoned".into()))?;
+            if !attempts.contains_key(client_key) && attempts.len() >= MAX_LOGIN_CLIENTS {
+                attempts.retain(|_, times| {
+                    times.retain(|t| now.0 - *t < LOGIN_WINDOW_MS);
+                    !times.is_empty()
+                });
+                if attempts.len() >= MAX_LOGIN_CLIENTS {
+                    return Err(AppError::Capacity(
+                        "too many sign-in attempts; wait a minute".into(),
+                    ));
+                }
+            }
             let entry = attempts.entry(client_key.to_owned()).or_default();
-            entry.retain(|t| now.0 - *t < 60_000);
+            entry.retain(|t| now.0 - *t < LOGIN_WINDOW_MS);
             if entry.len() >= LOGIN_ATTEMPTS_PER_MINUTE {
                 return Err(AppError::Capacity(
                     "too many sign-in attempts; wait a minute".into(),

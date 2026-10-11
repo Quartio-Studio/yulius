@@ -99,7 +99,7 @@ export function mountSkillCreator(ctx, sandbox) {
       }
       await ctx.api.put(`${files}/content`, { root: 'sandbox', path: `.agents/skills/${slug}/SKILL.md`, content: content() });
       created = true;
-      toast(`Created ${slug}`, { kind: 'ok' });
+      toast(`Skill ${slug} created.`, { kind: 'ok' });
       navigate(`${base}/${encodeURIComponent(slug)}`);
     } catch (error) {
       if (error.status === 409) invalid(nameInput, `A skill named ${slug} already exists.`);

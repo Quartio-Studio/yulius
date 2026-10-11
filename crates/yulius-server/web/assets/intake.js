@@ -163,7 +163,7 @@ export function heldPromptCard(ctx, sandbox, task, prompt, detail) {
         action: created ? { label: `Open #${created.number}`, run: () => ctx.navigate(`/s/${slug}/t/${created.number}`) } : undefined,
       });
     } catch (error) {
-      errorToast(error, 'Could not handle the held prompt');
+      errorToast(error, 'Couldn’t handle the held prompt');
     } finally {
       busy = false;
       card.classList.remove('busy');

@@ -10,7 +10,7 @@ import { h, icon, setChildren, placeholder, loadError, confirmDialog, toast, inv
 import { href, navigate } from '../router.js';
 import { allows } from '../status.js';
 import { describeCron, cronValid, utcOffset, dateTime, relLong } from '../format.js';
-import { dataTable } from './common.js';
+import { dataTable, notFound } from './common.js';
 
 const RECIPES = [
   { id: 'feedback', name: 'Daily feedback', icon: 'mail', days: [1, 2, 3, 4, 5], time: '09:00', text: 'Weekdays, 09:00', prompt: 'Implement yesterday’s customer feedback from the Quartio MCP. Open one pull request per change.' },
@@ -263,7 +263,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
       if (creating) await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/automations`, payload);
       else automation = await ctx.api.put(`/api/automations/${enc(id)}`, payload);
       saved = snapshot();
-      toast(creating ? `Created ${payload.name}` : `Saved ${payload.name}`, { kind: 'ok' });
+      toast(creating ? `Automation ${payload.name} created.` : `Automation ${payload.name} saved.`, { kind: 'ok' });
       if (creating) navigate(base); else changed();
     } catch (error) {
       toast(`Couldn’t save: ${error.message}`, { kind: 'error' });
@@ -326,7 +326,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
       workflows = Array.isArray(wfs) ? wfs : [];
       if (!creating) {
         automation = (Array.isArray(list) ? list : []).find((a) => a.id === id);
-        if (!automation) { setChildren(body, loadError('This automation no longer exists.', () => navigate(base))); return; }
+        if (!automation) { saved = snapshot(); setChildren(el, notFound({ title: 'Automation not found', text: `There is no automation “${id}” in ${sandbox.name}. It may have been deleted.`, back: ['Automations', base] })); return; }
         Object.assign(state, { name: automation.name, prompt: automation.prompt || '', workflow_id: automation.workflow_id || null, enabled: automation.enabled, cron: automation.cron, offset: automation.utc_offset_minutes, custom: !readSchedule(automation.cron) });
         nameInput.value = automation.name;
         showZone = state.offset !== -new Date().getTimezoneOffset();

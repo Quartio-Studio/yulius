@@ -9,7 +9,7 @@ import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, 
 import { replaceQuietly } from '../router.js';
 import { allows } from '../status.js';
 import { relLong } from '../format.js';
-import { pageFrame, loader } from './common.js';
+import { pageFrame, loader, createButton } from './common.js';
 import { BRAND } from '../brand.js';
 
 /** The clipboard is cleared this long after a copy (VLT-002). */
@@ -109,7 +109,7 @@ function showTeamSecret(ctx, secret, revealed) {
   if (revealed.password) {
     rows.push(field('Password', h('div', { class: 'row-wrap' },
       h('code', { class: 'mono secret-value' }, revealed.password),
-      smallButton('Copy', 'Copy password', () => copyValue(revealed.password, 'Password').catch((e) => errorToast(e, 'Could not copy'))))));
+      smallButton('Copy', 'Copy password', () => copyValue(revealed.password, 'Password').catch((e) => errorToast(e, 'Couldn’t copy'))))));
   }
   if (revealed.notes) rows.push(field('Notes', h('pre', { class: 'mono secret-notes' }, revealed.notes)));
   const code = h('code', { class: 'mono secret-value' }, '······');
@@ -133,7 +133,7 @@ function showTeamSecret(ctx, secret, revealed) {
     };
     refresh();
     rows.push(field('Current code', h('div', { class: 'row-wrap' }, code, left,
-      smallButton('Copy', 'Copy code', () => copyValue(code.textContent, 'Code').catch((e) => errorToast(e, 'Could not copy'))))));
+      smallButton('Copy', 'Copy code', () => copyValue(code.textContent, 'Code').catch((e) => errorToast(e, 'Couldn’t copy'))))));
   }
   if (rows.length === 0) rows.push(h('p', { class: 'muted' }, 'This secret stores no password, notes or seed.'));
   openModal({ title: secret.title, body: h('div', { class: 'stack' }, ...rows), actions: [{ label: 'Done', kind: 'primary' }], onClose: () => clearInterval(countdown) });
@@ -142,7 +142,7 @@ function showTeamSecret(ctx, secret, revealed) {
 function mountTeam(ctx, host) {
   const list = h('div');
   const activity = h('div');
-  const add = h('button', { type: 'button', class: 'btn btn-primary', onClick: () => edit(null) }, 'Add team secret');
+  const add = createButton('Add team secret', () => edit(null));
   setChildren(host,
     h('div', { class: 'toolbar' }, h('span', { class: 'muted small' }, 'Shared by everyone on this instance. Passwords, notes and codes show after you confirm it’s you; every reveal is recorded.'), add),
     list,
@@ -155,7 +155,7 @@ function mountTeam(ctx, host) {
   }
 
   function render(secrets) {
-    if (secrets.length === 0) return emptyState({ iconName: 'lock', title: 'No team secrets yet', text: 'Keep shared logins here instead of chats and mail: the team’s mailboxes, infrastructure consoles, their two-factor codes.', action: h('button', { type: 'button', class: 'btn btn-primary', onClick: () => edit(null) }, 'Add team secret') });
+    if (secrets.length === 0) return emptyState({ iconName: 'lock', title: 'No team secrets yet', text: 'Keep shared logins here instead of chats and mail: the team’s mailboxes, infrastructure consoles, their two-factor codes.', action: createButton('Add team secret', () => edit(null)) });
     return h('div', { class: 'item-list' }, secrets.map((secret) => itemCard({
       iconName: 'key',
       title: secret.title,
@@ -170,14 +170,14 @@ function mountTeam(ctx, host) {
           try {
             const values = await reveal(secret, 'copy', ['password']);
             if (values && values.password) await copyValue(values.password, 'Password');
-          } catch (error) { errorToast(error, 'Could not copy'); }
+          } catch (error) { errorToast(error, 'Couldn’t copy'); }
           reloadActivity();
         }) : null,
         smallButton('Show', `Show ${secret.title}`, async () => {
           try {
             const values = await reveal(secret, 'show');
             if (values) showTeamSecret(ctx, secret, values);
-          } catch (error) { errorToast(error, 'Could not reveal'); }
+          } catch (error) { errorToast(error, 'Couldn’t reveal'); }
           reloadActivity();
         }),
         smallButton('Edit', `Edit ${secret.title}`, () => edit(secret)),
@@ -186,8 +186,8 @@ function mountTeam(ctx, host) {
     })));
   }
 
-  const reload = loader(list, () => ctx.api.get('/api/team-secrets'), render);
-  const reloadActivity = loader(activity, () => ctx.api.get('/api/secrets/activity?limit=50'), (entries) => {
+  const reload = loader(list, 'the team secrets', () => ctx.api.get('/api/team-secrets'), render);
+  const reloadActivity = loader(activity, 'the secrets activity', () => ctx.api.get('/api/secrets/activity?limit=50'), (entries) => {
     if (!entries.length) return h('p', { class: 'muted small' }, 'Nothing yet.');
     return h('ul', { class: 'plain-list activity-list' }, entries.map((e) => h('li', { class: 'small' },
       h('span', { class: 'mono' }, e.actor), ' ', h('span', null, ACTIONS[e.action] || e.action), ' ', h('strong', null, e.detail || ''), ' ', h('span', { class: 'muted' }, `· ${relLong(e.at)}`))));
@@ -217,7 +217,7 @@ function mountTeam(ctx, host) {
       toast('Deleted.', { kind: 'ok' });
       reload();
       reloadActivity();
-    } catch (error) { errorToast(error, 'Could not delete'); }
+    } catch (error) { errorToast(error, 'Couldn’t delete'); }
   }
 }
 
@@ -298,7 +298,7 @@ function mountAgents(ctx, sandbox, host) {
   }
   const write = allows(sandbox.access, 'write');
   const list = h('div');
-  const add = h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: () => edit(null) }, 'Add agent secret');
+  const add = createButton('Add agent secret', () => edit(null), { disabled: !write, title: write ? null : 'Requires write access' });
   setChildren(host,
     h('div', { class: 'banner banner-info' }, icon('shield'), h('div', { class: 'banner-text small' },
       `Agents use these without seeing them: ${BRAND.name} adds a secret to HTTPS requests for its hosts and types it into sign-in pages of those hosts. Anything that would show a value to an agent — command output, files, web pages, tool results — shows `,
@@ -307,7 +307,7 @@ function mountAgents(ctx, sandbox, host) {
     list);
 
   function render(secrets) {
-    if (secrets.length === 0) return emptyState({ iconName: 'key', title: 'No agent secrets yet', text: 'Add an API key or a login an agent needs; bind it to the hosts it belongs to.', action: write ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => edit(null) }, 'Add agent secret') : null });
+    if (secrets.length === 0) return emptyState({ iconName: 'key', title: 'No agent secrets yet', text: 'Add an API key or a login an agent needs; bind it to the hosts it belongs to.', action: write ? createButton('Add agent secret', () => edit(null)) : null });
     return h('div', { class: 'item-list' }, secrets.map((secret) => itemCard({
       iconName: 'key',
       title: h('span', { class: 'mono' }, secret.name),
@@ -326,7 +326,7 @@ function mountAgents(ctx, sandbox, host) {
     })));
   }
 
-  const reload = loader(list, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`), render);
+  const reload = loader(list, 'the agent secrets', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`), render);
 
   function edit(secret) {
     const form = agentForm(ctx, secret);
@@ -354,7 +354,7 @@ function mountAgents(ctx, sandbox, host) {
       await ctx.api.del(`/api/agent-secrets/${enc(secret.id)}`);
       toast('Deleted.', { kind: 'ok' });
       reload();
-    } catch (error) { errorToast(error, 'Could not delete'); }
+    } catch (error) { errorToast(error, 'Couldn’t delete'); }
   }
 }
 

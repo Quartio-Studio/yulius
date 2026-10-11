@@ -35,7 +35,7 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 | --- | --- | --- |
 | GET | `/api/setup/status` | → `{"setup_required": bool}` |
 | POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. Refused once a superadmin exists. The web UI's last setup step offers the optional Jev key with this session (`PUT /api/admin/jev`, ADM-001). |
-| POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; rate limited) |
+| POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; 5 attempts per client per minute, then 429; the client is the TCP peer, or the reverse proxy's `X-Yulius-Client-Ip` when `X-Yulius-Proxy-Secret` matches the configured secret, ACC-013, [operations](operations.md#per-client-sign-in-limits-trusted-proxy-header)) |
 | GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
 | POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left); 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
 | POST | `/api/admin/recovery-code` | superadmin session, `{"password"}` → `{"recovery_code"}`: replaces the code and re-enables a locked recovery; 403 for a wrong password |
@@ -104,6 +104,18 @@ Profile = {"preset": "standard|product|studio|custom", "integration_branch": "de
                              "command": "…|null", "verify": "manual|command"}],
            "gate": "scripts/ci.sh|null"}
 ```
+
+`counts.running` counts tasks with a live process and `counts.queued` queued tasks.
+`counts.needs_attention` counts the tasks that need a person by the web UI sidebar's "Needs you"
+rule (SPEC-001 UI-050, `AttentionFacts` in the domain): a permission prompt (`needs_attention`),
+a finished turn waiting for input (`waiting`), a pending held prompt, a pending request to act in
+the sandbox browser (read from the running browser's tabs), a chain whose predecessor ended
+otherwise, and failing checks of the pull request of a finished turn. A tested, reviewed or merged
+pull request of a finished turn whose plan is complete counts as Done or In review, not as needing
+a person. The pull request facts are those the sandbox's Git overview
+(`GET /api/sandboxes/{sid}/git`) last read; until it is read after a start, only a merge already
+recorded counts (the UI reads it with the sidebar and reloads the counters after each read). An
+ended task never counts; a paused or queued one only for a held prompt or a browser request.
 
 ## Import (`yulius onboard` / `yulius import`)
 
@@ -834,10 +846,9 @@ Account = {"id","provider","label",
 per-model weekly caps when the plan has them. Unknown usage is `null`, never zero. Credentials are
 never returned. `email` (the provider sign-in,
 administrators only) and `plan` (the subscription tier) are planned for UI-022: the web UI shows
-them when present, but **the server does not report them yet** (only the mock does), so today they
-are absent and the UI falls back to the label and provider. A task's overview names each session's
-account by that email when it has it, matching `TaskDetail.attempts[].account_label` to the
-Status accounts; an `account_id` on attempts (proposed) would make the match independent of labels.
+them when present, but **the server does not report them yet** (and the mock does not either, so
+it looks like production), so today they are absent and the UI shows the label and provider. A
+task's overview names each session's subscription by its label (`TaskDetail.attempts[].account_label`).
 
 **Login terminal.** Each login runs Claude Code's own sign-in (`claude setup-token`) with a
 temporary config directory in a server-owned PTY 500 columns

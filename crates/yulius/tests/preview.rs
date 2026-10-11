@@ -97,6 +97,8 @@ fn fixture_app(port: u16, tag: String) -> Router {
                     "host": pick("host"), "origin": pick("origin"), "referer": pick("referer"),
                     "cookie": pick("cookie"), "x-forwarded-for": pick("x-forwarded-for"),
                     "x-forwarded-host": pick("x-forwarded-host"),
+                    "x-yulius-client-ip": pick("x-yulius-client-ip"),
+                    "x-yulius-proxy-secret": pick("x-yulius-proxy-secret"),
                 }))
             }),
         )
@@ -578,6 +580,12 @@ async fn the_dev_server_sees_a_plain_localhost_request() -> TestResult {
             ("sec-fetch-site", "same-origin"),
             ("x-forwarded-for", "203.0.113.9"),
             ("x-forwarded-host", "attacker.example"),
+            // The reverse proxy's headers (ACC-013): its secret never reaches a sandbox.
+            ("x-yulius-client-ip", "203.0.113.9"),
+            (
+                "x-yulius-proxy-secret",
+                "synthetic-proxy-secret-0123456789abcdef",
+            ),
         ],
     )
     .await?;
@@ -594,6 +602,8 @@ async fn the_dev_server_sees_a_plain_localhost_request() -> TestResult {
     );
     assert_eq!(seen["x-forwarded-for"], Value::Null);
     assert_eq!(seen["x-forwarded-host"], Value::Null);
+    assert_eq!(seen["x-yulius-client-ip"], Value::Null);
+    assert_eq!(seen["x-yulius-proxy-secret"], Value::Null);
     // Large bodies stream through.
     let body = vec![b'x'; 3 << 20];
     let upload = send(

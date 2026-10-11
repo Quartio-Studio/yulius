@@ -6,7 +6,7 @@ import { h, badge, iconBadge, itemCard, iconButton, openModal, toast, confirmDia
 import { relLong, dateTime, describeCron, utcOffset } from '../format.js';
 import { allows } from '../status.js';
 import { href, navigate } from '../router.js';
-import { pageFrame, loader, dataTable } from './common.js';
+import { pageFrame, loader, dataTable, createButton } from './common.js';
 
 // AutomationRun.state (docs/api.md "Skills, workflows, automations, MCP").
 const RUN_TONE = { scheduled: 'warn', task_created: 'ok', skipped_previous_active: '', skipped_disabled: '', failed: 'danger' };
@@ -22,7 +22,7 @@ export function mountAutomationsPage(ctx, sandbox) {
   const frame = pageFrame({
     title: 'Automations',
     sub: 'scheduled tasks — agents can create them too',
-    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: create }, 'New automation')],
+    actions: [createButton('New automation', create, { disabled: !write, title: write ? null : 'Requires write access' })],
   });
   const host = h('div');
   frame.body.append(host);
@@ -34,9 +34,9 @@ export function mountAutomationsPage(ctx, sandbox) {
     return h('a', { href: href(path), dataset: { route: path } }, `#${task.number}`);
   };
 
-  const reload = loader(host, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/automations`), (list) => {
+  const reload = loader(host, 'the automations', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/automations`), (list) => {
     const items = Array.isArray(list) ? list : [];
-    if (items.length === 0) return emptyState({ iconName: 'zap', title: 'No automations yet', text: 'Start tasks on a schedule — for example, every day at 09:00 a task that works through yesterday’s customer feedback.', action: write ? h('button', { type: 'button', class: 'btn btn-primary', onClick: create }, 'New automation') : null });
+    if (items.length === 0) return emptyState({ iconName: 'zap', title: 'No automations yet', text: 'Start tasks on a schedule — for example, every day at 09:00 a task that works through yesterday’s customer feedback.', action: write ? createButton('New automation', create) : null });
     return h('div', { class: 'item-list' }, items.map((a) => itemCard({
       iconName: 'zap',
       title: a.name,

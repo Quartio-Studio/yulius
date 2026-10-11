@@ -46,10 +46,11 @@ export function createTabRow(ctx) {
   } });
   const hamburger = iconButton('menu', 'Open navigation', () => document.body.classList.toggle('drawer-open'), { class: 'hamburger', 'aria-controls': 'sidebar', 'aria-expanded': 'false' });
   const addButton = iconButton('plus', 'Add sandbox: create or import a repository', () => openSandboxDialog(ctx), { class: 'tab-add' });
-  const contained = h('span', { class: 'chip chip-warn', hidden: true, title: 'Host mode: agent sessions on this server are not isolated in an OS sandbox, so an agent can reach files outside its sandbox.' }, icon('warn', { size: 12 }), h('span', { class: 'chip-text' }, 'Not contained'));
+  // One name for one fact (#147): sessions are "isolated" in an OS sandbox, or "not isolated".
+  const contained = h('span', { class: 'chip chip-warn', hidden: true, title: 'Not isolated: agent sessions on this server run without an OS sandbox, so an agent can reach files outside its sandbox.' }, icon('warn', { size: 12 }), h('span', { class: 'chip-text' }, 'Not isolated'));
   const eventDot = h('span', { class: 'ev-dot', title: 'Live updates connected' });
   const eventText = h('span', { class: 'sr-only' }, ', live updates connected');
-  const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and account usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), eventText, icon('down', { size: 12 }));
+  const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and subscription usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), eventText, icon('down', { size: 12 }));
   // Shows/hides the right tool rail (browser, editor, shell, messages); hidden by default.
   const toolsButton = iconButton('tools', 'Show tools (browser, editor, shell, messages)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
   const toolsDot = h('span', { class: 'rail-dot', hidden: true });
@@ -202,7 +203,8 @@ function openUserMenu(ctx, anchor) {
   const user = me.user || {};
   const superadmin = Boolean(user.is_superadmin);
   const instanceAdmin = superadmin || Boolean(user.is_instance_admin);
-  const sandbox = ctx.currentSandbox() || ctx.store.state.sandboxes[0] || null;
+  // Outside a sandbox (Home, Settings…) the per-sandbox entries use the sandbox used last.
+  const sandbox = ctx.currentSandbox() || (ctx.defaultSandbox ? ctx.defaultSandbox() : null);
   const items = [
     { header: `${user.display_name || user.login || 'Signed in'}${user.login ? ` · @${user.login}` : ''}${superadmin ? ' · superadmin' : ''}` },
     { label: 'Archived tasks', icon: 'archive', onSelect: () => ctx.navigate('/archived') },
@@ -212,11 +214,12 @@ function openUserMenu(ctx, anchor) {
   if (instanceAdmin) {
     items.push({ separator: true }, { header: 'Administration' });
     if (superadmin) items.push({ label: 'Users', icon: 'users', onSelect: () => ctx.navigate('/admin/users') });
-    items.push({ label: 'AI accounts', icon: 'user', onSelect: () => ctx.navigate('/admin/accounts') });
+    items.push({ label: 'Subscriptions', icon: 'user', onSelect: () => ctx.navigate('/admin/accounts') });
     if (superadmin) items.push({ label: 'GitHub connection', icon: 'github', onSelect: () => ctx.navigate('/admin/github') });
     items.push(
-      { label: 'Instance MCP', icon: 'plug', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/mcp?scope=instance`) },
-      { label: 'Instance skills', icon: 'book', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills?source=instance`) },
+      // One name per scope (#147): "Every sandbox" (the instance) and "This sandbox".
+      { label: 'MCP for every sandbox', icon: 'plug', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/mcp?scope=instance`) },
+      { label: 'Skills for every sandbox', icon: 'book', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/skills?source=instance`) },
     );
   }
   items.push({ separator: true }, { label: 'Settings', icon: 'gear', onSelect: () => ctx.navigate('/settings') }, { label: 'Sign out', icon: 'logout', onSelect: () => ctx.signOut() });
@@ -225,7 +228,7 @@ function openUserMenu(ctx, anchor) {
 
 // ---------------------------------------------------------------- status panel
 
-/** Hidden-by-default Status panel with VM metrics and account usage (UI-007, AC-STA-1). */
+/** Hidden-by-default Status panel with VM metrics and subscription usage (UI-007, AC-STA-1). */
 function createStatusPanel(ctx, button) {
   let offFocus = null;
   let el = null;
@@ -303,10 +306,13 @@ function usageBar(percent, label) {
 
 const percentText = (percent) => (Number.isFinite(percent) ? `${Math.round(percent)}%` : '—');
 
-/** The names Claude uses for its usage windows: "Current session" (5 h), "This week"… */
+/**
+ * Usage windows by their length: "5-hour window", "This week"… Claude calls the 5-hour one
+ * "Current session"; here a session is a Claude Code run, so the window is named by its length (#147).
+ */
 function limitName(minutes, fallback) {
   if (!minutes) return fallback;
-  if (minutes === 300) return 'Current session';
+  if (minutes === 300) return '5-hour window';
   if (minutes === 10080) return 'This week';
   if (minutes === 1440) return 'Today';
   if (minutes % 1440 === 0) return `${minutes / 1440}-day window`;
@@ -363,11 +369,11 @@ export function renderStatus(data) {
   const troubled = accounts.filter((a) => ['relogin', 'pending_login', 'error'].includes(a.status));
   const hot = [vm.cpu_percent, memPct, diskPct].some((v) => Number.isFinite(v) && v >= 90);
   let health = { tone: 'ok', icon: 'check', text: 'Everything is running normally' };
-  if (data.contained === false) health = { tone: 'warn', icon: 'shield', text: 'Host mode: agent sessions are not isolated' };
+  if (data.contained === false) health = { tone: 'warn', icon: 'shield', text: 'Not isolated: agent sessions run without an OS sandbox' };
   if (hot) health = { tone: 'warn', icon: 'warn', text: 'The machine is under heavy load' };
   // Every subscription at its limit: tasks wait for the first window reset (ROT-010).
   if (accounts.length && accounts.every((a) => a.status === 'limited')) health = { tone: 'warn', icon: 'clock', text: 'No subscription has capacity left: tasks continue when a window resets' };
-  if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'account needs' : 'accounts need'} attention` };
+  if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'subscription needs' : 'subscriptions need'} attention` };
 
   const facts = [
     h('span', { class: 'status-fact', title: 'Time since the machine started' }, icon('clock', { size: 13 }), Number.isFinite(vm.uptime_s) ? `Up ${duration(vm.uptime_s * 1000)}` : 'Uptime unknown'),
@@ -399,8 +405,8 @@ export function renderStatus(data) {
         statTile('terminal', 'Sessions', Number.isFinite(sessions.live) ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}` : '—', sessionsPct, sessions.queued ? `${sessions.queued} queued` : 'agent sessions running')),
       h('div', { class: 'status-facts' }, facts)),
     sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
-    statusSection('accounts', 'user', 'AI accounts', accounts.length ? accountSummary : 'none connected',
-      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No accounts connected.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map((a) => accountUsage(a, { foldable: true, open: troubled.includes(a) }))), troubled.length > 0 || accounts.length <= 3),
+    statusSection('accounts', 'user', 'Subscriptions', accounts.length ? accountSummary : 'none yet',
+      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No subscriptions yet.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map((a) => accountUsage(a, { foldable: true, open: troubled.includes(a) }))), troubled.length > 0 || accounts.length <= 3),
   ];
 }
 
@@ -436,7 +442,7 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
       h('span', { class: 'account-name' }, h('strong', { class: 'ellipsis' }, account.label || account.id), account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
       h('span', { class: 'account-sub' }, account.email || provider)),
     state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`] }, icon(state.icon, { size: 12 }), state.label) : null,
-    foldable ? h('span', { class: 'account-glance', title: 'Current session' }, usageBar(primary ? primary.used_percent : null, 'Current session'), h('span', { class: ['usage-pct', `tone-${toneOf(primary ? primary.used_percent : null)}`] }, primary && Number.isFinite(primary.used_percent) ? `${Math.round(primary.used_percent)}%` : '—')) : null,
+    foldable ? h('span', { class: 'account-glance', title: '5-hour window' }, usageBar(primary ? primary.used_percent : null, '5-hour window'), h('span', { class: ['usage-pct', `tone-${toneOf(primary ? primary.used_percent : null)}`] }, primary && Number.isFinite(primary.used_percent) ? `${Math.round(primary.used_percent)}%` : '—')) : null,
     foldable ? icon('down', { size: 14 }) : null,
   ];
   // A usage reading that failed for now ("usage: …", one plain sentence) is a quiet note, not a
@@ -446,13 +452,13 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
   const body = h('div', { class: 'account-body' },
     account.last_error && usageNote ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, account.last_error.slice('usage:'.length).trim())) : null,
     account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.last_error)) : null,
-    usageRow(usage.primary, 'Current session'),
+    usageRow(usage.primary, '5-hour window'),
     usageRow(usage.secondary, 'This week'),
     // Per-model weekly caps, when the plan has them (they bind only tasks of that model).
     usage.weekly_opus ? usageRow({ ...usage.weekly_opus, window_minutes: null }, 'Opus this week') : null,
     usage.weekly_sonnet ? usageRow({ ...usage.weekly_sonnet, window_minutes: null }, 'Sonnet this week') : null,
     h('div', { class: 'account-foot' },
-      account.in_use_by ? h('span', { class: 'status-count live' }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'} on this account`) : h('span', null, 'No tasks right now'),
+      account.in_use_by ? h('span', { class: 'status-count live' }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'} on this subscription`) : h('span', null, 'No tasks right now'),
       h('span', null, usage.observed_at ? `Updated ${relLong(usage.observed_at)}` : 'Usage shows up when a task runs on it')));
   if (!foldable) return h('div', { class: 'account-card' }, h('div', { class: 'account-head' }, head), body);
   return rememberOpen(h('details', { class: 'account-fold' }, h('summary', { class: 'account-head' }, head), body), `account:${account.id}`, open);
@@ -496,8 +502,8 @@ export function capacityPanel(view) {
   return h('div', { class: 'stack capacity-panel' },
     h('div', { class: ['status-health', `health-${add > 0 ? 'warn' : 'ok'}`], role: 'status' }, icon(add > 0 ? 'warn' : 'check', { size: 16 }), h('span', null, line)),
     h('div', { class: 'stat-tiles' },
-      capacityTile('user', 'Available now', `${Number.isFinite(v.available) ? v.available : 0} of ${subscriptions}`, 'below 98 % in every window', v.available ? 'ok' : 'danger'),
-      capacityTile('clock', 'Left this week', Number.isFinite(weekly) ? `${Math.round(weekly)}%` : '—', Number.isFinite(session) ? `current sessions: ${Math.round(session)}% left` : 'of the pool before it pauses', leftTone(weekly)),
+      capacityTile('user', 'Available now', `${Number.isFinite(v.available) ? v.available : 0} of ${subscriptions}`, `below ${threshold}% in every window`, v.available ? 'ok' : 'danger'),
+      capacityTile('clock', 'Left this week', Number.isFinite(weekly) ? `${Math.round(weekly)}%` : '—', Number.isFinite(session) ? `5-hour windows: ${Math.round(session)}% left` : 'of the pool before it pauses', leftTone(weekly)),
       capacityTile('zap', 'Burn rate', burn24 === null ? '—' : `${burn24.toFixed(1)} / week`, burn24 === null ? 'not enough readings yet' : `subscriptions' weekly limits, last 24 h${burn7 === null ? '' : ` (7 d: ${burn7.toFixed(1)})`}`, 'ok'),
       capacityTile('chart', 'Runs out', v.runs_out_at ? resetLabel(v.runs_out_at).replace(/^Resets (at )?/, '') : burn24 === null ? '—' : 'Not this week', v.runs_out_at ? 'at the current rate' : 'at the current rate, before the next resets', v.runs_out_at ? 'warn' : 'ok'),
       capacityTile('pulse', 'Paused (7 days)', `${hours.toFixed(hours >= 10 ? 0 : 1)} h`, Number.isFinite(v.active_hours_7d) ? `task-hours; ${Math.round(v.active_hours_7d)} h worked` : 'task-hours', hours > 0 ? 'warn' : 'ok')));
@@ -703,7 +709,13 @@ export function createSidebar(ctx) {
   function renderTasks() {
     if (!sandbox) {
       shape = '';
-      setChildren(list, h('div', { class: 'placeholder small' }, 'Open a sandbox to see its tasks.'));
+      // The sandbox list failed to load: said here on pages that do not show it themselves (Home
+      // and a sandbox's pages do), never as a toast.
+      const error = ctx.store.state.sandboxesError;
+      const outside = route && route.name !== 'home' && !route.slug;
+      setChildren(list, error && outside
+        ? loadError(`Couldn’t load your sandboxes: ${error.message}`, () => ctx.store.loadSandboxes().then(() => renderTasks(), () => renderTasks()))
+        : h('div', { class: 'placeholder small' }, 'Open a sandbox to see its tasks.'));
       return;
     }
     const all = ctx.store.tasksOf(sandbox.id);

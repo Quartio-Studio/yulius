@@ -13,6 +13,7 @@ import { href, navigate, currentLocation } from '../router.js';
 import { allows } from '../status.js';
 import { BRAND } from '../brand.js';
 import { workflowIcon } from './workflows.js';
+import { notFound } from './common.js';
 
 const BLANK = { id: 'blank', name: 'Blank', icon: 'plus', description: 'Start from nothing.', copyName: '', steps: [], gates: { require_spec: false, require_tests: false }, instructions: '' };
 
@@ -212,7 +213,7 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
     if (!state) return;
     const gates = [state.gates.require_spec && 'a valid task spec', state.gates.require_tests && 'tests'].filter(Boolean);
     setChildren(summary,
-      h('h2', { class: 'ti-card-title' }, icon('target', { size: 14 }), 'A task started with it'),
+      h('h2', { class: 'card-title' }, icon('target', { size: 14 }), 'A task started with it'),
       h('p', { class: 'small' }, 'Begins with this plan:'),
       state.steps.length ? h('ol', { class: 'wf-summary-steps' }, state.steps.map((s) => h('li', null, s))) : h('p', { class: 'muted small' }, 'No plan yet: the agent writes its own.'),
       h('p', { class: 'small' }, 'The agent is told:'),
@@ -254,7 +255,7 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
       if (creating) await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/workflows`, payload);
       else await ctx.api.put(`/api/workflows/${enc(id)}`, payload);
       saved = snapshot();
-      toast(creating ? `Created ${payload.name}` : `Saved ${payload.name}`, { kind: 'ok' });
+      toast(creating ? `Workflow ${payload.name} created.` : `Workflow ${payload.name} saved.`, { kind: 'ok' });
       navigate(base);
     } catch (error) {
       toast(`Couldn’t save: ${error.message}`, { kind: 'error' });
@@ -298,7 +299,8 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
       templates = [...all.filter((w) => w.builtin).map(asTemplate), BLANK];
       if (!creating) {
         wf = all.find((w) => w.id === id);
-        if (!wf) { setChildren(body, loadError('This workflow no longer exists.', () => navigate(base))); return; }
+        // A wrong or deleted id: nothing to edit, and the way back (#147).
+        if (!wf) { setChildren(el, notFound({ title: 'Workflow not found', text: `There is no workflow “${id}” in ${sandbox.name}. It may have been deleted.`, back: ['Workflows', base] })); return; }
       }
       canEdit = write && (!wf || (!wf.builtin && (wf.scope !== 'instance' || instanceAdmin)));
       state = wf

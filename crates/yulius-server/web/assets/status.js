@@ -29,17 +29,17 @@ const ENDED_MESSAGES = {
   stopped_crashed: { tone: 'warn', text: `The agent stopped unexpectedly. ${SAFE}` },
   stopped_killed: { tone: 'warn', text: `The agent's process was ended outside ${BRAND.name} (for example killed). ${SAFE}` },
   stopped_lost: { tone: 'warn', text: `The agent's process was lost. ${SAFE}` },
-  stopped_switch_failed: { tone: 'warn', text: `The session could not continue on another subscription, so the agent stopped. ${SAFE}`, accounts: true },
+  stopped_switch_failed: { tone: 'warn', text: `The session couldn’t continue on another subscription, so the agent stopped. ${SAFE}`, accounts: true },
   stopped_switch_timeout: { tone: 'warn', text: `Continuing on another subscription took too long, so the agent stopped. ${SAFE}`, accounts: true },
   stopped_server_lost: { tone: 'warn', text: `${BRAND.name} restarted while the agent was working. ${SAFE}` },
-  failed_spawn_error: { tone: 'error', text: 'Claude Code could not start — usually an AI account must sign in again, or no slot is free.', accounts: true, retry: true },
-  failed_start_timeout: { tone: 'error', text: 'Claude Code took too long to start — usually an AI account must sign in again, or the machine is busy.', accounts: true, retry: true },
-  failed_precondition: { tone: 'error', text: 'The task could not start because the sandbox is not ready yet.', retry: true },
+  failed_spawn_error: { tone: 'error', text: 'Claude Code couldn’t start — usually a subscription must sign in again, or no slot is free.', accounts: true, retry: true },
+  failed_start_timeout: { tone: 'error', text: 'Claude Code took too long to start — usually a subscription must sign in again, or the machine is busy.', accounts: true, retry: true },
+  failed_precondition: { tone: 'error', text: 'The task couldn’t start because the sandbox is not ready yet.', retry: true },
 };
 
 /**
  * What to tell the user when a task's session has ended (UX-02): a plain sentence with a `tone`
- * ('info' | 'warn' | 'error'), whether checking the AI accounts may help (`accounts`), and
+ * ('info' | 'warn' | 'error'), whether checking the subscriptions may help (`accounts`), and
  * whether the next step is to try again rather than continue (`retry`).
  */
 export function endedMessage(status) {
@@ -68,6 +68,12 @@ function stillWorking(count) {
 
 const DONE = { glyph: '✓', icon: 'check', tone: 'done', label: 'Done', group: 'done' };
 
+/** Whether the task's plan has steps not done or skipped yet (STP-001, STP-005). */
+export function planOpen(task) {
+  const steps = task.steps || {};
+  return Boolean(steps.total) && (steps.done || 0) < steps.total;
+}
+
 /**
  * How a task's status reads: an SVG `icon` (one distinct shape per state, dom.js), a colour
  * `tone`, a plain `label`, and the sidebar `group` — `needs` (waiting for the user), `working`
@@ -90,22 +96,24 @@ export function statusInfo(task) {
     if (activity === 'working') return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working' };
     return { glyph: '●', icon: 'st-working', tone: 'running', label: 'Running', group: 'working' };
   }
-  if (status === 'queued') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Queued', group: 'working' };
-  if (status === 'starting') return { glyph: '⧗', icon: 'clock', tone: 'queued', label: 'Starting', group: 'working' };
+  // Each waiting state has its own shape (#147): an hourglass in line for a slot, a ring being
+  // drawn while the session starts, pause bars, and a chain link after another task.
+  if (status === 'queued') return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: 'Queued', group: 'working' };
+  if (status === 'starting') return { glyph: '◌', icon: 'st-starting', tone: 'queued', label: 'Starting', group: 'working' };
   // The pool moves the session to another subscription at a turn end (ROT-003): under the hood,
   // the task goes on (F 2026-10-10: tasks are subscription-agnostic).
   if (status === 'switching') return { glyph: '↻', icon: 'refresh', tone: 'switching', label: 'Continuing', group: 'working' };
   // No subscription has capacity left (every one at 98 % or limited, ROT-010): Yulius paused the
   // task at its turn boundary without telling the agent. Nothing is for the user to do: it
   // continues by itself. A task never pauses while another subscription has room.
-  if (status === 'waiting_capacity') return { glyph: '⏸', icon: 'clock', tone: 'queued', label: 'Paused', group: 'working' };
+  if (status === 'waiting_capacity') return { glyph: '⏸', icon: 'st-paused', tone: 'queued', label: 'Paused', group: 'working' };
   if (status === 'stopping') return { glyph: '■', icon: 'st-stopped', tone: 'stopping', label: 'Stopping', group: 'working' };
   // Waiting for another task to be Done (TSK-012); when that task ended otherwise, a person
   // decides: Start now or Cancel. It never starts by itself then.
   if (status === 'chained') {
     const after = task.after;
     if (after && after.blocked) return { glyph: '!', icon: 'st-attention', tone: 'attention', label: `Needs you · after #${after.number}`, group: 'needs', detail: after.blocked };
-    return { glyph: '⧗', icon: 'clock', tone: 'queued', label: after ? `Queued after #${after.number}` : 'Queued after another task', group: 'working' };
+    return { glyph: '⛓', icon: 'st-chained', tone: 'queued', label: after ? `Queued after #${after.number}` : 'Queued after another task', group: 'working' };
   }
   if (status === 'closed') return { glyph: '✓', icon: 'st-closed', tone: 'closed', label: 'Closed', group: 'ended' };
   if (status === 'stopped_cancelled') return { glyph: '■', icon: 'st-stopped', tone: 'stopped', label: STOP_LABELS[status], group: 'ended' };
@@ -167,8 +175,9 @@ export function activityLine(task, info = statusInfo(task)) {
  *
  * The one rule for Done (SPEC-001 TSK-014): the last turn ended cleanly, nothing needs the user,
  * no background shell is left, and the work is evidently complete — Claude Code recorded the goal
- * as achieved (activity `done`) or the pull request is tested. Failing checks need the user; a
- * background shell keeps it Working; checks still running (without an achieved goal) are In review.
+ * as achieved (activity `done`), or the plan is complete and the pull request is tested. Failing
+ * checks need the user; a background shell keeps it Working; checks still running (without an
+ * achieved goal) are In review. The group `needs` is what Home and the tabs count.
  */
 export function taskInfo(task, actionRequests, pr) {
   const info = statusInfo(task);
@@ -183,9 +192,13 @@ export function taskInfo(task, actionRequests, pr) {
   // The agent finished and its pull request exists (#35): done once it is tested — checks green
   // or not required — or merged; in review while checks run; needs you when they fail.
   // Only after a finished turn: a task waiting for approval (needs_attention) or working is not done (#68).
+  // A plan with open steps is not finished work, whatever its pull request says (#139): the task's
+  // own state shows ("Your turn"); failing checks still need you. The server counts the same way
+  // (`AttentionFacts` in yulius-domain).
   const finished = task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done');
   if (pr && finished && (pr.state === 'open' || pr.state === 'merged')) {
     if (pr.state === 'open' && pr.checks === 'failure') return { ...info, icon: 'branch', tone: 'attention', label: `PR #${pr.number} · checks failing`, group: 'needs', pr };
+    if (planOpen(task)) return info;
     const shells = backgroundShells(task);
     if (shells) return { ...info, ...stillWorking(shells), pr };
     const done = { ...info, ...DONE, label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, pr };

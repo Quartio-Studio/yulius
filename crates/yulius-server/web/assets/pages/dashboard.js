@@ -36,8 +36,8 @@ export function mountDashboardPage(ctx, sandbox) {
   ], { align: 'end' }) }, icon('download', { size: 14 }), 'Export');
   const range = h('div', { class: 'seg db-seg', role: 'radiogroup', 'aria-label': 'Date range' }, RANGES.map(([value, label]) => h('label', null,
     h('input', { type: 'radio', name: 'dash-range', value: String(value), checked: value === days, onChange: () => { days = value; reload(); } }), label)));
-  const frame = pageFrame({ title: 'Dashboard', sub: sandbox.name, actions: [range, exportButton, iconButton('refresh', 'Refresh', () => reload())] });
-  frame.sub.append(' · ', rangeLabel);
+  // The subtitle says what the page is for (#147); the dates of the chosen range sit with the range.
+  const frame = pageFrame({ title: 'Dashboard', sub: 'what the tasks of this sandbox did, and what it took', actions: [rangeLabel, range, exportButton, iconButton('refresh', 'Refresh', () => reload())] });
   const host = h('div', { class: 'db' });
   frame.body.append(host);
 
@@ -57,7 +57,7 @@ export function mountDashboardPage(ctx, sandbox) {
     a.remove();
   }
 
-  const reload = loader(host, async () => {
+  const reload = loader(host, 'the dashboard', async () => {
     const current = period();
     rangeLabel.textContent = `${SHORT_DATE.format(parseDay(current.from))} – ${SHORT_DATE.format(parseDay(current.to))}`;
     // The previous period only adds the changes; the page still works without it.
@@ -141,7 +141,7 @@ function sparkline(values) {
 
 function card(title, sub, body, { tools, className } = {}) {
   return h('section', { class: ['card', 'db-card', className] },
-    h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'db-card-title' }, title), sub ? h('span', { class: 'db-card-sub' }, sub) : null), tools || null),
+    h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, title), sub ? h('span', { class: 'db-card-sub' }, sub) : null), tools || null),
     body);
 }
 
@@ -172,7 +172,7 @@ export function renderSummary(data, previous = null, days = 30, capacity = null)
 
   const byStatus = Object.entries(tasks.by_status || {}).map(([status, count]) => ({ status, info: statusInfo({ status, activity: null }), value: count }));
   const byModel = (Array.isArray(data.tokens_by_model) ? data.tokens_by_model : []).map((r) => ({ label: r.model === 'unknown' ? 'Unknown model' : modelLabel(r.model), value: sumTokens(r) }));
-  const byAccount = (Array.isArray(data.tokens_by_account) ? data.tokens_by_account : []).map((r) => ({ label: r.account_label || (r.account_id ? 'Deleted account' : 'No account'), value: sumTokens(r) }));
+  const byAccount = (Array.isArray(data.tokens_by_account) ? data.tokens_by_account : []).map((r) => ({ label: r.account_label || (r.account_id ? 'Removed subscription' : 'No subscription'), value: sumTokens(r) }));
   const byOrigin = Object.entries(tasks.by_origin || {}).map(([origin, count]) => ({ label: ORIGIN_NAMES[origin] || origin, value: count }));
 
   const feedbackBar = rated ? h('div', { class: 'db-ratio', 'aria-hidden': 'true' },
@@ -188,7 +188,7 @@ export function renderSummary(data, previous = null, days = 30, capacity = null)
       kpi({ label: 'Active agent time', value: duration(d.total_active ?? null), change: delta(now.active, was('active'), { better: null, days }), sub: d.total_wall !== undefined ? `${duration(d.total_wall)} start to end` : null }),
       kpi({ label: 'Tokens', value: compact(now.tokens), change: delta(now.tokens, was('tokens'), { better: null, days }), sub: `${compact(tokens.input)} in · ${compact(tokens.output)} out`, hint: tokenNotes || null,
         note: tokenNotes || null }),
-      kpi({ label: 'Account switches', value: int(switches(data)), change: delta(now.switches, was('switches'), { better: 'down', days }), sub: 'made by the pool, between subscriptions' }),
+      kpi({ label: 'Subscription switches', value: int(switches(data)), change: delta(now.switches, was('switches'), { better: 'down', days }), sub: 'made by the pool, between subscriptions' }),
       kpi({ label: 'Feedback correct', value: rated ? `${Math.round(now.correct * 100)}%` : '—', change: delta(now.correct, was('correct'), { points: true, days }), extra: feedbackBar, sub: rated ? `${feedback.correct || 0} of ${rated} rated` : 'no feedback yet' })),
     subscriptions(capacity),
     h('div', { class: 'db-row' },
@@ -196,7 +196,7 @@ export function renderSummary(data, previous = null, days = 30, capacity = null)
       outcomes(byStatus)),
     h('div', { class: 'db-row db-row-3' },
       card('Tokens by model', 'input + output', barList(byModel, { format: compact, empty: 'No token data. Unknown usage is not counted as zero.' })),
-      card('Tokens by account', 'input + output', barList(byAccount, { format: compact })),
+      card('Tokens by subscription', 'input + output', barList(byAccount, { format: compact })),
       card('Where tasks start', null, barList(byOrigin, { format: int }))),
   ];
 }

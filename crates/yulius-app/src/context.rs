@@ -62,6 +62,10 @@ pub struct AppConfig {
     pub upload_max_bytes: u64,
     /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21).
     pub ci: crate::ci::CiSettings,
+    /// The TLS reverse proxy's shared secret (`YULIUS_PROXY_SECRET_FILE`, SPEC-001 ACC-013): a
+    /// request carrying it is keyed on the client address the proxy passes; `None` keys every
+    /// request on its TCP peer. Formatting never shows it.
+    pub proxy_secret: Option<crate::model::Secret>,
 }
 
 impl AppConfig {
@@ -104,6 +108,7 @@ impl AppConfig {
             permission_stale_ms: 30 * 60 * 1000,
             upload_max_bytes: crate::uploads::DEFAULT_UPLOAD_MAX_BYTES,
             ci: crate::ci::CiSettings::default(),
+            proxy_secret: None,
         }
     }
 }
@@ -174,6 +179,8 @@ pub struct App {
     pub(crate) ci: crate::ci::CiState,
     /// Sandbox isolation (SPEC-002 ADR-22); unset: contained runs keep the previous containment.
     pub(crate) isolation: OnceLock<Arc<dyn crate::ports::isolation::SandboxIsolation>>,
+    /// Pull requests the Git overview last observed, for the "needs you" counts (#147).
+    pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
 }
 
 impl App {
@@ -204,6 +211,7 @@ impl App {
             vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),
             isolation: OnceLock::new(),
+            observed_pulls: crate::sandboxes::ObservedPulls::default(),
         })
     }
 

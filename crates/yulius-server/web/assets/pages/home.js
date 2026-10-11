@@ -117,21 +117,11 @@ export function mountHomePage(ctx) {
       keepFocus(el, () => setChildren(el, emptyView(needsGithub, user)));
       return;
     }
-    let attention = 0;
-    let running = 0;
-    for (const sandbox of sandboxes) {
-      attention += (sandbox.counts && sandbox.counts.needs_attention) || 0;
-      running += (sandbox.counts && sandbox.counts.running) || 0;
-    }
-    const summary = [
-      `${sandboxes.length} ${sandboxes.length === 1 ? 'sandbox' : 'sandboxes'}`,
-      attention ? `${attention} ${attention === 1 ? 'task needs' : 'tasks need'} you` : null,
-      running ? `${running} working` : null,
-    ].filter(Boolean).join(' · ');
+    // The subtitle says what the page is for, as on every page (#147); each card has its counts.
     keepFocus(el, () => setChildren(el, h('div', { class: 'page' }, h('div', { class: 'page-inner' },
       h('div', { class: 'page-head home-head' },
         h('h1', { class: 'page-title' }, 'Sandboxes'),
-        h('span', { class: 'page-sub' }, summary),
+        h('span', { class: 'page-sub' }, 'one GitHub repository each, with its tasks, browser and editor'),
         h('div', { class: 'page-actions' }, addActions(needsGithub, user, { primary: false }))),
       h('div', { class: 'home-grid' }, sandboxes.map(card))))));
   }

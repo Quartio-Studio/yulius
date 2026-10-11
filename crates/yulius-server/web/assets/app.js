@@ -12,6 +12,7 @@ import { createStore, readJson, writeJson } from './store.js';
 import { applyTheme, PHONE, isPhone } from './theme.js';
 import { BRAND } from './brand.js';
 import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError, closeMenu } from './dom.js';
+import { notFound } from './pages/common.js';
 import { createTabRow, createSidebar } from './layout.js';
 import { createPanelHost } from './panels.js';
 import { mountTaskView, mountComposer } from './taskview.js';
@@ -43,6 +44,7 @@ import { IS_MAC, showShortcuts } from './shortcuts.js';
 import { preloadTerminal } from './terminal.js';
 
 const params = new URLSearchParams(window.location.search);
+const NOT_FOUND = { title: 'Page not found', text: 'There is nothing at this address. The link may be old or mistyped.', back: ['All sandboxes', '/'] };
 const MOCK = params.get('mock') === '1';
 const LAST_SANDBOX_KEY = 'yulius.lastSandbox';
 
@@ -150,11 +152,8 @@ function createApp(root, transport) {
     expiredHandled = false;
     store.state.me = me;
     api.setCsrf(me && me.csrf_token);
-    try {
-      await store.loadSandboxes();
-    } catch (error) {
-      errorToast(error, 'Couldn’t load sandboxes');
-    }
+    // A failed load is said in the view (Home, a sandbox's pages, the sidebar), not in a toast.
+    try { await store.loadSandboxes(); } catch { /* store.state.sandboxesError */ }
     buildShell();
     store.startEvents();
     // The terminal (xterm) is not part of the first paint; fetch it once the browser is idle so the
@@ -183,7 +182,7 @@ function createApp(root, transport) {
     if (expiredHandled || !store.state.me) return;
     expiredHandled = true;
     teardown();
-    toast('Your session ended. Please sign in again.', { kind: 'warn' });
+    toast('You were signed out. Please sign in again.', { kind: 'warn' });
     renderSignIn();
   }
 
@@ -378,8 +377,14 @@ function createApp(root, transport) {
     return centerView;
   }
 
-  function message(key, text, extra) {
-    setCenter(key, () => ({ el: h('div', { class: 'page' }, h('div', { class: 'page-inner' }, h('div', { class: 'card placeholder' }, text, extra || null))) }));
+  /** A page that cannot be shown (#147): a heading, why, and the way back (pages/common.js). */
+  function missing(key, view) {
+    setCenter(key, () => ({ el: h('div', { class: 'page' }, notFound(view)) }));
+  }
+
+  /** A load that failed, in the view with a retry (not a toast). */
+  function failed(key, text, retry) {
+    setCenter(key, () => ({ el: h('div', { class: 'page' }, h('div', { class: 'page-inner' }, loadError(text, retry))) }));
   }
 
   // ------------------------------------------------------------ links
@@ -447,13 +452,10 @@ function createApp(root, transport) {
 
   // ------------------------------------------------------------ routing
 
+  // A failed load is said where the tasks show (the sidebar, Tasks, the task route), not in a toast.
   async function ensureTasks(sandbox) {
     if (store.tasksOf(sandbox.id) !== null) return;
-    try {
-      await store.loadTasks(sandbox.id);
-    } catch (error) {
-      errorToast(error, 'Couldn’t load tasks');
-    }
+    try { await store.loadTasks(sandbox.id); } catch { /* store.tasksError(sandbox.id) */ }
   }
 
   async function findTaskByNumber(sandbox, number) {
@@ -473,51 +475,34 @@ function createApp(root, transport) {
     document.body.classList.remove('drawer-open');
     if (route.name === 'setup' || route.name === 'signin') { navigate('/', { replace: true }); return; }
 
-    // Home (UI-045): every sandbox at a glance is the default view; it no longer redirects into the
-    // last sandbox. Deep links below open their sandbox directly.
-    if (route.name === 'home') {
-      currentSandbox = null;
-      currentTask = null;
-      shell.el.classList.add('no-sandbox');
-      shell.tabRow.update(null, { home: true });
-      shell.sidebar.update(route, null);
-      shell.panels.setContext(null, null);
-      if (store.state.sandboxesError) sandboxesFailed('sandboxes-error'); else setCenter('home', () => mountHomePage(ctx));
-      if (ctx.fitSidebar) ctx.fitSidebar();
+    // Home (UI-045) and the other pages outside a sandbox (leaveSandbox).
+    if (!route.slug) {
+      leaveSandbox(route, { home: route.name === 'home' });
+      showOutside(route);
       updateTitle();
       return;
     }
-    const wasHome = shell.el.classList.contains('no-sandbox');
-    shell.el.classList.remove('no-sandbox');
-    if (wasHome && ctx.fitSidebar) ctx.fitSidebar();
-
-    let sandbox = currentSandbox;
-    if (route.slug) {
+    let sandbox = store.sandboxBySlug(route.slug);
+    if (!sandbox) {
+      try { await store.loadSandboxes(); } catch { /* reported below */ }
       sandbox = store.sandboxBySlug(route.slug);
-      if (!sandbox) {
-        try { await store.loadSandboxes(); } catch { /* reported below */ }
-        sandbox = store.sandboxBySlug(route.slug);
-      }
-      if (currentRoute !== route) return;
-      if (!sandbox) {
-        currentSandbox = null;
-        shell.tabRow.update(null);
-        shell.sidebar.update(route, null);
-        shell.panels.setContext(null, null);
-        if (store.state.sandboxesError) sandboxesFailed(`sandboxes-error:${route.slug}`);
-        else message(`missing:${route.slug}`, 'This sandbox does not exist or you do not have access to its GitHub repository.');
-        return;
-      }
-      writeJson(LAST_SANDBOX_KEY, sandbox.id);
-    } else if (sandbox) {
-      sandbox = store.sandboxById(sandbox.id) || store.state.sandboxes[0] || null;
-    } else {
-      sandbox = store.sandboxById(readJson(LAST_SANDBOX_KEY, null)) || store.state.sandboxes[0] || null;
     }
+    if (currentRoute !== route) return;
+    if (!sandbox) {
+      leaveSandbox(route);
+      if (store.state.sandboxesError) sandboxesFailed(`sandboxes-error:${route.slug}`);
+      else missing(`missing:${route.slug}`, { title: 'Sandbox not found', text: `There is no sandbox “${route.slug}”, or you don’t have access to its GitHub repository.`, back: ['All sandboxes', '/'] });
+      updateTitle();
+      return;
+    }
+    writeJson(LAST_SANDBOX_KEY, sandbox.id);
+    const wasOutside = shell.el.classList.contains('no-sandbox');
+    shell.el.classList.remove('no-sandbox');
+    if (wasOutside && ctx.fitSidebar) ctx.fitSidebar();
     currentSandbox = sandbox;
-    shell.tabRow.update(route.slug && sandbox ? sandbox.slug : null);
+    shell.tabRow.update(sandbox.slug);
     shell.sidebar.update(route, sandbox);
-    if (sandbox) ensureTasks(sandbox).then(() => { if (currentRoute === route && shell) shell.sidebar.refresh(); });
+    ensureTasks(sandbox).then(() => { if (currentRoute === route && shell) shell.sidebar.refresh(); });
 
     let task = null;
     switch (route.name) {
@@ -526,13 +511,13 @@ function createApp(root, transport) {
         if (currentRoute !== route) return;
         if (store.tasksOf(sandbox.id) === null && store.tasksError(sandbox.id)) {
           // The list failed to load: say so, rather than "Task #12 was not found".
-          message(`tasks-error:${sandbox.id}:${route.number}`, `Couldn’t load the tasks of ${sandbox.name}: ${store.tasksError(sandbox.id).message}`,
-            h('button', { type: 'button', class: 'btn btn-sm space-top', onClick: () => store.loadTasks(sandbox.id).then(() => refreshRoute(), () => {}) }, 'Try again'));
+          failed(`tasks-error:${sandbox.id}:${route.number}`, `Couldn’t load the tasks of ${sandbox.name}: ${store.tasksError(sandbox.id).message}`,
+            () => store.loadTasks(sandbox.id).then(() => refreshRoute(), () => {}));
           break;
         }
         task = await findTaskByNumber(sandbox, route.number);
         if (currentRoute !== route) return;
-        if (!task) { message(`missing-task:${sandbox.id}:${route.number}`, `Task #${route.number} was not found in ${sandbox.name}.`); break; }
+        if (!task) { missingTask(sandbox, route.number); break; }
         setCenter(`task:${task.id}`, () => mountTaskView(ctx, sandbox, task), { paper: false });
         break;
       }
@@ -558,7 +543,7 @@ function createApp(root, transport) {
         if (currentRoute !== route) return;
         const shown = await findTaskByNumber(sandbox, route.number);
         if (currentRoute !== route) return;
-        if (!shown) { message(`missing-task:${sandbox.id}:${route.number}`, `Task #${route.number} was not found in ${sandbox.name}.`); break; }
+        if (!shown) { missingTask(sandbox, route.number); break; }
         setCenter(`task-info:${shown.id}`, () => mountTaskInfoView(ctx, sandbox, shown));
         break;
       }
@@ -568,7 +553,7 @@ function createApp(root, transport) {
         if (currentRoute !== route) return;
         const reviewed = await findTaskByNumber(sandbox, route.number);
         if (currentRoute !== route) return;
-        if (!reviewed) { message(`missing-task:${sandbox.id}:${route.number}`, `Task #${route.number} was not found in ${sandbox.name}.`); break; }
+        if (!reviewed) { missingTask(sandbox, route.number); break; }
         const view = setCenter(`git-task:${reviewed.id}`, () => mountGitTaskView(ctx, sandbox, reviewed, route));
         if (view.update) view.update(route);
         break;
@@ -588,27 +573,8 @@ function createApp(root, transport) {
         setCenter(`${base}:${route.query.toString()}`, () => factory(ctx, sandbox, route));
         break;
       }
-      case 'archived':
-        setCenter('archived', () => mountArchivedPage(ctx));
-        break;
-      case 'settings':
-        setCenter('settings', () => mountSettingsPage(ctx));
-        break;
-      case 'secrets':
-        // Team secrets without a sandbox (the user menu); agent secrets need one.
-        setCenter('secrets', () => mountSecretsPage(ctx, null, route));
-        break;
-      case 'design':
-        setCenter('design', () => mountDesignPage(ctx));
-        break;
-      case 'device':
-        setCenter(`device:${route.query.toString()}`, () => mountDevicePage(ctx, route));
-        break;
-      case 'admin':
-        setCenter(`admin:${route.page}`, () => ADMIN_PAGES[route.page](ctx, route));
-        break;
       default:
-        message('notfound', 'Page not found.', h('div', { class: 'space-top' }, h('a', { href: href('/'), dataset: { route: '/' } }, 'Go to all sandboxes')));
+        missing('notfound', NOT_FOUND);
     }
     currentTask = task;
     shell.panels.setContext(sandbox, task);
@@ -617,6 +583,47 @@ function createApp(root, transport) {
       navigate(`/s/${encodeURIComponent(sandbox.slug)}`, { replace: true });
     }
     updateTitle();
+  }
+
+  /**
+   * Pages outside a sandbox — Home (UI-045), Settings, Archived, Device, Team secrets, the
+   * administration pages, Design, unknown addresses and a sandbox that is not there — show no
+   * sandbox, as the tab row does (no sandbox tab is current): the sidebar drops the sandbox's
+   * navigation and tasks, and the tools go (#147). New task still starts in the sandbox used last.
+   */
+  function leaveSandbox(route, { home = false } = {}) {
+    currentSandbox = null;
+    currentTask = null;
+    const wasInside = !shell.el.classList.contains('no-sandbox');
+    shell.el.classList.add('no-sandbox');
+    shell.tabRow.update(null, { home });
+    shell.sidebar.update(route, null);
+    shell.panels.setContext(null, null);
+    if (wasInside && ctx.fitSidebar) ctx.fitSidebar();
+  }
+
+  /** Task #n of a sandbox does not exist (deleted, or a wrong link). */
+  function missingTask(sandbox, number) {
+    const tasks = `/s/${encodeURIComponent(sandbox.slug)}/tasks`;
+    missing(`missing-task:${sandbox.id}:${number}`, { title: 'Task not found', text: `There is no task #${number} in ${sandbox.name}. It may have been deleted.`, back: ['Tasks', tasks] });
+  }
+
+  /** A page outside any sandbox (the caller cleared the sandbox). */
+  function showOutside(route) {
+    if (route.name === 'home') {
+      if (store.state.sandboxesError) sandboxesFailed('sandboxes-error'); else setCenter('home', () => mountHomePage(ctx));
+      return;
+    }
+    switch (route.name) {
+      case 'archived': setCenter('archived', () => mountArchivedPage(ctx)); break;
+      case 'settings': setCenter('settings', () => mountSettingsPage(ctx)); break;
+      // Team secrets without a sandbox (the user menu); agent secrets need one.
+      case 'secrets': setCenter('secrets', () => mountSecretsPage(ctx, null, route)); break;
+      case 'design': setCenter('design', () => mountDesignPage(ctx)); break;
+      case 'device': setCenter(`device:${route.query.toString()}`, () => mountDevicePage(ctx, route)); break;
+      case 'admin': setCenter(`admin:${route.page}`, () => ADMIN_PAGES[route.page](ctx, route)); break;
+      default: missing('notfound', NOT_FOUND);
+    }
   }
 
   /** The sandbox list could not be loaded: say so with a retry (not "no sandboxes" or "no access"). */
