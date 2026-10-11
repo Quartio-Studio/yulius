@@ -1643,7 +1643,7 @@ already holds, so unchanged sessions are never offered. Sessions arrive redacted
 
 ### 6.6 Sandbox onboarding
 
-`not_needed | pending → preparing (task id) → ready | skipped(by admin)`. Owner: the server. Exit
+`not_needed | pending → preparing (task id) → ready | skipped(by admin)`. Every import starts `pending` with an onboarding task: the full preparation prompt when the docs fail the format check, the environment-only prompt (`ENVIRONMENT_TITLE`) when they pass; `not_needed` is left for repositories created from a template (F 2026-10-11). Owner: the server. Exit
 triggers: `pending → preparing` when the preparation task starts — by itself, at once for a
 repository added in the UI and when the import is applied for `yulius onboard` (also
 `POST …/onboarding/approve`, kept for a pending sandbox whose start failed; a missing preparation

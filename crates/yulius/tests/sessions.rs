@@ -250,8 +250,9 @@ async fn people_list_search_and_read_sessions_by_sandbox_access() -> TestResult 
     w.grant("alice", "ready", "admin");
     w.grant("carol", "ready", "pull");
     let ready = import(&w, &alice, "Quartio-Studio/ready").await?;
-    assert_eq!(ready["onboarding"], "not_needed");
     let sid = SandboxId::parse(text(&ready["id"]))?;
+    // Its environment task (F 2026-10-11) has finished: this test is about sessions.
+    w.h.store.set_onboarding(&sid, "ready", None).await?;
     agent_secret(&w.h.app, &alice_user, &sid).await?;
     let task = insert_task(
         &w.h.store,
