@@ -14,8 +14,9 @@ implemented; do not invent features beyond them.
 Project map for Yulius, configured in [yulius.toml](yulius.toml): [product](docs/product.md),
 [architecture](docs/architecture.md), [decisions](docs/decisions/README.md), specs in
 [.ai/specs](.ai/specs), [changes](docs/changes.md). They summarise and point to the specs
-above; the rules in this file stay authoritative. CI runs through Yulius CI
-(`[[ci.jobs]]` in `yulius.toml`), not GitHub Actions.
+above; the rules in this file stay authoritative. Yulius CI
+runs the gate (`[[ci.jobs]]` in `yulius.toml`); GitHub Actions stay until the Yulius GitHub App
+may post commit statuses and change workflow files, then they are removed.
 
 ## Start here
 
