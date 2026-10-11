@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-11
 
+- Debug and test builds keep only line tables (dependencies none): a worktree's test build had
+  reached 48 GB and parallel tasks filled the sandbox disk quota, so CI runs and session starts
+  were refused.
 - Agents carry delivery through on their own: Yulius tells a task when its pull request opened and
   when its checks passed or failed, the Stop gate asks for a missing spec at once (and follows a
   renamed one), and the briefing says never to ask a person — an issue covers what only a person
