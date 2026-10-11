@@ -1,0 +1,69 @@
+---
+name: infra-bootstrap
+description: Lay a project's engineering foundations the way a senior engineer would - strong unit and integration tests, lint and format, one local gate that our own CI runs (no GitHub Actions), dev and production environments with deploy and verification, AGENTS.md, architecture and product docs, GitHub labels and templates. Use on the first prompt of a fresh project, during onboarding, or when the briefing lists missing foundations.
+---
+
+# Infra bootstrap
+
+Foundations are what make every later task fast and safe. Lay them once, properly, for the
+project's own stack, then leave them stable: change them only when the product needs it (for
+example when it starts deploying for real), and record every change as a decision.
+
+## Principles
+
+- **Respect what exists.** Read the repository first: language, framework, package manager,
+  existing scripts, tests, CI files, deploy scripts, docs and conventions. Map, don't move: keep
+  working conventions and wire them into the gate instead of replacing them. Every project has
+  its own foundations (a Rust workspace, a TypeScript monorepo, a Python service): pick what is
+  state of the art for *that* stack.
+- **One gate.** A single command runs everything a merge depends on, the same way on a laptop,
+  in the sandbox and on CI.
+- **Our own machines only.** CI runs on our own infrastructure through Yulius CI, which runs the
+  gate for every pull request head and for the integration and production branches. Never add
+  GitHub Actions or anything that needs a paid GitHub plan (rulesets, hosted runner minutes).
+- **Decide, don't ask.** Compare options, choose, and write an ADR per lasting choice.
+- **Small pull requests.** Deliver the bootstrap as a short series of pull requests, one concern
+  each, through the normal pipeline (`delivery-pipeline`).
+
+## Steps (each one a pull request of similar effort)
+
+1. **Gate and tests.** Add or complete:
+   - formatting check and linter with warnings as errors, type checking where the language has it;
+   - unit tests for the core logic and integration tests at the real boundaries (HTTP, database
+     on the real engine in a disposable instance, queues, external APIs behind fakes), fast,
+     deterministic and isolated (`test-driven-development`);
+   - one entry point that runs them all in order (for example `scripts/ci` or `make ci`), exiting
+     non-zero on any failure, plus the dependency and license audit the ecosystem offers;
+   - `yulius.toml` `[commands]`: `test`, `lint`, `build`, and `gate` (the entry point), or
+     `[[ci.jobs]]` entries (`name`, `command`, optional `matrix`) when parallel jobs pay off.
+2. **CI on our own machines.** Translate every `.github/workflows/*.yml` job into the Yulius CI
+   configuration so nothing is lost (in Yulius, `ci_setup` lists the workflows, jobs, steps and
+   matrices to translate): each job's run steps become the gate script or a `[[ci.jobs]]` entry,
+   matrices become `matrix` values, actions (`uses:`) become the equivalent commands, services
+   (databases, caches) become disposable local containers or processes started by the script,
+   and secrets come from the project's agent secrets, never inline. Run the gate locally and show
+   it passes. Then delete `.github/workflows/` in the same pull request, so gates and merges rely
+   only on Yulius CI results (`ci_status`). Merge gating needs no rulesets: Yulius enforces the
+   gate at merge.
+3. **Environments.** Define dev (after integration) and production (after promotion) in
+   `yulius.toml` `[delivery]` as `[[delivery.environments]]` entries with an idempotent deploy
+   `command` and `verify = "command"` for a smoke test against the deployed app (health endpoint,
+   one real user path). Deploy scripts read secrets from the environment, roll forward safely,
+   and print where the app runs.
+4. **Docs.** `AGENTS.md` (rules, commands, layout and the docs index), a `CLAUDE.md` pointer to
+   it, `docs/product.md` (purpose, users, scope, current state), `docs/architecture.md` with a
+   Mermaid diagram, ADRs for the choices above, and the first entry of `docs/changes.md`. When
+   the repository already has equivalents, point `yulius.toml` `[docs]` at them.
+5. **GitHub hygiene (free features only).** Labels: `type: bug|enhancement|docs|chore|performance`,
+   `priority: high|medium|low`, `area: <part>` per main area, `risk: high`. Issue templates with
+   the Definition of Ready (summary, current and expected behavior, out of scope, acceptance
+   criteria), a pull request template (summary, spec, evidence, review verdict, `Fixes #N`),
+   `.gitignore` and `.gitattributes` for the stack, and automatic deletion of merged branches.
+
+## Done when
+
+- The gate passes from a clean checkout and fails on a deliberately broken test.
+- No GitHub Actions workflow is left; `[commands] gate` (or `[[ci.jobs]]`) is set and Yulius CI
+  reports on it.
+- Dev and production deploy and verify by command.
+- The docs describe the project as it is, and each choice has an ADR.

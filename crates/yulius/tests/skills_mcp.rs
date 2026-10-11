@@ -61,15 +61,21 @@ fn by_name<'a>(list: &'a Value, name: &str) -> Option<&'a Value> {
 }
 
 #[tokio::test]
-async fn skill_catalog_sources_toggles_run_set_and_om_config() -> TestResult {
+async fn skill_catalog_sources_toggles_and_run_set() -> TestResult {
     let w = world(false).await?;
     let data = w.h.app.config.data_dir.clone();
+    let bundled_files: usize = pack::PACKS.iter().map(|p| p.files.len()).sum();
     assert_eq!(
         w.h.app.install_skill_catalog().await? as usize,
-        pack::PACK_FILES.len()
+        bundled_files
     );
     assert_eq!(w.h.app.install_skill_catalog().await?, 0, "idempotent");
     assert!(data.join("skills/open-mercato/LICENSE").is_file());
+    assert!(data.join("skills/superpowers/LICENSE").is_file());
+    assert!(
+        data.join("skills/yulius/delivery-pipeline/SKILL.md")
+            .is_file()
+    );
 
     let repo = data.join("sandboxes/s1/repo");
     write(
@@ -125,16 +131,37 @@ async fn skill_catalog_sources_toggles_run_set_and_om_config() -> TestResult {
         by_name(&list.body, "evil").is_none(),
         "a symlink leaving the repository is ignored"
     );
-    let om: Vec<&str> = list
-        .body
-        .as_array()
-        .ok_or("list")?
-        .iter()
-        .filter(|s| s["source"] == "open-mercato")
-        .filter_map(|s| s["name"].as_str())
-        .collect();
-    assert_eq!(om.len(), pack::PACK_SKILLS.len() - 1);
-    assert!(om.iter().all(|n| pack::PACK_SKILLS.contains(n)));
+    for bundled in &pack::PACKS {
+        let listed: Vec<&str> = list
+            .body
+            .as_array()
+            .ok_or("list")?
+            .iter()
+            .filter(|s| s["source"] == bundled.source.as_str())
+            .filter_map(|s| s["name"].as_str())
+            .collect();
+        // om-fix is shadowed by the repository skill of the same name.
+        let shadowed = usize::from(bundled.skills.contains(&"om-fix"));
+        assert_eq!(
+            listed.len(),
+            bundled.skills.len() - shadowed,
+            "{}",
+            bundled.dir
+        );
+        assert!(listed.iter().all(|n| bundled.skills.contains(n)));
+    }
+    assert!(
+        by_name(&list.body, "om-verify-in-repo").is_none(),
+        "removed"
+    );
+    assert_eq!(
+        by_name(&list.body, "git-hygiene").ok_or("git-hygiene")?["source"],
+        "yulius"
+    );
+    assert_eq!(
+        by_name(&list.body, "test-driven-development").ok_or("tdd")?["source"],
+        "superpowers"
+    );
     assert_eq!(
         by_name(&list.body, "om-code-review").ok_or("om")?["path"],
         "skills/open-mercato/om-code-review/SKILL.md"
@@ -250,12 +277,16 @@ async fn skill_catalog_sources_toggles_run_set_and_om_config() -> TestResult {
     assert_eq!(
         names,
         [
+            "delivery-pipeline",
+            "git-hygiene",
+            "infra-bootstrap",
             "om-check-and-commit",
             "om-code-review",
             "om-root-cause",
             "om-spec-writing",
             "om-ux-shape",
-            "om-verify-in-repo"
+            "test-driven-development",
+            "verification-before-completion",
         ]
     );
     let homes = tempfile::tempdir()?;
@@ -268,48 +299,29 @@ async fn skill_catalog_sources_toggles_run_set_and_om_config() -> TestResult {
     );
     assert!(!dir.join("om-brainstorm").exists());
 
-    // The Open Mercato config is rendered from the profile and yulius.toml when absent.
-    write(
-        &repo.join("yulius.toml"),
-        "[commands]\ntest = \"cargo test\"\nlint = \"cargo clippy\"\n\n[docs]\nspecs_dir = \"knowledge/specs\"\n",
-    )?;
-    let config = w.h.app.om_config_for(&sandbox).await?.ok_or("config")?;
-    let config: Value = serde_json::from_str(&config)?;
-    assert_eq!(
-        config["baseBranch"], "quartio",
-        "the sandbox's integration branch"
-    );
-    assert_eq!(
-        config["validation"]["commands"],
-        json!(["cargo clippy", "cargo test"])
-    );
-    assert_eq!(config["paths"]["specs"], "knowledge/specs");
-    write(&repo.join(".ai/agentic.config.json"), "{}")?;
-    assert_eq!(
-        w.h.app.om_config_for(&sandbox).await?,
-        None,
-        "an existing config wins"
-    );
-    std::fs::remove_file(repo.join(".ai/agentic.config.json"))?;
-    for skill in pack::PACK_SKILLS {
-        let r = call(
-            &w.h.router,
-            Method::PUT,
-            &format!("/api/sandboxes/s1/skills/{skill}"),
-            Some(off.clone()),
-            &w.alice,
-        )
-        .await?;
-        assert!(
-            r.status == StatusCode::NO_CONTENT || skill == "om-fix",
-            "{skill}: {}",
-            r.status
-        );
+    // Yulius writes no Open Mercato configuration into the repository any more: the skills are
+    // universal and read the project's own instructions.
+    assert!(!repo.join(".ai/agentic.config.json").exists());
+    for bundled in &pack::PACKS {
+        for skill in bundled.skills {
+            let r = call(
+                &w.h.router,
+                Method::PUT,
+                &format!("/api/sandboxes/s1/skills/{skill}"),
+                Some(off.clone()),
+                &w.alice,
+            )
+            .await?;
+            assert!(
+                r.status == StatusCode::NO_CONTENT || *skill == "om-fix",
+                "{skill}: {}",
+                r.status
+            );
+        }
     }
-    assert_eq!(
-        w.h.app.om_config_for(&sandbox).await?,
-        None,
-        "pack disabled"
+    assert!(
+        w.h.app.skills_for_run(&sandbox).await?.is_empty(),
+        "every bundled skill and the instance skill gamma are disabled"
     );
     Ok(())
 }

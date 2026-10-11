@@ -155,7 +155,7 @@ TaskSummary = {
   "activity": "working|waiting|needs_attention|done|null",
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
-  "steps": {"done": 3, "total": 7, "current": "Implement API|null"},
+  "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42},
   "unread_messages": 0, "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
@@ -179,6 +179,10 @@ time a subscription has capacity for it again. The UI shows "Paused: waiting for
 capacity (resets ~14:20)" outside Needs you. A Continue with no capacity answers `200` with the
 task paused, not an error.
 
+`steps.done` counts finished steps (done or skipped, STP-005); `steps.percent` is the finished
+share of the plan's **effort**, 0-100, rounded down (STP-006): steps declare an effort of 1 (the
+default) to 3, so 9 of 10 equal steps is 90 and a plan whose one big step is open shows less.
+
 `activity` is `done` when Claude Code recorded the task's goal as achieved and the turn ended
 cleanly (TSK-014); the session stays open, and any new prompt makes it `working` again.
 `background_shells` is set while the agent is idle (`waiting` or `done`): the Bash-tool shells it
@@ -194,7 +198,7 @@ TaskDetail = TaskSummary + {
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
   "delivery": Delivery, "switches": [{"at","reason","from","to"}]
 }
-Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at"}
+Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
 Message = {"id","from":{"task_id|null","login|null","title"},"to_task_id|null","kind":"info|question|request|scope","subject","body","created_at","read":bool}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}
 ```
@@ -423,7 +427,7 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 
 | Method | Path | Level | Notes |
 | --- | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/skills` | read | `[{"name","description","source":"repository|instance|open-mercato","path","enabled"}]` |
+| GET | `/api/sandboxes/{sid}/skills` | read | `[{"name","description","source":"repository|instance|yulius|open-mercato|superpowers","path","enabled"}]`; `yulius`, `open-mercato` and `superpowers` are the bundled packs (SKL-007) |
 | GET | `/api/sandboxes/{sid}/skills/{name}` | read | `{"name","content"}` (`SKILL.md`, at most 512 KiB) |
 | PUT | `/api/sandboxes/{sid}/skills/{name}` | write (instance skills: instance admin) | `{"enabled":bool}` → 204. Repository skills → 422 (always available inside the repository). |
 
@@ -431,7 +435,8 @@ The web UI edits and creates repository skills as files: a repository skill is
 `.agents/skills/<name>/SKILL.md` (or `.claude/skills/…`) in the sandbox repository, so its skill page
 (UI-033) reads and saves it with the built-in editor's files API (root `sandbox`, the save carrying
 the read's `sha256`) and New skill (UI-035) creates the folder and the file there. Instance skills
-and the Open Mercato pack have no write API and are read-only in the UI.
+and the bundled packs (`yulius`, `open-mercato`, `superpowers`) have no write API and are
+read-only in the UI.
 | GET/POST | `/api/sandboxes/{sid}/workflows` | read/write | `Workflow`; POST → 201. `"scope":"instance"` creates an instance workflow (instance admins). |
 | PUT/DELETE | `/api/workflows/{id}` | write (instance: admin) | PUT replaces name, description, steps, instructions, gates → `Workflow`; DELETE → 204. A default workflow (`builtin`) → 409 `conflict` ("duplicate it to customise"). |
 | GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201 |

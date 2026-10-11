@@ -439,7 +439,7 @@ rotate every team and agent secret at its source.
 
 ## 8. Upgrades
 
-- Upgrading to the secrets vault (ADR-18, 2026-10-10): migration 0007 adds the vault tables. New
+- Upgrading to the secrets vault (ADR-18, 2026-10-10): migration 0008 adds the vault tables. New
   agent runs route HTTP(S) through the egress proxy and redact agent secrets; runs started earlier
   keep their environment until they are continued. Make sure `ca-certificates` is installed.
 
