@@ -75,6 +75,9 @@ const SESSION_WRITE_MS: i64 = 15_000;
 /// Burn-rate samples from session readings: at most this often per subscription (and at every
 /// window reset).
 const SESSION_SAMPLE_MS: i64 = 5 * 60_000;
+/// An unchanged session reading still refreshes when the usage was last seen, at most this
+/// often, so a subscription in use never looks stale (F 2026-10-11).
+const SESSION_TOUCH_MS: i64 = 60_000;
 /// Latest reset time accepted from a session reading: a week and a day ahead.
 const SESSION_RESET_MAX_MS: i64 = WEEK_MS + 24 * 3_600_000;
 
@@ -93,6 +96,11 @@ pub struct CapacityState {
     wake: Notify,
     /// The last session reading stored per subscription (ADR-17: usage from the sessions).
     sessions: Mutex<HashMap<AccountId, SessionReading>>,
+    /// When each subscription's usage may be asked for again (ROT-009 back-off), shared by the
+    /// background round and on-demand reads so neither hammers the provider (F 2026-10-11).
+    pub(crate) usage_not_before: tokio::sync::Mutex<HashMap<AccountId, Timestamp>>,
+    /// The last usage round asked for by opening the subscriptions list (debounced).
+    pub(crate) usage_asked: Mutex<Option<Timestamp>>,
 }
 
 /// A window of Claude Code's status line input as a usage window of `minutes`; `None` without a
@@ -345,9 +353,11 @@ impl App {
         let mut sessions = self.capacity.sessions.lock().ok()?;
         let (write, sample, sampled) = match sessions.get(account) {
             None => (true, true, now),
-            Some(last) if last.five_hour == five_hour && last.seven_day == seven_day => {
-                (false, false, last.sampled)
-            }
+            Some(last) if last.five_hour == five_hour && last.seven_day == seven_day => (
+                now.millis_since(last.written) >= SESSION_TOUCH_MS,
+                false,
+                last.sampled,
+            ),
             Some(last) => {
                 let much =
                     moved_much(last.five_hour, five_hour) || moved_much(last.seven_day, seven_day);

@@ -9,7 +9,7 @@ import tomllib
 
 root = Path(__file__).resolve().parent.parent
 channel = tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
-rustup = shutil.which("rustup")
+rustup = shutil.which("rustup") or shutil.which("rustup", path=str(Path.home() / ".cargo/bin"))
 if rustup is None:
     sys.exit("rustup is required: install it from https://rustup.rs, then run scripts/bootstrap.py")
 os.chdir(root)
