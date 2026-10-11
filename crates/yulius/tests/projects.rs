@@ -288,9 +288,26 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     assert_eq!(product["profile"]["preset"], "product");
     assert_eq!(product["profile"]["integration_branch"], "quartio");
     let ready = import(&w, &alice, "Quartio-Studio/ready").await?.body;
-    assert_eq!(
-        ready["onboarding"], "not_needed",
-        "a validating project needs no preparation"
+    // F 2026-10-11: a validating project still gets its environment set up by an onboarding
+    // task (not the full preparation).
+    assert_ne!(ready["onboarding"], "not_needed", "{ready}");
+    let ready_record =
+        w.h.store
+            .sandbox(&SandboxId::parse(text(&ready["id"]))?)
+            .await?
+            .ok_or("ready sandbox")?;
+    let env_task =
+        w.h.store
+            .task(&ready_record.onboarding_task_id.ok_or("environment task")?)
+            .await?
+            .ok_or("task")?;
+    assert_eq!(env_task.title, "Set up this sandbox's environment");
+    assert!(
+        env_task.prompt.contains("development environment") && env_task.prompt.contains("rustup")
+    );
+    assert!(
+        !env_task.prompt.contains("Reverse-engineer"),
+        "no documentation work"
     );
     assert_eq!(ready["profile"]["preset"], "standard");
 
