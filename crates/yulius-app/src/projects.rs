@@ -185,7 +185,10 @@ pub(crate) async fn remove_tree(path: PathBuf) {
     .await;
 }
 
-/// Commit identity for a user: display name and GitHub no-reply address.
+/// Commit identity for a user: their display name (else their GitHub login) and the GitHub
+/// no-reply address that GitHub links to their account, `{id}+{login}@users.noreply.github.com`
+/// (F 2026-10-11; `{login}@users.noreply.github.com` while the id is unknown); Yulius's own
+/// identity without a linked GitHub account.
 pub(crate) fn identity(user: &UserRecord) -> (String, String) {
     match &user.github_login {
         Some(login) => (
@@ -194,13 +197,26 @@ pub(crate) fn identity(user: &UserRecord) -> (String, String) {
             } else {
                 user.display_name.clone()
             },
-            format!("{login}@users.noreply.github.com"),
+            match user.github_id {
+                Some(id) => format!("{id}+{login}@users.noreply.github.com"),
+                None => format!("{login}@users.noreply.github.com"),
+            },
         ),
-        None => (
-            "Yulius".to_owned(),
-            "yulius@users.noreply.github.com".to_owned(),
-        ),
+        None => yulius_identity(),
     }
+}
+
+/// [`identity`] of an optional user (a task's creator, the acting person): Yulius's own
+/// identity without one.
+pub(crate) fn commit_identity(user: Option<&UserRecord>) -> (String, String) {
+    user.map_or_else(yulius_identity, identity)
+}
+
+fn yulius_identity() -> (String, String) {
+    (
+        "Yulius".to_owned(),
+        "yulius@users.noreply.github.com".to_owned(),
+    )
 }
 
 fn foreign_owner(owner: &str, name: &str, instance_owner: &str) -> AppError {
@@ -1176,5 +1192,48 @@ mod tests {
         assert_eq!(rules[1].branch, "main");
         assert_eq!(rules[1].merge_methods, vec!["merge".to_owned()]);
         assert!(rules.iter().all(|r| r.require_pr));
+    }
+
+    /// F 2026-10-11: commits carry the address GitHub links to the account (`{id}+{login}`).
+    #[test]
+    fn commit_identity_is_the_address_github_links_to_the_account()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut user = UserRecord {
+            id: yulius_domain::ids::UserId::parse("u-alice")?,
+            github_login: Some("alice".into()),
+            github_id: Some(4242),
+            display_name: "Alice Example".into(),
+            avatar_url: None,
+            is_superadmin: false,
+            is_instance_admin: false,
+            password_hash: None,
+            created_at: yulius_domain::time::Timestamp(1),
+            disabled_at: None,
+        };
+        assert_eq!(
+            commit_identity(Some(&user)),
+            (
+                "Alice Example".to_owned(),
+                "4242+alice@users.noreply.github.com".to_owned()
+            )
+        );
+        user.github_id = None;
+        user.display_name = " ".into();
+        assert_eq!(
+            identity(&user),
+            (
+                "alice".to_owned(),
+                "alice@users.noreply.github.com".to_owned()
+            )
+        );
+        user.github_login = None;
+        user.github_id = Some(4242);
+        let yulius = (
+            "Yulius".to_owned(),
+            "yulius@users.noreply.github.com".to_owned(),
+        );
+        assert_eq!(identity(&user), yulius);
+        assert_eq!(commit_identity(None), yulius);
+        Ok(())
     }
 }

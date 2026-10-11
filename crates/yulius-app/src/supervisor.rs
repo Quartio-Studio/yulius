@@ -110,6 +110,9 @@ pub struct TaskRuntime {
     pub(crate) hold_polled_ms: AtomicI64,
     /// Turn-end step nudges already given to the agent (`Nudge::key`), so each is given once.
     pub(crate) nudged: Mutex<std::collections::BTreeSet<String>>,
+    /// The terminal already said that this task acts on GitHub as the App, not its creator
+    /// (F 2026-10-11), so it is said once.
+    pub(crate) acting_as_app_said: AtomicBool,
 }
 
 impl TaskRuntime {
@@ -141,6 +144,7 @@ impl TaskRuntime {
             session_end: Mutex::new(None),
             hold_polled_ms: AtomicI64::new(0),
             nudged: Mutex::new(std::collections::BTreeSet::new()),
+            acting_as_app_said: AtomicBool::new(false),
         }
     }
 
@@ -451,6 +455,10 @@ impl App {
             .join("worktrees")
             .join(task.id.as_str());
         if worktree.join(".git").exists() {
+            // A worktree from before (an older identity, F 2026-10-11) commits as the creator now.
+            if let Err(err) = self.set_task_identity(&worktree, task).await {
+                tracing::warn!(task = %task.id, error = %err, "refreshing the commit identity failed");
+            }
             return Ok(worktree);
         }
         let repo = self.sandbox_repo(&sandbox.id);
@@ -495,20 +503,7 @@ impl App {
             .git
             .install_push_guard(&worktree, &protected)
             .await?;
-        let creator = self.deps.store.user(&task.created_by).await?;
-        let login = creator
-            .as_ref()
-            .and_then(|u| u.github_login.clone())
-            .unwrap_or_else(|| "yulius".into());
-        let name = creator.map_or_else(|| "Yulius".to_owned(), |u| u.display_name);
-        self.deps
-            .git
-            .set_identity(
-                &worktree,
-                &name,
-                &format!("{login}@users.noreply.github.com"),
-            )
-            .await?;
+        self.set_task_identity(&worktree, task).await?;
         let update = TaskFieldUpdate {
             branch: Some(branch),
             worktree_path: Some(worktree.to_string_lossy().into_owned()),
@@ -519,6 +514,14 @@ impl App {
             .update_task(&task.id, &update, self.now())
             .await?;
         Ok(worktree)
+    }
+
+    /// Commits in `task`'s worktree are its creator's: their name and the no-reply address GitHub
+    /// links to their account (F 2026-10-11, [`crate::projects::identity`]).
+    async fn set_task_identity(&self, worktree: &Path, task: &TaskRecord) -> AppResult<()> {
+        let creator = self.deps.store.user(&task.created_by).await?;
+        let (name, email) = crate::projects::commit_identity(creator.as_ref());
+        self.deps.git.set_identity(worktree, &name, &email).await
     }
 
     /// Installs the enabled skills into the agent home. Failures are logged; a run never fails
@@ -786,6 +789,8 @@ impl App {
         } else {
             Containment::None
         };
+        // `gh` in the agent's shell acts as the task's creator, like its Git (F 2026-10-11).
+        self.add_agent_gh(&mut launch)?;
         let seq = u32::try_from(store.attempts(&task.id).await?.len() + 1).unwrap_or(u32::MAX);
         let attempt = AttemptRecord {
             id: attempt_id.clone(),

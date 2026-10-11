@@ -797,16 +797,19 @@ impl App {
     }
 }
 
-/// A Git credential issued to a task (`POST /internal/git-credential`).
+/// A Git credential issued to a task or a user process (`POST /internal/git-credential`).
 #[derive(Debug)]
 pub struct GitCredential {
-    /// Installation access token.
+    /// A user's GitHub token, or an installation access token.
     pub token: crate::model::Secret,
 }
 
 impl App {
-    /// Issues the GitHub installation token for the run's own repository (SPEC-002 §8, R-06).
-    /// Requests for any other host or repository are refused.
+    /// Issues the run's GitHub token (SPEC-002 §8, R-06): the task creator's own token, so the
+    /// agent's pushes are theirs on GitHub (F 2026-10-11); without a usable one, the App's
+    /// installation token restricted to the run's repository, said once in the task's terminal.
+    /// `gh` in the run asks the same way (`yulius gh-token`, SPEC-004). Requests for any other
+    /// host or repository are refused.
     ///
     /// # Errors
     /// `Unauthenticated` for unknown runs, `Forbidden` for other repositories, GitHub failures.
@@ -840,7 +843,10 @@ impl App {
                 ));
             }
         }
-        let token = self.repository_installation_token(&sandbox).await?;
+        let token = match self.creator_github_token(&ctx.task).await {
+            Some(token) => token,
+            None => self.repository_installation_token(&sandbox).await?,
+        };
         Ok(GitCredential { token })
     }
 

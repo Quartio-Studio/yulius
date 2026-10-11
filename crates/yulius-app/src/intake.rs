@@ -779,16 +779,8 @@ impl App {
                     .ok_or(AppError::NotFound)?;
                 let base = crate::delivery::delivery_profile(&sandbox).integration_branch;
                 let keep = format!("yulius/reverted/{}-{}", current.number, now.0);
-                let (name, email) = match store.user(&d.ctx.user.id).await? {
-                    Some(user) => {
-                        let login = user.github_login.unwrap_or_else(|| "yulius".into());
-                        (
-                            user.display_name,
-                            format!("{login}@users.noreply.github.com"),
-                        )
-                    }
-                    None => ("Yulius".into(), "yulius@users.noreply.github.com".into()),
-                };
+                let user = store.user(&d.ctx.user.id).await?;
+                let (name, email) = crate::projects::commit_identity(user.as_ref());
                 self.deps
                     .git
                     .keep_and_revert(std::path::Path::new(worktree), &keep, &base, &name, &email)

@@ -25,7 +25,9 @@ create` work with no `gh auth login`, exactly as `git push` already does (UI-016
   on disk.
 - `gh` has no credential-helper hook; it reads `GH_TOKEN` or `~/.config/gh/hosts.yml`.
 - User processes already have `/yulius/bin` first on `PATH` (the `sudo` shim, contained mode).
-- Agents use task tokens and installation tokens; they are out of scope.
+- Agents asked the same route with their task token and got an installation token. Since
+  F 2026-10-11 (SPEC-001 GIT-003) the route answers a task token with the task creator's own
+  token, and agents get the shim too (GH-006).
 
 ## Requirements
 
@@ -36,6 +38,7 @@ create` work with no `gh auth login`, exactly as `git push` already does (UI-016
 | GH-003 | A `GH_TOKEN` or `GITHUB_TOKEN` the user set themselves wins; the shim does not override it. | shim test |
 | GH-004 | When `gh` is not installed the shim says so and exits 127; it never recurses into itself. | shim test |
 | GH-005 | Works in contained and uncontained (development) user processes. | env/PATH tests |
+| GH-006 | In an agent run, `gh` is logged in as the task's creator: the same shim first on the run's `PATH`, whose `yulius gh-token` asks with the run's task token; without a usable creator token, the App's token for the sandbox's repository (SPEC-001 GIT-003). GH-002..004 apply unchanged. | `identity::agent_runs_get_the_gh_shim_first_on_path`; `agent_hooks.rs::the_agents_git_acts_as_the_task_creator` (path-less request); `supervision.rs` (shim written for a run) |
 
 ## Design
 
@@ -48,6 +51,9 @@ create` work with no `gh auth login`, exactly as `git push` already does (UI-016
 - Contained: the shim directory is already bound at `/yulius/bin` and first on `PATH`.
   Uncontained: a directory holding only the `gh` shim is put first on `PATH` (the `sudo` shim must
   not shadow the host's `sudo`).
+- Agent runs (GH-006): the directory holding only the `gh` shim is bound read-only at
+  `/yulius/bin` in a contained run (nothing else of `runtime/` enters it) or used by its host path
+  in an uncontained one, and put first on the run's final `PATH`.
 - `gh` hands `GH_TOKEN` to its own children (aliases, extensions); that is inherent and the token
   is the user's own, scoped by their GitHub access.
 - A repository path is not sent: `gh` talks to the API across repositories; the token is the user's
@@ -84,6 +90,9 @@ Git helper unchanged. Existing homes need no migration (shim is rewritten when i
   `GH_TOKEN` in the shell environment (leaks to every child process and goes stale).
 
 ## Evidence
+
+- GH-006 (F 2026-10-11, #188): `cargo nextest run -p yulius-app -E 'test(agent_runs_get_the_gh_shim)'`
+  and `-p yulius --test agent_hooks --test supervision`: passed. Not run: a real `gh` in an agent run.
 
 - `cargo test -p yulius-git --test credential_helper`: 8 passed (2 new `gh_token_*`).
 - `cargo test -p yulius-app --lib identity`: 9 passed (6 new `gh_shim_*`).

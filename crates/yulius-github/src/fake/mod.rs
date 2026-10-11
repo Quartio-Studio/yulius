@@ -6,7 +6,8 @@
 //! with a path (as on GitHub Enterprise Server). Tests configure users, tokens,
 //! installations, repositories, permissions, commits, branches, pull requests, check runs,
 //! statuses and Actions workflow runs; withhold App permissions; inject faults; and inspect
-//! every recorded request. All data is synthetic, including the App key in
+//! every recorded request, including which credential made it ([`FakeActor`]: a user's token,
+//! an installation token or the App). All data is synthetic, including the App key in
 //! `synthetic_app_key.pem`.
 //!
 //! App JWTs are verified for real (RS256 signature, issuer, `iat`/`exp` window) against the
@@ -56,9 +57,39 @@ pub const REFRESH_TOKEN_SECS: i64 = 184 * 24 * 3600;
 /// Requests kept in the log (oldest dropped first).
 pub const MAX_RECORDED_REQUESTS: usize = 2048;
 
+/// Who made a request, as the fake identified its credentials: tests assert which token acted
+/// on GitHub (a person's own, an installation's, the App's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FakeActor {
+    /// No `Authorization` header.
+    Anonymous,
+    /// Credentials the fake never issued, or an App JWT that does not verify.
+    Invalid,
+    /// The App itself (a valid App JWT).
+    App,
+    /// An installation access token of the installation with this id.
+    Installation(u64),
+    /// A user access token of this login (lower case).
+    User(String),
+}
+
+impl From<&Identity> for FakeActor {
+    fn from(identity: &Identity) -> Self {
+        match identity {
+            Identity::Anonymous => Self::Anonymous,
+            Identity::Invalid => Self::Invalid,
+            Identity::App => Self::App,
+            Identity::Installation(id) => Self::Installation(*id),
+            Identity::User(login) => Self::User(login.clone()),
+        }
+    }
+}
+
 /// One request as the fake received it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedRequest {
+    /// Who made it.
+    pub actor: FakeActor,
     /// HTTP method.
     pub method: String,
     /// `true` for `/web/...` (OAuth) requests, `false` for `/api/...`.
@@ -597,6 +628,17 @@ impl FakeGitHub {
             .count()
     }
 
+    /// Who made each recorded request with `method` and relative `path`, oldest first.
+    #[must_use]
+    pub fn actors(&self, method: &str, path: &str) -> Vec<FakeActor> {
+        lock(&self.state)
+            .requests
+            .iter()
+            .filter(|r| r.method == method && r.path == path)
+            .map(|r| r.actor.clone())
+            .collect()
+    }
+
     /// Clears the request log.
     pub fn clear_requests(&self) {
         lock(&self.state).requests.clear();
@@ -874,7 +916,9 @@ async fn handle(
     };
     let mut guard = lock(&state);
     let state = &mut *guard;
+    let actor = FakeActor::from(&identify(state, &headers));
     state.requests.push_back(RecordedRequest {
+        actor,
         method: method.to_string(),
         web,
         path: rest.clone(),

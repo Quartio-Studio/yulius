@@ -459,9 +459,11 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 ยง6.7, ย
   registered, the first Markdown file under the project's specs directory (`yulius.toml`
   `[docs]`, default `docs/specs`) whose frontmatter names the task is registered. Paths escaping
   the worktree (also via symlinks) and files over 256 KiB are refused.
-- **Open PR** pushes the task branch with an installation token, then opens the PR into the
-  integration branch with the caller's token (title: task title unless given; body: the spec's
-  Goal, spec path, Plan checklist and steps unless given, plus a link back to the task).
+- **Open PR** pushes the task branch and opens the PR into the integration branch with the
+  caller's token (the superadmin without a GitHub identity: the App's), so both are theirs on
+  GitHub (title: task title unless given; body: the spec's Goal, spec path, Plan checklist and
+  steps unless given, plus a link back to the task). The pull request Yulius opens by itself for
+  a ready task, and later pushes to it, use the task creator's token (GIT-003).
 - **Merge** uses the profile's merge method and passes the head that was checked as the
   expected head; a PR head that differs from the task worktree's head is refused as stale.
   With `auto_promote` (Studio), the integration branch is promoted right after a merge done
@@ -472,7 +474,9 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 ยง6.7, ย
   command and `verify = "command"` only) and `delivery_promote`, which take these same paths with
   the task creator's authority and are audited as `task:<n>` too (DLV-008). `issue_create`
   opens a GitHub issue only when it meets the Definition of Ready (one `type:`, one `priority:`,
-  at least one `area:` label and an `## Acceptance criteria` checklist).
+  at least one `area:` label and an `## Acceptance criteria` checklist). On GitHub these tools
+  act with the task creator's own token; a creator without a usable one (no linked account, an
+  expired sign-in) gets the App's, and the task's terminal says so once (GIT-003).
 - **Promote** refuses while a merged task still has an integration environment pending, when
   production already equals integration, or when a fast-forward is impossible.
   `fast_forward`: production is fast-forwarded to the integration head (`result: "promoted"`,

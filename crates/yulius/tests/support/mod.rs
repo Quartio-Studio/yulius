@@ -55,6 +55,9 @@ pub struct FakeGitHub {
     pub remote: Mutex<Option<Arc<dyn FakeRemote>>>,
     /// Recorded state-changing calls (`create_pull …`, `merge_pull …`, `fast_forward …`).
     pub writes: Mutex<Vec<String>>,
+    /// The same calls with who made them: the login whose token each carried, or `inst` for the
+    /// App installation (F 2026-10-11).
+    pub writes_by: Mutex<Vec<(String, String)>>,
     /// Who opened each pull request: the user login, or `inst` for the App installation.
     pub pull_authors: Mutex<HashMap<u64, String>>,
     /// Commit statuses published, in order: (sha, status).
@@ -213,7 +216,7 @@ impl GitHubPort for FakeGitHub {
         issues.push((login_of(token), issue.clone()));
         let number = u64::try_from(issues.len()).unwrap_or(0) + 100;
         drop(issues);
-        self.record(format!("create_issue #{number} {}", issue.title));
+        self.record(token, format!("create_issue #{number} {}", issue.title));
         Ok(GhIssue {
             number,
             html_url: format!("https://github.test/{owner}/{repo}/issues/{number}"),
@@ -252,10 +255,10 @@ impl GitHubPort for FakeGitHub {
         if let Ok(mut authors) = self.pull_authors.lock() {
             authors.insert(number, login_of(token));
         }
-        self.record(format!(
-            "create_pull #{number} {}<-{}",
-            pull.base, pull.head
-        ));
+        self.record(
+            token,
+            format!("create_pull #{number} {}<-{}", pull.base, pull.head),
+        );
         Ok(created)
     }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, number: u64) -> AppResult<GhPull> {
@@ -304,7 +307,7 @@ impl GitHubPort for FakeGitHub {
     }
     async fn merge_pull(
         &self,
-        _: &Secret,
+        token: &Secret,
         _: &str,
         _: &str,
         number: u64,
@@ -343,12 +346,12 @@ impl GitHubPort for FakeGitHub {
             p.state = "closed".into();
             p.merged = true;
         }
-        self.record(format!("merge_pull #{number} {method}"));
+        self.record(token, format!("merge_pull #{number} {method}"));
         Ok(sha)
     }
     async fn fast_forward(
         &self,
-        _: &Secret,
+        token: &Secret,
         _: &str,
         _: &str,
         branch: &str,
@@ -360,7 +363,7 @@ impl GitHubPort for FakeGitHub {
         remote
             .fast_forward(branch, sha)
             .map_err(|_| AppError::Conflict("update is not a fast forward".into()))?;
-        self.record(format!("fast_forward {branch} {sha}"));
+        self.record(token, format!("fast_forward {branch} {sha}"));
         Ok(())
     }
     async fn create_commit_status(
@@ -380,12 +383,18 @@ impl GitHubPort for FakeGitHub {
             .push((sha.to_owned(), status.clone()));
         Ok(())
     }
-    async fn delete_branch(&self, _: &Secret, _: &str, _: &str, branch: &str) -> AppResult<bool> {
+    async fn delete_branch(
+        &self,
+        token: &Secret,
+        _: &str,
+        _: &str,
+        branch: &str,
+    ) -> AppResult<bool> {
         let remote = self
             .remote()
             .ok_or_else(|| AppError::Upstream("no remote".into()))?;
         let deleted = remote.delete_branch(branch).map_err(AppError::Upstream)?;
-        self.record(format!("delete_branch {branch}"));
+        self.record(token, format!("delete_branch {branch}"));
         Ok(deleted)
     }
     async fn branch_pulls(
@@ -728,10 +737,26 @@ impl FakeGitHub {
     fn remote(&self) -> Option<Arc<dyn FakeRemote>> {
         self.remote.lock().ok().and_then(|r| r.clone())
     }
-    fn record(&self, call: String) {
+    fn record(&self, token: &Secret, call: String) {
+        if let Ok(mut by) = self.writes_by.lock() {
+            by.push((call.clone(), login_of(token)));
+        }
         if let Ok(mut writes) = self.writes.lock() {
             writes.push(call);
         }
+    }
+    /// Who made each state-changing call starting with `prefix`, in order: the login whose
+    /// token it carried, or `inst` for the App installation.
+    pub fn actors_of(&self, prefix: &str) -> Vec<String> {
+        self.writes_by
+            .lock()
+            .map(|by| {
+                by.iter()
+                    .filter(|(call, _)| call.starts_with(prefix))
+                    .map(|(_, actor)| actor.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
     /// Open pull requests follow their head branch, as on GitHub.
     fn refresh_heads(&self) {
