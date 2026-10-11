@@ -65,7 +65,7 @@ exec env "$@"
 "#;
 
 /// The `gh` shim for the Yulius executable `exe`: runs the real `gh` (the first one on `PATH`
-/// outside the shim's own directory) logged in as the user. The user's token comes from
+/// that is not a copy of the shim) logged in as the user. The user's token comes from
 /// `yulius gh-token` for this one process only, so it is never stored, never reaches the shell's
 /// other children and is checked against the user's current access at every use; a `GH_TOKEN`
 /// or `GITHUB_TOKEN` the user set wins, and without a token `gh` simply stays logged out.
@@ -75,14 +75,19 @@ pub fn gh_shim(exe: &Path) -> String {
     format!(
         r#"#!/bin/sh
 # Yulius gh shim: the GitHub CLI, logged in as the GitHub user who signed in to Yulius.
-self=$(dirname "$0")
 real=
+set -f
 old_ifs=$IFS
 IFS=:
 for dir in $PATH; do
-  if [ "$dir" != "$self" ] && [ -x "$dir/gh" ]; then real="$dir/gh"; break; fi
+  # Skip empty entries and every copy of this shim (whatever way its directory is spelled).
+  if [ -n "$dir" ] && [ -x "$dir/gh" ] && ! grep -qs "^# Yulius gh shim" "$dir/gh"; then
+    real="$dir/gh"
+    break
+  fi
 done
 IFS=$old_ifs
+set +f
 if [ -z "$real" ]; then
   echo "gh is not installed in this sandbox" >&2
   exit 127
@@ -670,6 +675,50 @@ mod tests {
         assert_eq!(code, 127);
         assert!(out.is_empty());
         assert!(err.contains("gh is not installed"), "{err}");
+        Ok(())
+    }
+
+    #[test]
+    fn gh_shim_survives_odd_exe_paths_empty_path_entries_and_a_second_shim() -> TestResult {
+        let dir = unique_dir("yulius-gh-odd");
+        let exe_dir = dir.join("it's here");
+        let shim_a = dir.join("a");
+        let shim_b = dir.join("b");
+        let real = dir.join("real");
+        for d in [&exe_dir, &shim_a, &shim_b, &real] {
+            std::fs::create_dir_all(d)?;
+        }
+        let exe = exe_dir.join("yulius");
+        write_file(&exe, b"#!/bin/sh\necho ghu_Synthetic\n", 0o755)?;
+        let shim = gh_shim(&exe);
+        // Two shim directories (contained and uncontained flavours) and a symlinked spelling of
+        // one of them: the shim must skip every copy of itself, never loop.
+        write_file(&shim_a.join("gh"), shim.as_bytes(), 0o755)?;
+        write_file(&shim_b.join("gh"), shim.as_bytes(), 0o755)?;
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&shim_b, &link)?;
+        write_file(
+            &real.join("gh"),
+            b"#!/bin/sh\necho \"token=${GH_TOKEN:-none}\"\n",
+            0o755,
+        )?;
+        let path = format!(
+            "{}::{}:{}:{}:/usr/bin:/bin",
+            shim_a.display(),
+            link.display(),
+            shim_b.display(),
+            real.display()
+        );
+        let out = std::process::Command::new("sh")
+            .arg(shim_a.join("gh"))
+            .env_clear()
+            .env("PATH", path)
+            .output()?;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "token=ghu_Synthetic"
+        );
         Ok(())
     }
 

@@ -1,11 +1,11 @@
 ---
 yulius-task: b5fe233c-1c07-47fd-a30b-9dfe4d2550aa
-status: draft
+status: done
 ---
 
 # SPEC-004: GitHub CLI logged in with the user's GitHub login
 
-Status: draft
+Status: implemented
 Date: 2026-10-11
 Owner: Yulius task #2
 Scope authorization: user request ("github cli should get logged in automatically when the
@@ -42,12 +42,14 @@ create` work with no `gh auth login`, exactly as `git push` already does (UI-016
 - `yulius gh-token` (hidden): prints a GitHub token for github.com via `credential_get`
   (`YULIUS_URL` + `YULIUS_TASK_TOKEN`, 5 s bound), exits 1/2 like the git helper, prints nothing on failure.
 - `GH_SHIM`: POSIX `sh` script `gh`, written next to the `sudo` shim with the absolute path of the
-  Yulius executable. It finds the real `gh` as the first `gh` on `PATH` outside its own directory,
+  Yulius executable. It finds the real `gh` as the first `gh` on `PATH` that is not a copy of the shim (recognised by its header line, so symlinked or doubled shim directories never loop),
   fetches the token (unless `GH_TOKEN`/`GITHUB_TOKEN` is set) and `exec`s `gh` with `GH_TOKEN`
   set for that process only. `GH_PROMPT_DISABLED` is not forced.
 - Contained: the shim directory is already bound at `/yulius/bin` and first on `PATH`.
   Uncontained: a directory holding only the `gh` shim is put first on `PATH` (the `sudo` shim must
   not shadow the host's `sudo`).
+- `gh` hands `GH_TOKEN` to its own children (aliases, extensions); that is inherent and the token
+  is the user's own, scoped by their GitHub access.
 - A repository path is not sent: `gh` talks to the API across repositories; the token is the user's
   own and GitHub enforces its scope.
 
@@ -65,14 +67,15 @@ Git helper unchanged. Existing homes need no migration (shim is rewritten when i
 ## Test plan
 
 - yulius-git: `gh_token` prints the token on 200, nothing on 403, rejects non-loopback URLs.
-- yulius-app: shim text is written with the exe path quoted; uncontained PATH starts with the gh-only dir.
+- yulius-app: shim run with an exe path containing a space and a quote, an empty `PATH` entry, two shim directories and a symlinked one.
+- Not covered by an automated test: the uncontained `PATH` wiring in `user_space` (a one-line prefix, checked by review) and a real `gh` binary (not installed in CI).
 - Shim run with a fake `gh` that echoes `GH_TOKEN`: token injected; pre-set token preserved; missing gh → 127.
 
 ## Plan
 
-- [ ] `yulius gh-token` prints the user's token or fails closed
-- [ ] The `gh` shim exists in user processes (contained and uncontained) and logs `gh` in
-- [ ] Docs, ADR note and changes log updated; every gate green
+- [x] `yulius gh-token` prints the user's token or fails closed
+- [x] The `gh` shim exists in user processes (contained and uncontained) and logs `gh` in
+- [x] Docs, ADR note and changes log updated; every gate green
 
 ## Decisions
 
@@ -82,4 +85,13 @@ Git helper unchanged. Existing homes need no migration (shim is rewritten when i
 
 ## Evidence
 
-Pending.
+- `cargo test -p yulius-git --test credential_helper`: 8 passed (2 new `gh_token_*`).
+- `cargo test -p yulius-app --lib identity`: 9 passed (6 new `gh_shim_*`).
+- `scripts/dev lint` (fmt + clippy): clean.
+- `cargo nextest run --workspace --all-features --profile ci`: 1091 of 1093 passed; the
+  failures are `wiring::system::tests::reads_real_machine_metrics` ("disk total", this sandbox
+  exposes no disk totals; unrelated) and `supervision::a_session_change_inside_claude_is_adopted_into_the_task_lineage`
+  (failed once under full-suite load, passes alone; unrelated).
+- Independent review (fresh session): approve; minor findings on `PATH` globbing, empty entries
+  and recursion through differently spelled shim directories fixed in the shim with a test.
+- Not run: a real sign-in with GitHub and a real `gh` (no GitHub App or `gh` here).
