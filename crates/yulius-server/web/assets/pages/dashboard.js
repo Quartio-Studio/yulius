@@ -181,7 +181,7 @@ export function renderSummary(data, previous = null, days = 30, capacity = null)
   const tokenNotes = [Number.isFinite(tokens.cache_read) ? `${compact(tokens.cache_read)} read from cache` : null, unknownRuns ? `${unknownRuns} run${unknownRuns === 1 ? '' : 's'} reported no usage` : null].filter(Boolean).join(' · ');
 
   return [
-    data.truncated ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, 'This range has more than 50 000 tasks; the figures describe the newest 50 000.')) : null,
+    data.truncated ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, `This range has more than ${int(50000)} tasks; the figures describe the newest ${int(50000)}.`)) : null,
     h('section', { class: 'card db-kpis', 'aria-label': 'Key figures' },
       kpi({ label: 'Tasks', value: int(tasks.total), change: delta(now.tasks, was('tasks'), { days }), sub: Number.isFinite(tasks.closed) ? `${int(tasks.closed)} closed` : null, extra: sparkline(perDay.map((x) => x.count || 0)) }),
       kpi({ label: 'Median duration', value: duration(d.median ?? null), change: delta(now.median, was('median'), { better: 'down', days }), sub: d.p90 !== undefined ? `9 in 10 within ${duration(d.p90)}` : null }),

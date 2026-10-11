@@ -60,6 +60,8 @@ pub struct AppConfig {
     pub own_ports: Vec<u16>,
     /// Largest file one upload may carry (SPEC-001 EDT-006, UI-048; `YULIUS_UPLOAD_MAX_MB`).
     pub upload_max_bytes: u64,
+    /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21).
+    pub ci: crate::ci::CiSettings,
 }
 
 impl AppConfig {
@@ -101,6 +103,7 @@ impl AppConfig {
             permission_ttl_ms: 5 * 60 * 1000,
             permission_stale_ms: 30 * 60 * 1000,
             upload_max_bytes: crate::uploads::DEFAULT_UPLOAD_MAX_BYTES,
+            ci: crate::ci::CiSettings::default(),
         }
     }
 }
@@ -167,6 +170,8 @@ pub struct App {
     pub(crate) updates: crate::updates::UpdateState,
     /// Secrets vault runtime state (SPEC-002 ADR-20).
     pub(crate) vault: crate::vault::VaultState,
+    /// Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
+    pub(crate) ci: crate::ci::CiState,
 }
 
 impl App {
@@ -195,6 +200,7 @@ impl App {
             intake: OnceLock::new(),
             updates: crate::updates::UpdateState::default(),
             vault: crate::vault::VaultState::default(),
+            ci: crate::ci::CiState::default(),
         })
     }
 

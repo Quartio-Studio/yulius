@@ -6,7 +6,7 @@
 // multi-select, search) live in the URL so a filtered view can be shared as a link. Search is not a
 // field: "/" opens a Spotlight-style search (spotlight.js, UI-036) that jumps to a task or filters.
 
-import { h, icon, setChildren, iconButton, badge, toast, errorToast, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, prChip } from '../dom.js';
+import { h, icon, setChildren, iconButton, badge, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, prChip } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
@@ -68,9 +68,11 @@ export function mountTasksPage(ctx, sandbox) {
   const shownCount = new Map(); // group id → rows shown after "Show more"
   let searchQuery = query.get('q') || ''; // the list's text filter, set from the search's last row
 
+  // Read access watches; starting tasks needs write access, as on Home and every other page.
+  const canStart = allows(sandbox.access, 'write');
   const frame = pageFrame({ title: 'Tasks', sub: sandbox.name, actions: [
     h('button', { type: 'button', class: 'tl-find', 'aria-keyshortcuts': '/', 'aria-label': 'Search tasks', onClick: () => openSearch() }, icon('search', { size: 14 }), h('span', { class: 'tl-find-text', 'aria-hidden': 'true' }, 'Press', h('span', { class: 'kbd' }, '/'), 'to search')),
-    h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, NEW_TASK_KEYS)),
+    h('button', { type: 'button', class: 'btn btn-primary', disabled: !canStart, title: canStart ? null : 'Requires write access', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, NEW_TASK_KEYS)),
   ] });
   const tabs = h('div', { class: 'tl-tabs', role: 'radiogroup', 'aria-label': 'Task state' });
   const chips = h('div', { class: 'tl-chips' });
@@ -219,7 +221,7 @@ export function mountTasksPage(ctx, sandbox) {
       setChildren(listHost, h('div', { class: 'tl-empty' },
         h('p', { class: 'tl-empty-title' }, `No tasks in ${sandbox.name} yet`),
         h('p', { class: 'muted' }, 'Each task is a Claude Code session on its own branch.'),
-        h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task')));
+        canStart ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task') : null));
       return;
     }
     if (!visible.length) {
@@ -381,7 +383,7 @@ export function mountArchivedPage(ctx) {
       { label: '', render: (t) => {
         const sb = ctx.store.sandboxById(t.sandbox_id);
         const can = sb && allows(sb.access, 'write');
-        return h('button', { type: 'button', class: 'btn btn-sm', disabled: !can, title: can ? 'Restore to the sidebar' : 'Requires write access', onClick: async () => {
+        return h('button', { type: 'button', class: 'btn btn-sm', disabled: !can, title: can ? 'Restore to its sandbox’s task list' : 'Requires write access', onClick: async () => {
           const updated = await restoreTask(ctx, t);
           if (updated) reload();
         } }, 'Restore');
@@ -401,15 +403,18 @@ export function mountDevicePage(ctx, route) {
     if (!userCode) { code.focus(); return; }
     try {
       await ctx.api.post('/api/device/approve', { user_code: userCode, approve });
-      setChildren(result, h('div', { class: `banner ${approve ? 'banner-info' : ''}` }, approve ? `Approved ${userCode}. The CLI receives a token on its next poll.` : `Denied ${userCode}.`));
-      toast(approve ? 'Device approved' : 'Device denied', { kind: approve ? 'ok' : 'info' });
+      setChildren(result, h('div', { class: 'banner banner-info' }, approve ? `Approved ${userCode}. The CLI receives a token on its next poll.` : `Denied ${userCode}. The CLI is refused on its next poll.`));
     } catch (error) {
-      errorToast(error, 'Approval failed');
+      // Said where the answer appears, like the success (not a toast that vanishes).
+      setChildren(result, h('div', { class: 'banner banner-danger' }, `Couldn’t ${approve ? 'approve' : 'deny'} ${userCode}: ${error.message || String(error)}`));
     }
   });
+  const approveCode = decide(true);
+  // Enter in the code field approves, as Enter submits every other form.
+  code.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); approveCode(); } });
   frame.body.append(h('div', { class: 'card card-pad stack narrow' },
     h('p', { class: 'text-2' }, 'Enter the code shown by the CLI. Approve only codes you started yourself; the CLI gets a token with your permissions.'),
-    h('div', { class: 'row-wrap' }, code, h('button', { type: 'button', class: 'btn btn-primary', onClick: decide(true) }, 'Approve'), h('button', { type: 'button', class: 'btn', onClick: decide(false) }, 'Deny')),
+    h('div', { class: 'row-wrap' }, code, h('button', { type: 'button', class: 'btn btn-primary', onClick: approveCode }, 'Approve'), h('button', { type: 'button', class: 'btn', onClick: decide(false) }, 'Deny')),
     result));
   return { el: frame.el, key: 'device' };
 }

@@ -53,7 +53,7 @@ p { margin: 0; }
   cursor: pointer; white-space: nowrap; font-size: var(--fs); line-height: var(--lh);
 }
 .btn:hover:not(:disabled) { background: var(--surface-hover); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
 .btn-danger { background: var(--danger-soft); border-color: var(--danger-border); color: var(--danger-fg); }
@@ -605,8 +605,10 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .gt-back { display: inline-flex; align-items: center; gap: 4px; width: max-content; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .gt-back:hover { color: var(--text); text-decoration: none; }
 .gt-title-row { display: flex; align-items: center; gap: 12px; }
-.gt-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.gt-title { flex: 1; min-width: 0; overflow-wrap: break-word; }
 .gt-go { flex: none; }
+/* Phones: the title takes its own line above the buttons instead of breaking inside words. */
+@media (max-width: 767px) { .gt-title-row { flex-wrap: wrap; } .gt-title { flex-basis: 100%; } }
 .gt-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .gt-state { display: inline-flex; align-items: center; gap: 6px; }
 .gt-branch { display: inline-flex; align-items: center; gap: 4px; height: var(--control-sm); padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); color: var(--text); font-size: var(--fs-xs); line-height: var(--lh-xs); }
@@ -1319,8 +1321,9 @@ summary { cursor: pointer; }
 .tl-tab.urgent .tl-tab-count { color: var(--warn-fg); font-weight: 600; }
 .tl-tab-icon { display: inline-flex; color: var(--muted); }
 .tl-tab.urgent .tab-needs { color: var(--warn); }
-.tab-working { color: var(--ok); }
-.tl-tab:hover .tl-tab-icon, .tl-tab.active .tl-tab-icon:not(.tab-working):not(.tab-needs) { color: var(--text-2); }
+/* The sidebar's group colours: Done is the green one, Working stays neutral. */
+.tab-done { color: var(--ok); }
+.tl-tab:hover .tl-tab-icon, .tl-tab.active .tl-tab-icon:not(.tab-done):not(.tab-needs) { color: var(--text-2); }
 .tl-chips { display: flex; gap: 8px; }
 .tl-chip { height: var(--control-lg); }
 .tl-chip.active { border-color: var(--accent-border); background: var(--accent-soft); color: var(--text); }
@@ -2024,3 +2027,24 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .section-title { margin: 16px 0 0; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
 .plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .stack-tight { display: flex; flex-direction: column; gap: 4px; }
+
+/* ---- CI page (pages/ci.js) */
+.ci-heading { font-weight: 600; font-size: var(--fs); line-height: var(--lh); margin: 8px 0 0; }
+.ci-config { margin: 0; }
+.ci-jobs, .ci-hygiene { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ci-jobs li { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
+.ci-job-name { flex: none; min-width: 96px; font-weight: 500; }
+.ci-job-command { min-width: 0; overflow-wrap: anywhere; color: var(--text-2); }
+.ci-hygiene li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.ci-hygiene code { overflow-wrap: anywhere; }
+.ci-state { display: inline-flex; color: var(--muted); }
+.ci-passed { color: var(--ok-fg); }
+.ci-failed, .ci-error { color: var(--danger-fg); }
+.ci-running { color: var(--warn-fg); }
+.ci-running .icon { animation: spin var(--duration-spin-slow) linear infinite; }
+.ci-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.ci-tab { display: inline-flex; align-items: center; gap: 6px; height: var(--control-sm); padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); cursor: pointer; }
+.ci-tab:hover { background: var(--surface-2); }
+.ci-tab.active { border-color: var(--border-strong); background: var(--surface-2); color: var(--text); }
+.ci-tab:focus-visible { box-shadow: var(--focus); outline: none; }
+

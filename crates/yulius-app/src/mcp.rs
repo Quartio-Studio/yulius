@@ -107,6 +107,34 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
+            name: "ci_status".into(),
+            description: "This project's CI, run by Yulius (the only CI; no GitHub Actions): the jobs in force and where they come from, the latest runs (this task's pull request first) and their state. With run_id, one run with the end of each job's output. A merge that requires checks waits until the latest run at the pull request head passed.".into(),
+            input_schema: schema(json!({"run_id": {"type": "string", "description": "A run id from the list, to read its jobs' output"}}), &[]),
+        },
+        ToolDescriptor {
+            name: "ci_rerun".into(),
+            description: "Run the CI again for the commit of a finished run (for example after a failure that was not caused by the code). Refused while a run of that commit is queued or running.".into(),
+            input_schema: schema(json!({"run_id": {"type": "string"}}), &["run_id"]),
+        },
+        ToolDescriptor {
+            name: "ci_setup".into(),
+            description: "Onboarding: move the project's GitHub Actions into Yulius CI. Returns the workflows in this task's worktree (jobs, run steps, uses steps, matrices), the CI its yulius.toml configures ([[ci.jobs]] or [commands] gate) and the steps: translate every check into [[ci.jobs]], delete .github/workflows/, commit; the pull request is tested with the CI it adds.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "repo_hygiene".into(),
+            description: "Stale branches and worktrees of this project: remote branches whose pull request was merged or closed, branches already merged, local branches no worktree uses, worktrees of deleted, archived or merged tasks. Each item has a reason and whether removing it is safe.".into(),
+            input_schema: schema(json!({"refresh": {"type": "boolean", "description": "Scan now instead of returning the last scan"}}), &[]),
+        },
+        ToolDescriptor {
+            name: "repo_cleanup".into(),
+            description: "Remove stale branches and worktrees reported by repo_hygiene: the given items, or every safe item when items is omitted. Unmerged branches without a pull request (reason idle) are removed only with force. Live tasks' worktrees, protected branches and branches with an open pull request are never removed; dirty worktrees are kept.".into(),
+            input_schema: schema(json!({
+                "items": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["remote_branch", "local_branch", "worktree"]}, "name": {"type": "string"}}, "required": ["kind", "name"]}},
+                "force": {"type": "boolean"}
+            }), &[]),
+        },
+        ToolDescriptor {
             name: "automation_create".into(),
             description: "Create a scheduled automation in this project: on a five-field cron schedule (minute hour day-of-month month day-of-week, evaluated at utc_offset_minutes from UTC) Yulius creates and starts a new task with the given prompt. Use it when the user asks for recurring work, e.g. \"every day at 9 implement yesterday's customer feedback\". The automation appears on the project's Automations page.".into(),
             input_schema: schema(json!({
@@ -238,6 +266,11 @@ impl App {
             "step_update" => self.tool_step_update(ctx, &args).await,
             "steps_get" => self.tool_steps_get(ctx).await,
             "delivery_status" => self.tool_delivery_status(ctx).await,
+            "ci_status" => self.tool_ci_status(ctx, &args).await,
+            "ci_rerun" => self.tool_ci_rerun(ctx, &args).await,
+            "ci_setup" => self.tool_ci_setup(ctx).await,
+            "repo_hygiene" => self.tool_repo_hygiene(ctx, &args).await,
+            "repo_cleanup" => self.tool_repo_cleanup(ctx, &args).await,
             "automation_create" => self.tool_automation_create(ctx, &args).await,
             "automations_list" => self.tool_automations_list(ctx).await,
             "automation_update" => self.tool_automation_update(ctx, &args).await,

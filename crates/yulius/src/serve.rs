@@ -134,6 +134,22 @@ pub struct ServeArgs {
     /// Minutes between automatic checks of `main` (0: only "Check now").
     #[arg(long, env = "YULIUS_UPDATE_CHECK_MINUTES", default_value_t = 60)]
     pub update_check_minutes: u64,
+    /// Yulius-run CI (SPEC-002 ADR-21): `off` stops running projects' CI jobs (merges that
+    /// require checks then wait for GitHub's checks again).
+    #[arg(long, env = "YULIUS_CI", default_value = "on", value_parser = ["on", "off"])]
+    pub ci: String,
+    /// CI jobs running at once on this machine, across all sandboxes.
+    #[arg(long, env = "YULIUS_CI_MAX_JOBS", default_value_t = 4,
+          value_parser = clap::value_parser!(u32).range(1..=64))]
+    pub ci_max_jobs: u32,
+    /// Wall-clock limit of one CI job, in minutes.
+    #[arg(long, env = "YULIUS_CI_JOB_TIMEOUT_MIN", default_value_t = 30,
+          value_parser = clap::value_parser!(u64).range(1..=360))]
+    pub ci_job_timeout_min: u64,
+    /// How often each sandbox is checked for new pull request heads and pushes, in seconds.
+    #[arg(long, env = "YULIUS_CI_POLL_SECS", default_value_t = 60,
+          value_parser = clap::value_parser!(u64).range(10..=3600))]
+    pub ci_poll_secs: u64,
 }
 
 /// Parses a probability threshold (0.5–1).
@@ -386,6 +402,12 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     config.max_live_sessions = args.max_live_sessions;
     config.contained = args.contained;
     config.upload_max_bytes = args.upload_max_mb * 1024 * 1024;
+    config.ci = yulius_app::ci::CiSettings {
+        enabled: args.ci == "on",
+        max_jobs: args.ci_max_jobs,
+        job_timeout: std::time::Duration::from_secs(args.ci_job_timeout_min * 60),
+        poll: std::time::Duration::from_secs(args.ci_poll_secs),
+    };
     config.own_ports = vec![args.bind.port(), args.internal_bind.port()];
     config.preview = preview_config(&args.public_url, args.preview_domain.as_deref())?;
     config

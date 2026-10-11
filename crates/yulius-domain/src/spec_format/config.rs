@@ -4,7 +4,8 @@
 //! pre-parsed map, so the domain stays dependency-free and every problem carries a line
 //! number for the agent prompt. Supported:
 //!
-//! - `[docs]`, `[commands]`, `[delivery]` tables and `[[delivery.environments]]` entries;
+//! - `[docs]`, `[commands]`, `[delivery]` tables, `[[delivery.environments]]` and `[[ci.jobs]]`
+//!   entries;
 //! - `key = "basic string"` (escapes `\" \\ \n \t \r \b \f \uXXXX \UXXXXXXXX`),
 //!   `key = 'literal string'`, `key = true|false`, and `environments = []`;
 //! - blank lines and `#` comments (also after a value).
@@ -20,10 +21,16 @@
 //!
 //! [commands]
 //! test = "cargo test"
+//! gate = "scripts/ci.sh"                 # what Yulius runs as the project's CI (DLV-006)
 //!
 //! [delivery]
 //! preset = "studio"
 //! auto_promote = false                   # one change: production becomes gated
+//!
+//! [[ci.jobs]]                           # instead of `gate`: jobs run in parallel
+//! name = "test"
+//! command = "cargo test"
+//! matrix = "1/2 2/2"                     # one job per value, in $YULIUS_CI_MATRIX
 //!
 //! [[delivery.environments]]
 //! name = "dev-vm"
@@ -37,6 +44,7 @@ use crate::delivery::{
 };
 
 use super::{Commands, DecisionsLocation, DocsLayout, ProjectConfig};
+use crate::ci::{CiConfigError, JobDef, parse_matrix, project_jobs};
 
 /// Largest accepted `yulius.toml`.
 pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
@@ -142,6 +150,9 @@ pub enum ConfigProblem {
     /// The resulting profile is invalid.
     #[error("invalid delivery profile: {0}")]
     Profile(ProfileError),
+    /// Invalid CI jobs (`[[ci.jobs]]`, `[commands] gate`).
+    #[error("{0}")]
+    Ci(CiConfigError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +181,7 @@ struct Document {
     commands: Option<Table>,
     delivery: Option<Table>,
     environments: Vec<Table>,
+    ci_jobs: Vec<Table>,
 }
 
 enum Target {
@@ -178,12 +190,14 @@ enum Target {
     Commands,
     Delivery,
     Environment,
+    CiJob,
 }
 
 const DOCS_KEYS: &str = "product, architecture, decisions, specs_dir, changes, agents";
-const COMMAND_KEYS: &str = "test, lint, build";
+const COMMAND_KEYS: &str = "test, lint, build, gate";
 const DELIVERY_KEYS: &str = "preset, integration_branch, production_branch, merge, promote, auto_promote, require_checks, environments";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
+const CI_JOB_KEYS: &str = "name, command, matrix";
 
 fn err(line: usize, problem: ConfigProblem) -> FormatError {
     FormatError { line, problem }
@@ -344,6 +358,13 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                     document.environments.push(fresh);
                     Target::Environment
                 }
+                ("ci.jobs", false) => {
+                    return Err(err(line, ConfigProblem::ArrayTableRequired(name)));
+                }
+                ("ci.jobs", true) => {
+                    document.ci_jobs.push(fresh);
+                    Target::CiJob
+                }
                 (known @ ("docs" | "commands" | "delivery"), false) => {
                     let (slot, target) = match known {
                         "docs" => (&mut document.docs, Target::Docs),
@@ -366,6 +387,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
             Target::Commands => document.commands.as_mut(),
             Target::Delivery => document.delivery.as_mut(),
             Target::Environment => document.environments.last_mut(),
+            Target::CiJob => document.ci_jobs.last_mut(),
         };
         let Some(table) = table else { continue };
         let entry = parse_entry(trimmed, line)?;
@@ -513,6 +535,7 @@ fn commands(table: Option<&Table>) -> Result<Commands, FormatError> {
             "test" => commands.test = value,
             "lint" => commands.lint = value,
             "build" => commands.build = value,
+            "gate" => commands.gate = value,
             _ => return Err(unknown("commands", entry, COMMAND_KEYS)),
         }
     }
@@ -538,6 +561,42 @@ fn environment(table: &Table) -> Result<Environment, FormatError> {
         command: command_text,
         verify: verify.unwrap_or(Verify::Manual),
     })
+}
+
+fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
+    let (mut name, mut command_text, mut matrix) = (None, None, Vec::new());
+    for entry in &table.entries {
+        match entry.key.as_str() {
+            "name" => name = Some(string_value(entry)?.to_owned()),
+            "command" => command_text = Some(command(entry)?),
+            "matrix" => {
+                let job = name.as_deref().unwrap_or("?");
+                matrix = parse_matrix(job, string_value(entry)?)
+                    .map_err(|e| err(entry.line, ConfigProblem::Ci(e)))?;
+            }
+            _ => return Err(unknown("[ci.jobs]", entry, CI_JOB_KEYS)),
+        }
+    }
+    Ok(JobDef {
+        name: name.ok_or_else(|| err(table.line, ConfigProblem::MissingKey("name")))?,
+        command: command_text
+            .ok_or_else(|| err(table.line, ConfigProblem::MissingKey("command")))?,
+        matrix,
+    })
+}
+
+fn ci_jobs(document: &Document, commands: &Commands) -> Result<Vec<JobDef>, FormatError> {
+    let defs = document
+        .ci_jobs
+        .iter()
+        .map(ci_job)
+        .collect::<Result<Vec<_>, _>>()?;
+    let line = document.ci_jobs.first().map_or_else(
+        || document.commands.as_ref().map_or(1, |t| t.line),
+        |t| t.line,
+    );
+    project_jobs(commands.gate.as_deref(), &defs).map_err(|e| err(line, ConfigProblem::Ci(e)))?;
+    Ok(defs)
 }
 
 fn delivery(document: &Document) -> Result<DeliveryProfile, FormatError> {
@@ -626,9 +685,12 @@ fn delivery(document: &Document) -> Result<DeliveryProfile, FormatError> {
 /// ```
 pub fn parse_yulius_toml(text: &str) -> Result<ProjectConfig, FormatError> {
     let document = parse_document(text)?;
+    let commands = commands(document.commands.as_ref())?;
+    let ci = ci_jobs(&document, &commands)?;
     Ok(ProjectConfig {
         docs: docs_layout(document.docs.as_ref())?,
-        commands: commands(document.commands.as_ref())?,
+        commands,
+        ci,
         delivery: delivery(&document)?,
     })
 }
@@ -686,9 +748,20 @@ pub fn render_yulius_toml(config: &ProjectConfig) -> String {
         ("test", &config.commands.test),
         ("lint", &config.commands.lint),
         ("build", &config.commands.build),
+        ("gate", &config.commands.gate),
     ] {
         if let Some(command) = value {
             out.push_str(&format!("{key} = {}\n", quote(command)));
+        }
+    }
+    for job in &config.ci {
+        out.push_str(&format!(
+            "\n[[ci.jobs]]\nname = {}\ncommand = {}\n",
+            quote(&job.name),
+            quote(&job.command)
+        ));
+        if !job.matrix.is_empty() {
+            out.push_str(&format!("matrix = {}\n", quote(&job.matrix.join(" "))));
         }
     }
     let profile = &config.delivery;
@@ -789,6 +862,7 @@ mod tests {
             [commands]\n\
             test = \"node scripts/test-all.mjs \\\"all\\\"\"\n\
             lint = \"eslint\\u0020.\"\n\
+            gate = \"scripts/dev ci\"\n\
             [delivery]\n\
             preset = \"product\"\n";
         let config = parse_yulius_toml(text)?;
@@ -805,6 +879,7 @@ mod tests {
         );
         assert_eq!(config.commands.lint.as_deref(), Some("eslint ."));
         assert_eq!(config.commands.build, None);
+        assert_eq!(config.commands.gate.as_deref(), Some("scripts/dev ci"));
         assert_eq!(config.delivery, DeliveryProfile::product());
         Ok(())
     }
@@ -968,8 +1043,25 @@ mod tests {
                     test: Some("cargo test".to_owned()),
                     lint: None,
                     build: Some("cargo build --release".to_owned()),
+                    gate: Some("cargo test && cargo build --release".to_owned()),
                 },
+                ci: Vec::new(),
                 delivery: custom.relabeled(),
+            },
+            ProjectConfig {
+                ci: vec![
+                    JobDef {
+                        name: "lint".to_owned(),
+                        command: "cargo clippy -- -D warnings".to_owned(),
+                        matrix: Vec::new(),
+                    },
+                    JobDef {
+                        name: "test".to_owned(),
+                        command: "cargo test --partition \"hash:$YULIUS_CI_MATRIX\"".to_owned(),
+                        matrix: vec!["1/2".to_owned(), "2/2".to_owned()],
+                    },
+                ],
+                ..ProjectConfig::default()
             },
             ProjectConfig {
                 delivery: DeliveryProfile {
@@ -988,6 +1080,38 @@ mod tests {
             let text = render_yulius_toml(&config);
             assert_eq!(parse_yulius_toml(&text)?, config, "{text}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn ci_jobs_parse_with_matrices_and_report_problems() -> TestResult {
+        let config = parse_yulius_toml(
+            "[[ci.jobs]]\nname = \"lint\"\ncommand = \"make lint\"\n\n\
+             [[ci.jobs]]\nname = \"test\"\ncommand = \"make test\"\nmatrix = \"a b\"\n",
+        )?;
+        let jobs = crate::ci::project_jobs(config.commands.gate.as_deref(), &config.ci)?;
+        let names: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(names, ["lint", "test (a)", "test (b)"]);
+        assert_eq!(
+            problem("[ci.jobs]\nname = \"x\"\n"),
+            Some((1, ConfigProblem::ArrayTableRequired("ci.jobs".to_owned())))
+        );
+        assert_eq!(
+            problem("[[ci.jobs]]\nname = \"x\"\n"),
+            Some((1, ConfigProblem::MissingKey("command")))
+        );
+        assert!(matches!(
+            problem("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\nmatrix = \"a;b\"\n"),
+            Some((4, ConfigProblem::Ci(CiConfigError::InvalidMatrix(_))))
+        ));
+        assert!(matches!(
+            problem("[commands]\ngate = \"g\"\n[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\n"),
+            Some((3, ConfigProblem::Ci(CiConfigError::GateAndJobs)))
+        ));
+        assert!(matches!(
+            problem("[[ci.jobs]]\nname = \"X\"\ncommand = \"y\"\n"),
+            Some((1, ConfigProblem::Ci(CiConfigError::InvalidJobName(_))))
+        ));
         Ok(())
     }
 }

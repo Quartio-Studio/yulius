@@ -359,9 +359,20 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
     event.preventDefault();
     if (dismissible) close(undefined);
   });
+  // Enter in a one-line field submits the dialog, as in every form: the primary action runs.
+  let primary = null;
+  dialog.addEventListener('keydown', (event) => {
+    const field = event.target;
+    if (event.key !== 'Enter' || event.defaultPrevented || event.isComposing || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (!(field instanceof HTMLInputElement) || ['checkbox', 'radio', 'button', 'submit', 'file', 'range', 'color'].includes(field.type)) return;
+    if (!primary || primary.disabled || !primary.isConnected) return;
+    event.preventDefault();
+    primary.click();
+  });
   const modal = { dialog, body: bodyEl, footer, close, result, setActions };
   function setActions(list) {
     footer.replaceChildren();
+    primary = null;
     for (const action of list) {
       const button = h('button', { type: action.submit ? 'submit' : 'button', class: ['btn', action.kind && `btn-${action.kind}`], disabled: action.disabled, onClick: async () => {
         if (!action.run) return close(action.value);
@@ -382,6 +393,7 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
         }
       } }, action.label);
       if (action.ref) action.ref(button);
+      if (action.kind === 'primary' || action.kind === 'danger' || (!primary && action.run)) primary = button;
       footer.append(button);
     }
     footer.hidden = list.length === 0;
