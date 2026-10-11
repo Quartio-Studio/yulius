@@ -230,13 +230,13 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          changes log. Adapt this repository to that format WITHOUT breaking its existing \
          conventions.\n\n\
          Problems Yulius found:\n{problems}\n\n\
-         How to work:\n\
+         How to work (autonomously: decide, record why, and continue; nobody needs to approve):\n\
          1. Read the repository's own instructions first (AGENTS.md, CLAUDE.md, .agents/skills, \
          .claude/skills, CONTRIBUTING and README). They stay authoritative: follow them for \
          branches, commits, tests and reviews.\n\
-         2. Ask the user once whether you should reverse-engineer the existing project into these \
-         documents (product summary, architecture and decisions derived from the code and its \
-         history) or only add short summaries. If nobody answers, reverse-engineer.\n\
+         2. Reverse-engineer the existing project into these documents: the product summary, an \
+         architecture document and decision records derived from the code and its history, so \
+         every later task knows the whole product before it builds anything.\n\
          3. Map instead of moving: when equivalent documents already exist (a README summary, an \
          architecture page, a decisions file, a changelog), point to them from yulius.toml [docs] \
          (product, architecture, decisions, specs_dir, changes, agents) instead of renaming or \
@@ -249,15 +249,21 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          5. Record the delivery profile in yulius.toml [delivery]: preset \"{preset}\" \
          (integration branch {integration}, production branch {production}), and put the \
          repository's real test, lint and build commands in [commands].\n\
-         6. git-crypt: encrypted files stay locked. Never unlock or decrypt them, never commit \
+         6. Foundations (skill infra-bootstrap): CI runs only on our own machines through Yulius \
+         CI, never GitHub Actions. Translate every .github/workflows/* job into the Yulius CI \
+         configuration ([commands] gate or [[ci.jobs]] in yulius.toml; ci_setup lists them) so \
+         nothing is lost, run it, then delete .github/workflows/ in the same pull request. When \
+         tests, lint or environments are missing, lay them as the infra-bootstrap skill \
+         describes, as follow-up pull requests.\n\
+         7. git-crypt: encrypted files stay locked. Never unlock or decrypt them, never commit \
          decrypted content, and leave encrypted files byte-for-byte unchanged.\n\
-         7. Hooks: when the repository's instructions describe a hooks setup (for example \
+         8. Hooks: when the repository's instructions describe a hooks setup (for example \
          `git config core.hooksPath .githooks`), apply it in your worktree before committing. \
          Never bypass hooks with --no-verify.\n\
-         8. Deliver through a pull request from your task branch into {integration}; never push \
-         to {integration} or {production}. Change documentation and configuration only, not \
+         9. Deliver through a pull request from your task branch into {integration}; never push \
+         to {integration} or {production}. Change documentation, configuration and CI only, not \
          application code.\n\
-         9. Before finishing, make sure every problem listed above is resolved.",
+         10. Before finishing, make sure every problem listed above is resolved.",
         preset = profile.preset,
         problems = problems.join("\n"),
     )
@@ -267,10 +273,10 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
 fn onboarding_steps() -> Vec<String> {
     [
         "Read the repository's instructions and conventions",
-        "Ask whether to reverse-engineer the project into the docs",
-        "Map existing documents in yulius.toml",
-        "Add the missing documents",
-        "Open a pull request with the changes",
+        "Reverse-engineer the product, architecture and decisions into the docs",
+        "Map existing documents and commands in yulius.toml",
+        "Move GitHub Actions into Yulius CI and delete them",
+        "Add the missing documents and open the pull request",
     ]
     .iter()
     .map(|step| (*step).to_owned())
@@ -773,7 +779,11 @@ mod tests {
         assert!(prompt.contains("preset \"product\""));
         assert!(prompt.contains("into quartio"));
         assert!(prompt.contains("git-crypt"));
-        assert!(prompt.contains("reverse-engineer"));
+        assert!(prompt.contains("Reverse-engineer"));
+        assert!(prompt.contains("nobody needs to approve"));
+        assert!(!prompt.contains("Ask the user"), "onboarding is autonomous");
+        assert!(prompt.contains("delete .github/workflows/"));
+        assert!(prompt.contains("infra-bootstrap"));
         assert!(prompt.contains("--no-verify"));
         assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);
         Ok(())

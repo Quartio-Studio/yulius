@@ -1,6 +1,6 @@
 # Brief template
 
-The payload `om-brainstorm` writes in workflow step 6 (ramps 2–5), consumed cold by the routed skill. Preserve the Problem, Agreed direction, Resolved unknowns, and Non-goals headings used by the routed skills. Keep answers concrete and remove repetition; omit optional affected-area detail when unknown. A necessary empty section gets one short statement, not a placeholder table.
+The brief `om-brainstorm` writes in workflow step 6 (conclusions 2-4), read cold by whoever takes the next step. Keep the Problem, Agreed direction, Resolved unknowns and Non-goals headings. Keep answers concrete and remove repetition; omit optional affected-area detail when unknown. A necessary empty section gets one short statement, not a placeholder table.
 
 ```markdown
 # {one-line goal}
@@ -9,11 +9,11 @@ The payload `om-brainstorm` writes in workflow step 6 (ramps 2–5), consumed co
 - Category: {feature | bug | refactor | security | dependencies | documentation}
 - Priority signal: {low | medium | high | extreme} — {one-line why}
 - Risk signal: {low | medium | high} — {one-line why}
-- Routing: {the emitted Next line, verbatim}
+- Next step: {conclusion number and what it starts}
 
 ## Problem
 
-{2–5 sentences in the user's sharpened words; evidence it matters}
+{2-5 sentences, sharpened; evidence it matters}
 
 ## Agreed direction
 
@@ -21,7 +21,7 @@ The payload `om-brainstorm` writes in workflow step 6 (ramps 2–5), consumed co
 
 ## Resolved unknowns
 
-| Question | Answer (from the conversation) |
+| Question | Answer (and its source, or "reversible default") |
 |----------|--------------------------------|
 | {…} | {…} |
 
@@ -31,12 +31,14 @@ The payload `om-brainstorm` writes in workflow step 6 (ramps 2–5), consumed co
 
 ## Affected areas (if known)
 
-- {only what the conversation established — never guessed}
+- {only what the sources established, never guessed}
 ```
 
 Notes:
 
-- **Category** follows the SDLC category taxonomy, so downstream label inference works unchanged.
-- **Priority/Risk signals** feed `om-prepare-issue`'s `--priority`/`--risk` on ramp 2; on the other ramps they are context for the implementer.
-- **Resolved unknowns** is the load-bearing section: on ramp 3 these answers replace `om-auto-write-spec`'s autonomous defaults, and on ramp 4 they pre-answer `om-spec-writing`'s Open Questions gate. An empty table on ramp 3 means the routing is wrong — go back to ramp 4 or keep talking.
-- **Affected areas** stays honest: only what the conversation established. The routed skill re-derives the rest from the codebase.
+- **Priority and risk signals** become the issue's labels on conclusion 2; otherwise they are
+  context for whoever implements it.
+- **Resolved unknowns** is the load-bearing section: it pre-answers the spec's Open Questions.
+  Mark each answer with its source, or as a reversible default that a later task may revisit.
+- **Affected areas** stays honest: only what was established. The next step re-derives the rest
+  from the code.

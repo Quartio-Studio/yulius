@@ -15,6 +15,7 @@ import { BRAND } from '../brand.js';
 export const SOURCE_BADGE = { repository: ['branch', 'Repository', ''], instance: ['globe', 'Whole instance', 'violet'], 'open-mercato': ['lock', 'Included', ''] };
 const CUSTOM = new Set(['repository', 'instance']);
 const OPEN_MERCATO_SKILLS = 'https://github.com/open-mercato/skills';
+const SUPERPOWERS_SKILLS = 'https://github.com/obra/superpowers';
 
 /** Mount the Skills page; ?source=instance (admin "Instance skills" entry) starts at Custom. */
 export function mountSkillsPage(ctx, sandbox, route) {
@@ -66,8 +67,9 @@ export function mountSkillsPage(ctx, sandbox, route) {
     const custom = skills.filter((s) => CUSTOM.has(s.source));
     const view = h('div', { class: 'stack' },
       section('skills-included', 'Included', `curated, kept current by ${BRAND.name}`,
-        h('p', { class: 'page-section-note' }, 'Adapted from the ', h('a', { href: OPEN_MERCATO_SKILLS, target: '_blank', rel: 'noopener noreferrer' }, 'Open Mercato skills'),
-          ' and rewritten to fit any project. Thank you to the Open Mercato team for sharing them.'),
+        h('p', { class: 'page-section-note' }, `${BRAND.name}'s own delivery skills, and skills adapted from the `, h('a', { href: OPEN_MERCATO_SKILLS, target: '_blank', rel: 'noopener noreferrer' }, 'Open Mercato skills'),
+          ' and ', h('a', { href: SUPERPOWERS_SKILLS, target: '_blank', rel: 'noopener noreferrer' }, 'obra/superpowers'),
+          ', rewritten to fit any project. Thank you to the Open Mercato team and the superpowers authors for sharing them.'),
         included.length ? h('div', { class: 'item-list' }, included.map(card)) : h('p', { class: 'muted small' }, 'None in this version.')),
       section('skills-custom', 'Custom', 'this repository and the instance',
         custom.length ? h('div', { class: 'item-list' }, custom.map(card))

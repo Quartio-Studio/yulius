@@ -1,7 +1,7 @@
 // Application state store and the UI event stream (docs/api.md "UI event stream").
 // Topics: sandboxes, tasks (sid), task (TaskSummary), task-removed (tid), steps (tid),
 // message ({task_id, message}), browser-action (event), automation-run (event),
-// account (Account), resync, events-status (status), pulls (sandbox id).
+// account (Account), update ({phase}), resync, events-status (status), pulls (sandbox id).
 //
 // The server sends `resync` (not `sandbox.updated`) after sandbox changes, and sandbox
 // counters (running / needs attention / queued) are not pushed at all: task events
@@ -199,6 +199,7 @@ export function createStore(api) {
       case 'browser.action_requested': addActionRequest(event); break;
       case 'automation.run': emit('automation-run', event); break;
       case 'account.updated': emit('account', event.account); break;
+      case 'update.updated': emit('update', event); break;
       case 'resync': emit('resync'); break;
       default: break;
     }

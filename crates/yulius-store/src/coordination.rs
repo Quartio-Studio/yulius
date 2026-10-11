@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
-use yulius_app::model::{InboxEntry, MessageRecord, ScopeClaimRecord, StepRecord};
+use yulius_app::model::{InboxEntry, MessageRecord, ScopeClaimRecord, StepRecord, StepTiming};
 use yulius_app::ports::store::CoordinationStore;
 use yulius_domain::ids::{MessageId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
@@ -22,10 +22,11 @@ fn step_from_row(row: &Row<'_>) -> rusqlite::Result<StepRecord> {
         note: row.get("note")?,
         updated_by: row.get("updated_by")?,
         updated_at: row.get::<_, Option<i64>>("updated_at")?.map(Timestamp),
+        effort: u8::try_from(row.get::<_, i64>("effort")?.clamp(1, 3)).unwrap_or(1),
     })
 }
 
-const STEP_COLS: &str = "id, task_id, ordinal, title, status, note, updated_by, updated_at";
+const STEP_COLS: &str = "id, task_id, ordinal, title, status, note, updated_by, updated_at, effort";
 
 fn opt_task(text: Option<String>) -> rusqlite::Result<Option<TaskId>> {
     text.as_deref()
@@ -87,8 +88,8 @@ impl CoordinationStore for SqliteStore {
             tx.execute("DELETE FROM steps WHERE task_id = ?1", [&task]).map_err(db)?;
             for s in &steps {
                 tx.execute(
-                    &format!("INSERT INTO steps ({STEP_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"),
-                    params![s.id.as_str(), task, i64::from(s.ordinal), s.title, s.status, s.note, s.updated_by, s.updated_at.map(|t| t.0)],
+                    &format!("INSERT INTO steps ({STEP_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"),
+                    params![s.id.as_str(), task, i64::from(s.ordinal), s.title, s.status, s.note, s.updated_by, s.updated_at.map(|t| t.0), i64::from(s.effort.clamp(1, 3))],
                 )
                 .map_err(db)?;
                 let previous = old.get(s.id.as_str());
@@ -114,6 +115,32 @@ impl CoordinationStore for SqliteStore {
                 ))
                 .map_err(db)?;
             let rows = stmt.query_map([t], step_from_row).map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn step_timings(&self, task: &TaskId) -> AppResult<Vec<StepTiming>> {
+        let t = task.as_str().to_owned();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT step_id, \
+                     MAX(CASE WHEN to_status = 'in_progress' THEN at END), \
+                     MAX(CASE WHEN to_status IN ('done', 'skipped') THEN at END) \
+                     FROM step_events WHERE task_id = ?1 GROUP BY step_id",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([t], |r| {
+                    let id: String = r.get(0)?;
+                    Ok(StepTiming {
+                        step_id: StepId::parse(&id).map_err(|_| bad_column("step id", &id))?,
+                        started_at: r.get::<_, Option<i64>>(1)?.map(Timestamp),
+                        finished_at: r.get::<_, Option<i64>>(2)?.map(Timestamp),
+                    })
+                })
+                .map_err(db)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
         })
         .await

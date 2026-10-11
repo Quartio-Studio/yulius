@@ -103,22 +103,22 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "spec_check".into(),
-            description: "Validate this task's spec in the Yulius format (frontmatter, required sections, Plan checklist) and the project documentation; returns the problems to fix. The same check runs when you stop.".into(),
+            description: "Validate this task's spec in the Yulius format (frontmatter, required sections, a Plan of at most 30 unique steps) and the project documentation; says whether this task needs a spec at all (features and fixes do; research, questions, docs and chores do not) and returns the problems to fix plus nudges about the plan. The same check runs when you stop.".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
             name: "steps_set".into(),
-            description: "Replace this task's plan with an ordered list of steps (strings or {title,status}). Keep it in sync with the Plan checklist of your spec. Statuses: pending, in_progress, done, skipped, blocked.".into(),
-            input_schema: schema(json!({"steps": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"title": {"type": "string"}, "status": {"type": "string"}}, "required": ["title"]}]}}}), &["steps"]),
+            description: "Replace this task's plan with an ordered list of 1-30 steps of similar effort (strings or {title, status, effort}), each a slice that leaves the project working, named by what it delivers. Keep it in sync with the Plan checklist of your spec. effort is 1 (default) to 3, only for a step that cannot be split; progress is weighted by it. Statuses: pending, in_progress, done, skipped (blocked needs step_update with a note). A step matching a current title keeps its status and effort; a finished step stays finished.".into(),
+            input_schema: schema(json!({"steps": {"type": "array", "maxItems": crate::coordination::MAX_STEPS, "items": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"title": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "done", "skipped"]}, "effort": {"type": "integer", "minimum": 1, "maximum": 3}}, "required": ["title"]}]}}}), &["steps"]),
         },
         ToolDescriptor {
             name: "step_update".into(),
-            description: "Update one step (by step_id, ordinal or exact title) to a new status with an optional note. Mark a step in_progress when you start it and done when finished.".into(),
+            description: "Update one step (by step_id, ordinal or title). Mark a step in_progress when you start it and done the moment it is finished, one at a time (at most 2 in progress), so progress arrives steadily. A finished step stays finished: add a follow-up step with steps_set instead. blocked and skipped need a note saying why. Returns the steps, the progress and nudges.".into(),
             input_schema: schema(json!({"step_id": {"type": "string"}, "ordinal": {"type": "integer"}, "title": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "done", "skipped", "blocked"]}, "note": {"type": "string"}}), &["status"]),
         },
         ToolDescriptor {
             name: "steps_get".into(),
-            description: "Get this task's steps and progress.".into(),
+            description: "Get this task's steps, the effort-weighted progress (percent) and nudges about the plan and its pace.".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
@@ -196,7 +196,7 @@ impl App {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Yulius coordinates this project's tasks. Use tasks_list before starting, message_send to coordinate with other tasks, and steps_set/step_update to keep your plan visible. Sessions are docs: when you do not know how something was implemented, sessions_search the earlier sessions and session_read the relevant part.",
+                    "instructions": "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, message_send to coordinate with other tasks, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
                 }))
             }
             "ping" => Ok(json!({})),

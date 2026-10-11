@@ -18,7 +18,9 @@ test('Skills shows the included set read-only with its source, then custom skill
   // No filter tabs or search: the list is short.
   expect(await browser.evaluate(() => document.querySelectorAll('#main [role=tablist], #main input[type=search]').length)).toBe(0);
   const order = await browser.evaluate(() => [...document.querySelectorAll('#main .item-name')].map((n) => n.textContent?.trim()));
-  expect(order).toEqual(['om-code-review', 'om-testing', 'yulius-rust-slice', 'design', 'quartio-brand']);
+  expect(order).toEqual(['delivery-pipeline', 'om-code-review', 'test-driven-development', 'yulius-rust-slice', 'design', 'quartio-brand']);
+  // Every adapted source is thanked (#139).
+  await expect(screen.getByRole('link', 'obra/superpowers')).toHaveAttribute('href', 'https://github.com/obra/superpowers');
 
   // An included skill opens read-only.
   await screen.getByRole('button', 'Open skill om-code-review').click();

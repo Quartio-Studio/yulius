@@ -3,4 +3,5 @@
 pub mod cli;
 pub mod doctor;
 pub mod serve;
+pub mod update_helper;
 pub mod wiring;

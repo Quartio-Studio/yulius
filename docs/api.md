@@ -34,7 +34,7 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 | Method | Path | Body → Response |
 | --- | --- | --- |
 | GET | `/api/setup/status` | → `{"setup_required": bool}` |
-| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. Refused once a superadmin exists. |
+| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. Refused once a superadmin exists. The web UI's last setup step offers the optional Jev key with this session (`PUT /api/admin/jev`, ADM-001). |
 | POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; rate limited) |
 | GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
 | POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left); 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
@@ -210,7 +210,7 @@ TaskSummary = {
   "activity": "working|waiting|needs_attention|done|null",
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
-  "steps": {"done": 3, "total": 7, "current": "Implement API|null"},
+  "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42},
   "unread_messages": 0, "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
@@ -234,6 +234,10 @@ time a subscription has capacity for it again. The UI shows "Paused: waiting for
 capacity (resets ~14:20)" outside Needs you. A Continue with no capacity answers `200` with the
 task paused, not an error.
 
+`steps.done` counts finished steps (done or skipped, STP-005); `steps.percent` is the finished
+share of the plan's **effort**, 0-100, rounded down (STP-006): steps declare an effort of 1 (the
+default) to 3, so 9 of 10 equal steps is 90 and a plan whose one big step is open shows less.
+
 `activity` is `done` when Claude Code recorded the task's goal as achieved and the turn ended
 cleanly (TSK-014); the session stays open, and any new prompt makes it `working` again.
 `background_shells` is set while the agent is idle (`waiting` or `done`): the Bash-tool shells it
@@ -249,7 +253,7 @@ TaskDetail = TaskSummary + {
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
   "delivery": Delivery, "switches": [{"at","reason","from","to"}]
 }
-Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at"}
+Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
 Message = {"id","from":{"task_id|null","login|null","title"},"to_task_id|null","kind":"info|question|request|scope","subject","body","created_at","read":bool}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}
 ```
@@ -478,7 +482,7 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 
 | Method | Path | Level | Notes |
 | --- | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/skills` | read | `[{"name","description","source":"repository|instance|open-mercato","path","enabled"}]` |
+| GET | `/api/sandboxes/{sid}/skills` | read | `[{"name","description","source":"repository|instance|yulius|open-mercato|superpowers","path","enabled"}]`; `yulius`, `open-mercato` and `superpowers` are the bundled packs (SKL-007) |
 | GET | `/api/sandboxes/{sid}/skills/{name}` | read | `{"name","content"}` (`SKILL.md`, at most 512 KiB) |
 | PUT | `/api/sandboxes/{sid}/skills/{name}` | write (instance skills: instance admin) | `{"enabled":bool}` → 204. Repository skills → 422 (always available inside the repository). |
 
@@ -486,7 +490,8 @@ The web UI edits and creates repository skills as files: a repository skill is
 `.agents/skills/<name>/SKILL.md` (or `.claude/skills/…`) in the sandbox repository, so its skill page
 (UI-033) reads and saves it with the built-in editor's files API (root `sandbox`, the save carrying
 the read's `sha256`) and New skill (UI-035) creates the folder and the file there. Instance skills
-and the Open Mercato pack have no write API and are read-only in the UI.
+and the bundled packs (`yulius`, `open-mercato`, `superpowers`) have no write API and are
+read-only in the UI.
 | GET/POST | `/api/sandboxes/{sid}/workflows` | read/write | `Workflow`; POST → 201. `"scope":"instance"` creates an instance workflow (instance admins). |
 | PUT/DELETE | `/api/workflows/{id}` | write (instance: admin) | PUT replaces name, description, steps, instructions, gates → `Workflow`; DELETE → 204. A default workflow (`builtin`) → 409 `conflict` ("duplicate it to customise"). |
 | GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201 |
@@ -727,6 +732,16 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/analytics/summary?sandbox&from&to` | read | → `AnalyticsSummary` |
 | GET | `/api/analytics/tasks?format=json|csv&sandbox&from&to` | read | → `[TaskRow]` or CSV |
 | GET | `/api/status` | signed in | → `Status` |
+| GET | `/api/update` | signed in | → `UpdateView` (below): the build and a running update's `phase` for everyone; the offered update, the last check, whether the helper is installed and the current or last run for the superadmin (OPS-006..OPS-009, SPEC-002 ADR-18) |
+| POST | `/api/admin/update/check` | superadmin | reads `main` now (a check younger than 30 s is reused) → `UpdateView` |
+| POST | `/api/admin/update` | superadmin | `{"commit","confirm":true}` → 202 `UpdateView`: installs exactly that commit, which must be the offered head of `main`; 422 without `confirm` or for a malformed commit, 409 without an installed helper, while an update runs, or for any other commit |
+| POST | `/api/admin/update/cancel` | superadmin | while building or pausing tasks: nothing is installed, paused tasks go on → `UpdateView`; 409 otherwise |
+| POST | `/api/admin/update/proceed` | superadmin | while pausing tasks: restart without waiting for tasks still in a turn → `UpdateView`; 409 otherwise |
+| GET | `/api/admin/jev` | superadmin | → `JevKeyView` (never the key) |
+| PUT | `/api/admin/jev` | superadmin | `{"key"}` (8–4096 printable characters, no spaces; 422 otherwise) → `JevKeyView`: sealed with the master key, used by task intake at once (ADM-002) |
+| DELETE | `/api/admin/jev` | superadmin | removes the saved key (the `YULIUS_JEV_API_KEY_FILE` key is used again, if any) → `JevKeyView` |
+| POST | `/api/admin/jev/adopt` | superadmin | saves the key of `YULIUS_JEV_API_KEY_FILE` in settings → `JevKeyView`; 409 without a usable file |
+| POST | `/api/admin/jev/test` | superadmin | one small Jev request with the key in use → `{"ok","result":"ok|refused|unreachable|timeout|invalid|none","message","latency_ms|null"}` |
 
 ```json
 AdminUser = {"id","github_login","display_name","is_instance_admin","disabled",
@@ -839,13 +854,43 @@ task-hours; `needed` = ⌈max(burn_24h × 168 ÷ 98, subscriptions × (active + 
 `add` = needed − subscriptions (SPEC-002 ADR-17 §2.4). `resumes_at` is set while no subscription is
 available. `id` and `in_use_by` are for instance administrators only.
 
+```json
+UpdateView = {"current":{"commit":"<40 hex>|null","short":"…|null"},
+  "phase":"building|pausing|restarting|resuming|null",
+  // superadmin only (null for everyone else):
+  "helper_installed":true,
+  "available":{"commit","short","summary":"A · B · C and 4 more","count":7,
+               "commits":[{"sha","short","title","author|null","date|null"}],
+               "relation":"behind|diverged|unknown"}|null,
+  "check":{"checked_at|null","error|null","via":"app|token|anonymous|null",
+           "relation":"up_to_date|behind|ahead|diverged|unknown|null","head|null"},
+  "run":{"id","target":{"commit","short"},"from":{"commit|null","short|null"},"summary",
+         "state":"building|pausing|restarting|resuming|succeeded|failed|rolled_back|cancelled",
+         "step":"fetching|verifying|compiling|built|pausing|stopping|backing_up|installing|starting|checking|rolling_back|resuming|…|null",
+         "message|null","progress":{"done","total"}|null,
+         "tasks":{"paused","total","waiting":[{"id","number","title","sandbox"}],"deadline|null"}|null,
+         "error|null","log_tail":["…"],"requested_by","started_at","state_since","finished_at|null",
+         "can_cancel","can_proceed"}|null}
+JevKeyView = {"configured","source":"settings|config|null","set_at|null","set_by|null",
+              "config_present","config_error|null"}
+```
+
+`available` lists the commits from the build to the head of `main` without merges and promotions,
+titles without their conventional prefix and pull request number. `run.progress` counts compiled
+crates while building and released tasks while resuming; `run.tasks` counts live tasks at a pause
+point while pausing. `log_tail` is filled only for a failed or rolled-back run. The internal
+listener also serves `GET /internal/version` → `{"commit|null","version"}` for the update
+helper's health check.
+
 ## UI event stream
 
 `WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.removed",
 "task_id"}`, `{"type":"steps.updated","task_id"}`, `{"type":"message","task_id","message":Message}`,
 `{"type":"sandbox.updated","sandbox":Sandbox}`, `{"type":"browser.action_requested","sandbox_id",
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
-`{"type":"account.updated","account":Account}` (instance administrators only), `{"type":"resync"}`.
+`{"type":"account.updated","account":Account}` (instance administrators only),
+`{"type":"update.updated","phase":"building|pausing|restarting|resuming|null"}` (an update was
+found or moved; clients refetch `GET /api/update`), `{"type":"resync"}`.
 
 Sandbox views depend on the viewer's access level, so after a sandbox change (import, create,
 onboarding transitions, removal) the server publishes `resync` to that sandbox's viewers (or
@@ -876,3 +921,7 @@ rate limits become the run's subscription's 5-hour and weekly windows (SPEC-002 
 when they change (at once for a move of a point or more, a reset or crossing 98 %, otherwise at
 most every 15 s) and sampled for the burn rate at most every 5 minutes (`usage_samples.source`
 `session`).
+
+While an instance update pauses the tasks (SPEC-002 ADR-18) every `Stop` and `UserPromptSubmit`
+answers `202` with `Retry-After: 3` until the server that runs after the update releases the
+task; other hooks answer as usual.

@@ -17,7 +17,8 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use yulius_contracts::api::common::UserRef;
 use yulius_contracts::api::sessions::{
-    SessionDoc, SessionHit, SessionList, SessionTask, SnippetPart, TranscriptPage,
+    SessionDoc, SessionHit, SessionList, SessionTask, SnippetPart, TranscriptBlock,
+    TranscriptEntry, TranscriptPage,
 };
 use yulius_contracts::api::tasks::TaskSummary;
 use yulius_contracts::import::SessionRef;
@@ -679,12 +680,34 @@ impl App {
             )
             .await?
             .unwrap_or_default();
+        let mut entries = page.entries;
+        self.redact_page_secrets(&doc.sandbox_id, &mut entries)
+            .await;
         Ok(TranscriptPage {
             session,
-            entries: page.entries,
+            entries,
             next: page.next,
             skipped_lines: page.skipped,
         })
+    }
+
+    /// The sandbox's agent secrets in text served from its sessions (SES-004). This is the one
+    /// place the agent-secrets vault plugs in: with the vault on `dev` (#153) the body becomes
+    /// `self.redact_for_sandbox(sandbox, &text).await`. Agent reads (`sessions_search`,
+    /// `session_read`) already pass through the vault's redaction of every MCP result.
+    async fn redact_agent_secrets(&self, _sandbox: &SandboxId, text: String) -> String {
+        text
+    }
+
+    async fn redact_page_secrets(&self, sandbox: &SandboxId, entries: &mut [TranscriptEntry]) {
+        for entry in entries {
+            for block in &mut entry.blocks {
+                for text in block_texts(block) {
+                    let original = std::mem::take(text);
+                    *text = self.redact_agent_secrets(sandbox, original).await;
+                }
+            }
+        }
     }
 
     /// `DELETE /api/sessions/{id}`: removes an imported session (its uploader with write access,
@@ -1188,6 +1211,32 @@ impl App {
             "next_from": cut_at.or(page.next),
             "text": if text.is_empty() { "(nothing to show in this range)".to_owned() } else { text },
         }))
+    }
+}
+
+/// Every text field of a transcript block.
+fn block_texts(block: &mut TranscriptBlock) -> Vec<&mut String> {
+    match block {
+        TranscriptBlock::Text { text, .. }
+        | TranscriptBlock::Thinking { text, .. }
+        | TranscriptBlock::Meta { text }
+        | TranscriptBlock::ToolResult { text, .. } => vec![text],
+        TranscriptBlock::ToolCall {
+            summary,
+            input,
+            diff,
+            ..
+        } => {
+            let mut texts = vec![summary, input];
+            if let Some(diff) = diff {
+                for hunk in &mut diff.hunks {
+                    texts.push(&mut hunk.old);
+                    texts.push(&mut hunk.new);
+                }
+            }
+            texts
+        }
+        TranscriptBlock::Image { .. } => Vec::new(),
     }
 }
 

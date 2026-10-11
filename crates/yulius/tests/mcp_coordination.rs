@@ -400,9 +400,12 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     assert!(capped, "claims per task are bounded");
 
     // spec_check runs the Stop gate's validator (DSC-003); project_context rebuilds the briefing.
+    // Without a workflow and without a worktree (so without changes) no spec is needed yet
+    // (DSC-013: features and fixes need one, research and questions do not).
     let (no_tree, err) = tool(&internal, "tok-claude", "spec_check", json!({})).await?;
     assert!(!err, "{no_tree}");
-    assert_eq!(no_tree["spec"]["valid"], false);
+    assert_eq!(no_tree["spec"]["required"], false, "{no_tree}");
+    assert_eq!(no_tree["spec"]["valid"], true);
     let worktree = h._dir.path().join("wt-claude2");
     std::fs::create_dir_all(worktree.join("docs/specs"))?;
     let date = CivilDate::new(2026, 10, 9).ok_or("date")?;
@@ -424,6 +427,8 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     let (checked, err) = tool(&internal, "tok-other", "spec_check", json!({})).await?;
     assert!(!err, "{checked}");
     assert_eq!(checked["spec"]["path"], "docs/specs/split.md");
+    // The changed paths cannot be read (no Git repository): a spec is required, to be safe.
+    assert_eq!(checked["spec"]["required"], true, "{checked}");
     assert_eq!(checked["spec"]["valid"], false);
     assert!(
         checked["spec"]["problems"].as_array().is_some_and(|p| p
@@ -452,15 +457,24 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
         "{context}"
     );
 
-    // Steps: set, update, and status preserved on re-plan (STP-001/002).
-    let (_, err) = tool(
+    // Steps: set, update, and status preserved on re-plan (STP-001/002); a plan of similar-effort
+    // steps whose progress arrives steadily (STP-006..008).
+    let (planned, err) = tool(
         &internal,
         "tok-claude",
         "steps_set",
         json!({"steps": ["Write spec", "Implement", "Test"]}),
     )
     .await?;
-    assert!(!err);
+    assert!(!err, "{planned}");
+    assert!(
+        planned["nudges"]
+            .as_array()
+            .is_some_and(|n| n.iter().any(|x| x
+                .as_str()
+                .is_some_and(|t| t.contains("name a phase, not a slice")))),
+        "phase titles are nudged: {planned}"
+    );
     let (after, _) = tool(
         &internal,
         "tok-claude",
@@ -469,18 +483,92 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     )
     .await?;
     assert_eq!(after["progress"]["done"], 1);
+    assert_eq!(after["progress"]["percent"], 33);
     assert_eq!(after["progress"]["current"], "Implement");
-    let (replanned, _) = tool(
+    let (replanned, err) = tool(
         &internal,
         "tok-claude",
         "steps_set",
-        json!({"steps": ["Write spec", "Implement", "Test", "Open PR"]}),
+        json!({"steps": [
+            "Write spec",
+            {"title": "Parse the CSV upload", "effort": 2},
+            {"title": "Store rows per tenant", "status": "in_progress"},
+            "Show the import summary"
+        ]}),
     )
     .await?;
+    assert!(!err, "{replanned}");
     assert_eq!(
         replanned["steps"][0]["status"], "done",
         "identical titles keep status"
     );
+    assert_eq!(replanned["steps"][1]["effort"], 2);
+    assert_eq!(replanned["progress"]["percent"], 20, "1 of 5 effort units");
+    // Bounds: duplicates, effort, too many steps and blocked without a note are refused.
+    let many: Vec<String> = (0..31).map(|n| format!("Slice {n}")).collect();
+    for (args, why) in [
+        (json!({"steps": ["A", "a"]}), "appears twice"),
+        (json!({"steps": [{"title": "A", "effort": 5}]}), "effort 5"),
+        (json!({"steps": many}), "at most 30"),
+        (
+            json!({"steps": [{"title": "A", "status": "blocked"}]}),
+            "needs a note",
+        ),
+        (
+            json!({"steps": [{"title": "Write spec", "status": "pending"}]}),
+            "stays finished",
+        ),
+    ] {
+        let (refused, err) = tool(&internal, "tok-claude", "steps_set", args).await?;
+        assert!(err, "refused: {refused}");
+        assert!(refused.to_string().contains(why), "{why}: {refused}");
+    }
+    // At most two steps in progress; a finished step stays finished for the agent.
+    let (_, err) = tool(
+        &internal,
+        "tok-claude",
+        "step_update",
+        json!({"title": "parse the csv upload", "status": "in_progress"}),
+    )
+    .await?;
+    assert!(!err, "title match ignores case and spacing");
+    let (third, err) = tool(
+        &internal,
+        "tok-claude",
+        "step_update",
+        json!({"ordinal": 4, "status": "in_progress"}),
+    )
+    .await?;
+    assert!(err, "a third open step is refused: {third}");
+    assert!(third.to_string().contains("already in progress"), "{third}");
+    let (reopen, err) = tool(
+        &internal,
+        "tok-claude",
+        "step_update",
+        json!({"ordinal": 1, "status": "in_progress"}),
+    )
+    .await?;
+    assert!(
+        err && reopen.to_string().contains("add a follow-up step"),
+        "{reopen}"
+    );
+    let (skip, err) = tool(
+        &internal,
+        "tok-claude",
+        "step_update",
+        json!({"ordinal": 4, "status": "skipped"}),
+    )
+    .await?;
+    assert!(err && skip.to_string().contains("needs a note"), "{skip}");
+    let (got, err) = tool(&internal, "tok-claude", "steps_get", json!({})).await?;
+    assert!(!err);
+    assert!(
+        got["nudges"].as_array().is_some_and(|n| n.iter().any(|x| x
+            .as_str()
+            .is_some_and(|t| t.contains("in progress at once")))),
+        "two open steps are nudged: {got}"
+    );
+    assert!(got["steps"][1]["started_at"].is_string(), "{got}");
     let (bad, err) = tool(
         &internal,
         "tok-claude",
