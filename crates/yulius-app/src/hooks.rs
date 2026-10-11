@@ -186,8 +186,14 @@ impl App {
             events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(&ctx, input).await,
             events::STOP => self.hook_stop(&ctx, input).await,
             events::NOTIFICATION => {
-                self.set_task_activity(&ctx.task, Activity::NeedsAttention)
-                    .await?;
+                // Only a notice that asks a person to act needs one: Claude Code's reminder that
+                // it waits for input ("idle", about a minute after a turn ended) keeps a finished
+                // task waiting or done, so chains and onboarding see it as finished
+                // (F 2026-10-11).
+                if notification_needs_a_person(input) {
+                    self.set_task_activity(&ctx.task, Activity::NeedsAttention)
+                        .await?;
+                }
                 Ok(HookReply::Output(HookOutput::default()))
             }
             events::SESSION_END => {
@@ -982,6 +988,20 @@ impl RepoDocs {
                 .map(|(name, contents)| NamedFile { name, contents })
                 .collect(),
         )
+    }
+}
+
+/// Whether a `Notification` hook asks a person to act (a permission prompt or a question for
+/// the user) rather than reminding that the agent waits for input or reporting a sign-in.
+/// Without `notification_type` (older Claude Code) the idle reminder is known by its text.
+fn notification_needs_a_person(input: &HookInput) -> bool {
+    match input.notification_type.as_deref() {
+        Some("idle_prompt" | "auth_success") => false,
+        Some(_) => true,
+        None => !input
+            .message
+            .as_deref()
+            .is_some_and(|m| m.to_ascii_lowercase().contains("waiting for your input")),
     }
 }
 

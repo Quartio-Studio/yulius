@@ -1878,7 +1878,7 @@ output) and is recorded. Responses:
   until a `200` (printed as usual), a 4xx (fails open) or 8 days pass (fails open); while held, a
   refused connection or a 5xx is retried every 2 s (a server restart). The CLI's `timeout` for
   these two events is 8 days + 1 h; the other events keep 15 s.
-- `Notification` / `PermissionRequest` → `needs_attention`.
+- `Notification` / `PermissionRequest` → `needs_attention` when it asks a person to act (a permission prompt or a question); Claude Code's idle reminder (`notification_type: idle_prompt`, "waiting for your input") and `auth_success` leave the activity as it is, so a finished task stays `waiting`/`done` (F 2026-10-11).
 - `SessionEnd` → no output; its `reason` is kept for the run until it exits: `prompt_input_exit`
   (`/exit`, Ctrl+C twice, Ctrl+D) and `logout` make the exit a normal close whatever its code;
   `clear` (the process goes on with a new session) drops an achieved goal (§6.1).
@@ -2398,6 +2398,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-11 (F 2026-10-11): §7.5 the idle reminder no longer marks a task as needing attention.
 - 2026-10-11 (F 2026-10-11): §6.6 tasks wait for preparation instead of a 409, and a finished
   preparation turn (plan done, docs valid) makes the sandbox ready.
 - 2026-10-11: editorial — §2 decision records and their index table in ADR order (two §2.5
