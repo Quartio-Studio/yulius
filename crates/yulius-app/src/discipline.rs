@@ -115,6 +115,11 @@ impl App {
     /// The task's spec policy from its workflow (DSC-013): `Required` or `NotRequired` by the
     /// workflow's spec gate, `ByChange` without a workflow (or when it cannot be read).
     pub async fn spec_policy(&self, task: &TaskRecord) -> SpecPolicy {
+        // The preparation task changes documentation, configuration and CI only (DSC-010): a
+        // chore that needs no spec, so Yulius opens its pull request once its plan is done.
+        if task.origin == crate::model::TaskOrigin::Onboarding {
+            return SpecPolicy::NotRequired;
+        }
         match self.task_workflow(task).await {
             Ok(workflow) => SpecPolicy::from_workflow(workflow.map(|w| w.require_spec)),
             Err(err) => {

@@ -346,7 +346,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | DSC-010 | Imported projects are not assumed to comply: a preparation meta-task adapts them first, needing minimal user attention (approve, or be informed). It reverse-engineers the existing project into the docs without asking (everything is autonomous, F 2026-10-10) and moves its GitHub Actions into Yulius CI (DSC-014). | T 27:00–27:44, WA 13:38 | E | AC-IMP-4 |
 | DSC-011 | The implementing team may research documentation best practice; for now one task = one spec as above. | T 20:40–21:02 | E | — |
 | DSC-012 | Production-grade defaults for non-programmers: the agent is guided to tests, error handling and conventions without the user knowing frameworks. | T 19:15–19:59, T 22:00 | E | AC-DSC-4 |
-| DSC-013 | Specs where they matter, from first principles: features and fixes need a spec; research, questions about the product, documentation and small chores do not. A task's workflow decides (Feature, Fix and Infra bootstrap require one; Research / Question, Docs and Chore do not); without a workflow, a spec is required as soon as the branch changes anything other than documentation (Markdown, reStructuredText, AsciiDoc or Mermaid files, or anything under `docs/`). The Stop gate, `spec_check` and the automatic pull request follow the same rule. | F 2026-10-10 | E | AC-DSC-7 |
+| DSC-013 | Specs where they matter, from first principles: features and fixes need a spec; research, questions about the product, documentation and small chores do not. A task's workflow decides (Feature, Fix and Infra bootstrap require one; Research / Question, Docs and Chore do not); without a workflow, a spec is required as soon as the branch changes anything other than documentation (Markdown, reStructuredText, AsciiDoc or Mermaid files, or anything under `docs/`). An imported project's preparation task (documentation, configuration and CI only) never needs one (F 2026-10-11). The Stop gate, `spec_check` and the automatic pull request follow the same rule. | F 2026-10-10, F 2026-10-11 | E | AC-DSC-7 |
 | DSC-014 | Infra bootstrap: on the first prompt of a fresh project, during onboarding, or while the briefing reports missing foundations, the agent lays them the way a senior engineer would, for the project's own stack: strong unit and integration tests, lint and format, one local gate run by Yulius CI on our own machines (`[commands] gate` or `[[ci.jobs]]`), dev and production environments with deploy and verification, AGENTS.md, architecture and product docs, labels and templates. Existing GitHub Actions are translated into the Yulius CI configuration and then deleted; no project gets GitHub Actions or anything needing a paid GitHub plan. Foundations then stay stable and change only when the product needs it, with an ADR. | F 2026-10-10 | E | AC-DSC-8 |
 | DSC-015 | The default workflows (AUT-006) are Feature, Fix, Research / Question, Infra bootstrap, Docs and Chore, each with when to use it, whether it needs a spec, seed steps of similar effort and instructions that follow DLV-008 (`catalog/workflows/*.md`). | F 2026-10-10 | E | AC-DSC-9 |
 
@@ -931,6 +931,10 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 ## 12. Changelog
 
+- 2026-10-11 (`F 2026-10-11`): the preparation of `yulius-2` stalled although its agent had
+  finished: Claude Code's idle reminder marked it as needing attention, and its `yulius.toml` and
+  CI changes demanded a spec, so no pull request opened. The idle reminder no longer counts, and
+  the preparation task needs no spec (DSC-013 changed).
 - 2026-10-11 (`F 2026-10-11`): a repository added again after its sandbox was removed gets its
   name back (`yulius`, not `yulius-2`); the `yulius onboard` summary says new tasks wait for
   onboarding (PRJ-009, AC-PRJ-4 changed).

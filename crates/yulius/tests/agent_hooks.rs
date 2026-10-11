@@ -568,6 +568,39 @@ async fn permission_requests_need_attention() -> TestResult {
     Ok(())
 }
 
+/// F 2026-10-11: Claude Code's idle reminder ("Claude is waiting for your input", about a
+/// minute after a turn ended) made every finished task need attention, so chains and onboarding
+/// never saw it finished. Only notices that ask a person to act do.
+#[tokio::test]
+async fn the_idle_reminder_keeps_a_finished_task_waiting() -> TestResult {
+    let f = fixture().await?;
+    let store = &f.h.app.deps.store;
+    store
+        .set_activity(&f.task, Some(Activity::Waiting), Timestamp(10))
+        .await?;
+    for notice in [
+        json!({"message": "Claude is waiting for your input", "notification_type": "idle_prompt"}),
+        json!({"message": "Claude is waiting for your input"}),
+        json!({"message": "Signed in", "notification_type": "auth_success"}),
+    ] {
+        let body = hook(&f, "Notification", notice.clone()).await?;
+        assert!(body.is_null());
+        assert_eq!(
+            activity(&f).await?,
+            Some(Activity::Waiting),
+            "{notice} keeps the task waiting"
+        );
+    }
+    hook(
+        &f,
+        "Notification",
+        json!({"message": "Claude needs your permission to use Bash", "notification_type": "permission_prompt"}),
+    )
+    .await?;
+    assert_eq!(activity(&f).await?, Some(Activity::NeedsAttention));
+    Ok(())
+}
+
 #[tokio::test]
 async fn git_credentials_are_scoped_to_the_project_repository() -> TestResult {
     let f = fixture().await?;

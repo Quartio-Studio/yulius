@@ -788,6 +788,12 @@ async fn a_finished_preparation_turn_makes_the_sandbox_ready_and_starts_waiting_
             .onboarding_task_id
             .ok_or("prep task")?;
     let prep = w.h.store.task(&task_id).await?.ok_or("prep")?;
+    // Documentation, configuration and CI only: no spec, so Yulius opens its pull request once
+    // its plan is done (F 2026-10-11).
+    assert!(
+        !w.h.app.spec_required(&prep).await?,
+        "preparation needs no spec"
+    );
 
     // "Start in parallel" during preparation: the task waits after the preparation task.
     let waiting = call(
