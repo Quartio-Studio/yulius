@@ -3,7 +3,7 @@ yulius-task: 6444bcc1-8292-4016-984d-11f75636dfd9
 status: done
 ---
 
-# SPEC-005: Files dropped on the new-task prompt
+# SPEC-006: Files dropped on the new-task prompt
 
 Status: implemented
 Date: 2026-10-11
