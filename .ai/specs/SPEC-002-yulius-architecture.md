@@ -1357,7 +1357,7 @@ Hence the shared, ownership-shifted **base** under a kernel overlay with a per-s
    - Then it attaches `slirp4netns --configure --disable-host-loopback` to the new network namespace and records `runtime/sandboxes/<sid>/host.json`: pids, namespace inodes, boot id, base.
    - The inner process mounts the **system layer** (kernel overlayfs, `userxattr`) at `runtime/sandboxes/<sid>/root` inside its mount namespace, writes `/etc/hosts` and `/etc/hostname`, serves the relays and waits.
    - The holder is detached like a ptyhost (it survives server restarts). The server adopts it again by verifying the pids and namespace inodes. It is stopped after 5 minutes without runs, or when its base is superseded and it is idle; the next run starts a fresh one.
-2. **Runs join the sandbox.** A run is an agent or a shell.
+2. **Runs join the sandbox.** A run is an agent session, a shell or a CI job (ADR-21: CI tests the sandbox's own system, packages included, and pull requests' code gets the same isolation).
    - The ptyhost first joins the sandbox's cgroup, then `setns` into the holder's user, network and mount namespaces, after checking that `/proc/<pid>/ns/*` still has the recorded inodes, so a reused pid cannot be joined.
    - It then starts `yulius sandbox-exec` (seccomp shim) → `bwrap` with its own PID/IPC/UTS/cgroup namespaces, `--cap-drop ALL` plus Docker's default set (`CHOWN DAC_OVERRIDE FOWNER FSETID KILL SETGID SETUID SETPCAP SETFCAP NET_BIND_SERVICE NET_RAW SYS_CHROOT AUDIT_WRITE`), `--die-with-parent`, fresh `/proc` and `/dev`, private `/tmp` and `/run`.
    - Binds:

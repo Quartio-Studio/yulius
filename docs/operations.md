@@ -287,8 +287,8 @@ Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
 
 ### Sandbox isolation
 
-Each sandbox has one **namespace holder** (SPEC-002 ADR-22). Agents' task sessions and users'
-shells join it. A sandbox gets:
+Each sandbox has one **namespace holder** (SPEC-002 ADR-22). Agents' task sessions, users'
+shells and CI jobs join it. A sandbox gets:
 
 - its own user namespace: root inside is the service user, ids 1–65535 come from its subordinate
   range;
