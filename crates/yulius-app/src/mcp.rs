@@ -1,5 +1,7 @@
 //! Yulius MCP server: JSON-RPC dispatch for agent tools (SPEC-002 §7.4).
 
+use std::sync::Arc;
+
 use serde_json::{Value, json};
 use yulius_contracts::mcp::{
     RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
@@ -123,7 +125,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_status".into(),
-            description: "Read-only delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and what people can do next. Merging, deploying and promoting are human actions in Yulius; there is no tool for them.".into(),
+            description: "Delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and the next actions. Deliver with delivery_merge, delivery_deploy and delivery_promote.".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
@@ -153,6 +155,33 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "items": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["remote_branch", "local_branch", "worktree"]}, "name": {"type": "string"}}, "required": ["kind", "name"]}},
                 "force": {"type": "boolean"}
             }), &[]),
+        },
+        ToolDescriptor {
+            name: "delivery_merge".into(),
+            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). Acts with the authority of the task's creator and is audited.".into(),
+            input_schema: schema(json!({
+                "reviewed_head": {"type": "string", "description": "The commit SHA the independent reviewer approved (must be the branch head)"},
+                "review_summary": {"type": "string", "description": "One line: the reviewer's verdict and what it checked"}
+            }), &["reviewed_head"]),
+        },
+        ToolDescriptor {
+            name: "delivery_deploy".into(),
+            description: "Run the next environment of the delivery profile (for example dev after a merge, production after a promotion): its deploy command runs and its verification decides. Only environments with a command and verify = \"command\"; one a person must verify is refused. Follow the run with delivery_status.".into(),
+            input_schema: schema(json!({"environment": {"type": "string", "description": "Environment name from the delivery profile"}}), &["environment"]),
+        },
+        ToolDescriptor {
+            name: "delivery_promote".into(),
+            description: "Promote the integration branch to production once every merged task's integration environments are done. With merge-commit promotion the first call opens the promotion pull request and a later call, after its checks passed, merges it; fast-forward promotes at once.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "issue_create".into(),
+            description: "Open a GitHub issue for follow-up work, a bug or a flaky test you found, instead of widening this task. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
+            input_schema: schema(json!({
+                "title": {"type": "string"},
+                "body": {"type": "string", "description": "Markdown with a ## Acceptance criteria checklist"},
+                "labels": {"type": "array", "items": {"type": "string"}, "maxItems": 10}
+            }), &["title", "body", "labels"]),
         },
         ToolDescriptor {
             name: "automation_create".into(),
@@ -218,7 +247,11 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
 
 impl App {
     /// Handles one JSON-RPC message from an agent; `None` for notifications.
-    pub async fn mcp_handle(&self, token: &str, request: RpcRequest) -> Option<RpcResponse> {
+    pub async fn mcp_handle(
+        self: &Arc<Self>,
+        token: &str,
+        request: RpcRequest,
+    ) -> Option<RpcResponse> {
         let id = request.id.clone()?;
         let ctx = match self.agent_context(token).await {
             Ok(ctx) => ctx,
@@ -266,7 +299,7 @@ impl App {
         })
     }
 
-    async fn mcp_call(&self, ctx: &AgentContext, params: &Value) -> Value {
+    async fn mcp_call(self: &Arc<Self>, ctx: &AgentContext, params: &Value) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or("");
         let args = params
             .get("arguments")
@@ -293,6 +326,10 @@ impl App {
             "ci_setup" => self.tool_ci_setup(ctx).await,
             "repo_hygiene" => self.tool_repo_hygiene(ctx, &args).await,
             "repo_cleanup" => self.tool_repo_cleanup(ctx, &args).await,
+            "delivery_merge" => self.tool_delivery_merge(ctx, &args).await,
+            "delivery_deploy" => self.tool_delivery_deploy(ctx, &args).await,
+            "delivery_promote" => self.tool_delivery_promote(ctx).await,
+            "issue_create" => self.tool_issue_create(ctx, &args).await,
             "automation_create" => self.tool_automation_create(ctx, &args).await,
             "automations_list" => self.tool_automations_list(ctx).await,
             "automation_update" => self.tool_automation_update(ctx, &args).await,

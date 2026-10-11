@@ -9,8 +9,9 @@ use yulius_domain::time::Timestamp;
 use yulius_github::fake::{FakeCheckRun, FakeFault, FakeGitHub, FakeStatus};
 use yulius_github::{
     AccessLevel, CheckSource, ChecksSummary, Clock, CommitStatus, CompareStatus, CreateRepo,
-    GitHubClient, GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewPull, OwnerKind,
-    PullFilter, PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock, Url,
+    GitHubClient, GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewIssue, NewPull,
+    OwnerKind, PullFilter, PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock,
+    Url,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -257,6 +258,7 @@ async fn manifest_flow_builds_manifest_and_converts_code() -> TestResult {
     for (name, level) in [
         ("contents", "write"),
         ("pull_requests", "write"),
+        ("issues", "write"),
         ("checks", "read"),
         ("statuses", "write"),
         ("workflows", "write"),
@@ -434,6 +436,60 @@ async fn rulesets_protect_branches() -> TestResult {
             .await,
         Err(GitHubError::Forbidden { .. })
     ));
+    Ok(())
+}
+
+/// DLV-008 (#139): agents log issues with Definition-of-Ready labels; labels the repository does
+/// not have yet are created first, existing ones are reused, and bad input never reaches GitHub.
+#[tokio::test]
+async fn issues_are_opened_with_their_labels() -> TestResult {
+    let (fake, client) = setup().await?;
+    fake.add_repo("acme", "app", true);
+    fake.add_user("dev", None);
+    fake.set_permission("acme", "app", "dev", writer());
+    let token = fake.issue_user_token("dev");
+    let issue = NewIssue {
+        title: "Flaky checkout test".into(),
+        body: "Fails 1 in 20 runs under load.".into(),
+        labels: vec![
+            "type: bug".into(),
+            "priority: high".into(),
+            "area: backend".into(),
+        ],
+    };
+    let opened = client.create_issue(&token, "acme", "app", &issue).await?;
+    assert_eq!(opened.number, 1);
+    assert!(opened.url.ends_with("/acme/app/issues/1"), "{}", opened.url);
+    assert_eq!(fake.labels("acme", "app").len(), 3);
+    let second = client.create_issue(&token, "acme", "app", &issue).await?;
+    assert_eq!(second.number, 2);
+    assert_eq!(
+        fake.count("POST", "/repos/acme/app/labels"),
+        3,
+        "labels are created once"
+    );
+    assert_eq!(fake.issues("acme", "app")[1]["labels"][2], "area: backend");
+    let before = fake.requests().len();
+    for bad in [
+        NewIssue {
+            title: " ".into(),
+            ..issue.clone()
+        },
+        NewIssue {
+            labels: vec!["x".repeat(51)],
+            ..issue.clone()
+        },
+        NewIssue {
+            labels: vec!["l".into(); 11],
+            ..issue.clone()
+        },
+    ] {
+        assert!(matches!(
+            client.create_issue(&token, "acme", "app", &bad).await,
+            Err(GitHubError::InvalidInput { .. })
+        ));
+    }
+    assert_eq!(fake.requests().len(), before, "refused before any request");
     Ok(())
 }
 

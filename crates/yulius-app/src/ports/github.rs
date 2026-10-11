@@ -238,6 +238,25 @@ pub struct NewCommitStatus {
 /// Why GitHub refused to publish a commit status.
 pub const STATUS_PERMISSION_MISSING: &str =
     "the GitHub App needs the \u{201c}Commit statuses: Read and write\u{201d} permission";
+/// An issue to open (DLV-008).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewIssue {
+    /// Title.
+    pub title: String,
+    /// Body (Markdown).
+    pub body: String,
+    /// Label names; labels the repository lacks are created.
+    pub labels: Vec<String>,
+}
+
+/// An opened issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GhIssue {
+    /// Number.
+    pub number: u64,
+    /// Web URL.
+    pub html_url: String,
+}
 
 /// GitHub operations used by the application.
 #[async_trait]
@@ -340,6 +359,14 @@ pub trait GitHubPort: Send + Sync {
         repo: &str,
         pull: &NewPull,
     ) -> AppResult<GhPull>;
+    /// Opens an issue with its labels, creating labels the repository lacks.
+    async fn create_issue(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        issue: &NewIssue,
+    ) -> AppResult<GhIssue>;
     /// Gets a pull request.
     async fn get_pull(
         &self,
