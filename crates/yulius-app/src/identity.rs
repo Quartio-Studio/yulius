@@ -19,7 +19,7 @@
 //! - the GitHub CLI is logged in the same way: a `gh` shim first on `PATH` fetches that token per
 //!   invocation (`yulius gh-token`) and runs the real `gh` with it ([`gh_shim`], SPEC-004); agent
 //!   runs get the same shim, answered with their task token as the task's creator
-//!   ([`App::add_agent_gh`], F 2026-10-11).
+//!   (`App::add_agent_gh`, F 2026-10-11).
 
 use std::collections::HashMap;
 use std::io::Write as _;
