@@ -1462,6 +1462,8 @@ system/base-<n>/, system/current.json   bases of the system layers: a copy of th
 sysroots/<sandbox>/{upper,work}/    a sandbox's system layer (packages it installed); outside the sandbox
                                     directory, never bound into runs
 sandboxes/<sandbox>/imports/<job>/  uploaded bundles, snapshots, session files
+sandboxes/<sandbox>/sessions/<doc>/ imported sessions (SES-001): `<session>.jsonl` and `<session>/subagents/`,
+                                    read-only copies (0444), replaced as a whole when re-uploaded
 runs/<attempt>/                     ptyhost: launch.json, pty.sock, status.json, exit.json, config files;
                                     scrub.json (redaction fingerprints) and egress-ca.pem (host roots
                                     plus the egress CA), both bound read-only into containment (ADR-20)
@@ -1469,7 +1471,8 @@ shells/<shell>/                     ptyhost run directories of sandbox shells (U
                                     sandbox, folder, name, sealed host token) to adopt them after a restart
 logins/<login>/                     temporary provider login (config dir + run dir); zero-filled and removed after the login
 exports/sandbox-<slug>-<ms>.json    task export written when a sandbox is removed (PRJ-009), 0600
-transcripts/<task>/                 archived/imported provider transcripts (immutable copies)
+transcripts/<task>/                 imported provider transcripts of tasks (immutable copies; a continued
+                                    imported session is copied here when its task is created)
 skills/<pack>/                      bundled skill packs extracted from the binary: yulius, open-mercato,
                                     superpowers (SKL-007; rewritten when they differ, extras removed)
 skills/open-mercato/                instance skill catalog extracted from the binary (vendored Open Mercato pack)
@@ -1531,6 +1534,8 @@ Schema version 1 (tables; columns abbreviated):
 | `task_auto_choices` | task_id (PK), mode_by, workflow_by (`jev` / `default`; NULL when a person picked it), workflow_name, created_at — ADR-16 item 5 (TSK-015) |
 | `ci_runs` | id, sandbox_id, reference (`pr/<n>` / `branch/<name>`), sha, source (profile/yulius_toml/pull_request), state (queued/running/passed/failed/error/cancelled), reason, requested_by, status_for, status_note, status_attempts, queued_at, started_at, ended_at; partial unique index: one running run per sandbox — ADR-21 (migration `0011_local_ci.sql`) |
 | `ci_jobs` | id, run_id (cascade), ordinal, name, job_key, command, matrix, state, reason, exit_code, output (tail), started_at, ended_at — ADR-21 |
+| `session_docs` | id, sandbox_id, kind (task/imported), task_id (task sessions; cascade on task deletion), harness, session_id, title, author_id, git_branch, cwd_relative, base (imported: the revision a continuation starts from), transcript_path, sha256, bytes, redactions, started_at, ended_at, continued_task_id (set null on task deletion), indexed_bytes, indexed_lines, index_full, created_at, updated_at; unique (sandbox, harness, session) for imported, (task, harness, session) for task sessions — SES-001 |
+| `session_chunks` + `session_fts` | one redacted passage per transcript line (doc_id cascade, line, role, text ≤ 8 KiB) and its FTS5 index (external content, `unicode61 remove_diacritics 2`, kept in sync by triggers) — SES-005 |
 
 Versioning: each migration is one transaction; startup refuses a database from a newer schema.
 Backup: `VACUUM INTO` plus copy of files excluding `runs/`.
@@ -1625,14 +1630,29 @@ than one interval.
 ### 6.5 Import job
 
 `created → receiving → received → applying → completed | failed`. Chunks are idempotent by
-(job, file, offset, sha256). `applying` creates sandbox (if needed), local import branches,
-snapshot worktree and archived tasks inside one store transaction per session; reapplying skips
-sessions already recorded (`provider_sessions` unique on harness+session_id+sandbox).
+(job, file, offset, sha256). Job creation adds the sandbox when needed; `applying` creates local
+import branches and the snapshot worktree, then stores each session as a session document
+(§6.10): new, replaced (same uploader, other digest), unchanged (same digest) or kept as another
+person's; finally it starts the preparation task of a `pending` sandbox (§6.6). Reapplying is
+idempotent (same digests). Before the job, `POST /api/onboard/plan` tells the CLI the sandbox,
+its onboarding status and which fingerprints (`sha256` of the redacted transcript) the server
+already holds, so unchanged sessions are never offered. Sessions arrive redacted (IMP-008,
+`yulius_domain::redact` applied by `yulius_import::stage_redacted`).
 
 ### 6.6 Sandbox onboarding
 
-`not_needed | pending → preparing (task id) → ready | skipped(by admin)`. New tasks in an imported
-sandbox are rejected with an explanatory error while `pending/preparing`, unless skipped (U-08).
+`not_needed | pending → preparing (task id) → ready | skipped(by admin)`. Owner: the server. Exit
+triggers: `pending → preparing` when the preparation task starts — by itself, at once for a
+repository added in the UI and when the import is applied for `yulius onboard` (also
+`POST …/onboarding/approve`, kept for a pending sandbox whose start failed; a missing preparation
+task is created then); `preparing → ready` when the task rests after running and the project
+validates in its worktree or the clone (re-evaluated on reads, task closes and the gate);
+`→ skipped` by an admin. Failure: a start failure leaves `pending` (shown with what is pending);
+no subscription with capacity leaves the task paused and the sandbox `preparing` (ADR-17). While
+`pending/preparing`, `App::ensure_tasks_may_start` refuses every task start other than the
+preparation task's — create, chain, automation run, continue, continuing an imported session —
+with a 409 (U-08, IMP-010). `App::onboarding_status` gives the state, a summary and the pending
+items (the CLI and the plan show them).
 
 ### 6.7 Delivery (per task)
 
@@ -1660,6 +1680,23 @@ restart during `installing` is the normal case: the new server finishes it).
 A job goes `queued → running` once it holds a slot, or straight to cancelled when the run is
 cancelled first. It leaves running on exit, timeout, cancellation, the output limit or a lost host.
 Every end is recorded once (compare-and-set).
+
+### 6.10 Session documents (SES-001..005)
+
+Task sessions get a document lazily (on list, search or read) for each `provider_sessions` entry;
+their transcript is the harness file under the sandbox home for the task worktree (an imported
+lineage entry's stored copy until the task resumed it natively). Imported sessions get theirs when
+an import is applied. Indexing is incremental and lazy: each list or search reads complete lines
+from `indexed_bytes` of documents whose transcript grew (compare-and-set on the position, so
+concurrent refreshes never duplicate passages), at most 32 MiB per refresh and 64 MiB per session
+(`index_full` after that); a shrunk transcript is re-indexed. Passages, pages and agent reads are
+normalized from Claude Code JSONL by `yulius_app::transcripts` and redacted with
+`yulius_domain::redact` (dotenv content when a tool call's path or command names a dotenv file).
+Search: every word becomes a quoted prefix term (FTS5 syntax never reaches the index), all terms
+must match, else any; results are grouped per document (≤ 3 passages each). Continuing an imported
+session creates a task (origin `import`), copies the transcript to `transcripts/<task>/`, records
+an `imported` lineage entry and the document's `continued_task_id`, and resumes it natively from
+the document's `base` (IMP-004).
 
 ## 7. Runtime contracts
 
@@ -1793,6 +1830,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `workflows_list` | Workflows available, the defaults first with `builtin` and `when_to_use` (AUT-004, AUT-006) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
+| `sessions_search`, `session_read` | Sessions as docs (SES-005): full-text search over the task and imported sessions of the agent's sandbox (its own sessions excluded; ≤ 20 sessions, ≤ 3 passages each) and a bounded read of one session by id or task number (≤ 200 entries, ≤ 100 000 characters, `next_from`); never another sandbox's |
 | `secrets_list`, `browser_fill_secret` | Agent secrets: names, descriptions and bindings; typing a value, user name or TOTP code into a page of a bound host (VLT-004/005, ADR-20) |
 | `ci_status`, `ci_rerun` | The CI in force and recent runs (this task's pull request first), one run's job outputs (tails of 16 KiB), run a commit again (DLV-006) |
 | `ci_setup` | Onboarding off GitHub Actions: the worktree's workflows summarized, its `[[ci.jobs]]`, the steps (DLV-006) |
@@ -1906,7 +1944,8 @@ browser action requests) filtered by permission. Bounded per-connection queue (2
 continue, switch, archive, restore, feedback, steps, `start-now`, `held-prompts/{hid}`), `/api/sandboxes/{id}/git/*`,
 `/api/sandboxes/{id}/delivery/*`, `/api/sandboxes/{id}/{skills,workflows,automations,mcp}`,
 `/api/admin/{users,accounts,github,mcp,skills}`, `/api/analytics/*`, `/api/status`,
-`/api/import/*` (CLI), `/api/sandboxes/{id}/browser` (WS), `/api/sandboxes/{id}/previews`,
+`/api/import/*` and `/api/onboard/plan` (CLI), `/api/sandboxes/{id}/sessions`, `/api/sessions/{id}`
+(get, delete, `transcript`, `continue`; SES-002/003), `/api/sandboxes/{id}/browser` (WS), `/api/sandboxes/{id}/previews`,
 `/api/previews/authorize`; every `<port>-<key>.<host>` is a live preview (ADR-14).
 Dropped files (EDT-006, UI-048): `PUT /api/sandboxes/{id}/files/upload`, `POST
 /api/tasks/{id}/attachments`, `POST /api/sandboxes/{id}/shells/{id}/attachments`, one raw file
@@ -2137,6 +2176,11 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | MCP request / result | 1 MiB / 256 KiB | error |
 | Transcript line | 4 MiB | skip + diagnostic |
 | Import total / chunk | 2 GiB / 8 MiB | reject |
+| Imported session transcript / sessions per import | 128 MiB (after redaction, images left out) / 2 000 | left out with a warning / the newest 2 000 go, run again |
+| Imported sessions per sandbox | 10 000 sessions, 8 GiB | `capacity` with the advice to delete old ones |
+| Session index | 64 MiB of transcript per session, 32 MiB read per refresh, 8 KiB per passage | the rest is readable, not searchable / indexed on the next refresh |
+| Session page / agent read | 500 entries, ~2 MiB; text 32 KiB, results 16 KiB, diffs 16 KiB × 20 / 200 entries, 100 000 characters | `next` / `next_from` |
+| Session search | 200 characters, 12 terms; 20 sessions × 3 passages | cut |
 | GitHub retries | 3 attempts, ≤ 30 s total, honoring `Retry-After` | surface error |
 | Permission cache | 5 min | refetch |
 | Preview handshakes / grants | 1024 pending (60 s) / 4096 (12 h, re-checked every 30 s) | refuse with 429 / drop the oldest |
@@ -2212,6 +2256,8 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Disk full | write errors | Refuse new tasks/imports; live sessions continue; status panel warns. |
 | DB busy/corrupt | busy timeout / integrity check at start | Retry busy; refuse start on integrity failure with restore guidance. |
 | Partial import upload | missing chunks | Resume by checksum (AC-IMP-1). |
+| Import applied, preparation start fails | start error | The sandbox stays `pending` with what is pending; approve (write) or skip (admin) on the sandbox page; a re-run of `yulius onboard` tries again. |
+| Session transcript missing or unreadable | open/read error | Listed with its metadata; the page shows nothing to read; not indexed; agents get a clear error. |
 | Concurrent Continue/Switch/Cancel | CAS on task status, unique live attempt | One wins; others get conflict errors. |
 | Automation during downtime | scheduler startup | ≤ 1 catch-up run; unique run key prevents duplicates. |
 | Worktree conflicts / dirty cleanup | git status before removal | Never delete dirty or foreign worktrees; surface for review (GIT-002). |
@@ -2322,10 +2368,15 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Updates and the Jev key (ADR-18, 2026-10-10) | Unit: `yulius-domain::update` (commit ids, titles and summaries, run transitions, pause points); `wiring::release` against a local server shaped like GitHub's answers (behind, up to date, unknown build, 401/404/429/5xx, malformed head; field names checked against the real API); `wiring::update_files`; `update_helper` with real Git repositories, fake cargo, fake systemctl and a fake health endpoint (strict request parsing, owner/link/FIFO/size checks, build once per id with progress, a failed build's error and log, commits off main or older than installed refused, the token only as a header of the fetch, install with backup, rollback restoring binary, database and modes, a linked database refused, install needing the staged commit); the Jev client's test request (ok, refused, unreachable, invalid). Integration: `tests/self_update.rs` (offer to superadmins only, cached check, App token then error, Update now refusals and the build request, holds with `Retry-After: 3` and no output, queued starts, two-pass install, hold across a restart, staggered release, rollback, 30-minute bound, cancel, unresponsive helper), `tests/update_supervision.rs` (real ptyhost, fake agent through the real hook client: a prompt typed during the update waits through the server's restart on the same port and reaches the same process exactly as typed), `tests/jev_key.rs`, store migration `version_five_databases_migrate_to_updates_and_the_jev_key`. UI: headless Chrome against the mock (banner, instance page, run to success and to rollback, setup step, Jev card); `e2e/tests/update.e2e.ts` in CI. VM (2026-10-11, throwaway units and paths under `/var/tmp/yqa-update`, service as `nobody` with a fake systemctl): a transient path unit with `ProtectSystem=strict` started the helper on the request; it built the PR head in 4.5 min with progress, installed it (stop, backup, swap, start, health in 5 s), rolled back a build reporting the wrong commit after 120 s (binary, database with owner and mode, previous version running, data intact), and refused a downgrade, a root-owned request, a link to `/etc/shadow` and a stale request. |
 | Yulius-run CI and hygiene (ADR-21, DLV-006/007, 2026-10-11) | Unit: `yulius_domain::ci` (gate validation and precedence, job definitions and matrix expansion and their errors, run state from jobs, the plan: once per commit, supersede, no automatic retry of a cancelled reference; status descriptions within 140 characters; the merge gate; branch and worktree classification), `ci::actions` (workflow reader: jobs, block scalars, folded scripts, bounds, garbage), the `yulius.toml` `[[ci.jobs]]` parser and render round trip, `ci/exec.rs` (escape stripping across chunks, matrix checkouts), store (`ci_runs`/`ci_jobs`: transitions, one running run per sandbox, requeue after restart, status bookkeeping, retention with cascade). `yulius-github` `tests/client.rs`: commit statuses against the fake GitHub (pending then success in the combined status, description clipped, invalid state refused, 403 without the permission), branch deletion (true, then false). `tests/local_ci.rs` (real git, real detached ptyhost, fake GitHub): jobs in parallel with a matrix, outputs without escape sequences, no secret in the environment, persistent checkouts, statuses and links, the merge gate pending → passed → failed, Run again (and its refusal while active), a superseded run killed at once, a timeout, nothing left in `runs/`; statuses refused → runs still gate; hygiene scan and cleanup over a real origin. `tests/delivery.rs`: the merged branch is deleted. `e2e/tests/ci.e2e.ts` (mock UI). |
 | Sandbox isolation (ADR-22, #142, 2026-10-11) | On the production VM (Ubuntu 24.04, kernel 6.8, bwrap 0.9.0) as `yulius` with its subordinate range, `crates/yulius/tests/isolation.rs` with the real server, ptyhost, `bwrap`, `newuidmap`, `slirp4netns` and a real base: **3/3 passed**. Base built in 217 s (74 s warm), 5.5 GB; first shell (holder start) 174–384 ms; `sudo apt-get install cowsay` from a user's shell in 9–12 s, `whoami` = the login; a second shell, an agent session (root, `IS_SANDBOX=1`, its own `apt-get install sl` and `useradd --system`) and a shell after an idle stop see the packages; the other sandbox and the host do not. Forwarded host port open; another host loopback port, the slirp gateway and a host abstract socket closed; `/tmp/.X11-unix` absent; `master.key`, `jev.key`, the other sandbox, another user's home, `runtime/`, `system/`, `sysroots/` absent; `unshare(CLONE_NEWUSER)`, `mount` and `unshare -U` refused; IPv4 and IPv6-only dev servers inside answer on the host's `127.0.0.1:<port>`, the other sandbox cannot reach them; an attachment read by path. Limits (transient unit with `Delegate=yes`, `DelegateSubgroup=server`): `pids.max` 64 → forks refused after 48 with `EAGAIN`; `memory.max` 256 MiB → the 512 MiB allocation OOM-killed (exit 137, `oom_kill 1`), the run sees `0::/`. Over the disk quota: 409 with the figures. The seccomp filter by itself (`yulius sandbox-exec -- bwrap …`): `unshare(CLONE_NEWUSER)` and `io_uring_setup` allowed without it, `EPERM` with it; `bpf`, `keyctl`, `perf_event_open` `EPERM`; `fork` works. `yulius serve` in a delegated unit: limits on (25 GB, 10 CPUs), base adopted. Unit tests: seccomp program per call, relays (in, out, refused, forbidden, following ports), `/proc/net/tcp`, cgroup files, subordinate ids, the base copy (data directory and `/var` outside the allow-list never copied, links, hard links), generated files, fingerprint, owners, identity merge, the joined `bwrap` argv, contract validation. |
-| Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. |
+| Onboarding and sessions (IMP-007..010, SES-001..005, 2026-10-10) | Unit: `yulius-domain::redact` (provider tokens, near misses, assignments, URLs, headers, JWTs, keys, dotenv files and pasted blocks, determinism and idempotence, Unicode); `yulius-import::redact` (JSONL stays valid, same bytes twice, dotenv tool results, named keys, images left out, budget); `yulius-app::transcripts` (entries, diffs, paging with dotenv tracking, index batches at byte offsets, agent rendering, long lines); store `session_docs` (uniqueness, CAS on the index position, FTS search per sandbox, cascade on task deletion). CLI against the fake server (`tests/import/end_to_end.rs`): four steps, all/recent/pick, redaction listed and applied, only new or changed sessions, resume, dry run, status, refusal. Server (`tests/import_server.rs`, `tests/sessions.rs`): sessions stored as attributed documents, replaced or kept, continued natively by another member; list, search, read, delete by access level; MCP search and read scoped and bounded; the gate on create, chain and continue; the plan. UI: `e2e/tests/sessions.e2e.ts` (mock; runs in CI), checked locally with headless Chrome (layout at 1440, 768 and 390 px). |
+| Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. `yulius onboard` against a deployed instance with real `~/.claude` stores. |
 
 ## 15. Changelog
 
+- 2026-10-10 (F 2026-10-10, item 3b; #137): sessions as documents — §4 `sessions/<doc>/`, §5
+  `session_docs`/`session_chunks`/`session_fts` (migration 0011), §6.5 imports store sessions as
+  documents and the onboarding plan, §6.6 the gate and the self-starting preparation task, §6.10
+  new, §7.4 `sessions_search`/`session_read`, §7.9, §9 bounds, §10, §14.
 - 2026-10-11 (F 2026-10-10, final stage; #138): ADR-21 Yulius-run CI and repository hygiene;
   §5 `ci_runs`, `ci_jobs`; §6.8; §7.4 CI and hygiene tools; §8 CI trust; §9 bounds; §10; §14.
 - 2026-10-10 (F 2026-10-10, final stage items 1(e) and 2; #140): ADR-18 (§2.5) updates from `main`

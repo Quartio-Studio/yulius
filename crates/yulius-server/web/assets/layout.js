@@ -18,6 +18,7 @@ const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
 
 const NAV = [
   ['tasks', 'Tasks', 'tasks'],
+  ['sessions', 'Sessions', 'chat'],
   ['git', 'Git', 'branch'],
   ['ci', 'CI', 'check'],
   ['workflows', 'Workflows', 'workflow'],
@@ -603,7 +604,7 @@ export function createSidebar(ctx) {
     NAV.forEach(([page], i) => {
       const link = nav.children[i];
       const path = slug ? `/s/${slug}/${page}` : '/';
-      const active = Boolean(route && ['page', 'gitTask', 'taskInfo', 'skill', 'workflow', 'automation', 'mcpServer'].includes(route.name) && route.page === page);
+      const active = Boolean(route && ['page', 'gitTask', 'taskInfo', 'skill', 'workflow', 'automation', 'mcpServer', 'session'].includes(route.name) && route.page === page);
       link.href = href(path);
       link.dataset.route = path;
       link.classList.toggle('active', active);

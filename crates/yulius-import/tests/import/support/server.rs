@@ -2,7 +2,7 @@
 //! injection. Runs on a loopback port chosen by the OS in its own thread and runtime; dropped
 //! servers shut down and are joined.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -19,7 +19,8 @@ use sha2::{Digest, Sha256};
 use yulius_contracts::import::{
     CHUNK_SHA256_HEADER, CreateImportRequest, CreateImportResponse, DevicePoll, DevicePollRequest,
     DeviceStart, DeviceStatus, FileProgress, FileRef, ImportManifest, ImportResult,
-    MAX_CHUNK_BYTES,
+    MAX_CHUNK_BYTES, OnboardPlan, OnboardPlanRequest, OnboardSandbox, OnboardingStatus,
+    SessionPlan,
 };
 use yulius_import::Url;
 
@@ -58,8 +59,16 @@ pub struct ServerState {
     pub lose_response_after_chunk: Option<usize>,
     /// Answer the next chunk with 422.
     pub reject_next_chunk: bool,
-    pub imported_sessions: BTreeSet<String>,
+    /// Sessions held: session id → digest of the main transcript.
+    pub held_sessions: BTreeMap<String, String>,
     pub completed_jobs: usize,
+    /// Whether the repository already has a sandbox (else the plan offers to create it).
+    pub sandbox_exists: bool,
+    /// A refusal the plan answers with (permissions, foreign owner).
+    pub refusal: Option<String>,
+    /// Onboarding is ready (else `preparing` with pending items).
+    pub onboarding_ready: bool,
+    pub plan_requests: Vec<OnboardPlanRequest>,
     pub device_script: VecDeque<DeviceStatus>,
     pub device_polls: usize,
     pub device_interval_s: u64,
@@ -81,6 +90,7 @@ impl FakeServer {
         let address = listener.local_addr()?;
         let state: Shared = Arc::new(Mutex::new(ServerState::default()));
         let app = Router::new()
+            .route("/api/onboard/plan", post(plan))
             .route("/api/import", post(create_job))
             .route("/api/import/{job}/files/{name}", put(put_chunk))
             .route("/api/import/{job}/complete", post(complete))
@@ -361,25 +371,99 @@ async fn complete(
     let Some(manifest) = state.manifests.last().cloned() else {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "internal", "no manifest");
     };
-    let mut created = 0;
-    let mut skipped = 0;
+    let (mut imported, mut updated, mut unchanged) = (0, 0, 0);
     for session in &manifest.sessions {
-        let key = format!("{}:{}", session.harness, session.session_id);
-        if state.imported_sessions.insert(key) {
-            created += 1;
-        } else {
-            skipped += 1;
+        let digest = session.files[0].sha256.clone();
+        match state
+            .held_sessions
+            .insert(session.session_id.clone(), digest.clone())
+        {
+            None => imported += 1,
+            Some(previous) if previous == digest => unchanged += 1,
+            Some(_) => updated += 1,
         }
     }
     state.completed_jobs += 1;
+    state.sandbox_exists = true;
+    let status = onboarding(&state);
     Json(ImportResult {
         sandbox_id: "sbx-demo".to_owned(),
         sandbox_url: "https://yulius.example/s/demo".to_owned(),
-        tasks_created: created,
-        sessions_skipped_existing: skipped,
-        onboarding: "pending".to_owned(),
+        tasks_created: 0,
+        sessions_skipped_existing: unchanged,
+        onboarding: status.state.clone(),
+        sessions_imported: imported,
+        sessions_updated: updated,
+        sessions_unchanged: unchanged,
+        sessions_url: Some("https://yulius.example/s/demo/sessions".to_owned()),
+        onboarding_status: Some(status),
     })
     .into_response()
+}
+
+fn onboarding(state: &ServerState) -> OnboardingStatus {
+    if state.onboarding_ready {
+        OnboardingStatus {
+            state: "ready".to_owned(),
+            ready: true,
+            summary: "Ready: the preparation task adapted the repository.".to_owned(),
+            pending: Vec::new(),
+            task: None,
+        }
+    } else {
+        OnboardingStatus {
+            state: "preparing".to_owned(),
+            ready: false,
+            summary: "Preparing: task #1 is adapting the repository (step 2 of 5).".to_owned(),
+            pending: vec![
+                "task #1 finishes".to_owned(),
+                "the repository passes the Yulius format check".to_owned(),
+            ],
+            task: None,
+        }
+    }
+}
+
+async fn plan(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(request): Json<OnboardPlanRequest>,
+) -> Response {
+    if !authorized(&headers) {
+        return unauthorized();
+    }
+    let Some(mut state) = lock(&state) else {
+        return poisoned();
+    };
+    let sessions = request
+        .sessions
+        .iter()
+        .map(|offered| SessionPlan {
+            session_id: offered.session_id.clone(),
+            state: match state.held_sessions.get(&offered.session_id) {
+                None => "new",
+                Some(digest) if *digest == offered.sha256 => "unchanged",
+                Some(_) => "changed",
+            }
+            .to_owned(),
+        })
+        .collect();
+    let sandbox = state.sandbox_exists.then(|| OnboardSandbox {
+        id: "sbx-demo".to_owned(),
+        slug: "demo".to_owned(),
+        url: "https://yulius.example/s/demo".to_owned(),
+        sessions_url: "https://yulius.example/s/demo/sessions".to_owned(),
+        onboarding: onboarding(&state),
+    });
+    let response = OnboardPlan {
+        login: "alice".to_owned(),
+        can_create: sandbox.is_none() && state.refusal.is_none(),
+        sandbox,
+        refusal: state.refusal.clone(),
+        sessions,
+    };
+    state.plan_requests.push(request);
+    Json(response).into_response()
 }
 
 async fn device_start(State(state): State<Shared>) -> Response {

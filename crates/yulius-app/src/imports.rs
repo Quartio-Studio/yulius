@@ -9,9 +9,11 @@
 //! received length. Chunks are idempotent by (job, name, offset, sha256). Completing applies the
 //! job: the bundle becomes `import/<login>/…` branches, the snapshot is extracted into a
 //! worktree on `import/<login>/snapshot-<date>` created from the client's `HEAD` and committed,
-//! and every new session becomes an archived organization task with an immutable transcript
-//! copy under `<data_dir>/transcripts/<task>/` and an `imported` lineage entry. Re-applying
-//! skips known sessions and an already applied snapshot.
+//! and every session becomes (or replaces) a read-only session document of the sandbox,
+//! attributed to the uploader ([`crate::session_docs`], SES-001); any member with write access
+//! can continue one natively as a task later (IMP-004). Re-applying skips unchanged sessions and
+//! an already applied snapshot. Tasks imported as archived tasks by earlier versions keep
+//! working (their worktree base is read from the applied job).
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -26,23 +28,24 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use yulius_contracts::import::{
     CreateImportRequest, CreateImportResponse, FileProgress, FileRef, ImportHarness,
-    ImportManifest, ImportResult, MAX_IMPORT_TOTAL_BYTES, SNAPSHOT_DELETED_ENTRY,
-    SNAPSHOT_FILES_PREFIX, SessionRef, is_sha256_hex, is_valid_chunk_len,
+    ImportManifest, ImportResult, MAX_IMPORT_TOTAL_BYTES, MAX_SESSIONS_PER_IMPORT, OnboardPlan,
+    OnboardPlanRequest, OnboardSandbox, SNAPSHOT_DELETED_ENTRY, SNAPSHOT_FILES_PREFIX, SessionPlan,
+    SessionRef, is_safe_session_id, is_sha256_hex, is_valid_chunk_len,
 };
 use yulius_domain::cron::CivilDate;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, TaskId};
-use yulius_domain::permission::Action;
+use yulius_domain::permission::{AccessLevel, Action};
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, hex_token};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::lifecycle::NewTask;
-use crate::model::{ProviderSessionRecord, SandboxRecord, TaskOrigin, TaskRecord, UserRecord};
+use crate::model::{SandboxRecord, TaskRecord, UserRecord};
 use crate::ports::store::TaskFieldUpdate;
 use crate::ports::store_ext::ImportJobRecord;
 use crate::projects::{blocking, clone_url, identity};
+use crate::session_docs::StoreOutcome;
 use crate::supervisor::branch_for;
 
 /// Earlier jobs of a sandbox examined for content reuse, job reuse and applied state.
@@ -304,26 +307,6 @@ fn applied_of(job: &ImportJobRecord) -> Option<AppliedImport> {
     serde_json::from_str(job.result.as_deref()?).ok()
 }
 
-fn import_prompt(session: &SessionRef, login: &str) -> String {
-    let title = if session.title.trim().is_empty() {
-        "(no prompt recorded)"
-    } else {
-        session.title.trim()
-    };
-    format!(
-        "{title}\n\n(Imported {} session {} by {login}, recorded {} to {}{}.)",
-        session.harness,
-        session.session_id,
-        session.started_at,
-        session.ended_at,
-        session
-            .git_branch
-            .as_deref()
-            .map(|branch| format!(" on branch {branch}"))
-            .unwrap_or_default()
-    )
-}
-
 impl App {
     fn import_dir(&self, sandbox: &SandboxId, job: &str) -> PathBuf {
         self.sandbox_dir(sandbox).join("imports").join(job)
@@ -351,8 +334,129 @@ impl App {
                 let (record, _) = self.require(&ctx.user, &existing.id, Action::Work).await?;
                 Ok(record)
             }
-            None => self.import_repository(&ctx.user, owner, name).await,
+            None => self.import_repository(&ctx.user, owner, name, false).await,
         }
+    }
+
+    /// `POST /api/onboard/plan` (`yulius onboard`): the repository's sandbox with its onboarding
+    /// state and what is pending, whether the caller may create it, and which offered sessions
+    /// the server still needs (IMP-006). Nothing is changed.
+    ///
+    /// # Errors
+    /// `Invalid` requests; GitHub failures while checking a new repository are reported as the
+    /// refusal, not as errors.
+    pub async fn onboard_plan(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        req: &OnboardPlanRequest,
+    ) -> AppResult<OnboardPlan> {
+        if req.sessions.len() > MAX_SESSIONS_PER_IMPORT {
+            return Err(AppError::Invalid(format!(
+                "at most {MAX_SESSIONS_PER_IMPORT} sessions per request"
+            )));
+        }
+        if let Some(bad) = req
+            .sessions
+            .iter()
+            .find(|s| !is_safe_session_id(&s.session_id) || !is_sha256_hex(&s.sha256))
+        {
+            return Err(AppError::Invalid(format!(
+                "invalid session fingerprint {:?}",
+                bad.session_id
+            )));
+        }
+        let login = self.login_of(&ctx.user.id).await;
+        let new_states = || {
+            req.sessions
+                .iter()
+                .map(|s| SessionPlan {
+                    session_id: s.session_id.clone(),
+                    state: "new".to_owned(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let Some(record) = self
+            .deps
+            .store
+            .sandbox_by_repo(req.owner.trim(), req.name.trim())
+            .await?
+        else {
+            let (can_create, refusal) = match self
+                .import_permission(&ctx.user, req.owner.trim(), req.name.trim())
+                .await
+            {
+                Ok(_) => (true, None),
+                Err(err) => (false, Some(err.public_message())),
+            };
+            return Ok(OnboardPlan {
+                login,
+                sandbox: None,
+                can_create,
+                refusal,
+                sessions: new_states(),
+            });
+        };
+        let level = self
+            .access_level(&ctx.user, &record)
+            .await
+            .unwrap_or(AccessLevel::None);
+        if level == AccessLevel::None {
+            return Ok(OnboardPlan {
+                login,
+                sandbox: None,
+                can_create: false,
+                refusal: Some(format!(
+                    "{}/{} is a sandbox you cannot see; ask for access on GitHub",
+                    record.repo_owner, record.repo_name
+                )),
+                sessions: new_states(),
+            });
+        }
+        let refusal = (!level.allows(Action::Work)).then(|| {
+            format!(
+                "uploading needs write access to {}/{} on GitHub; you have {}",
+                record.repo_owner,
+                record.repo_name,
+                level.as_str()
+            )
+        });
+        let mut sessions = Vec::with_capacity(req.sessions.len());
+        for offered in &req.sessions {
+            let state = self
+                .session_plan_state(
+                    &record.id,
+                    &ctx.user.id,
+                    harness_of(offered.harness),
+                    &offered.session_id,
+                    &offered.sha256,
+                )
+                .await?;
+            sessions.push(SessionPlan {
+                session_id: offered.session_id.clone(),
+                state: state.to_owned(),
+            });
+        }
+        self.refresh_onboarding(&record.id).await?;
+        let record = self
+            .deps
+            .store
+            .sandbox(&record.id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let url = format!("{}/s/{}", self.config.public_url, record.slug);
+        Ok(OnboardPlan {
+            login,
+            sandbox: Some(OnboardSandbox {
+                id: record.id.to_string(),
+                slug: record.slug.clone(),
+                sessions_url: format!("{url}/sessions"),
+                url,
+                onboarding: self.onboarding_status(&record).await?,
+            }),
+            can_create: false,
+            refusal,
+            sessions,
+        })
     }
 
     /// `POST /api/import`: validates the manifest and the repository, creates (or reuses) the
@@ -756,17 +860,8 @@ impl App {
             ),
             None => None,
         };
-        let mut tasks = Vec::new();
-        let mut skipped = 0_u32;
+        let (mut imported, mut updated, mut unchanged) = (0_u32, 0_u32, 0_u32);
         for session in &manifest.sessions {
-            let harness = harness_of(session.harness);
-            if store
-                .provider_session_exists(&sid, harness.as_str(), &session.session_id)
-                .await?
-            {
-                skipped += 1;
-                continue;
-            }
             let base = self
                 .session_base(
                     &repo_dir,
@@ -777,124 +872,42 @@ impl App {
                     &prefix,
                 )
                 .await;
-            let task = self
-                .import_session(&sandbox, session, harness, &job_dir, &ctx.user, &login)
-                .await?;
-            tasks.push(AppliedTask {
-                task_id: task.id.to_string(),
-                harness: harness.as_str().to_owned(),
-                session_id: session.session_id.clone(),
-                base,
-            });
+            match self
+                .store_imported_session(&sandbox, session, &job_dir, &ctx.user, base)
+                .await?
+            {
+                StoreOutcome::New => imported += 1,
+                StoreOutcome::Updated => updated += 1,
+                StoreOutcome::Unchanged | StoreOutcome::Taken => unchanged += 1,
+            }
+        }
+        // The preparation task starts once the import landed, so it can read what was imported
+        // (sessions, branches, the snapshot) — no approval step (U-08).
+        if let Err(err) = self.start_onboarding(&sid, &login).await {
+            tracing::warn!(sandbox = %sid, error = %err, "the preparation task did not start");
         }
         let onboarding = self.refresh_onboarding(&sid).await?;
+        let record = store.sandbox(&sid).await?.ok_or(AppError::NotFound)?;
+        let status = self.onboarding_status(&record).await?;
+        let base_url = format!("{}/s/{}", self.config.public_url, sandbox.slug);
         Ok(AppliedImport {
             version: APPLIED_VERSION,
             result: ImportResult {
                 sandbox_id: sid.to_string(),
-                sandbox_url: format!("{}/s/{}", self.config.public_url, sandbox.slug),
-                tasks_created: u32::try_from(tasks.len()).unwrap_or(u32::MAX),
-                sessions_skipped_existing: skipped,
+                sessions_url: Some(format!("{base_url}/sessions")),
+                sandbox_url: base_url,
+                tasks_created: 0,
+                sessions_skipped_existing: unchanged,
                 onboarding,
+                sessions_imported: imported,
+                sessions_updated: updated,
+                sessions_unchanged: unchanged,
+                onboarding_status: Some(status),
             },
             bundle_refs,
             snapshot,
-            tasks,
+            tasks: Vec::new(),
         })
-    }
-
-    /// One imported session → archived organization task, immutable transcript copy and an
-    /// `imported` lineage entry (IMP-004).
-    async fn import_session(
-        self: &Arc<Self>,
-        sandbox: &SandboxRecord,
-        session: &SessionRef,
-        harness: Harness,
-        job_dir: &Path,
-        user: &UserRecord,
-        login: &str,
-    ) -> AppResult<TaskRecord> {
-        // Stage the transcript before the task exists, so a failed copy creates no task.
-        let staging = self
-            .config
-            .data_dir
-            .join("transcripts")
-            .join(".staging")
-            .join(self.deps.crypto.new_id());
-        let sources: Vec<(PathBuf, PathBuf)> = session
-            .files
-            .iter()
-            .enumerate()
-            .map(|(index, file)| {
-                let dest = if index == 0 {
-                    staging.join(format!("{}.jsonl", session.session_id))
-                } else {
-                    staging
-                        .join(&session.session_id)
-                        .join(aux_relative(&file.name, session))
-                };
-                (job_dir.join(&file.name), dest)
-            })
-            .collect();
-        let stage_dir = staging.clone();
-        blocking(move || {
-            for (src, dest) in &sources {
-                copy_immutable(src, dest)?;
-            }
-            Ok(())
-        })
-        .await
-        .inspect_err(|_| {
-            let _ = fs::remove_dir_all(&stage_dir);
-        })?;
-        let title = if session.title.trim().is_empty() {
-            format!("Imported {} session", session.harness)
-        } else {
-            session.title.trim().to_owned()
-        };
-        let task = self
-            .create_task_internal(NewTask {
-                sandbox: sandbox.id.clone(),
-                created_by: user.id.clone(),
-                prompt: import_prompt(session, login),
-                harness,
-                title: Some(title),
-                workflow_id: None,
-                steps: Vec::new(),
-                model: None,
-                effort: None,
-                origin: TaskOrigin::Import,
-                automation_run: None,
-                start: false,
-                mode: crate::model::TaskMode::Prompt,
-            })
-            .await?;
-        let final_dir = self
-            .config
-            .data_dir
-            .join("transcripts")
-            .join(task.id.as_str());
-        let moved_from = staging.clone();
-        let moved_to = final_dir.clone();
-        blocking(move || move_tree(&moved_from, &moved_to)).await?;
-        let transcript = final_dir.join(format!("{}.jsonl", session.session_id));
-        let now = self.now();
-        let first_seen = parse_rfc3339(&session.started_at).unwrap_or(now);
-        self.deps
-            .store
-            .upsert_provider_session(&ProviderSessionRecord {
-                id: self.deps.crypto.new_id(),
-                sandbox_id: sandbox.id.clone(),
-                task_id: task.id.clone(),
-                harness,
-                session_id: session.session_id.clone(),
-                transcript_ref: Some(transcript.to_string_lossy().into_owned()),
-                origin: "imported".into(),
-                first_seen,
-                last_seen: parse_rfc3339(&session.ended_at).unwrap_or(first_seen),
-            })
-            .await?;
-        Ok(task)
     }
 
     /// Where an imported session's worktree should start: the snapshot when the session ran on
@@ -1043,7 +1056,7 @@ impl App {
                 return Ok(entry.base.clone());
             }
         }
-        Ok(None)
+        self.continued_session_base(sandbox, task).await
     }
 
     /// Creates the worktree of an imported task from its imported base (snapshot or session
@@ -1173,7 +1186,7 @@ impl App {
 }
 
 /// Relative path of an auxiliary session file below the session's own directory.
-fn aux_relative(name: &str, session: &SessionRef) -> String {
+pub(crate) fn aux_relative(name: &str, session: &SessionRef) -> String {
     let prefix = format!("sessions/{}/{}/", session.harness, session.session_id);
     name.strip_prefix(&prefix).unwrap_or(name).to_owned()
 }
@@ -1281,7 +1294,7 @@ fn sha256_file(path: &Path) -> AppResult<String> {
 }
 
 /// Writes a read-only copy of `src` at `dest` (temporary file, fsync, rename).
-fn copy_immutable(src: &Path, dest: &Path) -> AppResult<()> {
+pub(crate) fn copy_immutable(src: &Path, dest: &Path) -> AppResult<()> {
     let parent = dest
         .parent()
         .ok_or_else(|| AppError::Internal("transcript path without parent".into()))?;
@@ -1303,7 +1316,7 @@ fn copy_immutable(src: &Path, dest: &Path) -> AppResult<()> {
 }
 
 /// Moves a staged directory into place (rename; merges into an existing directory).
-fn move_tree(from: &Path, to: &Path) -> AppResult<()> {
+pub(crate) fn move_tree(from: &Path, to: &Path) -> AppResult<()> {
     if !to.exists() {
         if let Some(parent) = to.parent() {
             fs::create_dir_all(parent).map_err(AppError::internal)?;

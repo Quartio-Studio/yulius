@@ -1,6 +1,7 @@
 //! Server side of `yulius import` over HTTP with real Git: guarded job creation, resumable
-//! idempotent chunks, bundle/snapshot/session application, idempotent re-runs and the native
-//! resume of imported sessions (AC-IMP-1, AC-IMP-2, AC-IMP-4..6).
+//! idempotent chunks, bundle/snapshot/session application, sessions stored as attributed,
+//! deduplicated session documents, idempotent re-runs and the native continuation of imported
+//! sessions (AC-IMP-1, AC-IMP-2, AC-IMP-4..6, AC-SES-1).
 
 mod support;
 
@@ -150,6 +151,7 @@ fn laptop_offer(w: &World, remote: &Path) -> Result<Offer, Error> {
                     file_ref(w, &claude_name, claude.as_bytes()),
                     file_ref(w, &subagent_name, subagent.as_bytes()),
                 ],
+                redactions: 0,
             },
             SessionRef {
                 harness: ImportHarness::Claude,
@@ -160,6 +162,7 @@ fn laptop_offer(w: &World, remote: &Path) -> Result<Offer, Error> {
                 ended_at: "2026-10-02T09:30:00.000Z".to_owned(),
                 git_branch: Some("main".to_owned()),
                 files: vec![file_ref(w, &main_name, on_main.as_bytes())],
+                redactions: 0,
             },
         ],
         since: "2026-09-23T00:00:00.000Z".to_owned(),
@@ -420,10 +423,28 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     upload_missing(&w, &alice, &offer, &resumed.body).await?;
     let result = complete(&w, &alice, &job).await?;
     assert_eq!(result.status, StatusCode::OK, "{:?}", result.body);
-    assert_eq!(result.body["tasks_created"], 2);
+    assert_eq!(
+        result.body["tasks_created"], 0,
+        "sessions are documents, not tasks"
+    );
+    assert_eq!(result.body["sessions_imported"], 2);
     assert_eq!(result.body["sessions_skipped_existing"], 0);
-    assert_eq!(result.body["onboarding"], "pending");
+    assert_eq!(
+        result.body["onboarding"], "preparing",
+        "the preparation task starts by itself once the upload landed (U-08)"
+    );
+    assert_eq!(result.body["onboarding_status"]["ready"], false);
+    assert!(
+        text(&result.body["onboarding_status"]["summary"])
+            .contains("waits for a Claude subscription"),
+        "{:?}",
+        result.body["onboarding_status"]
+    );
     assert_eq!(result.body["sandbox_url"], "https://yulius.test/s/shop");
+    assert_eq!(
+        result.body["sessions_url"],
+        "https://yulius.test/s/shop/sessions"
+    );
     assert_eq!(result.body["sandbox_id"], sandbox.id.as_str());
     let again = complete(&w, &alice, &job).await?;
     assert_eq!(
@@ -463,13 +484,14 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "created from the client's HEAD"
     );
     let worktrees = repo.parent().ok_or("parent")?.join("worktrees");
-    assert_eq!(
-        std::fs::read_dir(&worktrees)?.count(),
-        0,
-        "snapshot worktree removed"
+    assert!(
+        std::fs::read_dir(&worktrees)?
+            .flatten()
+            .all(|entry| !entry.file_name().to_string_lossy().starts_with("import-")),
+        "snapshot worktree removed (the preparation task has its own)"
     );
 
-    // Sessions → archived organization tasks with immutable transcripts (IMP-004).
+    // Sessions → read-only session documents attributed to the uploader, no tasks (SES-001).
     let archived = call(
         &w.h.router,
         Method::GET,
@@ -478,31 +500,26 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         &alice,
     )
     .await?;
-    let tasks = archived.body.as_array().ok_or("tasks")?.clone();
-    assert_eq!(tasks.len(), 2);
+    assert_eq!(archived.body.as_array().map(Vec::len), Some(0));
+    let docs = sessions_of(&w, &alice, &sandbox.id).await?;
+    assert_eq!(docs.len(), 2);
     assert!(
-        tasks
-            .iter()
-            .all(|t| t["origin"] == "import" && t["archived"] == true)
+        docs.iter()
+            .all(|d| d["kind"] == "imported" && d["author"]["login"] == "alice")
     );
-    let by_title = |title: &str| -> Result<TaskId, Error> {
-        let task = tasks.iter().find(|t| t["title"] == title).ok_or("task")?;
-        Ok(TaskId::parse(text(&task["id"]))?)
+    let doc_of = |title: &str| -> Result<String, Error> {
+        let doc = docs.iter().find(|d| d["title"] == title).ok_or("doc")?;
+        Ok(text(&doc["id"]).to_owned())
     };
-    let claude_task = by_title("Add a cart")?;
-    let main_task = by_title("Fix login")?;
-    let lineage = w.h.store.provider_sessions(&claude_task).await?;
-    assert_eq!(lineage.len(), 1);
-    assert_eq!(lineage[0].origin, "imported");
-    assert_eq!(lineage[0].session_id, CLAUDE_SESSION);
-    let stored = PathBuf::from(lineage[0].transcript_ref.clone().ok_or("transcript")?);
-    assert_eq!(
-        stored,
-        w.data_dir()
-            .join("transcripts")
-            .join(claude_task.as_str())
-            .join(format!("{CLAUDE_SESSION}.jsonl"))
-    );
+    let claude_doc = doc_of("Add a cart")?;
+    let main_doc = doc_of("Fix login")?;
+    let stored = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sandbox.id.as_str())
+        .join("sessions")
+        .join(&claude_doc)
+        .join(format!("{CLAUDE_SESSION}.jsonl"));
     let claude_name = format!("sessions/claude/{CLAUDE_SESSION}.jsonl");
     assert_eq!(
         &std::fs::read(&stored)?,
@@ -519,7 +536,22 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
             .join("subagents/agent-1.jsonl")
             .exists()
     );
-    // Imported tasks pass the onboarding gate; ordinary ones are still blocked.
+    let page = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sessions/{main_doc}/transcript"),
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(page.status, StatusCode::OK, "{:?}", page.body);
+    assert_eq!(page.body["entries"][0]["blocks"][0]["text"], "Fix login");
+    assert_eq!(page.body["session"]["can_continue"], true);
+    assert_eq!(
+        page.body["session"]["can_delete"], false,
+        "only the uploader or an admin deletes"
+    );
+    // Ordinary tasks are still blocked while the sandbox is being prepared.
     let blocked = call(
         &w.h.router,
         Method::POST,
@@ -529,8 +561,21 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     )
     .await?;
     assert_eq!(blocked.status, StatusCode::CONFLICT);
+    let early = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sessions/{claude_doc}/continue"),
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(
+        early.status,
+        StatusCode::CONFLICT,
+        "continuing a session starts a task: gated while preparing"
+    );
 
-    // AC-IMP-6: a re-run uploads nothing and creates no duplicates.
+    // AC-IMP-6: a re-run uploads nothing and stores nothing twice.
     let rerun = create_job(&w, &alice, offer.body()?).await?;
     assert_eq!(rerun.status, StatusCode::OK);
     assert_ne!(
@@ -550,7 +595,8 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "{:?}",
         rerun_result.body
     );
-    assert_eq!(rerun_result.body["tasks_created"], 0);
+    assert_eq!(rerun_result.body["sessions_imported"], 0);
+    assert_eq!(rerun_result.body["sessions_unchanged"], 2);
     assert_eq!(rerun_result.body["sessions_skipped_existing"], 2);
     assert!(
         git(
@@ -561,7 +607,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "an applied snapshot is not applied again"
     );
 
-    // A new session only uploads its own file.
+    // A new session only uploads its own file; a grown session replaces its earlier copy.
     let mut grown = Offer {
         manifest: offer.manifest.clone(),
         contents: offer.contents.clone(),
@@ -579,29 +625,146 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         ended_at: "2026-10-03T08:10:00.000Z".to_owned(),
         git_branch: None,
         files: vec![file_ref(&w, &extra_name, extra.as_bytes())],
+        redactions: 3,
     });
     grown
         .contents
         .insert(extra_name.clone(), extra.into_bytes());
+    let main_name = format!("sessions/claude/{MAIN_SESSION}.jsonl");
+    let longer = format!(
+        "{}{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"Fixed.\"}}]}}}}\n",
+        String::from_utf8_lossy(offer.contents.get(&main_name).ok_or("main")?)
+    );
+    let main_index = grown
+        .manifest
+        .sessions
+        .iter()
+        .position(|s| s.session_id == MAIN_SESSION)
+        .ok_or("main session")?;
+    grown.manifest.sessions[main_index].files = vec![file_ref(&w, &main_name, longer.as_bytes())];
+    grown
+        .contents
+        .insert(main_name.clone(), longer.into_bytes());
     let created = create_job(&w, &alice, grown.body()?).await?;
-    assert_eq!(missing_names(&created.body), vec![(extra_name, 0)]);
+    assert_eq!(
+        missing_names(&created.body),
+        vec![(main_name.clone(), 0), (extra_name, 0)]
+    );
     upload_missing(&w, &alice, &grown, &created.body).await?;
     let grown_result = complete(&w, &alice, text(&created.body["job_id"])).await?;
-    assert_eq!(grown_result.body["tasks_created"], 1);
-    assert_eq!(grown_result.body["sessions_skipped_existing"], 2);
-    let archived = call(
+    assert_eq!(grown_result.body["sessions_imported"], 1);
+    assert_eq!(grown_result.body["sessions_updated"], 1);
+    assert_eq!(grown_result.body["sessions_unchanged"], 1);
+    let docs = sessions_of(&w, &alice, &sandbox.id).await?;
+    assert_eq!(docs.len(), 3, "one document per session");
+    let written = docs
+        .iter()
+        .find(|d| d["title"] == "Write docs")
+        .ok_or("docs")?;
+    assert_eq!(written["redactions"], 3);
+    let page = call(
         &w.h.router,
         Method::GET,
-        "/api/archived-tasks",
+        &format!("/api/sessions/{main_doc}/transcript"),
         None,
         &alice,
     )
     .await?;
-    assert_eq!(archived.body.as_array().map(Vec::len), Some(3));
+    assert_eq!(
+        page.body["entries"][1]["blocks"][0]["text"], "Fixed.",
+        "the replaced copy is the longer transcript"
+    );
 
-    // AC-IMP-5: another member continues imported sessions natively.
+    // Another person's upload of the same session id keeps the first uploader's document.
+    let mut theirs = grown.manifest.clone();
+    theirs.bundle = None;
+    theirs.snapshot = None;
+    let changed = format!("{{\"type\":\"user\",\"sessionId\":\"{MAIN_SESSION}\"}}\n");
+    theirs.sessions = vec![SessionRef {
+        files: vec![file_ref(&w, &main_name, changed.as_bytes())],
+        ..grown.manifest.sessions[main_index].clone()
+    }];
+    let carol_offer = Offer {
+        manifest: theirs,
+        contents: [(main_name.clone(), changed.into_bytes())]
+            .into_iter()
+            .collect(),
+    };
+    let created = create_job(&w, &carol, carol_offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    upload_missing(&w, &carol, &carol_offer, &created.body).await?;
+    let taken = complete(&w, &carol, text(&created.body["job_id"])).await?;
+    assert_eq!(taken.body["sessions_updated"], 0);
+    assert_eq!(taken.body["sessions_unchanged"], 1);
+    let docs = sessions_of(&w, &alice, &sandbox.id).await?;
+    let main = docs
+        .iter()
+        .find(|d| d["id"] == main_doc.as_str())
+        .ok_or("main")?;
+    assert_eq!(main["author"]["login"], "alice");
+
+    // AC-IMP-5: once the sandbox is ready, another member continues imported sessions natively.
+    let skip = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{}/onboarding/skip", sandbox.id),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(skip.status, StatusCode::OK, "{:?}", skip.body);
+    let claude_task = continue_doc(&w, &carol, &claude_doc).await?;
+    let main_task = continue_doc(&w, &carol, &main_doc).await?;
+    assert_eq!(
+        continue_doc(&w, &carol, &claude_doc).await?,
+        claude_task,
+        "a continued session opens its task"
+    );
+    let docs = sessions_of(&w, &alice, &sandbox.id).await?;
+    let claude = docs
+        .iter()
+        .find(|d| d["id"] == claude_doc.as_str())
+        .ok_or("claude")?;
+    assert_eq!(claude["continued_in"]["id"], claude_task.as_str());
+    let lineage = w.h.store.provider_sessions(&claude_task).await?;
+    assert_eq!(lineage.len(), 1);
+    assert_eq!(lineage[0].origin, "imported");
+    assert_eq!(lineage[0].session_id, CLAUDE_SESSION);
     assert_imported_resume(&w, &sandbox.id, &claude_task, &main_task).await?;
     Ok(())
+}
+
+async fn continue_doc(w: &World, creds: &Creds, doc: &str) -> Result<TaskId, Error> {
+    let resp = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sessions/{doc}/continue"),
+        None,
+        creds,
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
+    assert_eq!(resp.body["origin"], "import");
+    Ok(TaskId::parse(text(&resp.body["id"]))?)
+}
+
+async fn sessions_of(w: &World, creds: &Creds, sandbox: &SandboxId) -> Result<Vec<Value>, Error> {
+    let list = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{sandbox}/sessions"),
+        None,
+        creds,
+    )
+    .await?;
+    assert_eq!(list.status, StatusCode::OK, "{:?}", list.body);
+    Ok(list.body["sessions"]
+        .as_array()
+        .ok_or("sessions")?
+        .iter()
+        .filter(|s| s["kind"] == "imported")
+        .cloned()
+        .collect())
 }
 
 async fn assert_imported_resume(
@@ -660,7 +823,8 @@ async fn assert_imported_resume(
         app.deps
             .harness
             .claude_transcript(&sandbox_dir.join("home"), &main_worktree, MAIN_SESSION);
-    let record: Value = serde_json::from_str(std::fs::read_to_string(&native)?.trim())?;
+    let native_text = std::fs::read_to_string(&native)?;
+    let record: Value = serde_json::from_str(native_text.lines().next().ok_or("line")?)?;
     assert_eq!(record["cwd"], main_worktree.to_string_lossy().as_ref());
     assert_eq!(record["message"]["content"], "Fix login");
 

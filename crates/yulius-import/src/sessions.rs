@@ -237,7 +237,9 @@ fn clean_title(text: &str) -> Option<String> {
         return None;
     }
     let collapsed = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
-    Some(truncate_chars(&collapsed, MAX_TITLE_CHARS))
+    // Titles are shown and uploaded: redact before cutting, so a secret is never half-kept.
+    let redacted = yulius_domain::redact::redact(&collapsed).map_or(collapsed, |r| r.text);
+    Some(truncate_chars(&redacted, MAX_TITLE_CHARS))
 }
 
 fn strip_system_reminders(text: &str) -> String {
@@ -517,6 +519,17 @@ mod tests {
             Some("Real ask".to_owned())
         );
         assert_eq!(clean_title("<system-reminder>unterminated"), None);
+        let secret = format!(
+            "Deploy with ghp_{} {}",
+            "Ab3Cd".repeat(8),
+            "now ".repeat(20)
+        );
+        let title = clean_title(&secret).unwrap_or_default();
+        assert!(
+            title.starts_with("Deploy with [REDACTED:github-token] now"),
+            "{title}"
+        );
+        assert!(!title.contains("Ab3Cd"));
         let long = "word ".repeat(40);
         let title = clean_title(&long).unwrap_or_default();
         assert_eq!(title.chars().count(), MAX_TITLE_CHARS);

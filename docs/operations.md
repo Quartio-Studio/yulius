@@ -1,7 +1,7 @@
 # Operating Yulius
 
 Yulius is one Rust binary, `yulius`, that serves the web UI and API, supervises agent sessions and
-provides the CLI (`yulius import`, `yulius login`). This guide covers a single Linux VM with a TLS
+provides the CLI (`yulius onboard` alias `yulius import`, `yulius login`). This guide covers a single Linux VM with a TLS
 reverse proxy in front. It satisfies SPEC-001 AC-OPS-1 as documentation only: **a deployment has not
 been performed or verified** as part of the implementation work.
 
@@ -517,17 +517,33 @@ involved.
 scanned for stale branches and worktrees, shown on its CI page. People clean them up there, agents
 with `repo_cleanup`.
 
-## 6. Importing local work (`yulius import`)
+## 6. Onboarding a repository and your Claude sessions (`yulius onboard`)
 
 On a developer machine with the `yulius` binary:
 
 ```sh
 yulius login --server https://yulius.example.com          # browser approval (device flow)
-cd ~/code/product && yulius import --server https://yulius.example.com --since 14d
+cd ~/code/product && yulius onboard                       # --server once signed in to one server
+yulius onboard --status                                   # the sandbox's onboarding state
 ```
 
-The repository must be on GitHub under the instance owner. Uploads resume after interruptions;
-re-running imports only new sessions.
+`yulius import` is the same command. The repository must be on GitHub under the instance owner;
+adding it as a sandbox needs admin or maintain on GitHub, adding sessions to an existing sandbox
+needs write. The command shows four steps (repository, Yulius, Claude Code sessions, upload),
+asks which of your sessions of this repository to send (all, recent, or picked; `--sessions
+all|recent|pick|none`, `--since 14d`), redacts secrets on your computer and lists what it
+redacted (`--show-redactions` for every key name), and sends only sessions the server does not hold
+yet or that changed. `--dry-run` uploads nothing; `--sessions-only` leaves out unpublished
+branches and uncommitted changes; `--yes` asks nothing; colours follow `NO_COLOR` (and
+`--no-color`). Uploads resume after interruptions: run the same command again.
+
+Each teammate runs it for their own sessions; sessions are attributed to whoever uploaded them.
+They are stored read-only under `<data>/sandboxes/<sid>/sessions/` (at most 128 MiB per
+transcript, 10 000 sessions and 8 GiB per sandbox), listed on the sandbox's Sessions page, and
+searched by agents (`sessions_search`, `session_read`). The uploader or an admin deletes one on
+its page; deletions are audited (`session.deleted`). A new sandbox's preparation task starts by
+itself once the upload is applied, and no other task starts there until onboarding is ready (or an
+admin skips it); `yulius onboard --status` and the sandbox page say what is pending.
 
 ### Dropped files
 
@@ -692,6 +708,11 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
 ### Notes for specific upgrades
 
+- Upgrading to sessions as documents (#137, 2026-10-10): migration 0011 adds `session_docs`,
+  `session_chunks` and the FTS5 index `session_fts` (SQLite's bundled FTS5). Existing data is kept:
+  tasks imported earlier as archived tasks stay tasks (their sessions appear on the Sessions page as
+  task sessions). Task sessions are indexed lazily, 32 MiB of transcript per list or search, so the
+  first searches after the upgrade on a busy sandbox index while they answer. No configuration.
 - Upgrading to sandbox isolation (ADR-22, 2026-10-10): install the packages, add the subordinate
   range and the two unit lines, and build the base as in [Sandbox isolation](#sandbox-isolation),
   then restart. Sessions and shells started before the upgrade keep running as they are (their

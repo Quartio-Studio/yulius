@@ -52,6 +52,26 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(task_ref.clone(), &[]),
         },
         ToolDescriptor {
+            name: "sessions_search".into(),
+            description: "Sessions are this project's docs: search the transcripts of earlier and parallel Yulius tasks and the Claude Code sessions people imported from their computers (full text: words from file names, functions, errors, features). Use it whenever you do not know how or why something was implemented, before guessing or re-deriving. Returns sessions with matching passages and their line numbers; read around a match with session_read.".into(),
+            input_schema: schema(json!({
+                "query": {"type": "string", "description": "Words to find (all must match; falls back to any)"},
+                "kind": {"type": "string", "enum": ["all", "task", "imported"], "description": "Only task sessions or only imported ones (default all)"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": crate::session_docs::MAX_SEARCH_RESULTS, "description": "Most sessions (default 8)"}
+            }), &["query"]),
+        },
+        ToolDescriptor {
+            name: "session_read".into(),
+            description: "Read part of one session of this project: by `id` from sessions_search, or the latest session of another task by `task_number`. Returns messages, tool calls, edits and results from line `from` (bounded); continue with `next_from`.".into(),
+            input_schema: schema(json!({
+                "id": {"type": "string", "description": "Session id from sessions_search"},
+                "task_number": {"type": "integer", "description": "Read this task's latest session instead"},
+                "from": {"type": "integer", "minimum": 0, "description": "First transcript line (default 0; use a match's line minus a few)"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Most entries (default 60)"},
+                "max_chars": {"type": "integer", "minimum": 1000, "maximum": crate::session_docs::READ_CHARS_MAX, "description": "Most characters of text (default 24000)"}
+            }), &[]),
+        },
+        ToolDescriptor {
             name: "message_send".into(),
             description: "Send a message to another task (by task_id or number), broadcast to the other tasks with to=\"all\", or tell or ask the people using Yulius something with to=\"people\" (they reply in this session's terminal, not by message). Use kind=scope to agree who works on which files.".into(),
             input_schema: schema(message_props, &["body"]),
@@ -289,6 +309,8 @@ impl App {
             "project_context" => self.tool_project_context(ctx).await,
             "tasks_list" => self.tool_tasks_list(ctx, &args).await,
             "task_get" => self.tool_task_get(ctx, &args).await,
+            "sessions_search" => self.tool_sessions_search(ctx, &args).await,
+            "session_read" => self.tool_session_read(ctx, &args).await,
             "message_send" => self.tool_message_send(ctx, &args).await,
             "messages_inbox" => self.tool_messages_inbox(ctx, &args).await,
             "scope_claim" => self.tool_scope_claim(ctx, &args).await,
