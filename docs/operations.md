@@ -427,7 +427,7 @@ systemctl restart yulius
 | `YULIUS_SANDBOX_MEMORY_GB` | half the RAM | `memory.max` per sandbox. |
 | `YULIUS_SANDBOX_CPUS` | all CPUs but two | `cpu.max` per sandbox. |
 | `YULIUS_SANDBOX_PIDS` | 8192 | `pids.max` per sandbox. |
-| `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes; above it, new sessions are refused (live ones continue). `0` turns it off. |
+| `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-005](../.ai/specs/SPEC-005-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. |
 

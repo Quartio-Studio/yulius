@@ -1,11 +1,11 @@
 ---
 yulius-task: 7fd8d053-b40c-4bc4-ab19-11bac3505999
-status: draft
+status: done
 ---
 
 # SPEC-005: a full sandbox disk never kills a running session; Yulius frees build caches itself
 
-Status: draft
+Status: implemented
 Date: 2026-10-11
 Owner: Yulius task #8
 Scope authorization: user request (production incident of 2026-10-11 19:40 UTC)
@@ -79,11 +79,11 @@ directories of closed and cancelled tasks (38, 46, 11 and 7 GB).
 
 ## Plan
 
-- [ ] Quota refusals measure again when the reading is old
-- [ ] A switch checks the new start before it ends the running session
-- [ ] Cache and worktree rules: recognised and declared caches, closed and cancelled worktrees in hygiene
-- [ ] Yulius prunes caches of ended and idle tasks and tells their agents
-- [ ] Docs, ADR, spec rows and changes log updated; every gate green
+- [x] Quota refusals measure again when the reading is old
+- [x] A switch checks the new start before it ends the running session
+- [x] Cache and worktree rules: recognised and declared caches, closed and cancelled worktrees in hygiene
+- [x] Yulius prunes caches of ended and idle tasks and tells their agents
+- [x] Docs, ADR, spec rows and changes log updated; every gate green
 
 ## Decisions
 
@@ -93,3 +93,15 @@ directories of closed and cancelled tasks (38, 46, 11 and 7 GB).
   new starts only, as before.
 - The preflight runs the real start preconditions (credential, quota, holder) instead of a copy
   of them, so a new precondition cannot be forgotten.
+
+## Evidence
+
+- `cargo test -p yulius-sandbox --lib manager`: 5 passed (3 new `quota_*`/`over_quota` cases).
+- `cargo test -p yulius-domain -p yulius-sandbox -p yulius-app --lib`: all passed (new: `disk::*`,
+  `declared_caches_*`, `TaskEnded` classification).
+- `cargo test -p yulius --test supervision a_switch_that_cannot`: passed (refused switch keeps the
+  attempt, status and writes the reason; the same switch works once space is back).
+- `cargo test -p yulius --test disk`: 4 passed (grace period, closed/cancelled worktrees, dirty and
+  crashed tasks, pressure with largest-first, working tasks untouched, links not followed, refused
+  start prunes and retries, agent messaged).
+- Not run: a real 100 GB sandbox.

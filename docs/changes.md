@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-11
 
+- A full sandbox disk no longer ends running sessions or needs a person: a switch checks that the new session can start before it ends the running one (the reason shows in the terminal and the switch log); a refusal over the quota measures again when its reading is over a minute old; Yulius removes build caches (Cargo `target` and similar, or `[disk] caches`) of tasks that are not working and the worktrees of closed and cancelled tasks, prunes idle tasks' caches from 90 % of the quota, and tells the agent what was freed ([SPEC-005](../.ai/specs/SPEC-005-sandbox-disk.md)).
 - Yulius CI `quality` job failed at once on a clean machine (no rustup): `scripts/bootstrap.py`
   installs it when the run is unattended or given `--install-rustup` (no default toolchain, no
   profile edits).
