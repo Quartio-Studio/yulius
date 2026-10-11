@@ -563,6 +563,50 @@ fn is_hex_sha(text: &str) -> bool {
     matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The `type(scope)!` part of a conventional commit subject or title (`docs: …`,
+/// `fix(ui)!: …`), when it has one.
+fn conventional_prefix(subject: &str) -> Option<&str> {
+    let (head, rest) = subject.trim().split_once(": ")?;
+    if rest.trim().is_empty() {
+        return None;
+    }
+    let bare = head.strip_suffix('!').unwrap_or(head);
+    let kind = match bare.split_once('(') {
+        Some((kind, scope)) if scope.len() > 1 && scope.ends_with(')') => kind,
+        Some(_) => return None,
+        None => bare,
+    };
+    (!kind.is_empty() && kind.len() <= 10 && kind.bytes().all(|b| b.is_ascii_lowercase()))
+        .then_some(head)
+}
+
+/// The default title of a task's pull request: the task's title, prefixed — when it is not a
+/// conventional title itself — with the type and scope of the branch's oldest conventional
+/// commit, so repositories that require conventional titles accept it ("Prepare this
+/// repository for Yulius" → "docs: prepare this repository for Yulius", F 2026-10-11).
+/// `subjects` are the branch's commit subjects, newest first.
+fn default_pr_title(task_title: &str, subjects: &[String]) -> String {
+    let title = task_title.trim();
+    if conventional_prefix(title).is_some() {
+        return title.to_owned();
+    }
+    let Some(prefix) = subjects.iter().rev().find_map(|s| conventional_prefix(s)) else {
+        return title.to_owned();
+    };
+    // "Prepare …" reads "prepare …" after the prefix; an acronym ("API …") keeps its case.
+    let mut chars = title.chars();
+    let first = chars.next();
+    let second_lower = chars.clone().next().is_some_and(char::is_lowercase);
+    let rest = chars.as_str();
+    match first {
+        Some(c) if c.is_uppercase() && second_lower => {
+            format!("{prefix}: {}{rest}", c.to_lowercase())
+        }
+        Some(c) => format!("{prefix}: {c}{rest}"),
+        None => title.to_owned(),
+    }
+}
+
 fn clip_chars(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {
         Some((cut, _)) => format!("{}…", &text[..cut]),
@@ -1709,11 +1753,21 @@ impl App {
             .git
             .push(Path::new(&worktree), &branch, &branch, &installation)
             .await?;
-        let title = title
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .unwrap_or(&task.title)
-            .replace(['\n', '\r'], " ");
+        let title = match title.map(str::trim).filter(|t| !t.is_empty()) {
+            Some(title) => title.to_owned(),
+            None => {
+                let base = format!("origin/{}", profile.integration_branch);
+                let subjects: Vec<String> = self
+                    .deps
+                    .git
+                    .review_commits(Path::new(&worktree), &base, "HEAD", 50)
+                    .await
+                    .map(|commits| commits.into_iter().map(|c| c.subject).collect())
+                    .unwrap_or_default();
+                default_pr_title(&task.title, &subjects)
+            }
+        }
+        .replace(['\n', '\r'], " ");
         let pull = self
             .deps
             .github
@@ -3285,6 +3339,36 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pull_requests_get_a_conventional_title_from_the_branch() {
+        let subjects = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            default_pr_title(
+                "Prepare this repository for Yulius",
+                &subjects(&["docs: fix links", "docs: prepare the repository for Yulius"])
+            ),
+            "docs: prepare this repository for Yulius"
+        );
+        assert_eq!(
+            default_pr_title(
+                "API rate limits",
+                &subjects(&["fix(api)!: limit per token"])
+            ),
+            "fix(api)!: API rate limits"
+        );
+        assert_eq!(
+            default_pr_title("feat(ui): dark mode", &subjects(&["wip"])),
+            "feat(ui): dark mode"
+        );
+        assert_eq!(
+            default_pr_title("Add search", &subjects(&["wip", "Merge branch 'dev'"])),
+            "Add search"
+        );
+        assert_eq!(conventional_prefix("Note: not a type"), None);
+        assert_eq!(conventional_prefix("feat(: broken"), None);
+        assert_eq!(conventional_prefix("chore: "), None);
+    }
+
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;

@@ -329,14 +329,14 @@ async fn tasks_pause_at_their_turn_boundary_before_the_install() -> TestResult {
     let (code, _, _) = hook(&i.h.internal, WORKING, "PreToolUse").await?;
     assert_eq!(code, 200);
 
-    // A start meanwhile queues.
+    // A start meanwhile queues (a new task waits as `queued` for its start).
     let alice = i.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
     let later = seed_task(
         &i.h,
         "t-later",
         "s1",
         alice.as_str(),
-        TaskStatus::Closed,
+        TaskStatus::Queued,
         None,
     )
     .await?;
