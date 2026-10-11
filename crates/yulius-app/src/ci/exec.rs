@@ -387,7 +387,15 @@ impl App {
         env
     }
 
-    fn ci_containment(&self, sandbox: &SandboxRecord, home: &Path) -> Containment {
+    /// The job's containment: the sandbox's holder when it is isolated (SPEC-002 ADR-22: the
+    /// job sees the packages the sandbox installed and its private network), else the previous
+    /// containment.
+    fn ci_containment(
+        &self,
+        sandbox: &SandboxRecord,
+        home: &Path,
+        join: Option<crate::ports::isolation::SandboxJoin>,
+    ) -> Containment {
         if !self.config.contained {
             return Containment::None;
         }
@@ -395,9 +403,16 @@ impl App {
             sandbox_root: self.sandbox_dir(&sandbox.id),
             home: home.to_path_buf(),
             writable: Vec::new(),
-            readonly: self.config.contained_readonly.clone(),
+            readonly: self
+                .config
+                .contained_readonly
+                .iter()
+                .cloned()
+                .chain(join.iter().flat_map(|j| j.extra_readonly.iter().cloned()))
+                .collect(),
             binds: Vec::new(),
             identity: None,
+            join: join.map(Box::new),
         }
     }
 
@@ -430,6 +445,12 @@ impl App {
         let log = logs.join(format!("{}.log", job.id));
         let _ = std::fs::remove_file(&log);
         std::fs::File::create(&log).map_err(|e| format!("creating the job log failed: {e}"))?;
+        // Held until the job ends: the sandbox's holder is not stopped as idle meanwhile.
+        let (join, _lease) = self
+            .isolation_join(sandbox)
+            .await
+            .map_err(|e| e.public_message())?
+            .unzip();
         let plan = LaunchPlan {
             argv: vec![
                 "/bin/sh".into(),
@@ -443,7 +464,7 @@ impl App {
             env: self.ci_job_env(sandbox, run, job, &home, &cache),
             secret_env: Vec::new(),
             files: Vec::new(),
-            containment: self.ci_containment(sandbox, &home),
+            containment: self.ci_containment(sandbox, &home, join),
         };
         let run_dir = self.ci_run_dir(&job.id);
         let _ = std::fs::remove_dir_all(&run_dir);

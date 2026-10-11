@@ -21,6 +21,7 @@ test-support = []
 [dependencies]
 # Explicit version: cargo-deny `wildcards = "deny"` rejects versionless path dependencies.
 yulius-contracts = { workspace = true }
+yulius-sandbox = { workspace = true }
 nix.workspace = true
 portable-pty.workspace = true
 serde.workspace = true

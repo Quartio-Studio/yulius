@@ -10,6 +10,7 @@ pub mod harness;
 pub mod jev;
 pub mod pending;
 pub mod release;
+pub mod sandbox;
 pub mod session;
 pub mod split;
 pub mod system;

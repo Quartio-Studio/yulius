@@ -51,6 +51,27 @@ enum Command {
         /// Operation (`get`, `store`, `erase`).
         operation: String,
     },
+    /// Internal: a sandbox's namespace holder (SPEC-002 ADR-22).
+    #[command(name = "sandbox-host", hide = true)]
+    SandboxHost {
+        /// What to do.
+        #[command(subcommand)]
+        action: yulius::sandbox_cli::HostAction,
+    },
+    /// Internal: exec `bwrap` with the sandbox's seccomp filter.
+    #[command(name = "sandbox-exec", hide = true)]
+    SandboxExec {
+        /// `bwrap` and its arguments, after `--`.
+        #[arg(last = true, required = true)]
+        argv: Vec<std::ffi::OsString>,
+    },
+    /// Build or show the base of sandboxes' system layers (run as the service user).
+    #[command(name = "sandbox-base")]
+    SandboxBase {
+        /// What to do.
+        #[command(subcommand)]
+        action: yulius::sandbox_cli::BaseAction,
+    },
     /// Sign in this computer's CLI to a Yulius instance (browser approval).
     Login {
         /// Yulius URL, e.g. https://yulius.quartio.ai.
@@ -134,6 +155,9 @@ fn main() -> ExitCode {
             );
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
+        Command::SandboxHost { action } => yulius::sandbox_cli::host(action),
+        Command::SandboxExec { argv } => yulius::sandbox_cli::exec(&argv),
+        Command::SandboxBase { action } => yulius::sandbox_cli::base(action),
         Command::Login { server } => yulius::cli::login(&server),
         Command::Import {
             path,

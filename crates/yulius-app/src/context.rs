@@ -172,6 +172,8 @@ pub struct App {
     pub(crate) vault: crate::vault::VaultState,
     /// Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
     pub(crate) ci: crate::ci::CiState,
+    /// Sandbox isolation (SPEC-002 ADR-22); unset: contained runs keep the previous containment.
+    pub(crate) isolation: OnceLock<Arc<dyn crate::ports::isolation::SandboxIsolation>>,
 }
 
 impl App {
@@ -201,7 +203,16 @@ impl App {
             updates: crate::updates::UpdateState::default(),
             vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),
+            isolation: OnceLock::new(),
         })
+    }
+
+    /// Installs sandbox isolation (once; SPEC-002 ADR-22). Returns whether it was set.
+    pub fn set_isolation(
+        &self,
+        isolation: Arc<dyn crate::ports::isolation::SandboxIsolation>,
+    ) -> bool {
+        self.isolation.set(isolation).is_ok()
     }
 
     /// Whether a browser `Origin` may use the API: the public URL or an allowlisted origin.
