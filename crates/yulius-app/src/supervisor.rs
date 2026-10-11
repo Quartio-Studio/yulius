@@ -564,7 +564,10 @@ impl App {
                 .ok_or(AppError::NotFound)?;
             let live =
                 u32::try_from(self.deps.store.live_attempts().await?.len()).unwrap_or(u32::MAX);
-            if live >= self.config.max_live_sessions && task.status != TaskStatus::Switching {
+            // While an update pauses the tasks, starts queue like at the session limit and run
+            // once it is over (SPEC-002 ADR-18).
+            let full = live >= self.config.max_live_sessions || self.update_holds_starts();
+            if full && task.status != TaskStatus::Switching {
                 let queued = self
                     .deps
                     .store
@@ -725,9 +728,14 @@ impl App {
             .secret_env
             .push(("YULIUS_TASK_TOKEN".into(), task_token.clone()));
         launch.env.extend(self.base_env(&sandbox, &home));
+        // Agent secrets: placeholders, the Bash redaction wrapper and the egress proxy
+        // (SPEC-002 ADR-20). A vault that cannot be read fails the start, never a run without
+        // redaction.
+        self.vault_run_setup(&sandbox, &run_dir, &task_token, &mut launch)
+            .await?;
         let (join, _lease) = self.isolation_join(&sandbox).await?.unzip();
         if join.is_some() {
-            // Root of its sandbox (ADR-20): Claude Code accepts --dangerously-skip-permissions as
+            // Root of its sandbox (ADR-21): Claude Code accepts --dangerously-skip-permissions as
             // root only inside a declared sandbox; package tools live in sbin.
             launch.env.retain(|(k, _)| k != "PATH");
             launch.env.extend([
@@ -973,18 +981,31 @@ impl App {
         host_token: &[u8; 32],
     ) -> AppResult<()> {
         let runtime = self.runtime(task_id);
+        let sandbox = self
+            .deps
+            .store
+            .task(task_id)
+            .await?
+            .ok_or(AppError::NotFound)?
+            .sandbox_id;
+        // The terminal people see is redacted of agent secrets (SPEC-002 ADR-20).
+        let scrub = crate::vault::TerminalScrub::default();
         let attached = self
             .deps
             .session_host
             .attach(Path::new(&attempt.run_dir), host_token)
             .await?;
         let welcome = attached.welcome.clone();
-        runtime.hub.reset(
-            welcome.seq,
-            welcome.snapshot.as_deref().unwrap_or_default(),
-            welcome.cols,
-            welcome.rows,
-        );
+        let screen = self
+            .terminal_snapshot(
+                &scrub,
+                &sandbox,
+                welcome.snapshot.as_deref().unwrap_or_default(),
+            )
+            .await;
+        runtime
+            .hub
+            .reset(welcome.seq, &screen, welcome.cols, welcome.rows);
         *runtime.run.lock().await = Some(ActiveRun {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
@@ -1007,11 +1028,13 @@ impl App {
             loop {
                 match reader.next().await {
                     Ok(Some(RunEvent::Output { seq, bytes })) => {
-                        app.runtime(&tid).hub.output(seq, &bytes)
+                        app.terminal_output(&scrub, &tid, &sandbox, seq, &bytes)
+                            .await;
                     }
                     Ok(Some(RunEvent::Snapshot { seq, bytes })) => {
                         let (cols, rows) = app.runtime(&tid).hub.size();
-                        app.runtime(&tid).hub.reset(seq, &bytes, cols, rows);
+                        let screen = app.terminal_snapshot(&scrub, &sandbox, &bytes).await;
+                        app.runtime(&tid).hub.reset(seq, &screen, cols, rows);
                     }
                     Ok(Some(RunEvent::Exit(exit))) => {
                         app.finalize_attempt(&tid, &aid, exit).await;
@@ -1036,10 +1059,17 @@ impl App {
                                     .await
                             {
                                 {
+                                    let screen = app
+                                        .terminal_snapshot(
+                                            &scrub,
+                                            &sandbox,
+                                            again.welcome.snapshot.as_deref().unwrap_or_default(),
+                                        )
+                                        .await;
                                     let rt = app.runtime(&tid);
                                     rt.hub.reset(
                                         again.welcome.seq,
-                                        again.welcome.snapshot.as_deref().unwrap_or_default(),
+                                        &screen,
                                         again.welcome.cols,
                                         again.welcome.rows,
                                     );
@@ -1240,8 +1270,11 @@ impl App {
             .await;
     }
 
-    /// Starts queued tasks while capacity allows (FIFO).
+    /// Starts queued tasks while capacity allows (FIFO); none while an update pauses tasks.
     pub async fn drain_queue(self: &Arc<Self>) {
+        if self.update_holds_starts() {
+            return;
+        }
         let Ok(queued) = self
             .deps
             .store

@@ -13,7 +13,7 @@ been performed or verified** as part of the implementation work.
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
-| `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-20): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
+| `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-21): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
 | `slirp4netns` | sandbox egress (isolation) | `apt install slirp4netns`. |
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
 | `xvfb` | the sandbox browser's virtual display (SPEC-002 ADR-15) | `apt install xvfb`. Without it (or ffmpeg) the browser runs headless: JPEG frames, no real input, captchas fail. `xauth` is not needed (Yulius writes the cookie itself); `x11-utils` (`xdpyinfo`) only for diagnostics. |
@@ -73,9 +73,12 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 # The sandbox browser: a headful Chrome on a virtual display when xvfb and ffmpeg are installed
 # (auto, the default). See "Sandbox browser" below for the other settings.
 Environment=YULIUS_BROWSER_DISPLAY=auto
-# Optional task intake (see "Task intake (Jev)" below).
+# Optional: a Jev key file (see "Task intake (Jev)" below); the superadmin can also set the key in
+# Settings → Instance, which wins over the file.
 #Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
-# Sandbox isolation (SPEC-002 ADR-20): auto (default), namespaces or legacy; see "Sandbox
+# Optional: a token that may read Quartio-Studio/yulius, when the GitHub App cannot (see §8).
+#Environment=YULIUS_UPDATE_TOKEN_FILE=/var/lib/yulius/update.token
+# Sandbox isolation (SPEC-002 ADR-21): auto (default), namespaces or legacy; see "Sandbox
 # isolation" below for limits and egress.
 #Environment=YULIUS_ISOLATION=auto
 ExecStart=/usr/local/bin/yulius serve
@@ -280,7 +283,7 @@ Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
 
 ### Sandbox isolation
 
-Each sandbox has one **namespace holder** (SPEC-002 ADR-20). Agents' task sessions and users'
+Each sandbox has one **namespace holder** (SPEC-002 ADR-21). Agents' task sessions and users'
 shells join it. A sandbox gets:
 
 - its own user namespace: root inside is the service user, ids 1–65535 come from its subordinate
@@ -351,20 +354,22 @@ always takes its defaults: Goal, with the workflow named "Feature" (none when th
 workflow, and none for a prompt-mode task). The Auto thresholds are fixed (75 % for the mode,
 60 % for the workflow) and have no setting.
 
+**The key is managed in Yulius** (SPEC-001 ADM-001, ADM-002): setup asks for it as an optional
+last step, and the superadmin sets, replaces, tests (one small request) and removes it under
+Settings → Instance. It is sealed with `master.key` like every other stored secret, takes effect
+at once (no restart), and is never logged or returned by the API. A key file is still honoured
+while no key is saved there; the page shows it as "from config" and **Save it here** moves it into
+settings, after which the variable can be removed from the unit. A key saved in settings always
+wins over the file.
+
 | Setting (flag / environment) | Default | Meaning |
 | --- | --- | --- |
-| `--jev-api-key-file` / `YULIUS_JEV_API_KEY_FILE` | unset (off) | File holding the Jev API key, owned by the service user, mode `0600` (a group- or world-readable file is refused, and intake stays off). Read at start; restart after changing it. The key is never logged. |
+| `--jev-api-key-file` / `YULIUS_JEV_API_KEY_FILE` | unset | File holding a Jev API key, owned by the service user, mode `0600` (a group- or world-readable file is refused and the page says why). Used while no key is saved in settings; read at start. The key is never logged. |
 | `--jev-split-threshold` / `YULIUS_JEV_SPLIT_THRESHOLD` | 0.9 | Probability of "several workstreams" Jev must give before a split is offered (0.5–1). |
 | `--jev-scope-threshold` / `YULIUS_JEV_SCOPE_THRESHOLD` | 0.8 | Probability Jev must give before a typed prompt is held (0.5–1). |
 
-```sh
-# The data directory is owner-only already; keep the key beside the master key.
-sudo install -o yulius -g yulius -m 0600 /dev/null /var/lib/yulius/jev.key
-sudo sh -c 'cat > /var/lib/yulius/jev.key'   # paste the key, then Ctrl-D
-# in the unit: Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
-```
-
-- The start log says `task intake is on (Jev jev-1.13.0)` or why it is off.
+- The start log says `task intake is on (Jev jev-1.13.0, key saved in settings)` (or `… key from
+  YULIUS_JEV_API_KEY_FILE`) or `task intake is off: no Jev key`.
 - Requests go to `https://api.typesafe.ai/v1/systemone` (outbound HTTPS). Each request carries one
   question: for a split check or an Auto choice, the new task's prompt (the workflow question also
   carries the sandbox's workflow names, descriptions, when to use them and step titles); for a
@@ -388,7 +393,9 @@ sudo sh -c 'cat > /var/lib/yulius/jev.key'   # paste the key, then Ctrl-D
 1. Start the service. On the first start it writes a one-time setup token to
    `/var/lib/yulius/setup.token` (0600) and logs where it is.
 2. Open the public URL, enter the token, choose the superadmin password (twice) and confirm both
-   warnings: **the password cannot be recovered** (SPEC-001 ACC-002).
+   warnings: **the password cannot be recovered** (SPEC-001 ACC-002). Store the recovery code
+   shown next. The last step asks for the Jev API key (optional; skip it to add it later in
+   Settings → Instance).
 3. Administration → GitHub: create the GitHub App with the manifest flow for the owner account or
    organization, then install it on the repositories Yulius may use. The App's callback URLs point
    at `YULIUS_PUBLIC_URL`. The manifest requests the permissions below.
@@ -488,17 +495,148 @@ sudo -u yulius yulius backup --data-dir /var/lib/yulius /var/backups/yulius-$(da
 (it encrypts every stored secret; without it the database's credentials are unreadable) and, if
 wanted, `sandboxes/` (clones and worktrees can be re-created from GitHub, uncommitted work cannot).
 Restore: stop the service, put the database copy at `yulius.db`, restore `master.key`, start.
+The database copy holds the secrets vault and the egress CA key as ciphertext only; keep
+`master.key` apart from database backups (whoever has both can read every secret).
+
+### Secrets vault (agent secrets, ADR-20)
+
+Nothing to configure. On first start the server creates the egress CA (its key sealed in the
+database) and serves the agents' egress proxy on the internal listener (`YULIUS_INTERNAL_BIND`):
+agent runs get `HTTPS_PROXY` pointing there, so whatever makes that address reachable from a
+sandbox (it is loopback today; network isolation must keep it reachable) carries the agents'
+HTTP(S). Claude Code's own API traffic (`*.anthropic.com`, `claude.ai`) and loopback bypass it.
+Runs trust the CA through `<run>/egress-ca.pem`, built from the host's CA roots
+(`/etc/ssl/certs/ca-certificates.crt` on Ubuntu, from the `ca-certificates` package); if the
+server logs that the roots were not found, install `ca-certificates`. Every Bash command of an
+agent runs through `yulius --scrub-exec` and every tool result through the `PostToolUse` hook:
+a command that prints `the agent-secret fingerprints of this run cannot be loaded` means the run
+cannot reach Yulius and has no `scrub.json` — continue the task to start a fresh run.
+
+Rotation: replace a value on the Secrets page after rotating it at its provider (the page marks
+values older than 180 days). If `master.key` and a database copy may have leaked together,
+rotate every team and agent secret at its source.
 
 ## 8. Upgrades
 
-<<<<<<< HEAD
-- Upgrading to default workflows (AUT-006, #136, 2026-10-10): the default workflows now ship with
-  the binary (`catalog/workflows/`) and are read-only. On the first start the "Feature" and "Quick
-  task" rows seeded by earlier releases are retired (audited as `workflow.retired`); an edited
-  "Feature" is kept as "Feature (custom)", an edited "Quick task" stays as it is. Automations that
-  used "Quick task" continue without a workflow. No migration and no configuration.
-=======
-- Upgrading to sandbox isolation (ADR-20, 2026-10-10): install the packages, add the subordinate
+### Updates from main (the update helper)
+
+Yulius updates itself from `main` of **Quartio-Studio/yulius** (SPEC-001 OPS-006..OPS-009,
+SPEC-002 ADR-18). It knows the commit it was built from (`yulius version`, and
+`GET /internal/version` on the internal listener) and checks `main` every hour. Superadmins get a
+notification and a banner, "Update available: …", and **Settings → Instance** lists the new
+commits. Nothing updates by itself: a superadmin chooses **Update now** and confirms. Then:
+
+1. **Build** (tasks keep working): the root helper fetches `main`, checks that the commit is on it
+   and not older than the commit it installed last, and runs `cargo build --release --locked -p
+   yulius` with `YULIUS_BUILD_COMMIT` set. Several minutes; the page shows the progress.
+2. **Pause tasks**: each task pauses at its next turn boundary (its Stop or `UserPromptSubmit`
+   hook is held, as for a capacity pause) and new starts queue. The agents are told nothing. A
+   task still in a turn after 30 minutes cancels the update (nothing changes); the superadmin can
+   also **Continue without waiting** or **Cancel**.
+3. **Restart**: the helper stops `yulius.service` (with `KillMode=process` agent sessions and
+   terminals keep running), copies the binary and `yulius.db` (with its WAL) to
+   `/var/lib/yulius-update/backups/<run>/`, installs the new binary, starts the service and waits
+   up to 2 minutes until `/internal/version` reports the new commit. If it does not, it stops the
+   service, restores the previous binary **and database**, and starts them again ("rolled back").
+4. **Resume**: the server that started releases the held tasks one by one; they go on as if
+   nothing happened.
+
+The service user cannot replace `/usr/local/bin/yulius` or restart itself. A root-owned **path
+unit** starts the helper when the server writes `/var/lib/yulius/update/request.json`; the request
+can only say "build" or "install" one commit, everything else (repository, paths, service) is in
+the root-owned unit. The helper refuses a request that is not a regular file owned by the
+service user, larger than 16 KiB, malformed, older than 15 minutes or already handled. It reports in
+`/var/lib/yulius-update/status.json`, which the server reads.
+
+**Install the helper** (once, as root; the unit files are in the repository under
+`deploy/systemd/`):
+
+```sh
+install -m 0644 deploy/systemd/yulius-update.path deploy/systemd/yulius-update.service /etc/systemd/system/
+install -d -m 0755 -o root -g root /var/lib/yulius-update
+# Edit the lines marked "local" in yulius-update.service if this server differs: the data
+# directory, the internal listener (YULIUS_INTERNAL_BIND), rustup's cargo for root.
+systemctl daemon-reload
+systemctl enable --now yulius-update.path
+systemctl status yulius-update.path        # active (waiting)
+```
+
+```ini
+# /etc/systemd/system/yulius-update.path
+[Unit]
+Description=Yulius update requests
+
+[Path]
+PathChanged=/var/lib/yulius/update/request.json
+Unit=yulius-update.service
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/yulius-update.service
+[Unit]
+Description=Yulius update helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/yulius update-helper
+Environment=YULIUS_DATA=/var/lib/yulius
+Environment=YULIUS_UPDATE_HEALTH=http://127.0.0.1:8081/internal/version
+Environment=YULIUS_UPDATE_BINARY=/usr/local/bin/yulius
+Environment=YULIUS_UPDATE_SERVICE=yulius.service
+Environment=YULIUS_UPDATE_STATE=/var/lib/yulius-update
+Environment=HOME=/root
+Environment=PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+TimeoutStartSec=3h
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/yulius-update /var/lib/yulius /usr/local/bin /root/.cargo /root/.rustup
+UMask=0022
+```
+
+No sudo rule or polkit rule is needed: the path unit is the only way in, and it starts a fixed
+command. The build needs Rust through rustup for root (the checkout's `rust-toolchain.toml` picks
+the version), `git`, a C linker, and network access to GitHub and crates.io.
+
+**Reading the repository.** The repository is private. Yulius reads it, and hands the helper a
+short-lived token for its fetch, with the GitHub App's installation token when the App is
+installed on Quartio-Studio with access to `yulius` (Contents: read). Otherwise put a token that
+may read the repository (a fine-grained personal access token with Contents: read on that one
+repository) in a file:
+
+```sh
+install -o yulius -g yulius -m 0600 /dev/null /var/lib/yulius/update.token
+sh -c 'cat > /var/lib/yulius/update.token'   # paste the token, then Ctrl-D
+# in yulius.service: Environment=YULIUS_UPDATE_TOKEN_FILE=/var/lib/yulius/update.token
+```
+
+Settings → Instance says which credential read `main` and why a check failed.
+
+| Setting (flag / environment) | Default | Meaning |
+| --- | --- | --- |
+| `--update-token-file` / `YULIUS_UPDATE_TOKEN_FILE` | unset | Owner-only file with a token that may read Quartio-Studio/yulius, used when the App cannot. |
+| `--update-state-dir` / `YULIUS_UPDATE_STATE` | `/var/lib/yulius-update` | The helper's state directory; "Update now" is offered when it exists. |
+| `--update-check-minutes` / `YULIUS_UPDATE_CHECK_MINUTES` | 60 | Minutes between checks of `main` (0: only "Check now"). |
+
+**Logs and recovery.** `journalctl -u yulius-update` shows each step. A failed rollback (the
+helper says "restore by hand") leaves the previous binary and database in
+`/var/lib/yulius-update/backups/<run>/`: stop `yulius`, copy `yulius` to `/usr/local/bin/yulius`
+and `yulius.db` (and `yulius.db-wal`, if present) to `/var/lib/yulius/` owned by `yulius`, mode
+0600, remove `yulius.db-shm`, start `yulius`. The helper keeps the last 3 backups. A manual build
+should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEAD) cargo build
+--release --locked -p yulius` (a checkout does it by itself; a tarball has no Git).
+
+### Notes for specific upgrades
+
+- Upgrading to sandbox isolation (ADR-21, 2026-10-10): install the packages, add the subordinate
   range and the two unit lines, and build the base as in [Sandbox isolation](#sandbox-isolation),
   then restart. Sessions and shells started before the upgrade keep running as they are (their
   launch records have no holder) and are adopted as usual. New sessions in the same sandbox join
@@ -507,7 +645,18 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
   moved to `legacy/`. Files written in either mode belong to the service user, so repositories,
   worktrees and homes need no migration. Each sandbox's system layer starts empty. No database
   migration.
->>>>>>> 19c40a2 (feat(sandbox): isolate each sandbox behind a namespace holder with apt, a private network and limits)
+- Upgrading to updates from main and the Jev key in settings (ADR-18, 2026-10-10): migration 0008
+  adds `update_runs` and the instance's sealed Jev key. Install the update helper (above). A
+  configured `YULIUS_JEV_API_KEY_FILE` keeps working ("from config"); Settings → Instance → **Save
+  it here** moves the key into settings, then the variable can go.
+- Upgrading to the secrets vault (ADR-20, 2026-10-10): migration 0009 adds the vault tables. New
+  agent runs route HTTP(S) through the egress proxy and redact agent secrets; runs started earlier
+  keep their environment until they are continued. Make sure `ca-certificates` is installed.
+- Upgrading to default workflows (AUT-006, #136, 2026-10-10): the default workflows now ship with
+  the binary (`catalog/workflows/`) and are read-only. On the first start the "Feature" and "Quick
+  task" rows seeded by earlier releases are retired (audited as `workflow.retired`); an edited
+  "Feature" is kept as "Feature (custom)", an edited "Quick task" stays as it is. Automations that
+  used "Quick task" continue without a workflow. No migration and no configuration.
 - Upgrading to dropped files (EDT-006, UI-048, 2026-10-10): raise the reverse proxy's request body
   limit to 32 MB (§4) or uploads between 16 and 25 MiB fail at the proxy with 413. No migration.
 - Upgrading to usage from the sessions and session-end tracking (F 2026-10-10 items 1(a)/(c)): no
@@ -536,7 +685,7 @@ Restore: stop the service, put the database copy at `yulius.db`, restore `master
   now `__Host-yulius_session`, so everyone signs in once more after the upgrade. Add the preview
   DNS and TLS configuration (§4) for live pages.
 
-Replace the binary and `systemctl restart yulius`. Live sessions keep running in their detached
+By hand (without the helper): replace the binary and `systemctl restart yulius`. Live sessions keep running in their detached
 hosts; the new server reconciles them on start (reattaches live runs, marks dead ones stopped,
 never respawns). Users' terminals keep running too and are adopted again before the server
 serves; a terminal whose host is gone (a machine reboot) or whose sandbox was removed is cleaned
@@ -544,7 +693,12 @@ up. Queued tasks start when capacity allows.
 
 ## 9. Security notes
 
-- The data directory is owner-only (0700); secrets are sealed with `master.key` (XChaCha20-Poly1305).
+- The data directory is owner-only (0700); secrets are sealed with `master.key` (XChaCha20-Poly1305);
+  vault secrets under envelope encryption (per-secret data keys wrapped by a key derived from
+  `master.key`), with re-authenticated, audited reveals (ADR-20).
+- Agent secrets are never given to agents: the egress proxy adds them for their bound hosts and
+  every channel an agent reads is redacted. Remaining threats (a bound host echoing a credential
+  in another form, misuse on its hosts, weak values, raw CDP): SPEC-002 ADR-20.
 - Agents receive per-run task tokens (MCP, hooks) and GitHub tokens restricted to their sandbox
   repository; provider credentials reach the agent process only through its environment.
 - Known open risks are listed in SPEC-002 §12 (notably R-07: Chromium's DevTools port is

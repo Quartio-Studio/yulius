@@ -401,14 +401,14 @@ pub struct BubblewrapSpec {
     /// namespace already makes the run uid 0; its host name is `join.hostname`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<SandboxIdentity>,
-    /// Join the sandbox's namespace holder (SPEC-002 ADR-20) instead of creating a user and
+    /// Join the sandbox's namespace holder (SPEC-002 ADR-21) instead of creating a user and
     /// network namespace: the run gets the sandbox's network, its writable system layer, its
     /// cgroup, a reduced capability set and the seccomp filter. `None`: the previous containment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join: Option<Box<SandboxJoin>>,
 }
 
-/// The sandbox namespace holder a contained run joins (SPEC-002 ADR-20).
+/// The sandbox namespace holder a contained run joins (SPEC-002 ADR-21).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxJoin {
     /// The holder process inside the namespaces.

@@ -1,4 +1,4 @@
-//! The per-sandbox namespace holder (SPEC-002 ADR-20 §1).
+//! The per-sandbox namespace holder (SPEC-002 ADR-21 §1).
 //!
 //! `yulius sandbox-host start --spec <state>/holder.json` ([`start`]) creates the namespaces
 //! with `bwrap` and the subordinate id map ([`crate::userns`]), waits until the holder inside is

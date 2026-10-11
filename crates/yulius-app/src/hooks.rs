@@ -170,6 +170,15 @@ impl App {
         self.runtime(&ctx.task.id)
             .hooks_seen
             .store(true, Ordering::SeqCst);
+        // An instance update pauses every task at its turn boundary, as a capacity pause does:
+        // the agent waits here and is never told (SPEC-002 ADR-18).
+        if matches!(event, events::STOP | events::USER_PROMPT_SUBMIT)
+            && self.hold_for_update(&ctx.task.id)
+        {
+            return Ok(HookReply::Hold {
+                retry_after_secs: crate::updates::HOLD_RETRY_SECS,
+            });
+        }
         match event {
             events::SESSION_START => Ok(HookReply::Output(
                 self.hook_session_start(&ctx, input).await?,

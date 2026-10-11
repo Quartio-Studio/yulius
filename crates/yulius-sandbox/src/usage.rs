@@ -1,4 +1,4 @@
-//! Disk usage of a sandbox for its soft quota (SPEC-002 ADR-20 §5): allocated blocks of every
+//! Disk usage of a sandbox for its soft quota (SPEC-002 ADR-21 §5): allocated blocks of every
 //! file under the given roots, without following links or crossing filesystems, bounded in
 //! entries.
 

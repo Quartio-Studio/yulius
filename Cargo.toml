@@ -11,6 +11,7 @@ members = [
     "crates/yulius-git",
     "crates/yulius-browser",
     "crates/yulius-import",
+    "crates/yulius-egress",
     "crates/yulius-server",
     "crates/yulius",
     "tools/xtask",
@@ -37,6 +38,7 @@ yulius-github = { path = "crates/yulius-github", version = "0.1.0" }
 yulius-git = { path = "crates/yulius-git", version = "0.1.0" }
 yulius-browser = { path = "crates/yulius-browser", version = "0.1.0" }
 yulius-import = { path = "crates/yulius-import", version = "0.1.0" }
+yulius-egress = { path = "crates/yulius-egress", version = "0.1.0" }
 yulius-server = { path = "crates/yulius-server", version = "0.1.0" }
 # External crates: exact minor pins; the lockfile holds exact versions.
 thiserror = "2.0.21"
@@ -64,6 +66,12 @@ hex = "0.4.3"
 base64 = "0.23.1"
 tempfile = "3.27.0"
 chacha20poly1305 = "0.11.0"
+# Secrets vault (SPEC-002 ADR-20): zeroed key material and plaintexts, constant-time comparisons,
+# and the egress proxy's certificate authority (leaf certificates for bound hosts).
+zeroize = { version = "1.9.1", features = ["std"] }
+subtle = "2.6.1"
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 # HTTPS client for `yulius import`/`login` (shared TLS decision: rustls with the ring provider).
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "http2", "charset", "form"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }

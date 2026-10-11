@@ -34,7 +34,7 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 | Method | Path | Body → Response |
 | --- | --- | --- |
 | GET | `/api/setup/status` | → `{"setup_required": bool}` |
-| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. Refused once a superadmin exists. |
+| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. Refused once a superadmin exists. The web UI's last setup step offers the optional Jev key with this session (`PUT /api/admin/jev`, ADM-001). |
 | POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; rate limited) |
 | GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
 | POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left); 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
@@ -648,7 +648,7 @@ resolves to nothing, the run gets the server without that variable or token.
     sandbox identity (their home; uid 0 with `sudo` when contained). The name defaults to
     "Terminal N", the lowest number free among the caller's shells there. At most 8 live shells
     per user and sandbox (429); 409 before the repository is cloned. In an isolated sandbox
-    (SPEC-002 ADR-20) the shell joins the sandbox's namespace holder (its own system layer, where
+    (SPEC-002 ADR-21) the shell joins the sandbox's namespace holder (its own system layer, where
     `sudo apt-get install` persists, and private network); 409 when the sandbox is over its disk
     quota (the message gives the figures); a task started then fails with that reason in its
     terminal ("Could not start: …").
@@ -681,6 +681,16 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/analytics/summary?sandbox&from&to` | read | → `AnalyticsSummary` |
 | GET | `/api/analytics/tasks?format=json|csv&sandbox&from&to` | read | → `[TaskRow]` or CSV |
 | GET | `/api/status` | signed in | → `Status` |
+| GET | `/api/update` | signed in | → `UpdateView` (below): the build and a running update's `phase` for everyone; the offered update, the last check, whether the helper is installed and the current or last run for the superadmin (OPS-006..OPS-009, SPEC-002 ADR-18) |
+| POST | `/api/admin/update/check` | superadmin | reads `main` now (a check younger than 30 s is reused) → `UpdateView` |
+| POST | `/api/admin/update` | superadmin | `{"commit","confirm":true}` → 202 `UpdateView`: installs exactly that commit, which must be the offered head of `main`; 422 without `confirm` or for a malformed commit, 409 without an installed helper, while an update runs, or for any other commit |
+| POST | `/api/admin/update/cancel` | superadmin | while building or pausing tasks: nothing is installed, paused tasks go on → `UpdateView`; 409 otherwise |
+| POST | `/api/admin/update/proceed` | superadmin | while pausing tasks: restart without waiting for tasks still in a turn → `UpdateView`; 409 otherwise |
+| GET | `/api/admin/jev` | superadmin | → `JevKeyView` (never the key) |
+| PUT | `/api/admin/jev` | superadmin | `{"key"}` (8–4096 printable characters, no spaces; 422 otherwise) → `JevKeyView`: sealed with the master key, used by task intake at once (ADM-002) |
+| DELETE | `/api/admin/jev` | superadmin | removes the saved key (the `YULIUS_JEV_API_KEY_FILE` key is used again, if any) → `JevKeyView` |
+| POST | `/api/admin/jev/adopt` | superadmin | saves the key of `YULIUS_JEV_API_KEY_FILE` in settings → `JevKeyView`; 409 without a usable file |
+| POST | `/api/admin/jev/test` | superadmin | one small Jev request with the key in use → `{"ok","result":"ok|refused|unreachable|timeout|invalid|none","message","latency_ms|null"}` |
 
 ```json
 AdminUser = {"id","github_login","display_name","is_instance_admin","disabled",
@@ -793,13 +803,77 @@ task-hours; `needed` = ⌈max(burn_24h × 168 ÷ 98, subscriptions × (active + 
 `add` = needed − subscriptions (SPEC-002 ADR-17 §2.4). `resumes_at` is set while no subscription is
 available. `id` and `in_use_by` are for instance administrators only.
 
+```json
+UpdateView = {"current":{"commit":"<40 hex>|null","short":"…|null"},
+  "phase":"building|pausing|restarting|resuming|null",
+  // superadmin only (null for everyone else):
+  "helper_installed":true,
+  "available":{"commit","short","summary":"A · B · C and 4 more","count":7,
+               "commits":[{"sha","short","title","author|null","date|null"}],
+               "relation":"behind|diverged|unknown"}|null,
+  "check":{"checked_at|null","error|null","via":"app|token|anonymous|null",
+           "relation":"up_to_date|behind|ahead|diverged|unknown|null","head|null"},
+  "run":{"id","target":{"commit","short"},"from":{"commit|null","short|null"},"summary",
+         "state":"building|pausing|restarting|resuming|succeeded|failed|rolled_back|cancelled",
+         "step":"fetching|verifying|compiling|built|pausing|stopping|backing_up|installing|starting|checking|rolling_back|resuming|…|null",
+         "message|null","progress":{"done","total"}|null,
+         "tasks":{"paused","total","waiting":[{"id","number","title","sandbox"}],"deadline|null"}|null,
+         "error|null","log_tail":["…"],"requested_by","started_at","state_since","finished_at|null",
+         "can_cancel","can_proceed"}|null}
+JevKeyView = {"configured","source":"settings|config|null","set_at|null","set_by|null",
+              "config_present","config_error|null"}
+```
+
+`available` lists the commits from the build to the head of `main` without merges and promotions,
+titles without their conventional prefix and pull request number. `run.progress` counts compiled
+crates while building and released tasks while resuming; `run.tasks` counts live tasks at a pause
+point while pausing. `log_tail` is filled only for a failed or rolled-back run. The internal
+listener also serves `GET /internal/version` → `{"commit|null","version"}` for the update
+helper's health check.
+
+## Secrets vault
+
+SPEC-001 VLT-001..009, SPEC-002 ADR-20. Values are never logged; responses that carry one have
+`Cache-Control: no-store`.
+
+**Team secrets** — every signed-in member.
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/team-secrets` | → `[TeamSecret]`: `{id, title, url, username, has_password, has_notes, has_totp, created_by, updated_by, updated_at, value_updated_at, rotate_due}` (never a password, notes or seed) |
+| POST | `/api/team-secrets` | `{title, url?, username?, password?, notes?, totp?}` → 201 `TeamSecret`. `totp`: base32 or `otpauth://totp/…` (422 otherwise) |
+| PATCH | `/api/team-secrets/{id}` | the same fields, each optional: absent keeps, `""` clears → `TeamSecret` |
+| DELETE | `/api/team-secrets/{id}` | → 204 |
+| POST | `/api/team-secrets/{id}/reveal` | `{purpose?: "show"\|"copy", fields?: ["password","notes","totp"]}` → `{password, notes, totp}` (only the asked, stored fields). Audited (`vault.team.reveal` / `vault.team.copy`) |
+| POST | `/api/team-secrets/{id}/totp` | → `{code, period, remaining}`. Audited (`vault.team.totp`) |
+| GET | `/api/auth/reauth` | → `{fresh, fresh_until, methods}`; `methods` ⊆ `["password", "github"]` |
+| POST | `/api/auth/reauth` | `{password}` (the superadmin) → the status; 403 for a wrong password (audited; the session stays signed in) or an account without a password, 429 after 5 attempts a minute |
+| GET | `/api/secrets/activity?limit=100` | → `[{at, actor, action, secret_id, detail}]`, newest first (≤ 500); an agent secret's entries only for members who can view its sandbox |
+
+Reveal and TOTP need a **fresh re-authentication**: the browser session was created, or
+re-authenticated, within the last 10 minutes. Otherwise they answer `403`
+`{"error": {"code": "reauth_required", …}, "reauth": {fresh, fresh_until, methods}}`; the client
+confirms with `POST /api/auth/reauth` (password) or by signing in with GitHub again
+(`/api/auth/github/start?next=<page>`), then retries. Bearer tokens never reveal (403).
+
+**Agent secrets** — values are write-only (never returned).
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, can_manage}` — the sandbox's and the instance-wide ones |
+| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts: [..], injection?: "none"\|"bearer"\|"basic"\|"header", header_name?, username?, value, totp?}` → 201. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 1–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks; `basic` needs `username`. 409 when the name already applies to the sandbox |
+| PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, totp` → `AgentSecret` (`value` replaces it; `""` clears `username`/`totp`) |
+| DELETE | `/api/agent-secrets/{id}` | → 204 |
+
 ## UI event stream
 
 `WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.removed",
 "task_id"}`, `{"type":"steps.updated","task_id"}`, `{"type":"message","task_id","message":Message}`,
 `{"type":"sandbox.updated","sandbox":Sandbox}`, `{"type":"browser.action_requested","sandbox_id",
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
-`{"type":"account.updated","account":Account}` (instance administrators only), `{"type":"resync"}`.
+`{"type":"account.updated","account":Account}` (instance administrators only),
+`{"type":"update.updated","phase":"building|pausing|restarting|resuming|null"}` (an update was
+found or moved; clients refetch `GET /api/update`), `{"type":"resync"}`.
 
 Sandbox views depend on the viewer's access level, so after a sandbox change (import, create,
 onboarding transitions, removal) the server publishes `resync` to that sandbox's viewers (or
@@ -830,3 +904,25 @@ rate limits become the run's subscription's 5-hour and weekly windows (SPEC-002 
 when they change (at once for a move of a point or more, a reset or crossing 98 %, otherwise at
 most every 15 s) and sampled for the burn rate at most every 5 minutes (`usage_samples.source`
 `session`).
+
+While an instance update pauses the tasks (SPEC-002 ADR-18) every `Stop` and `UserPromptSubmit`
+answers `202` with `Retry-After: 3` until the server that runs after the update releases the
+task; other hooks answer as usual.
+
+`PostToolUse` is not forwarded: the hook client redacts the tool result inside the sandbox
+(below).
+
+### Agent secrets on the internal listener (SPEC-002 ADR-20)
+
+- **Egress proxy**: a `CONNECT host:port` or an absolute-form `http://` request to the internal
+  listener is a proxy request, authenticated with `Proxy-Authorization: Basic
+  base64("yulius:" + task token)` (407 otherwise). Hosts bound to an agent secret of the run's
+  sandbox are intercepted (credential added, placeholders `yulius-secret-NAME` replaced,
+  `X-Yulius-Secret: NAME` chooses between secrets adding the same header, 409 when ambiguous;
+  the response redacted); other hosts are tunneled. Local destinations answer 403.
+- `POST /internal/scrub/fingerprints` (task token) → `{version, base, salt, names, needles:
+  [{secret, len, rolling, digest}]}`: the run's redaction fingerprints (no values).
+- `POST /internal/scrub/report` (task token) `{channel: "bash"|"tool", names}` → 204; audited
+  once per run, secret and channel (`vault.agent.redacted`).
+- MCP: `secrets_list` and `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
+  selector?}`; every MCP result is redacted.

@@ -1961,3 +1961,66 @@ a.dl-task:hover { text-decoration: underline; }
 }
 button.task-group-head:hover { color: var(--text); }
 
+
+/* instance updates (updates.js, pages/instance.js; SPEC-002 ADR-18) and the Jev key (jevkey.js) */
+.update-banner { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: min(460px, 36vw); height: var(--control-md); padding: 0 6px 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); background: var(--surface-2); color: var(--text); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.update-banner[hidden] { display: none; }
+.update-banner.update-info { border-color: var(--accent-border); }
+.update-banner.update-info > .icon { color: var(--accent-fg); }
+.update-banner.update-warn { border-color: var(--warn-border); }
+.update-banner.update-warn > .icon { color: var(--warn); }
+.update-banner .icon { flex: none; }
+.update-text { display: block; min-width: 0; padding: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: none; }
+a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
+.update-close, .update-action { flex: none; display: inline-flex; align-items: center; justify-content: center; height: var(--control-sm); padding: 0 6px; border: 0; border-radius: var(--radius-full); background: transparent; color: var(--muted); cursor: pointer; font: inherit; }
+.update-close:hover, .update-action:hover { background: var(--surface-3); color: var(--text); }
+.update-action { color: var(--accent-fg); font-weight: 600; }
+.update-banner .spinner, .update-step-mark .spinner, .jev-test .spinner { display: inline-block; width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; }
+.update-banner .spinner { color: var(--accent-fg); }
+.instance-body { gap: 12px; padding: 16px 20px; }
+.instance-version { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.update-offer, .update-run { display: flex; flex-direction: column; gap: 12px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); }
+.update-commits { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.update-commits li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: var(--control-sm); }
+.update-commits a { display: inline-flex; align-items: center; min-height: var(--control-sm); }
+.update-steps { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.update-step { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 12px; align-items: start; }
+.update-step-mark { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--border-strong); color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.update-step-done .update-step-mark { border-color: var(--ok); background: var(--ok-soft); color: var(--ok-fg); }
+.update-step-current .update-step-mark { border-color: var(--accent); color: var(--accent-fg); }
+.update-step-next .update-step-title { color: var(--text-2); }
+.update-step-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.update-step-title { font-weight: 600; }
+.update-progress { display: flex; align-items: center; gap: 8px; }
+.update-track { position: relative; flex: 1; height: 6px; border-radius: var(--radius-full); background: var(--surface-3); overflow: hidden; }
+.update-fill { height: 100%; border-radius: var(--radius-full); background: var(--accent); transition: width var(--duration-slow) ease-out; }
+.update-track.indeterminate .update-fill { width: 30%; animation: update-slide var(--duration-spin-slow) ease-in-out infinite; }
+@keyframes update-slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.update-count { flex: none; font-variant-numeric: tabular-nums; }
+.update-outcome { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.update-outcome-ok { border-color: var(--ok-border); }
+.update-outcome-ok > .row .icon { color: var(--ok); }
+.update-outcome-danger { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger-fg-strong); }
+.update-log { max-height: 240px; overflow: auto; margin: 0; padding: 8px 12px; border-radius: var(--radius); background: var(--surface-3); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: pre-wrap; }
+.update-confirm-steps { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 20px; }
+.jev-status { display: flex; align-items: center; gap: 8px; }
+.jev-status.jev-on .icon { color: var(--ok); }
+.jev-form { display: flex; flex-direction: column; gap: 8px; max-width: 520px; }
+.jev-test { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.jev-test-ok .icon { color: var(--ok); }
+.jev-test-warn .icon { color: var(--warn); }
+.jev-test-danger { color: var(--danger-fg); }
+.auth-step { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+@media (prefers-reduced-motion: reduce) {
+  .update-track.indeterminate .update-fill { animation: none; }
+}
+@media (max-width: 767px) {
+  .update-banner { max-width: 44vw; }
+}
+/* Secrets page (VLT-001..009): revealed values wrap and stay selectable; the activity trail is
+   a quiet list. */
+.secret-value { word-break: break-all; user-select: all; }
+.secret-notes { max-height: 240px; overflow: auto; }
+.section-title { margin: 16px 0 0; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
+.plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.stack-tight { display: flex; flex-direction: column; gap: 4px; }

@@ -1,5 +1,5 @@
 //! Starting `bwrap` in a new user namespace whose id map covers a subordinate range
-//! (SPEC-002 ADR-20 §1).
+//! (SPEC-002 ADR-21 §1).
 //!
 //! An unprivileged `bwrap` can only map the caller's own id. With `--userns-block-fd` it leaves
 //! the map to us: it reports the namespace's process on `--info-fd`, waits, and we write the

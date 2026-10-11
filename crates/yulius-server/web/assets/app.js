@@ -32,6 +32,9 @@ import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
+import { mountInstancePage } from './pages/instance.js';
+import { createUpdateBanner } from './updates.js';
+import { mountSecretsPage } from './pages/secrets.js';
 import { mountDesignPage } from './pages/design.js';
 import { mountHomePage } from './pages/home.js';
 import { IS_MAC, showShortcuts } from './shortcuts.js';
@@ -48,6 +51,7 @@ const SANDBOX_PAGES = {
   skills: (ctx, sandbox, route) => mountSkillsPage(ctx, sandbox, route),
   automations: (ctx, sandbox) => mountAutomationsPage(ctx, sandbox),
   mcp: (ctx, sandbox, route) => mountMcpPage(ctx, sandbox, route),
+  secrets: (ctx, sandbox, route) => mountSecretsPage(ctx, sandbox, route),
   dashboard: (ctx, sandbox) => mountDashboardPage(ctx, sandbox),
 };
 
@@ -55,6 +59,7 @@ const ADMIN_PAGES = {
   users: mountUsersPage,
   accounts: mountAccountsPage,
   github: mountGithubPage,
+  instance: mountInstancePage,
 };
 
 function createApp(root, transport) {
@@ -207,6 +212,8 @@ function createApp(root, transport) {
     }
     if (ctx.notifications) ctx.notifications.destroy();
     ctx.notifications = null;
+    if (ctx.updates) ctx.updates.destroy();
+    ctx.updates = null;
     shell = null;
     store.state.me = null;
     unsubscribers.splice(0).forEach((off) => off());
@@ -228,7 +235,13 @@ function createApp(root, transport) {
     // Live-updates outage (PERF-08): said after 5 s without the event stream (at once when it gave
     // up), with Retry; the network coming back or the tab being shown again retries at once.
     const connBanner = h('div', { class: 'conn-banner', role: 'status', hidden: true });
+    // Instance updates (SPEC-002 ADR-18): a calm banner while one runs and "Update available".
+    const updates = createUpdateBanner(ctx);
+    ctx.updates = updates;
     setChildren(root, skip, appEl, backdrop, connBanner);
+    const tabRight = tabRow.el.querySelector('.tabrow-right');
+    if (tabRight) tabRight.prepend(updates.el);
+    else root.append(updates.el);
     new MutationObserver(syncDrawer).observe(appEl, { attributes: true, attributeFilter: ['class'] });
     syncDrawer();
     ctx.openNewTask = (sandbox) => openNewTask(sandbox);
@@ -246,9 +259,11 @@ function createApp(root, transport) {
     const showConn = () => {
       const status = store.state.eventsStatus;
       const offline = navigator.onLine === false;
+      const restarting = !offline && ctx.updates && ctx.updates.restarting();
       const text = offline
         ? `You’re offline. ${BRAND.name} reconnects when the network is back.`
-        : status === 'failed' ? `Can’t reach ${BRAND.name}. Live updates stopped.` : `Can’t reach ${BRAND.name}. Reconnecting…`;
+        : restarting ? `${BRAND.name} is restarting for an update. Reconnecting…`
+          : status === 'failed' ? `Can’t reach ${BRAND.name}. Live updates stopped.` : `Can’t reach ${BRAND.name}. Reconnecting…`;
       setChildren(connBanner, icon('warn', { size: 14 }), h('span', null, text),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => store.retryEvents() }, 'Retry now'));
       connBanner.hidden = false;
@@ -571,6 +586,10 @@ function createApp(root, transport) {
         break;
       case 'settings':
         setCenter('settings', () => mountSettingsPage(ctx));
+        break;
+      case 'secrets':
+        // Team secrets without a sandbox (the user menu); agent secrets need one.
+        setCenter('secrets', () => mountSecretsPage(ctx, null, route));
         break;
       case 'design':
         setCenter('design', () => mountDesignPage(ctx));

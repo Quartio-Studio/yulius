@@ -1,4 +1,4 @@
-//! Contained runs in isolated sandboxes (SPEC-002 ADR-20): asking the isolation adapter for the
+//! Contained runs in isolated sandboxes (SPEC-002 ADR-21): asking the isolation adapter for the
 //! sandbox's holder and holding a lease until the run's process has joined it.
 
 use std::sync::Arc;

@@ -290,19 +290,23 @@ fn bearer_of(headers: &BTreeMap<String, String>) -> (Option<String>, Vec<String>
 
 impl App {
     /// The value of the secret `name` for runs in `sandbox`, for `${secret:NAME}` references in
-    /// MCP configuration (MCP-003). This is the hook of the agent-secrets vault: until it
-    /// answers, no reference resolves and the referencing variable or header is left out of the
-    /// run (with a warning), never passed on as the literal reference.
+    /// MCP configuration (MCP-003, VLT-009): the agent secret of that NAME that applies to the
+    /// sandbox (its own or an instance-wide one). An unknown name does not resolve, and the
+    /// referencing variable or header is left out of the run (with a warning), never passed on
+    /// as the literal reference. The value reaches the run's environment for the MCP client;
+    /// every channel the agent reads redacts it (SPEC-002 ADR-20).
     ///
     /// # Errors
-    /// Failures of the secret store (none yet).
+    /// Store or decryption failures.
     pub async fn resolve_secret_ref(
         &self,
         sandbox: &SandboxRecord,
         name: &str,
     ) -> AppResult<Option<String>> {
-        let _ = (sandbox, name);
-        Ok(None)
+        Ok(self
+            .agent_secret_value(&sandbox.id, name)
+            .await?
+            .map(|value| value.to_string()))
     }
 
     /// A stored secret value for a run: itself, or what its reference resolves to.

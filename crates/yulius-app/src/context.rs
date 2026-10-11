@@ -163,7 +163,11 @@ pub struct App {
     pub instance_tag: String,
     /// Task intake (Jev, split proposals); unset means nothing is checked (SPEC-002 ADR-16).
     pub(crate) intake: OnceLock<crate::intake::IntakeServices>,
-    /// Sandbox isolation (SPEC-002 ADR-20); unset: contained runs keep the previous containment.
+    /// Instance updates: checks of `main` and the update run (SPEC-002 ADR-18).
+    pub(crate) updates: crate::updates::UpdateState,
+    /// Secrets vault runtime state (SPEC-002 ADR-20).
+    pub(crate) vault: crate::vault::VaultState,
+    /// Sandbox isolation (SPEC-002 ADR-21); unset: contained runs keep the previous containment.
     pub(crate) isolation: OnceLock<Arc<dyn crate::ports::isolation::SandboxIsolation>>,
 }
 
@@ -191,11 +195,13 @@ impl App {
             previews: crate::preview::PreviewState::default(),
             uploads: crate::uploads::UploadState::default(),
             intake: OnceLock::new(),
+            updates: crate::updates::UpdateState::default(),
+            vault: crate::vault::VaultState::default(),
             isolation: OnceLock::new(),
         })
     }
 
-    /// Installs sandbox isolation (once; SPEC-002 ADR-20). Returns whether it was set.
+    /// Installs sandbox isolation (once; SPEC-002 ADR-21). Returns whether it was set.
     pub fn set_isolation(
         &self,
         isolation: Arc<dyn crate::ports::isolation::SandboxIsolation>,

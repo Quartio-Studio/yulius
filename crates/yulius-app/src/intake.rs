@@ -115,10 +115,15 @@ pub struct HoldRecord {
     pub new_task_id: Option<TaskId>,
 }
 
-/// The intake services an instance runs with. Without `jev` nothing is checked.
+/// The intake services an instance runs with. Without a Jev evaluator nothing is checked.
 pub struct IntakeServices {
-    /// TypeSafe's Jev.
-    pub jev: Option<Arc<dyn ChoiceEvaluator>>,
+    /// TypeSafe's Jev in use; replaced at once when a superadmin sets or removes the key
+    /// (SPEC-001 ADM-002, `jev_key.rs`).
+    pub(crate) jev: std::sync::RwLock<Option<crate::jev_key::ActiveJev>>,
+    /// Builds evaluators from keys (none: the key cannot be managed, e.g. in tests).
+    pub(crate) connector: Option<Arc<dyn crate::ports::intake::JevConnector>>,
+    /// The key of `YULIUS_JEV_API_KEY_FILE`, or why it is not usable.
+    pub(crate) config_key: Result<Option<crate::model::Secret>, String>,
     /// Headless Claude for split proposals.
     pub proposer: Option<Arc<dyn SplitProposer>>,
     /// Probability of "several" needed to propose a split.
@@ -129,19 +134,35 @@ pub struct IntakeServices {
 }
 
 impl IntakeServices {
-    /// Services with the default thresholds.
+    /// Services with the default thresholds and a fixed evaluator (`None`: nothing is checked).
     #[must_use]
     pub fn new(
         jev: Option<Arc<dyn ChoiceEvaluator>>,
         proposer: Option<Arc<dyn SplitProposer>>,
     ) -> Self {
         Self {
-            jev,
+            jev: std::sync::RwLock::new(jev.map(crate::jev_key::ActiveJev::fixed)),
+            connector: None,
+            config_key: Ok(None),
             proposer,
             split_threshold: policy::DEFAULT_SPLIT_THRESHOLD,
             scope_threshold: policy::DEFAULT_SCOPE_THRESHOLD,
             permits: Arc::new(tokio::sync::Semaphore::new(MAX_PROPOSALS)),
         }
+    }
+
+    /// The same services with a key manager: `connector` builds evaluators from keys a
+    /// superadmin saves; `config_key` is the key of `YULIUS_JEV_API_KEY_FILE` (or why it is not
+    /// usable), used while no key is saved. [`App::load_jev_key`] picks the key in use.
+    #[must_use]
+    pub fn with_key_management(
+        mut self,
+        connector: Arc<dyn crate::ports::intake::JevConnector>,
+        config_key: Result<Option<crate::model::Secret>, String>,
+    ) -> Self {
+        self.connector = Some(connector);
+        self.config_key = config_key;
+        self
     }
 
     /// The same services with these thresholds (each clamped to 0.5–1).
@@ -181,9 +202,10 @@ impl App {
         self.intake.set(services).is_ok()
     }
 
-    pub(crate) fn jev(&self) -> Option<(&Arc<dyn ChoiceEvaluator>, &IntakeServices)> {
+    pub(crate) fn jev(&self) -> Option<(Arc<dyn ChoiceEvaluator>, &IntakeServices)> {
         let services = self.intake.get()?;
-        services.jev.as_ref().map(|jev| (jev, services))
+        let jev = services.jev.read().ok()?.as_ref()?.evaluator.clone();
+        Some((jev, services))
     }
 
     /// Records that `user` typed into `task`'s terminal now (a prompt submitted soon after is
@@ -278,9 +300,8 @@ impl App {
                 "the prompt must be 1 byte to 64 KiB".into(),
             ));
         }
-        let services = self
-            .intake
-            .get()
+        let (_, services) = self
+            .jev()
             .ok_or_else(|| AppError::Conflict("split proposals are not configured".into()))?;
         let proposer = services
             .proposer

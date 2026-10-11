@@ -2,14 +2,17 @@
 
 pub mod browser;
 pub mod clock;
+pub mod egress;
 pub mod git;
 pub mod github;
 pub mod github_client;
 pub mod harness;
 pub mod jev;
 pub mod pending;
+pub mod release;
 pub mod sandbox;
 pub mod session;
 pub mod split;
 pub mod system;
+pub mod update_files;
 pub mod usage;

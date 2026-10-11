@@ -143,7 +143,29 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
     ];
     tools.extend(crate::browser::tool_descriptors());
+    tools.extend(secret_tool_descriptors());
     tools
+}
+
+/// Agent-secret tools (SPEC-002 ADR-20): names only, and typing into the sandbox browser.
+fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
+    vec![
+        ToolDescriptor {
+            name: "secrets_list".into(),
+            description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "browser_fill_secret".into(),
+            description: "Type an agent secret into the project browser without seeing it: its value (password or key), its user name, or its current two-factor (TOTP) code, into the focused field or the element matching selector, in a tab whose page is on one of the secret's bound hosts. Use browser_snapshot first to find the field.".into(),
+            input_schema: schema(json!({
+                "tab_id": {"type": "string", "description": "Tab from browser_tabs or browser_open"},
+                "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
+                "field": {"type": "string", "enum": ["value", "password", "username", "totp"], "description": "What to type (default value; password is the same as value)"},
+                "selector": {"type": "string", "description": "CSS selector of the field to focus first"}
+            }), &["tab_id", "secret"]),
+        },
+    ]
 }
 
 impl App {
@@ -231,11 +253,16 @@ impl App {
             "browser_request_user_action" => {
                 self.tool_browser_request_user_action(ctx, &args).await
             }
+            "secrets_list" => self.tool_secrets_list(ctx).await,
+            "browser_fill_secret" => self.tool_browser_fill_secret(ctx, &args).await,
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         };
         match outcome {
             Ok(value) => {
-                let mut text = serde_json::to_string_pretty(&value).unwrap_or_default();
+                // No tool result carries an agent secret's value (SPEC-002 ADR-20): page text,
+                // messages, task prompts and everything else are redacted before the agent.
+                let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+                let mut text = self.redact_for_sandbox(&ctx.task.sandbox_id, &text).await;
                 if text.len() > MAX_RESULT_BYTES {
                     let mut cut = MAX_RESULT_BYTES;
                     while !text.is_char_boundary(cut) {
@@ -246,7 +273,11 @@ impl App {
                 }
                 text_result(text, false)
             }
-            Err(err) => text_result(err.public_message(), true),
+            Err(err) => text_result(
+                self.redact_for_sandbox(&ctx.task.sandbox_id, &err.public_message())
+                    .await,
+                true,
+            ),
         }
     }
 }

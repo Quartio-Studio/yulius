@@ -178,7 +178,7 @@ fn identity_files(login: &str, display_name: &str, home: &Path) -> (String, Stri
     (passwd, group)
 }
 
-/// The identity files of an isolated sandbox (ADR-20): the user's line first, then the sandbox
+/// The identity files of an isolated sandbox (ADR-21): the user's line first, then the sandbox
 /// system's own users and groups (system users of packages it installed included), so names
 /// resolve as on the system while uid 0 is named after the user. Lines naming the login are
 /// left out of the system part; at most 4096 lines of each are kept.
@@ -303,7 +303,7 @@ impl App {
         write_file(&identity_dir.join("group"), group.as_bytes(), 0o644)?;
         let bin = self.runtime_bin()?;
         env.push(("HOME".into(), home.to_string_lossy().into_owned()));
-        // In an isolated sandbox (ADR-20) the system layer has root's tools and the sudo shim
+        // In an isolated sandbox (ADR-21) the system layer has root's tools and the sudo shim
         // as /usr/bin/sudo (a dpkg diversion), so only the identity files are bound.
         let path = if join.is_some() {
             crate::isolation::SANDBOX_PATH.to_owned()

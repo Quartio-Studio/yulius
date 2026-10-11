@@ -1,4 +1,4 @@
-//! The server's side of sandbox isolation (SPEC-002 ADR-20): holders on demand, their relays,
+//! The server's side of sandbox isolation (SPEC-002 ADR-21): holders on demand, their relays,
 //! limits, quotas, idle stops, base builds and adoption after a restart.
 //!
 //! Ownership and bounds:
