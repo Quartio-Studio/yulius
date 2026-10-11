@@ -551,8 +551,8 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         page.body["session"]["can_delete"], false,
         "only the uploader or an admin deletes"
     );
-    // Ordinary tasks are still blocked while the sandbox is being prepared.
-    let blocked = call(
+    // Ordinary tasks wait while the sandbox is being prepared: created, not started.
+    let waiting = call(
         &w.h.router,
         Method::POST,
         &format!("/api/sandboxes/{}/tasks", sandbox.id),
@@ -560,7 +560,8 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         &alice,
     )
     .await?;
-    assert_eq!(blocked.status, StatusCode::CONFLICT);
+    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
+    assert_eq!(waiting.body["status"], "chained");
     let early = call(
         &w.h.router,
         Method::POST,

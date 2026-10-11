@@ -1647,13 +1647,16 @@ already holds, so unchanged sessions are never offered. Sessions arrive redacted
 triggers: `pending → preparing` when the preparation task starts — by itself, at once for a
 repository added in the UI and when the import is applied for `yulius onboard` (also
 `POST …/onboarding/approve`, kept for a pending sandbox whose start failed; a missing preparation
-task is created then); `preparing → ready` when the task rests after running and the project
-validates in its worktree or the clone (re-evaluated on reads, task closes and the gate);
+task is created then); `preparing → ready` when the task has finished — it rests after running, or its turn ended
+with every step of its plan resolved — and the project validates in its worktree or the clone
+(re-evaluated on reads, turn ends, task closes and the gate);
 `→ skipped` by an admin. Failure: a start failure leaves `pending` (shown with what is pending);
 no subscription with capacity leaves the task paused and the sandbox `preparing` (ADR-17). While
-`pending/preparing`, `App::ensure_tasks_may_start` refuses every task start other than the
-preparation task's — create, chain, automation run, continue, continuing an imported session —
-with a 409 (U-08, IMP-010). `App::onboarding_status` gives the state, a summary and the pending
+`pending/preparing`, a new task (create, held-prompt choice, chain, automation run) is created
+`chained` after the preparation task (`App::onboarding_wait`) and released by `advance_chains`
+when the sandbox is `ready` or `skipped` (re-checked at the preparation task's turn ends, by the
+chain tick and at once on a skip); Start now releases one at once. Continuing a resting task or
+an imported session is refused with a 409 (`App::ensure_tasks_may_start`; U-08, IMP-010). `App::onboarding_status` gives the state, a summary and the pending
 items (the CLI and the plan show them).
 
 ### 6.7 Delivery (per task)
@@ -2395,6 +2398,8 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-11 (F 2026-10-11): §6.6 tasks wait for preparation instead of a 409, and a finished
+  preparation turn (plan done, docs valid) makes the sandbox ready.
 - 2026-10-11: editorial — §2 decision records and their index table in ADR order (two §2.5
   sections are now §2.5 ADR-18 and §2.6 ADR-19); no decision changed.
 - 2026-10-11 (F 2026-10-09, decision on #88): §8 the client address of per-client limits — the

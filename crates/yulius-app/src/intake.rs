@@ -506,7 +506,11 @@ impl App {
                 let created = self
                     .held_new_task(&decision, hold_state::PARALLEL, None)
                     .await?;
-                let note = format!("Started #{} in parallel.", created.number);
+                let note = if created.status == TaskStatus::Chained {
+                    started_later(created.number)
+                } else {
+                    format!("Started #{} in parallel.", created.number)
+                };
                 (Some(created), note)
             }
             "after" => {
@@ -726,7 +730,11 @@ impl App {
                 };
                 let created = self.create_task_with(req, None).await?;
                 d.link(self, hold_state::REVERTED, &created.id).await;
-                let note = format!("{note} Started #{}.", created.number);
+                let note = if created.status == TaskStatus::Chained {
+                    format!("{note} {}", started_later(created.number))
+                } else {
+                    format!("{note} Started #{}.", created.number)
+                };
                 Ok((Some(created), note))
             }
             Err(err) => {
@@ -874,4 +882,9 @@ impl Decision<'_> {
             )
             .await;
     }
+}
+
+/// The note for a new task that waits for the sandbox's preparation (U-08).
+fn started_later(number: u32) -> String {
+    format!("#{number} starts by itself once this project's preparation is done.")
 }

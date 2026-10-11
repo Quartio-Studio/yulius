@@ -89,7 +89,19 @@ impl App {
             .await?
             .filter(|s| s.removed_at.is_none())
             .ok_or(AppError::NotFound)?;
-        self.ensure_tasks_may_start(&sandbox.id, req.origin).await?;
+        // While the sandbox is being prepared a new task is not refused: it waits after the
+        // preparation task and starts by itself once the sandbox is ready (U-08, IMP-010).
+        let after = match after {
+            Some(task) => Some(task),
+            None if req.start => match self.onboarding_wait(&sandbox.id, req.origin).await? {
+                Some(preparation) => {
+                    self.ensure_chain_room(&sandbox.id).await?;
+                    Some(preparation)
+                }
+                None => None,
+            },
+            None => None,
+        };
         let prompt = req.prompt.trim().to_owned();
         if prompt.is_empty() || prompt.len() > MAX_PROMPT_BYTES {
             return Err(AppError::Invalid(
