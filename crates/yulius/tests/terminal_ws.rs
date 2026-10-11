@@ -565,6 +565,13 @@ async fn the_active_viewer_sets_the_size_and_an_idle_one_hands_it_over() -> Test
         sized(v, true, 100, 30)
     })
     .await?;
+    // Carol's view must have seen the click first: her last state is still the earlier
+    // 150×45 control, so waiting for that below would pass at once, before alice has left, and
+    // carol's typing would race alice's departure (seen on a loaded CI runner).
+    read_until(&mut c, &mut cv, "carol watches alice's click", |v| {
+        sized(v, false, 100, 30)
+    })
+    .await?;
     drop(a);
     read_until(
         &mut c,

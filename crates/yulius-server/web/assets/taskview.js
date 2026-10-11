@@ -104,8 +104,12 @@ export function mountTaskView(ctx, sandbox, task) {
     exitActions: (exit) => {
       const message = endedMessage(exit.status || current.status);
       const actions = [];
-      if (message.accounts && ctx.openStatus) actions.push({ label: 'Check AI accounts', run: () => ctx.openStatus() });
-      if (taskActions(current, sandbox.access).continue || allows(sandbox.access, 'write')) {
+      // Administrators go to the Subscriptions page, where a subscription signs in again; everyone
+      // else sees the subscriptions' state in the Status panel (#147).
+      if (message.accounts) actions.push({ label: 'Check subscriptions', run: () => (ctx.isInstanceAdmin() ? ctx.navigate('/admin/accounts') : ctx.openStatus && ctx.openStatus()) });
+      // The exit can arrive before the task's new status: write access is enough, but an archived
+      // task is restored first, as in its menu (taskActions).
+      if (allows(sandbox.access, 'write') && !current.archived) {
         actions.push({ label: message.retry ? 'Try again' : 'Continue', run: () => continueTask(ctx, current) });
       }
       return actions;
@@ -269,7 +273,7 @@ export function mountTaskView(ctx, sandbox, task) {
         renderStrip();
       }
     } catch (error) {
-      if (alive && error.status !== 404) errorToast(error, 'Could not load task details');
+      if (alive && error.status !== 404) errorToast(error, 'Couldn’t load task details');
     }
     if (alive) renderStepList();
   }
@@ -583,7 +587,7 @@ export function mountComposer(ctx, sandbox) {
       await ctx.store.loadTasks(sandbox.id).catch(() => null);
       toast('Preparation started.', { kind: 'ok' });
     } catch (error) {
-      errorToast(error, 'Could not start preparation');
+      errorToast(error, 'Couldn’t start preparation');
     }
   }
 
@@ -599,7 +603,7 @@ export function mountComposer(ctx, sandbox) {
       if (updated && updated.id) ctx.store.upsertSandbox(updated);
       toast('Preparation skipped; tasks can start now.', { kind: 'ok' });
     } catch (error) {
-      errorToast(error, 'Could not skip preparation');
+      errorToast(error, 'Couldn’t skip preparation');
     }
   }
 
@@ -672,7 +676,7 @@ export function mountComposer(ctx, sandbox) {
     try {
       await work();
     } catch (error) {
-      errorToast(error, 'Could not start the task');
+      errorToast(error, 'Couldn’t start the task');
     } finally {
       idle();
     }
@@ -722,7 +726,7 @@ export function mountComposer(ctx, sandbox) {
       if (afterTaskId) body.after_task_id = afterTaskId;
       opened(await createTask(body));
     } catch (error) {
-      errorToast(error, 'Could not start the task');
+      errorToast(error, 'Couldn’t start the task');
     } finally {
       idle();
     }

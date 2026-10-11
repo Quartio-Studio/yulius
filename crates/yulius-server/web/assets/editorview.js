@@ -70,7 +70,7 @@ function loadMonaco() {
         resolve(window.monaco);
       }, (error) => reject(error));
     };
-    script.onerror = () => reject(new Error('The editor could not be loaded.'));
+    script.onerror = () => reject(new Error('The editor couldn’t be loaded.'));
     document.head.append(script);
   }).catch((error) => { monacoPromise = null; throw error; });
   return monacoPromise;
@@ -292,8 +292,8 @@ export function createEditorView(ctx, sandbox, getTask) {
       if (listing.truncated) toast(`Only the first ${listing.entries.length} entries of ${path || 'the folder'} are shown.`, { kind: 'info' });
     } catch (error) {
       expanded.delete(path);
-      if (path === '') setChildren(tree, h('div', { class: 'panel-msg' }, error.status === 409 ? 'The editor opens once the sandbox repository has been cloned.' : (error.message || 'Could not list files.')));
-      else errorToast(error, 'Could not list the folder');
+      if (path === '') setChildren(tree, h('div', { class: 'panel-msg' }, error.status === 409 ? 'The editor opens once the sandbox repository has been cloned.' : (error.message || 'Couldn’t list files.')));
+      else errorToast(error, 'Couldn’t list the folder');
       return;
     }
     renderTree();
@@ -383,7 +383,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     try {
       await api.post(`/api/sandboxes/${sid}/files`, { root, path, kind });
     } catch (error) {
-      errorToast(error, `Could not create ${path}`);
+      errorToast(error, `Couldn’t create ${path}`);
       return;
     }
     await loadDir(dir);
@@ -401,7 +401,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     try {
       await api.del(`/api/sandboxes/${sid}/files?${query(entry.path)}`);
     } catch (error) {
-      errorToast(error, `Could not delete ${entry.path}`);
+      errorToast(error, `Couldn’t delete ${entry.path}`);
       return;
     }
     for (const tab of [...tabs]) if (tab.path === entry.path || tab.path.startsWith(`${entry.path}/`)) closeTab(tab, true);
@@ -416,7 +416,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     try {
       monaco = await loadMonaco();
     } catch (error) {
-      errorToast(error, 'The editor could not be loaded');
+      errorToast(error, 'The editor couldn’t be loaded');
       return false;
     }
     defineEditorTheme(monaco); // the host is in place now: take its theme
@@ -446,7 +446,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     try {
       file = await api.get(`/api/sandboxes/${sid}/files/content?${query(path)}`);
     } catch (error) {
-      errorToast(error, `Could not open ${path}`);
+      errorToast(error, `Couldn’t open ${path}`);
       return;
     }
     if (file.binary || file.too_large || file.content == null) {
@@ -581,7 +581,7 @@ export function createEditorView(ctx, sandbox, getTask) {
         if (choice === 'overwrite') return save(tab, true);
         if (choice === 'reload') { tab.dirty = false; await refreshFromDisk(tab); }
       } else {
-        errorToast(error, `Could not save ${tab.path}`);
+        errorToast(error, `Couldn’t save ${tab.path}`);
       }
     } finally {
       tab.saving = false;

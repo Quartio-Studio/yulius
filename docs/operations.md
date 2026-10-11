@@ -41,7 +41,7 @@ sudo -u yulius yulius doctor --data-dir /var/lib/yulius --contained
 ```
 
 The agent CLIs must be installed for (and logged-in state is never taken from) the `yulius` user:
-provider accounts are added inside Yulius (Administration → Accounts), not with the CLIs' own
+Claude subscriptions are added inside Yulius (user menu → Administration → Subscriptions), not with the CLIs' own
 `login` on the VM.
 
 ## 3. systemd unit
@@ -502,18 +502,18 @@ wins over the file.
    warnings: **the password cannot be recovered** (SPEC-001 ACC-002). Store the recovery code
    shown next. The last step asks for the Jev API key (optional; skip it to add it later in
    Settings → Instance).
-3. Administration → GitHub: create the GitHub App with the manifest flow for the owner account or
+3. User menu → Administration → GitHub connection: create the GitHub App with the manifest flow for the owner account or
    organization, then install it on the repositories Yulius may use. The App's callback URLs point
    at `YULIUS_PUBLIC_URL`. The manifest requests the permissions below.
-4. Administration → Users: admit GitHub logins; they sign in with GitHub. Repository access in
+4. User menu → Administration → Users: admit GitHub logins; they sign in with GitHub. Repository access in
    Yulius mirrors their GitHub permissions (read / write / admin). The superadmin owns the
    instance and sees every sandbox with admin access without GitHub (SPEC-001 ACC-012); pull
    requests it opens are authored by the GitHub App, and merging or releasing, which act as a
    person on GitHub, are done on GitHub or after signing in with GitHub as an admitted user.
-5. Administration → Accounts: add Claude subscriptions; each login runs Claude's own sign-in in a
+5. User menu → Administration → Subscriptions: add Claude subscriptions; each login runs Claude's own sign-in in a
    terminal in the browser. They form one pool with nothing to configure: tasks are
    subscription-agnostic; Yulius places them on the capacity that expires soonest, moves them at
-   98 % at a turn boundary, pauses them (without telling the agent) only while no subscription has
+   98% at a turn boundary, pauses them (without telling the agent) only while no subscription has
    capacity left and resumes them by itself. The capacity panel there and on the Dashboard says
    when to add subscriptions (SPEC-002 ADR-17). Claude's sign-in here (`claude setup-token`) may
    not read Claude's usage endpoint (it lacks the `user:profile` scope), so a subscription's usage

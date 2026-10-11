@@ -321,6 +321,92 @@ impl Activity {
     }
 }
 
+/// What a task's pull request says (SPEC-001 GIT-001), as the Git overview last read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PullSignal {
+    /// Open with checks green, or with none required: tested.
+    Tested,
+    /// Open while its checks run or cannot be read.
+    InReview,
+    /// Open with failing checks.
+    Failing,
+    /// Merged.
+    Merged,
+}
+
+impl PullSignal {
+    /// From a pull request's `state` and `checks` wire names (`PullView`); `None` for a closed
+    /// pull request, which says nothing about the task.
+    #[must_use]
+    pub fn from_wire(state: &str, checks: &str) -> Option<Self> {
+        match (state, checks) {
+            ("merged", _) => Some(Self::Merged),
+            ("open", "success" | "none") => Some(Self::Tested),
+            ("open", "failure") => Some(Self::Failing),
+            ("open", _) => Some(Self::InReview),
+            _ => None,
+        }
+    }
+}
+
+/// Everything the "needs you" rule reads about one task (SPEC-001 §6.1, UI-005).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttentionFacts {
+    /// Durable status.
+    pub status: TaskStatus,
+    /// Activity while running.
+    pub activity: Option<Activity>,
+    /// A prompt typed into the session is held for a person's decision (TSK-013).
+    pub held_prompt: bool,
+    /// The task asked a person to act in the sandbox browser and the request is pending
+    /// (BRW-004).
+    pub browser_request: bool,
+    /// A chained task whose predecessor ended other than Done (TSK-012).
+    pub chain_blocked: bool,
+    /// The task has a plan with steps not done or skipped yet (STP-001).
+    pub plan_open: bool,
+    /// Its pull request, when one is known.
+    pub pull: Option<PullSignal>,
+}
+
+impl AttentionFacts {
+    /// Whether the task waits for a person: the sidebar's "Needs you" group, counted the same way
+    /// on Home and the sandbox tabs (`taskInfo` in the web UI's `status.js` is the same rule).
+    ///
+    /// An ended task needs nobody. A held prompt or a pending browser request does, whatever the
+    /// task's state. After a finished turn, failing checks do, and a tested, reviewed or merged
+    /// pull request answers for a task whose plan is complete (Done or In review). Otherwise: a
+    /// permission prompt (`needs_attention`), "Your turn" (`waiting`), or a chain whose
+    /// predecessor ended otherwise.
+    #[must_use]
+    pub fn needs_you(&self) -> bool {
+        if self.status.is_resting() {
+            return false;
+        }
+        if self.held_prompt || self.browser_request {
+            return true;
+        }
+        let finished =
+            self.status == TaskStatus::Running && self.activity.is_some_and(Activity::is_idle);
+        if finished && let Some(pull) = self.pull {
+            if pull == PullSignal::Failing {
+                return true;
+            }
+            if !self.plan_open {
+                return false;
+            }
+        }
+        match self.status {
+            TaskStatus::Running => matches!(
+                self.activity,
+                Some(Activity::NeedsAttention | Activity::Waiting)
+            ),
+            TaskStatus::Chained => self.chain_blocked,
+            _ => false,
+        }
+    }
+}
+
 /// Process run state (SPEC-002 §6.2). Exactly one terminal state is ever recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AttemptState {
@@ -553,6 +639,144 @@ mod tests {
         assert_eq!(Activity::after_clean_turn(false), Activity::Waiting);
         assert!(Activity::Done.is_idle() && Activity::Waiting.is_idle());
         assert!(!Activity::Working.is_idle() && !Activity::NeedsAttention.is_idle());
+    }
+
+    fn facts(status: TaskStatus, activity: Option<Activity>) -> AttentionFacts {
+        AttentionFacts {
+            status,
+            activity,
+            held_prompt: false,
+            browser_request: false,
+            chain_blocked: false,
+            plan_open: false,
+            pull: None,
+        }
+    }
+
+    /// The sidebar's "Needs you" rule (UI-005, #147): the counts on Home and the tabs use it.
+    #[test]
+    fn needs_you_follows_the_sidebar_rule() {
+        use Activity as A;
+        use PullSignal as P;
+        let running = |activity| facts(TaskStatus::Running, Some(activity));
+        // The task's own state.
+        assert!(running(A::NeedsAttention).needs_you());
+        assert!(running(A::Waiting).needs_you(), "Your turn needs you");
+        assert!(!running(A::Working).needs_you());
+        assert!(!running(A::Done).needs_you());
+        assert!(!facts(TaskStatus::Running, None).needs_you());
+        // Paused for capacity, queued or switching: nobody needs to act.
+        for status in [
+            TaskStatus::WaitingCapacity,
+            TaskStatus::Queued,
+            TaskStatus::Switching,
+            TaskStatus::Starting,
+        ] {
+            assert!(
+                !facts(status, Some(A::NeedsAttention)).needs_you(),
+                "{status:?}"
+            );
+        }
+        // A chain waits by itself, unless its predecessor ended otherwise.
+        let chained = facts(TaskStatus::Chained, None);
+        assert!(!chained.needs_you());
+        assert!(
+            AttentionFacts {
+                chain_blocked: true,
+                ..chained
+            }
+            .needs_you()
+        );
+        // A held prompt needs a decision, except on an ended task.
+        assert!(
+            AttentionFacts {
+                held_prompt: true,
+                ..running(A::Working)
+            }
+            .needs_you()
+        );
+        assert!(
+            !AttentionFacts {
+                held_prompt: true,
+                ..facts(TaskStatus::Closed, None)
+            }
+            .needs_you()
+        );
+        assert!(!facts(TaskStatus::Stopped(StopReason::Crashed), Some(A::Waiting)).needs_you());
+        // A pending browser request needs a person whatever the activity or pull request says.
+        let asked = |activity| AttentionFacts {
+            browser_request: true,
+            pull: Some(P::Tested),
+            ..running(activity)
+        };
+        assert!(asked(A::Done).needs_you() && asked(A::Working).needs_you());
+        assert!(
+            AttentionFacts {
+                browser_request: true,
+                ..facts(TaskStatus::WaitingCapacity, None)
+            }
+            .needs_you()
+        );
+        assert!(
+            !AttentionFacts {
+                browser_request: true,
+                ..facts(TaskStatus::Closed, None)
+            }
+            .needs_you()
+        );
+        // After a finished turn the pull request speaks: failing checks need you; a tested,
+        // reviewed or merged one makes the task Done or In review while the plan is complete.
+        let with = |activity, pull, plan_open| AttentionFacts {
+            pull: Some(pull),
+            plan_open,
+            ..running(activity)
+        };
+        assert!(with(A::Waiting, P::Failing, false).needs_you());
+        assert!(with(A::Done, P::Failing, false).needs_you());
+        for pull in [P::Tested, P::InReview, P::Merged] {
+            assert!(!with(A::Waiting, pull, false).needs_you(), "{pull:?}");
+            // Open plan steps keep it out of Done: the task's own state shows (#139).
+            assert!(
+                with(A::Waiting, pull, true).needs_you(),
+                "{pull:?} with open steps"
+            );
+            assert!(
+                !with(A::Done, pull, true).needs_you(),
+                "an achieved goal stays Done"
+            );
+        }
+        // While the agent works, the pull request does not count.
+        assert!(!with(A::Working, P::Failing, false).needs_you());
+        assert!(with(A::NeedsAttention, P::Tested, false).needs_you());
+    }
+
+    #[test]
+    fn pull_signals_from_wire_names() {
+        assert_eq!(
+            PullSignal::from_wire("merged", "none"),
+            Some(PullSignal::Merged)
+        );
+        assert_eq!(
+            PullSignal::from_wire("open", "success"),
+            Some(PullSignal::Tested)
+        );
+        assert_eq!(
+            PullSignal::from_wire("open", "none"),
+            Some(PullSignal::Tested)
+        );
+        assert_eq!(
+            PullSignal::from_wire("open", "failure"),
+            Some(PullSignal::Failing)
+        );
+        assert_eq!(
+            PullSignal::from_wire("open", "pending"),
+            Some(PullSignal::InReview)
+        );
+        assert_eq!(
+            PullSignal::from_wire("open", "unknown"),
+            Some(PullSignal::InReview)
+        );
+        assert_eq!(PullSignal::from_wire("closed", "none"), None);
     }
 
     #[test]

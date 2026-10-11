@@ -13,6 +13,7 @@ import { relLong } from '../format.js';
 import { createMarkdownEditor } from '../mdeditor.js';
 import { SOURCE_BADGE } from './skills.js';
 import { BRAND } from '../brand.js';
+import { notFound } from './common.js';
 
 /** Mount the editor of one skill. */
 export function mountSkillEditor(ctx, sandbox, name) {
@@ -71,7 +72,7 @@ export function mountSkillEditor(ctx, sandbox, name) {
       saved = content;
       savedAt = new Date().toISOString();
       setDirty(editor.getMarkdown() !== saved);
-      toast(`Saved ${name}`, { kind: 'ok' });
+      toast(`Skill ${name} saved.`, { kind: 'ok' });
     } catch (error) {
       if (!alive) return;
       save.disabled = false;
@@ -121,7 +122,7 @@ export function mountSkillEditor(ctx, sandbox, name) {
       }
       if (!alive) return;
       const why = skill.source !== 'repository' && skill.source !== 'instance' ? `Read-only: included skills ship with ${BRAND.name} and stay current with it.`
-        : skill.source !== 'repository' ? 'Read-only: instance skills are kept by the server and are not edited here.'
+        : skill.source !== 'repository' ? 'Read-only: skills for every sandbox are kept by the server and are not edited here.'
           : !write ? 'Read-only: editing needs write access to this sandbox.' : null;
       const [badgeIcon, badgeLabel, badgeTone] = SOURCE_BADGE[skill.source] || ['lock', 'Included', ''];
       setChildren(badges, iconBadge(badgeIcon, badgeLabel, badgeTone), skill.enabled === false ? iconBadge('minimize', 'Off', '') : null);
@@ -135,6 +136,8 @@ export function mountSkillEditor(ctx, sandbox, name) {
       setDirty(false);
     } catch (error) {
       if (!alive || error.code === 'aborted') return;
+      // A skill that is not there is a missing page, not a retry (#147).
+      if (error.status === 404) { setChildren(el, notFound({ title: 'Skill not found', text: `There is no skill “${name}” in ${sandbox.name}.`, back: ['Skills', base] })); return; }
       setChildren(body, loadError(`Couldn’t load ${name}: ${error.message}`, () => { setChildren(body, placeholder('Loading the skill…', 'loading')); load(); }));
     }
   }

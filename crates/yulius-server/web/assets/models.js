@@ -55,7 +55,7 @@ export function findEffort(id) {
 /** Menu items to pick a model (grouped by provider); `onPick(id|null)`. */
 export function modelMenuItems(selected, onPick) {
   return [
-    { label: 'Default', description: 'Claude Code’s default for the account', checked: selected === null, onSelect: () => onPick(null) },
+    { label: 'Default', description: 'Claude Code’s default for the subscription', checked: selected === null, onSelect: () => onPick(null) },
     ...PROVIDERS.flatMap((provider) => [
       { header: provider.name },
       ...provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === selected, onSelect: () => onPick(model.id) })),

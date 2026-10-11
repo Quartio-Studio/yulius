@@ -7,7 +7,7 @@ import { enc } from '../api.js';
 import { h, toast, confirmDialog, errorToast, iconButton, iconBadge, itemCard, emptyState } from '../dom.js';
 import { navigate } from '../router.js';
 import { allows } from '../status.js';
-import { pageFrame, loader } from './common.js';
+import { pageFrame, loader, createButton } from './common.js';
 import { BRAND } from '../brand.js';
 
 /** Icon of a workflow: the defaults have their own, the rest share one. */
@@ -25,7 +25,7 @@ export function mountWorkflowsPage(ctx, sandbox) {
   const frame = pageFrame({
     title: 'Workflows',
     sub: 'picked when starting a task',
-    actions: [h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, title: write ? null : 'Requires write access', onClick: create }, 'New workflow')],
+    actions: [createButton('New workflow', create, { disabled: !write, title: write ? null : 'Requires write access' })],
   });
   const host = h('div');
   frame.body.append(host);
@@ -39,7 +39,7 @@ export function mountWorkflowsPage(ctx, sandbox) {
       title: wf.name,
       badges: [
         wf.builtin ? iconBadge('lock', 'Default', 'violet', `Ships with ${BRAND.name} and stays current with it; duplicate it to customise`)
-          : wf.scope === 'instance' ? iconBadge('globe', 'Whole instance', 'violet', 'Available in every sandbox') : iconBadge('folder', 'This sandbox', '', 'Available in this sandbox only'),
+          : wf.scope === 'instance' ? iconBadge('globe', 'Every sandbox', 'violet', 'Available in every sandbox') : iconBadge('folder', 'This sandbox', '', 'Available in this sandbox only'),
         gates.require_spec ? iconBadge('book', 'Spec required', '', 'The task writes a spec before it is delivered') : null,
         gates.require_tests ? iconBadge('check', 'Tests required', '', 'The task adds or runs tests before it is delivered') : null,
       ],
@@ -59,7 +59,7 @@ export function mountWorkflowsPage(ctx, sandbox) {
     });
   }
 
-  const reload = loader(host, () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`), (list) => {
+  const reload = loader(host, 'the workflows', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`), (list) => {
     const workflows = Array.isArray(list) ? list : [];
     const defaults = workflows.filter((wf) => wf.builtin);
     const custom = workflows.filter((wf) => !wf.builtin);
@@ -70,7 +70,7 @@ export function mountWorkflowsPage(ctx, sandbox) {
       defaults.length ? section('wf-defaults', 'Defaults', `kept current by ${BRAND.name}`, h('div', { class: 'item-list' }, defaults.map(card))) : null,
       section('wf-custom', 'Custom', 'yours to change', custom.length
         ? h('div', { class: 'item-list' }, custom.map(card))
-        : emptyState({ iconName: 'workflow', title: 'No custom workflows yet', text: 'Duplicate a default to change it, or start one from Blank.', action: write ? h('button', { type: 'button', class: 'btn', onClick: create }, 'New workflow') : null })));
+        : emptyState({ iconName: 'workflow', title: 'No custom workflows yet', text: 'Duplicate a default to change it, or start one from Blank.', action: write ? createButton('New workflow', create) : null })));
   });
 
   async function remove(wf) {
@@ -80,7 +80,7 @@ export function mountWorkflowsPage(ctx, sandbox) {
       toast('Workflow deleted.', { kind: 'ok' });
       reload();
     } catch (error) {
-      errorToast(error, 'Could not delete workflow');
+      errorToast(error, 'Couldn’t delete workflow');
     }
   }
 

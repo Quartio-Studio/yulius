@@ -58,6 +58,8 @@ function layoutProblems(browser: Browser) {
 const pages = [
   ['home', '/', 'Sandboxes'],
   ['tasks', '/s/studio/tasks', 'Tasks'],
+  // The task overview: its figures and its sessions fit a 390 px phone (#147).
+  ['task overview', '/s/studio/tasks/12', '#12 Checkout API'],
   ['sessions', '/s/studio/sessions', 'Sessions'],
   ['git', '/s/studio/git', 'Git'],
   ['CI', '/s/studio/ci', 'CI'],

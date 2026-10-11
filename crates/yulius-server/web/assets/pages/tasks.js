@@ -6,7 +6,7 @@
 // multi-select, search) live in the URL so a filtered view can be shared as a link. Search is not a
 // field: "/" opens a Spotlight-style search (spotlight.js, UI-036) that jumps to a task or filters.
 
-import { h, icon, setChildren, iconButton, badge, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, prChip } from '../dom.js';
+import { h, icon, setChildren, iconButton, badge, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, prChip, emptyState } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
@@ -70,7 +70,7 @@ export function mountTasksPage(ctx, sandbox) {
 
   // Read access watches; starting tasks needs write access, as on Home and every other page.
   const canStart = allows(sandbox.access, 'write');
-  const frame = pageFrame({ title: 'Tasks', sub: sandbox.name, actions: [
+  const frame = pageFrame({ title: 'Tasks', sub: 'each task is a Claude Code session on its own branch', actions: [
     h('button', { type: 'button', class: 'tl-find', 'aria-keyshortcuts': '/', 'aria-label': 'Search tasks', onClick: () => openSearch() }, icon('search', { size: 14 }), h('span', { class: 'tl-find-text', 'aria-hidden': 'true' }, 'Press', h('span', { class: 'kbd' }, '/'), 'to search')),
     h('button', { type: 'button', class: 'btn btn-primary', disabled: !canStart, title: canStart ? null : 'Requires write access', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, NEW_TASK_KEYS)),
   ] });
@@ -214,21 +214,17 @@ export function mountTasksPage(ctx, sandbox) {
     setChildren(summary, filtered()
       ? [`Showing ${visible.length} of ${tasks.length}`, ' · ', h('button', { type: 'button', class: 'link-btn', onClick: clearFilters }, 'Clear filters')]
       : plural(tasks.length, 'task'));
-    frame.sub.textContent = sandbox.name;
 
     const focusedId = listHost.contains(document.activeElement) ? document.activeElement.closest('[data-task-id]')?.dataset.taskId : null;
+    // The shared empty state (#147), as on every other list page.
     if (!tasks.length) {
-      setChildren(listHost, h('div', { class: 'tl-empty' },
-        h('p', { class: 'tl-empty-title' }, `No tasks in ${sandbox.name} yet`),
-        h('p', { class: 'muted' }, 'Each task is a Claude Code session on its own branch.'),
-        canStart ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task') : null));
+      setChildren(listHost, emptyState({ iconName: 'tasks', title: `No tasks in ${sandbox.name} yet`, text: 'Describe what you want built; the agent works on its own branch until it is done.',
+        action: canStart ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task') : null }));
       return;
     }
     if (!visible.length) {
-      setChildren(listHost, h('div', { class: 'tl-empty' },
-        h('p', { class: 'tl-empty-title' }, q ? `No tasks match “${searchQuery}”` : 'No tasks match these filters'),
-        h('p', { class: 'muted' }, 'The counts on the tabs show where the matches are.'),
-        h('button', { type: 'button', class: 'btn', onClick: clearFilters }, 'Clear filters')));
+      setChildren(listHost, emptyState({ iconName: 'search', title: q ? `No tasks match “${searchQuery}”` : 'No tasks match these filters', text: 'The counts on the tabs show where the matches are.',
+        action: h('button', { type: 'button', class: 'btn', onClick: clearFilters }, 'Clear filters') }));
       return;
     }
 
@@ -368,12 +364,11 @@ export function mountTasksPage(ctx, sandbox) {
 
 /** Archived tasks across visible sandboxes, with restore. */
 export function mountArchivedPage(ctx) {
-  const frame = pageFrame({ title: 'Archived tasks', sub: 'across your sandboxes' });
+  const frame = pageFrame({ title: 'Archived tasks', sub: 'tasks you put away, from every sandbox, with restore' });
   const host = h('div');
   frame.body.append(host);
-  const reload = loader(host, () => ctx.api.get('/api/archived-tasks'), (tasks) => {
+  const reload = loader(host, 'the archived tasks', () => ctx.api.get('/api/archived-tasks'), (tasks) => {
     const list = Array.isArray(tasks) ? tasks : [];
-    frame.sub.textContent = `${list.length} archived across your sandboxes`;
     return dataTable([
       { label: 'Sandbox', render: (t) => { const sb = ctx.store.sandboxById(t.sandbox_id); return sb ? sb.name : badge('unknown'); } },
       { label: '#', class: 'num', render: (t) => String(t.number) },
@@ -388,14 +383,14 @@ export function mountArchivedPage(ctx) {
           if (updated) reload();
         } }, 'Restore');
       } },
-    ], list, { empty: 'No archived tasks. Archive finished tasks from their action menu.' });
+    ], list, { empty: emptyState({ iconName: 'archive', title: 'No archived tasks', text: 'Archive a finished task from its action menu to put it away; restore it here any time.' }) });
   });
   return { el: frame.el, key: 'archived' };
 }
 
 /** CLI device approval (docs/api.md device flow): approve or deny a user code. */
 export function mountDevicePage(ctx, route) {
-  const frame = pageFrame({ title: 'CLI device approval', sub: 'approve a command-line sign-in, such as “yulius import”' });
+  const frame = pageFrame({ title: 'CLI device approval', sub: 'approve a sign-in from the command line, such as “yulius login”' });
   const code = h('input', { placeholder: 'ABCD-EFGH', autocomplete: 'off', spellcheck: 'false', value: route.query.get('code') || route.query.get('user_code') || '', class: 'input mono code-input', 'aria-label': 'User code' });
   const result = h('div', { role: 'status' });
   const decide = (approve) => singleFlight(async () => {
@@ -412,7 +407,7 @@ export function mountDevicePage(ctx, route) {
   const approveCode = decide(true);
   // Enter in the code field approves, as Enter submits every other form.
   code.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); approveCode(); } });
-  frame.body.append(h('div', { class: 'card card-pad stack narrow' },
+  frame.body.append(h('div', { class: 'card card-pad stack' },
     h('p', { class: 'text-2' }, 'Enter the code shown by the CLI. Approve only codes you started yourself; the CLI gets a token with your permissions.'),
     h('div', { class: 'row-wrap' }, code, h('button', { type: 'button', class: 'btn btn-primary', onClick: approveCode }, 'Approve'), h('button', { type: 'button', class: 'btn', onClick: decide(false) }, 'Deny')),
     result));

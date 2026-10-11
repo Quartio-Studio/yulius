@@ -66,7 +66,7 @@ export function jevSetupCard(ctx, { onDone, header = null }) {
         skip.textContent = 'Continue anyway';
       }
     } catch (error) {
-      setChildren(result, h('div', { class: 'field-error', role: 'alert' }, error.message || 'Could not save the key.'));
+      setChildren(result, h('div', { class: 'field-error', role: 'alert' }, error.message || 'Couldn’t save the key.'));
       save.disabled = false;
     } finally {
       save.classList.remove('busy');
@@ -90,7 +90,7 @@ export function jevSettingsCard(ctx) {
     try {
       state = await ctx.api.get('/api/admin/jev');
     } catch (error) {
-      setChildren(body, h('div', { class: 'banner banner-danger', role: 'alert' }, icon('warn'), h('span', { class: 'banner-text' }, `Could not load the Jev key: ${error.message}`)));
+      setChildren(body, h('div', { class: 'banner banner-danger', role: 'alert' }, icon('warn'), h('span', { class: 'banner-text' }, `Couldn’t load the Jev key: ${error.message}`)));
       return;
     }
     render();
@@ -121,7 +121,7 @@ export function jevSettingsCard(ctx) {
         render();
         test();
       } catch (error) {
-        errorToast(error, 'Could not save the key');
+        errorToast(error, 'Couldn’t save the key');
         save.disabled = false;
       } finally {
         save.classList.remove('busy');
@@ -165,7 +165,7 @@ export function jevSettingsCard(ctx) {
       toast('Jev key removed.', { kind: 'ok' });
       render();
     } catch (error) {
-      errorToast(error, 'Could not remove the key');
+      errorToast(error, 'Couldn’t remove the key');
     }
   }
 
@@ -175,7 +175,7 @@ export function jevSettingsCard(ctx) {
       toast('The configured key is now saved here.', { kind: 'ok' });
       render();
     } catch (error) {
-      errorToast(error, 'Could not save the key');
+      errorToast(error, 'Couldn’t save the key');
     }
   }
 

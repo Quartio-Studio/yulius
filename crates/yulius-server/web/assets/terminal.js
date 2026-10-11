@@ -32,7 +32,7 @@ function loadStylesheet(href) {
   const existing = document.querySelector(`link[rel="stylesheet"][href="${href}"]`);
   if (existing) return existing.sheet ? Promise.resolve() : new Promise((resolve, reject) => { existing.addEventListener('load', resolve, { once: true }); existing.addEventListener('error', reject, { once: true }); });
   return new Promise((resolve, reject) => {
-    const link = h('link', { rel: 'stylesheet', href, onLoad: resolve, onError: () => { link.remove(); reject(new Error('Could not load the terminal styles.')); } });
+    const link = h('link', { rel: 'stylesheet', href, onLoad: resolve, onError: () => { link.remove(); reject(new Error('Couldn’t load the terminal styles.')); } });
     document.head.append(link);
   });
 }

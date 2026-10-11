@@ -2368,3 +2368,123 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
     assert_eq!(merged.body["stage"], "merged_integration");
     Ok(())
 }
+
+/// #147: Home's cards and the sandbox tabs count "needs you" with the sidebar's rule (`taskInfo`
+/// in the web UI): Your turn, held prompts, blocked chains and failing checks count; a paused or
+/// ended task does not; a tested pull request answers for a finished task once its plan is
+/// complete (#139). The pull request facts are what the Git overview last read.
+#[tokio::test]
+async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
+    use yulius_app::intake::{ChainRecord, HoldRecord, hold_state};
+    use yulius_app::ports::store_ext::IntakeStore;
+    use yulius_domain::intake::PromptClass;
+    use yulius_domain::task::Activity;
+
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let now = Timestamp(5);
+    let set = async |id: &str, status: TaskStatus, activity: Option<Activity>| -> BoxResult<()> {
+        f.h.store
+            .transition_task(&TaskId::parse(id)?, None, status, activity, now)
+            .await?;
+        Ok(())
+    };
+    let hold = |id: &str| -> BoxResult<HoldRecord> {
+        Ok(HoldRecord {
+            id: format!("hold-{id}"),
+            task_id: TaskId::parse(id)?,
+            class: PromptClass::NewScope,
+            prompt: "Also add dark mode.".into(),
+            prompt_sha256: "0".repeat(64),
+            percent: 90,
+            typed_by: None,
+            state: hold_state::PENDING.into(),
+            created_at: now,
+            resolved_by: None,
+            resolved_at: None,
+            new_task_id: None,
+        })
+    };
+    let needs = async || -> BoxResult<u64> {
+        let r = f.req(Method::GET, "/api/sandboxes", None, &f.bob).await?;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        let sandbox = r
+            .body
+            .as_array()
+            .and_then(|list| list.iter().find(|s| s["id"] == "s1"))
+            .ok_or("s1")?;
+        sandbox["counts"]["needs_attention"]
+            .as_u64()
+            .ok_or_else(|| format!("{sandbox}").into())
+    };
+
+    // t1 finished its turn with an open pull request and a complete plan.
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    set("t1", TaskStatus::Running, Some(Activity::Waiting)).await?;
+    // Your turn; a held prompt; a chain whose predecessor ended otherwise.
+    f.add_task("t2", "Your turn", "feat/2-your-turn", "dev")
+        .await?;
+    set("t2", TaskStatus::Running, Some(Activity::Waiting)).await?;
+    f.add_task("t3", "Held prompt", "feat/3-held", "dev")
+        .await?;
+    set("t3", TaskStatus::Running, Some(Activity::Working)).await?;
+    f.h.store.insert_hold(&hold("t3")?).await?;
+    f.add_task("t4", "Blocked chain", "feat/4-chain", "dev")
+        .await?;
+    set("t4", TaskStatus::Chained, None).await?;
+    f.h.store
+        .insert_chain(&ChainRecord {
+            task_id: TaskId::parse("t4")?,
+            after_task_id: Some(TaskId::parse("t2")?),
+            after_number: 2,
+            blocked_reason: Some("#2 stopped".into()),
+            created_at: now,
+        })
+        .await?;
+    // Nobody needs to act: paused for capacity, or ended (even with a held prompt).
+    f.add_task("t5", "Paused", "feat/5-paused", "dev").await?;
+    set(
+        "t5",
+        TaskStatus::WaitingCapacity,
+        Some(Activity::NeedsAttention),
+    )
+    .await?;
+    f.add_task("t6", "Closed", "feat/6-closed", "dev").await?;
+    f.h.store.insert_hold(&hold("t6")?).await?;
+
+    // Before any Git overview read, t1's pull request is not known: Your turn.
+    assert_eq!(needs().await?, 4);
+
+    // Green checks, read by the Git overview: t1 is Done.
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert_eq!(needs().await?, 3);
+
+    // A step opened again keeps it out of Done: its own state (Your turn) shows.
+    set_steps(&f, "t1", &["done", "pending"]).await?;
+    assert_eq!(needs().await?, 4);
+
+    // Failing checks need a person whatever the plan says.
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    f.req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(needs().await?, 4);
+
+    // Working again: the pull request no longer speaks for it.
+    set("t1", TaskStatus::Running, Some(Activity::Working)).await?;
+    assert_eq!(needs().await?, 3);
+    Ok(())
+}

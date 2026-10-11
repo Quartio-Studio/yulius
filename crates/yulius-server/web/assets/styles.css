@@ -696,7 +696,6 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
 .ti-progress-fill { display: block; height: 100%; background: var(--series-1); }
 .ti-columns { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 12px; align-items: start; }
 .ti-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
-.ti-card-title { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
 .ti-steps { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
 .ti-step { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); }
 .ti-step:first-child { border-top: 0; padding-top: 0; }
@@ -708,6 +707,16 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
 .ti-person { display: inline-flex; align-items: center; gap: 6px; }
 .ti-avatar.avatar { width: 20px; height: 20px; font-size: var(--fs-xs); }
 .ti-sessions { width: 100%; }
+/* A narrow overview (a phone, or a tool panel beside it) stacks each session: its cells one per line,
+   each named by its column, so nothing scrolls sideways (#147). */
+@container (max-width: 640px) {
+  .ti-sessions thead { display: none; }
+  .ti-sessions, .ti-sessions tbody, .ti-sessions tr { display: block; }
+  .ti-sessions tr { padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .ti-sessions tr:last-child { border-bottom: 0; }
+  .ti-sessions td { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 8px; padding: 2px 0; border-bottom: 0; overflow-wrap: anywhere; }
+  .ti-sessions td::before { content: attr(data-label); color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh); font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+}
 @media (max-width: 900px) { .ti-columns { grid-template-columns: minmax(0, 1fr); } }
 
 /* Spotlight-style search (UI-036): a floating panel near the top, results under the field. */
@@ -917,9 +926,11 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
 .shortcuts-list dd { margin: 0; color: var(--text-2); }
 
 /* notification center (UI-020) */
+/* The badge sits inside the button's box, so the window edge never cuts it (the bell is the last
+   control on pages without tools, #147). */
 .notif-btn { position: relative; }
 .notif-badge {
-  position: absolute; top: 0; right: -2px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-full);
+  position: absolute; top: 1px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-full);
   background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); font-weight: 600; line-height: var(--lh-xs); text-align: center;
   box-shadow: 0 0 0 2px var(--bg);
 }
@@ -1159,7 +1170,7 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .term-conn .spinner { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; }
 /* The terminal's corner: notices, the size chip and the mouse hand-over, floating and opaque (they
    never resize the terminal, #101/#103). Only its children take the pointer. */
-.term-corner { position: absolute; top: 6px; right: 16px; z-index: var(--z-float); display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 70%; pointer-events: none; }
+.term-corner { position: absolute; top: calc(var(--term-banner-h, 0px) + 6px); right: 16px; z-index: var(--z-float); display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 70%; pointer-events: none; }
 .term-corner > * { pointer-events: auto; }
 .term-corner > [hidden] { display: none; }
 .term-size-chip { padding: 2px 8px; border-radius: var(--radius-full); background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); box-shadow: var(--shadow-sm); white-space: nowrap; cursor: default; }
@@ -1254,7 +1265,9 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .toolbar .input, .toolbar .select { width: auto; min-width: 140px; height: var(--control-md); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); min-width: 0; }
 .card-head { display: flex; align-items: center; gap: 8px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
-.card-title { font-weight: 600; font-size: var(--fs); line-height: var(--lh); }
+/* The one card title (#147): Settings sections, the task overview, Git, the Dashboard, CI, admin. */
+.card-title { display: flex; align-items: center; gap: 8px; margin: 0; min-width: 0; color: var(--text); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
+.card-title > .icon { flex: none; color: var(--muted); }
 .card-body { padding: 16px 20px; }
 .card-pad { padding: 16px 20px; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
@@ -1268,7 +1281,6 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .settings-section { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; }
 .settings-head { display: flex; align-items: center; gap: 8px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .settings-head .icon { color: var(--muted); }
-.settings-head h2 { font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; }
 .settings-body { display: flex; flex-direction: column; }
 .settings-identity { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .settings-avatar { width: 40px; height: 40px; font-size: var(--fs); line-height: var(--lh); }
@@ -1295,7 +1307,6 @@ summary { cursor: pointer; }
 .space-bottom { margin-bottom: 8px; }
 .list-plain { margin: 0; padding-left: 16px; }
 .wrap-text { white-space: normal; }
-.narrow { max-width: 640px; }
 .scroll-box { max-height: 320px; overflow: auto; }
 .fill-column { flex: 1; min-height: 0; }
 .choice { cursor: pointer; }
@@ -1362,11 +1373,12 @@ summary { cursor: pointer; }
 .tl-row:has(.tl-link:focus-visible) { box-shadow: var(--focus-inset); outline: 2px solid transparent; outline-offset: -2px; }
 .tl-mark { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 24px; }
 .tl-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
-/* The title cell keeps its contents: an origin chip gives way (ellipsis) before it would reach the
-   Status column (UI-046). The row's stretched link (::after) belongs to the row, so it is not clipped. */
+/* The title cell keeps its contents inside it (UI-046): the title gives way (ellipsis) and the origin
+   chip stays whole, never cut to one letter (#147). The row's stretched link (::after) belongs to the
+   row, so it is not clipped. */
 .tl-link { overflow: hidden; }
 .group-stopped .tl-title, .group-closed .tl-title { color: var(--text-2); font-weight: 400; }
-.tl-origin { flex: 0 3 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.tl-origin { flex: none; white-space: nowrap; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .tl-cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .tl-row.group-needs .tl-status { color: var(--text); }
 .tl-branch { font-family: var(--font-mono); }
@@ -1414,9 +1426,6 @@ summary { cursor: pointer; }
 .empty-icon { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; margin-bottom: 4px; border-radius: 50%; background: var(--surface-3); color: var(--text-2); }
 .empty-title { font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
 .empty-text { color: var(--muted); }
-.tl-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 48px 16px; text-align: center; }
-.tl-empty p { margin: 0; }
-.tl-empty-title { font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
 .tl-footer a { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .tl-footer a:hover { color: var(--text); }
 /* "/" opens the search (UI-036): the header only says so; on touch screens it is a search button. */
@@ -1445,7 +1454,6 @@ summary { cursor: pointer; }
 .dl-strip { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .dl-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
 .dl-card p { margin: 0; }
-.dl-eyebrow { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
 .dl-big { font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; }
 .dl-big .muted { font-size: var(--fs); font-weight: 400; }
 .dl-env { display: flex; align-items: center; gap: 8px; min-height: var(--control-md); font-size: var(--fs-sm); line-height: var(--lh-sm); }
@@ -1511,7 +1519,10 @@ a.dl-task:hover { text-decoration: underline; }
 
 /* Design system page (/design) */
 .ds .ds-section { display: flex; flex-direction: column; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
-.ds-head h2 { font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; }
+.ds-sub { margin: 4px 0 0; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.ds-sample { padding: 12px 16px; border: 1px dashed var(--border-strong); border-radius: var(--radius-lg); }
+.ds-missing { border: 1px dashed var(--border-strong); border-radius: var(--radius-lg); }
+.ds-missing .page-inner { padding: 16px; }
 .ds-head p { margin: 4px 0 0; }
 .ds-group h3 { margin: 4px 0 8px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
 .ds-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
@@ -1612,7 +1623,7 @@ a.dl-task:hover { text-decoration: underline; }
 /* Dashboard (UI-040): a strip of key numbers with changes, the daily chart as the hero, the
    outcomes as one split bar, breakdowns as bar lists. Container queries keep it readable at any width. */
 .db { display: flex; flex-direction: column; gap: 12px; container-type: inline-size; }
-.db-range { font-variant-numeric: tabular-nums; }
+.db-range { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; }
 .db-seg label { height: var(--control-sm); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 /* Dividers are each cell's left and top hairline; the card clips those on its outer edges. */
 .db-kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); overflow: hidden; }
@@ -1636,7 +1647,6 @@ a.dl-task:hover { text-decoration: underline; }
 .db-card { display: flex; flex-direction: column; gap: 16px; min-width: 0; padding: 16px 20px 20px; }
 .db-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .db-card-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.db-card-title { margin: 0; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
 .db-card-sub { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .db-table-toggle[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); }
 .db-chart { min-height: 220px; }
