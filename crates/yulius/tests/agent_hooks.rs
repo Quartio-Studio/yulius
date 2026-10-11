@@ -846,3 +846,26 @@ async fn steps_follow_the_spec_plan_checklist() -> TestResult {
     assert!(briefing.contains("Implement API"), "{briefing}");
     Ok(())
 }
+
+/// F 2026-10-11: an agent renamed its spec (SPEC-005 → SPEC-006 to avoid a clash) and the Stop
+/// gate kept demanding the old registered path, which the agent cannot change. The gate follows
+/// the spec by its frontmatter and registers the new path.
+#[tokio::test]
+async fn a_renamed_spec_is_followed_by_its_frontmatter() -> TestResult {
+    let f = fixture().await?;
+    std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/renamed.md"),
+        "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout API\n\n\
+         ## Goal\n\nCustomers can pay.\n\n## Context\n\nNo checkout yet.\n\n\
+         ## Requirements\n\n- Card payments.\n\n## Plan\n\n- [x] Write spec\n- [ ] Implement API\n\n\
+         ## Acceptance Criteria\n\nA test order succeeds.\n\n## Test plan\n\n```sh\ncargo test\n```\n\n\
+         ## Decisions\n\n- Hosted payment page.\n",
+    )?;
+    let body = hook(&f, "Stop", json!({})).await?;
+    assert!(body.is_null(), "the renamed spec is found: {body:?}");
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.spec_path.as_deref(), Some("docs/specs/renamed.md"));
+    Ok(())
+}

@@ -2009,6 +2009,17 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
         ["feat/1-checkout-api->feat/1-checkout-api token=token-bob"]
     );
     assert_eq!(f.h.github.actors_of("create_pull"), ["bob"]);
+    // F 2026-10-11: the agent's turn ended, its work did not; Yulius tells it to deliver.
+    let told = f.h.store.inbox(&t1, true, 10).await?;
+    assert!(
+        told.iter().any(
+            |m| m.message.subject == "Your pull request is open: deliver it"
+                && m.message.kind == "request"
+                && m.message.body.contains("delivery_merge")
+                && m.message.body.contains("without asking anyone")
+        ),
+        "{told:?}"
+    );
     f.h.app.auto_open_pr(&t1).await;
     assert_eq!(pulls_opened(), 1, "one pull request per task");
 
