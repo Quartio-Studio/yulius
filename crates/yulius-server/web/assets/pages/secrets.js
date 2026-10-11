@@ -246,9 +246,9 @@ function agentForm(ctx, secret) {
     h('option', { value: 'sandbox' }, 'This sandbox'),
     h('option', { value: 'instance' }, 'Every sandbox'));
   if (secret) scope.value = secret.scope;
-  const name = h('input', { class: 'input mono', value: secret ? secret.name : '', placeholder: 'STRIPE_API_KEY', autocomplete: 'off', autofocus: true });
-  const description = h('input', { class: 'input', value: secret ? secret.description : '', placeholder: 'Stripe test-mode key for the checkout' });
-  const hosts = h('input', { class: 'input mono', value: secret ? secret.hosts.join(', ') : '', placeholder: 'api.stripe.com', autocomplete: 'off' });
+  const name = h('input', { class: 'input mono', 'aria-label': 'Name', value: secret ? secret.name : '', placeholder: 'STRIPE_API_KEY', autocomplete: 'off', autofocus: true });
+  const description = h('input', { class: 'input', 'aria-label': 'What it is for', value: secret ? secret.description : '', placeholder: 'Stripe test-mode key for the checkout' });
+  const hosts = h('input', { class: 'input mono', 'aria-label': 'Hosts', value: secret ? secret.hosts.join(', ') : '', placeholder: 'api.stripe.com', autocomplete: 'off' });
   const injection = h('select', { class: 'select' },
     h('option', { value: 'bearer' }, 'Authorization: Bearer <value>'),
     h('option', { value: 'basic' }, 'Authorization: Basic <user name:value>'),
@@ -261,7 +261,7 @@ function agentForm(ctx, secret) {
   injection.addEventListener('change', sync);
   sync();
   const username = h('input', { class: 'input', autocomplete: 'off', placeholder: secret && secret.has_username ? 'Unchanged' : 'For Basic credentials and website logins' });
-  const value = h('input', { class: 'input mono', type: 'password', autocomplete: 'new-password', placeholder: secret ? 'Unchanged' : '' });
+  const value = h('input', { class: 'input mono', type: 'password', 'aria-label': 'Value', autocomplete: 'new-password', placeholder: secret ? 'Unchanged' : '' });
   const totp = h('input', { class: 'input mono', autocomplete: 'off', placeholder: secret && secret.has_totp ? 'Unchanged' : 'Optional: for website two-factor codes' });
   const body = h('div', { class: 'stack' },
     field('Scope', scope, instanceAdmin ? null : 'Secrets for every sandbox are added by instance administrators.'),

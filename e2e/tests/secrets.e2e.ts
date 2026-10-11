@@ -55,12 +55,12 @@ test('agent secrets are write-only and bound to hosts', async ({ app, browser, s
 
   await screen.getByRole('button', 'Add agent secret').first().click();
   const dialog = screen.getByRole('dialog', 'Add agent secret');
-  await screen.getByLabel(/^Name\b/).fill('RESEND_KEY');
-  await screen.getByLabel(/^Hosts\b/).fill('api.resend.com');
-  await screen.getByLabel(/^Value\b/).fill('short');
+  await screen.getByLabel('Name').fill('RESEND_KEY');
+  await screen.getByLabel('Hosts').fill('api.resend.com');
+  await screen.getByLabel('Value').fill('short');
   await dialog.getByRole('button', 'Add').click();
   await expect(browser.locator('.field-error')).toHaveText(/At least 8 characters/);
-  await screen.getByLabel(/^Value\b/).fill('re_mock_value_123');
+  await screen.getByLabel('Value').fill('re_mock_value_123');
   await dialog.getByRole('button', 'Add').click();
   await expect(dialog).toBeHidden();
   await expect(screen.getByText('RESEND_KEY')).toBeVisible();
