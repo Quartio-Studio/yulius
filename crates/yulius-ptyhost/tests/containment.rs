@@ -93,6 +93,7 @@ mod linux {
                 share_net: false,
                 binds: Vec::new(),
                 identity: None,
+                join: None,
             }),
             ring_bytes: 0,
             token_sha256: token_sha256_hex(&TOKEN),

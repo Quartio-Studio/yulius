@@ -911,6 +911,7 @@ for n in ({n1}, {n2}):
             share_net: true,
             binds: Vec::new(),
             identity: identity.clone(),
+            join: None,
         };
         let argv = yulius_ptyhost::bwrap_argv(
             &spec,

@@ -692,6 +692,7 @@ async fn spawn_failures_are_recorded_with_a_diagnostic() -> TestResult {
             share_net: true,
             binds: Vec::new(),
             identity: None,
+            join: None,
         });
         expect_spawn_failed(&contained, "only supported on Linux").await?;
     }

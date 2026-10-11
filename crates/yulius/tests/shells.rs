@@ -297,7 +297,7 @@ async fn superadmin_scenario(f: &Fixture) -> TestResult {
             .sandbox(&SandboxId::parse("s1")?)
             .await?
             .ok_or("s1")?;
-    let space = f.h.app.user_space(&superadmin, &sandbox)?;
+    let space = f.h.app.user_space(&superadmin, &sandbox, None)?;
     let token = space
         .env
         .iter()

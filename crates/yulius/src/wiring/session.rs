@@ -33,6 +33,7 @@ pub fn wire_containment(containment: &Containment) -> wire::Containment {
             readonly,
             binds,
             identity,
+            join,
         } => wire::Containment::Bubblewrap(BubblewrapSpec {
             sandbox_root: sandbox_root.to_string_lossy().into_owned(),
             home: home.to_string_lossy().into_owned(),
@@ -57,6 +58,26 @@ pub fn wire_containment(containment: &Containment) -> wire::Containment {
                 uid: i.uid,
                 gid: i.gid,
                 hostname: i.hostname.clone(),
+            }),
+            join: join.as_ref().map(|j| {
+                Box::new(wire::SandboxJoin {
+                    holder_pid: j.holder_pid,
+                    user_ns: j.user_ns,
+                    net_ns: j.net_ns,
+                    mnt_ns: j.mnt_ns,
+                    cgroup: j.cgroup.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                    system_root: j.system_root.to_string_lossy().into_owned(),
+                    hostname: j.hostname.clone(),
+                    exec_shim: j
+                        .exec_shim
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
+                    private_dirs: j
+                        .private_dirs
+                        .iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect(),
+                })
             }),
         }),
     }
