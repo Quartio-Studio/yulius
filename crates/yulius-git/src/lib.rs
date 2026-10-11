@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 mod bundle;
+mod ci;
 mod commit;
 pub mod credential;
 mod error;
@@ -34,6 +35,7 @@ mod validate;
 mod worktree;
 
 pub use bundle::{BundleHead, BundleSpec, IMPORT_PREFIX, ImportRef};
+pub use ci::BranchTip;
 pub use commit::{Author, MAX_COMMIT_MESSAGE};
 pub use credential::run_credential_helper;
 pub use error::GitError;

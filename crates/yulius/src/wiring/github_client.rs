@@ -6,13 +6,14 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::github::{
-    ChecksReport, ChecksSource, ChecksState, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
-    GitHubPort, NewPull, RepoAccess, RulesetRequest,
+    ChecksReport, ChecksSource, ChecksState, GhIssue, GhPull, GhRepo, GhUser, GhUserToken,
+    GitHubAppConfig, GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess, RulesetRequest,
+    STATUS_PERMISSION_MISSING,
 };
 use yulius_github::{
-    AppCredentials, CheckSource, ChecksSummary, CreateRepo, GitHubClient, GitHubConfig,
-    GitHubError, MergeMethod, OwnerKind, PullFilter, PullRequest, PullState, Repo, RulesetSpec,
-    Secret as GhSecret, Url,
+    AppCredentials, CheckSource, ChecksSummary, CommitStatus, CreateRepo, GitHubClient,
+    GitHubConfig, GitHubError, MergeMethod, OwnerKind, PullFilter, PullRequest, PullState, Repo,
+    RulesetSpec, Secret as GhSecret, Url,
 };
 
 /// GitHub adapter with one cached client per App id (keeps installation tokens warm).
@@ -345,6 +346,29 @@ impl GitHubPort for GitHubAdapter {
         })
     }
 
+    async fn create_issue(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo_name: &str,
+        issue: &NewIssue,
+    ) -> AppResult<GhIssue> {
+        let spec = yulius_github::NewIssue {
+            title: issue.title.clone(),
+            body: issue.body.clone(),
+            labels: issue.labels.clone(),
+        };
+        let opened = self
+            .plain
+            .create_issue(&gh(token), owner, repo_name, &spec)
+            .await
+            .map_err(map_err)?;
+        Ok(GhIssue {
+            number: opened.number,
+            html_url: opened.url,
+        })
+    }
+
     async fn create_pull(
         &self,
         token: &Secret,
@@ -466,6 +490,69 @@ impl GitHubPort for GitHubAdapter {
             .fast_forward_ref(&gh(token), owner, repo_name, branch, sha)
             .await
             .map_err(map_err)
+    }
+
+    async fn create_commit_status(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo_name: &str,
+        sha: &str,
+        status: &NewCommitStatus,
+    ) -> AppResult<()> {
+        let status = CommitStatus {
+            state: status.state.clone(),
+            context: status.context.clone(),
+            description: status.description.clone(),
+            target_url: status.target_url.clone(),
+        };
+        match self
+            .plain
+            .create_commit_status(&gh(token), owner, repo_name, sha, &status)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(GitHubError::Forbidden { message })
+                if message
+                    .to_ascii_lowercase()
+                    .contains("not accessible by integration") =>
+            {
+                Err(AppError::Forbidden(STATUS_PERMISSION_MISSING.to_owned()))
+            }
+            Err(err) => Err(map_err(err)),
+        }
+    }
+
+    async fn delete_branch(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo_name: &str,
+        branch: &str,
+    ) -> AppResult<bool> {
+        self.plain
+            .delete_branch(&gh(token), owner, repo_name, branch)
+            .await
+            .map_err(map_err)
+    }
+
+    async fn branch_pulls(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo_name: &str,
+        branch: &str,
+    ) -> AppResult<Vec<GhPull>> {
+        let mut pulls: Vec<GhPull> = self
+            .plain
+            .list_pulls(&gh(token), owner, repo_name, PullFilter::All, Some(branch))
+            .await
+            .map_err(map_err)?
+            .into_iter()
+            .map(pull)
+            .collect();
+        pulls.sort_by_key(|p| std::cmp::Reverse(p.number));
+        Ok(pulls)
     }
 
     async fn branch_sha(

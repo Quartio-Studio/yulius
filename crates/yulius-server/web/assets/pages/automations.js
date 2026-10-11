@@ -10,9 +10,9 @@ import { pageFrame, loader, dataTable } from './common.js';
 
 // AutomationRun.state (docs/api.md "Skills, workflows, automations, MCP").
 const RUN_TONE = { scheduled: 'warn', task_created: 'ok', skipped_previous_active: '', skipped_disabled: '', failed: 'danger' };
-const RUN_LABEL = { scheduled: 'scheduled', task_created: 'task created', skipped_previous_active: 'skipped: previous task still active', skipped_disabled: 'skipped: disabled', failed: 'failed' };
+const RUN_LABEL = { scheduled: 'Scheduled', task_created: 'Task created', skipped_previous_active: 'Skipped: previous task still active', skipped_disabled: 'Skipped: disabled', failed: 'Failed' };
 
-const runBadge = (state) => badge(RUN_LABEL[state] || state || 'unknown', RUN_TONE[state] || '');
+const runBadge = (state) => badge(RUN_LABEL[state] || state || 'Unknown', RUN_TONE[state] || '');
 
 /** Mount the Automations page. */
 export function mountAutomationsPage(ctx, sandbox) {
@@ -51,10 +51,10 @@ export function mountAutomationsPage(ctx, sandbox) {
             await ctx.api.put(`/api/automations/${enc(a.id)}`, { ...editable(a), enabled: checked });
             a.enabled = checked;
             input.closest('.item-card').classList.toggle('off', !checked);
-            toast(`${a.name} ${checked ? 'enabled' : 'paused'}`, { kind: 'ok' });
+            toast(`${a.name} ${checked ? 'enabled' : 'paused'}.`, { kind: 'ok' });
           } catch (error) {
             input.checked = !checked;
-            errorToast(error, 'Could not update automation');
+            errorToast(error, 'Couldn’t update automation');
           }
         } }),
         h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, title: write ? 'Create a task from this automation now' : 'Requires write access', onClick: () => runNow(a) }, 'Run now'),
@@ -84,7 +84,7 @@ export function mountAutomationsPage(ctx, sandbox) {
       const state = run && run.state;
       const task = run && run.task_id ? ctx.store.findTask(run.task_id) : null;
       if (state === 'failed') toast(`${a.name}: run failed${run.error ? ` — ${run.error}` : ''}`, { kind: 'error' });
-      else toast(`${a.name}: ${RUN_LABEL[state] || state || 'run recorded'}${task ? ` (#${task.number})` : ''}`, { kind: state === 'task_created' ? 'ok' : 'info' });
+      else toast(`${a.name}: ${(RUN_LABEL[state] || state || 'run recorded').toLowerCase()}${task ? ` (#${task.number})` : ''}.`, { kind: state === 'task_created' ? 'ok' : 'info' });
       if (run && run.task_id) ctx.store.loadTasks(sandbox.id).catch(() => null);
       reload();
     } catch (error) {
@@ -111,7 +111,7 @@ export function mountAutomationsPage(ctx, sandbox) {
       toast('Automation deleted.', { kind: 'ok' });
       reload();
     } catch (error) {
-      errorToast(error, 'Could not delete automation');
+      errorToast(error, 'Couldn’t delete automation');
     }
   }
 

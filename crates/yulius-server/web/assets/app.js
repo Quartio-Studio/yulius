@@ -18,6 +18,7 @@ import { mountTaskView, mountComposer } from './taskview.js';
 import { mountSetup, mountSignIn, signInProblem } from './pages/auth.js';
 import { mountTasksPage, mountArchivedPage, mountDevicePage } from './pages/tasks.js';
 import { mountGitPage } from './pages/git.js';
+import { mountCiPage } from './pages/ci.js';
 import { mountGitTaskView } from './pages/gittask.js';
 import { mountTaskInfoView } from './pages/taskinfo.js';
 import { mountSkillEditor } from './pages/skilledit.js';
@@ -34,6 +35,7 @@ import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admi
 import { mountSettingsPage } from './pages/settings.js';
 import { mountInstancePage } from './pages/instance.js';
 import { createUpdateBanner } from './updates.js';
+import { mountSecretsPage } from './pages/secrets.js';
 import { mountDesignPage } from './pages/design.js';
 import { mountHomePage } from './pages/home.js';
 import { IS_MAC, showShortcuts } from './shortcuts.js';
@@ -50,6 +52,8 @@ const SANDBOX_PAGES = {
   skills: (ctx, sandbox, route) => mountSkillsPage(ctx, sandbox, route),
   automations: (ctx, sandbox) => mountAutomationsPage(ctx, sandbox),
   mcp: (ctx, sandbox, route) => mountMcpPage(ctx, sandbox, route),
+  secrets: (ctx, sandbox, route) => mountSecretsPage(ctx, sandbox, route),
+  ci: (ctx, sandbox, route) => mountCiPage(ctx, sandbox, route),
   dashboard: (ctx, sandbox) => mountDashboardPage(ctx, sandbox),
 };
 
@@ -147,7 +151,7 @@ function createApp(root, transport) {
     try {
       await store.loadSandboxes();
     } catch (error) {
-      errorToast(error, 'Could not load sandboxes');
+      errorToast(error, 'Couldn’t load sandboxes');
     }
     buildShell();
     store.startEvents();
@@ -318,7 +322,7 @@ function createApp(root, transport) {
           }
           if (currentSandbox) await store.loadTasks(currentSandbox.id);
         } catch (error) {
-          errorToast(error, 'Could not refresh');
+          errorToast(error, 'Couldn’t refresh');
         }
       }),
       store.on('browser-action', (event) => {
@@ -446,7 +450,7 @@ function createApp(root, transport) {
     try {
       await store.loadTasks(sandbox.id);
     } catch (error) {
-      errorToast(error, 'Could not load tasks');
+      errorToast(error, 'Couldn’t load tasks');
     }
   }
 
@@ -585,6 +589,10 @@ function createApp(root, transport) {
       case 'settings':
         setCenter('settings', () => mountSettingsPage(ctx));
         break;
+      case 'secrets':
+        // Team secrets without a sandbox (the user menu); agent secrets need one.
+        setCenter('secrets', () => mountSecretsPage(ctx, null, route));
+        break;
       case 'design':
         setCenter('design', () => mountDesignPage(ctx));
         break;
@@ -595,7 +603,7 @@ function createApp(root, transport) {
         setCenter(`admin:${route.page}`, () => ADMIN_PAGES[route.page](ctx, route));
         break;
       default:
-        message('notfound', 'Page not found.', h('div', { class: 'space-top' }, h('a', { href: href('/'), dataset: { route: '/' } }, 'Go to your workspace')));
+        message('notfound', 'Page not found.', h('div', { class: 'space-top' }, h('a', { href: href('/'), dataset: { route: '/' } }, 'Go to all sandboxes')));
     }
     currentTask = task;
     shell.panels.setContext(sandbox, task);

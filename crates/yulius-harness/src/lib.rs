@@ -13,6 +13,7 @@ pub mod launch;
 pub mod login;
 pub mod observe;
 pub mod paths;
+pub mod scrub_client;
 pub mod secret;
 pub mod skills;
 pub mod tail;

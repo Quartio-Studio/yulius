@@ -371,6 +371,77 @@ pub trait UpdateStore: Send + Sync {
     ) -> AppResult<()>;
 }
 
+/// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
+#[async_trait]
+pub trait CiStore: Send + Sync {
+    /// Inserts a run with its jobs atomically.
+    async fn insert_ci_run(
+        &self,
+        run: &crate::ci::CiRunRecord,
+        jobs: &[crate::ci::CiJobRecord],
+    ) -> AppResult<()>;
+    /// One run.
+    async fn ci_run(&self, id: &str) -> AppResult<Option<crate::ci::CiRunRecord>>;
+    /// The jobs of a run in order; outputs only when `with_output`.
+    async fn ci_jobs(&self, run: &str, with_output: bool)
+    -> AppResult<Vec<crate::ci::CiJobRecord>>;
+    /// Most recent runs of a sandbox (by queue time), newest first, at most `limit`.
+    async fn ci_runs(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Runs of a sandbox for one commit, newest first.
+    async fn ci_runs_for_sha(
+        &self,
+        sandbox: &SandboxId,
+        sha: &str,
+    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Queued and running runs of every sandbox, oldest first.
+    async fn active_ci_runs(&self) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Compare-and-set of a run's state with `update`; `false` when it was in none of
+    /// `from`. `Conflict` when another run of the sandbox is already running.
+    async fn transition_ci_run(
+        &self,
+        id: &str,
+        from: &[yulius_domain::ci::RunState],
+        to: yulius_domain::ci::RunState,
+        update: &crate::ci::CiRunUpdate,
+    ) -> AppResult<bool>;
+    /// Compare-and-set of a job's state with `update`; `false` when it was in none of `from`.
+    async fn transition_ci_job(
+        &self,
+        id: &str,
+        from: &[yulius_domain::ci::RunState],
+        to: yulius_domain::ci::RunState,
+        update: &crate::ci::CiJobUpdate,
+    ) -> AppResult<bool>;
+    /// Replaces the output of a running job.
+    async fn set_ci_job_output(&self, id: &str, output: &str) -> AppResult<()>;
+    /// Puts a `running` run and all its jobs back to `queued` (after a server restart), clearing
+    /// times and outputs; `false` when the run was not running.
+    async fn requeue_ci_run(&self, id: &str) -> AppResult<bool>;
+    /// Records a commit status publication: `published` is the run state GitHub accepted the
+    /// status of, `None` on failure with `note`; counts the attempt.
+    async fn record_ci_status(
+        &self,
+        id: &str,
+        published: Option<yulius_domain::ci::RunState>,
+        note: Option<&str>,
+    ) -> AppResult<()>;
+    /// Runs whose current state's commit status was not accepted yet, queued at or after
+    /// `since`, with fewer than `max_attempts` attempts, oldest first (at most `limit`).
+    async fn unpublished_ci_runs(
+        &self,
+        since: Timestamp,
+        max_attempts: u32,
+        limit: u32,
+    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Deletes finished runs (and their jobs) beyond the newest `keep` of each sandbox and
+    /// those queued before `before`; returns how many runs were deleted.
+    async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
+}
+
 /// All extension areas.
 pub trait ExtensionStores:
     WorkflowStore
@@ -383,6 +454,8 @@ pub trait ExtensionStores:
     + CapacityStore
     + IntakeStore
     + UpdateStore
+    + crate::ports::vault::VaultStore
+    + CiStore
 {
 }
 
@@ -397,5 +470,7 @@ impl<T> ExtensionStores for T where
         + CapacityStore
         + IntakeStore
         + UpdateStore
+        + crate::ports::vault::VaultStore
+        + CiStore
 {
 }

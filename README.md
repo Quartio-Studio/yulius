@@ -1,7 +1,8 @@
 # Yulius
 
-A coding sandbox for the Quartio team, inspired by
-[Cezar](https://github.com/open-mercato/cezar), to be built in Rust.
+A self-hosted coding workspace for the Quartio team, written in Rust and inspired by
+[Cezar](https://github.com/open-mercato/cezar): native Claude Code sessions per task, with
+delivery discipline, shared context and Yulius's own CI.
 
 The product is specified in [SPEC-001](.ai/specs/SPEC-001-yulius-product.md) (product),
 [SPEC-002](.ai/specs/SPEC-002-yulius-architecture.md) (architecture and runtime contracts) and

@@ -8,9 +8,10 @@ use std::time::{Duration, Instant};
 use yulius_domain::time::Timestamp;
 use yulius_github::fake::{FakeCheckRun, FakeFault, FakeGitHub, FakeStatus};
 use yulius_github::{
-    AccessLevel, CheckSource, ChecksSummary, Clock, CompareStatus, CreateRepo, GitHubClient,
-    GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewPull, OwnerKind, PullFilter,
-    PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock, Url,
+    AccessLevel, CheckSource, ChecksSummary, Clock, CommitStatus, CompareStatus, CreateRepo,
+    GitHubClient, GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewIssue, NewPull,
+    OwnerKind, PullFilter, PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock,
+    Url,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -257,8 +258,10 @@ async fn manifest_flow_builds_manifest_and_converts_code() -> TestResult {
     for (name, level) in [
         ("contents", "write"),
         ("pull_requests", "write"),
+        ("issues", "write"),
         ("checks", "read"),
-        ("statuses", "read"),
+        ("statuses", "write"),
+        ("workflows", "write"),
         ("administration", "write"),
         ("metadata", "read"),
         ("members", "read"),
@@ -433,6 +436,60 @@ async fn rulesets_protect_branches() -> TestResult {
             .await,
         Err(GitHubError::Forbidden { .. })
     ));
+    Ok(())
+}
+
+/// DLV-008 (#139): agents log issues with Definition-of-Ready labels; labels the repository does
+/// not have yet are created first, existing ones are reused, and bad input never reaches GitHub.
+#[tokio::test]
+async fn issues_are_opened_with_their_labels() -> TestResult {
+    let (fake, client) = setup().await?;
+    fake.add_repo("acme", "app", true);
+    fake.add_user("dev", None);
+    fake.set_permission("acme", "app", "dev", writer());
+    let token = fake.issue_user_token("dev");
+    let issue = NewIssue {
+        title: "Flaky checkout test".into(),
+        body: "Fails 1 in 20 runs under load.".into(),
+        labels: vec![
+            "type: bug".into(),
+            "priority: high".into(),
+            "area: backend".into(),
+        ],
+    };
+    let opened = client.create_issue(&token, "acme", "app", &issue).await?;
+    assert_eq!(opened.number, 1);
+    assert!(opened.url.ends_with("/acme/app/issues/1"), "{}", opened.url);
+    assert_eq!(fake.labels("acme", "app").len(), 3);
+    let second = client.create_issue(&token, "acme", "app", &issue).await?;
+    assert_eq!(second.number, 2);
+    assert_eq!(
+        fake.count("POST", "/repos/acme/app/labels"),
+        3,
+        "labels are created once"
+    );
+    assert_eq!(fake.issues("acme", "app")[1]["labels"][2], "area: backend");
+    let before = fake.requests().len();
+    for bad in [
+        NewIssue {
+            title: " ".into(),
+            ..issue.clone()
+        },
+        NewIssue {
+            labels: vec!["x".repeat(51)],
+            ..issue.clone()
+        },
+        NewIssue {
+            labels: vec!["l".into(); 11],
+            ..issue.clone()
+        },
+    ] {
+        assert!(matches!(
+            client.create_issue(&token, "acme", "app", &bad).await,
+            Err(GitHubError::InvalidInput { .. })
+        ));
+    }
+    assert_eq!(fake.requests().len(), before, "refused before any request");
     Ok(())
 }
 
@@ -1069,5 +1126,72 @@ async fn repository_tokens_are_restricted_and_cached_per_repository() -> TestRes
         client.create_repository_token(installation, "../x").await,
         Err(GitHubError::InvalidInput { .. })
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
+    let (fake, client) = setup().await?;
+    let root = fake.add_repo("acme", "app", true);
+    fake.set_branch("acme", "app", "dev", &root);
+    let head = fake.add_commit("acme", "app", &[&root]);
+    fake.set_branch("acme", "app", "task/ci", &head);
+    fake.add_user("dev", None);
+    fake.set_permission("acme", "app", "dev", writer());
+    let token = fake.issue_user_token("dev");
+    let status = |state: &str| CommitStatus {
+        state: state.into(),
+        context: "yulius/ci".into(),
+        description: format!("{state} {}", "x".repeat(300)),
+        target_url: Some("https://yulius.example.com/s/app/ci?run=r1".into()),
+    };
+    client
+        .create_commit_status(&token, "acme", "app", &head, &status("pending"))
+        .await?;
+    let report = client.check_status(&token, "acme", "app", &head).await?;
+    assert_eq!(report.summary, ChecksSummary::Pending);
+    client
+        .create_commit_status(&token, "acme", "app", &head, &status("success"))
+        .await?;
+    let report = client.check_status(&token, "acme", "app", &head).await?;
+    assert_eq!(report.summary, ChecksSummary::Success);
+    let sent = fake
+        .requests()
+        .into_iter()
+        .rfind(|r| r.method == "POST" && r.path.ends_with(&format!("/statuses/{head}")))
+        .ok_or("status request")?;
+    let body: serde_json::Value = serde_json::from_str(&sent.body)?;
+    assert_eq!(body["context"], "yulius/ci");
+    assert_eq!(
+        body["description"].as_str().map(|d| d.chars().count()),
+        Some(140)
+    );
+    // Invalid input never reaches GitHub.
+    assert!(matches!(
+        client
+            .create_commit_status(&token, "acme", "app", &head, &status("green"))
+            .await,
+        Err(GitHubError::InvalidInput { .. })
+    ));
+    // Without "Commit statuses: write" GitHub answers 403.
+    fake.withhold_permission("statuses");
+    assert!(matches!(
+        client
+            .create_commit_status(&token, "acme", "app", &head, &status("success"))
+            .await,
+        Err(GitHubError::Forbidden { .. })
+    ));
+    // Branch deletion: true once, false when already gone.
+    assert!(
+        client
+            .delete_branch(&token, "acme", "app", "task/ci")
+            .await?
+    );
+    assert!(
+        !client
+            .delete_branch(&token, "acme", "app", "task/ci")
+            .await?
+    );
+    assert_eq!(fake.branch_sha("acme", "app", "task/ci"), None);
     Ok(())
 }

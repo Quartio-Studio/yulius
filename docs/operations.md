@@ -75,6 +75,10 @@ Environment=YULIUS_BROWSER_DISPLAY=auto
 #Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
 # Optional: a token that may read Quartio-Studio/yulius, when the GitHub App cannot (see §8).
 #Environment=YULIUS_UPDATE_TOKEN_FILE=/var/lib/yulius/update.token
+# Yulius-run CI (see "CI on this machine" below): jobs at once, minutes per job, seconds between checks.
+Environment=YULIUS_CI_MAX_JOBS=4
+Environment=YULIUS_CI_JOB_TIMEOUT_MIN=30
+Environment=YULIUS_CI_POLL_SECS=60
 ExecStart=/usr/local/bin/yulius serve
 KillMode=process
 Restart=on-failure
@@ -354,8 +358,10 @@ manifest flow requests these repository permissions:
 | --- | --- | --- |
 | Contents | Read and write | Clone and fetch repositories; push task branches (the server, and agents through their repository-restricted token); merge pull requests; fast-forward promotions; compare branches. |
 | Pull requests | Read and write | Open, list and read pull requests. |
+| Issues | Read and write | Agents log follow-up work, bugs and flaky tests as issues with Definition-of-Ready labels (`issue_create`, DLV-008); missing labels are created. Requested since 2026-10-10; an App created before needs it added (below). |
 | Checks | Read | Read check runs on pull request heads: GitHub Actions and every other Checks API app. |
-| Commit statuses | Read | Read commit statuses on pull request heads: CI and deploy previews that report statuses. Requested since 2026-10-10. |
+| Commit statuses | Read and write | Publish the result of Yulius's own CI as the status `yulius/ci` on each tested commit (write, since 2026-10-11), and read statuses of projects without Yulius CI. |
+| Workflows | Read and write | Push the onboarding commit that deletes `.github/workflows/` (Yulius is the only CI). Requested since 2026-10-11. |
 | Administration | Read and write | Create repositories in an organization (New sandbox) and add branch rulesets to them. |
 | Metadata | Read | Mandatory for every App: repository facts and the signed-in person's permission level, which Yulius mirrors. |
 | Members (organization) | Read | Requested by the manifest; no current Yulius call uses it. |
@@ -364,10 +370,11 @@ Two more are worth knowing:
 
 - **Actions: read** is optional. It is a fallback only: when check runs can't be read, Yulius reads
   the head's GitHub Actions workflow runs in their place. With Checks granted it is never needed.
-- **Workflows** is not requested. Without it, GitHub refuses pushes made with the App's tokens that
-  change files under `.github/workflows/`. So agents cannot change the repository's CI through
-  Yulius. Grant it only if tasks must edit workflows; the task's own token can then change CI,
-  which runs with the repository's secrets.
+- **Workflows** lets the App's tokens change files under `.github/workflows/`. Without it, GitHub
+  refuses such pushes, and onboarding cannot delete a repository's GitHub Actions. With it, a
+  task could also *add* a workflow, which would run with the repository's secrets. So once a
+  repository is off Actions, also turn GitHub Actions off for it (Settings → Actions → General →
+  Disable actions; free on every plan): no workflow runs any more, whoever pushes one.
 
 **When a permission is missing.** A read GitHub refuses with 403 "Resource not accessible by
 integration" means the App lacks the permission. For checks, Yulius keeps working with the
@@ -388,6 +395,55 @@ passed, so merges and releases that require checks wait.
    Configure. Until someone accepts, the old permissions apply.
 4. New tokens carry the new permission. Installation tokens are cached for up to an hour; restart
    Yulius (`systemctl restart yulius`) to use the new permission at once.
+
+### CI on this machine
+
+Yulius is the projects' only CI (SPEC-002 ADR-21). No GitHub Actions or paid GitHub feature is
+involved.
+
+**What runs.** For each sandbox:
+
+- The CI comes from `[[ci.jobs]]`, or `[commands] gate`, in `yulius.toml` on the integration
+  branch (docs/api.md "CI").
+- An administrator can set `gate` on the sandbox profile instead (`PATCH /api/sandboxes/{sid}`).
+- Every open pull request into the integration branch and every new integration or production
+  commit is tested once.
+- The jobs run in parallel as the `yulius` user, inside the sandbox's containment when
+  `YULIUS_CONTAINED=true`, without any token.
+- Results appear on each sandbox's CI page and on GitHub as the status `yulius/ci`.
+- `YULIUS_CI=off` stops all of it. Merges then fall back to GitHub's checks.
+
+**The machine.** Jobs use the tools installed on the VM (`/usr`, `/opt` and
+`YULIUS_CONTAINED_READONLY` paths are visible read-only inside containment).
+
+- Install the toolchains the projects need system-wide, for example rustup's toolchains under
+  `/opt`, Node and Python.
+- Each sandbox keeps `<data>/sandboxes/<id>/ci/`:
+  - `jobs/<job>`: one persistent checkout per job; ignored build outputs such as `target/` and
+    `node_modules/` are its cache;
+  - `home`: `HOME` for jobs, with `~/.cargo`, `~/.npm` and `~/.cache`;
+  - `cache`: `YULIUS_CI_CACHE`.
+- Budget the disk: a Rust workspace's `target/` per job.
+- Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
+- Size `YULIUS_CI_MAX_JOBS` to the cores left after the agents. Each job gets
+  `YULIUS_CI_JOB_TIMEOUT_MIN`.
+
+**Moving a repository off GitHub Actions** (the onboarding step; agents use the `ci_setup` tool):
+
+1. Translate each workflow job's checks into `[[ci.jobs]]`.
+   - Use matrices for splits.
+   - Drop `${{ }}` expressions, Actions secrets and services.
+   - Install what `uses:` steps installed on the machine or in the job's command.
+2. `git rm -r .github/workflows` in the same commit, then open the pull request. Yulius tests it with
+   the CI it adds, because the integration branch has none yet.
+3. Merge once it passes. The App needs **Workflows: Read and write** to push step 2.
+4. Turn GitHub Actions off for the repository (see "GitHub App permissions").
+5. Rulesets that require Actions checks must switch to `yulius/ci`, or go. Yulius's own merge gate
+   enforces the delivery profile either way.
+
+**Hygiene.** After a merge through Yulius the head branch is deleted. Every 6 hours each sandbox is
+scanned for stale branches and worktrees, shown on its CI page. People clean them up there, agents
+with `repo_cleanup`.
 
 ## 6. Importing local work (`yulius import`)
 
@@ -423,6 +479,26 @@ sudo -u yulius yulius backup --data-dir /var/lib/yulius /var/backups/yulius-$(da
 (it encrypts every stored secret; without it the database's credentials are unreadable) and, if
 wanted, `sandboxes/` (clones and worktrees can be re-created from GitHub, uncommitted work cannot).
 Restore: stop the service, put the database copy at `yulius.db`, restore `master.key`, start.
+The database copy holds the secrets vault and the egress CA key as ciphertext only; keep
+`master.key` apart from database backups (whoever has both can read every secret).
+
+### Secrets vault (agent secrets, ADR-20)
+
+Nothing to configure. On first start the server creates the egress CA (its key sealed in the
+database) and serves the agents' egress proxy on the internal listener (`YULIUS_INTERNAL_BIND`):
+agent runs get `HTTPS_PROXY` pointing there, so whatever makes that address reachable from a
+sandbox (it is loopback today; network isolation must keep it reachable) carries the agents'
+HTTP(S). Claude Code's own API traffic (`*.anthropic.com`, `claude.ai`) and loopback bypass it.
+Runs trust the CA through `<run>/egress-ca.pem`, built from the host's CA roots
+(`/etc/ssl/certs/ca-certificates.crt` on Ubuntu, from the `ca-certificates` package); if the
+server logs that the roots were not found, install `ca-certificates`. Every Bash command of an
+agent runs through `yulius --scrub-exec` and every tool result through the `PostToolUse` hook:
+a command that prints `the agent-secret fingerprints of this run cannot be loaded` means the run
+cannot reach Yulius and has no `scrub.json` — continue the task to start a fresh run.
+
+Rotation: replace a value on the Secrets page after rotating it at its provider (the page marks
+values older than 180 days). If `master.key` and a database copy may have leaked together,
+rotate every team and agent secret at its source.
 
 ## 8. Upgrades
 
@@ -548,6 +624,9 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
   adds `update_runs` and the instance's sealed Jev key. Install the update helper (above). A
   configured `YULIUS_JEV_API_KEY_FILE` keeps working ("from config"); Settings → Instance → **Save
   it here** moves the key into settings, then the variable can go.
+- Upgrading to the secrets vault (ADR-20, 2026-10-10): migration 0009 adds the vault tables. New
+  agent runs route HTTP(S) through the egress proxy and redact agent secrets; runs started earlier
+  keep their environment until they are continued. Make sure `ca-certificates` is installed.
 - Upgrading to default workflows (AUT-006, #136, 2026-10-10): the default workflows now ship with
   the binary (`catalog/workflows/`) and are read-only. On the first start the "Feature" and "Quick
   task" rows seeded by earlier releases are retired (audited as `workflow.retired`); an edited
@@ -589,7 +668,12 @@ up. Queued tasks start when capacity allows.
 
 ## 9. Security notes
 
-- The data directory is owner-only (0700); secrets are sealed with `master.key` (XChaCha20-Poly1305).
+- The data directory is owner-only (0700); secrets are sealed with `master.key` (XChaCha20-Poly1305);
+  vault secrets under envelope encryption (per-secret data keys wrapped by a key derived from
+  `master.key`), with re-authenticated, audited reveals (ADR-20).
+- Agent secrets are never given to agents: the egress proxy adds them for their bound hosts and
+  every channel an agent reads is redacted. Remaining threats (a bound host echoing a credential
+  in another form, misuse on its hosts, weak values, raw CDP): SPEC-002 ADR-20.
 - Agents receive per-run task tokens (MCP, hooks) and GitHub tokens restricted to their sandbox
   repository; provider credentials reach the agent process only through its environment.
 - Known open risks are listed in SPEC-002 §12 (notably R-07: Chromium's DevTools port is

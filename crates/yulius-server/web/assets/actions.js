@@ -6,7 +6,7 @@
 
 import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, iconButton, placeholder, linkify } from './dom.js';
-import { taskActions, statusInfo, allows } from './status.js';
+import { taskActions, taskInfo, allows } from './status.js';
 import { relLong, dateTime } from './format.js';
 import { BRAND } from './brand.js';
 
@@ -17,9 +17,10 @@ export function openTaskMenu(ctx, anchor, task) {
   const sandbox = ctx.store.sandboxById(task.sandbox_id);
   const access = sandbox ? sandbox.access : 'read';
   const can = taskActions(task, access);
-  const why = allows(access, 'write') ? 'Not available in this state' : 'Requires write access on GitHub';
+  const why = allows(access, 'write') ? 'Not available in this state' : 'Requires write access';
   openMenu(anchor, [
-    { header: `#${task.number} · ${statusInfo(task).label}` },
+    // The same rule as the row it opens from (pull request, held prompt, browser request).
+    { header: `#${task.number} · ${taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id)).label}` },
     task.status === 'chained' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
     { label: task.status === 'chained' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
@@ -47,7 +48,7 @@ async function taskPost(ctx, task, verb, request, okMessage) {
     if (okMessage) toast(okMessage, { kind: 'ok' });
     return updated;
   } catch (error) {
-    errorToast(error, `Could not ${verb} task #${task.number}`);
+    errorToast(error, `Couldn’t ${verb} task #${task.number}`);
     return null;
   } finally {
     inFlight.delete(key);
@@ -85,11 +86,11 @@ export function continueTask(ctx, task) {
   return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, {}), `Continuing #${task.number}…`);
 }
 
-/** Permanent deletion (TSK-009): typed confirmation; cannot be undone. */
+/** Permanent deletion (TSK-009): an explicit confirmation; cannot be undone. */
 export async function deleteTask(ctx, task) {
   const ok = await confirmDialog({
     title: `Delete task #${task.number} permanently?`,
-    message: `"${task.title}" and its history, messages, steps and metrics are deleted, and its local worktree and branch are removed, including uncommitted changes. Pushed branches and pull requests on GitHub stay. This cannot be undone.`,
+    message: `“${task.title}” and its history, messages, steps and metrics are deleted, and its local worktree and branch are removed, including uncommitted changes. Pushed branches and pull requests on GitHub stay. This cannot be undone.`,
     confirmLabel: 'Delete permanently',
     danger: true,
   });
@@ -97,11 +98,11 @@ export async function deleteTask(ctx, task) {
   try {
     await ctx.api.del(`/api/tasks/${enc(task.id)}`);
   } catch (error) {
-    errorToast(error, `Could not delete task #${task.number}`);
+    errorToast(error, `Couldn’t delete task #${task.number}`);
     return;
   }
   ctx.store.removeTask(task.id, { byUser: true });
-  toast(`Deleted #${task.number} ${task.title}`, { kind: 'ok' });
+  toast(`Task #${task.number} deleted.`, { kind: 'ok' });
   const route = ctx.route();
   if (route && route.name === 'task' && route.number === task.number) {
     const sandbox = ctx.store.sandboxById(task.sandbox_id);
@@ -114,7 +115,7 @@ export async function archiveTask(ctx, task) {
   const updated = await taskPost(ctx, task, 'archive', () => ctx.api.post(`/api/tasks/${enc(task.id)}/archive`));
   if (updated) {
     ctx.store.removeTask(task.id, { byUser: true });
-    toast(`Archived #${task.number} ${task.title}`, { kind: 'ok', action: { label: 'Undo', run: () => restoreTask(ctx, task) } });
+    toast(`Task #${task.number} archived.`, { kind: 'ok', action: { label: 'Undo', run: () => restoreTask(ctx, task) } });
     const route = ctx.route();
     if (route && route.name === 'task' && route.number === task.number) {
       const sandbox = ctx.store.sandboxById(task.sandbox_id);
@@ -483,11 +484,11 @@ export async function confirmRemoveSandbox(ctx, sandbox) {
   try {
     await ctx.api.del(`/api/sandboxes/${enc(sandbox.id)}`);
     ctx.store.removeSandbox(sandbox.id);
-    toast(`Removed ${sandbox.name}`, { kind: 'ok' });
+    toast(`Sandbox ${sandbox.name} removed.`, { kind: 'ok' });
     const current = ctx.currentSandbox();
     if (!current || current.id === sandbox.id) ctx.navigate('/');
   } catch (error) {
-    errorToast(error, 'Could not remove sandbox');
+    errorToast(error, 'Couldn’t remove sandbox');
   }
 }
 

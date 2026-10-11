@@ -19,8 +19,9 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::Clock;
 use yulius_app::ports::github::{
-    ChecksReport, ChecksState, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort,
-    NewPull, RepoAccess, RulesetRequest,
+    ChecksReport, ChecksState, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
+    GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess, RulesetRequest,
+    STATUS_PERMISSION_MISSING,
 };
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::time::Timestamp;
@@ -56,6 +57,12 @@ pub struct FakeGitHub {
     pub writes: Mutex<Vec<String>>,
     /// Who opened each pull request: the user login, or `inst` for the App installation.
     pub pull_authors: Mutex<HashMap<u64, String>>,
+    /// Commit statuses published, in order: (sha, status).
+    pub statuses: Mutex<Vec<(String, NewCommitStatus)>>,
+    /// When set, publishing a commit status fails as without the App permission.
+    pub statuses_forbidden: std::sync::atomic::AtomicBool,
+    /// Issues opened (DLV-008).
+    pub issues: Mutex<Vec<(String, NewIssue)>>,
 }
 
 impl FakeGitHub {
@@ -193,6 +200,23 @@ impl GitHubPort for FakeGitHub {
             client_secret: "secret".into(),
             private_key_pem: "pem".into(),
             webhook_secret: None,
+        })
+    }
+    async fn create_issue(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        issue: &NewIssue,
+    ) -> AppResult<GhIssue> {
+        let mut issues = self.issues.lock().map_err(AppError::internal)?;
+        issues.push((login_of(token), issue.clone()));
+        let number = u64::try_from(issues.len()).unwrap_or(0) + 100;
+        drop(issues);
+        self.record(format!("create_issue #{number} {}", issue.title));
+        Ok(GhIssue {
+            number,
+            html_url: format!("https://github.test/{owner}/{repo}/issues/{number}"),
         })
     }
     async fn create_pull(
@@ -338,6 +362,49 @@ impl GitHubPort for FakeGitHub {
             .map_err(|_| AppError::Conflict("update is not a fast forward".into()))?;
         self.record(format!("fast_forward {branch} {sha}"));
         Ok(())
+    }
+    async fn create_commit_status(
+        &self,
+        _: &Secret,
+        _: &str,
+        _: &str,
+        sha: &str,
+        status: &NewCommitStatus,
+    ) -> AppResult<()> {
+        if self.statuses_forbidden.load(Ordering::SeqCst) {
+            return Err(AppError::Forbidden(STATUS_PERMISSION_MISSING.to_owned()));
+        }
+        self.statuses
+            .lock()
+            .map_err(AppError::internal)?
+            .push((sha.to_owned(), status.clone()));
+        Ok(())
+    }
+    async fn delete_branch(&self, _: &Secret, _: &str, _: &str, branch: &str) -> AppResult<bool> {
+        let remote = self
+            .remote()
+            .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        let deleted = remote.delete_branch(branch).map_err(AppError::Upstream)?;
+        self.record(format!("delete_branch {branch}"));
+        Ok(deleted)
+    }
+    async fn branch_pulls(
+        &self,
+        _: &Secret,
+        _: &str,
+        _: &str,
+        branch: &str,
+    ) -> AppResult<Vec<GhPull>> {
+        let mut pulls: Vec<GhPull> = self
+            .pulls
+            .lock()
+            .map_err(AppError::internal)?
+            .iter()
+            .filter(|p| p.head == branch)
+            .cloned()
+            .collect();
+        pulls.sort_by_key(|p| std::cmp::Reverse(p.number));
+        Ok(pulls)
     }
     async fn branch_sha(
         &self,
@@ -645,6 +712,11 @@ pub trait FakeRemote: Send + Sync {
     ) -> Result<String, String>;
     /// Moves `branch` to `sha` only as a fast-forward.
     fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String>;
+    /// Deletes `branch`; `false` when it did not exist.
+    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
+        let _ = branch;
+        Ok(false)
+    }
 }
 
 impl FakeGitHub {
@@ -680,6 +752,10 @@ impl FakeGitHub {
         if let Ok(mut m) = self.check_states.lock() {
             m.insert(sha.into(), report);
         }
+    }
+    /// Commit statuses published so far: (sha, status).
+    pub fn statuses(&self) -> Vec<(String, NewCommitStatus)> {
+        self.statuses.lock().map(|s| s.clone()).unwrap_or_default()
     }
     pub fn writes(&self) -> Vec<String> {
         self.writes.lock().map(|w| w.clone()).unwrap_or_default()
@@ -831,6 +907,8 @@ pub struct HarnessOptions {
     pub harness: Option<Arc<dyn yulius_app::ports::harness::HarnessPort>>,
     /// Provider usage probe (default: unavailable).
     pub usage: Option<Arc<dyn yulius_app::ports::usage::UsageProbe>>,
+    /// Store (default: a new in-memory database).
+    pub store: Option<SqliteStore>,
 }
 
 /// Like [`harness`] with the given adapters. The data directory path is canonical.
@@ -840,7 +918,10 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         None => tempfile::tempdir()?,
     };
     let data = dir.path().canonicalize()?;
-    let store = SqliteStore::open_in_memory()?;
+    let store = match options.store {
+        Some(store) => store,
+        None => SqliteStore::open_in_memory()?,
+    };
     let github = Arc::new(FakeGitHub::default());
     let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
     let mut config = AppConfig::new(

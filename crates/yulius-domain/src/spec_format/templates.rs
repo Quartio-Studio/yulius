@@ -249,16 +249,22 @@ fn commands(template: TemplateKind, names: &Names) -> Commands {
             test: some("node --test"),
             lint: None,
             build: None,
+            gate: some("node --test"),
         },
         TemplateKind::PythonData => Commands {
             test: some("python3 -m unittest discover -s tests"),
             lint: Some(format!("python3 -m compileall -q {} tests", names.python)),
             build: None,
+            gate: Some(format!(
+                "python3 -m compileall -q {} tests && python3 -m unittest discover -s tests",
+                names.python
+            )),
         },
         TemplateKind::RustService => Commands {
             test: some("cargo test"),
             lint: some("cargo clippy --all-targets -- -D warnings"),
             build: some("cargo build --release"),
+            gate: some("cargo clippy --all-targets -- -D warnings && cargo test"),
         },
     }
 }
@@ -302,6 +308,10 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
         ("Test", commands.test.clone()),
         ("Lint", commands.lint.clone()),
         ("Build", commands.build.clone()),
+        (
+            "CI gate (Yulius runs it on every pull request)",
+            commands.gate.clone(),
+        ),
         ("Run", run_command(template, names)),
     ] {
         if let Some(command) = command {
@@ -310,7 +320,7 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
     }
     let commands_section = if rows.is_empty() {
         "No technology is chosen yet. The first task decides it (record an ADR), then adds the\n\
-         test, lint and build commands here and in `yulius.toml` `[commands]`.\n"
+         test, lint, build and CI gate commands here and in `yulius.toml` `[commands]`.\n"
             .to_owned()
     } else {
         format!(
@@ -737,7 +747,7 @@ pub fn scaffold_files(project_name: &str, template: TemplateKind) -> Vec<(String
     if template == TemplateKind::Empty {
         yulius_toml = yulius_toml.replace(
             "[commands]\n",
-            "[commands]\n# Set test, lint and build once the first task chooses the technology.\n",
+            "[commands]\n# Set test, lint, build and gate (the CI Yulius runs on every pull request) once the\n# first task chooses the technology.\n",
         );
     }
     let mut files = vec![

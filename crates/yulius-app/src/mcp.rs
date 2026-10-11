@@ -1,5 +1,7 @@
 //! Yulius MCP server: JSON-RPC dispatch for agent tools (SPEC-002 §7.4).
 
+use std::sync::Arc;
+
 use serde_json::{Value, json};
 use yulius_contracts::mcp::{
     RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
@@ -103,8 +105,63 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_status".into(),
-            description: "Read-only delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and what people can do next. Merging, deploying and promoting are human actions in Yulius; there is no tool for them.".into(),
+            description: "Delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and the next actions. Deliver with delivery_merge, delivery_deploy and delivery_promote.".into(),
             input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "ci_status".into(),
+            description: "This project's CI, run by Yulius (the only CI; no GitHub Actions): the jobs in force and where they come from, the latest runs (this task's pull request first) and their state. With run_id, one run with the end of each job's output. A merge that requires checks waits until the latest run at the pull request head passed.".into(),
+            input_schema: schema(json!({"run_id": {"type": "string", "description": "A run id from the list, to read its jobs' output"}}), &[]),
+        },
+        ToolDescriptor {
+            name: "ci_rerun".into(),
+            description: "Run the CI again for the commit of a finished run (for example after a failure that was not caused by the code). Refused while a run of that commit is queued or running.".into(),
+            input_schema: schema(json!({"run_id": {"type": "string"}}), &["run_id"]),
+        },
+        ToolDescriptor {
+            name: "ci_setup".into(),
+            description: "Onboarding: move the project's GitHub Actions into Yulius CI. Returns the workflows in this task's worktree (jobs, run steps, uses steps, matrices), the CI its yulius.toml configures ([[ci.jobs]] or [commands] gate) and the steps: translate every check into [[ci.jobs]], delete .github/workflows/, commit; the pull request is tested with the CI it adds.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "repo_hygiene".into(),
+            description: "Stale branches and worktrees of this project: remote branches whose pull request was merged or closed, branches already merged, local branches no worktree uses, worktrees of deleted, archived or merged tasks. Each item has a reason and whether removing it is safe.".into(),
+            input_schema: schema(json!({"refresh": {"type": "boolean", "description": "Scan now instead of returning the last scan"}}), &[]),
+        },
+        ToolDescriptor {
+            name: "repo_cleanup".into(),
+            description: "Remove stale branches and worktrees reported by repo_hygiene: the given items, or every safe item when items is omitted. Unmerged branches without a pull request (reason idle) are removed only with force. Live tasks' worktrees, protected branches and branches with an open pull request are never removed; dirty worktrees are kept.".into(),
+            input_schema: schema(json!({
+                "items": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["remote_branch", "local_branch", "worktree"]}, "name": {"type": "string"}}, "required": ["kind", "name"]}},
+                "force": {"type": "boolean"}
+            }), &[]),
+        },
+        ToolDescriptor {
+            name: "delivery_merge".into(),
+            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). Acts with the authority of the task's creator and is audited.".into(),
+            input_schema: schema(json!({
+                "reviewed_head": {"type": "string", "description": "The commit SHA the independent reviewer approved (must be the branch head)"},
+                "review_summary": {"type": "string", "description": "One line: the reviewer's verdict and what it checked"}
+            }), &["reviewed_head"]),
+        },
+        ToolDescriptor {
+            name: "delivery_deploy".into(),
+            description: "Run the next environment of the delivery profile (for example dev after a merge, production after a promotion): its deploy command runs and its verification decides. Only environments with a command and verify = \"command\"; one a person must verify is refused. Follow the run with delivery_status.".into(),
+            input_schema: schema(json!({"environment": {"type": "string", "description": "Environment name from the delivery profile"}}), &["environment"]),
+        },
+        ToolDescriptor {
+            name: "delivery_promote".into(),
+            description: "Promote the integration branch to production once every merged task's integration environments are done. With merge-commit promotion the first call opens the promotion pull request and a later call, after its checks passed, merges it; fast-forward promotes at once.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "issue_create".into(),
+            description: "Open a GitHub issue for follow-up work, a bug or a flaky test you found, instead of widening this task. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
+            input_schema: schema(json!({
+                "title": {"type": "string"},
+                "body": {"type": "string", "description": "Markdown with a ## Acceptance criteria checklist"},
+                "labels": {"type": "array", "items": {"type": "string"}, "maxItems": 10}
+            }), &["title", "body", "labels"]),
         },
         ToolDescriptor {
             name: "automation_create".into(),
@@ -143,12 +200,38 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
     ];
     tools.extend(crate::browser::tool_descriptors());
+    tools.extend(secret_tool_descriptors());
     tools
+}
+
+/// Agent-secret tools (SPEC-002 ADR-20): names only, and typing into the sandbox browser.
+fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
+    vec![
+        ToolDescriptor {
+            name: "secrets_list".into(),
+            description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "browser_fill_secret".into(),
+            description: "Type an agent secret into the project browser without seeing it: its value (password or key), its user name, or its current two-factor (TOTP) code, into the focused field or the element matching selector, in a tab whose page is on one of the secret's bound hosts. Use browser_snapshot first to find the field.".into(),
+            input_schema: schema(json!({
+                "tab_id": {"type": "string", "description": "Tab from browser_tabs or browser_open"},
+                "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
+                "field": {"type": "string", "enum": ["value", "password", "username", "totp"], "description": "What to type (default value; password is the same as value)"},
+                "selector": {"type": "string", "description": "CSS selector of the field to focus first"}
+            }), &["tab_id", "secret"]),
+        },
+    ]
 }
 
 impl App {
     /// Handles one JSON-RPC message from an agent; `None` for notifications.
-    pub async fn mcp_handle(&self, token: &str, request: RpcRequest) -> Option<RpcResponse> {
+    pub async fn mcp_handle(
+        self: &Arc<Self>,
+        token: &str,
+        request: RpcRequest,
+    ) -> Option<RpcResponse> {
         let id = request.id.clone()?;
         let ctx = match self.agent_context(token).await {
             Ok(ctx) => ctx,
@@ -196,7 +279,7 @@ impl App {
         })
     }
 
-    async fn mcp_call(&self, ctx: &AgentContext, params: &Value) -> Value {
+    async fn mcp_call(self: &Arc<Self>, ctx: &AgentContext, params: &Value) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or("");
         let args = params
             .get("arguments")
@@ -216,6 +299,15 @@ impl App {
             "step_update" => self.tool_step_update(ctx, &args).await,
             "steps_get" => self.tool_steps_get(ctx).await,
             "delivery_status" => self.tool_delivery_status(ctx).await,
+            "ci_status" => self.tool_ci_status(ctx, &args).await,
+            "ci_rerun" => self.tool_ci_rerun(ctx, &args).await,
+            "ci_setup" => self.tool_ci_setup(ctx).await,
+            "repo_hygiene" => self.tool_repo_hygiene(ctx, &args).await,
+            "repo_cleanup" => self.tool_repo_cleanup(ctx, &args).await,
+            "delivery_merge" => self.tool_delivery_merge(ctx, &args).await,
+            "delivery_deploy" => self.tool_delivery_deploy(ctx, &args).await,
+            "delivery_promote" => self.tool_delivery_promote(ctx).await,
+            "issue_create" => self.tool_issue_create(ctx, &args).await,
             "automation_create" => self.tool_automation_create(ctx, &args).await,
             "automations_list" => self.tool_automations_list(ctx).await,
             "automation_update" => self.tool_automation_update(ctx, &args).await,
@@ -231,11 +323,16 @@ impl App {
             "browser_request_user_action" => {
                 self.tool_browser_request_user_action(ctx, &args).await
             }
+            "secrets_list" => self.tool_secrets_list(ctx).await,
+            "browser_fill_secret" => self.tool_browser_fill_secret(ctx, &args).await,
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         };
         match outcome {
             Ok(value) => {
-                let mut text = serde_json::to_string_pretty(&value).unwrap_or_default();
+                // No tool result carries an agent secret's value (SPEC-002 ADR-20): page text,
+                // messages, task prompts and everything else are redacted before the agent.
+                let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+                let mut text = self.redact_for_sandbox(&ctx.task.sandbox_id, &text).await;
                 if text.len() > MAX_RESULT_BYTES {
                     let mut cut = MAX_RESULT_BYTES;
                     while !text.is_char_boundary(cut) {
@@ -246,7 +343,11 @@ impl App {
                 }
                 text_result(text, false)
             }
-            Err(err) => text_result(err.public_message(), true),
+            Err(err) => text_result(
+                self.redact_for_sandbox(&ctx.task.sandbox_id, &err.public_message())
+                    .await,
+                true,
+            ),
         }
     }
 }

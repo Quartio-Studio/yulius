@@ -47,6 +47,36 @@ pub struct ReviewChanges {
     pub truncated: bool,
 }
 
+/// A branch tip (CI and hygiene, SPEC-001 DLV-006/007).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchInfo {
+    /// Branch name.
+    pub name: String,
+    /// Tip commit.
+    pub sha: String,
+    /// Committer time of the tip (ms).
+    pub committed_ms: i64,
+}
+
+/// A registered worktree of a sandbox clone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeInfo {
+    /// Path as Git records it.
+    pub path: std::path::PathBuf,
+    /// Checked-out branch, absent when detached.
+    pub branch: Option<String>,
+    /// Its directory is gone.
+    pub prunable: bool,
+    /// The main worktree (the clone itself).
+    pub main: bool,
+}
+
+fn unsupported<T>(what: &str) -> AppResult<T> {
+    Err(crate::error::AppError::Conflict(format!(
+        "{what} is not available on this instance"
+    )))
+}
+
 /// Git operations on sandbox repositories.
 #[async_trait]
 pub trait GitPort: Send + Sync {
@@ -139,6 +169,68 @@ pub trait GitPort: Send + Sync {
         remote_branch: &str,
         token: &Secret,
     ) -> AppResult<()>;
+    /// The commit `rev` names, if it exists in `repo`.
+    async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
+        let _ = (repo, rev);
+        unsupported("resolving commits")
+    }
+    /// A file (repository-relative `path`) at `rev`; `None` when absent.
+    async fn show_file(&self, repo: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {
+        let _ = (repo, rev, path);
+        unsupported("reading files at a revision")
+    }
+    /// File names directly in directory `dir` at `rev` (empty when absent).
+    async fn list_dir(&self, repo: &Path, rev: &str, dir: &str) -> AppResult<Vec<String>> {
+        let _ = (repo, rev, dir);
+        unsupported("listing files at a revision")
+    }
+    /// Prepares a persistent detached CI checkout at `path` (inside `owned_root`) on `sha`,
+    /// keeping ignored files as a cache (SPEC-002 ADR-21).
+    async fn ci_checkout(
+        &self,
+        repo: &Path,
+        path: &Path,
+        sha: &str,
+        owned_root: &Path,
+    ) -> AppResult<()> {
+        let _ = (repo, path, sha, owned_root);
+        unsupported("CI checkouts")
+    }
+    /// `origin`'s branches as last fetched.
+    async fn remote_branches(&self, repo: &Path) -> AppResult<Vec<BranchInfo>> {
+        let _ = repo;
+        unsupported("listing branches")
+    }
+    /// Local branches.
+    async fn local_branches(&self, repo: &Path) -> AppResult<Vec<BranchInfo>> {
+        let _ = repo;
+        unsupported("listing branches")
+    }
+    /// Whether `ancestor` is reachable from `descendant`.
+    async fn is_ancestor(&self, repo: &Path, ancestor: &str, descendant: &str) -> AppResult<bool> {
+        let _ = (repo, ancestor, descendant);
+        unsupported("comparing commits")
+    }
+    /// Whether a remote-tracking branch contains `sha`.
+    async fn on_remote(&self, repo: &Path, sha: &str) -> AppResult<bool> {
+        let _ = (repo, sha);
+        unsupported("comparing commits")
+    }
+    /// Registered worktrees (the main one first).
+    async fn worktrees(&self, repo: &Path) -> AppResult<Vec<WorktreeInfo>> {
+        let _ = repo;
+        unsupported("listing worktrees")
+    }
+    /// Deletes a local branch that no worktree has checked out.
+    async fn delete_local_branch(&self, repo: &Path, name: &str) -> AppResult<()> {
+        let _ = (repo, name);
+        unsupported("deleting branches")
+    }
+    /// Forgets worktrees whose directories are gone.
+    async fn prune_worktrees(&self, repo: &Path) -> AppResult<()> {
+        let _ = repo;
+        unsupported("pruning worktrees")
+    }
     /// Imports a bundle's refs under `refs/heads/<prefix>/…`.
     async fn import_bundle(
         &self,

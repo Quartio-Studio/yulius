@@ -14,7 +14,7 @@
 //!
 //! The server stops when [`FakeGitHub::shutdown`] is awaited or the value is dropped.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -203,6 +203,8 @@ struct FakeRepo {
     statuses: HashMap<String, Vec<FakeStatus>>,
     workflow_runs: HashMap<String, Vec<FakeCheckRun>>,
     rulesets: Vec<Value>,
+    labels: BTreeSet<String>,
+    issues: Vec<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -449,6 +451,24 @@ impl FakeGitHub {
         repo.branches.insert("main".to_owned(), sha.clone());
         state.repos.insert(key(owner, name), repo);
         sha
+    }
+
+    /// Issues opened in a repository (title, body, labels, number), in order.
+    pub fn issues(&self, owner: &str, repo: &str) -> Vec<Value> {
+        lock(&self.state)
+            .repos
+            .get(&key(owner, repo))
+            .map(|r| r.issues.clone())
+            .unwrap_or_default()
+    }
+
+    /// Labels of a repository.
+    pub fn labels(&self, owner: &str, repo: &str) -> Vec<String> {
+        lock(&self.state)
+            .repos
+            .get(&key(owner, repo))
+            .map(|r| r.labels.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Sets `login`'s permission flags on a repository.
@@ -1176,7 +1196,9 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
     };
     let app_permission = match (method.as_str(), tail) {
         ("GET", ["commits", _, "check-runs"]) => Some("checks"),
-        ("GET", ["commits", _, "status" | "statuses"]) => Some("statuses"),
+        ("GET", ["commits", _, "status" | "statuses"]) | ("POST", ["statuses", _]) => {
+            Some("statuses")
+        }
         ("GET", ["actions", ..]) => Some("actions"),
         _ => None,
     };
@@ -1231,6 +1253,55 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
             let value = pull_json(state, repo, &pull);
             repo.pulls.push(pull);
             reply(201, value)
+        }
+        ("GET", ["labels", name]) => {
+            let name = pct_decode(name);
+            if repo.labels.contains(&name) {
+                reply(200, json!({"name": name}))
+            } else {
+                error(404, "Not Found")
+            }
+        }
+        ("POST", ["labels"]) => {
+            let name = body["name"].as_str().unwrap_or_default().to_owned();
+            if name.is_empty() || !repo.labels.insert(name.clone()) {
+                return error(
+                    422,
+                    "Validation Failed: label already exists or has no name",
+                );
+            }
+            reply(201, json!({"name": name, "color": body["color"]}))
+        }
+        ("POST", ["issues"]) => {
+            let labels: Vec<String> = body["labels"]
+                .as_array()
+                .map(|l| {
+                    l.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(missing) = labels.iter().find(|l| !repo.labels.contains(*l)) {
+                return error(
+                    422,
+                    &format!("Validation Failed: label '{missing}' does not exist"),
+                );
+            }
+            // Issues and pull requests share one number sequence.
+            let number = (repo.pulls.len() + repo.issues.len()) as u64 + 1;
+            let url = format!(
+                "https://github.com/{}/{}/issues/{number}",
+                repo.owner, repo.name
+            );
+            let issue = json!({
+                "number": number,
+                "html_url": url,
+                "title": body["title"],
+                "body": body["body"],
+                "labels": labels,
+            });
+            repo.issues.push(issue.clone());
+            reply(201, issue)
         }
         ("GET", ["pulls"]) => {
             let wanted = query.get("state").map_or("open", String::as_str);
@@ -1309,6 +1380,40 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
                 200,
                 json!({"total_count": runs.len(), "workflow_runs": paginate(&runs, query)}),
             )
+        }
+        ("POST", ["statuses", sha]) => {
+            let state_name = body["state"].as_str().unwrap_or_default().to_owned();
+            let context = body["context"].as_str().unwrap_or("default").to_owned();
+            if !matches!(
+                state_name.as_str(),
+                "pending" | "success" | "failure" | "error"
+            ) {
+                return error(422, "Validation Failed: state");
+            }
+            if !repo.commits.contains_key(*sha) {
+                return error(422, "No commit found for SHA");
+            }
+            let list = repo.statuses.entry((*sha).to_owned()).or_default();
+            // GitHub keeps every status; the combined view shows the latest per context.
+            list.retain(|s| s.context != context);
+            list.push(FakeStatus {
+                context: context.clone(),
+                state: state_name.clone(),
+            });
+            reply(
+                201,
+                json!({"state": state_name, "context": context, "description": body["description"], "target_url": body["target_url"]}),
+            )
+        }
+        ("DELETE", ["git", "refs", "heads", branch @ ..]) => {
+            let branch = branch.join("/");
+            if repo.branches.remove(&branch).is_none() {
+                return error(422, "Reference does not exist");
+            }
+            Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .body(axum::body::Body::empty())
+                .unwrap_or_else(|_| error(500, "response"))
         }
         ("PATCH", ["git", "refs", "heads", branch @ ..]) => {
             let branch = branch.join("/");
