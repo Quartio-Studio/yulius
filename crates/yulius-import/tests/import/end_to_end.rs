@@ -190,7 +190,7 @@ fn onboards_everything_then_sends_nothing_new_on_rerun() -> TestResult {
         "Sessions     https://yulius.example/s/demo/sessions",
         "Onboarding   ● preparing",
         "· task #1 finishes",
-        "Tasks can start in this sandbox once onboarding is ready.",
+        "New tasks wait for it and start by themselves once onboarding is ready.",
     ] {
         assert!(
             output.contains(expected),

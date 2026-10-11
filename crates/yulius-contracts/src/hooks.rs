@@ -74,6 +74,10 @@ pub struct HookInput {
     /// Notification title (`Notification`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Kind of notification (Claude Code `Notification`): `permission_prompt`, `idle_prompt`,
+    /// `elicitation_dialog`, `auth_success`, …
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notification_type: Option<String>,
     /// Tool name for tool and permission events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
