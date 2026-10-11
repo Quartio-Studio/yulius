@@ -1,11 +1,12 @@
 //! The subscription pool with real processes: supervisor → detached `yulius ptyhost` → fake
 //! agent, a scripted usage probe and real git worktrees (SPEC-001 ROT-004/010, AC-ROT-9..11,
 //! AC-ROT-14; SPEC-002 ADR-17). The fake agent has no hooks, so its turn boundary is the end of
-//! a turn in its transcript; hook holds are covered by `subscription_pool.rs`.
+//! a turn in its transcript; hook holds are covered by `subscription_pool.rs`. MCP servers reach
+//! every run on every subscription (MCP-004, AC-MCP-3).
 
 mod support;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -24,6 +25,7 @@ use yulius_app::model::{
     TaskRecord, UserRecord,
 };
 use yulius_app::ports::usage::{UsageFailure, UsageProbe};
+use yulius_contracts::api::mcp::McpServerInput;
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
@@ -560,6 +562,184 @@ fn a_paused_task_resumes_on_the_subscription_with_capacity_by_native_resume() ->
         assert!(launch.contains("prompt: None"), "no prompt: {launch}");
         assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
         assert!(app.deps.store.open_pause(&id).await?.is_none());
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+fn mcp_input(name: &str, transport: &str) -> McpServerInput {
+    McpServerInput {
+        name: name.into(),
+        transport: transport.into(),
+        command: (transport == "stdio").then(|| "npx".into()),
+        args: vec!["-y".into(), format!("@example/{name}-mcp")],
+        url: (transport == "http").then(|| format!("https://mcp.{name}.test/mcp")),
+        env: None,
+        headers: None,
+        enabled: None,
+        scope: None,
+    }
+}
+
+/// The run's own MCP configuration (`--mcp-config`) and the names of its secret variables.
+fn run_mcp(
+    run_dir: &str,
+) -> Result<(serde_json::Value, String, Vec<String>), Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(Path::new(run_dir).join("mcp.json"))?;
+    let launch: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+        Path::new(run_dir).join("launch.json"),
+    )?)?;
+    let secrets = launch["secret_env_names"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|n| n.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((serde_json::from_str(&text)?, text, secrets))
+}
+
+/// AC-MCP-3 (MCP-004): MCP servers configured in Yulius reach every run, whichever subscription
+/// it runs on. Each run gets its own `mcp.json` (`--mcp-config`, strict) with the configured
+/// servers and their secrets only as `${VAR}` references, and the values in the run's
+/// environment. After the task moves to another subscription by native resume, the new run has
+/// the same servers, plus one added in between.
+#[test]
+fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
+    const QUARTIO_TOKEN: &str = "synthetic-quartio-token";
+    const APIFY_TOKEN: &str = "synthetic-apify-token";
+    const LINEAR_KEY: &str = "synthetic-linear-key-1";
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            report_env: vec![
+                "YULIUS_MCP_QUARTIO_TOKEN".into(),
+                "APIFY_TOKEN".into(),
+                "LINEAR_KEY".into(),
+            ],
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let mut quartio = mcp_input("quartio", "http");
+        quartio.scope = Some("instance".into());
+        quartio.headers = Some(BTreeMap::from([(
+            "Authorization".into(),
+            format!("Bearer {QUARTIO_TOKEN}"),
+        )]));
+        app.create_mcp_server(&ctx, sandbox.as_str(), &quartio)
+            .await?;
+        let mut apify = mcp_input("apify", "stdio");
+        apify.env = Some(BTreeMap::from([("APIFY_TOKEN".into(), APIFY_TOKEN.into())]));
+        app.create_mcp_server(&ctx, sandbox.as_str(), &apify)
+            .await?;
+
+        let id = new_task(&app, &sandbox, &user, "Tools").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ENV LINEAR_KEY=") }
+        })
+        .await?;
+        let first = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        assert_eq!(
+            first.account_id.as_ref().map(AccountId::as_str),
+            Some("a-first")
+        );
+        let (mcp, text, secrets) = run_mcp(&first.run_dir)?;
+        let servers = mcp["mcpServers"].as_object().ok_or("mcpServers")?;
+        let mut names: Vec<&str> = servers.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["apify", "quartio", "yulius"]);
+        assert_eq!(servers["quartio"]["url"], "https://mcp.quartio.test/mcp");
+        assert_eq!(
+            servers["quartio"]["headers"]["Authorization"],
+            "Bearer ${YULIUS_MCP_QUARTIO_TOKEN}"
+        );
+        assert_eq!(servers["apify"]["command"], "npx");
+        assert_eq!(servers["apify"]["env"]["APIFY_TOKEN"], "${APIFY_TOKEN}");
+        for secret in [QUARTIO_TOKEN, APIFY_TOKEN] {
+            assert!(!text.contains(secret), "the MCP file holds no secret value");
+        }
+        for name in ["YULIUS_MCP_QUARTIO_TOKEN", "APIFY_TOKEN"] {
+            assert!(secrets.iter().any(|n| n == name), "{name} in {secrets:?}");
+        }
+        let shown = screen(&app, &id);
+        assert!(
+            shown.contains(&format!(
+                "ENV YULIUS_MCP_QUARTIO_TOKEN=set len={}",
+                QUARTIO_TOKEN.len()
+            )),
+            "{shown}"
+        );
+        assert!(
+            shown.contains(&format!("ENV APIFY_TOKEN=set len={}", APIFY_TOKEN.len())),
+            "{shown}"
+        );
+        assert!(shown.contains("ENV LINEAR_KEY=unset"), "{shown}");
+
+        // A server added while the task runs; then the task moves to b-second.
+        let mut linear = mcp_input("linear", "stdio");
+        linear.env = Some(BTreeMap::from([("LINEAR_KEY".into(), LINEAR_KEY.into())]));
+        app.create_mcp_server(&ctx, sandbox.as_str(), &linear)
+            .await?;
+        probe.set("a-first", usage(98.0, 4 * HOUR, 30.0, 100));
+        probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        refresh(&app, &user, "b-second").await?;
+        app.send_input(&id, b"work\r").await?;
+        wait_for("the pause", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let _ = app.resume_round().await;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let second = app.deps.store.attempts(&id).await?.remove(1);
+        assert_eq!(
+            second.account_id.as_ref().map(AccountId::as_str),
+            Some("b-second")
+        );
+        assert_eq!(second.launch_kind, LaunchKind::Resume);
+        let (mcp, text, secrets) = run_mcp(&second.run_dir)?;
+        let servers = mcp["mcpServers"].as_object().ok_or("mcpServers")?;
+        let mut names: Vec<&str> = servers.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["apify", "linear", "quartio", "yulius"]);
+        assert_eq!(servers["linear"]["env"]["LINEAR_KEY"], "${LINEAR_KEY}");
+        assert_eq!(
+            servers["quartio"]["headers"]["Authorization"],
+            "Bearer ${YULIUS_MCP_QUARTIO_TOKEN}"
+        );
+        assert!(!text.contains(LINEAR_KEY) && !text.contains(APIFY_TOKEN));
+        for name in ["YULIUS_MCP_QUARTIO_TOKEN", "APIFY_TOKEN", "LINEAR_KEY"] {
+            assert!(secrets.iter().any(|n| n == name), "{name} in {secrets:?}");
+        }
+        wait_for("the new run's environment", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move {
+                screen(&app, &id).contains(&format!("ENV LINEAR_KEY=set len={}", LINEAR_KEY.len()))
+            }
+        })
+        .await?;
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

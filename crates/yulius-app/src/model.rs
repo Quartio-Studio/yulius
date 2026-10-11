@@ -552,7 +552,14 @@ pub struct UsageSampleRecord {
     pub used_percent: f64,
     /// When the window resets, when known.
     pub resets_at: Option<Timestamp>,
+    /// Who read it: [`USAGE_FROM_PROBE`] or [`USAGE_FROM_SESSION`].
+    pub source: String,
 }
+
+/// A usage reading from the provider's usage endpoint.
+pub const USAGE_FROM_PROBE: &str = "probe";
+/// A usage reading a running session passed on (Claude Code's status line, ADR-17).
+pub const USAGE_FROM_SESSION: &str = "session";
 
 /// A recorded rotation decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -594,6 +601,19 @@ pub struct StepRecord {
     pub updated_by: Option<String>,
     /// Last update.
     pub updated_at: Option<Timestamp>,
+    /// Declared effort, 1 to [`yulius_domain::steps::MAX_EFFORT`] (STP-006).
+    pub effort: u8,
+}
+
+/// When a step last started and finished, from its event history (STP-007).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepTiming {
+    /// Step.
+    pub step_id: StepId,
+    /// Last move to `in_progress`.
+    pub started_at: Option<Timestamp>,
+    /// Last move to `done` or `skipped`.
+    pub finished_at: Option<Timestamp>,
 }
 
 /// An inter-task or user message.

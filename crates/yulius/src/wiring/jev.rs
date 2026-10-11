@@ -12,11 +12,13 @@
 //! owner-only file and never appears in a log, an error, a request body or a debug string.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
-use yulius_app::ports::intake::{ChoiceEvaluator, JevFailure};
+use yulius_app::model::Secret;
+use yulius_app::ports::intake::{ChoiceEvaluator, JevCheck, JevConnector, JevFailure};
 use yulius_domain::intake::{ChoiceAnswer, ChoiceQuestion, JEV_MODEL};
 
 /// The one endpoint.
@@ -78,6 +80,15 @@ pub fn read_key_file(path: &Path) -> Result<JevKey, String> {
         .and_then(|f| f.take(MAX_KEY_FILE_BYTES).read_to_string(&mut text))
         .map_err(|e| format!("cannot read {shown}: {e}"))?;
     JevKey::new(&text).map_err(|e| format!("{shown}: {e}"))
+}
+
+/// Reads a secret from an owner-only file (the same rules as the Jev key file): for
+/// `YULIUS_UPDATE_TOKEN_FILE`.
+///
+/// # Errors
+/// A message naming the path and the problem, never the secret.
+pub fn read_secret_file(path: &Path) -> Result<Secret, String> {
+    read_key_file(path).map(|key| Secret(key.0))
 }
 
 /// The Jev client.
@@ -271,7 +282,7 @@ impl ChoiceEvaluator for JevClient {
     async fn evaluate(
         &self,
         state: &str,
-        question: &ChoiceQuestion,
+        question: &ChoiceQuestion<'_>,
         deadline: Duration,
     ) -> Result<ChoiceAnswer, JevFailure> {
         let body = self.request_body(state, question)?;
@@ -279,6 +290,110 @@ impl ChoiceEvaluator for JevClient {
             .await
             .map_err(|_| JevFailure::Timeout)??;
         parse_answer(&bytes, question)
+    }
+}
+
+/// The state of a test request: a short split question with an obvious answer.
+const TEST_STATE: &str = "REQUEST\nRename the Save button on the settings page to Apply.";
+
+impl JevClient {
+    /// One small request (SPEC-001 ADM-002 "test the key"): the split question about a one-line
+    /// request. The HTTP status tells a refused key from an unreachable service.
+    pub async fn check(&self) -> JevCheck {
+        use yulius_domain::intake::SPLIT_QUESTION;
+        let Ok(body) = self.request_body(TEST_STATE, &SPLIT_QUESTION) else {
+            return JevCheck::Invalid;
+        };
+        let send = self
+            .http
+            .post(&self.endpoint)
+            .bearer_auth(&self.key.0)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::ACCEPT, "application/json")
+            .body(body)
+            .send();
+        let response = match tokio::time::timeout(MAX_DEADLINE, send).await {
+            Err(_) => return JevCheck::Timeout,
+            Ok(Err(err)) if err.is_timeout() => return JevCheck::Timeout,
+            Ok(Err(_)) => return JevCheck::Unreachable,
+            Ok(Ok(response)) => response,
+        };
+        match response.status().as_u16() {
+            200..=299 => {}
+            401 | 403 => return JevCheck::Refused,
+            _ => return JevCheck::Unreachable,
+        }
+        let Ok(Ok(bytes)) = tokio::time::timeout(MAX_DEADLINE, response.bytes()).await else {
+            return JevCheck::Timeout;
+        };
+        if bytes.len() > MAX_RESPONSE_BYTES {
+            return JevCheck::Invalid;
+        }
+        match parse_answer(&bytes, &SPLIT_QUESTION) {
+            Ok(_) => JevCheck::Ok,
+            Err(_) => JevCheck::Invalid,
+        }
+    }
+}
+
+/// Builds [`JevClient`]s from keys a superadmin saves (SPEC-001 ADM-002).
+#[derive(Debug, Clone)]
+pub struct JevKeys {
+    endpoint: String,
+    https_only: bool,
+}
+
+impl Default for JevKeys {
+    fn default() -> Self {
+        Self {
+            endpoint: JEV_ENDPOINT.to_owned(),
+            https_only: true,
+        }
+    }
+}
+
+impl JevKeys {
+    /// Keys for another endpoint (tests).
+    #[must_use]
+    pub fn with_endpoint(endpoint: String) -> Self {
+        Self {
+            endpoint,
+            https_only: false,
+        }
+    }
+
+    fn client(&self, key: &Secret) -> Result<JevClient, String> {
+        JevClient::build(
+            JevKey::new(key.expose())?,
+            self.endpoint.clone(),
+            self.https_only,
+        )
+    }
+}
+
+#[async_trait]
+impl JevConnector for JevKeys {
+    fn connect(&self, key: &Secret) -> Result<Arc<dyn ChoiceEvaluator>, String> {
+        Ok(Arc::new(self.client(key)?))
+    }
+
+    async fn check(&self, key: &Secret) -> JevCheck {
+        match self.client(key) {
+            Ok(client) => client.check().await,
+            Err(_) => JevCheck::Invalid,
+        }
+    }
+}
+
+/// The key of `YULIUS_JEV_API_KEY_FILE`: `Ok(None)` when unset, `Err` (a message without the
+/// key) when set but unusable.
+///
+/// # Errors
+/// Why the file cannot be used.
+pub fn config_key(path: Option<&Path>) -> Result<Option<Secret>, String> {
+    match path {
+        None => Ok(None),
+        Some(path) => read_key_file(path).map(|key| Some(Secret(key.0))),
     }
 }
 
@@ -526,6 +641,29 @@ mod tests {
             calls,
             "refused input sent nothing"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_test_request_tells_a_refused_key_from_an_unreachable_service() -> TestResult {
+        let keys = |url: &str| JevKeys::with_endpoint(url.to_owned());
+        let key = Secret(KEY.into());
+        let ok = fake(200, valid().to_string(), Duration::ZERO).await?;
+        assert_eq!(keys(&ok.url).check(&key).await, JevCheck::Ok);
+        assert_eq!(ok.calls.load(Ordering::SeqCst), 1, "one cheap request");
+        let refused = fake(401, "{}".into(), Duration::ZERO).await?;
+        assert_eq!(keys(&refused.url).check(&key).await, JevCheck::Refused);
+        let down = fake(503, "{}".into(), Duration::ZERO).await?;
+        assert_eq!(keys(&down.url).check(&key).await, JevCheck::Unreachable);
+        let odd = fake(200, "{\"model\": \"other\"}".into(), Duration::ZERO).await?;
+        assert_eq!(keys(&odd.url).check(&key).await, JevCheck::Invalid);
+        assert!(keys(&ok.url).connect(&Secret("short".into())).is_err());
+        let evaluator = keys(&ok.url).connect(&key).map_err(|e| e.to_string())?;
+        let answer = evaluator
+            .evaluate("REQUEST\nx", &SPLIT_QUESTION, Duration::from_secs(5))
+            .await
+            .map_err(|e| e.to_string())?;
+        assert_eq!(answer.choice, "several");
         Ok(())
     }
 

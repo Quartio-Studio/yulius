@@ -3,7 +3,7 @@
 // Every API path is a literal at its call site (tests/ui_contract.rs checks them).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton } from './dom.js';
 import { allows, isLive } from './status.js';
 
 /** Prompts with fewer words are one task without asking (the server's rule, SPLIT_MIN_WORDS). */
@@ -35,12 +35,19 @@ export async function looksSeveral(ctx, sandbox, prompt) {
   }
 }
 
+/** The first line of a proposed task's prompt, shortened: what the row previews. */
+function preview(prompt) {
+  const line = String(prompt || '').split('\n').map((l) => l.replace(/^\s*(\d+[.)]|[-*•])\s+/, '').trim()).find(Boolean) || '';
+  return line.length > 140 ? `${line.slice(0, 139)}…` : line;
+}
+
 /**
- * The composer's split card: "This looks like N separate tasks", the proposed tasks with
- * editable titles, and Create N tasks (in parallel) · Create as a chain · Keep as one task.
- * `create(list, chain)` creates the tasks; `keep()` creates the original one. While the
- * proposal is prepared, Keep as one task already works; without a usable proposal the card
- * calls `keep()` by itself (one task, as asked).
+ * The composer's split card (F 2026-10-10 layout): "Split into N tasks?" with one compact row per
+ * proposed task — number, editable title, a one-line preview and the prompt collapsed — then In
+ * parallel / As a chain and one primary action, Create N tasks, beside Keep as one task. While
+ * Claude prepares the proposal the rows shimmer and Keep as one task already works; without a
+ * usable proposal the card calls `keep()` by itself (one task, as asked).
+ * `create(list, chain)` creates the tasks; `keep()` the original one; `close()` withdraws.
  */
 export function splitCard(ctx, sandbox, prompt, { create, keep, close }) {
   const controller = new AbortController();
@@ -52,12 +59,14 @@ export function splitCard(ctx, sandbox, prompt, { create, keep, close }) {
     controller.abort();
     fn();
   };
-  const keepButton = h('button', { type: 'button', class: 'btn', onClick: () => finish(keep) }, 'Keep as one task');
+  const keepButton = h('button', { type: 'button', class: 'btn btn-ghost', onClick: () => finish(keep) }, 'Keep as one task');
   const dismiss = iconButton('x', 'Close the proposal', () => finish(close), { class: 'split-x' });
+  const head = (title, text) => h('div', { class: 'split-head' }, icon('workflow', { size: 16 }),
+    h('div', { class: 'split-heading' }, h('strong', null, title), h('span', { class: 'muted' }, text)), dismiss);
   setChildren(el,
-    h('div', { class: 'split-head' }, icon('workflow', { size: 16 }),
-      h('strong', null, 'This looks like separate tasks.'), h('span', { class: 'muted' }, 'Preparing a proposal…'), dismiss),
-    h('div', { class: 'split-actions' }, keepButton));
+    head('Splitting your request…', 'It looks like separate workstreams. Claude is grouping them.'),
+    skeleton('Preparing a split proposal…', 3),
+    h('div', { class: 'split-actions' }, h('span', { class: 'split-spacer' }), keepButton));
 
   (async () => {
     let proposal = null;
@@ -74,26 +83,52 @@ export function splitCard(ctx, sandbox, prompt, { create, keep, close }) {
       finish(keep);
       return;
     }
-    const titles = tasks.map((task, i) => h('input', { class: 'input split-title', type: 'text', value: task.title, maxlength: 120, 'aria-label': `Title of task ${i + 1}` }));
+    const titles = tasks.map((task, i) => h('input', { class: 'split-title', type: 'text', value: task.title, maxlength: 120, 'aria-label': `Title of task ${i + 1}` }));
     const chainFirst = tasks.some((t) => t.after_previous);
-    const parallel = h('button', { type: 'button', class: ['btn', !chainFirst && 'btn-primary'], onClick: () => finish(() => create(edited(), false)) }, `Create ${tasks.length} tasks (in parallel)`);
-    const chain = h('button', { type: 'button', class: ['btn', chainFirst && 'btn-primary'], onClick: () => finish(() => create(edited(), true)) }, 'Create as a chain');
+    const name = `split-run-${Math.random().toString(36).slice(2, 8)}`;
+    const radio = (value, label, checked) => h('label', null, h('input', { type: 'radio', name, value, checked }), label);
+    const run = h('div', { class: 'seg split-run', role: 'radiogroup', 'aria-label': 'Run the tasks' },
+      radio('parallel', 'In parallel', !chainFirst), radio('chain', 'As a chain', chainFirst));
+    const chained = () => Boolean(run.querySelector('input[value="chain"]:checked'));
+    const createButton = h('button', { type: 'button', class: 'btn btn-primary', onClick: () => finish(() => create(edited(), chained())) }, `Create ${tasks.length} tasks`);
     function edited() {
       return tasks.map((task, i) => ({ ...task, title: titles[i].value.trim() || task.title }));
     }
     setChildren(el,
-      h('div', { class: 'split-head' }, icon('workflow', { size: 16 }),
-        h('strong', null, `This looks like ${tasks.length} separate tasks.`),
-        h('span', { class: 'muted' }, chainFirst ? 'Some must run after another: a chain fits.' : 'They could run in parallel.'), dismiss),
+      head(`Split into ${tasks.length} tasks?`, chainFirst ? 'Separate workstreams; some must run after another, so a chain fits.' : 'Separate workstreams that could run in parallel.'),
       h('ol', { class: 'split-list' }, tasks.map((task, i) => h('li', { class: 'split-item' },
-        titles[i],
-        task.after_previous ? h('span', { class: 'chip xs' }, 'after the previous') : null,
-        h('details', { class: 'split-prompt' }, h('summary', null, 'Prompt'), h('pre', null, task.prompt))))),
-      h('div', { class: 'split-actions' }, parallel, chain, keepButton));
-    titles[0].focus();
+        h('span', { class: 'split-num', 'aria-hidden': 'true' }, String(i + 1)),
+        h('div', { class: 'split-body' },
+          h('div', { class: 'split-line' }, titles[i], task.after_previous ? h('span', { class: 'chip xs' }, 'after the previous') : null),
+          h('details', { class: 'split-prompt' },
+            h('summary', null, h('span', { class: 'split-preview' }, preview(task.prompt)),
+              h('span', { class: 'split-more split-more-closed' }, 'Show prompt'), h('span', { class: 'split-more split-more-open' }, 'Hide prompt')),
+            h('div', { class: 'split-prompt-text' }, task.prompt)))))),
+      h('div', { class: 'split-actions' }, run, h('span', { class: 'split-spacer' }), keepButton, createButton));
+    createButton.focus();
   })();
 
   return { el, cancel: () => finish(() => {}) };
+}
+
+/**
+ * The composer's calm "working" line while intake decides (F 2026-10-10): a label that follows the
+ * stage — reading the request, choosing mode and workflow, starting the task — over a shimmer.
+ * Returns {el, stage(text)}.
+ */
+export function intakeStatus(text) {
+  const label = h('span', { class: 'intake-label' }, text);
+  const el = h('div', { class: 'intake-status', role: 'status' }, h('span', { class: 'intake-dot', 'aria-hidden': 'true' }), label);
+  return {
+    el,
+    stage(next) {
+      if (label.textContent === next) return;
+      label.textContent = next;
+      label.classList.remove('intake-label-in');
+      void label.offsetWidth; // restart the fade for the new stage
+      label.classList.add('intake-label-in');
+    },
+  };
 }
 
 const HELD = {

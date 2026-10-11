@@ -3,7 +3,7 @@
 // against leaving unsaved changes. A repository skill is a file in the sandbox repository
 // (.agents/skills or .claude/skills): it is read and saved with the built-in editor's files API
 // (root `sandbox`; the save carries the read's sha256, so a file changed meanwhile is a conflict, not
-// an overwrite). Instance skills and the Open Mercato pack are kept by the server: read-only here.
+// an overwrite). Instance skills and the included skills are kept by the server: read-only here.
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, loadError, iconBadge, confirmDialog, toast } from '../dom.js';
@@ -12,6 +12,7 @@ import { allows } from '../status.js';
 import { relLong } from '../format.js';
 import { createMarkdownEditor } from '../mdeditor.js';
 import { SOURCE_BADGE } from './skills.js';
+import { BRAND } from '../brand.js';
 
 /** Mount the editor of one skill. */
 export function mountSkillEditor(ctx, sandbox, name) {
@@ -119,10 +120,10 @@ export function mountSkillEditor(ctx, sandbox, name) {
         data = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/skills/${enc(name)}`, { signal: reads.signal });
       }
       if (!alive) return;
-      const why = skill.source === 'open-mercato' ? 'The Open Mercato pack is read-only: it is shared by every instance.'
+      const why = skill.source !== 'repository' && skill.source !== 'instance' ? `Read-only: included skills ship with ${BRAND.name} and stay current with it.`
         : skill.source !== 'repository' ? 'Read-only: instance skills are kept by the server and are not edited here.'
           : !write ? 'Read-only: editing needs write access to this sandbox.' : null;
-      const [badgeIcon, badgeLabel, badgeTone] = SOURCE_BADGE[skill.source] || ['book', skill.source, ''];
+      const [badgeIcon, badgeLabel, badgeTone] = SOURCE_BADGE[skill.source] || ['lock', 'Included', ''];
       setChildren(badges, iconBadge(badgeIcon, badgeLabel, badgeTone), skill.enabled === false ? iconBadge('minimize', 'Off', '') : null);
       pathEl.textContent = skill.path || '';
       setChildren(note, why ? h('p', { class: 'banner small' }, icon('lock', { size: 14 }), h('span', { class: 'banner-text' }, why)) : null);

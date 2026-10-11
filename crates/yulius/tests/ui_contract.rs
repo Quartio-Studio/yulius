@@ -328,7 +328,7 @@ async fn every_api_call_of_the_ui_exists_in_the_router() -> TestResult {
         ("GET", "/api/events"),
         ("PUT", "/api/sandboxes/{}/skills/{}"),
         ("DELETE", "/api/sandboxes/{}"),
-        ("POST", "/api/sandboxes/{}/delivery/environments/{}/confirm"),
+        ("GET", "/api/sandboxes/{}/delivery/runs/{}"),
         ("GET", "/api/admin/accounts/login/{}/terminal"),
         ("PUT", "/api/sandboxes/{}/files/content"),
         ("DELETE", "/api/tasks/{}"),

@@ -26,13 +26,45 @@ test('the Git page names a missing GitHub App permission to administrators until
   await expect(screen.getByText(MISSING)).toBeHidden();
   await browser.reload();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
-  await expect(screen.getByRole('heading', /^Delivery needs you/)).toBeVisible();
+  await expect(screen.getByRole('heading', /^Blocked/)).toBeVisible();
   await expect(screen.getByText(MISSING)).toBeHidden();
 });
 
 test('members who cannot change the GitHub App do not see it', async ({ app, screen }) => {
   await app.open(mock('/s/studio/git', '&role=member'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
-  await expect(screen.getByRole('heading', /^Delivery needs you/)).toBeVisible();
+  await expect(screen.getByRole('heading', /^Blocked/)).toBeVisible();
   await expect(screen.getByText(MISSING)).toBeHidden();
+});
+
+// "git should be presentation layer strictly because all responsibilities will be handled by
+// agents" (F 2026-10-10, #136): status, links and output only; agents merge, deploy and release.
+const ACTIONS = /^(merge|release|deploy|mark .* verified|verify|open pull request|deliver\b)/i;
+
+test('the Git page shows delivery state without merge, release, deploy or verify buttons', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/git'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
+  await expect(screen.getByRole('heading', /^Where every task is/)).toBeVisible();
+  await expect(screen.getByRole('heading', /^Blocked/)).toBeVisible();
+  await expect(screen.getByText(/Agents merge and release as part of their workflow/)).toBeVisible();
+  await expect(screen.getByRole('link', 'Pull requests')).toHaveAttribute('href', /\/pulls$/);
+  const labels = await browser.evaluate(() => [...document.querySelectorAll('#main button, #main a.btn')].map((b) => (b.textContent ?? '').trim()));
+  expect(labels.filter((label) => ACTIONS.test(label))).toEqual([]);
+
+  // A task's delivery details are read-only too.
+  await browser.locator('.dl-deliver').first().click();
+  const dialog = screen.getByRole('dialog', /^Delivery · #/);
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(/Agents open, merge, deploy and release as part of their workflow/)).toBeVisible();
+  const dialogLabels = await browser.evaluate(() => [...document.querySelectorAll('dialog[open] button')].map((b) => (b.textContent ?? '').trim()));
+  expect(dialogLabels.filter((label) => ACTIONS.test(label))).toEqual([]);
+  expect(await axeViolations(browser)).toEqual([]);
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  // The task view's delivery line shows the pull request, not a Merge button.
+  await app.open(mock('/s/studio/t/13'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#13 /);
+  await expect(screen.getByRole('button', /^Pull request #520/)).toBeVisible();
+  await expect(screen.getByRole('button', 'Merge…')).toBeHidden();
 });

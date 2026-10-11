@@ -9,7 +9,9 @@
 // keeps unknown usage `null`.
 //
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
-// role=member|admin|superadmin (default superadmin), contained=0 (host mode), github=0.
+// role=member|admin|superadmin (default superadmin), contained=0 (host mode), github=0,
+// update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
+// jev=config (a Jev key file is configured).
 
 const MIN = 60e3;
 const HOUR = 60 * MIN;
@@ -94,6 +96,8 @@ function makeSteps(taskId, done, current, total = PLAN.length) {
       note: status === 'in_progress' ? 'Handlers for /cart and /checkout; Stripe test keys only.' : status === 'done' && i === 0 ? 'Spec at docs/specs/2026-10-07-checkout-api.md' : '',
       updated_by: i < done ? (i % 2 ? 'task #12 (claude)' : 'mkarp') : status === 'in_progress' ? 'task #12 (claude)' : '',
       updated_at: status === 'pending' ? null : iso((total - i) * 11 * MIN),
+      // The one step that cannot be split declares a larger effort (STP-006).
+      effort: PLAN[i] === 'Implement checkout API' ? 3 : 1,
     });
   }
   return steps;
@@ -122,6 +126,17 @@ function seed(params) {
     sessions: new Map(),
     browsers: new Map(),
     shells: new Map(), // id → {id, sandbox_id, name, task_id, created_at, session}
+    // Instance updates and the Jev key (SPEC-002 ADR-18): `update=1` (main moved on), `update=fail`
+    // (main moved on and its install is rolled back), `helper=0` (no update helper), `jev=config`.
+    update: {
+      current: '68b4f5f2c1d0e9a8b7c6d5e4f3a2b1c0d9e8f7a6',
+      offer: ['1', 'fail'].includes(params.get('update')) ? '9c1e7d3b5a2f4e6d8c0b1a3f5e7d9c2b4a6f8e0d' : null,
+      fail: params.get('update') === 'fail',
+      helper: params.get('helper') !== '0',
+      checkedAt: ['1', 'fail'].includes(params.get('update')) ? iso(10 * MIN) : null,
+      run: null,
+    },
+    jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
 
     nextId: 100,
   };
@@ -203,24 +218,26 @@ function seed(params) {
   ];
   db.accounts = [
     { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', email: 'michal.karp@example.com', plan: 'Max 20x', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
-    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', email: 'team.dev@example.com', plan: 'Max 20x', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: the provider is limiting usage requests for this account (HTTP 429); Yulius asks again in about 12 min', in_use_by: 3 },
+    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', email: 'team.dev@example.com', plan: 'Max 20x', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
     { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', email: 'ops@example.com', plan: 'Max 5x', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
     { id: 'acc_x1', provider: 'anthropic', label: 'Claude #4', email: 'studio@example.com', plan: 'Max 5x', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
     { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', email: 'product@example.com', plan: 'Pro', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
     { id: 'acc_x3', provider: 'anthropic', label: 'Claude spare', email: null, plan: null, status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
-  // `wf-feature` and `wf-quick-task` are the built-in instance workflows the server seeds.
+  // The default workflows ship with the server (catalog/workflows/*.md, AUT-006): read-only, first.
   db.workflows = [
-    { id: 'wf-feature', sandbox: null, name: 'Feature', description: 'Default discipline: spec with plan, implementation, tests, PR.', steps: ['Write task spec', 'Implement', 'Test', 'Open PR'], instructions: 'Follow AGENTS.md. Keep the spec Plan checklist in sync.', gates: { require_spec: true, require_tests: true }, scope: 'instance' },
-    { id: 'wf-quick-task', sandbox: null, name: 'Quick task', description: 'Small change without a spec gate.', steps: ['Implement', 'Test'], instructions: '', gates: { require_spec: false, require_tests: true }, scope: 'instance' },
-    { id: 'wf_bugfix', sandbox: 'sb_studio', name: 'Bugfix', description: 'Reproduce with a failing test first.', steps: ['Reproduce with a failing test', 'Fix', 'Open PR'], instructions: '', gates: { require_spec: true, require_tests: true }, scope: 'sandbox' },
+    { id: 'wf-feature', sandbox: null, name: 'Feature', description: 'New or changed behaviour, from a spec through review and tests to production.', when_to_use: 'The task adds or changes behaviour that users or other code rely on.', steps: ['Write the spec', 'Implement', 'Review the change', 'Test', 'Deliver to the integration branch', 'Release to production'], instructions: 'Start with the task spec. Implement only what it describes, prove it with tests, review your own diff, then deliver through the delivery profile.', gates: { require_spec: true, require_tests: true }, scope: 'instance', builtin: true },
+    { id: 'wf-fix', sandbox: null, name: 'Fix', description: 'A bug fixed from a reproduction, with a regression test.', when_to_use: 'Something that used to work, or should work, behaves wrongly.', steps: ['Reproduce with a failing test', 'Fix the cause', 'Review the change', 'Deliver'], instructions: 'Reproduce the bug first, with a test that fails because of it.', gates: { require_spec: false, require_tests: true }, scope: 'instance', builtin: true },
+    { id: 'wf-research', sandbox: null, name: 'Research', description: 'Investigate a question and report findings, without changing the product.', when_to_use: 'The task is a question about the product, the code or an option to choose.', steps: ['Investigate', 'Report the findings'], instructions: 'Answer with evidence. Do not change the product’s code.', gates: { require_spec: false, require_tests: false }, scope: 'instance', builtin: true },
+    { id: 'wf_release', sandbox: 'sb_studio', name: 'Release notes', description: 'Collect what shipped and write the release notes.', when_to_use: '', steps: ['Collect merged pull requests', 'Write the notes'], instructions: '', gates: { require_spec: false, require_tests: false }, scope: 'sandbox', builtin: false },
   ];
   db.skills = [
     { name: 'yulius-rust-slice', description: 'Implement a vertical Rust slice with tests and docs.', source: 'repository', path: '.agents/skills/yulius-rust-slice/SKILL.md', enabled: true },
     { name: 'design', description: 'Make UI designs consistent with the Quartio design system.', source: 'repository', path: '.claude/skills/design/SKILL.md', enabled: true },
     { name: 'quartio-brand', description: 'Brand voice and visual identity for customer-facing copy.', source: 'instance', path: 'instance/skills/quartio-brand/SKILL.md', enabled: true },
-    { name: 'om-code-review', description: 'Structured code review checklist (Open Mercato).', source: 'open-mercato', path: 'open-mercato/om-code-review/SKILL.md', enabled: true },
-    { name: 'om-testing', description: 'Write meaningful tests for every behavior change (Open Mercato).', source: 'open-mercato', path: 'open-mercato/om-testing/SKILL.md', enabled: false },
+    { name: 'delivery-pipeline', description: 'The one autonomous path every feature and fix takes, from a ready issue to verified production.', source: 'yulius', path: 'skills/yulius/delivery-pipeline/SKILL.md', enabled: true },
+    { name: 'om-code-review', description: 'Review a diff against correctness, security, contracts and tests with a mechanical verdict.', source: 'open-mercato', path: 'skills/open-mercato/om-code-review/SKILL.md', enabled: true },
+    { name: 'test-driven-development', description: 'Write the test first, watch it fail for the right reason, then the minimal code.', source: 'superpowers', path: 'skills/superpowers/test-driven-development/SKILL.md', enabled: false },
   ];
   db.automations = [
     { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
@@ -256,7 +273,12 @@ function seed(params) {
 function stepsSummary(task) {
   const list = task.stepsList;
   const current = list.find((s) => s.status === 'in_progress');
-  return { done: list.filter((s) => s.status === 'done').length, total: list.length, current: current ? current.title : null };
+  // Skipped steps count as finished (STP-005); progress is weighted by declared effort (STP-006).
+  const finished = list.filter((s) => s.status === 'done' || s.status === 'skipped');
+  const effort = (s) => Math.min(3, Math.max(1, s.effort || 1));
+  const total = list.reduce((sum, s) => sum + effort(s), 0);
+  const percent = total ? Math.floor((finished.reduce((sum, s) => sum + effort(s), 0) * 100) / total) : 0;
+  return { done: finished.length, total: list.length, current: current ? current.title : null, percent };
 }
 
 function summary(task) {
@@ -271,6 +293,8 @@ function summary(task) {
     next: (task.nextLinks || []).map((link) => ({ ...link })),
     held_prompt: task.heldPrompt ? { ...task.heldPrompt } : null,
     ...(task.mode ? { mode: task.mode } : {}),
+    // How Auto chose the mode and workflow (TSK-015).
+    auto: task.auto ? { ...task.auto } : null,
     // Background shells an idle agent left running (TSK-014).
     background_shells: task.status === 'running' ? task.background_shells ?? null : null,
   };
@@ -616,15 +640,20 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
   const archived = query.get('archived') === 'true';
   return db.tasks.filter((t) => t.sandbox_id === p[0] && t.archived === archived).map(summary);
 });
-route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing') fail(409, 'conflict', 'The project is being prepared; new tasks start after the preparation task lands (or an admin skips it).');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
   if (body.harness && body.harness !== 'claude') fail(422, 'invalid', 'harness must be claude (Yulius runs Claude Code only)');
+  if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
+  const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
+  if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
+  // Auto (TSK-015): the mock's stand-in for Jev answers after a moment, like the server.
+  const choice = body.mode === 'auto' || body.workflow_id === 'auto' ? await mockAutoChoice(body, visible) : null;
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
   const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
-  const wf = db.workflows.find((w) => w.id === body.workflow_id);
+  const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const before = body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
   if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
@@ -635,7 +664,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
     unread_messages: 0, archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
     model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
-    delivery: null,
+    delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
   };
   db.tasks.push(task);
   recount(db);
@@ -648,8 +677,40 @@ route('POST', `/api/sandboxes/${ID}/tasks`, ({ db, p, body }) => {
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return json(201, summary(task));
 });
+/**
+ * The mock's Auto choice (TSK-015): a question ("?", or starting with how/why/what…) is a prompt
+ * with the Research workflow (never a spec-first one); "fix", "bug" or "crash" gets Fix; anything
+ * else is a goal with Feature. "maybe" makes the stand-in unsure, so the defaults apply (Goal and
+ * Feature; no workflow for a prompt).
+ */
+async function mockAutoChoice(body, workflows) {
+  await delay(700);
+  const text = String(body.prompt || '').trim();
+  const unsure = /\bmaybe\b/i.test(text);
+  const question = /\?|^(how|why|what|where|when|which|who|is|are|does|do|can|could|should)\b/i.test(text);
+  const named = (name) => workflows.find((w) => w.name.toLowerCase() === name) || null;
+  const autoMode = body.mode === 'auto';
+  const mode = autoMode ? (!unsure && question ? 'prompt' : 'goal') : body.mode || 'goal';
+  let workflow = body.workflow_id && body.workflow_id !== 'auto' ? workflows.find((w) => w.id === body.workflow_id) : null;
+  if (body.workflow_id === 'auto') {
+    const noSpec = (w) => (w && !(w.gates && w.gates.require_spec) ? w : null);
+    if (unsure) workflow = mode === 'prompt' ? null : named('feature');
+    else if (mode === 'prompt') workflow = noSpec(named('research'));
+    else workflow = /\b(fix|bug|crash)/i.test(text) ? named('fix') || named('feature') : named('feature');
+  }
+  return {
+    mode,
+    workflow,
+    auto: {
+      mode: autoMode ? (unsure ? 'default' : 'jev') : null,
+      workflow: body.workflow_id === 'auto' ? (unsure ? 'default' : 'jev') : null,
+      workflow_name: workflow ? workflow.name : null,
+    },
+  };
+}
+
 // Task intake (TSK-011): requests of 40+ words mixing UI and backend work look like several
-// tasks; the proposal groups lines by area (UX first, backend second).
+// tasks; the proposal groups lines by area (UX first, backend second), after a moment (Claude).
 const MOCK_BACKEND = /backend|api|server|database|pool|queue/i;
 route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -660,8 +721,9 @@ route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
   const several = lines.some((l) => MOCK_BACKEND.test(l)) && lines.some((l) => !MOCK_BACKEND.test(l));
   return { verdict: several ? 'several' : 'one', checked: true };
 });
-route('POST', `/api/sandboxes/${ID}/intake/proposal`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  await delay(900);
   const lines = String(body.prompt || '').split('\n').filter((l) => /^\s*(\d+[.)]|[-*•])\s/.test(l)).map((l) => l.trim());
   const backend = lines.filter((l) => MOCK_BACKEND.test(l));
   const ux = lines.filter((l) => !MOCK_BACKEND.test(l));
@@ -1220,19 +1282,25 @@ route('POST', `/api/sandboxes/${ID}/workflows`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (body.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance workflows are managed by instance administrators');
   db.nextId += 1;
-  const wf = { id: `wf_${db.nextId}`, sandbox: body.scope === 'instance' ? null : p[0], name: body.name, description: body.description || '', steps: body.steps || [], instructions: body.instructions || '', gates: { require_spec: Boolean(body.gates && body.gates.require_spec), require_tests: Boolean(body.gates && body.gates.require_tests) }, scope: body.scope === 'instance' ? 'instance' : 'sandbox' };
+  const wf = { id: `wf_${db.nextId}`, sandbox: body.scope === 'instance' ? null : p[0], name: body.name, description: body.description || '', when_to_use: '', steps: body.steps || [], instructions: body.instructions || '', gates: { require_spec: Boolean(body.gates && body.gates.require_spec), require_tests: Boolean(body.gates && body.gates.require_tests) }, scope: body.scope === 'instance' ? 'instance' : 'sandbox', builtin: false };
   db.workflows.push(wf);
   const { sandbox: _s, ...out } = wf;
   return json(201, out);
 });
-route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
-  const wf = db.workflows.find((w) => w.id === p[0]);
+// Default workflows are kept current by the server: duplicate one to customise it.
+function mutableWorkflow(db, id) {
+  const wf = db.workflows.find((w) => w.id === id);
   if (!wf) fail(404, 'not_found', 'not found');
+  if (wf.builtin) fail(409, 'conflict', `${wf.name} is a default workflow kept current by Yulius: duplicate it to customise`);
+  return wf;
+}
+route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
+  const wf = mutableWorkflow(db, p[0]);
   Object.assign(wf, { name: body.name, description: body.description, steps: body.steps, instructions: body.instructions, gates: body.gates });
   const { sandbox: _s, ...out } = wf;
   return out;
 });
-route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { db.workflows = db.workflows.filter((w) => w.id !== p[0]); return json(204); });
+route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { mutableWorkflow(db, p[0]); db.workflows = db.workflows.filter((w) => w.id !== p[0]); return json(204); });
 
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
@@ -1512,6 +1580,151 @@ route('GET', '/api/status', ({ db }) => {
     contained: db.me.instance.contained,
   };
 });
+// ------------------------------------------------------------------ instance updates (ADR-18)
+
+const UPDATE_COMMITS = [
+  { title: 'An update banner and update now', author: 'MrFishPL' },
+  { title: 'A solid wordmark beside the mark, with a quiet tagline', author: 'MrFishPL' },
+  { title: 'Keep the streamed browser live over a real link', author: 'BartlomiejNowak04' },
+  { title: 'Drag and drop files into the editor and Claude', author: 'MrFishPL' },
+];
+/** How long each phase of a mock update takes (ms). */
+const UPDATE_STEP_MS = 1500;
+const UPDATE_STATES = ['building', 'pausing', 'restarting', 'resuming'];
+const short7 = (sha) => (sha ? sha.slice(0, 7) : null);
+
+function updateView(db) {
+  const u = db.update;
+  const superadmin = Boolean(db.me.user.is_superadmin);
+  const running = u.run && UPDATE_STATES.includes(u.run.state);
+  const view = { current: { commit: u.current, short: short7(u.current) }, phase: running ? u.run.state : null, helper_installed: null, available: null, check: null, run: null };
+  if (!superadmin) return view;
+  view.helper_installed = u.helper;
+  view.check = u.checkedAt ? { checked_at: u.checkedAt, error: null, via: 'app', relation: u.offer ? 'behind' : 'up_to_date', head: u.offer || u.current } : { checked_at: null, error: null, via: null, relation: null, head: null };
+  if (u.offer && u.checkedAt) {
+    view.available = {
+      commit: u.offer, short: short7(u.offer), relation: 'behind', count: UPDATE_COMMITS.length,
+      summary: `${UPDATE_COMMITS.slice(0, 3).map((c) => c.title).join(' · ')} and ${UPDATE_COMMITS.length - 3} more`,
+      commits: UPDATE_COMMITS.map((c, i) => ({ sha: `${i}${u.offer.slice(1)}`, short: `${i}${u.offer.slice(1, 7)}`, title: c.title, author: c.author, date: iso(i * HOUR) })),
+    };
+  }
+  if (u.run) view.run = clone(u.run);
+  return view;
+}
+
+function moveUpdate(db, state, patch = {}) {
+  const run = db.update.run;
+  if (!run) return;
+  Object.assign(run, { state, state_since: new Date().toISOString(), progress: null, tasks: null, step: null }, patch);
+  run.can_cancel = state === 'building' || state === 'pausing';
+  run.can_proceed = state === 'pausing';
+  if (!UPDATE_STATES.includes(state)) run.finished_at = new Date().toISOString();
+  emit(db, { type: 'update.updated', phase: UPDATE_STATES.includes(state) ? state : null });
+}
+
+/** Walks a started update through its phases, like the server and helper do. */
+function runUpdate(db, id) {
+  const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
+  const steps = 4;
+  for (let i = 1; i <= steps; i += 1) {
+    later(() => {
+      if (!live() || db.update.run.state !== 'building') return;
+      db.update.run.progress = { done: Math.round((340 * i) / steps), total: 340 };
+      db.update.run.step = 'compiling';
+      db.update.run.message = 'Building the new version. Tasks keep working meanwhile.';
+      emit(db, { type: 'update.updated', phase: 'building' });
+    }, (UPDATE_STEP_MS * i) / steps);
+  }
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'pausing', { step: 'pausing', message: 'Pausing tasks at their next step: 2 of 3 paused.', tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() } });
+  }, UPDATE_STEP_MS + 100);
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'restarting', { step: 'installing', message: 'Installing the new version.' });
+  }, UPDATE_STEP_MS * 2);
+  later(() => {
+    if (!live()) return;
+    if (!db.update.fail) db.update.current = db.update.run.target.commit;
+    moveUpdate(db, 'resuming', { step: 'resuming', message: 'Resuming tasks: 1 of 3.', progress: { done: 1, total: 3 } });
+  }, UPDATE_STEP_MS * 3);
+  later(() => {
+    if (!live()) return;
+    if (db.update.fail) {
+      moveUpdate(db, 'rolled_back', { message: 'The update was rolled back; the previous version runs.', error: 'The new server did not become healthy within 120 s (HTTP 500). The previous version and its database were restored.', log_tail: ['yulius update-helper: checking', 'yulius update-helper: rolling_back'] });
+    } else {
+      db.update.offer = null;
+      moveUpdate(db, 'succeeded', { message: `Updated to ${short7(db.update.current)}.` });
+    }
+  }, UPDATE_STEP_MS * 4);
+}
+
+route('GET', '/api/update', ({ db }) => updateView(db));
+route('POST', '/api/admin/update/check', ({ db }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  db.update.checkedAt = new Date().toISOString();
+  return updateView(db);
+});
+route('POST', '/api/admin/update', ({ db, body }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  if (body.confirm !== true) fail(422, 'invalid', 'confirm the update: tasks pause while the server restarts');
+  const u = db.update;
+  if (!u.helper) fail(409, 'conflict', 'the update helper is not installed on this server (see the operations guide)');
+  if (u.run && UPDATE_STATES.includes(u.run.state)) fail(409, 'conflict', 'an update is already running');
+  if (!u.offer || body.commit !== u.offer) fail(409, 'conflict', `${short7(body.commit || '')} is not the update on offer; check for updates again`);
+  const now = new Date().toISOString();
+  db.nextId += 1;
+  u.run = {
+    id: `upd_${db.nextId}`, target: { commit: u.offer, short: short7(u.offer) }, from: { commit: u.current, short: short7(u.current) },
+    summary: updateView(db).available.summary, state: 'building', step: 'fetching', message: 'Fetching the new version from GitHub.',
+    progress: null, tasks: null, error: null, log_tail: [], requested_by: db.me.user.login, started_at: now, state_since: now, finished_at: null, can_cancel: true, can_proceed: false,
+  };
+  emit(db, { type: 'update.updated', phase: 'building' });
+  runUpdate(db, u.run.id);
+  return json(202, updateView(db));
+});
+route('POST', '/api/admin/update/cancel', ({ db }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  const run = db.update.run;
+  if (!run || !['building', 'pausing'].includes(run.state)) fail(409, 'conflict', 'no update can be cancelled now (it is restarting or done)');
+  moveUpdate(db, 'cancelled', { error: `Cancelled by ${db.me.user.login}; nothing was installed.`, message: 'Cancelled; nothing was installed.' });
+  return updateView(db);
+});
+route('POST', '/api/admin/update/proceed', ({ db }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  if (!db.update.run || db.update.run.state !== 'pausing') fail(409, 'conflict', 'the update is not pausing tasks');
+  return updateView(db);
+});
+
+function jevView(db) {
+  const j = db.jev;
+  const source = j.key ? 'settings' : j.config ? 'config' : null;
+  return { configured: Boolean(source), source, set_at: j.key ? j.setAt : null, set_by: j.key ? j.setBy : null, config_present: j.config, config_error: null };
+}
+const superadminOnly = (db) => { if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only'); };
+route('GET', '/api/admin/jev', ({ db }) => { superadminOnly(db); return jevView(db); });
+route('PUT', '/api/admin/jev', ({ db, body }) => {
+  superadminOnly(db);
+  const key = String(body.key || '').trim();
+  if (key.length < 8 || /\s/.test(key)) fail(422, 'invalid', 'the Jev key must be 8-4096 printable characters without spaces');
+  Object.assign(db.jev, { key, setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return jevView(db);
+});
+route('DELETE', '/api/admin/jev', ({ db }) => { superadminOnly(db); db.jev.key = null; return jevView(db); });
+route('POST', '/api/admin/jev/adopt', ({ db }) => {
+  superadminOnly(db);
+  if (!db.jev.config) fail(409, 'conflict', 'YULIUS_JEV_API_KEY_FILE holds no usable key');
+  Object.assign(db.jev, { key: 'from-config', setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return jevView(db);
+});
+route('POST', '/api/admin/jev/test', ({ db }) => {
+  superadminOnly(db);
+  const key = db.jev.key || (db.jev.config ? 'from-config' : null);
+  if (!key) return { ok: false, result: 'none', message: 'No Jev key is set.', latency_ms: null };
+  if (key.includes('bad')) return { ok: false, result: 'refused', message: 'Jev refused this key. Check it and save it again.', latency_ms: 210 };
+  return { ok: true, result: 'ok', message: 'Jev answered: the key works.', latency_ms: 240 };
+});
+
 // GET /api/capacity (`CapacityView`, ROT-013): the pool, burn rate and forecast. The mock's pool
 // burns faster than it refills and tasks waited this week, so it recommends one more subscription.
 route('GET', '/api/capacity', ({ db }) => {
@@ -1575,7 +1788,8 @@ async function handleFetch(db, url, init = {}) {
     const match = u.pathname.match(re);
     if (!match) continue;
     try {
-      const result = handler({ db, p: match.slice(1).map(decodeURIComponent), body, query: u.searchParams });
+      // A handler may be async (one that takes a while, like Jev or Claude on the server).
+      const result = await handler({ db, p: match.slice(1).map(decodeURIComponent), body, query: u.searchParams });
       return result instanceof Response ? result : json(200, result);
     } catch (error) {
       if (error instanceof MockError) return json(error.status, { error: { code: error.code, message: error.message } });
@@ -1726,7 +1940,8 @@ class TermSession {
         '',
       );
     }
-    this.lines.push(`${c(245, '>')} ${this.task.prompt || this.task.title}`, '');
+    // A multi-line prompt shows as lines (a bare \n would only move the cursor down).
+    this.lines.push(...`${c(245, '>')} ${this.task.prompt || this.task.title}`.split('\n'), '');
     if (this.task.number === 10 && this.task.sandbox_id === 'sb_studio') {
       this.lines.push(
         `${c(255, '⏺')} The deploy needs an AWS console session. I can't sign in for you.`,

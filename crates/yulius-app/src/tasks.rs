@@ -72,30 +72,14 @@ fn step_view(s: &StepRecord) -> StepView {
         note: s.note.clone(),
         updated_by: s.updated_by.clone(),
         updated_at: s.updated_at.map(rfc3339),
+        effort: s.effort,
     }
 }
 
-/// Step progress from a step list.
+/// Step progress from a step list (effort-weighted, STP-006).
 #[must_use]
 pub fn progress(steps: &[StepRecord]) -> StepProgress {
-    let total = u32::try_from(steps.len()).unwrap_or(u32::MAX);
-    let done = u32::try_from(
-        steps
-            .iter()
-            .filter(|s| s.status == "done" || s.status == "skipped")
-            .count(),
-    )
-    .unwrap_or(0);
-    let current = steps
-        .iter()
-        .find(|s| s.status == "in_progress")
-        .or_else(|| steps.iter().find(|s| s.status == "pending"))
-        .map(|s| s.title.clone());
-    StepProgress {
-        done,
-        total,
-        current,
-    }
+    crate::discipline::progress_view(steps)
 }
 
 impl App {
@@ -147,6 +131,7 @@ impl App {
             after,
             next,
             held_prompt: self.held_prompt_view(&task.id).await,
+            auto: self.auto_choice_view(&task.id).await,
             background_shells: (task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle))
             .then(|| self.background_shells_of(&task.id))

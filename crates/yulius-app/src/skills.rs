@@ -1,12 +1,14 @@
-//! Skill catalog: repository, instance and vendored Open Mercato skills with per-sandbox
-//! enablement (SPEC-001 SKL-001..005, §7.3, AC-SKL-1..3).
+//! Skill catalog: repository, instance and bundled skills with per-sandbox enablement (SPEC-001
+//! SKL-001..005, §7.3, AC-SKL-1..3).
 //!
 //! Sources, in precedence order when two share a name:
 //! 1. repository skills in the sandbox clone (`.agents/skills/*/SKILL.md`, then
 //!    `.claude/skills/*/SKILL.md`); the harness CLIs already see them inside the repository, so
 //!    they are listed but never installed and cannot be disabled here;
 //! 2. instance skills in `<data_dir>/skills/<name>/` (managed by instance administrators);
-//! 3. the Open Mercato pack extracted to `<data_dir>/skills/open-mercato/<name>/`.
+//! 3. the bundled packs extracted to `<data_dir>/skills/<pack>/<name>/`: Yulius's own skills
+//!    (`yulius`), the adapted Open Mercato skills (`open-mercato`) and the adapted superpowers
+//!    skills (`superpowers`), see [`pack::PACKS`].
 //!
 //! Repository content is untrusted (SPEC-002 §8): a skill whose resolved path leaves the
 //! repository (for example a symbolic link to a host file) is ignored, reads are bounded, and
@@ -19,18 +21,14 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
-use yulius_contracts::api::sandboxes::Profile;
 use yulius_contracts::api::skills::{SkillContent, SkillView};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
-use yulius_domain::spec_format::{Commands, DocsLayout, parse_yulius_toml};
 
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
-use crate::sandboxes::standard_profile;
 
 /// Directory of instance skills under the data directory.
 pub const SKILLS_DIR: &str = "skills";
@@ -44,12 +42,8 @@ const MAX_DIR_ENTRIES: usize = 10_000;
 pub const MAX_FRONTMATTER_BYTES: u64 = 64 * 1024;
 /// Longest description kept for listing.
 pub const MAX_DESCRIPTION_CHARS: usize = 4_096;
-/// Largest `yulius.toml` read for the Open Mercato configuration.
-const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 /// Repository directories searched for skills, in precedence order.
 pub const REPOSITORY_SKILL_DIRS: [&str; 2] = [".agents/skills", ".claude/skills"];
-/// Open Mercato configuration file inside a repository.
-pub const OM_CONFIG_PATH: &str = ".ai/agentic.config.json";
 
 /// Where a skill comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -58,8 +52,12 @@ pub enum SkillSource {
     Repository,
     /// The instance catalog.
     Instance,
-    /// The vendored Open Mercato pack.
+    /// Yulius's own bundled skills.
+    Yulius,
+    /// The bundled Open Mercato skills, adapted to be universal (MIT).
     OpenMercato,
+    /// The bundled skills adapted from obra/superpowers (MIT).
+    Superpowers,
 }
 
 impl SkillSource {
@@ -69,8 +67,16 @@ impl SkillSource {
         match self {
             Self::Repository => "repository",
             Self::Instance => "instance",
+            Self::Yulius => "yulius",
             Self::OpenMercato => "open-mercato",
+            Self::Superpowers => "superpowers",
         }
+    }
+
+    /// Whether skills of this source ship with Yulius (read-only, per-sandbox enablement).
+    #[must_use]
+    pub fn is_bundled(self) -> bool {
+        !matches!(self, Self::Repository | Self::Instance)
     }
 }
 
@@ -384,26 +390,29 @@ pub fn scan_catalog(repo: &Path, skills_root: &Path) -> Vec<CatalogSkill> {
         }
     }
     if let Ok(root) = skills_root.canonicalize() {
+        let pack_dirs: Vec<&str> = pack::PACKS.iter().map(|p| p.dir).collect();
         found.extend(scan_dir(
             skills_root,
             &root,
             SkillSource::Instance,
             SKILLS_DIR,
-            &[pack::PACK_DIR],
+            &pack_dirs,
         ));
-        let pack_dir = skills_root.join(pack::PACK_DIR);
-        if let Ok(pack_root) = pack_dir.canonicalize() {
-            found.extend(
-                scan_dir(
-                    &pack_dir,
-                    &pack_root,
-                    SkillSource::OpenMercato,
-                    &format!("{SKILLS_DIR}/{}", pack::PACK_DIR),
-                    &[],
-                )
-                .into_iter()
-                .filter(|s| pack::PACK_SKILLS.contains(&s.name.as_str())),
-            );
+        for bundled in &pack::PACKS {
+            let pack_dir = skills_root.join(bundled.dir);
+            if let Ok(pack_root) = pack_dir.canonicalize() {
+                found.extend(
+                    scan_dir(
+                        &pack_dir,
+                        &pack_root,
+                        bundled.source,
+                        &format!("{SKILLS_DIR}/{}", bundled.dir),
+                        &[],
+                    )
+                    .into_iter()
+                    .filter(|s| bundled.skills.contains(&s.name.as_str())),
+                );
+            }
         }
     }
     let mut seen = BTreeSet::new();
@@ -412,9 +421,9 @@ pub fn scan_catalog(repo: &Path, skills_root: &Path) -> Vec<CatalogSkill> {
 }
 
 /// Writes through a temporary file and a rename so readers (skill installs) never see a
-/// partial file. No fsync: the extracted pack is a cache that [`extract_pack`] verifies byte for
-/// byte against the embedded copy at every startup and rewrites on mismatch, so a write lost in
-/// a crash is repaired on the next start.
+/// partial file. No fsync: the extracted packs are a cache that [`extract_packs`] verifies byte
+/// for byte against the embedded copy at every startup and rewrites on mismatch, so a write lost
+/// in a crash is repaired on the next start.
 fn write_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
     let name = target
         .file_name()
@@ -462,14 +471,10 @@ fn prune(
     Ok(())
 }
 
-/// Extracts the embedded Open Mercato pack to `<skills_root>/open-mercato/`, rewriting files
-/// whose content differs and removing anything else in that directory. Returns the number of
-/// files written (0 when already current).
-///
-/// # Errors
-/// I/O failures.
-pub fn extract_pack(skills_root: &Path) -> io::Result<u32> {
-    let root = skills_root.join(pack::PACK_DIR);
+/// Extracts one embedded pack to `<skills_root>/<pack>/`, rewriting files whose content differs
+/// and removing anything else in that directory. Returns the number of files written.
+fn extract_pack(skills_root: &Path, bundled: &pack::Pack) -> io::Result<u32> {
+    let root = skills_root.join(bundled.dir);
     if fs::symlink_metadata(&root).is_ok_and(|m| !m.is_dir()) {
         fs::remove_file(&root)?;
     }
@@ -477,7 +482,7 @@ pub fn extract_pack(skills_root: &Path) -> io::Result<u32> {
     let mut written = 0;
     let mut files = BTreeSet::new();
     let mut dirs = BTreeSet::new();
-    for (rel, bytes) in pack::PACK_FILES {
+    for (rel, bytes) in bundled.files {
         files.insert(*rel);
         let mut parent = Path::new(rel).parent();
         while let Some(p) = parent.filter(|p| !p.as_os_str().is_empty()) {
@@ -505,60 +510,17 @@ pub fn extract_pack(skills_root: &Path) -> io::Result<u32> {
     Ok(written)
 }
 
-/// Renders a `.ai/agentic.config.json` for the Open Mercato skills from Yulius project data:
-/// base branch, ordered validation commands (lint, test, build), the GitHub tracker, labels
-/// and QA gate disabled (Yulius tracks steps and delivery itself), and the spec directory.
-#[must_use]
-pub fn render_om_config(base_branch: &str, commands: &Commands, specs_dir: &str) -> String {
-    let validation: Vec<&str> = [&commands.lint, &commands.test, &commands.build]
-        .into_iter()
-        .flatten()
-        .map(String::as_str)
-        .collect();
-    let value = json!({
-        "version": 1,
-        "baseBranch": base_branch,
-        "tracker": "github",
-        "validation": {"commands": validation},
-        "labels": {"enabled": false},
-        "qaGate": false,
-        "paths": {"specs": specs_dir},
-        "reviewChecklist": null,
-        "closeKeywords": [],
-    });
-    let mut text = serde_json::to_string_pretty(&value).unwrap_or_default();
-    text.push('\n');
-    text
-}
-
-/// What the Open Mercato configuration needs from the repository.
-fn om_repo_facts(repo: &Path) -> (bool, Commands, DocsLayout) {
-    let has_config = fs::symlink_metadata(repo.join(OM_CONFIG_PATH)).is_ok();
-    // Only a `yulius.toml` that resolves inside the repository is read.
-    let toml = repo.canonicalize().and_then(|root| {
-        let file = repo.join("yulius.toml").canonicalize()?;
-        if file.starts_with(&root) {
-            Ok(file)
-        } else {
-            Err(io::Error::other(
-                "yulius.toml resolves outside the repository",
-            ))
-        }
-    });
-    let parsed = match toml.and_then(|path| read_bounded(&path, MAX_CONFIG_BYTES)) {
-        Ok(text) => match parse_yulius_toml(&text) {
-            Ok(config) => Some(config),
-            Err(err) => {
-                tracing::warn!(error = %err, "ignoring an invalid yulius.toml for the Open Mercato config");
-                None
-            }
-        },
-        Err(_) => None,
-    };
-    match parsed {
-        Some(config) => (has_config, config.commands, config.docs),
-        None => (has_config, Commands::default(), DocsLayout::default()),
+/// Extracts every embedded pack to `<skills_root>/<pack>/` (see [`pack::PACKS`]). Returns the
+/// number of files written (0 when already current).
+///
+/// # Errors
+/// I/O failures.
+pub fn extract_packs(skills_root: &Path) -> io::Result<u32> {
+    let mut written = 0;
+    for bundled in &pack::PACKS {
+        written += extract_pack(skills_root, bundled)?;
     }
+    Ok(written)
 }
 
 async fn blocking<T, F>(f: F) -> AppResult<T>
@@ -578,14 +540,14 @@ impl App {
         self.config.data_dir.join(SKILLS_DIR)
     }
 
-    /// Extracts the embedded Open Mercato pack (call once at startup; idempotent). Returns the
-    /// number of files written.
+    /// Extracts the embedded skill packs (call once at startup; idempotent). Returns the number
+    /// of files written.
     ///
     /// # Errors
     /// I/O failures.
     pub async fn install_skill_catalog(&self) -> AppResult<u32> {
         let root = self.skills_root();
-        blocking(move || extract_pack(&root))
+        blocking(move || extract_packs(&root))
             .await?
             .map_err(AppError::internal)
     }
@@ -693,7 +655,7 @@ impl App {
                 ));
             }
             SkillSource::Instance => self.require_instance_admin(ctx)?,
-            SkillSource::OpenMercato => {}
+            SkillSource::Yulius | SkillSource::OpenMercato | SkillSource::Superpowers => {}
         }
         self.deps
             .store
@@ -715,7 +677,7 @@ impl App {
             .await
     }
 
-    /// Enabled instance and Open Mercato skills for a run in `sandbox`, as (name, directory)
+    /// Enabled instance and bundled skills for a run in `sandbox`, as (name, directory)
     /// for `HarnessPort::install_skills`. Repository skills are excluded (the CLIs see them in
     /// the repository), and so are skills shadowed by a repository skill of the same name.
     ///
@@ -733,37 +695,6 @@ impl App {
             .filter(|s| s.source != SkillSource::Repository && Self::skill_enabled(s, &states))
             .map(|s| (s.name, s.dir))
             .collect())
-    }
-
-    /// A compatible `.ai/agentic.config.json` when at least one Open Mercato skill is enabled
-    /// for the sandbox and its repository has no such file (SPEC-001 §7.3). The caller decides
-    /// where to write it.
-    ///
-    /// # Errors
-    /// Store failures.
-    pub async fn om_config_for(&self, sandbox: &SandboxRecord) -> AppResult<Option<String>> {
-        let states = self.skill_states(&sandbox.id).await?;
-        let pack_enabled = self
-            .skill_catalog(&sandbox.id)
-            .await?
-            .iter()
-            .any(|s| s.source == SkillSource::OpenMercato && Self::skill_enabled(s, &states));
-        if !pack_enabled {
-            return Ok(None);
-        }
-        let repo = self.sandbox_repo(&sandbox.id);
-        let (has_config, commands, docs) = blocking(move || om_repo_facts(&repo)).await?;
-        if has_config {
-            return Ok(None);
-        }
-        let profile: Profile =
-            serde_json::from_str(&sandbox.profile_json).unwrap_or_else(|_| standard_profile());
-        let branch = if profile.integration_branch.trim().is_empty() {
-            standard_profile().integration_branch
-        } else {
-            profile.integration_branch
-        };
-        Ok(Some(render_om_config(&branch, &commands, &docs.specs_dir)))
     }
 }
 
@@ -832,74 +763,134 @@ mod tests {
         assert!(!valid_skill_name(&"x".repeat(65)));
     }
 
-    #[test]
-    fn om_config_contents() -> TestResult {
-        let commands = Commands {
-            test: Some("cargo test".into()),
-            lint: Some("cargo clippy".into()),
-            build: None,
-        };
-        let text = render_om_config("quartio", &commands, "docs/specs");
-        let value: serde_json::Value = serde_json::from_str(&text)?;
-        assert_eq!(value["baseBranch"], "quartio");
-        assert_eq!(value["tracker"], "github");
-        assert_eq!(
-            value["validation"]["commands"],
-            json!(["cargo clippy", "cargo test"])
-        );
-        assert_eq!(value["labels"]["enabled"], false);
-        assert_eq!(value["paths"]["specs"], "docs/specs");
-        assert!(text.ends_with('\n'));
-        Ok(())
-    }
-
-    /// AC-SKL-2: the embedded pack is exactly the catalog directory, which holds exactly the
-    /// selected skills plus license and attribution.
-    #[test]
-    fn embedded_pack_matches_catalog() -> TestResult {
-        let catalog = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../catalog/skills")
-            .join(pack::PACK_DIR);
+    fn files_under(dir: &Path) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
         let mut on_disk = BTreeSet::new();
-        let mut stack = vec![catalog.clone()];
-        while let Some(dir) = stack.pop() {
-            for entry in fs::read_dir(&dir)? {
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(current) = stack.pop() {
+            for entry in fs::read_dir(&current)? {
                 let path = entry?.path();
                 if path.is_dir() {
                     stack.push(path);
                 } else {
-                    let rel = path
-                        .strip_prefix(&catalog)?
-                        .to_string_lossy()
-                        .replace('\\', "/");
+                    let rel = path.strip_prefix(dir)?.to_string_lossy().replace('\\', "/");
                     on_disk.insert(rel);
                 }
             }
         }
-        let embedded: BTreeSet<String> = pack::PACK_FILES
-            .iter()
-            .map(|(p, _)| (*p).to_owned())
-            .collect();
-        assert_eq!(
-            on_disk, embedded,
-            "update skills/pack.rs after re-vendoring"
-        );
-        let mut skill_dirs: Vec<String> = fs::read_dir(&catalog)?
+        Ok(on_disk)
+    }
+
+    /// AC-SKL-2: each embedded pack is exactly its catalog directory, which holds exactly the
+    /// selected skills plus attribution (and the upstream license of adapted packs); skill names
+    /// are unique across packs.
+    #[test]
+    fn embedded_packs_match_the_catalog() -> TestResult {
+        let catalog = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalog/skills");
+        let mut packs: Vec<String> = fs::read_dir(&catalog)?
             .filter_map(Result::ok)
             .filter(|e| e.path().is_dir())
             .filter_map(|e| e.file_name().into_string().ok())
             .collect();
-        skill_dirs.sort();
-        let mut selected: Vec<String> = pack::PACK_SKILLS.iter().map(|s| (*s).to_owned()).collect();
-        selected.sort();
-        assert_eq!(skill_dirs, selected);
-        for skill in pack::PACK_SKILLS {
-            let text = fs::read_to_string(catalog.join(skill).join("SKILL.md"))?;
-            assert_eq!(parse_frontmatter(&text).name.as_deref(), Some(skill));
+        packs.sort();
+        let mut listed: Vec<String> = pack::PACKS.iter().map(|p| p.dir.to_owned()).collect();
+        listed.sort();
+        assert_eq!(packs, listed, "every catalog directory is a pack");
+        let mut names = BTreeSet::new();
+        for bundled in &pack::PACKS {
+            let dir = catalog.join(bundled.dir);
+            let embedded: BTreeSet<String> =
+                bundled.files.iter().map(|(p, _)| (*p).to_owned()).collect();
+            assert_eq!(
+                files_under(&dir)?,
+                embedded,
+                "regenerate skills/pack.rs for {}",
+                bundled.dir
+            );
+            let mut skill_dirs: Vec<String> = fs::read_dir(&dir)?
+                .filter_map(Result::ok)
+                .filter(|e| e.path().is_dir())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect();
+            skill_dirs.sort();
+            let mut selected: Vec<String> =
+                bundled.skills.iter().map(|s| (*s).to_owned()).collect();
+            selected.sort();
+            assert_eq!(skill_dirs, selected, "{}", bundled.dir);
+            for skill in bundled.skills {
+                assert!(names.insert(*skill), "{skill} is in two packs");
+                let text = fs::read_to_string(dir.join(skill).join("SKILL.md"))?;
+                let meta = parse_frontmatter(&text);
+                assert_eq!(meta.name.as_deref(), Some(*skill));
+                assert!(meta.description.is_some_and(|d| d.len() > 40), "{skill}");
+            }
+            assert!(embedded.contains("README.md"), "{}", bundled.dir);
+            let readme = fs::read_to_string(dir.join("README.md"))?;
+            if let Some((repository, commit)) = bundled.upstream {
+                assert!(embedded.contains("LICENSE"), "{}", bundled.dir);
+                assert!(readme.contains(repository) && readme.contains(commit));
+                assert!(fs::read_to_string(dir.join("LICENSE"))?.starts_with("MIT License"));
+            }
         }
-        assert!(embedded.contains("LICENSE") && embedded.contains("README.md"));
-        let readme = fs::read_to_string(catalog.join("README.md"))?;
-        assert!(readme.contains(pack::UPSTREAM_COMMIT));
+        assert!(
+            !names.contains("om-verify-in-repo"),
+            "removed (F 2026-10-10)"
+        );
+        Ok(())
+    }
+
+    /// The adapted skills are universal and autonomous (F 2026-10-10): each shows where it comes
+    /// from, and none depends on Open Mercato's own harness or waits for a person.
+    #[test]
+    fn adapted_skills_are_universal_autonomous_and_attributed() -> TestResult {
+        let catalog = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalog/skills");
+        let forbidden = [
+            "agentic.config",
+            ".ai/skills",
+            "om-auto-",
+            "om-setup-",
+            "om-discover",
+            "om-verify-in-repo",
+            "tracker descriptor",
+            "qa-approved",
+            "needs-qa",
+            "product-brief",
+            "--autonomous",
+            "interactive",
+            "manual mode",
+            "human partner",
+            "hard stop",
+            "ask the user",
+            "wait for the user",
+        ];
+        for bundled in &pack::PACKS {
+            for (rel, bytes) in bundled.files {
+                if !rel.ends_with(".md") || *rel == "README.md" {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(bytes).to_lowercase();
+                for word in forbidden {
+                    assert!(
+                        !text.contains(word),
+                        "{}/{rel} mentions {word:?}",
+                        bundled.dir
+                    );
+                }
+            }
+            for skill in bundled.skills {
+                let text =
+                    fs::read_to_string(catalog.join(bundled.dir).join(skill).join("SKILL.md"))?;
+                let note = match bundled.source {
+                    SkillSource::OpenMercato => Some(
+                        "> Adapted from Open Mercato's skills (MIT), rephrased to be universal; thanks to the Open Mercato team for this contribution.",
+                    ),
+                    SkillSource::Superpowers => Some("> Adapted from obra/superpowers (MIT"),
+                    _ => None,
+                };
+                if let Some(note) = note {
+                    assert!(text.contains(note), "{skill} lacks its attribution note");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -916,15 +907,6 @@ mod tests {
         std::os::unix::fs::symlink(&outside, repo.join("yulius.toml"))?;
         let catalog = scan_catalog(&repo, &temp.path().join("skills"));
         assert!(catalog.is_empty(), "{catalog:?}");
-        let (has_config, commands, _) = om_repo_facts(&repo);
-        assert!(!has_config);
-        assert_eq!(commands, Commands::default());
-        fs::remove_file(repo.join("yulius.toml"))?;
-        fs::write(
-            repo.join("yulius.toml"),
-            "[commands]\ntest = \"make test\"\n",
-        )?;
-        assert_eq!(om_repo_facts(&repo).1.test.as_deref(), Some("make test"));
         Ok(())
     }
 
@@ -932,17 +914,32 @@ mod tests {
     fn extraction_is_idempotent_and_restores_edits() -> TestResult {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_path_buf();
-        let written = extract_pack(&dir)?;
-        assert_eq!(written as usize, pack::PACK_FILES.len());
-        assert_eq!(extract_pack(&dir)?, 0);
-        let skill_md = dir.join(pack::PACK_DIR).join("om-fix/SKILL.md");
+        let total: usize = pack::PACKS.iter().map(|p| p.files.len()).sum();
+        assert_eq!(extract_packs(&dir)? as usize, total);
+        assert_eq!(extract_packs(&dir)?, 0);
+        let skill_md = dir.join("open-mercato/om-fix/SKILL.md");
         fs::write(&skill_md, "local edit")?;
-        fs::write(dir.join(pack::PACK_DIR).join("om-fix/stray.md"), "x")?;
-        fs::create_dir_all(dir.join(pack::PACK_DIR).join("om-old"))?;
-        assert_eq!(extract_pack(&dir)?, 1);
+        fs::write(dir.join("open-mercato/om-fix/stray.md"), "x")?;
+        fs::create_dir_all(dir.join("open-mercato/om-verify-in-repo"))?;
+        fs::create_dir_all(dir.join("yulius/old-skill"))?;
+        assert_eq!(extract_packs(&dir)?, 1);
         assert!(fs::read_to_string(&skill_md)?.contains("name: om-fix"));
-        assert!(!dir.join(pack::PACK_DIR).join("om-fix/stray.md").exists());
-        assert!(!dir.join(pack::PACK_DIR).join("om-old").exists());
+        assert!(!dir.join("open-mercato/om-fix/stray.md").exists());
+        assert!(!dir.join("open-mercato/om-verify-in-repo").exists());
+        assert!(!dir.join("yulius/old-skill").exists());
+        assert!(dir.join("yulius/git-hygiene/SKILL.md").is_file());
+        assert!(
+            dir.join("superpowers/test-driven-development/SKILL.md")
+                .is_file()
+        );
+        let catalog = scan_catalog(&temp.path().join("no-repo"), &dir);
+        let sources: BTreeSet<&str> = catalog.iter().map(|s| s.source.as_str()).collect();
+        assert_eq!(
+            sources,
+            BTreeSet::from(["open-mercato", "superpowers", "yulius"]),
+            "bundled packs are never listed as instance skills"
+        );
+        assert!(catalog.iter().all(|s| s.source.is_bundled()));
         Ok(())
     }
 }

@@ -4,6 +4,7 @@
 
 import { h, icon, field, setChildren, toast } from '../dom.js';
 import { BRAND } from '../brand.js';
+import { jevSetupCard } from '../jevkey.js';
 
 /** The product's mark and name (brand.js) at the top of the sign-in and setup cards. */
 function brandLockup() {
@@ -60,7 +61,10 @@ function passwordChecks(password, confirm, prefix) {
   return { passwordNote, confirmNote, check };
 }
 
-/** Setup wizard: token, password + confirmation, non-recoverable warning (ACC-002). */
+/**
+ * Setup wizard: token, password + confirmation, non-recoverable warning (ACC-002), the recovery
+ * code, then the optional Jev key (ADM-001).
+ */
 export function mountSetup(ctx, { onDone }) {
   const token = h('input', { class: 'input mono', type: 'text', autocomplete: 'one-time-code', spellcheck: 'false', placeholder: 'printed on the VM by `yulius serve`', autofocus: true });
   const password = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minlength: MIN_PASSWORD });
@@ -114,10 +118,13 @@ export function mountSetup(ctx, { onDone }) {
       confirm.value = '';
       const code = me && me.recovery_code;
       if (me) delete me.recovery_code;
+      // The session exists now: the optional Jev step saves through the superadmin's API.
+      if (me && me.csrf_token) ctx.api.setCsrf(me.csrf_token);
+      const jevStep = () => setChildren(root, jevSetupCard(ctx, { header: brandLockup(), onDone: () => onDone(me) }));
       if (code) {
-        setChildren(root, recoveryCodeCard(code, { onContinue: () => onDone(me) }));
+        setChildren(root, recoveryCodeCard(code, { onContinue: jevStep }));
       } else {
-        onDone(me);
+        jevStep();
       }
     } catch (error) {
       // Said on the card, above the button (a wrong token is marked on its field).

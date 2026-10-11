@@ -40,7 +40,7 @@ use crate::ports::harness::OutputMasker;
 use crate::ports::session::{
     Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal, RunWriter,
 };
-use crate::ports::usage::UsageFailure;
+use crate::ports::usage::{UsageFailure, UsageFailureKind};
 use crate::usage_json;
 
 /// Maximum duration of one login before its process is stopped.
@@ -299,8 +299,14 @@ fn totals_view(tokens: Option<&crate::model::AccountTokens>) -> TokenTotalsView 
 
 /// One day in milliseconds.
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+/// Prefix of an account's `last_error` that is a note about reading its usage, not a broken
+/// account (the UI shows it quietly, ROT-009).
+pub const USAGE_NOTE_PREFIX: &str = "usage: ";
 /// Back-off after a failed usage request that gave no `Retry-After` (ROT-009).
 pub const USAGE_BACKOFF_MS: i64 = 30 * 60 * 1000;
+/// Back-off after the usage endpoint refused a sign-in that may not read usage (a
+/// `setup-token`, ADR-17): asked again once a day in case the sign-in changed.
+pub const USAGE_NOT_SHARED_BACKOFF_MS: i64 = DAY_MS;
 /// Longest back-off taken from a provider's `Retry-After`.
 pub const USAGE_BACKOFF_MAX_MS: i64 = 2 * 60 * 60 * 1000;
 
@@ -488,8 +494,11 @@ impl App {
                 "the account is not signed in yet".into(),
             ));
         }
-        if let Err(failure) = self.fetch_and_record_usage(&account).await {
-            return Err(AppError::Upstream(format!("usage: {}", failure.message)));
+        // A sign-in that may not read usage is not a failure: its sessions report it (ADR-17).
+        if let Err(failure) = self.fetch_and_record_usage(&account).await
+            && failure.kind != UsageFailureKind::NotShared
+        {
+            return Err(AppError::Upstream(failure.message));
         }
         let updated = store.account(&id).await?.ok_or(AppError::NotFound)?;
         let mut view = account_view(&updated, &store.live_attempts().await?);
@@ -530,13 +539,25 @@ impl App {
             Ok(mut usage) => {
                 usage.observed_at = Some(self.now());
                 self.record_account_usage(&account.id, &usage).await;
-                self.record_usage_samples(&account.id, &usage).await;
+                self.record_usage_samples(&account.id, &usage, crate::model::USAGE_FROM_PROBE)
+                    .await;
                 Ok(())
+            }
+            Err(failure) if failure.kind == UsageFailureKind::NotShared => {
+                // Not an error: the sessions on this subscription report its usage. An earlier
+                // note about usage goes away; other errors stay.
+                let _ = self
+                    .deps
+                    .store
+                    .clear_usage_error(&account.id, self.now())
+                    .await;
+                Err(failure)
             }
             Err(failure) => {
                 // Only the error: the status and usage may have changed since `account` was
-                // read (a task's limit hit during the request), and must stay (#72).
-                let message = format!("usage: {}", failure.message);
+                // read (a task's limit hit during the request), and must stay (#72). The
+                // `usage:` prefix marks it as a note about usage, not a broken account.
+                let message = format!("{USAGE_NOTE_PREFIX}{}", failure.message);
                 let _ = self
                     .deps
                     .store
@@ -571,11 +592,13 @@ impl App {
                     not_before.remove(&account.id);
                 }
                 Err(failure) => {
-                    let wait = failure.retry_after.map_or(USAGE_BACKOFF_MS, |d| {
-                        i64::try_from(d.as_millis())
+                    let wait = match (failure.kind, failure.retry_after) {
+                        (UsageFailureKind::NotShared, _) => USAGE_NOT_SHARED_BACKOFF_MS,
+                        (_, Some(d)) => i64::try_from(d.as_millis())
                             .unwrap_or(USAGE_BACKOFF_MAX_MS)
-                            .clamp(60_000, USAGE_BACKOFF_MAX_MS)
-                    });
+                            .clamp(60_000, USAGE_BACKOFF_MAX_MS),
+                        (_, None) => USAGE_BACKOFF_MS,
+                    };
                     not_before.insert(account.id.clone(), now.plus_millis(wait));
                 }
             }

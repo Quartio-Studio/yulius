@@ -52,7 +52,7 @@ struct FakeJev {
     down: AtomicBool,
 }
 
-fn answer(question: &ChoiceQuestion, winner: &str, p: f64) -> ChoiceAnswer {
+fn answer(question: &ChoiceQuestion<'_>, winner: &str, p: f64) -> ChoiceAnswer {
     let rest = (1.0 - p) / (question.options.len() - 1) as f64;
     ChoiceAnswer {
         choice: winner.to_owned(),
@@ -70,7 +70,7 @@ impl ChoiceEvaluator for FakeJev {
     async fn evaluate(
         &self,
         state: &str,
-        question: &ChoiceQuestion,
+        question: &ChoiceQuestion<'_>,
         _deadline: Duration,
     ) -> Result<ChoiceAnswer, JevFailure> {
         self.calls.fetch_add(1, Ordering::SeqCst);
@@ -534,6 +534,7 @@ async fn running_task(i: &Intake) -> Result<TaskId, Box<dyn std::error::Error>> 
                 note: None,
                 updated_by: Some("system".into()),
                 updated_at: Some(now),
+                effort: 1,
             })
         };
     i.h.store

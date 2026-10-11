@@ -18,11 +18,13 @@
 //! capacity again (the held hook simply answers on its next poll), otherwise by a native resume
 //! on the chosen account.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::Notify;
 use yulius_contracts::api::admin::{CapacityAccount, CapacityView};
+use yulius_contracts::hooks::{RateLimitWindow, RateLimits};
 use yulius_domain::capacity::{ForecastInput, PoolMember, Span, WeeklySample};
 use yulius_domain::ids::{AccountId, TaskId};
 use yulius_domain::rotation::{self, Decision, RotationInput, Trigger};
@@ -34,7 +36,9 @@ use crate::accounts::{account_usage, in_use_count, usage_view};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::AppResult;
-use crate::model::{AccountStatus, PauseKind, PauseRecord, TaskRecord, UsageSampleRecord};
+use crate::model::{
+    AccountStatus, PauseKind, PauseRecord, TaskRecord, USAGE_FROM_SESSION, UsageSampleRecord,
+};
 use crate::supervisor::RunStart;
 
 /// Default wait between two resumes of paused tasks ("resumed gently").
@@ -52,14 +56,84 @@ pub const CONTINUATION_MAX: usize = 100 * 1024;
 /// interrupted with a usage limit needs a user message to go on. It says nothing about pauses,
 /// accounts or limits.
 pub const CONTINUE_TEXT: &str = "Continue.";
+/// A held hook asks again every [`HOLD_RETRY_SECS`] (a restart: every 2 s); one nobody asked
+/// about for this long was given up by the CLI (an interrupt, the CLI's own hook timeout — 15 s
+/// for sessions started before ADR-17 — or a killed hook client): the agent is not held any more.
+pub const HOLD_LOST_MS: i64 = 45_000;
+/// While a hook is held, the resume loop looks at least this often whether it still is.
+const HOLD_CHECK: Duration = Duration::from_secs(15);
 /// Usage readings are kept this long (the forecast reads 7 days).
 const SAMPLE_RETENTION_MS: i64 = 8 * 24 * 3_600_000;
 const WEEK_MS: i64 = 7 * 24 * 3_600_000;
+
+/// A session's usage reading is stored at once when a window moved by this many points (or
+/// reset, or crossed the threshold); smaller moves at most every [`SESSION_WRITE_MS`].
+const SESSION_STEP: f64 = 1.0;
+/// Shortest time between two stored session readings of one subscription that moved less than
+/// [`SESSION_STEP`].
+const SESSION_WRITE_MS: i64 = 15_000;
+/// Burn-rate samples from session readings: at most this often per subscription (and at every
+/// window reset).
+const SESSION_SAMPLE_MS: i64 = 5 * 60_000;
+/// Latest reset time accepted from a session reading: a week and a day ahead.
+const SESSION_RESET_MAX_MS: i64 = WEEK_MS + 24 * 3_600_000;
+
+/// The last session reading stored for a subscription.
+#[derive(Debug, Clone, Copy)]
+struct SessionReading {
+    five_hour: Option<UsageWindow>,
+    seven_day: Option<UsageWindow>,
+    written: Timestamp,
+    sampled: Timestamp,
+}
 
 /// Runtime state of the pool controller (owned by [`App`]).
 #[derive(Default)]
 pub struct CapacityState {
     wake: Notify,
+    /// The last session reading stored per subscription (ADR-17: usage from the sessions).
+    sessions: Mutex<HashMap<AccountId, SessionReading>>,
+}
+
+/// A window of Claude Code's status line input as a usage window of `minutes`; `None` without a
+/// sane percentage. A reset time in the past or more than a week and a day ahead is unknown.
+fn session_window(
+    window: Option<RateLimitWindow>,
+    minutes: u32,
+    now: Timestamp,
+) -> Option<UsageWindow> {
+    let window = window?;
+    let used = window
+        .used_percentage
+        .filter(|p| p.is_finite() && (0.0..=1_000.0).contains(p))?;
+    let resets_at = window
+        .resets_at
+        .and_then(|s| s.checked_mul(1_000))
+        .map(Timestamp)
+        .filter(|at| *at > now && at.millis_since(now) <= SESSION_RESET_MAX_MS);
+    Some(UsageWindow {
+        used_percent: Some(used),
+        window_minutes: Some(minutes),
+        resets_at,
+    })
+}
+
+/// Whether a new reading of a window must be stored at once: it appeared, reset, moved by
+/// [`SESSION_STEP`] or more, or crossed the switch threshold.
+fn moved_much(before: Option<UsageWindow>, after: Option<UsageWindow>) -> bool {
+    match (before, after) {
+        (None, None) => false,
+        (Some(b), Some(a)) => {
+            let (b_used, a_used) = (
+                b.known_percent().unwrap_or(0.0),
+                a.known_percent().unwrap_or(0.0),
+            );
+            b.resets_at != a.resets_at
+                || (a_used - b_used).abs() >= SESSION_STEP
+                || (b_used < rotation::THRESHOLD) != (a_used < rotation::THRESHOLD)
+        }
+        _ => true,
+    }
 }
 
 /// What happened to one paused task in a resume pass.
@@ -202,7 +276,9 @@ impl App {
                 .await?;
             self.runtime(task_id)
                 .hub
-                .notice("Yulius paused this task: waiting for subscription capacity.");
+                .notice(
+                "Yulius paused this task: no subscription has capacity left. It continues by itself.",
+            );
         }
         self.publish_task(task_id).await;
         self.capacity_changed();
@@ -221,8 +297,91 @@ impl App {
         }
     }
 
-    /// Stores the provider's readings of an account's windows for the burn rate (ROT-013).
-    pub(crate) async fn record_usage_samples(&self, account: &AccountId, usage: &AccountUsage) {
+    /// A running session's reading of its subscription's plan usage (Claude Code's status line:
+    /// the rate-limit headers of its own API responses, ADR-17). The only usage a
+    /// `claude setup-token` sign-in can see: the usage endpoint refuses it. The five-hour and
+    /// weekly windows replace the stored ones (per-model caps and a reported limit stay); stored
+    /// when they changed — at once for a move of a point or more, a reset or the threshold, else
+    /// at most every 15 s — and sampled for the burn rate at most every 5 minutes.
+    pub(crate) async fn session_usage(&self, account: &AccountId, limits: &RateLimits) {
+        let now = self.now();
+        let five_hour = session_window(limits.five_hour, 5 * 60, now);
+        let seven_day = session_window(limits.seven_day, 7 * 24 * 60, now);
+        if five_hour.is_none() && seven_day.is_none() {
+            return;
+        }
+        let Some(sample) = self.session_reading_due(account, five_hour, seven_day, now) else {
+            return;
+        };
+        let Ok(Some(record)) = self.deps.store.account(account).await else {
+            return;
+        };
+        let mut usage = account_usage(&record);
+        usage.primary = five_hour.or(usage.primary);
+        usage.secondary = seven_day.or(usage.secondary);
+        usage.observed_at = Some(now);
+        self.record_account_usage(account, &usage).await;
+        if sample {
+            let windows = AccountUsage {
+                primary: five_hour,
+                secondary: seven_day,
+                observed_at: Some(now),
+                ..AccountUsage::default()
+            };
+            self.record_usage_samples(account, &windows, USAGE_FROM_SESSION)
+                .await;
+        }
+    }
+
+    /// Whether a session reading is to be stored now (`Some(sample)`, with whether it is also a
+    /// burn-rate sample), remembering it when it is.
+    fn session_reading_due(
+        &self,
+        account: &AccountId,
+        five_hour: Option<UsageWindow>,
+        seven_day: Option<UsageWindow>,
+        now: Timestamp,
+    ) -> Option<bool> {
+        let mut sessions = self.capacity.sessions.lock().ok()?;
+        let (write, sample, sampled) = match sessions.get(account) {
+            None => (true, true, now),
+            Some(last) if last.five_hour == five_hour && last.seven_day == seven_day => {
+                (false, false, last.sampled)
+            }
+            Some(last) => {
+                let much =
+                    moved_much(last.five_hour, five_hour) || moved_much(last.seven_day, seven_day);
+                let write = much || now.millis_since(last.written) >= SESSION_WRITE_MS;
+                let reset = last.five_hour.map(|w| w.resets_at) != five_hour.map(|w| w.resets_at)
+                    || last.seven_day.map(|w| w.resets_at) != seven_day.map(|w| w.resets_at);
+                let sample =
+                    write && (reset || now.millis_since(last.sampled) >= SESSION_SAMPLE_MS);
+                (write, sample, if sample { now } else { last.sampled })
+            }
+        };
+        if !write {
+            return None;
+        }
+        sessions.insert(
+            account.clone(),
+            SessionReading {
+                five_hour,
+                seven_day,
+                written: now,
+                sampled,
+            },
+        );
+        Some(sample)
+    }
+
+    /// Stores readings of an account's windows for the burn rate (ROT-013); `source` says who
+    /// read them ([`crate::model::USAGE_FROM_PROBE`] or [`USAGE_FROM_SESSION`]).
+    pub(crate) async fn record_usage_samples(
+        &self,
+        account: &AccountId,
+        usage: &AccountUsage,
+        source: &str,
+    ) {
         let at = usage.observed_at.unwrap_or_else(|| self.now());
         let samples: Vec<UsageSampleRecord> = [
             ("five_hour", usage.primary),
@@ -239,6 +398,7 @@ impl App {
                 window: window.to_owned(),
                 used_percent: w.known_percent()?,
                 resets_at: w.resets_at,
+                source: source.to_owned(),
             })
         })
         .collect();
@@ -273,12 +433,18 @@ impl App {
     /// with the configured stagger between two resumes. Returns how long to sleep before the
     /// next pass (until the earliest known reset, at most 5 minutes).
     pub async fn resume_round(self: &Arc<Self>) -> Duration {
+        // An instance update holds every task; the pool resumes them after it (ADR-18).
+        if self.update_holds_starts() {
+            return Duration::from_secs(5);
+        }
         let Ok(pauses) = self.deps.store.open_pauses().await else {
             return RECHECK;
         };
         let mut earliest: Option<Timestamp> = None;
         let mut resumed = 0_u32;
+        let mut holding = false;
         for pause in pauses {
+            holding |= self.hook_held(&pause);
             if resumed > 0 && self.would_resume(&pause).await {
                 tokio::time::sleep(Duration::from_millis(self.config.resume_stagger_ms)).await;
             }
@@ -292,11 +458,59 @@ impl App {
                 Resume::Gone => {}
             }
         }
-        earliest.map_or(RECHECK, |at| {
+        let wait = earliest.map_or(RECHECK, |at| {
             let ms = u64::try_from(at.millis_since(self.now()).max(0)).unwrap_or(0);
             // Wake a moment after the reset so the window reads as reset.
             Duration::from_millis(ms.saturating_add(1_000)).clamp(MIN_RECHECK, RECHECK)
-        })
+        });
+        if holding { wait.min(HOLD_CHECK) } else { wait }
+    }
+
+    /// Whether `pause` holds an agent at a hook of a run that reports through hooks (a `turn`
+    /// or `prompt` pause with a process): only such a hold is asked about again and again.
+    fn hook_held(&self, pause: &PauseRecord) -> bool {
+        matches!(pause.kind, PauseKind::Turn | PauseKind::Prompt)
+            && pause.account_id.is_some()
+            && self
+                .existing_runtime(&pause.task_id)
+                .is_some_and(|rt| rt.hooks_seen.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// Whether the CLI gave up the hook that `pause` holds: nobody asked about it for
+    /// [`HOLD_LOST_MS`]. The clock starts with the first look when no poll was seen since this
+    /// server started.
+    fn hold_given_up(&self, pause: &PauseRecord) -> bool {
+        if !self.hook_held(pause) {
+            return false;
+        }
+        let now = self.now();
+        let polled = &self.runtime(&pause.task_id).hold_polled_ms;
+        let last = polled.load(std::sync::atomic::Ordering::SeqCst);
+        if last <= 0 {
+            polled.store(now.0, std::sync::atomic::Ordering::SeqCst);
+            return false;
+        }
+        now.millis_since(Timestamp(last)) > HOLD_LOST_MS
+    }
+
+    /// A paused task whose hold ended without the resume loop — the person typed or interrupted
+    /// the held turn, or the CLI gave the hold up — runs again on its own process: its pause
+    /// closes with `outcome` and the task is `running` with `activity` (F 2026-10-10: the task
+    /// follows its session; a pause that holds nothing must not read "Paused").
+    pub(crate) async fn hold_ended(&self, task_id: &TaskId, outcome: &str, activity: Activity) {
+        self.end_pause(task_id, outcome).await;
+        let store = &self.deps.store;
+        if let Ok(Some(task)) = store.task(task_id).await
+            && task.status == TaskStatus::WaitingCapacity
+            && store.live_attempt(task_id).await.ok().flatten().is_some()
+            && let Ok(next) = task.status.apply(TaskEvent::CapacityReturned)
+        {
+            let _ = store
+                .transition_task(task_id, Some(task.status), next, Some(activity), self.now())
+                .await;
+            tracing::info!(task = %task_id, %outcome, "a held turn ended without the pool: the task runs again");
+            self.publish_task(task_id).await;
+        }
     }
 
     /// The policy decision for a paused task now: `Stay` resumes in place, `Switch` on another
@@ -340,6 +554,12 @@ impl App {
             Err(_) => return Resume::Waiting(None),
         };
         match decision {
+            // Still no capacity, but nobody is held any more: the CLI gave the hook up.
+            Decision::Wait { .. } if self.hold_given_up(pause) => {
+                self.hold_ended(&task.id, "abandoned", Activity::Waiting)
+                    .await;
+                Resume::Gone
+            }
             Decision::Wait { until } => Resume::Waiting(until),
             Decision::Stay if has_process => {
                 self.release_in_place(&task, pause).await;
@@ -405,7 +625,7 @@ impl App {
         }
         self.runtime(&task.id)
             .hub
-            .notice("Subscription capacity is back: the task continues.");
+            .notice("A subscription has capacity again: the task continues.");
         if pause.kind == PauseKind::Limit {
             if let Err(err) = self.send_input(&task.id, CONTINUE_TEXT.as_bytes()).await {
                 tracing::warn!(error = %err, task = %task.id, "could not continue after a limit");

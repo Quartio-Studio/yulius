@@ -10,6 +10,7 @@
 //!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
 //!            [--limit-after N] [--report-env NAME]... [--tui]
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-delay-ms MS]
+//!            [--interrupts] [--rate-limits-file PATH]
 //! ```
 //!
 //! Modes:
@@ -46,7 +47,23 @@
 //! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
 //! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
 //! JSON on stdin (the hook client reads `YULIUS_URL` and `YULIUS_TASK_TOKEN` from the inherited
-//! environment). A Stop answer that blocks prints `STOP BLOCKED`.
+//! environment). A Stop answer that blocks prints `STOP BLOCKED`. A `UserPromptSubmit` answer
+//! that blocks keeps the prompt from the agent like Claude Code: it prints
+//! `PROMPT BLOCKED: <reason>` and runs no turn. `/exit` runs `SessionEnd` with
+//! `reason: prompt_input_exit` first.
+//!
+//! `/work <ms> <text>` is a turn that takes `<ms>` (≤ 60 s): it prints `WORKING`, then `DONE
+//! <text>` with its transcript records and Stop hook. With `--interrupts` the agent handles
+//! Ctrl+C like Claude Code 2.1.292: during a turn it interrupts it (prints `INTERRUPTED`, writes
+//! the user line "[Request interrupted by user]", no Stop hook); at the prompt it prints `Press
+//! Ctrl-C again to exit`, and a second Ctrl+C within 2 s runs `SessionEnd`
+//! (`prompt_input_exit`), prints `BYE` and exits 0; SIGTERM runs `SessionEnd` (`other`) and
+//! exits 143.
+//!
+//! `--rate-limits-file PATH` runs Claude Code's status line command as Yulius configures it
+//! (`YULIUS_EXE hook claude StatusLine`, with `--hooks`) at the start and after every turn, with
+//! the `rate_limits` object read from PATH (when it exists) in its input, and prints
+//! `STATUS <line>`.
 //!
 //! `--tui` draws like a full-screen agent TUI (Claude Code 2.1.x): the alternate screen with a
 //! header box, the transcript and an input box between two rules along the bottom, all as wide
@@ -69,6 +86,11 @@ const MAX_SLEEP_SECONDS: u64 = 3600;
 const MAX_LATER_MS: u64 = 60_000;
 const MAX_GOAL_DELAY_MS: u64 = 60_000;
 const MAX_HOOK_OUTPUT: u64 = 1024 * 1024;
+const MAX_WORK_MS: u64 = 60_000;
+/// Two Ctrl+C at the prompt within this time exit (Claude Code's "Press Ctrl-C again to exit").
+const DOUBLE_CTRL_C: Duration = Duration::from_secs(2);
+/// The user line Claude Code 2.1.292 writes when the person interrupts a turn.
+const INTERRUPT_LINE: &str = "[Request interrupted by user]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -95,6 +117,8 @@ struct Options {
     hooks: Option<PathBuf>,
     goal_background: Option<u64>,
     goal_delay_ms: u64,
+    interrupts: bool,
+    rate_limits_file: Option<PathBuf>,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -119,6 +143,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         hooks: None,
         goal_background: None,
         goal_delay_ms: 0,
+        interrupts: false,
+        rate_limits_file: None,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -165,6 +191,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--goal-delay-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_delay_ms = ms.min(MAX_GOAL_DELAY_MS);
+            }
+            "--interrupts" => options.interrupts = true,
+            "--rate-limits-file" => {
+                options.rate_limits_file =
+                    Some(args.next().ok_or("--rate-limits-file needs a path")?.into());
             }
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -393,6 +424,46 @@ impl Transcript {
         self.append(&[user, assistant])
     }
 
+    /// The user line of a turn that takes a while (`/work`).
+    fn begin(&mut self, prompt: &str) -> io::Result<()> {
+        self.turns += 1;
+        let uuid = format!("fake-{}-{}-u", self.session_id, self.turns);
+        let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
+        user["message"] = json!({"role": "user", "content": prompt});
+        self.last_uuid = Some(uuid);
+        self.append(&[user])
+    }
+
+    /// The answer that ends a `/work` turn.
+    fn answer(&mut self, prompt: &str, answer: &str) -> io::Result<()> {
+        let n = self.turns;
+        let uuid = format!("fake-{}-{n}-a", self.session_id);
+        let mut assistant = self.claude_envelope("assistant", &uuid, &rfc3339(now_ms()));
+        assistant["message"] = json!({
+            "id": format!("msg_fake_{n}"),
+            "type": "message",
+            "role": "assistant",
+            "model": "fake-model",
+            "content": [{"type": "text", "text": answer}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10 + prompt.len() as u64,
+                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                "output_tokens": 4 + answer.len() as u64}
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[assistant])
+    }
+
+    /// The person interrupted the turn: Claude Code's user line, shaped like 2.1.292's.
+    fn interrupted(&mut self) -> io::Result<()> {
+        let uuid = format!("fake-{}-{}-interrupt", self.session_id, self.turns);
+        let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
+        user["message"] = json!({"role": "user",
+            "content": [{"type": "text", "text": INTERRUPT_LINE}]});
+        self.last_uuid = Some(uuid);
+        self.append(&[user])
+    }
+
     /// A `goal_status` attachment shaped like Claude Code 2.1.292's.
     fn goal_status(&mut self, goal: Value) -> io::Result<()> {
         let uuid = format!("fake-{}-goal-{}", self.session_id, self.turns);
@@ -507,13 +578,48 @@ struct Hooks {
 }
 
 impl Hooks {
-    fn prompt(&self, prompt: &str) {
-        run_hook(
+    /// `UserPromptSubmit`; `Some(reason)` when the hook blocks the prompt.
+    fn prompt(&self, prompt: &str) -> Option<String> {
+        let answer = run_hook(
             &self.exe,
             "UserPromptSubmit",
             &json!({"session_id": self.session_id, "hook_event_name": "UserPromptSubmit",
                 "prompt": prompt}),
         );
+        let value: Value = serde_json::from_str(&answer).ok()?;
+        (value.get("decision").and_then(Value::as_str) == Some("block")).then(|| {
+            value
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        })
+    }
+
+    /// `SessionEnd` with `reason`.
+    fn session_end(&self, reason: &str) {
+        run_hook(
+            &self.exe,
+            "SessionEnd",
+            &json!({"session_id": self.session_id, "hook_event_name": "SessionEnd",
+                "reason": reason}),
+        );
+    }
+
+    /// Claude Code's status line command with the rate limits in `file` (if it exists).
+    fn status_line(&self, file: &Path) -> io::Result<()> {
+        let mut input = json!({"session_id": self.session_id,
+            "model": {"id": "fake-model", "display_name": "Fake"},
+            "workspace": {"current_dir": std::env::current_dir()
+                .map(|p| p.display().to_string()).unwrap_or_default()}});
+        if let Some(limits) = std::fs::read_to_string(file)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        {
+            input["rate_limits"] = limits;
+        }
+        let line = run_hook(&self.exe, "StatusLine", &input);
+        say(&format!("STATUS {}", line.trim_end()))
     }
 
     fn stop(&self) -> io::Result<()> {
@@ -723,6 +829,9 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
         exe: exe.clone(),
         session_id: session_id.to_owned(),
     });
+    let keys = Keys::start(options, hooks.clone())?;
+    let keys = keys.as_ref();
+    status_line(options, hooks.as_ref())?;
     let mut turns = 0u64;
     let mut limited = false;
     let stdin = io::stdin();
@@ -730,6 +839,9 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     while let Some(line) = read_line(&mut input)? {
         match line.as_str() {
             "/exit" => {
+                if let Some(hooks) = &hooks {
+                    hooks.session_end("prompt_input_exit");
+                }
                 say("BYE")?;
                 return Ok(0);
             }
@@ -776,9 +888,14 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 turns += 1;
                 goal_turn(options, &line, transcript.as_ref(), hooks.as_ref())?;
             }
+            _ if line.starts_with("/work ") => {
+                turns += 1;
+                work_turn(options, &line, transcript.as_ref(), hooks.as_ref(), keys)?;
+            }
             _ => {
-                if let Some(hooks) = &hooks {
-                    hooks.prompt(&line);
+                if let Some(reason) = hooks.as_ref().and_then(|h| h.prompt(&line)) {
+                    say(&format!("PROMPT BLOCKED: {reason}"))?;
+                    continue;
                 }
                 let answer = format!("ECHO: {line}");
                 say(&answer)?;
@@ -799,10 +916,137 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 } else if let Some(hooks) = &hooks {
                     hooks.stop()?;
                 }
+                status_line(options, hooks.as_ref())?;
             }
         }
     }
     Ok(0)
+}
+
+/// Runs the status line command when `--rate-limits-file` is given (with `--hooks`).
+fn status_line(options: &Options, hooks: Option<&Hooks>) -> io::Result<()> {
+    match (hooks, &options.rate_limits_file) {
+        (Some(hooks), Some(file)) => hooks.status_line(file),
+        _ => Ok(()),
+    }
+}
+
+/// Ctrl+C and SIGTERM as Claude Code handles them (`--interrupts`, see the module docs).
+#[derive(Clone)]
+struct Keys {
+    /// A turn is running: Ctrl+C interrupts it.
+    turn: Arc<AtomicBool>,
+    /// Ctrl+C asked the running turn to stop.
+    interrupt: Arc<AtomicBool>,
+}
+
+impl Keys {
+    /// Watches SIGINT and SIGTERM; `None` without `--interrupts`.
+    fn start(options: &Options, hooks: Option<Hooks>) -> io::Result<Option<Self>> {
+        if !options.interrupts {
+            return Ok(None);
+        }
+        let sigint = Arc::new(AtomicBool::new(false));
+        let sigterm = Arc::new(AtomicBool::new(false));
+        signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&sigint))?;
+        signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&sigterm))?;
+        let keys = Self {
+            turn: Arc::new(AtomicBool::new(false)),
+            interrupt: Arc::new(AtomicBool::new(false)),
+        };
+        let watch = keys.clone();
+        std::thread::spawn(move || {
+            let mut armed: Option<std::time::Instant> = None;
+            loop {
+                std::thread::sleep(Duration::from_millis(5));
+                if sigterm.swap(false, Ordering::SeqCst) {
+                    if let Some(hooks) = &hooks {
+                        hooks.session_end("other");
+                    }
+                    std::process::exit(143);
+                }
+                if !sigint.swap(false, Ordering::SeqCst) {
+                    continue;
+                }
+                if watch.turn.load(Ordering::SeqCst) {
+                    watch.interrupt.store(true, Ordering::SeqCst);
+                    armed = None;
+                } else if armed.is_some_and(|at| at.elapsed() <= DOUBLE_CTRL_C) {
+                    if let Some(hooks) = &hooks {
+                        hooks.session_end("prompt_input_exit");
+                    }
+                    let _ = say("BYE");
+                    std::process::exit(0);
+                } else {
+                    armed = Some(std::time::Instant::now());
+                    let _ = say("Press Ctrl-C again to exit");
+                }
+            }
+        });
+        Ok(Some(keys))
+    }
+}
+
+/// `/work <ms> <text>`: a turn that takes a while and can be interrupted (see the module docs).
+fn work_turn(
+    options: &Options,
+    line: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+    keys: Option<&Keys>,
+) -> io::Result<()> {
+    let mut parts = line.splitn(3, ' ').skip(1);
+    let ms = parts
+        .next()
+        .and_then(|ms| ms.parse::<u64>().ok())
+        .unwrap_or(0)
+        .min(MAX_WORK_MS);
+    let text = parts.next().unwrap_or("work").to_owned();
+    if let Some(reason) = hooks.and_then(|h| h.prompt(line)) {
+        return say(&format!("PROMPT BLOCKED: {reason}"));
+    }
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        t.begin(line)?;
+    }
+    if let Some(keys) = keys {
+        keys.interrupt.store(false, Ordering::SeqCst);
+        keys.turn.store(true, Ordering::SeqCst);
+    }
+    say("WORKING")?;
+    let deadline = std::time::Instant::now() + Duration::from_millis(ms);
+    let mut interrupted = false;
+    while std::time::Instant::now() < deadline {
+        if keys.is_some_and(|k| k.interrupt.swap(false, Ordering::SeqCst)) {
+            interrupted = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if let Some(keys) = keys {
+        keys.turn.store(false, Ordering::SeqCst);
+    }
+    if interrupted {
+        if let Some(transcript) = transcript
+            && let Ok(mut t) = transcript.lock()
+        {
+            t.interrupted()?;
+        }
+        // Claude Code runs no Stop hook for an interrupted turn.
+        return say("INTERRUPTED");
+    }
+    let answer = format!("DONE {text}");
+    say(&answer)?;
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        t.answer(line, &answer)?;
+    }
+    if let Some(hooks) = hooks {
+        hooks.stop()?;
+    }
+    status_line(options, hooks)
 }
 
 fn run(options: &Options) -> io::Result<i32> {
@@ -885,6 +1129,8 @@ mod tests {
         assert!(parse(&["--tui"]).is_ok_and(|o| o.tui));
         assert!(parse(&["--seconds", "999999"]).is_ok_and(|o| o.seconds == MAX_SLEEP_SECONDS));
         assert!(parse(&["--hooks"]).is_err());
+        assert!(parse(&["--interrupts"]).is_ok_and(|o| o.interrupts));
+        assert!(parse(&["--rate-limits-file"]).is_err());
         assert!(
             parse(&["--goal-background", "3", "--goal-delay-ms", "999999"])
                 .is_ok_and(|o| o.goal_background == Some(3) && o.goal_delay_ms == MAX_GOAL_DELAY_MS)

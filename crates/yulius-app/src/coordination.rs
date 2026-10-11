@@ -6,16 +6,18 @@ use yulius_domain::ids::{MessageId, StepId, TaskId};
 
 use crate::auth::rfc3339;
 use crate::context::App;
+use crate::discipline::{step_by_title, step_states};
 use crate::error::{AppError, AppResult};
 use crate::model::{AttemptRecord, MessageRecord, StepRecord, TaskRecord};
 use crate::tasks::progress;
+use yulius_domain::steps::{self as rules, By, PlannedStep, StepStatus};
 
 /// Message kinds agents may send.
 pub const MESSAGE_KINDS: [&str; 4] = ["info", "question", "request", "scope"];
 /// Step statuses.
 pub const STEP_STATUSES: [&str; 5] = ["pending", "in_progress", "done", "skipped", "blocked"];
-/// Maximum steps per task.
-pub const MAX_STEPS: usize = 100;
+/// Maximum steps per task (a plan of similar-effort steps, STP-006).
+pub const MAX_STEPS: usize = rules::MAX_STEPS;
 
 /// The agent run behind a task token.
 #[derive(Debug, Clone)]
@@ -77,7 +79,7 @@ impl App {
             "activity": task.activity.map(|a| a.as_str()),
             "branch": task.branch,
             "spec_path": task.spec_path,
-            "steps": {"done": p.done, "total": p.total, "current": p.current},
+            "steps": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current},
             // A chained task runs after this task number (TSK-012).
             "runs_after": self.deps.store.chain(&task.id).await?.map(|c| c.after_number),
             "created_at": rfc3339(task.created_at),
@@ -299,47 +301,63 @@ impl App {
         Ok(json!({"messages": out}))
     }
 
-    /// `steps_set`: replaces the task's plan (STP-001); statuses of identical titles are kept.
+    /// `steps_set`: replaces the task's plan (STP-001, STP-006): 1 to [`MAX_STEPS`] unique steps,
+    /// each with an optional status and effort (1-3). A step whose title matches a current step
+    /// keeps its identity, note, status and effort unless given; a finished step stays finished.
     ///
     /// # Errors
-    /// `Invalid` input.
+    /// `Invalid` input, with the rule that was broken.
     pub async fn tool_steps_set(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
         let items = args
             .get("steps")
             .and_then(Value::as_array)
             .ok_or_else(|| AppError::Invalid("missing array `steps`".into()))?;
-        if items.is_empty() || items.len() > MAX_STEPS {
-            return Err(AppError::Invalid(format!("provide 1 to {MAX_STEPS} steps")));
-        }
-        let existing = self.deps.store.steps(&ctx.task.id).await?;
-        let now = self.now();
-        let mut steps = Vec::new();
-        for (i, item) in items.iter().enumerate() {
-            let (title, status) = match item {
-                Value::String(t) => (t.trim().to_owned(), None),
+        let mut plan = Vec::with_capacity(items.len().min(MAX_STEPS + 1));
+        for item in items.iter().take(MAX_STEPS + 1) {
+            let (title, status, effort) = match item {
+                Value::String(t) => (t.clone(), None, None),
                 Value::Object(o) => (
                     o.get("title")
                         .and_then(Value::as_str)
                         .unwrap_or("")
-                        .trim()
                         .to_owned(),
-                    o.get("status").and_then(Value::as_str).map(str::to_owned),
+                    o.get("status").and_then(Value::as_str),
+                    o.get("effort"),
                 ),
-                _ => (String::new(), None),
+                _ => (String::new(), None, None),
             };
-            if title.is_empty() || title.len() > 300 {
-                return Err(AppError::Invalid(
-                    "each step needs a title of 1-300 bytes".into(),
-                ));
-            }
-            if let Some(s) = &status
-                && !STEP_STATUSES.contains(&s.as_str())
-            {
-                return Err(AppError::Invalid(format!(
-                    "status must be one of {STEP_STATUSES:?}"
-                )));
-            }
-            let previous = existing.iter().find(|s| s.title == title);
+            let status = status
+                .map(|s| {
+                    StepStatus::parse(s).ok_or_else(|| {
+                        AppError::Invalid(format!("status must be one of {STEP_STATUSES:?}"))
+                    })
+                })
+                .transpose()?;
+            let effort = effort
+                .map(|e| {
+                    e.as_u64()
+                        .and_then(|n| u8::try_from(n).ok())
+                        .ok_or_else(|| AppError::Invalid("effort must be 1, 2 or 3".into()))
+                })
+                .transpose()?;
+            plan.push(PlannedStep {
+                title,
+                effort,
+                status,
+            });
+        }
+        if items.len() > MAX_STEPS {
+            return Err(AppError::Invalid(
+                rules::StepError::TooManySteps { count: items.len() }.to_string(),
+            ));
+        }
+        let (existing, states) = self.step_states_of(&ctx.task.id).await?;
+        let resolved = rules::validate_plan(&plan, &states, By::Agent)
+            .map_err(|err| AppError::Invalid(err.to_string()))?;
+        let now = self.now();
+        let mut steps = Vec::with_capacity(resolved.len());
+        for (i, step) in resolved.into_iter().enumerate() {
+            let previous = step.previous.and_then(|p| existing.get(p));
             steps.push(StepRecord {
                 id: previous
                     .map_or_else(
@@ -349,13 +367,12 @@ impl App {
                     .map_err(AppError::internal)?,
                 task_id: ctx.task.id.clone(),
                 ordinal: u32::try_from(i + 1).unwrap_or(u32::MAX),
-                status: status
-                    .or_else(|| previous.map(|p| p.status.clone()))
-                    .unwrap_or_else(|| "pending".into()),
-                title,
+                status: step.status.as_str().to_owned(),
+                title: step.title,
                 note: previous.and_then(|p| p.note.clone()),
                 updated_by: Some(ctx.actor()),
                 updated_at: Some(now),
+                effort: step.effort,
             });
         }
         self.deps
@@ -366,46 +383,69 @@ impl App {
         self.tool_steps_get(ctx).await
     }
 
-    /// `step_update`: changes one step's status/note.
+    /// `step_update`: changes one step's status/note (STP-007): at most
+    /// [`rules::MAX_IN_PROGRESS`] steps in progress, a finished step stays finished, blocked and
+    /// skipped need a note.
     ///
     /// # Errors
-    /// `Invalid`/`NotFound`.
+    /// `Invalid` (with the rule that was broken) or `NotFound`.
     pub async fn tool_step_update(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
         let status = str_arg(args, "status")?;
-        if !STEP_STATUSES.contains(&status) {
-            return Err(AppError::Invalid(format!(
-                "status must be one of {STEP_STATUSES:?}"
-            )));
-        }
-        let steps = self.deps.store.steps(&ctx.task.id).await?;
+        let parsed = StepStatus::parse(status)
+            .ok_or_else(|| AppError::Invalid(format!("status must be one of {STEP_STATUSES:?}")))?;
+        let (steps, states) = self.step_states_of(&ctx.task.id).await?;
         let step = if let Some(id) = args.get("step_id").and_then(Value::as_str) {
             steps.iter().find(|s| s.id.as_str() == id)
         } else if let Some(n) = args.get("ordinal").and_then(Value::as_u64) {
             steps.iter().find(|s| u64::from(s.ordinal) == n)
         } else {
-            let title = str_arg(args, "title")?;
-            steps.iter().find(|s| s.title == title)
+            step_by_title(&steps, str_arg(args, "title")?)
         }
         .ok_or(AppError::NotFound)?;
+        let index = steps
+            .iter()
+            .position(|s| s.id == step.id)
+            .ok_or(AppError::NotFound)?;
         let note = args.get("note").and_then(Value::as_str);
+        rules::check_update(&states, index, parsed, note, By::Agent)
+            .map_err(|err| AppError::Invalid(err.to_string()))?;
         self.deps
             .store
-            .update_step(&step.id, status, note, &ctx.actor(), self.now())
+            .update_step(
+                &step.id,
+                status,
+                note.map(str::trim),
+                &ctx.actor(),
+                self.now(),
+            )
             .await?;
         self.publish_steps(&ctx.task).await;
         self.tool_steps_get(ctx).await
     }
 
-    /// `steps_get`: the task's steps.
+    /// `steps_get`: the task's steps, the effort-weighted progress and the current nudges.
     ///
     /// # Errors
     /// Store failures.
     pub async fn tool_steps_get(&self, ctx: &AgentContext) -> AppResult<Value> {
-        let steps = self.deps.store.steps(&ctx.task.id).await?;
-        let p = progress(&steps);
+        let records = self.deps.store.steps(&ctx.task.id).await?;
+        let timings = self.deps.store.step_timings(&ctx.task.id).await?;
+        let states = step_states(&records, &timings);
+        let p = progress(&records);
+        let nudges = self.step_nudges(&ctx.task, &states).await;
         Ok(json!({
-            "progress": {"done": p.done, "total": p.total, "current": p.current},
-            "steps": steps.iter().map(|s| json!({"id": s.id.as_str(), "ordinal": s.ordinal, "title": s.title, "status": s.status, "note": s.note})).collect::<Vec<_>>(),
+            "progress": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current},
+            "steps": records.iter().zip(&states).map(|(s, st)| json!({
+                "id": s.id.as_str(),
+                "ordinal": s.ordinal,
+                "title": s.title,
+                "status": s.status,
+                "effort": s.effort,
+                "note": s.note,
+                "started_at": st.started_at.map(rfc3339),
+                "finished_at": st.finished_at.map(rfc3339),
+            })).collect::<Vec<_>>(),
+            "nudges": nudges,
         }))
     }
 
