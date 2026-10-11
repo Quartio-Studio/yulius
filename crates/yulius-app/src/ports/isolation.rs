@@ -43,12 +43,15 @@ pub struct SandboxJoin {
     pub hostname: String,
     /// `yulius` executable that installs the seccomp filter (`sandbox-exec`).
     pub exec_shim: Option<PathBuf>,
-    /// Identity files go to `/var/lib/extrausers` (`libnss-extrausers` in the base).
-    pub extrausers: bool,
     /// Host paths bound read-only on top of the system layer (the agent CLI's install).
     pub extra_readonly: Vec<PathBuf>,
     /// Directories covered by an empty tmpfs before the run's binds (the data directory).
     pub private_dirs: Vec<PathBuf>,
+    /// Host path of the sandbox system's current `/etc/passwd` (its upper layer's, else the
+    /// base's): users' identity files are built on it.
+    pub system_passwd: Option<PathBuf>,
+    /// Same for `/etc/group`.
+    pub system_group: Option<PathBuf>,
 }
 
 /// See the module docs.

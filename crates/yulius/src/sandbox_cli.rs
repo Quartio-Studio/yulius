@@ -157,10 +157,9 @@ pub fn base(action: BaseAction) -> ExitCode {
                 Ok(info) => {
                     yulius_sandbox::base::collect(&bases, &keep, &mapper, &exe);
                     println!(
-                        "sandbox base {} ready in {} s (libnss-extrausers: {})",
+                        "sandbox base {} ready in {} s",
                         info.id,
-                        started.elapsed().as_secs(),
-                        if info.extrausers { "yes" } else { "no" }
+                        started.elapsed().as_secs()
                     );
                     ExitCode::SUCCESS
                 }
@@ -177,14 +176,13 @@ pub fn base(action: BaseAction) -> ExitCode {
                             yulius_app::identity::SUDO_SHIM,
                         );
                     println!(
-                        "current base: {} ({}; libnss-extrausers: {})",
+                        "current base: {} ({})",
                         info.id,
                         if fresh {
                             "matches this host's system"
                         } else {
                             "the host's system changed since; a rebuild is due"
-                        },
-                        if info.extrausers { "yes" } else { "no" }
+                        }
                     );
                     ExitCode::SUCCESS
                 }

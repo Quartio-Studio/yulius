@@ -112,8 +112,10 @@ pub struct SandboxRequest {
 pub struct Joined {
     /// The ptyhost contract.
     pub join: SandboxJoin,
-    /// The base has `libnss-extrausers`.
-    pub extrausers: bool,
+    /// Host path of the sandbox system's `/etc/passwd` (upper layer, else base).
+    pub system_passwd: Option<PathBuf>,
+    /// Host path of its `/etc/group`.
+    pub system_group: Option<PathBuf>,
 }
 
 /// Why `prepare` refused.
@@ -322,9 +324,18 @@ impl Manager {
         };
         state.leases += 1;
         state.last_used = Some(Instant::now());
-        let extrausers = crate::base::has_extrausers(&self.bases.path(&record.base_id));
         let cgroup = self.cgroup_of(&request.id);
+        let system_file = |name: &str| {
+            [
+                self.sysroot(&request.id).join("upper/etc").join(name),
+                self.bases.path(&record.base_id).join("etc").join(name),
+            ]
+            .into_iter()
+            .find(|p| p.is_file())
+        };
         Ok(Some(Joined {
+            system_passwd: system_file("passwd"),
+            system_group: system_file("group"),
             join: SandboxJoin {
                 holder_pid: record.inner_pid,
                 user_ns: record.user_ns,
@@ -336,7 +347,6 @@ impl Manager {
                 exec_shim: Some(self.config.exe.to_string_lossy().into_owned()),
                 private_dirs: vec![self.config.data_dir.to_string_lossy().into_owned()],
             },
-            extrausers,
         }))
     }
 

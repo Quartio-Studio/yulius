@@ -246,14 +246,6 @@ fn isolation_checks(data_dir: &Path) -> Vec<Check> {
                     }
                 ),
             ));
-            if !base.extrausers {
-                checks.push(check(
-                    "libnss-extrausers",
-                    Level::Warn,
-                    "not in the base: in users' shells, packages that add system users fail \
-                     (install libnss-extrausers, then `yulius sandbox-base build`)",
-                ));
-            }
         }
         None => checks.push(check(
             "sandbox base",

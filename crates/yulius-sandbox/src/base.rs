@@ -28,7 +28,7 @@ use crate::holder::{read_json, write_json};
 use crate::userns::Mapper;
 
 /// Format of the base; a change rebuilds every base.
-pub const BASE_FORMAT: u32 = 1;
+pub const BASE_FORMAT: u32 = 2;
 /// The system directories a run binds from the system layer.
 pub const SYSTEM_DIRS: [&str; 9] = [
     "usr", "etc", "var", "opt", "root", "home", "srv", "mnt", "media",
@@ -57,7 +57,7 @@ const VAR_SKIPPED: [&str; 3] = [
     "lib/dpkg/lock",
 ];
 /// Empty directories every base has (mode).
-const EMPTY_DIRS: [(&str, u32); 17] = [
+const EMPTY_DIRS: [(&str, u32); 16] = [
     ("root", 0o700),
     ("home", 0o755),
     ("srv", 0o755),
@@ -74,7 +74,6 @@ const EMPTY_DIRS: [(&str, u32); 17] = [
     ("var/local", 0o755),
     ("var/backups", 0o755),
     ("var/cache/apt/archives", 0o755),
-    ("var/lib/extrausers", 0o755),
 ];
 /// Builds may take this long in the namespace step.
 const CHOWN_LIMIT: Duration = Duration::from_secs(30 * 60);
@@ -92,8 +91,6 @@ pub struct BaseInfo {
     pub fingerprint: String,
     /// When it was finished (ms since the epoch).
     pub built_at_ms: i64,
-    /// `libnss-extrausers` is installed in it (identity files go to `/var/lib/extrausers`).
-    pub extrausers: bool,
     /// [`BASE_FORMAT`].
     pub format: u32,
 }
@@ -425,47 +422,11 @@ fn shadow_of(table: &str, group: bool) -> String {
         .collect()
 }
 
-/// Whether `libnss_extrausers` is installed in the base at `root`.
-#[must_use]
-pub fn has_extrausers(root: &Path) -> bool {
-    let lib = root.join("usr/lib");
-    let candidates = std::fs::read_dir(&lib)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path().join("libnss_extrausers.so.2"))
-        .chain(std::iter::once(lib.join("libnss_extrausers.so.2")));
-    candidates.into_iter().any(|p| p.exists())
-}
-
-/// `nsswitch.conf` with `extrausers` first for users and groups.
-#[must_use]
-pub fn nsswitch_with_extrausers(text: &str) -> String {
-    let mut out = String::new();
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        let database = trimmed.split(':').next().unwrap_or_default();
-        if matches!(database, "passwd" | "group" | "shadow") && !trimmed.contains("extrausers") {
-            let (key, rest) = trimmed.split_once(':').unwrap_or((database, ""));
-            out.push_str(&format!(
-                "{key}:{:width$}extrausers {}\n",
-                "",
-                rest.trim(),
-                width = 1
-            ));
-        } else {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    out
-}
-
 /// Writes the sandbox-specific files into the copied base at `root` and returns their owners.
 ///
 /// # Errors
 /// A file cannot be written.
-pub fn generate(root: &Path, sudo_shim: &str) -> io::Result<(Vec<OwnerEntry>, bool)> {
+pub fn generate(root: &Path, sudo_shim: &str) -> io::Result<Vec<OwnerEntry>> {
     let mut owners = Vec::new();
     for (dir, mode) in EMPTY_DIRS {
         let path = root.join(dir);
@@ -533,22 +494,7 @@ pub fn generate(root: &Path, sudo_shim: &str) -> io::Result<(Vec<OwnerEntry>, bo
             mode: Some(0o700),
         });
     }
-    let extrausers = has_extrausers(root);
-    if extrausers {
-        let nsswitch = root.join("etc/nsswitch.conf");
-        let text = std::fs::read_to_string(&nsswitch).unwrap_or_default();
-        replace_file(&nsswitch, &nsswitch_with_extrausers(&text), 0o644)?;
-        for (name, mode) in [("passwd", 0o644), ("group", 0o644), ("shadow", 0o640)] {
-            replace_file(&root.join("var/lib/extrausers").join(name), "", mode)?;
-        }
-        owners.push(OwnerEntry {
-            path: "var/lib/extrausers/shadow".into(),
-            uid: 0,
-            gid: shadow_gid,
-            mode: Some(0o640),
-        });
-    }
-    Ok((owners, extrausers))
+    Ok(owners)
 }
 
 /// Gives every recorded file its owner (run as root of a mapped namespace) and restores its
@@ -605,8 +551,7 @@ pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
     let partial = bases.dir.join(format!(".building-{id}"));
     let (mut owners, stats) =
         copy_host(&config.host_root, &config.data_dir, &partial).map_err(|e| e.to_string())?;
-    let (generated, extrausers) =
-        generate(&partial, &config.sudo_shim).map_err(|e| format!("generate: {e}"))?;
+    let generated = generate(&partial, &config.sudo_shim).map_err(|e| format!("generate: {e}"))?;
     owners.extend(generated);
     let manifest = bases.dir.join(format!(".owners-{id}.json"));
     write_json(&manifest, &owners).map_err(|e| e.to_string())?;
@@ -645,7 +590,6 @@ pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
         id,
         fingerprint,
         built_at_ms: now_ms(),
-        extrausers,
         format: BASE_FORMAT,
     };
     write_json(&bases.dir.join("current.json"), &info).map_err(|e| e.to_string())?;
@@ -654,7 +598,6 @@ pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
         copied = stats.copied,
         skipped = stats.skipped,
         owners = owners.len(),
-        extrausers,
         "sandbox base built"
     );
     Ok(info)
@@ -841,12 +784,7 @@ mod tests {
         let out = tempfile::tempdir()?;
         let base = out.path().join("base");
         copy_host(host.path(), &host.path().join("var/lib/yulius"), &base)?;
-        std::fs::write(
-            base.join("usr/lib/x86_64-linux-gnu/libnss_extrausers.so.2"),
-            "",
-        )?;
-        let (owners, extrausers) = generate(&base, "#!/bin/sh\nexec \"$@\"\n")?;
-        assert!(extrausers);
+        let owners = generate(&base, "#!/bin/sh\nexec \"$@\"\n")?;
         assert_eq!(
             std::fs::read_to_string(base.join("etc/resolv.conf"))?,
             SANDBOX_RESOLV_CONF
@@ -863,13 +801,6 @@ mod tests {
             std::fs::read_to_string(base.join("var/lib/dpkg/diversions"))?
                 .contains("/usr/bin/sudo\n/usr/bin/sudo.distrib\n:\n")
         );
-        let nsswitch = std::fs::read_to_string(base.join("etc/nsswitch.conf"))?;
-        assert!(
-            nsswitch.contains("passwd: extrausers files systemd"),
-            "{nsswitch}"
-        );
-        assert!(nsswitch.contains("hosts:          files dns"), "{nsswitch}");
-        assert!(base.join("var/lib/extrausers/passwd").is_file());
         assert!(std::fs::read_to_string(base.join("etc/shadow"))?.contains("_apt:*:"));
         assert!(owners.contains(&OwnerEntry {
             path: "var/cache/apt/archives/partial".into(),
@@ -964,7 +895,6 @@ mod tests {
                 id: "base-3".into(),
                 fingerprint: "f".into(),
                 built_at_ms: 1,
-                extrausers: false,
                 format: BASE_FORMAT,
             },
         )?;

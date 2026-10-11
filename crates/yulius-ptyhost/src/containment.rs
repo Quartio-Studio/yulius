@@ -376,7 +376,7 @@ mod tests {
         let mut c = spec();
         c.binds = vec![yulius_contracts::ptyhost::BindMount {
             source: "/data/users/u1/identity/passwd".into(),
-            dest: "/var/lib/extrausers/passwd".into(),
+            dest: "/etc/passwd".into(),
             writable: false,
         }];
         c.readonly.push("/usr/local/bin/yulius".into());
@@ -415,11 +415,7 @@ mod tests {
         let exe = position(&argv, &["--ro-bind", "/usr/local/bin/yulius"]);
         let identity = position(
             &argv,
-            &[
-                "--ro-bind",
-                "/data/users/u1/identity/passwd",
-                "/var/lib/extrausers/passwd",
-            ],
+            &["--ro-bind", "/data/users/u1/identity/passwd", "/etc/passwd"],
         );
         let private = position(&argv, &["--tmpfs", "/data"]);
         assert!(usr.is_some() && usr < sandbox && sandbox < exe, "{argv:?}");

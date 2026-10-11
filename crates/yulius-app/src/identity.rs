@@ -58,7 +58,8 @@ if [ $# -eq 0 ]; then
   echo "usage: sudo command [args...]" >&2
   exit 1
 fi
-exec "$@"
+# `sudo NAME=value command` sets variables like sudo does.
+exec env "$@"
 "#;
 
 /// Registry of workspace tokens (process-local; user processes do not survive a restart).
@@ -177,6 +178,24 @@ fn identity_files(login: &str, display_name: &str, home: &Path) -> (String, Stri
     (passwd, group)
 }
 
+/// The identity files of an isolated sandbox (ADR-20): the user's line first, then the sandbox
+/// system's own users and groups (system users of packages it installed included), so names
+/// resolve as on the system while uid 0 is named after the user. Lines naming the login are
+/// left out of the system part; at most 4096 lines of each are kept.
+fn merged_identity(own: &str, system: &str, login: &str) -> String {
+    let mut out = String::from(own.lines().next().unwrap_or_default());
+    out.push('\n');
+    for line in system.lines().take(4096) {
+        let name = line.split(':').next().unwrap_or_default();
+        if name.is_empty() || name == login || line.starts_with('#') {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 /// Seeds a new home: `/etc/skel` dotfiles and a Git identity.
 fn seed_home(home: &Path, user: &UserRecord, login: &str) {
     for name in [".bashrc", ".profile", ".bash_logout"] {
@@ -266,25 +285,33 @@ impl App {
         let home = PathBuf::from("/home").join(&login);
         let identity_dir = root.join("identity");
         private_dir(&identity_dir)?;
-        let (passwd, group) = identity_files(&login, &user.display_name, &home);
+        let (mut passwd, mut group) = identity_files(&login, &user.display_name, &home);
+        if let Some(join) = &join {
+            let read = |path: &Option<PathBuf>| {
+                path.as_ref()
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .filter(|text| text.len() <= 1 << 20)
+            };
+            if let Some(system) = read(&join.system_passwd) {
+                passwd = merged_identity(&passwd, &system, &login);
+            }
+            if let Some(system) = read(&join.system_group) {
+                group = merged_identity(&group, &system, &login);
+            }
+        }
         write_file(&identity_dir.join("passwd"), passwd.as_bytes(), 0o644)?;
         write_file(&identity_dir.join("group"), group.as_bytes(), 0o644)?;
         let bin = self.runtime_bin()?;
         env.push(("HOME".into(), home.to_string_lossy().into_owned()));
         // In an isolated sandbox (ADR-20) the system layer has root's tools and the sudo shim
-        // as /usr/bin/sudo; package scripts may rewrite /etc/passwd, so with extrausers the
-        // identity files are bound where only the name service reads them.
+        // as /usr/bin/sudo (a dpkg diversion), so only the identity files are bound.
         let path = if join.is_some() {
             crate::isolation::SANDBOX_PATH.to_owned()
         } else {
             path
         };
         env.push(("PATH".into(), format!("{SANDBOX_BIN}:{path}")));
-        let identity_dest = if join.as_ref().is_some_and(|j| j.extrausers) {
-            PathBuf::from("/var/lib/extrausers")
-        } else {
-            PathBuf::from("/etc")
-        };
+        let identity_dest = PathBuf::from("/etc");
         let replace_sudo = join.is_none() && Path::new(HOST_SUDO).is_file();
         let extra_readonly: Vec<PathBuf> = join
             .as_ref()
@@ -472,5 +499,16 @@ mod tests {
         );
         assert!(passwd.contains("\nroot:x:0:0:"));
         assert!(group.starts_with("alice:x:0:\n"));
+        let merged = merged_identity(
+            &passwd,
+            "root:x:0:0:root:/root:/bin/bash\n_apt:x:42:65534::/nonexistent:/usr/sbin/nologin\nalice:x:1000:1000::/home/alice:/bin/sh\npostgres:x:113:120::/var/lib/postgresql:/bin/bash\n",
+            "alice",
+        );
+        let names: Vec<&str> = merged
+            .lines()
+            .map(|l| l.split(':').next().unwrap_or(""))
+            .collect();
+        assert_eq!(names, vec!["alice", "root", "_apt", "postgres"]);
+        assert!(merged.starts_with("alice:x:0:0:"));
     }
 }

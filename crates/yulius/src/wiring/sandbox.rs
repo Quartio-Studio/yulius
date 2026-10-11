@@ -272,9 +272,10 @@ impl SandboxIsolation for NamespaceIsolation {
                     system_root: PathBuf::from(join.system_root),
                     hostname: join.hostname,
                     exec_shim: join.exec_shim.map(PathBuf::from),
-                    extrausers: joined.extrausers,
                     extra_readonly: self.extra_readonly.clone(),
                     private_dirs: join.private_dirs.iter().map(PathBuf::from).collect(),
+                    system_passwd: joined.system_passwd,
+                    system_group: joined.system_group,
                 }))
             }
             Ok(None) if self.strict => Err(AppError::Conflict(

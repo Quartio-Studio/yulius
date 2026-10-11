@@ -15,7 +15,6 @@ been performed or verified** as part of the implementation work.
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-20): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
 | `slirp4netns` | sandbox egress (isolation) | `apt install slirp4netns`. |
-| `libnss-extrausers` | users' login names in isolated sandboxes | `apt install libnss-extrausers`; without it, package scripts that add system users fail in users' shells (they work in agents' sessions). |
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
 | `xvfb` | the sandbox browser's virtual display (SPEC-002 ADR-15) | `apt install xvfb`. Without it (or ffmpeg) the browser runs headless: JPEG frames, no real input, captchas fail. `xauth` is not needed (Yulius writes the cookie itself); `x11-utils` (`xdpyinfo`) only for diagnostics. |
 | `ffmpeg` with libx264 and x11grab | the browser video | `apt install ffmpeg` (Ubuntu's build has both; `yulius doctor` checks). |
@@ -296,7 +295,7 @@ shells join it. A sandbox gets:
 **Install once** (as root):
 
 ```sh
-apt install uidmap slirp4netns libnss-extrausers bubblewrap
+apt install uidmap slirp4netns bubblewrap
 # A free subordinate range of 65,536 ids for the service user (check /etc/subuid and /etc/subgid
 # for ranges already used; on the reference VM 100000–231071 are taken):
 usermod --add-subuids 231072-296607 --add-subgids 231072-296607 yulius
@@ -332,6 +331,11 @@ systemctl restart yulius
 **Ports.** A sandbox's dev servers are reachable on the host's loopback only on its port range
 (PRJ-010, `YULIUS_PORT_BASE`…), and only while something listens on them inside. Other ports
 stay private to the sandbox. Two sandboxes can both use 3000 inside.
+
+**Packages.**
+- `sudo apt-get install …` works in users' shells and agents' sessions; `sudo NAME=value command` is supported.
+- A package whose scripts add a system user or group (a database server, for example) fails in a user's shell, whose `/etc/passwd` is the user's generated identity file. Install it from an agent's session (ask the agent), where it works.
+- The base copies the host's apt sources: a broken third-party source on the host (on the reference VM, Caddy's Cloudsmith repository answers 402) makes `apt-get update` exit 100 in sandboxes too, while installs from the other sources still work.
 
 **Without the prerequisites** (`yulius doctor` lists what is missing), contained runs keep the
 previous containment: read-only host system, the host's network, no limits.
