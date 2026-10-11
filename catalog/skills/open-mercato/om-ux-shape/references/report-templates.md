@@ -6,57 +6,57 @@ Keep the concrete screen states, copy, evidence, and acceptance criteria below
 that summary when engineering needs them; do not shorten away implementable
 behavior. Omit empty sections, repeated conclusions, and framework narration.
 A small request usually needs 3–6 lines, while an engineering handoff can be
-as long as its behavior requires. Use glossary emojis only for their meanings.
+as long as its behavior requires.
 
 ## Shape mode
 
 Lead with the chosen direction.
 
 ```markdown
-## 🎯 Recommendation
+## Recommendation
 
 <One concrete direction and the decisive trade-off, in two or three sentences.>
 
-### 📝 Problem and evidence
+### Problem and evidence
 
 <Actor, situation, job, friction. What is known, what is assumed (labeled).>
 
-### 🎯 Outcomes
+### Outcomes
 
 <The user outcome, the observable signal that it happened, the business
 effect that follows, and the guardrail that must not degrade.>
 
-### 📋 Scope
+### Scope
 
 **Now**: <what completes one real job end to end>
 **Later**: <plausible value, not needed for this decision>
 **Not doing**: <what conflicts with focus, evidence, safety, or economics>
 
-### 📋 How it works
+### How it works
 
 <Screen by screen, named. For each: what the user sees, the components it is
-built from (from the contract registry when one exists), the actions
+built from (from the project's design system when it has one), the actions
 available, and where each one leads. Then the states that must exist for
 trust (empty, loading, error, permission) with the actual message the user
 reads, and the recovery paths. Write the labels and copy, do not describe
 them.>
 
-### 📋 AI behavior
+### AI behavior
 
 <Only when AI is involved: what it does, the quality bar, the mistake it
 prefers and why, what the user can correct or undo, what remains possible
 when it is unavailable.>
 
-### 🧪 Validation
+### Validation
 
 <The riskiest belief, the smallest test that could change the decision, and
 what each result would mean.>
 
-### ⚠️ Open decisions
+### Open decisions
 
 <Only questions that could still change the direction.>
 
-### 🧪 Evidence limits
+### Evidence limits
 
 <Only material limits: what was actually inspected or tested, what remains
 unverified, and how that changes confidence in this decision. Do not list
@@ -71,33 +71,33 @@ and next test. Keep the detailed checks internal unless their result changes the
 Lead with a verdict: keep, simplify, rethink, or stop.
 
 ```markdown
-## 🔍 Verdict: <keep | simplify | rethink | stop>
+## Verdict: <keep | simplify | rethink | stop>
 
 <One paragraph: what the product is doing well and what the core problem is.>
 
-### ✅ What works
+### What works
 
 <Mechanisms that clearly serve the outcome and should become the reference
 for the rest.>
 
-### 🔍 What to change (worst first)
+### What to change (worst first)
 
 <Each item: where it hurts, the evidence tag, what to do instead, what the
 fix costs, and how to tell it worked.>
 
-### 📋 The simpler flow
+### The simpler flow
 
 <The smallest coherent alternative, described as screens and steps.>
 
-### 🧪 Next test
+### Next test
 
 <The decision to de-risk first, and the cheapest way to do it.>
 
-### ⚠️ Not covered
+### Not covered
 
 <What was not examined and why: missing data, no access, out of scope.>
 
-### 🧪 Evidence limits
+### Evidence limits
 
 <Only material limits: what was actually inspected or tested, what remains
 unverified, and how that changes confidence in this decision. Do not list
@@ -109,39 +109,39 @@ inapplicable framework checks.>
 Implementation language, for the skill or person who builds it.
 
 ```markdown
-## 📝 <Feature> — handoff
+## <Feature> — handoff
 
 **Intent**: <what it does> **Non-goals**: <what it deliberately does not do>
 **Actor and trigger**: <who, from where>
 
-### 📋 Behavior
+### Behavior
 
 <The flow, step by step, with the decisions the user makes.>
 
-### 📋 States
+### States
 
 | State | Trigger | What the user sees | What they can do |
 |---|---|---|---|
 | <empty, loading, error, permission, success> | | | |
 
-### 📋 AI behavior
+### AI behavior
 
 <Only when AI is involved.>
 
-### 📋 Assumptions to confirm
+### Assumptions to confirm
 
 <Data, API, permission, latency, and persistence assumptions that need
 engineering confirmation, marked as assumptions.>
 
-### ✅ Acceptance criteria
+### Acceptance criteria
 
 <Given / When / Then, verifiable by someone who did not write them.>
 
-### ⚠️ Open decisions
+### Open decisions
 
-<With owners where known.>
+<Decisions still open, with the default chosen meanwhile.>
 
-### 🧪 Evidence limits
+### Evidence limits
 
 <Only unverified assumptions or coverage gaps the implementer must act on.>
 ```
@@ -165,7 +165,7 @@ engineering confirmation, marked as assumptions.>
   guardrail must not appear in the delivered text. Render each as a plain
   statement about screens, behavior, and what to change.
 - The result obeys the same house copy rules it enforces: check it against the
-  manual section of the design contract and any team rules the user stated.
+  project's own copy and design rules when it has them.
 - Prefer one strong recommendation over several equally weighted ideas.
 - Use tables or a small Mermaid flow when they explain relationships or reach
   more clearly than prose; distinguish current connections from proposed ones.

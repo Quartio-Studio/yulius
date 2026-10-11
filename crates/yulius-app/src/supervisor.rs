@@ -108,6 +108,8 @@ pub struct TaskRuntime {
     /// When a held hook of the current run last asked again (ms, 0 = not since this server
     /// started): a hold nobody polls any more was given up by the CLI (ADR-17).
     pub(crate) hold_polled_ms: AtomicI64,
+    /// Turn-end step nudges already given to the agent (`Nudge::key`), so each is given once.
+    pub(crate) nudged: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl TaskRuntime {
@@ -138,6 +140,7 @@ impl TaskRuntime {
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
             hold_polled_ms: AtomicI64::new(0),
+            nudged: Mutex::new(std::collections::BTreeSet::new()),
         }
     }
 
@@ -518,10 +521,9 @@ impl App {
         Ok(worktree)
     }
 
-    /// Installs the enabled skills into the agent home and, for Open Mercato skills, writes a
-    /// compatible `.ai/agentic.config.json` into the worktree (git-excluded so it never counts as
-    /// a change). Failures are logged; a run never fails because of them.
-    async fn prepare_run_extras(&self, sandbox: &SandboxRecord, worktree: &Path, home: &Path) {
+    /// Installs the enabled skills into the agent home. Failures are logged; a run never fails
+    /// because of them.
+    async fn prepare_run_extras(&self, sandbox: &SandboxRecord, home: &Path) {
         match self.skills_for_run(sandbox).await {
             Ok(skills) if !skills.is_empty() => {
                 let claude_dir = home.join(".claude").join("skills");
@@ -531,39 +533,6 @@ impl App {
             }
             Ok(_) => {}
             Err(err) => tracing::warn!(error = %err, "cannot list skills for the run"),
-        }
-        match self.om_config_for(sandbox).await {
-            Ok(Some(config)) => {
-                let rel = ".ai/agentic.config.json";
-                let target = worktree.join(rel);
-                let exclude = self.sandbox_repo(&sandbox.id).join(".git/info/exclude");
-                let written = (|| -> std::io::Result<()> {
-                    if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    if !target.exists() {
-                        std::fs::write(&target, config.as_bytes())?;
-                    }
-                    let current = std::fs::read_to_string(&exclude).unwrap_or_default();
-                    if !current.lines().any(|l| l.trim() == format!("/{rel}")) {
-                        if let Some(parent) = exclude.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-                        let mut text = current;
-                        if !text.is_empty() && !text.ends_with('\n') {
-                            text.push('\n');
-                        }
-                        text.push_str(&format!("/{rel}\n"));
-                        std::fs::write(&exclude, text)?;
-                    }
-                    Ok(())
-                })();
-                if let Err(err) = written {
-                    tracing::warn!(error = %err, "cannot write the Open Mercato agent config");
-                }
-            }
-            Ok(None) => {}
-            Err(err) => tracing::warn!(error = %err, "cannot render the Open Mercato agent config"),
         }
     }
 
@@ -707,7 +676,7 @@ impl App {
         let credential = self.open_credential(&account)?;
         let home = self.sandbox_home(&sandbox.id);
         std::fs::create_dir_all(&home).map_err(AppError::internal)?;
-        self.prepare_run_extras(&sandbox, &worktree, &home).await;
+        self.prepare_run_extras(&sandbox, &home).await;
 
         // Goal mode (TSK-010): the prompt is set as the session goal through `/goal` once the
         // TUI is ready; Claude's goal is per session, so a resumed session gets it again.

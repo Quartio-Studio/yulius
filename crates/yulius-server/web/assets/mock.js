@@ -96,6 +96,8 @@ function makeSteps(taskId, done, current, total = PLAN.length) {
       note: status === 'in_progress' ? 'Handlers for /cart and /checkout; Stripe test keys only.' : status === 'done' && i === 0 ? 'Spec at docs/specs/2026-10-07-checkout-api.md' : '',
       updated_by: i < done ? (i % 2 ? 'task #12 (claude)' : 'mkarp') : status === 'in_progress' ? 'task #12 (claude)' : '',
       updated_at: status === 'pending' ? null : iso((total - i) * 11 * MIN),
+      // The one step that cannot be split declares a larger effort (STP-006).
+      effort: PLAN[i] === 'Implement checkout API' ? 3 : 1,
     });
   }
   return steps;
@@ -233,8 +235,9 @@ function seed(params) {
     { name: 'yulius-rust-slice', description: 'Implement a vertical Rust slice with tests and docs.', source: 'repository', path: '.agents/skills/yulius-rust-slice/SKILL.md', enabled: true },
     { name: 'design', description: 'Make UI designs consistent with the Quartio design system.', source: 'repository', path: '.claude/skills/design/SKILL.md', enabled: true },
     { name: 'quartio-brand', description: 'Brand voice and visual identity for customer-facing copy.', source: 'instance', path: 'instance/skills/quartio-brand/SKILL.md', enabled: true },
-    { name: 'om-code-review', description: 'Structured code review checklist (Open Mercato).', source: 'open-mercato', path: 'open-mercato/om-code-review/SKILL.md', enabled: true },
-    { name: 'om-testing', description: 'Write meaningful tests for every behavior change (Open Mercato).', source: 'open-mercato', path: 'open-mercato/om-testing/SKILL.md', enabled: false },
+    { name: 'delivery-pipeline', description: 'The one autonomous path every feature and fix takes, from a ready issue to verified production.', source: 'yulius', path: 'skills/yulius/delivery-pipeline/SKILL.md', enabled: true },
+    { name: 'om-code-review', description: 'Review a diff against correctness, security, contracts and tests with a mechanical verdict.', source: 'open-mercato', path: 'skills/open-mercato/om-code-review/SKILL.md', enabled: true },
+    { name: 'test-driven-development', description: 'Write the test first, watch it fail for the right reason, then the minimal code.', source: 'superpowers', path: 'skills/superpowers/test-driven-development/SKILL.md', enabled: false },
   ];
   db.automations = [
     { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
@@ -270,7 +273,12 @@ function seed(params) {
 function stepsSummary(task) {
   const list = task.stepsList;
   const current = list.find((s) => s.status === 'in_progress');
-  return { done: list.filter((s) => s.status === 'done').length, total: list.length, current: current ? current.title : null };
+  // Skipped steps count as finished (STP-005); progress is weighted by declared effort (STP-006).
+  const finished = list.filter((s) => s.status === 'done' || s.status === 'skipped');
+  const effort = (s) => Math.min(3, Math.max(1, s.effort || 1));
+  const total = list.reduce((sum, s) => sum + effort(s), 0);
+  const percent = total ? Math.floor((finished.reduce((sum, s) => sum + effort(s), 0) * 100) / total) : 0;
+  return { done: finished.length, total: list.length, current: current ? current.title : null, percent };
 }
 
 function summary(task) {

@@ -1,6 +1,6 @@
 //! "Auto" mode and workflow for new tasks (SPEC-001 TSK-015, AC-TSK-14; SPEC-002 ADR-16 item 5):
 //! through the public API, Jev chooses goal or prompt and one of the sandbox's workflows (the
-//! catalog's defaults — Feature, Fix, Research — then instance and sandbox workflows) or none; without Jev, or when it fails or is unsure, the task is Goal with the
+//! catalog's defaults — Feature, Fix, Research / Question — then instance and sandbox workflows) or none; without Jev, or when it fails or is unsure, the task is Goal with the
 //! "Feature" workflow (none for a prompt-mode task); a prompt-mode task never gets a spec-first
 //! workflow from Auto; picked values are never sent to Jev. Jev is a fake: no real call is made.
 
@@ -23,7 +23,7 @@ use yulius_app::ports::store_ext::AutomationStore;
 use yulius_domain::intake::{ChoiceAnswer, ChoiceQuestion};
 
 /// A fake Jev for the Auto questions. Mode: a request with a question mark is a prompt.
-/// Workflow (by the option's name): a question gets "Research", "spec it anyway" gets "Feature",
+/// Workflow (by the option's name): a question gets "Research / Question", "spec it anyway" gets "Feature",
 /// "crash" gets "Fix", "typo" gets none, anything else "Feature". "maybe" makes every answer unsure. Records every question it saw.
 #[derive(Default)]
 struct FakeJev {
@@ -82,7 +82,7 @@ impl ChoiceEvaluator for FakeJev {
                 let wanted = if state.contains("spec it anyway") {
                     "Feature"
                 } else if state.contains('?') {
-                    "Research"
+                    "Research / Question"
                 } else if state.contains("crash") {
                     "Fix"
                 } else if state.contains("typo") {
@@ -221,8 +221,11 @@ async fn auto_chooses_goal_and_a_workflow_from_the_store() -> TestResult {
         .ok_or("workflow question")?;
     let options = workflow.1.join("\n");
     assert!(options.contains("w1=Feature (spec first): "), "{options}");
-    assert!(options.contains("=Fix (no spec): "), "{options}");
-    assert!(options.contains("=Research (no spec): "), "{options}");
+    assert!(options.contains("=Fix (spec first): "), "{options}");
+    assert!(
+        options.contains("=Research / Question (no spec): "),
+        "{options}"
+    );
     assert!(options.contains("Use when: "), "{options}");
     assert!(workflow.1.last().is_some_and(|o| o.starts_with("none=")));
 
@@ -255,11 +258,11 @@ async fn questions_run_as_prompts_without_a_spec_first_workflow() -> TestResult 
     assert_eq!(r.body["mode"], "prompt");
     assert_eq!(
         r.body["auto"],
-        json!({"mode": "jev", "workflow": "jev", "workflow_name": "Research"})
+        json!({"mode": "jev", "workflow": "jev", "workflow_name": "Research / Question"})
     );
     assert_eq!(
         step_titles(&detail(&a, &r.body).await?),
-        workflow_steps(&a, "Research").await?
+        workflow_steps(&a, "Research / Question").await?
     );
 
     let r = create(
