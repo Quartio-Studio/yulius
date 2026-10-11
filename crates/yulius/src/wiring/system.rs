@@ -67,6 +67,8 @@ fn volume_of(path: &Path) -> Option<(u64, u64)> {
 }
 
 /// Total and used bytes of the file system holding `path`, from `statvfs`.
+// The field types differ by platform (u64 on Linux, narrower on macOS).
+#[allow(clippy::useless_conversion)]
 fn statvfs_of(path: &Path) -> Option<(u64, u64)> {
     let stat = nix::sys::statvfs::statvfs(path).ok()?;
     let fragment = u64::from(stat.fragment_size());
