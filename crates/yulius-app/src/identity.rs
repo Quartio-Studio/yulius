@@ -584,6 +584,20 @@ mod tests {
         ))
     }
 
+    /// A directory with only `grep` (what the shim needs besides the shell), so a `gh` installed
+    /// on the host never shows up on the tests' `PATH`.
+    fn tools_dir(dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let tools = dir.join("tools");
+        std::fs::create_dir_all(&tools)?;
+        let grep = ["/usr/bin/grep", "/bin/grep"]
+            .into_iter()
+            .map(Path::new)
+            .find(|p| p.is_file())
+            .ok_or("no grep on this host")?;
+        std::os::unix::fs::symlink(grep, tools.join("grep"))?;
+        Ok(tools)
+    }
+
     /// Runs the shim for `exe` with a fake `gh` that prints its token and arguments.
     fn run_shim(
         exe: &str,
@@ -609,11 +623,12 @@ mod tests {
             )?;
         }
         let path = format!(
-            "{}:{}:/usr/bin:/bin",
+            "{}:{}:{}",
             shim_dir.display(),
-            real_dir.display()
+            real_dir.display(),
+            tools_dir(&dir)?.display()
         );
-        let mut command = std::process::Command::new("sh");
+        let mut command = std::process::Command::new("/bin/sh");
         command
             .arg(shim_dir.join("gh"))
             .args(["auth", "status"])
@@ -703,13 +718,14 @@ mod tests {
             0o755,
         )?;
         let path = format!(
-            "{}::{}:{}:{}:/usr/bin:/bin",
+            "{}::{}:{}:{}:{}",
             shim_a.display(),
             link.display(),
             shim_b.display(),
-            real.display()
+            real.display(),
+            tools_dir(&dir)?.display()
         );
-        let out = std::process::Command::new("sh")
+        let out = std::process::Command::new("/bin/sh")
             .arg(shim_a.join("gh"))
             .env_clear()
             .env("PATH", path)
