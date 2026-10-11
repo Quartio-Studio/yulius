@@ -337,26 +337,42 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
          \n\
          ## Rules\n\
          \n\
-         1. One task, one spec: before changing code, write `docs/specs/YYYY-MM-DD-<slug>.md`\n   \
-            with frontmatter (`yulius-task`, `status`) and the sections Goal, Context,\n   \
-            Requirements, Plan (a `- [ ]` checklist), Acceptance criteria, Test plan and\n   \
-            Decisions. When the task is complete, check every Plan item, add Evidence and set\n   \
-            `status: done`.\n\
-         2. Keep the spec's Plan checklist and the Yulius steps in sync (`steps_set`,\n   \
-            `step_update`).\n\
-         3. Make technology and design decisions yourself: compare options, choose, justify,\n   \
+         1. Know the product first: read the docs index below, earlier specs, parallel and\n   \
+            previous tasks and earlier sessions before designing; extend what exists.\n\
+         2. Features and fixes need a spec; research, questions, docs and chores do not. A spec\n   \
+            is `docs/specs/YYYY-MM-DD-<slug>.md` with frontmatter (`yulius-task`, `status`) and\n   \
+            the sections Goal, Context, Requirements, Plan (a `- [ ]` checklist), Acceptance\n   \
+            criteria, Test plan and Decisions. When the task is complete, check every Plan item,\n   \
+            add Evidence and set `status: done`.\n\
+         3. Steps measure real progress: 3-12 steps of similar effort, each a slice that leaves\n   \
+            the project working, finished one at a time as the work happens. Keep the spec's\n   \
+            Plan and the Yulius steps in sync (`steps_set`, `step_update`).\n\
+         4. Tests prove behavior: a test that fails without the change, then the change; strong\n   \
+            unit and integration tests; wait on conditions, never on sleeps; no retries of\n   \
+            flaky tests.\n\
+         5. Make technology and design decisions yourself: compare options, choose, justify,\n   \
             and record each lasting decision as an ADR in `docs/decisions/NNNN-<slug>.md`\n   \
             (Status, Context, Decision, Alternatives, Consequences).\n\
-         4. Keep `docs/architecture.md` current, including its Mermaid diagram.\n\
-         5. Production-grade defaults: tests for new behavior and failure cases, explicit error\n   \
-            handling, no secrets in the repository.\n\
-         6. On completion add a short entry at the top of `docs/changes.md`.\n\
+         6. Keep `docs/architecture.md` (with its Mermaid diagram), `docs/product.md` and this\n   \
+            file true in the same change. Production-grade defaults: explicit error handling,\n   \
+            no secrets in the repository.\n\
+         7. On completion add a short entry at the top of `docs/changes.md`.\n\
          \n\
-         ## Git flow\n\
+         ## Delivery\n\
          \n\
-         - Work only on your task branch; never commit or push to `dev` or `main` directly.\n\
-         - Deliver through a pull request into `dev` (squash merge) after the tests pass.\n\
-         - `dev` is promoted to `main` by a separate pull request (merge commit) by a person.\n\
+         Every feature and fix takes the same autonomous path: spec, implementation slice by\n\
+         slice, independent review in a fresh session, fixes, gates, a small pull request into\n\
+         `dev`, merge on green, deploy and verify `dev`, promotion to `main` by a merge commit,\n\
+         verify production. There is no human acceptance step; the gates decide.\n\
+         \n\
+         - One task, one branch, one worktree from `dev`; never commit or push to `dev` or\n  \
+           `main` directly, never `--no-verify`, no `git stash` as a tool, force-push only your\n  \
+           own branch with `--force-with-lease`.\n\
+         - Small atomic commits with conventional messages; pull requests of one concern, about\n  \
+           400 changed lines outside tests. Features are squash-merged into `dev`.\n\
+         - CI runs on our own machines through Yulius CI (the `gate` command in `yulius.toml`);\n  \
+           never add GitHub Actions or paid GitHub features.\n\
+         - After the merge, delete the branch and the worktree; leave nothing stale.\n\
          \n\
          ## Commands\n\
          \n\
@@ -365,7 +381,7 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
          Development servers must use the port range Yulius assigns to this project (see the\n\
          session briefing).\n\
          \n\
-         ## Layout\n\
+         ## Layout (the docs index)\n\
          \n\
          - `docs/product.md`: what the project is for, users, scope, current state.\n\
          - `docs/architecture.md`: components and data flow (Mermaid).\n\
@@ -804,7 +820,18 @@ mod tests {
         let web = scaffold_files("Online Shop", TemplateKind::WebApplication);
         assert!(file(&web, "package.json")?.contains("\"name\": \"online-shop\""));
         assert!(file(&web, "AGENTS.md")?.contains("| Test | `node --test` |"));
-        assert!(file(&web, "AGENTS.md")?.contains("never commit or push to `dev` or `main`"));
+        let agents = file(&web, "AGENTS.md")?;
+        for needle in [
+            "never commit or push to `dev` or\n  `main` directly",
+            "Features and fixes need a spec; research, questions, docs and chores do not.",
+            "3-12 steps of similar effort",
+            "independent review in a fresh session",
+            "no `git stash` as a tool",
+            "never add GitHub Actions",
+            "## Layout (the docs index)",
+        ] {
+            assert!(agents.contains(needle), "AGENTS.md lacks {needle}");
+        }
         let python = scaffold_files("Online Shop", TemplateKind::PythonData);
         assert!(file(&python, "online_shop/stats.py").is_ok());
         assert!(file(&python, "tests/test_stats.py")?.contains("from online_shop.stats import"));

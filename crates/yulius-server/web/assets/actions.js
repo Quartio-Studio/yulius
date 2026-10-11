@@ -1,6 +1,8 @@
-// Task actions (UI-013, §6.3) and shared dialogs: switch, feedback, delivery status, deploy
-// output, sandbox create/import and removal. Delivery is shown, not driven: agents merge, deploy
-// and release as part of their workflow (GIT-002), so no dialog here merges or releases.
+// Task actions (UI-013, §6.3) and shared dialogs: feedback, delivery status, deploy output,
+// sandbox create/import and removal. Delivery is shown, not driven: agents merge, deploy and
+// release as part of their workflow (GIT-002), so no dialog here merges or releases. Tasks are
+// subscription-agnostic (F 2026-10-10): the pool picks and changes a task's Claude subscription by
+// itself, so no action chooses one.
 
 import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, iconButton, placeholder, linkify } from './dom.js';
@@ -22,7 +24,6 @@ export function openTaskMenu(ctx, anchor, task) {
     task.status === 'chained' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
     { label: task.status === 'chained' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
-    { label: 'Switch account…', disabled: !can.switch, title: can.switch ? null : why, onSelect: () => openSwitchDialog(ctx, task) },
     { label: 'Delivery…', onSelect: () => openDeliveryDialog(ctx, task) },
     { label: 'Feedback…', disabled: !can.feedback, onSelect: () => openFeedbackDialog(ctx, task) },
     { separator: true },
@@ -127,50 +128,6 @@ export async function archiveTask(ctx, task) {
 export async function restoreTask(ctx, task) {
   const updated = await taskPost(ctx, task, 'restore', () => ctx.api.post(`/api/tasks/${enc(task.id)}/restore`), `Restored #${task.number}`);
   return updated;
-}
-
-// ---------------------------------------------------------------- switch
-
-/** Switch to another Claude account; for an ended task this continues it on that account. */
-export async function openSwitchDialog(ctx, task) {
-  const live = task.status === 'running' || task.status === 'waiting_capacity';
-  let accounts = [];
-  try {
-    accounts = await ctx.api.get('/api/admin/accounts', { allow401: true });
-  } catch {
-    accounts = []; // Only instance admins can list accounts; others let rotation choose.
-  }
-  const accountSelect = h('select', { class: 'select' },
-    h('option', { value: '' }, 'Automatic (the pool picks the best account)'),
-    // Accounts that cannot take the task are listed but disabled, with the reason in words.
-    (Array.isArray(accounts) ? accounts : []).map((a) => {
-      const used = a.usage && a.usage.primary && Number.isFinite(a.usage.primary.used_percent) ? Math.round(a.usage.primary.used_percent) : null;
-      const why = a.status === 'relogin' || a.status === 'pending_login' ? 'sign in again first' : a.status === 'limited' || (used !== null && used >= 98) ? 'limit reached' : a.status === 'error' ? 'not working' : null;
-      const label = `${a.label}${why ? ` — ${why}` : used !== null ? ` · ${used}% used` : ''}`;
-      return h('option', { value: a.id, disabled: Boolean(why) }, label);
-    }));
-  const body = h('div', { class: 'stack' },
-    h('p', { class: 'text-2' }, live
-      ? 'The session moves to the chosen account at the next turn boundary and resumes the same conversation.'
-      : 'The task is not running; it will continue on the chosen account.'),
-    field('Account', accountSelect, accounts.length ? null : 'Only instance administrators can pick a specific account.'),
-  );
-  openModal({
-    title: `Switch task #${task.number}`,
-    body,
-    actions: [
-      { label: 'Cancel', value: false },
-      { label: live ? 'Switch' : 'Continue on account', kind: 'primary', run: async () => {
-        const payload = {};
-        if (accountSelect.value) payload.account_id = accountSelect.value;
-        const updated = live
-          ? await ctx.api.post(`/api/tasks/${enc(task.id)}/switch`, payload)
-          : await ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, payload);
-        if (updated && updated.id) ctx.store.upsertTask(updated);
-        toast(live ? `Switching #${task.number}…` : `Continuing #${task.number}…`, { kind: 'ok' });
-      } },
-    ],
-  });
 }
 
 // ---------------------------------------------------------------- feedback

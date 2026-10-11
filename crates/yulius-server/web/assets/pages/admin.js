@@ -176,7 +176,7 @@ export function mountAccountsPage(ctx, route) {
   const frame = pageFrame({ title: 'AI accounts', sub: `Claude subscriptions in one pool: ${BRAND.name} places, switches and pauses tasks by itself`, actions: [h('button', { type: 'button', class: 'btn btn-primary', onClick: () => add() }, 'Add subscription')] });
   const capacityHost = h('section', { class: 'card card-pad stack', 'aria-label': 'Capacity' });
   const host = h('div');
-  frame.body.append(capacityHost, host, h('p', { class: 'muted xs' }, `${BRAND.name} starts each task on the subscription whose capacity expires soonest, moves it to another one at 98 % of a window at the end of a turn, and pauses it — without telling the agent — while every subscription is at 98 %. Paused tasks continue by themselves, oldest first, when a window resets or a subscription is added.`));
+  frame.body.append(capacityHost, host, h('p', { class: 'muted xs' }, `Tasks don't belong to a subscription: ${BRAND.name} starts each one on the subscription whose capacity expires soonest and moves it to another one by itself, at the end of a turn, when its subscription reaches 98 %. A task pauses only when no subscription has capacity left — without telling the agent — and continues by itself, oldest first, when a window resets or a subscription is added. Usage comes from the running tasks, so an idle subscription shows it once a task runs on it.`));
 
   const loadCapacity = () => ctx.api.get('/api/capacity').then((view) => {
     setChildren(capacityHost, h('h2', { class: 'card-title' }, 'Capacity'), capacityPanel(view));

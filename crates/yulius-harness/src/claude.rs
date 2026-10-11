@@ -64,6 +64,13 @@ fn window_of_text(lower: &str) -> Option<u32> {
     }
 }
 
+/// The user lines Claude Code 2.1.292 writes when the person interrupts a turn (Esc, or Ctrl+C
+/// while the agent works): a text block with exactly one of these.
+const INTERRUPT_MARKERS: [&str; 2] = [
+    "[Request interrupted by user]",
+    "[Request interrupted by user for tool use]",
+];
+
 /// `apiError` of the error record Claude Code writes when the account's usage limit rejects a
 /// request (alongside `error: "rate_limit"` and HTTP 429).
 const USAGE_LIMIT_API_ERROR: &str = "usage_limit_reached";
@@ -127,8 +134,11 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
     if bool_of(record, "isSidechain") || bool_of(record, "isMeta") || !is_prompt(message) {
         return Vec::new();
     }
-    let turn = Observed::UserTurn {
-        at: str_of(record, "timestamp").and_then(parse_rfc3339),
+    let at = str_of(record, "timestamp").and_then(parse_rfc3339);
+    let turn = if is_interrupt(message) {
+        Observed::TurnInterrupted { at }
+    } else {
+        Observed::UserTurn { at }
     };
     let Some(session_id) = owned_str(record, "sessionId") else {
         return vec![turn];
@@ -142,6 +152,22 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
         },
         turn,
     ]
+}
+
+/// A user line that only says the person interrupted the turn ([`INTERRUPT_MARKERS`]).
+fn is_interrupt(message: &Map<String, Value>) -> bool {
+    let marker = |text: &str| INTERRUPT_MARKERS.contains(&text.trim());
+    match message.get("content") {
+        Some(Value::String(text)) => marker(text),
+        Some(Value::Array(blocks)) => {
+            let mut texts = blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(Value::as_str));
+            texts.next().is_some_and(marker) && texts.next().is_none()
+        }
+        _ => false,
+    }
 }
 
 /// A user message is a prompt when it has text (string content or a text block), not only
@@ -453,6 +479,49 @@ mod tests {
                 at: Some(Timestamp(1_791_610_681_385))
             }]
         );
+    }
+
+    /// Esc or Ctrl+C during a turn (Claude Code 2.1.292, shape seen on the deployed instance):
+    /// the turn ends, it is not a new prompt.
+    #[test]
+    fn an_interrupt_line_ends_the_turn() {
+        let at = Some(Timestamp(1_791_610_681_385));
+        for text in INTERRUPT_MARKERS {
+            let line = json_line(text);
+            assert_eq!(
+                observe_line(&line),
+                vec![
+                    Observed::SessionMeta {
+                        session_id: "s1".into(),
+                        cwd: None,
+                        model: None,
+                        version: None,
+                    },
+                    Observed::TurnInterrupted { at }
+                ],
+                "{text}"
+            );
+        }
+        // A prompt that mentions an interruption is still a prompt.
+        assert_eq!(
+            observe_line(&json_line(
+                "why did you stop? [Request interrupted by user]"
+            ))
+            .last(),
+            Some(&Observed::UserTurn { at })
+        );
+    }
+
+    fn json_line(text: &str) -> String {
+        serde_json::json!({
+            "type": "user",
+            "sessionId": "s1",
+            "timestamp": "2026-10-10T05:38:01.385Z",
+            "userType": "external",
+            "isSidechain": false,
+            "message": {"role": "user", "content": [{"type": "text", "text": text}]}
+        })
+        .to_string()
     }
 
     /// The record Claude Code 2.1.292 writes (synthetic values): structure wins over wording.

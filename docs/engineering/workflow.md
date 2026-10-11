@@ -8,9 +8,12 @@ engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry poi
    its own worktree. Create the task branch and worktree together from dev, then
    inspect relevant code/specs and observed behavior. State the
    authorized outcome and unknowns. Load one matching skill, not the whole catalog.
-2. **Specify:** attach stable requirement IDs, input/output and lifecycle contracts,
-   acceptance scenarios and affected boundaries. Record assumptions and unresolved
-   product choices; use the [spec template](../../.ai/templates/spec.md).
+2. **Specify:** features and fixes get a spec; research, questions, docs and chores
+   do not (SPEC-001 DSC-013). Attach stable requirement IDs, input/output and lifecycle
+   contracts, acceptance scenarios and affected boundaries. Record assumptions and
+   unresolved product choices; use the [spec template](../../.ai/templates/spec.md).
+   Plan steps of similar effort, each a slice that leaves the code working, and finish
+   them one at a time (STP-006/007).
 3. **Implement:** build a complete slice, preserving existing behavior. Keep an
    affected boundary's types, implementation and tests together. New architecture
    deserves a short ADR with alternatives and consequences.
@@ -20,7 +23,9 @@ engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry poi
    compilation unless tooling/contracts changed.
 5. **Review:** examine the diff against each requirement, security boundary and
    existing default behavior. Classify findings with concrete failure scenarios.
-   Green tests do not establish untested product acceptance.
+   Green tests do not establish untested product acceptance. Get an independent
+   review in a fresh session too: a reviewer with no shared context (a subagent given
+   only the diff range and the spec), read-only; fix each finding test-first.
 6. **Deliver and hand off:** for authorized delivery, follow the Git sequence through
    verified dev and main merges, without waiting for reviewer approval. Report
    changed behavior, exact evidence and unresolved limits. Update
@@ -30,7 +35,8 @@ engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry poi
 A failing check is either a product defect, test defect, infrastructure failure or
 known nondeterminism. Name it, reproduce it, and fix the cause. Do not rerun until
 green without explanation, disable the test, broaden licenses or silently omit a
-missing tool. If external infrastructure blocks one check, finish independent
+missing tool. A flaky test is reproduced and fixed (wait on conditions, not sleeps;
+inject the clock; isolate data), or quarantined with an issue; never retried. If external infrastructure blocks one check, finish independent
 work and state what remains unverified.
 
 ## Definition of ready

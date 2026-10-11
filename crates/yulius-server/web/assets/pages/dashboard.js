@@ -188,7 +188,7 @@ export function renderSummary(data, previous = null, days = 30, capacity = null)
       kpi({ label: 'Active agent time', value: duration(d.total_active ?? null), change: delta(now.active, was('active'), { better: null, days }), sub: d.total_wall !== undefined ? `${duration(d.total_wall)} start to end` : null }),
       kpi({ label: 'Tokens', value: compact(now.tokens), change: delta(now.tokens, was('tokens'), { better: null, days }), sub: `${compact(tokens.input)} in · ${compact(tokens.output)} out`, hint: tokenNotes || null,
         note: tokenNotes || null }),
-      kpi({ label: 'Account switches', value: int(switches(data)), change: delta(now.switches, was('switches'), { better: 'down', days }), sub: 'between AI accounts' }),
+      kpi({ label: 'Account switches', value: int(switches(data)), change: delta(now.switches, was('switches'), { better: 'down', days }), sub: 'made by the pool, between subscriptions' }),
       kpi({ label: 'Feedback correct', value: rated ? `${Math.round(now.correct * 100)}%` : '—', change: delta(now.correct, was('correct'), { points: true, days }), extra: feedbackBar, sub: rated ? `${feedback.correct || 0} of ${rated} rated` : 'no feedback yet' })),
     subscriptions(capacity),
     h('div', { class: 'db-row' },

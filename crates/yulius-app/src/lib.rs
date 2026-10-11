@@ -16,6 +16,7 @@ pub mod ci;
 pub mod context;
 pub mod coordination;
 pub mod delivery;
+pub mod discipline;
 pub mod error;
 pub mod events;
 pub mod files;

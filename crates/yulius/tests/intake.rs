@@ -534,6 +534,7 @@ async fn running_task(i: &Intake) -> Result<TaskId, Box<dyn std::error::Error>> 
                 note: None,
                 updated_by: Some("system".into()),
                 updated_at: Some(now),
+                effort: 1,
             })
         };
     i.h.store

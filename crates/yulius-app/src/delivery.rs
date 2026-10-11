@@ -719,10 +719,13 @@ fn pull_request_body(
 #[derive(Debug, Clone, Default)]
 struct SpecCheck {
     path: Option<String>,
+    /// Valid, or not needed for this task (DSC-013).
     valid: bool,
     problems: Vec<String>,
     report: Option<SpecReport>,
     goal: Option<String>,
+    /// The task needs a spec (its workflow, or a change beyond documentation, DSC-013).
+    required: bool,
 }
 
 impl SpecCheck {
@@ -733,6 +736,7 @@ impl SpecCheck {
             problems: vec![message],
             report: None,
             goal: None,
+            required: true,
         }
     }
 }
@@ -890,8 +894,23 @@ impl App {
             .unwrap_or_else(|| "superadmin".into())
     }
 
-    /// Reads and validates the task spec; registers a discovered spec path.
+    /// Reads and validates the task spec; a task that needs none (DSC-013: research, a
+    /// question, docs or a chore by its workflow, or a docs-only change without one) counts as
+    /// valid without it.
     async fn dlv_check_spec(&self, task: &TaskRecord) -> SpecCheck {
+        let mut check = self.dlv_read_spec(task).await;
+        // A valid spec settles it; only a missing or invalid one asks whether it is needed
+        // (which may read the branch's changed paths).
+        if !check.valid && !self.spec_required(task).await.unwrap_or(true) {
+            check.required = false;
+            check.valid = true;
+            check.problems.clear();
+        }
+        check
+    }
+
+    /// Reads and validates the task spec; registers a discovered spec path.
+    async fn dlv_read_spec(&self, task: &TaskRecord) -> SpecCheck {
         let Some(worktree) = task.worktree_path.as_deref().map(PathBuf::from) else {
             return SpecCheck::problem(
                 task.spec_path.clone(),
@@ -936,6 +955,7 @@ impl App {
                     problems: report.problems.iter().map(ToString::to_string).collect(),
                     goal: section_text(&text, "Goal"),
                     report: Some(report),
+                    required: true,
                 }
             }
             Err(message) => SpecCheck::problem(Some(path.clone()), format!("Spec {message}.")),
@@ -1838,10 +1858,10 @@ impl App {
         };
         // Cheap checks first: most turns end with steps still open, and they need no GitHub call.
         let steps = store.steps(&task.id).await?;
-        if steps.is_empty()
-            || steps
-                .iter()
-                .any(|s| !StepStatus::parse(&s.status).is_some_and(StepStatus::is_resolved))
+        if steps
+            .iter()
+            .any(|s| !StepStatus::parse(&s.status).is_some_and(StepStatus::is_resolved))
+            || (steps.is_empty() && !self.branch_changed(&task).await?)
             || store
                 .delivery(&task.id)
                 .await?
@@ -1867,8 +1887,9 @@ impl App {
         let observed = self
             .dlv_observe(&sandbox, &task, &profile, Some(&token))
             .await?;
+        // A task that needs a spec needs its plan too; research, docs and chores may have none.
         if !observed.spec.valid
-            || observed.steps.is_empty()
+            || (observed.steps.is_empty() && observed.spec.required)
             || observed.steps_open > 0
             || observed.dirty
         {
@@ -3176,12 +3197,34 @@ impl App {
             tokio::task::spawn_blocking(move || crate::onboarding::validate_checkout(&root))
                 .await
                 .map_err(AppError::internal)?;
+        let message = if spec.required {
+            message
+        } else {
+            "This task needs no spec (research, a question, docs or a chore by its workflow, or a change to documentation only); keep its plan in your steps.".to_owned()
+        };
+        let plan: Vec<(&str, u8)> = spec
+            .report
+            .as_ref()
+            .map(|r| {
+                r.plan
+                    .iter()
+                    .filter(|item| item.depth == 0)
+                    .map(|item| (item.text.as_str(), 1))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let nudges: Vec<String> = yulius_domain::steps::plan_nudges(&plan, !spec.required)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         Ok(json!({
             "spec": {
+                "required": spec.required,
                 "path": spec.path,
                 "valid": spec.valid,
                 "problems": spec.problems,
                 "message": message,
+                "plan_nudges": nudges,
             },
             "docs": {
                 "valid": docs.is_valid(),
@@ -3387,6 +3430,7 @@ mod tests {
             problems: Vec::new(),
             goal: section_text(text, "Goal"),
             report: Some(report),
+            required: true,
         };
         let steps = vec![StepRecord {
             id: yulius_domain::ids::StepId::parse("s1")?,
@@ -3397,6 +3441,7 @@ mod tests {
             note: None,
             updated_by: None,
             updated_at: None,
+            effort: 1,
         }];
         let body = pull_request_body("LINK", &spec, &steps, None);
         assert!(body.starts_with("## Goal\n\nCustomers pay."), "{body}");
