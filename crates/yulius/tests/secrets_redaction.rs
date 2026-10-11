@@ -401,7 +401,7 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
         let screen = app.runtime(&task.id).hub.screen_text();
         assert!(!screen.contains(VALUE), "{screen}");
         // Split over two writes it is still found.
-        app.send_input(&task.id, VALUE[..10].as_bytes()).await?;
+        app.send_input(&task.id, &VALUE.as_bytes()[..10]).await?;
         tokio::time::sleep(Duration::from_millis(10)).await;
         app.send_input(&task.id, format!("{}\r", &VALUE[10..]).as_bytes())
             .await?;
