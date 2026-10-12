@@ -12,6 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   sandbox without tasks; the API still takes the full rule language ([SPEC-022](../.ai/specs/SPEC-022-when-rule-is-true-should-be-a-simple-edi.md), ADR-0019, #20).
 - Claude Code sessions in a task terminal no longer open Claude Code's diff side panel by themselves
   ("No changes this session" on the right); it still opens by hand within a session (SPEC-024).
+- A file attached on the new-task composer opens when its chip is clicked (an image in a preview,
+  another file in a new tab), and the task's Claude Code session receives attached files natively
+  as `@path` mentions in its first message, an image as an image, instead of paths to open with the
+  Read tool (SPEC-025, decision 0019).
 - Ended worktrees holding only end-to-end output (`.e2e`), the APM cache (`apm_modules`) or Claude
   Code's own `.claude/` state are removed too (SPEC-019; seven were kept on the first deploy).
 - Agents meet fewer avoidable obstacles (SPEC-020):
