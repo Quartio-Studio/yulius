@@ -30,6 +30,7 @@ applied at launch; a task record keeps `None` for "Default".
 
 ## Consequences
 
-Moving to a newer Opus is a one-line change of the constant and its test. The weekly Opus cap
+Moving to a newer Opus changes the constant and its launch test, plus the "Opus 5.5" wording of
+`models.js`, `taskview.js` and `docs/api.md`. The weekly Opus cap
 keeps binding for default tasks. A model added later that takes no effort level and is not a Haiku
 needs a rule here.

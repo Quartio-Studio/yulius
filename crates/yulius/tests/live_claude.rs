@@ -143,7 +143,8 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
         worktree: worktree.clone(),
         sandbox_home: work.path().join("home"),
         run_dir: run_dir.clone(),
-        model: None,
+        // Haiku keeps the probe cheap and, taking no effort level, gets no `--effort`.
+        model: Some("claude-haiku-4-5".into()),
         effort: None,
         contained: false,
         mcp: Vec::new(),
@@ -163,8 +164,6 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
             "Call the yulius MCP tool steps_set with steps [\"Probe live compatibility\"]. Then reply with the single word DONE.",
             "--setting-sources",
             "project",
-            "--model",
-            "haiku",
             "--max-budget-usd",
             "0.50",
             "--allowedTools",

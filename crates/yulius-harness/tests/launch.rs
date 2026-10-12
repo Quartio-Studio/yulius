@@ -403,7 +403,7 @@ fn a_named_model_without_effort_runs_at_high_effort_unless_it_takes_none() -> Te
         Some("high"),
         "{argv:?}"
     );
-    // Haiku takes no effort level: none is sent rather than one Claude Code refuses.
+    // Haiku takes no effort level, so none is sent.
     request.model = Some("claude-haiku-4-5".into());
     let argv = plan_launch(&request)?.argv;
     assert!(!argv.iter().any(|a| a == "--effort"), "{argv:?}");
