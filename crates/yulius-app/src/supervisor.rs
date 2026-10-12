@@ -56,6 +56,8 @@ pub const REATTACH_ATTEMPTS: u32 = 3;
 enum EndIntent {
     /// User or system stop.
     Cancel,
+    /// A finished task is closed (archived when Done): it ends as a clean exit, `closed`.
+    Close,
     /// Account/provider switch; the sender is told when the old run has exited.
     Switch(oneshot::Sender<()>),
 }
@@ -1330,6 +1332,7 @@ impl App {
             exit_reason: Some(match (&intent, exit.spawn_failed) {
                 (_, true) => "spawn_failed".into(),
                 (Some(EndIntent::Cancel), _) => "cancelled".into(),
+                (Some(EndIntent::Close), _) => "closed".into(),
                 (Some(EndIntent::Switch(_)), _) => "switched".into(),
                 (None, _) if exit.is_clean() => "exited".into(),
                 (None, _) => format!("exited code={:?} signal={:?}", exit.code, exit.signal),
@@ -1354,6 +1357,17 @@ impl App {
             Some(EndIntent::Switch(done)) => {
                 let _ = done.send(());
                 return; // the switch controller launches the next run and drains the queue
+            }
+            Some(EndIntent::Close) => {
+                // The task was finished: whatever the exit code of the ended session, it is
+                // closed, like a session the user left.
+                if let Ok(Some(task)) = store.task(task_id).await
+                    && let Ok(next) = task.status.apply(TaskEvent::Exited { normal: true })
+                {
+                    let _ = store
+                        .transition_task(task_id, Some(task.status), next, None, now)
+                        .await;
+                }
             }
             Some(EndIntent::Cancel) => {
                 if let Ok(Some(task)) = store.task(task_id).await
@@ -1461,6 +1475,51 @@ impl App {
                 }
             });
         }
+    }
+
+    /// Closes a finished, running task (TSK-014): its session is shut down gracefully and the
+    /// task ends `closed`, not stopped. It stays Running until the session is gone.
+    ///
+    /// # Errors
+    /// `Conflict` when the task is not running.
+    pub async fn close_task_now(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+        let task = self
+            .deps
+            .store
+            .task(task_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        if task.status != TaskStatus::Running {
+            return Err(AppError::Conflict(format!(
+                "task is {}",
+                task.status.as_str()
+            )));
+        }
+        let runtime = self.runtime(task_id);
+        if let Ok(mut intent) = runtime.intent.lock() {
+            *intent = Some(EndIntent::Close);
+        }
+        let total = STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS;
+        if let Some(run) = runtime.run.lock().await.as_mut() {
+            let _ = run
+                .writer
+                .shutdown(u32::try_from(STOP_INTERRUPT_GRACE_MS).unwrap_or(5000))
+                .await;
+        }
+        let app = self.clone();
+        let tid = task_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(
+                u64::try_from(total).unwrap_or(20_000),
+            ))
+            .await;
+            if let Ok(Some(attempt)) = app.deps.store.live_attempt(&tid).await {
+                tracing::warn!(task = %tid, "closed run did not exit after escalation; terminating host");
+                let _ = app.deps.session_host.terminate(Path::new(&attempt.run_dir));
+                app.mark_lost(&tid, &attempt.id, StopReason::Lost).await;
+            }
+        });
+        Ok(())
     }
 
     /// Stops a task: graceful shutdown with escalation, then (if needed) termination and `lost`.

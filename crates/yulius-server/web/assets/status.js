@@ -85,14 +85,21 @@ export function statusInfo(task) {
   const activity = task.activity;
   if (status === 'running') {
     // needs_attention: blocked mid-turn (a permission prompt, a browser request, failing gates);
-    // waiting: the agent finished its turn and the next move is the user's;
+    // waiting: the agent finished its turn and the next move is the user's — unless its
+    // background shells still run (it wakes by itself when they report, TSK-014);
     // done: the goal is achieved and the turn ended — Done once no background shell is left.
     if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs your action', group: 'needs' };
     if (activity === 'done') {
       const shells = backgroundShells(task);
       return shells ? stillWorking(shells) : { ...DONE };
     }
-    if (activity === 'waiting') return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
+    if (activity === 'waiting') {
+      // Background shells keep the agent going: it wakes by itself when they report, so the next
+      // move is not the user's yet.
+      const shells = backgroundShells(task);
+      if (shells) return stillWorking(shells);
+      return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
+    }
     if (activity === 'working') return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working' };
     return { glyph: '●', icon: 'st-working', tone: 'running', label: 'Running', group: 'working' };
   }
@@ -107,7 +114,9 @@ export function statusInfo(task) {
   // task at its turn boundary without telling the agent. Nothing is for the user to do: it
   // continues by itself. A task never pauses while another subscription has room.
   if (status === 'waiting_capacity') return { glyph: '⏸', icon: 'st-paused', tone: 'queued', label: 'Paused', group: 'working' };
-  if (status === 'stopping') return { glyph: '■', icon: 'st-stopped', tone: 'stopping', label: 'Stopping', group: 'working' };
+  // A stop was asked for: the task is on its way out, so it sits with the ended ones rather than
+  // flashing under Working until the process is gone.
+  if (status === 'stopping') return { glyph: '■', icon: 'st-stopped', tone: 'stopping', label: 'Stopping', group: 'ended' };
   // Waiting for another task to be Done (TSK-012); when that task ended otherwise, a person
   // decides: Start now or Cancel. It never starts by itself then.
   if (status === 'chained') {
@@ -218,8 +227,11 @@ export function allows(access, minimum) {
   return (RANK[access] || 0) >= (RANK[minimum] || 99);
 }
 
-/** Actions available for a task given sandbox access (UI-013, §6.3). */
-export function taskActions(task, access) {
+/**
+ * Actions available for a task given sandbox access (UI-013, §6.3). `pr` is the task's pull
+ * request (store.pullsOf()), so a task the sidebar shows as Done can be archived.
+ */
+export function taskActions(task, access, pr) {
   const write = allows(access, 'write');
   const live = isLive(task.status);
   const chained = task.status === 'chained';
@@ -230,7 +242,9 @@ export function taskActions(task, access) {
     continue: write && ended && !task.archived,
     deliver: write && !task.archived,
     feedback: allows(access, 'read'),
-    archive: write && ended && !task.archived,
+    // A finished task (Done by the one rule of taskInfo: goal achieved, or plan complete with its
+    // pull request merged or tested, and no shell left) is closed as it is archived (TSK-014).
+    archive: write && (ended || (live && taskInfo(task, null, pr).group === 'done')) && !task.archived,
     restore: write && task.archived,
     delete: write && (ended || chained) && task.status !== 'stopping',
   };

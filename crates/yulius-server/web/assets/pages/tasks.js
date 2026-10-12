@@ -278,7 +278,7 @@ export function mountTasksPage(ctx, sandbox) {
     // A row opens the task's overview (times, sessions, plan, changes, Go to task), not its session.
     const path = `/s/${encodeURIComponent(sandbox.slug)}/tasks/${task.number}`;
     const login = task.created_by && task.created_by.login;
-    const actions = taskActions(task, sandbox.access);
+    const actions = taskActions(task, sandbox.access, ctx.store.pullsOf(sandbox.id).get(task.id));
     const git = ctx.store.gitRowOf(sandbox.id, task.id);
     const what = detailLine(task, info);
     const kebab = iconButton('more', `Actions for ${task.title || `task #${task.number}`}`, () => openTaskMenu(ctx, kebab, task), { class: 'tl-action', 'aria-haspopup': 'menu' });

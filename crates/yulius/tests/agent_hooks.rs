@@ -361,10 +361,10 @@ async fn prompt_submit_delivers_message_digests_once() -> TestResult {
     let message = MessageRecord {
         id: MessageId::parse("m1")?,
         sandbox_id: f.sandbox.clone(),
-        from_task: Some(TaskId::parse("t-other")?),
+        from_task: None,
         from_user: None,
         to_task: Some(f.task.clone()),
-        kind: "info".into(),
+        kind: "request".into(),
         subject: "Schema changed".into(),
         body: "The invoices table gained a currency column.".into(),
         created_at: f.h.app.now(),
@@ -379,6 +379,10 @@ async fn prompt_submit_delivers_message_digests_once() -> TestResult {
         .as_str()
         .ok_or("no digest")?;
     assert!(context.contains("Schema changed") && context.contains("currency column"));
+    assert!(
+        context.contains("from Yulius") && !context.contains("message_send"),
+        "a notice from Yulius, with no advice to reply to it: {context}"
+    );
     assert_eq!(activity(&f).await?, Some(Activity::Working));
     let again = hook(&f, "UserPromptSubmit", json!({"prompt": "go"})).await?;
     assert!(again.is_null(), "digest delivered only once: {again:?}");

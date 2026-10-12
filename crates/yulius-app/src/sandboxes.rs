@@ -138,6 +138,10 @@ impl App {
             browser_request: requested.contains(task.id.as_str()),
             chain_blocked,
             plan_open,
+            background_shells: finished
+                && self
+                    .background_shells_of(&task.id)
+                    .is_some_and(|count| count > 0),
             pull,
         }
         .needs_you())

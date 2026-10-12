@@ -1,6 +1,7 @@
 //! Task records, views, archive/restore, feedback and user messages (SPEC-001 §5.4, ANL-002,
 //! UI-006). Process lifecycle lives in the supervisor.
 
+use std::sync::Arc;
 use yulius_contracts::api::common::UserRef;
 use yulius_contracts::api::tasks::{
     AttemptView, FeedbackView, MessageFrom, MessageView, Metrics, StepProgress, StepView,
@@ -265,18 +266,24 @@ impl App {
         })
     }
 
-    /// Archives a resting task (UI-006).
+    /// Archives a resting task (UI-006), or a finished one (TSK-014): Done by the sidebar's rule
+    /// (`task_is_done`: the goal achieved, or the plan complete with its pull request merged or
+    /// tested, and no background shell), so nothing is left to wait for and it is closed as it
+    /// is archived.
     ///
     /// # Errors
-    /// `Conflict` for live tasks.
+    /// `Conflict` for other live tasks.
     pub async fn archive_task(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         id: &str,
         archive: bool,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
-        if archive && !task.status.is_resting() {
+        let done = task.status == TaskStatus::Running && self.task_is_done(&task).await;
+        if archive && done {
+            self.close_task_now(&task.id).await?;
+        } else if archive && !task.status.is_resting() {
             return Err(AppError::Conflict(
                 "stop the task before archiving it".into(),
             ));

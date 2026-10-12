@@ -90,7 +90,7 @@ fn repo_doc_exists(root: &Path, relative: &str) -> bool {
 
 fn digest(entries: &[InboxEntry]) -> String {
     let mut out = format!(
-        "You have {} new Yulius message(s). Read them in full with the `messages_inbox` tool and reply with `message_send` when an answer is expected.\n",
+        "You have {} new Yulius notice(s). Read them in full with the `messages_inbox` tool.\n",
         entries.len()
     );
     for entry in entries {
