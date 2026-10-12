@@ -15,7 +15,7 @@ and Y are both finished. Etc."
 ## Goal
 
 A task can wait for a **start rule**, a logical sentence over the state of other tasks of its
-sandbox, for example `#12 done and #13 done` or `#12 done or (#13 failed and not #14 running)`.
+sandbox, for example `#12 done and #13 done` or `#12 done or (#13 ended and not #14 done)`.
 It starts by itself the moment the sentence is true. A chain ("Run after #N", TSK-012) is the
 special case `#N done`.
 
@@ -61,6 +61,10 @@ the rule column; app/integration tests for and/or/not starting and blocking; an 
 validation; an e2e test for the composer.
 
 ## Decisions
+
+- A rule task starts from the integration branch (a rule can be true because a task failed or
+  never ran, so no one predecessor branch is right); the briefing names the rule.
+- Facts about each named task are read once per evaluation pass (a reading may ask GitHub).
 
 - The canonical text is stored and reparsed on every evaluation, so there is one source of truth.
 - No dependency table: when any task changes, the waiting rules of its sandbox (at most 32) are
