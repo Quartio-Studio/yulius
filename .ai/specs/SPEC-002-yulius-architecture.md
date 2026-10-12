@@ -724,7 +724,9 @@ sign-ins that may read the endpoint; its 403 is "not shared": no error, an old n
 again a day later. **Idle subscriptions (F 2026-10-11, #4):** on that 403 (or 429, which production answers) the probe sends one
 one-token message on the cheapest model and reads the same `anthropic-ratelimit-unified-5h/7d`
 headers (utilization as a fraction, reset in Unix seconds), so a subscription shows usage all the
-time, not only while a task runs; the background round skips subscriptions with a live task. The
+time, not only while a task runs; the background round skips a subscription only while its reading
+is fresh (under 90 s: a session that works reports it live). A task that is running but idle
+reports nothing, so a subscription in use is not skipped for that alone (production, #4). The
 request starts the 5-hour window of an idle subscription. A subscription also used outside Yulius is seen as Claude saw it at the last
 response of a Yulius session.
 
