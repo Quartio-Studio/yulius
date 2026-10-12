@@ -1,11 +1,11 @@
 ---
 yulius-task: fd776a84-5a81-42e8-96af-9d3061ec37c0
-status: in-progress
+status: done
 ---
 
 # SPEC-043: "See the original prompt" in the task menu
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #42
 Scope authorization: user request (F 2026-10-12, task #42): "Here I want a button: 'see the
@@ -51,8 +51,8 @@ condition, so today the text cannot be read again in the UI.
 - [x] The API returns a task's original prompt text and its attached files
 - [x] The API serves a task's attached files from the attachments folder only
 - [x] "See the original prompt" in the task menu shows the text and the attached files
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -92,3 +92,30 @@ condition, so today the text cannot be read again in the UI.
   See [ADR-0032](../../docs/decisions/0032-original-prompt-on-demand.md).
 - A file that is gone (drafts are removed after a week) is shown by name, not hidden: the person
   sees what was attached.
+
+## Evidence
+
+- Red first: `task_prompt.rs` "the original prompt is its text and attached files…" and "a prompt
+  without attachments or whose files are gone" failed with 404 (no route) before
+  `GET /api/tasks/{tid}/prompt` and pass after; "an attached file is served only from the
+  attachments folder" passes with the attachment route (headers, download, 404 cases).
+- Review round 1 (fresh read-only session): REQUEST_CHANGES. Blocker: resolving the `attachments`
+  folder followed a link a contained process can plant, so any host file named in a prompt could
+  be served; it also served other users' drafts and shell files. Red first:
+  `only_the_tasks_own_attachment_folders_are_served_never_through_a_link` failed (200 for another
+  user's draft) before the fix and passes after; it also replaces `attachments` with a link.
+  Also fixed: a non-numeric index is 404, at most 500 attachments checked, reads share the upload
+  bound, a 120 s timeout for file reads in the UI, the download link attached before its click.
+- Review round 2: APPROVE at 91eac32 (blocker closed). Its minors (thumbnails can hit the
+  uploads' bound with more than 8 transfers; the `/proc` check passes when `/proc` is unreadable;
+  nits) are filed as #303.
+- e2e `original-prompt.e2e.ts`: failed before the UI (no "See the original prompt" menu item)
+  and passes after (task view and sidebar menus, formatted text, image preview, download button,
+  a file that is gone, a failed load, no WCAG violations).
+- `scripts/dev ci` on 91eac32 (with origin/dev merged): exit 0; nextest 1210 run, 1210 passed,
+  16 skipped; check, fmt, clippy, doctests, deny, machete, doc green. An earlier run on b6d3147
+  failed once in `terminal_ws::two_viewers_share_the_terminal_and_only_writers_type` (unrelated,
+  under load from a parallel e2e run; 20/20 passes alone): filed as #301.
+- e2e full suite on 91eac32: 161 passed, 1 skipped (the live-model test).
+- Not covered: a real browser against a deployed instance with a real upload (the e2e suite
+  runs the mock backend); the `/proc` fallback off Linux.
