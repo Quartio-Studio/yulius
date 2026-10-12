@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use yulius::wiring::harness::HarnessAdapter;
 use yulius_app::error::AppResult;
 use yulius_app::ports::harness::{
-    HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
+    CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
 };
+use yulius_app::ports::session::LaunchPlan;
 use yulius_domain::harness::Harness;
 use yulius_domain::time::Timestamp;
 
@@ -32,6 +33,11 @@ pub struct FakeAgentOptions {
     pub interrupts: bool,
     /// Run the status line command with the rate limits in this file (`--rate-limits-file`).
     pub rate_limits_file: Option<PathBuf>,
+    /// Run Claude Code's SessionStart hook at start, like the real CLI (`--session-start`).
+    pub session_start: bool,
+    /// Run a turn of this many milliseconds first when the launch has a first message
+    /// (`--opening-turn-ms`).
+    pub opening_turn_ms: Option<u64>,
     /// Also report these environment variables at start (`--report-env`: set and length, never
     /// the value).
     pub report_env: Vec<String>,
@@ -123,12 +129,26 @@ impl HarnessPort for FakeAgentHarness {
                 file.to_string_lossy().into_owned(),
             ]);
         }
+        if self.options.session_start {
+            argv.push("--session-start".into());
+        }
+        let first_message = match &launch.mode {
+            yulius_app::ports::harness::SessionMode::New { prompt, .. }
+            | yulius_app::ports::harness::SessionMode::Resume { prompt, .. } => prompt.is_some(),
+        };
+        if let (Some(ms), true) = (self.options.opening_turn_ms, first_message) {
+            argv.extend(["--opening-turn-ms".into(), ms.to_string()]);
+        }
         for name in &self.options.report_env {
             argv.extend(["--report-env".into(), name.clone()]);
         }
         plan.plan.argv = argv;
         Ok(plan)
     }
+    fn plan_cockpit(&self, launch: &CockpitLaunch) -> AppResult<LaunchPlan> {
+        self.inner.plan_cockpit(launch)
+    }
+
     fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
         self.inner.claude_transcript(home, worktree, session)
     }

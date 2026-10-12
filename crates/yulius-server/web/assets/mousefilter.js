@@ -117,6 +117,14 @@ export function createMouseFilter() {
     return parts.length === 1 ? parts[0] : concat(parts);
   }
 
+  /** One mouse report: SGR (`ESC [ < b ; col ; row M|m`) when the app asked for 1006, else X10. */
+  function report(button, col, row, press) {
+    if (requested.has(1006)) return `\x1b[<${button};${col};${row}${press ? 'M' : 'm'}`;
+    const byte = (n) => String.fromCharCode(32 + Math.min(Math.max(n, 1), 223));
+    // X10 has no released button: a release is button 3.
+    return `\x1b[M${String.fromCharCode(32 + (press ? button : 3))}${byte(col)}${byte(row)}`;
+  }
+
   return {
     feed,
     /** The screen was replaced by a snapshot, which carries the current modes again (#78). */
@@ -132,13 +140,18 @@ export function createMouseFilter() {
     /**
      * A wheel turn as the app's mouse reporting encodes it, at 1-based cell (col, row): SGR
      * (`ESC [ < 64|65 ; col ; row M`) when the app asked for 1006, otherwise the X10 bytes.
-     * Lets the app scroll with the wheel while clicks stay with text selection (#34).
+     * Lets the app scroll with the wheel while drags stay with text selection (#34).
      */
     wheelReport(up, col, row) {
-      const button = up ? 64 : 65;
-      if (requested.has(1006)) return `\x1b[<${button};${col};${row}M`;
-      const byte = (n) => String.fromCharCode(32 + Math.min(Math.max(n, 1), 223));
-      return `\x1b[M${String.fromCharCode(32 + button)}${byte(col)}${byte(row)}`;
+      return report(up ? 64 : 65, col, row, true);
+    },
+    /**
+     * A primary click (press and release) as the app's mouse reporting encodes it, at 1-based cell
+     * (col, row): lets a full-screen app such as Claude Code expand what was clicked while drags
+     * and double-clicks stay with text selection (#25).
+     */
+    clickReport(col, row) {
+      return report(0, col, row, true) + report(0, col, row, false);
     },
   };
 }

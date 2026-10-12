@@ -5,9 +5,9 @@
 // itself, so no action chooses one.
 
 import { enc } from './api.js';
-import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, iconButton, placeholder, linkify } from './dom.js';
+import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, iconButton, placeholder } from './dom.js';
 import { taskActions, taskInfo, allows } from './status.js';
-import { relLong, dateTime } from './format.js';
+import { relLong } from './format.js';
 import { BRAND } from './brand.js';
 
 // ---------------------------------------------------------------- task menu
@@ -491,23 +491,4 @@ export async function confirmRemoveSandbox(ctx, sandbox) {
   } catch (error) {
     errorToast(error, 'Couldn’t remove sandbox');
   }
-}
-
-/**
- * One message rendered with clickable links (UI-011). With `onReply` (the agent asks people
- * something), it offers "Reply in the terminal": people answer the agent there (F 2026-10-10).
- */
-export function messageView(ctx, message, myLogin, { onReply } = {}) {
-  const from = message.from || {};
-  const mine = from.login && myLogin && from.login === myLogin && !from.task_id;
-  const kindTone = { question: 'warn', request: 'accent', info: '' }[message.kind] || '';
-  return h('article', { class: ['msg', !message.read && 'unread', mine && 'mine'] },
-    h('div', { class: 'msg-head' },
-      h('strong', { class: 'ellipsis' }, from.title || from.login || 'unknown'),
-      badge(message.kind || 'info', kindTone),
-      h('span', { class: 'spacer' }),
-      h('span', { class: 'xs muted', title: dateTime(message.created_at) }, relLong(message.created_at))),
-    message.subject ? h('div', { class: 'msg-subject' }, message.subject) : null,
-    h('div', { class: 'msg-body' }, linkify(message.body || '', (url, event) => ctx.openLink(url, event))),
-    onReply ? h('div', { class: 'msg-actions' }, h('button', { type: 'button', class: 'btn btn-sm', onClick: onReply }, icon('terminal', { size: 14 }), 'Reply in the terminal')) : null);
 }

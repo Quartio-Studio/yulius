@@ -1,4 +1,4 @@
-//! Internal agent endpoints over HTTP: hook events (briefing, message digests, the Stop
+//! Internal agent endpoints over HTTP: hook events (briefing, the Stop
 //! discipline gate) and repository-scoped Git credentials, the task creator's own (SPEC-002
 //! §7.5, §8; AC-DSC-3, AC-COM-2, AC-COM-4, AC-GIT-3).
 
@@ -355,37 +355,36 @@ async fn session_start_returns_the_project_briefing() -> TestResult {
     Ok(())
 }
 
+/// MSR-004 (SPEC-028): stored messages reach no hook: no digest, no turn-end block.
 #[tokio::test]
-async fn prompt_submit_delivers_message_digests_once() -> TestResult {
+async fn stored_messages_reach_no_hook() -> TestResult {
     let f = fixture().await?;
-    let message = MessageRecord {
-        id: MessageId::parse("m1")?,
-        sandbox_id: f.sandbox.clone(),
-        from_task: None,
-        from_user: None,
-        to_task: Some(f.task.clone()),
-        kind: "request".into(),
-        subject: "Schema changed".into(),
-        body: "The invoices table gained a currency column.".into(),
-        created_at: f.h.app.now(),
-    };
-    f.h.app
-        .deps
-        .store
-        .insert_message(&message, std::slice::from_ref(&f.task))
-        .await?;
+    for (id, from_user) in [("m1", None), ("m2", Some(UserId::parse("u1")?))] {
+        let message = MessageRecord {
+            id: MessageId::parse(id)?,
+            sandbox_id: f.sandbox.clone(),
+            from_task: None,
+            from_user,
+            to_task: Some(f.task.clone()),
+            kind: "request".into(),
+            subject: "Also add refunds".into(),
+            body: "Refunds should be possible within 14 days.".into(),
+            created_at: f.h.app.now(),
+        };
+        f.h.app
+            .deps
+            .store
+            .insert_message(&message, std::slice::from_ref(&f.task))
+            .await?;
+    }
     let body = hook(&f, "UserPromptSubmit", json!({"prompt": "go"})).await?;
-    let context = body["hookSpecificOutput"]["additionalContext"]
-        .as_str()
-        .ok_or("no digest")?;
-    assert!(context.contains("Schema changed") && context.contains("currency column"));
-    assert!(
-        context.contains("from Yulius") && !context.contains("message_send"),
-        "a notice from Yulius, with no advice to reply to it: {context}"
-    );
+    assert!(body.is_null(), "no digest: {body:?}");
     assert_eq!(activity(&f).await?, Some(Activity::Working));
-    let again = hook(&f, "UserPromptSubmit", json!({"prompt": "go"})).await?;
-    assert!(again.is_null(), "digest delivered only once: {again:?}");
+    let body = hook(&f, "Stop", json!({})).await?;
+    assert!(
+        body.is_null(),
+        "unread messages do not block a turn end: {body:?}"
+    );
     Ok(())
 }
 
@@ -523,40 +522,6 @@ async fn untracked_work_is_nudged_once() -> TestResult {
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
     assert_eq!(task.gate_blocks, 0, "a nudge is not a gate block");
     assert!(hook(&f, "Stop", json!({})).await?.is_null(), "given once");
-    Ok(())
-}
-
-#[tokio::test]
-async fn stop_blocks_once_for_unread_user_messages() -> TestResult {
-    let f = fixture().await?;
-    let message = MessageRecord {
-        id: MessageId::parse("m2")?,
-        sandbox_id: f.sandbox.clone(),
-        from_task: None,
-        from_user: Some(UserId::parse("u1")?),
-        to_task: Some(f.task.clone()),
-        kind: "request".into(),
-        subject: "Also add refunds".into(),
-        body: "Refunds should be possible within 14 days.".into(),
-        created_at: f.h.app.now(),
-    };
-    f.h.app
-        .deps
-        .store
-        .insert_message(&message, std::slice::from_ref(&f.task))
-        .await?;
-    let body = hook(&f, "Stop", json!({})).await?;
-    assert_eq!(body["decision"], "block");
-    assert!(
-        body["reason"]
-            .as_str()
-            .is_some_and(|r| r.contains("Also add refunds"))
-    );
-    let body = hook(&f, "Stop", json!({"stop_hook_active": true})).await?;
-    assert!(
-        body.is_null(),
-        "delivered messages do not block again: {body:?}"
-    );
     Ok(())
 }
 

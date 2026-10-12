@@ -1,6 +1,6 @@
 // Notification center (SPEC-001 UI-020): what happened while the user looked elsewhere, in one
 // list behind the bell in the tab row — tasks waiting for input, done (TSK-014), needing attention or failing,
-// browser action requests, agent messages, automation runs, account problems and instance
+// browser action requests, automation runs, account problems and instance
 // notices. Built from the event stream the UI already receives; toasts still show. Kept per
 // user in this browser and bounded, so a reload keeps the history. With desktop notifications
 // on (Settings), entries also reach the operating system while the tab is in the background.
@@ -132,7 +132,7 @@ export function createNotificationCenter(ctx) {
       n.read ? h('span', { class: 'notif-read-space', 'aria-hidden': 'true' }) : iconButton('check', `Mark “${n.title}” read`, () => markRead((m) => m.id === n.id), { class: 'notif-read' })));
     const empty = filter === 'unread' && items.length
       ? 'No unread notifications.'
-      : 'Nothing yet. Tasks that wait for you, agent messages and browser requests show up here.';
+      : 'Nothing yet. Tasks that wait for you and browser requests show up here.';
     setChildren(pop, head, shown.length ? h('div', { class: 'notif-list' }, rows) : h('div', { class: 'notif-empty' }, empty));
   }
 
@@ -209,17 +209,6 @@ export function createNotificationCenter(ctx) {
       detail: [event.reason, sandbox.name].filter(Boolean).join(' · '),
       route: `/s/${encodeURIComponent(sandbox.slug)}/browser?tab=${encodeURIComponent(event.tab_id || '')}`,
       key,
-    });
-  });
-
-  watch('message', ({ task_id: taskId, message }) => {
-    if (!message || (message.from && message.from.login && message.from.login === user.login) || watching(taskId)) return;
-    const task = ctx.store.findTask(taskId);
-    add({
-      kind: message.kind === 'question' || message.kind === 'request' ? 'warn' : 'info',
-      title: `Message from ${(message.from && message.from.title) || (task ? `#${task.number} ${task.title}` : 'an agent')}`,
-      detail: message.subject || null,
-      route: taskRoute(task),
     });
   });
 

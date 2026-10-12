@@ -6,6 +6,35 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
+  `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
+  at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.
+- Messages are gone for now (SPEC-028, ADR-0023; task #26): no `message_send` or `messages_inbox`,
+  no stored notices, notice digest or "unread messages" stop reason, nothing typed into an idle
+  session, and no Messages panel, unread counts, message notifications or
+  `GET /api/tasks/{tid}/messages`. Agents learn about their checks, delivery and armed merges from
+  `yulius wait` (which now says how an armed merge ended), `ci_status` and `delivery_status`. The
+  stored messages stay as history. A `yulius wait` already running when the server updates exits
+  with "cannot be reached" once (its answer changed shape); start it again.
+- A file attached on the new-task composer opens when its chip is clicked (an image in a preview,
+  another file in a new tab), and the task's Claude Code session receives attached files natively
+  as `@path` mentions in its first message, an image as an image, instead of paths to open with the
+  Read tool (SPEC-025, decision 0022).
+- A half-written new task is kept (SPEC-026, task #24): its prompt, attached files (with thumbnails)
+  and choices come back after visiting another page or reloading, per sandbox; starting the task
+  clears it, signing out removes it.
+- Every user has a Cockpit, first in the sandbox navigation: their own plain Claude Code session in
+  the sandbox (no Yulius hooks, MCP or briefing) on a pool subscription, for quick questions and
+  work that should not become a task. `/clear` starts over; it cannot be deleted, and after an
+  exit, a day unwatched or a restart it resumes its conversation (SPEC-021, ADR-0020, task #19).
+- A start rule is picked, not typed: the composer's "When a rule is true…" opens an editor of
+  conditions (a task of the sandbox and "is done", "is merged" or "has ended") joined by All or
+  Any, shows the sentence it builds, opens again with what was picked and is not offered in a
+  sandbox without tasks; the API still takes the full rule language ([SPEC-022](../.ai/specs/SPEC-022-when-rule-is-true-should-be-a-simple-edi.md), ADR-0019, #20).
+- Claude Code sessions in a task terminal no longer open Claude Code's diff side panel by themselves
+  ("No changes this session" on the right); it still opens by hand within a session (SPEC-024).
+- A click on Claude Code's output in a task terminal reaches Claude Code, so a collapsed tool
+  group expands as in a native terminal; drags and double-clicks still select text (SPEC-027).
 - Ended worktrees holding only end-to-end output (`.e2e`), the APM cache (`apm_modules`) or Claude
   Code's own `.claude/` state are removed too (SPEC-019; seven were kept on the first deploy).
 - Agents meet fewer avoidable obstacles (SPEC-020):

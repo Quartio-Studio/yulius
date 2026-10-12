@@ -100,7 +100,6 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/tasks/{tid}/archive", post(tasks::archive))
         .route("/api/tasks/{tid}/restore", post(tasks::restore))
         .route("/api/tasks/{tid}/feedback", post(tasks::feedback))
-        .route("/api/tasks/{tid}/messages", get(tasks::messages))
         .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
         .route(
@@ -249,6 +248,8 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/sandboxes/{sid}/shells/{id}",
             patch(shells::rename).delete(shells::remove),
         )
+        // The user's Cockpit (SPEC-021): opened or started, never deleted.
+        .route("/api/sandboxes/{sid}/cockpit", post(shells::cockpit))
         .route(
             "/api/sandboxes/{sid}/files",
             get(files::list).post(files::create).delete(files::delete),

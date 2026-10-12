@@ -66,6 +66,9 @@ pub struct FakeGitHub {
     pub statuses_forbidden: std::sync::atomic::AtomicBool,
     /// Issues opened (DLV-008).
     pub issues: Mutex<Vec<(String, NewIssue)>>,
+    /// When set, reading checks waits for it (a slow GitHub); `checks_entered` says a read began.
+    pub checks_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub checks_entered: tokio::sync::Notify,
 }
 
 impl FakeGitHub {
@@ -291,6 +294,11 @@ impl GitHubPort for FakeGitHub {
             .collect())
     }
     async fn checks(&self, _: &Secret, _: &str, _: &str, sha: &str) -> AppResult<ChecksReport> {
+        let hold = self.checks_hold.lock().ok().and_then(|h| h.clone());
+        if let Some(hold) = hold {
+            self.checks_entered.notify_one();
+            hold.notified().await;
+        }
         if let Some(err) = self
             .checks_error
             .lock()
@@ -523,6 +531,40 @@ pub async fn call(
         body,
         set_cookie,
         location,
+    })
+}
+
+/// Sends `body` as a raw upload (`Content-Length` when `declared`).
+pub async fn send(
+    router: &Router,
+    method: Method,
+    path: &str,
+    body: Body,
+    declared: Option<usize>,
+    creds: &Creds,
+) -> Result<Resp, Box<dyn std::error::Error>> {
+    let mut req = Request::builder().method(method).uri(path);
+    if let Some(cookie) = &creds.cookie {
+        req = req.header(header::COOKIE, cookie_header(cookie));
+    }
+    if let Some(csrf) = &creds.csrf {
+        req = req.header("x-yulius-csrf", csrf);
+    }
+    if let Some(token) = &creds.bearer {
+        req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    if let Some(len) = declared {
+        req = req.header(header::CONTENT_LENGTH, len);
+    }
+    req = req.header(header::CONTENT_TYPE, "application/octet-stream");
+    let resp = router.clone().oneshot(req.body(body)?).await?;
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await?.to_bytes();
+    Ok(Resp {
+        status,
+        body: serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        set_cookie: None,
+        location: None,
     })
 }
 
@@ -779,6 +821,22 @@ impl FakeGitHub {
         if let Ok(mut m) = self.check_states.lock() {
             m.insert(sha.into(), report);
         }
+    }
+    /// Holds every checks read until the returned handle is released with [`Self::release_checks`].
+    pub fn hold_checks(&self) -> Arc<tokio::sync::Notify> {
+        let hold = Arc::new(tokio::sync::Notify::new());
+        if let Ok(mut h) = self.checks_hold.lock() {
+            *h = Some(Arc::clone(&hold));
+        }
+        hold
+    }
+    /// Lets the held checks read (and every later one) go on.
+    pub fn release_checks(&self, hold: &tokio::sync::Notify) {
+        if let Ok(mut h) = self.checks_hold.lock() {
+            *h = None;
+        }
+        hold.notify_waiters();
+        hold.notify_one();
     }
     /// Commit statuses published so far: (sha, status).
     pub fn statuses(&self) -> Vec<(String, NewCommitStatus)> {

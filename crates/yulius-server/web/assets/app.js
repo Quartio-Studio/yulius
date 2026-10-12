@@ -9,7 +9,7 @@
 import { createApi, realTransport, enc } from './api.js';
 import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
-import { applyTheme, PHONE, isPhone } from './theme.js';
+import { applyTheme, PHONE } from './theme.js';
 import { BRAND } from './brand.js';
 import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError, closeMenu } from './dom.js';
 import { notFound } from './pages/common.js';
@@ -33,6 +33,7 @@ import { mountAutomationsPage } from './pages/automations.js';
 import { mountSessionsPage, mountSessionView } from './pages/sessions.js';
 import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
+import { mountCockpitPage } from './pages/cockpit.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
 import { mountInstancePage } from './pages/instance.js';
@@ -42,6 +43,7 @@ import { mountDesignPage } from './pages/design.js';
 import { mountHomePage } from './pages/home.js';
 import { IS_MAC, showShortcuts } from './shortcuts.js';
 import { preloadTerminal } from './terminal.js';
+import { forgetDrafts } from './drafts.js';
 
 const params = new URLSearchParams(window.location.search);
 const NOT_FOUND = { title: 'Page not found', text: 'There is nothing at this address. The link may be old or mistyped.', back: ['All sandboxes', '/'] };
@@ -49,6 +51,7 @@ const MOCK = params.get('mock') === '1';
 const LAST_SANDBOX_KEY = 'yulius.lastSandbox';
 
 const SANDBOX_PAGES = {
+  cockpit: (ctx, sandbox) => mountCockpitPage(ctx, sandbox),
   tasks: (ctx, sandbox) => mountTasksPage(ctx, sandbox),
   sessions: (ctx, sandbox) => mountSessionsPage(ctx, sandbox),
   git: (ctx, sandbox) => mountGitPage(ctx, sandbox),
@@ -198,6 +201,7 @@ function createApp(root, transport) {
     try {
       for (const key of Object.keys(window.localStorage)) if (key.startsWith('yulius.notifications.')) window.localStorage.removeItem(key);
     } catch { /* storage unavailable: nothing kept */ }
+    forgetDrafts(); // unfinished prompts too (SPEC-026)
     navigate('/signin', { replace: true });
     renderSignIn();
   }
@@ -250,7 +254,6 @@ function createApp(root, transport) {
     ctx.openNewTask = (sandbox) => openNewTask(sandbox);
     ctx.defaultSandbox = () => defaultSandbox();
     ctx.openBrowserTab = (sandbox, tabId) => openBrowserTab(sandbox, tabId);
-    ctx.replyInTerminal = (task) => replyInTerminal(task);
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
     ctx.railVisible = () => panels.railVisible;
     ctx.setRailVisible = (visible) => panels.setRailVisible(visible);
@@ -397,21 +400,6 @@ function createApp(root, transport) {
     }
   }
 
-  /**
-   * "Reply in the terminal" (F 2026-10-10): people answer an agent in its terminal, not through
-   * Messages. Shows the task's session and focuses its terminal (the quick input on phones).
-   */
-  function replyInTerminal(task) {
-    if (centerView && centerView.key === `task:${task.id}` && centerView.reply) {
-      // On a phone the tool panel covers the session.
-      if (isPhone() && shell) shell.panels.close();
-      centerView.reply();
-      return;
-    }
-    const sandbox = store.sandboxById(task.sandbox_id);
-    if (sandbox) navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
-  }
-
   /** The viewed task closed because the user left the session: show the task list. */
   function onTaskClosed(task) {
     const sandbox = store.sandboxById(task.sandbox_id);
@@ -429,7 +417,7 @@ function createApp(root, transport) {
     shell.panels.open('editor', { file });
   }
 
-  /** Links from the terminal, messages and pages (UI-011, BRW-004). */
+  /** Links from the terminal and pages (UI-011, BRW-004). */
   function openLink(uri) {
     const me = store.state.me;
     const link = parseAppLink(uri, me && me.instance ? me.instance.public_url : null);

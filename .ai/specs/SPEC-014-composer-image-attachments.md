@@ -51,6 +51,8 @@ Browser e2e for drop and paste (mock server). Not covered: that a live Claude Co
 - Finished by hand (2026-10-12, after review): an `@path` inside a short goal-mode prompt never
   reached the model, because such a prompt was typed only as `/goal`. Attachments now go through the
   task's request file as files to open with the Read tool (SPEC-011), in goal and prompt mode.
+- Superseded 2026-10-12 by SPEC-025: attached files are mentioned in the session's first message
+  (the CLI prompt), which Claude Code attaches natively, in goal and prompt mode.
 
 ## Evidence
 

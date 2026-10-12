@@ -70,12 +70,13 @@ const WHEEL_MAX_NOTCHES = 10;
  *                              that has not started yet); hidden as soon as there is output
  *   onReady()                  the terminal is shown (its first screen is drawn)
  *   onConnection(status)       the socket's status (connecting|open|reconnecting|failed|closed)
+ *   onFatal(message)           the server refused this terminal for good (not_found, unauthenticated)
  *   fileLinks                  optional {list(dir) → Promise<[{name, kind}]>, roots() → [absolute
  *                              folder paths], open({path, line, col}, event)}: paths of existing
  *                              files in the terminal's folder become links (termlinks.js)
  * Call start() after the element is in the document; destroy() when done.
  */
-export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, fontSize, fileLinks = null, followServerSize = false }) {
+export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, fontSize, fileLinks = null, followServerSize = false }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
   // Connection trouble floats over the terminal: it never changes the terminal's size.
@@ -217,7 +218,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       onNotice: (text) => { showNotice(text); if (onNotice) onNotice(text); },
       onExit: (message) => { exited = message; applySize(); render(); reveal(); if (onExit) onExit(message); },
       onError: (message) => {
-        if (['unauthenticated', 'not_found'].includes(message.code)) { fatal = message; reveal(); }
+        if (['unauthenticated', 'not_found'].includes(message.code)) { fatal = message; reveal(); if (onFatal) onFatal(message); }
         else showNotice(message.message || message.code || 'Terminal error');
         render();
       },
@@ -396,13 +397,28 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       open: (file, event) => fileLinks.open(file, event),
     }));
   }
-  // Claude Code draws full screen (the alternate buffer has no scrollback) and scrolls its own
-  // transcript with the mouse wheel. Text selection keeps the mouse from the app (mousefilter.js),
-  // so there only wheel turns go to the app, in its encoding; clicks still select. In the normal
-  // buffer xterm scrolls its own scrollback (#34).
+  // Claude Code draws full screen (the alternate buffer has no scrollback), scrolls its own
+  // transcript with the mouse wheel and expands a clicked tool group. Text selection keeps the
+  // mouse from the app (mousefilter.js), so there only wheel turns and plain clicks go to the app,
+  // in its encoding; drags and double-clicks still select. In the normal buffer xterm scrolls its
+  // own scrollback (#34, #25).
+  const reportsToApp = () => mouse.requested() && !mouse.appMouse() && term.buffer.active.type === 'alternate' && state.can_write;
+  /**
+   * The 1-based cell of the shown grid under the pointer (also when it is scaled to fit), clamped
+   * to the grid; `inside` says whether the pointer is on the grid rather than in a margin beside it
+   * (another viewer's grid is centred in this box).
+   */
+  function cellAt(event) {
+    const screen = host.querySelector('.xterm-screen') || host;
+    const box = screen.getBoundingClientRect();
+    const col = Math.min(term.cols, Math.max(1, 1 + Math.floor(((event.clientX - box.left) / Math.max(1, box.width)) * term.cols)));
+    const row = Math.min(term.rows, Math.max(1, 1 + Math.floor(((event.clientY - box.top) / Math.max(1, box.height)) * term.rows)));
+    const inside = event.clientX >= box.left && event.clientX < box.right && event.clientY >= box.top && event.clientY < box.bottom;
+    return { col, row, inside };
+  }
   let wheelRest = 0;
   term.attachCustomWheelEventHandler((event) => {
-    if (!mouse.requested() || mouse.appMouse() || term.buffer.active.type !== 'alternate' || !state.can_write) return true;
+    if (!reportsToApp()) return true;
     // Pinch-zoom (ctrl+wheel) and horizontal swipes stay with the browser (#78).
     if (event.ctrlKey || !event.deltaY) return true;
     event.preventDefault();
@@ -411,10 +427,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     const notches = Math.trunc(wheelRest / WHEEL_NOTCH_PX);
     if (!notches) return false;
     wheelRest -= notches * WHEEL_NOTCH_PX;
-    const screen = host.querySelector('.xterm-screen') || host;
-    const box = screen.getBoundingClientRect();
-    const col = Math.min(term.cols, Math.max(1, 1 + Math.floor(((event.clientX - box.left) / Math.max(1, box.width)) * term.cols)));
-    const row = Math.min(term.rows, Math.max(1, 1 + Math.floor(((event.clientY - box.top) / Math.max(1, box.height)) * term.rows)));
+    const { col, row } = cellAt(event);
     // Scrolling is not typing: it takes neither control nor the terminal size (#78).
     socket.sendInput(mouse.wheelReport(notches < 0, col, row).repeat(Math.min(Math.abs(notches), WHEEL_MAX_NOTCHES)), { scroll: true });
     return false;
@@ -615,18 +628,29 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   document.addEventListener('visibilitychange', updatePresence);
 
   // A click takes the size once it is clearly a click: no drag, no selection (a double- or
-  // triple-click selects), the pointer not on a link.
+  // triple-click selects), the pointer not on a link. A full-screen app that asked for the mouse
+  // gets the click at once, as in a native terminal (#25), but not the second click of a
+  // double-click, which selects a word.
   let press = null;
   let clickTimer = 0;
   host.addEventListener('pointerdown', (event) => {
     clearTimeout(clickTimer);
-    press = event.button === 0 ? { x: event.clientX, y: event.clientY } : null;
+    press = event.button === 0 ? { x: event.clientX, y: event.clientY, count: 0 } : null;
   }, true);
+  // Pointer events carry no click count; the mouse event that follows the press does (a touch's
+  // comes after its release: a tap counts as one click).
+  host.addEventListener('mousedown', (event) => { if (press) press.count = event.detail; }, true);
   host.addEventListener('pointerup', (event) => {
     const start = press;
     press = null;
     if (!start || event.button !== 0 || Math.abs(event.clientX - start.x) > 4 || Math.abs(event.clientY - start.y) > 4) return;
     if (host.querySelector('.xterm-cursor-pointer')) return; // a link click opens the link
+    if (start.count <= 1 && !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey && conn === 'open' && reportsToApp()) {
+      const { col, row, inside } = cellAt(event);
+      // A click is not typing: like a wheel turn it does not take control; the settled click below
+      // does. A click in the margin beside the grid only takes the size.
+      if (inside && socket.sendInput(mouse.clickReport(col, row), { scroll: true })) used();
+    }
     clearTimeout(clickTimer);
     clickTimer = setTimeout(() => { if (!term.hasSelection()) claim(); }, CLICK_SETTLE_MS);
   }, true);
