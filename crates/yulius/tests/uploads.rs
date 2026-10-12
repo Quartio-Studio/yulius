@@ -13,17 +13,16 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::Router;
 use axum::body::Body;
-use axum::http::{Method, Request, StatusCode, header};
-use http_body_util::BodyExt as _;
+use axum::http::{Method, StatusCode};
+
 use serde_json::json;
 use support::agents::{FakeAgentHarness, FakeAgentOptions};
 use support::{
-    Creds, Harness, HarnessOptions, Resp, TestResult, call, cookie_header, harness_configured,
-    harness_with, perms, seed_github_user, seed_sandbox, seed_task, setup_superadmin_creds,
+    Creds, Harness, HarnessOptions, Resp, TestResult, call, harness_configured, harness_with,
+    perms, seed_github_user, seed_sandbox, seed_task, setup_superadmin_creds,
 };
-use tower::ServiceExt as _;
+
 use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::auth::AuthContext;
@@ -39,40 +38,6 @@ use yulius_ptyhost::test_support::locate_fake_agent;
 
 const LIMIT: u64 = 4096;
 
-/// Sends `body` as a raw upload (`Content-Length` when `declared`).
-async fn send(
-    router: &Router,
-    method: Method,
-    path: &str,
-    body: Body,
-    declared: Option<usize>,
-    creds: &Creds,
-) -> Result<Resp, Box<dyn std::error::Error>> {
-    let mut req = Request::builder().method(method).uri(path);
-    if let Some(cookie) = &creds.cookie {
-        req = req.header(header::COOKIE, cookie_header(cookie));
-    }
-    if let Some(csrf) = &creds.csrf {
-        req = req.header("x-yulius-csrf", csrf);
-    }
-    if let Some(token) = &creds.bearer {
-        req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
-    }
-    if let Some(len) = declared {
-        req = req.header(header::CONTENT_LENGTH, len);
-    }
-    req = req.header(header::CONTENT_TYPE, "application/octet-stream");
-    let resp = router.clone().oneshot(req.body(body)?).await?;
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await?.to_bytes();
-    Ok(Resp {
-        status,
-        body: serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
-        set_cookie: None,
-        location: None,
-    })
-}
-
 /// Uploads `bytes` with their length declared.
 async fn upload(
     h: &Harness,
@@ -81,7 +46,7 @@ async fn upload(
     bytes: &[u8],
     creds: &Creds,
 ) -> Result<Resp, Box<dyn std::error::Error>> {
-    send(
+    support::send(
         &h.router,
         method,
         path,
@@ -411,7 +376,7 @@ async fn uploads_are_bounded_and_leave_nothing_behind() -> TestResult {
     // A streamed body without a length is counted and cut at the limit.
     let chunks: Vec<Result<Vec<u8>, std::io::Error>> =
         too_big.chunks(1000).map(|c| Ok(c.to_vec())).collect();
-    let streamed = send(
+    let streamed = support::send(
         &h.router,
         Method::PUT,
         "/api/sandboxes/s1/files/upload?path=big.bin",
@@ -433,7 +398,7 @@ async fn uploads_are_bounded_and_leave_nothing_behind() -> TestResult {
         Ok(vec![b'y'; 100]),
         Err(std::io::Error::other("connection reset")),
     ];
-    let interrupted = send(
+    let interrupted = support::send(
         &h.router,
         Method::PUT,
         "/api/sandboxes/s1/files/upload?path=partial.bin",

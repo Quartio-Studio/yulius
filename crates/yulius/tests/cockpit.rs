@@ -11,12 +11,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use axum::body::Body;
 use axum::http::{Method, StatusCode};
 use futures::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use support::{
     Creds, Harness, HarnessOptions, TestResult, call, harness_with, perms, seed_github_user,
-    seed_sandbox, serve, ws_connect, ws_refusal_status,
+    seed_sandbox, send, serve, ws_connect, ws_refusal_status,
 };
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
@@ -312,6 +313,31 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
         open_cockpit(&f, &f.bob).await?.status,
         StatusCode::FORBIDDEN
     );
+
+    // A file dropped (or an image pasted) on it reaches Claude by path, like a task terminal's;
+    // only its owner may drop onto it.
+    let drop_path = format!("/api/sandboxes/s1/shells/{id}/attachments?name=shot.png");
+    let png = || Body::from(b"png".to_vec());
+    let foreign = send(
+        &f.h.router,
+        Method::POST,
+        &drop_path,
+        png(),
+        Some(3),
+        &f.carol,
+    )
+    .await?;
+    assert_eq!(foreign.status, StatusCode::NOT_FOUND, "{:?}", foreign.body);
+    let dropped = send(
+        &f.h.router,
+        Method::POST,
+        &drop_path,
+        png(),
+        Some(3),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(dropped.status, StatusCode::CREATED, "{:?}", dropped.body);
 
     // `/clear` is Claude Code's own: the process stays, so does the Cockpit.
     socket

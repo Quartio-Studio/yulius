@@ -390,16 +390,32 @@ impl App {
         own
     }
 
-    /// The caller's live shell `id` of `sandbox` (write access required).
+    /// The caller's live terminal `id` of `sandbox` (write access required); never their
+    /// Cockpit, which cannot be renamed or closed (SPEC-021 CKP-004).
     ///
     /// # Errors
-    /// `NotFound` for unknown, ended or closing shells, other users' shells and shells of
-    /// another sandbox; access errors.
+    /// `NotFound` for unknown, ended or closing shells, Cockpits, other users' shells and shells
+    /// of another sandbox; access errors.
     pub(crate) async fn own_shell(
         &self,
         ctx: &AuthContext,
         sandbox: &str,
         id: &str,
+    ) -> AppResult<Arc<ShellRuntime>> {
+        self.own_shell_of(ctx, sandbox, id, Some(ShellKind::Terminal))
+            .await
+    }
+
+    /// The caller's live shell `id` of `sandbox`, of `kind` when given (write access required).
+    ///
+    /// # Errors
+    /// As [`Self::own_shell`].
+    pub(crate) async fn own_shell_of(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+        id: &str,
+        kind: Option<ShellKind>,
     ) -> AppResult<Arc<ShellRuntime>> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require(&ctx.user, &sandbox_id, Action::Work).await?;
@@ -407,7 +423,7 @@ impl App {
             .filter(|shell| {
                 shell.creator == ctx.user.id
                     && shell.sandbox == sandbox_id
-                    && shell.kind == ShellKind::Terminal
+                    && kind.is_none_or(|kind| shell.kind == kind)
             })
             .ok_or(AppError::NotFound)
     }
