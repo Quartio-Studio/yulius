@@ -273,6 +273,69 @@ async fn the_superadmin_opens_shells_with_the_apps_git_credential() -> TestResul
     result
 }
 
+/// IDN-101 (F 2026-10-12): a shell's workspace token stays valid when the server restarts. Shells,
+/// the Cockpit and editors are adopted with their environment, and their `gh` and Git lost
+/// GitHub after every deploy while tokens were random per server lifetime.
+#[tokio::test]
+async fn workspace_tokens_stay_valid_across_a_server_restart() -> TestResult {
+    use yulius_app::ports::store::{SandboxStore, UserStore};
+    use yulius_domain::ids::UserId;
+    async fn token_of(h: &Harness) -> Result<String, Box<dyn std::error::Error>> {
+        let user = h
+            .store
+            .user(&UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+        let sandbox = h
+            .store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("s1")?;
+        let space = h.app.user_space(&user, &sandbox, None)?;
+        Ok(space
+            .env
+            .iter()
+            .find(|(name, _)| name == "YULIUS_TASK_TOKEN")
+            .map(|(_, value)| value.clone())
+            .ok_or("workspace token")?)
+    }
+    let f = fixture().await?;
+    let token = token_of(&f.h).await?;
+    f.h.app.stop_workspace_services().await;
+
+    // The next server process on the same data directory accepts the token it never issued.
+    let g = fixture_with(false, Some(f.data.clone())).await?;
+    let ask = |bearer: String| {
+        let internal = g.h.internal.clone();
+        async move {
+            call(
+                &internal,
+                Method::POST,
+                "/internal/git-credential",
+                Some(
+                    json!({"protocol": "https", "host": "github.com", "path": "acme/fixture.git"}),
+                ),
+                &Creds {
+                    bearer: Some(bearer),
+                    ..Creds::default()
+                },
+            )
+            .await
+        }
+    };
+    let credential = ask(token.clone()).await?;
+    assert_eq!(credential.status, StatusCode::OK, "{:?}", credential.body);
+    assert_eq!(
+        token_of(&g.h).await?,
+        token,
+        "the same token for the same user and sandbox"
+    );
+    let forged = ask(format!("ws_{}", "0".repeat(64))).await?;
+    assert_eq!(forged.status, StatusCode::UNAUTHORIZED);
+    g.h.app.stop_workspace_services().await;
+    Ok(())
+}
+
 async fn superadmin_scenario(f: &Fixture) -> TestResult {
     use yulius_app::ports::store::{InstanceStore, SandboxStore, UserStore};
     support::setup_superadmin_creds(&f.h).await?;

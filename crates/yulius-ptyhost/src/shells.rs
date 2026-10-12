@@ -9,7 +9,9 @@
 //! A *background shell* is therefore a process under the agent whose command line carries that
 //! wrapper ([`SHELL_SIGNATURE`]) and which has no such shell above it (a sub-shell of a counted
 //! shell is the same shell). Hooks, the status line and MCP servers run without the wrapper and
-//! are never counted. The probe reads the process table once: on Linux it walks
+//! are never counted. A shell that only runs `yulius wait` is not counted either: the agent
+//! waits for Yulius (checks, a merge, a message) and builds nothing (SPEC-050 DSK-102), so its
+//! task reads as waiting and its caches may go under disk pressure. The probe reads the process table once: on Linux it walks
 //! `/proc/<pid>/task/<tid>/children` from the agent (falling back to a scan of `/proc`), elsewhere
 //! it runs `ps` with a timeout. Every read is bounded ([`MAX_PROCESSES`], [`MAX_DEPTH`],
 //! [`MAX_CMDLINE_BYTES`], [`PS_TIMEOUT`]); `None` means the table could not be read.
@@ -41,6 +43,8 @@ pub struct ProcessEntry {
     pub ppid: u32,
     /// The command line carries Claude Code's shell wrapper.
     pub shell: bool,
+    /// The process is `yulius wait` ([`is_yulius_wait`]).
+    pub waits: bool,
 }
 
 /// Whether a command line (raw `/proc` bytes or `ps` text) is a Claude Code Bash tool shell.
@@ -51,9 +55,23 @@ pub fn is_agent_shell(command_line: &[u8]) -> bool {
         .any(|window| window == SHELL_SIGNATURE)
 }
 
+/// Whether a command line (raw `/proc` bytes or `ps` text) is `yulius wait`: the agent's command
+/// that blocks until Yulius has news for it (the shim execs the server binary with `wait`).
+#[must_use]
+pub fn is_yulius_wait(command_line: &[u8]) -> bool {
+    let mut args = command_line
+        .split(|b| *b == 0 || *b == b' ')
+        .filter(|arg| !arg.is_empty());
+    let Some(exe) = args.next() else {
+        return false;
+    };
+    let name = exe.rsplit(|b| *b == b'/').next().unwrap_or(exe);
+    name == b"yulius" && args.next() == Some(b"wait".as_slice())
+}
+
 /// Counts the background shells below `root` in `table` (the root itself never counts): wrapper
 /// shells with no wrapper shell above them, at most [`MAX_PROCESSES`] processes and
-/// [`MAX_DEPTH`] levels deep.
+/// [`MAX_DEPTH`] levels deep. A shell whose only processes are `yulius wait` does not count.
 #[must_use]
 pub fn count_shells(table: &[ProcessEntry], root: u32) -> u32 {
     let mut children: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
@@ -62,10 +80,11 @@ pub fn count_shells(table: &[ProcessEntry], root: u32) -> u32 {
             children.entry(entry.ppid).or_default().push(entry);
         }
     }
-    let mut count = 0u32;
+    // Per counted shell: whether a `yulius wait` and whether anything else runs below it.
+    let mut shells: HashMap<u32, (bool, bool)> = HashMap::new();
     let mut seen = HashSet::from([root]);
-    let mut queue = VecDeque::from([(root, false, 0usize)]);
-    while let Some((pid, inside_shell, depth)) = queue.pop_front() {
+    let mut queue = VecDeque::from([(root, None::<u32>, 0usize)]);
+    while let Some((pid, shell, depth)) = queue.pop_front() {
         if depth >= MAX_DEPTH {
             continue;
         }
@@ -73,13 +92,30 @@ pub fn count_shells(table: &[ProcessEntry], root: u32) -> u32 {
             if seen.len() > MAX_PROCESSES || !seen.insert(child.pid) {
                 continue;
             }
-            if child.shell && !inside_shell {
-                count = count.saturating_add(1);
-            }
-            queue.push_back((child.pid, inside_shell || child.shell, depth + 1));
+            let shell = match shell {
+                Some(top) => {
+                    if !child.shell
+                        && let Some((waits, other)) = shells.get_mut(&top)
+                    {
+                        *waits |= child.waits;
+                        *other |= !child.waits;
+                    }
+                    Some(top)
+                }
+                None if child.shell => {
+                    shells.insert(child.pid, (false, false));
+                    Some(child.pid)
+                }
+                None => None,
+            };
+            queue.push_back((child.pid, shell, depth + 1));
         }
     }
-    count
+    let counted = shells
+        .values()
+        .filter(|(waits, other)| !(*waits && !*other))
+        .count();
+    u32::try_from(counted).unwrap_or(u32::MAX)
 }
 
 /// Background shells left under the agent process `root`; `None` when the process table cannot
@@ -98,7 +134,9 @@ mod imp {
     use std::collections::{HashSet, VecDeque};
     use std::io::Read;
 
-    use super::{MAX_CMDLINE_BYTES, MAX_DEPTH, MAX_PROCESSES, ProcessEntry, is_agent_shell};
+    use super::{
+        MAX_CMDLINE_BYTES, MAX_DEPTH, MAX_PROCESSES, ProcessEntry, is_agent_shell, is_yulius_wait,
+    };
 
     fn command_line(pid: u32) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -157,10 +195,12 @@ mod imp {
                 if seen.len() > MAX_PROCESSES || !seen.insert(kid) {
                     continue;
                 }
+                let line = command_line(kid);
                 table.push(ProcessEntry {
                     pid: kid,
                     ppid: pid,
-                    shell: is_agent_shell(&command_line(kid)),
+                    shell: is_agent_shell(&line),
+                    waits: is_yulius_wait(&line),
                 });
                 queue.push_back((kid, depth + 1));
             }
@@ -183,7 +223,10 @@ mod imp {
                 parents.push((pid, ppid));
             }
         }
-        let shells = |pid: u32| is_agent_shell(&command_line(pid));
+        let kinds = |pid: u32| {
+            let line = command_line(pid);
+            (is_agent_shell(&line), is_yulius_wait(&line))
+        };
         let mut below = HashSet::from([root]);
         let mut table = Vec::new();
         // Parents may be listed after their children: repeat until nothing is added (bounded).
@@ -192,10 +235,12 @@ mod imp {
             for &(pid, ppid) in &parents {
                 if below.contains(&ppid) && !below.contains(&pid) && table.len() < MAX_PROCESSES {
                     below.insert(pid);
+                    let (shell, waits) = kinds(pid);
                     table.push(ProcessEntry {
                         pid,
                         ppid,
-                        shell: shells(pid),
+                        shell,
+                        waits,
                     });
                 }
             }
@@ -220,7 +265,7 @@ mod imp {
     use std::process::{Command, Stdio};
     use std::time::Instant;
 
-    use super::{PS_TIMEOUT, ProcessEntry, is_agent_shell};
+    use super::{PS_TIMEOUT, ProcessEntry, is_agent_shell, is_yulius_wait};
 
     /// Largest `ps` output read.
     const MAX_PS_BYTES: u64 = 16 * 1024 * 1024;
@@ -237,6 +282,7 @@ mod imp {
                     pid: pid.parse().ok()?,
                     ppid: ppid.parse().ok()?,
                     shell: is_agent_shell(command.as_bytes()),
+                    waits: is_yulius_wait(command.as_bytes()),
                 })
             })
             .collect()
@@ -286,7 +332,44 @@ mod tests {
     use std::time::Instant;
 
     fn entry(pid: u32, ppid: u32, shell: bool) -> ProcessEntry {
-        ProcessEntry { pid, ppid, shell }
+        ProcessEntry {
+            pid,
+            ppid,
+            shell,
+            waits: false,
+        }
+    }
+
+    fn wait(pid: u32, ppid: u32) -> ProcessEntry {
+        ProcessEntry {
+            pid,
+            ppid,
+            shell: false,
+            waits: true,
+        }
+    }
+
+    /// DSK-102: a shell that only waits for Yulius is not a running background shell; one that
+    /// also builds is.
+    #[test]
+    fn a_shell_that_only_runs_yulius_wait_does_not_count() {
+        assert!(is_yulius_wait(
+            b"/usr/local/bin/yulius\0wait\0--minutes\x0030\0"
+        ));
+        assert!(is_yulius_wait(b"/usr/local/bin/yulius wait"));
+        assert!(!is_yulius_wait(b"/usr/local/bin/yulius\0serve\0"));
+        assert!(!is_yulius_wait(b"/bin/sh\0-c\0yulius wait\0"));
+        let table = [
+            entry(10, 1, false), // the agent
+            entry(11, 10, true), // `yulius wait` in the background
+            wait(12, 11),
+            entry(13, 10, true), // a gate and then a wait in one shell
+            entry(14, 13, false),
+            wait(15, 13),
+            entry(16, 10, true), // a shell that has not started its command yet
+        ];
+        assert_eq!(count_shells(&table, 10), 2);
+        assert_eq!(count_shells(&table[..3], 10), 0);
     }
 
     #[test]
