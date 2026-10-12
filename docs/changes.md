@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Messages are gone for now (SPEC-028, ADR-0019; task #26): no `message_send` or `messages_inbox`,
+  no stored notices, notice digest or "unread messages" stop reason, nothing typed into an idle
+  session, and no Messages panel, unread counts, message notifications or
+  `GET /api/tasks/{tid}/messages`. Agents learn about their checks, delivery and armed merges from
+  `yulius wait` (which now says how an armed merge ended), `ci_status` and `delivery_status`. The
+  stored messages stay as history.
 - Ended worktrees holding only end-to-end output (`.e2e`), the APM cache (`apm_modules`) or Claude
   Code's own `.claude/` state are removed too (SPEC-019; seven were kept on the first deploy).
 - Agents meet fewer avoidable obstacles (SPEC-020):

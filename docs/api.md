@@ -217,7 +217,6 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
-| GET | `/api/tasks/{tid}/messages` | read | → `[Message]`: notices from Yulius and its agent's messages to people; older task-to-task rows still show, but no new ones are created: `message_send` only accepts `to="people"` (`to_task_id` null). People talk to the agent in its terminal; there is no route that posts a person's message to it (removed 2026-10-10, `POST` is 405) |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
 | WS | `/api/tasks/{tid}/terminal` | read (input: write) | terminal protocol below |
 
@@ -229,7 +228,7 @@ TaskSummary = {
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42},
-  "unread_messages": 0, "archived": false, "account_label": "Claude #2|null",
+  "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
@@ -272,7 +271,6 @@ TaskDetail = TaskSummary + {
   "delivery": Delivery, "switches": [{"at","reason","from","to"}]
 }
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
-Message = {"id","from":{"task_id|null","login|null","title"},"to_task_id|null","kind":"info|question|request (scope: older rows only)","subject","body","created_at","read":bool}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}
 ```
 
@@ -313,8 +311,8 @@ nothing is checked and nothing is held, and Auto uses its defaults.
   - `parallel`: a new task with the prompt (same harness, model, effort and mode);
   - `after`: a new task chained after this one;
   - `skip_after`: the given steps become `skipped` (with the note "Ruled out by the user: …" by
-    `user:<login>`), the agent gets a "Scope changed by the user" message, and a chained task gets
-    the prompt;
+    `user:<login>`; the agent sees them in its steps, no message is sent, SPEC-028), and a chained
+    task gets the prompt;
   - `revert`: stops the task (reaped within 30 s, else 409 and nothing changes), commits its work to
     a new branch `yulius/reverted/<number>-<ms>`, resets its worktree to where it forked from the
     integration branch, archives it, and starts a new task with the prompt; `note` names the
@@ -1014,7 +1012,7 @@ confirms with `POST /api/auth/reauth` (password) or by signing in with GitHub ag
 ## UI event stream
 
 `WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.removed",
-"task_id"}`, `{"type":"steps.updated","task_id"}`, `{"type":"message","task_id","message":Message}`,
+"task_id"}`, `{"type":"steps.updated","task_id"}`,
 `{"type":"sandbox.updated","sandbox":Sandbox}`, `{"type":"browser.action_requested","sandbox_id",
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
 `{"type":"account.updated","account":Account}` (instance administrators only),

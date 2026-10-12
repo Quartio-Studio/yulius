@@ -56,10 +56,10 @@ SPEC-011 DLV-012's "a notice arrives" (replaced by MSR-003).
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Agents have no message tools: message_send, messages_inbox and the notice digest are gone
-- [ ] Yulius stores no notices and types no wake-ups; `yulius wait` says how an armed merge ended
-- [ ] The web UI has no Messages: rail tool, sidebar badge, notifications and the messages route are gone
-- [ ] Specs, ADR and docs say messaging is withdrawn for now
+- [x] Agents have no message tools: message_send, messages_inbox and the notice digest are gone
+- [x] Yulius stores no notices and types no wake-ups; `yulius wait` says how an armed merge ended
+- [x] The web UI has no Messages: rail tool, sidebar badge, notifications and the messages route are gone
+- [x] Specs, ADR and docs say messaging is withdrawn for now
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

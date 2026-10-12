@@ -55,6 +55,26 @@ of closed and cancelled tasks, and a switch checks the quota and the other start
 before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md),
 [decision 0017](decisions/0017-sandbox-disk-upkeep.md)).
 
+## Agent feedback
+
+Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
+[decision 0019](decisions/0019-no-messages-until-delivery-is-reliable.md)): nothing is stored for
+an agent, injected by a hook or typed into its session. An agent pulls what it needs: it waits
+with `yulius wait` in a background shell, which Claude Code wakes it from, and reads
+`ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (Claude Code)
+    participant W as yulius wait (background shell)
+    participant Y as Yulius (internal API)
+    A->>Y: delivery_merge (checks still running: armed)
+    A->>W: start, end the turn
+    W->>Y: POST /internal/agent/wait (long poll)
+    Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
+    W-->>A: one line, then exits: Claude Code wakes the agent
+```
+
 ## Agent primitives
 
 Repository skills are APM primitives ([ADR-0016](decisions/0016-apm-for-agent-primitives.md),
