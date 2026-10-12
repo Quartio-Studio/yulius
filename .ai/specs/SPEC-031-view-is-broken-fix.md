@@ -1,11 +1,11 @@
 ---
 yulius-task: 3db6d0f4-6c71-4d37-90aa-91afcdc929eb
-status: in-progress
+status: done
 ---
 
 # SPEC-031: a long task title no longer breaks the start-rule editor
 
-Status: in progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #29
 Scope authorization: user request (F 2026-10-12, task #29): "View is broken. Fix.", with a screenshot of
@@ -71,4 +71,11 @@ below is generic, so one that can hold a long label opts in the same way.
 
 ## Evidence
 
-Filled in before merge.
+- Reproduced in Chrome 155 (headless) with a static page of the real stylesheets: two overlapping
+  lines, as in the screenshot; the same page with the fix shows one line ending in an ellipsis.
+- The new e2e test failed before the fix (commit d380e29: no one-line label, `fits: false`) and passes after.
+- `scripts/dev ci` exit 0; e2e full suite: 156 passed, 1 skipped.
+- Independent review (fresh read-only session): APPROVE, no major findings; applied `type="button"`
+  on the inner button and a sturdier test (right edge inside the select, no NaN line height).
+- Not covered: browsers without customizable selects (Firefox, Safari) were not run; they ignore the
+  extra child and keep the native control.

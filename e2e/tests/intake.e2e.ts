@@ -244,9 +244,9 @@ test('a long task title stays on one line in a condition, ending in an ellipsis'
     const select = document.querySelector('.rule-editor .rule-task') as HTMLElement;
     const shown = select.querySelector('selectedcontent') as HTMLElement | null;
     return {
-      fits: shown ? shown.getBoundingClientRect().height <= select.clientHeight : false,
+      fits: shown ? shown.getBoundingClientRect().height <= select.clientHeight && shown.getBoundingClientRect().right <= select.getBoundingClientRect().right : false,
       truncated: shown ? shown.scrollWidth > shown.clientWidth : false,
-      lines: shown ? Math.round(shown.getBoundingClientRect().height / parseFloat(getComputedStyle(shown).lineHeight)) : 0,
+      lines: shown ? Math.round(shown.getBoundingClientRect().height / (parseFloat(getComputedStyle(shown).lineHeight) || parseFloat(getComputedStyle(shown).fontSize) * 1.2)) : 0,
     };
   });
   expect(fit).toEqual({ fits: true, truncated: true, lines: 1 });
