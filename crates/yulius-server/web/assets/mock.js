@@ -714,7 +714,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   // While the sandbox is being prepared a new task waits after the preparation task (U-08).
   const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
   const preparation = preparing ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null;
-  // A start rule (SPEC-010): the mock checks the shape the server checks, and anchors the chain
+  // A start rule (SPEC-017): the mock checks the shape the server checks, and anchors the chain
   // on the first task the rule names.
   let rule = null;
   if (body.start_rule && body.start_rule.trim()) {

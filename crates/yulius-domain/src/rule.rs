@@ -1,4 +1,4 @@
-//! Start rules: a logical sentence over the state of other tasks of a sandbox (SPEC-010).
+//! Start rules: a logical sentence over the state of other tasks of a sandbox (SPEC-017).
 //!
 //! `#12 done and (#13 done or #14 ended)`: atoms `#N [state]` joined by `and`, `or`, `not`
 //! (`&&`, `||`, `!`) and parentheses; `not` binds tightest, then `and`, then `or`. Evaluation is

@@ -235,7 +235,9 @@ export function mountTaskView(ctx, sandbox, task) {
     const chainLink = (link, text, title) => (link.task_id
       ? h('a', { class: 'chip strip-extra chain-chip', href: href(`/s/${slug}/t/${link.number}`), dataset: { route: `/s/${slug}/t/${link.number}` }, title }, icon('branch', { size: 12 }), text)
       : h('span', { class: 'chip strip-extra chain-chip', title }, icon('branch', { size: 12 }), text));
-    const after = current.after ? chainLink(current.after, `After #${current.after.number}`, current.after.title ? `Runs after #${current.after.number} ${current.after.title}` : `#${current.after.number} was deleted`) : null;
+    const after = current.after ? (current.after.rule
+      ? chainLink(current.after, `When ${current.after.rule}`, `Starts by itself when ${current.after.rule}`)
+      : chainLink(current.after, `After #${current.after.number}`, current.after.title ? `Runs after #${current.after.number} ${current.after.title}` : `#${current.after.number} was deleted`)) : null;
     const next = (current.next || []).map((link) => chainLink(link, `Then #${link.number}`, `#${link.number} ${link.title || ''} runs after this task`));
     // How the task runs: "Auto → Goal · Feature" when Auto chose it (TSK-015), else Goal.
     const auto = autoChoiceLabel(current);
@@ -386,7 +388,7 @@ export function mountComposer(ctx, sandbox) {
   let workflows = [];
   // Run after another task of this sandbox (TSK-012): the new task waits until it is Done.
   let afterTaskId = '';
-  // Or wait for a logical sentence over the sandbox's tasks (SPEC-010), like `#12 done and #13 done`.
+  // Or wait for a logical sentence over the sandbox's tasks (SPEC-017), like `#12 done and #13 done`.
   let startRule = '';
   let split = null; // the split card while it shows (TSK-011)
   let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
@@ -504,7 +506,7 @@ export function mountComposer(ctx, sandbox) {
     ]);
   }
 
-  /** A start rule (SPEC-010): "#12 done and (#13 done or #14 ended)". The server checks it. */
+  /** A start rule (SPEC-017): "#12 done and (#13 done or #14 ended)". The server checks it. */
   function openRuleDialog() {
     const input = h('input', { class: 'input mono', type: 'text', value: startRule, placeholder: '#12 done and #13 done', maxlength: 500, autocomplete: 'off', spellcheck: 'false' });
     openModal({

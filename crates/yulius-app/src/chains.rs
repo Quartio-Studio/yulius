@@ -16,6 +16,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::Action;
 use yulius_domain::rule::{Facts, Rule, Truth};
 use yulius_domain::task::{TaskEvent, TaskStatus};
+use yulius_domain::time::Timestamp;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -152,11 +153,16 @@ impl App {
     /// Re-evaluates the tasks waiting for `predecessor`: starts them when it is Done, marks
     /// them as needing a person when it ended otherwise, leaves them waiting meanwhile.
     pub async fn advance_chains(self: &Arc<Self>, predecessor: &TaskId) {
-        let store = &self.deps.store;
-        // Waiting start rules may name this task anywhere (SPEC-010 RUL-005).
-        if let Ok(Some(before)) = store.task(predecessor).await {
+        // Waiting start rules may name this task anywhere (SPEC-017 RUL-005).
+        if let Ok(Some(before)) = self.deps.store.task(predecessor).await {
             self.advance_rule_chains(&before.sandbox_id).await;
         }
+        self.advance_after_chains(predecessor).await;
+    }
+
+    /// The tasks waiting for `predecessor` alone ("Run after #N", no rule).
+    async fn advance_after_chains(self: &Arc<Self>, predecessor: &TaskId) {
+        let store = &self.deps.store;
         let Ok(chains) = store.chain_successors(predecessor).await else {
             return;
         };
@@ -281,11 +287,12 @@ impl App {
                 }
             }
         }
+        // One rule pass per sandbox per tick, however many rules wait there.
         for sandbox in sandboxes {
             self.advance_rule_chains(&sandbox).await;
         }
         for predecessor in predecessors {
-            self.advance_chains(&predecessor).await;
+            self.advance_after_chains(&predecessor).await;
         }
     }
 
@@ -315,14 +322,19 @@ impl App {
         }
     }
 
-    /// What a rule can know about task `number` of `sandbox` (a missing task has ended).
-    async fn rule_facts(&self, sandbox: &SandboxId, number: u32) -> Facts {
+    /// What a rule can know about task `number` of `sandbox` (a missing task has ended), with
+    /// when that task was created: a number freed by deleting the newest task and given to a
+    /// later task never answers for a rule written before it.
+    async fn rule_facts(&self, sandbox: &SandboxId, number: u32) -> (Facts, Option<Timestamp>) {
         // (the caller memoises per pass: this may ask GitHub)
         let Ok(Some(task)) = self.deps.store.task_by_number(sandbox, number).await else {
-            return Facts {
-                ended: true,
-                ..Facts::default()
-            };
+            return (
+                Facts {
+                    ended: true,
+                    ..Facts::default()
+                },
+                None,
+            );
         };
         // A sandbox's preparation task counts as done once the sandbox is ready (U-08).
         let done = if task.origin == TaskOrigin::Onboarding {
@@ -335,18 +347,20 @@ impl App {
         } else {
             self.task_is_done(&task).await
         };
-        Facts {
+        let facts = Facts {
             done,
             merged: self.task_merged(&task.id).await,
             ended: matches!(
                 task.status,
                 TaskStatus::Closed | TaskStatus::Stopped(_) | TaskStatus::Failed(_)
             ),
-        }
+        };
+        (facts, Some(task.created_at))
     }
 
     /// Checks that a new task's rule names tasks of `sandbox` only and returns the first one
-    /// (the chain's anchor: branch base and briefing).
+    /// (the chain's anchor for links and the briefing; a rule task branches from the
+    /// integration branch).
     ///
     /// # Errors
     /// `Invalid` for an unknown task number or a full chain bound.
@@ -380,7 +394,7 @@ impl App {
             return;
         };
         // One reading of each named task per pass, however many rules name it.
-        let mut known: HashMap<u32, Facts> = HashMap::new();
+        let mut known: HashMap<u32, (Facts, Option<Timestamp>)> = HashMap::new();
         for task in tasks
             .into_iter()
             .filter(|t| t.status == TaskStatus::Chained)
@@ -398,7 +412,7 @@ impl App {
         self: &Arc<Self>,
         task: &TaskRecord,
         text: &str,
-        known: &mut HashMap<u32, Facts>,
+        known: &mut HashMap<u32, (Facts, Option<Timestamp>)>,
     ) {
         let rule = match Rule::parse(text) {
             Ok(rule) => rule,
@@ -414,11 +428,18 @@ impl App {
                 known.insert(number, self.rule_facts(&task.sandbox_id, number).await);
             }
         }
-        let facts = &*known;
         let ended = Facts {
             ended: true,
             ..Facts::default()
         };
+        // Only tasks that existed when this task was created answer for its rule.
+        let facts: HashMap<u32, Facts> = known
+            .iter()
+            .map(|(n, (facts, created))| {
+                let current = created.is_some_and(|at| at <= task.created_at);
+                (*n, if current { *facts } else { ended })
+            })
+            .collect();
         match rule.eval(&|n| facts.get(&n).copied().unwrap_or(ended)) {
             Truth::True => {
                 if let Err(err) = self.release_chained(task).await {
@@ -450,6 +471,7 @@ impl App {
         {
             if let Ok(Some(chain)) = store.chain(&task.id).await
                 && chain.blocked_reason.is_some()
+                && before.created_at <= task.created_at
                 && chain
                     .rule
                     .as_deref()
@@ -526,7 +548,7 @@ impl App {
         let store = &self.deps.store;
         let chain = store.chain(&task.id).await.ok()??;
         // A rule may be true because a task failed or never ran: it starts from the
-        // integration branch (SPEC-010).
+        // integration branch (SPEC-017).
         if chain.rule.is_some() {
             return None;
         }

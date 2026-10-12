@@ -111,7 +111,7 @@ pub struct ChainLink {
     /// predecessor stopped, failed, was cancelled, closed before it was done or was deleted).
     #[serde(default)]
     pub blocked: Option<String>,
-    /// On a task waiting for a start rule (SPEC-010): the rule in canonical text, for example
+    /// On a task waiting for a start rule (SPEC-017): the rule in canonical text, for example
     /// `#12 done and #13 done`. This link then shows the first task the rule names. Null for a
     /// plain "run after" chain.
     #[serde(default)]
@@ -170,7 +170,7 @@ pub struct CreateTask {
     /// `chained` until that task is Done.
     #[serde(default)]
     pub after_task_id: Option<String>,
-    /// Start when this logical sentence over the sandbox's tasks is true (SPEC-010), for example
+    /// Start when this logical sentence over the sandbox's tasks is true (SPEC-017), for example
     /// `#12 done and (#13 done or #14 ended)`. Not together with `after_task_id`.
     #[serde(default)]
     pub start_rule: Option<String>,

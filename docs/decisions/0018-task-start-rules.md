@@ -3,7 +3,7 @@
 ## Status
 
 Accepted. Extends [0012](0012-task-intake-and-chains.md); specified in
-[SPEC-010](../../.ai/specs/SPEC-010-task-start-rules.md).
+[SPEC-017](../../.ai/specs/SPEC-017-task-start-rules.md).
 
 ## Context
 
@@ -17,7 +17,7 @@ ended]` atoms with `and`, `or`, `not` and parentheses. The rule is parsed and ev
 domain module (`yulius_domain::rule`) in three-valued logic: a task that has not ended and is not
 in the asked state is unknown. True starts the task, unknown keeps it waiting, false (it can never
 become true) puts it under Needs you. The rule is stored as canonical text in `task_chains.rule`;
-`after_task_id` stays the first task it names (branch base, briefing, links). Whenever a task
+`after_task_id` stays the first task it names (briefing and links; a rule task branches from the integration branch, because a rule may be true while a named task failed or never ran). Whenever a task
 changes, the waiting rules of its sandbox are evaluated again (at most 32 per sandbox), and on the
 background tick. A plain "run after #N" chain is unchanged and means `#N done`.
 

@@ -1,11 +1,11 @@
 ---
 yulius-task: b74b1901-c035-461c-97f1-3c84bf6954aa
-status: draft
+status: done
 ---
 
-# SPEC-010: tasks start by a logical rule
+# SPEC-017: tasks start by a logical rule
 
-Status: draft
+Status: done
 Date: 2026-10-12
 Owner: Yulius task #15
 Scope authorization: user request: "Now we can chain tasks but we want actually even more
@@ -45,7 +45,7 @@ special case `#N done`.
 - [x] A chained task waits on its rule and starts when it is true (store, advancer)
 - [x] Start rules can be set through the API and shown on tasks
 - [x] The composer offers a start rule
-- [ ] Review, docs, ADR and delivery
+- [x] Review, docs, ADR and delivery
 
 ## Acceptance criteria
 
@@ -68,6 +68,19 @@ validation; an e2e test for the composer.
 
 - The canonical text is stored and reparsed on every evaluation, so there is one source of truth.
 - No dependency table: when any task changes, the waiting rules of its sandbox (at most 32) are
-  evaluated again; `after_task_id` stays the first named task (branch base, briefing, links).
+  evaluated again; `after_task_id` stays the first named task (briefing and links; the task branches from the integration branch).
   See ADR-0018.
 - Three-valued evaluation avoids a separate "can this still happen" analysis.
+- Finished by hand (2026-10-12, after the task was killed by an out-of-memory kill of its sandbox
+  and its review): SPEC-001's TSK-012 row is restored and TSK-016 has its own acceptance row
+  (AC-TSK-16); the background tick evaluates each sandbox's rules once, not once per legacy
+  predecessor; a named task created after the ruled task never answers its rule (defence for
+  reused numbers); the sidebar, task view and cancel dialog show the rule instead of "after #N";
+  a rule round-trips through the store.
+
+## Evidence
+
+- `cargo test -p yulius --test intake`: 8 passed, including `a_task_starts_when_its_start_rule_is_true`.
+- `cargo test -p yulius-store --test store chain`: passed with a stored rule.
+- `cargo test -p yulius-domain rule`: the parser and three-valued evaluation tests passed.
+- `scripts/dev ci` on macOS: see the pull request.

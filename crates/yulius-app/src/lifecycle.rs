@@ -84,7 +84,7 @@ impl App {
     }
 
     /// [`App::create_task_with`], or waiting for a start `rule` over other tasks of the sandbox
-    /// instead of one predecessor (SPEC-010): the task starts by itself once the rule is true.
+    /// instead of one predecessor (SPEC-017): the task starts by itself once the rule is true.
     ///
     /// # Errors
     /// As [`App::create_task_with`]; `Invalid` for a rule naming an unknown task, or a rule

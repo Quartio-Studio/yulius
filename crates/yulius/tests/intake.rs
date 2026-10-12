@@ -870,7 +870,7 @@ async fn redirect_reverts_only_with_confirmation_and_keeps_the_work() -> TestRes
     Ok(())
 }
 
-/// SPEC-010 RUL-003/RUL-005: a task waits for a logical sentence over other tasks: `and` needs
+/// SPEC-017 RUL-003/RUL-005: a task waits for a logical sentence over other tasks: `and` needs
 /// both, `or` either, `ended` fires when a task stops, a rule that can no longer be true needs a
 /// person, and every refusal is a 422 with a reason.
 #[tokio::test]
@@ -963,7 +963,7 @@ async fn a_task_starts_when_its_start_rule_is_true() -> TestResult {
     Ok(())
 }
 
-/// SPEC-010: the background tick starts a task whose rule became true, Start now releases a
+/// SPEC-017: the background tick starts a task whose rule became true, Start now releases a
 /// rule task, and deleting a task a rule names counts as that task ending.
 #[tokio::test]
 async fn start_rules_follow_the_tick_start_now_and_deletions() -> TestResult {

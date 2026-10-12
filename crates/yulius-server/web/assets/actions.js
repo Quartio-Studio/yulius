@@ -66,7 +66,7 @@ export async function stopTask(ctx, task) {
   if (task.status === 'chained') {
     const cancel = await confirmDialog({
       title: `Cancel task #${task.number}?`,
-      message: `It is queued after #${task.after ? task.after.number : '?'} and will not start. You can continue it later.`,
+      message: `It is queued ${task.after && task.after.rule ? `until ${task.after.rule}` : `after #${task.after ? task.after.number : '?'}`} and will not start. You can continue it later.`,
       confirmLabel: 'Cancel task',
       danger: true,
     });

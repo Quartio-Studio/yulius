@@ -349,7 +349,7 @@ impl App {
         if !self.deps.store.delete_task(&task.id).await? {
             return Err(AppError::NotFound);
         }
-        // A start rule naming the deleted task now sees it as ended (SPEC-010).
+        // A start rule naming the deleted task now sees it as ended (SPEC-017).
         self.advance_rule_chains(&deleted_in).await;
         let runs = self.config.data_dir.join("runs");
         for attempt in attempts {
