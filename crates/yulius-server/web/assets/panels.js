@@ -558,8 +558,8 @@ function createShellView(ctx, sandbox, getTask) {
 // ---------------------------------------------------------------- messages
 
 /**
- * A task's messages (COM-002, COM-005, F 2026-10-10): what other tasks sent it, what it sent them,
- * and its agent's messages to people. There is no composer: people talk to the agent in its
+ * A task's messages (COM-005, F 2026-10-10, F 2026-10-12): notices from Yulius (older rows from other
+ * tasks still show) and its agent's messages to people. There is no composer: people talk to the agent in its
  * terminal, so a message where the agent asks people something offers "Reply in the terminal".
  */
 function createMessagesView(ctx, sandbox, task) {
@@ -578,7 +578,7 @@ function createMessagesView(ctx, sandbox, task) {
   const rendered = new Map(); // message id → element
   function render() {
     const sorted = [...messages.values()].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-    if (sorted.length === 0) { rendered.clear(); setChildren(list, placeholder('No messages yet. Messages between this task and other tasks show here, and so do its agent’s messages to people. To talk to the agent, type in its terminal.')); return; }
+    if (sorted.length === 0) { rendered.clear(); setChildren(list, placeholder('No messages yet. Notices about this task show here, and so do its agent’s messages to people. To talk to the agent, type in its terminal.')); return; }
     const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 24;
     const fresh = sorted.filter((m) => !rendered.has(m.id));
     const last = sorted.filter((m) => rendered.has(m.id)).pop();

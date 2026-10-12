@@ -206,30 +206,24 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     assert_eq!(tasks["tasks"][0]["harness"], "claude");
     assert_eq!(tasks["you"]["harness"], "claude");
 
-    // It messages the other task by number; the other task reads it (COM-002).
+    // MSG-001: no task-to-task messages; only to="people" is accepted.
     let other_number = tasks["tasks"][0]["number"].as_u64().ok_or("number")?;
-    let (sent, err) = tool(&internal, "tok-claude", "message_send", json!({"number": other_number, "kind": "scope", "subject": "split", "body": "I take src/api; you take src/ui?"})).await?;
-    assert!(!err, "{sent}");
+    for args in [
+        json!({"number": other_number, "body": "hi"}),
+        json!({"task_id": "claude2", "body": "hi"}),
+        json!({"to": "all", "body": "hi"}),
+        json!({"body": "hi"}),
+        json!({"to": "people", "kind": "scope", "body": "hi"}),
+    ] {
+        let (refused, err) = tool(&internal, "tok-claude", "message_send", args.clone()).await?;
+        assert!(err, "{args} is refused: {refused}");
+    }
     let (inbox, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
     assert_eq!(
-        inbox["messages"][0]["body"],
-        "I take src/api; you take src/ui?"
-    );
-    assert_eq!(inbox["messages"][0]["kind"], "scope");
-    let (empty, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
-    assert_eq!(
-        empty["messages"].as_array().map(Vec::len),
+        inbox["messages"].as_array().map(Vec::len),
         Some(0),
-        "read messages are not repeated"
+        "nothing reached the other task"
     );
-    let (selfmsg, err) = tool(
-        &internal,
-        "tok-claude",
-        "message_send",
-        json!({"task_id": "claude1", "body": "x"}),
-    )
-    .await?;
-    assert!(err, "cannot message yourself: {selfmsg}");
 
     // #46: an answer to the people (a reply to a person's message) is shown in the task's thread
     // and published to the UI; no task receives it.
@@ -268,7 +262,7 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
         "no task receives an answer to people"
     );
 
-    // Scope claims (COM-003, AC-COM-3, #50): overlaps are reported to both tasks.
+    // Scope claims (COM-003, AC-COM-3, #50): an overlap is reported to the claiming task.
     let (claimed, err) = tool(
         &internal,
         "tok-claude",
@@ -292,13 +286,10 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     assert_eq!(overlap["conflicts"][0]["their_pattern"], "src/api/**");
     assert_eq!(overlap["conflicts"][0]["their_note"], "API work");
     let (told, _) = tool(&internal, "tok-claude", "messages_inbox", json!({})).await?;
-    let told = told["messages"].as_array().ok_or("messages")?;
-    assert!(
-        told.iter().any(|m| m["kind"] == "scope"
-            && m["body"]
-                .as_str()
-                .is_some_and(|b| b.contains("`src/**/*.rs` overlaps your claim `src/api/**`"))),
-        "the other task is told: {told:?}"
+    assert_eq!(
+        told["messages"].as_array().map(Vec::len),
+        Some(0),
+        "MSG-002: the overlap tells the other task nothing: {told}"
     );
     let (listed, _) = tool(&internal, "tok-other", "scopes_list", json!({})).await?;
     let claims = listed["claims"].as_array().ok_or("claims")?;

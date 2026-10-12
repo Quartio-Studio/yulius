@@ -1,6 +1,6 @@
 //! Advisory scope claims between parallel tasks (SPEC-001 COM-003, SPEC-002 §7.4): an agent
 //! claims repository path globs before changing shared areas; overlaps with the claims of other
-//! live tasks are reported to both tasks so they can agree who changes what. Claims never block
+//! live tasks are reported to the claiming agent only (nobody else is messaged, MSG-002). Claims never block
 //! file access. Claims of tasks that are no longer live are ignored.
 
 use serde_json::{Value, json};
@@ -15,8 +15,6 @@ use crate::model::{ScopeClaimRecord, TaskRecord};
 pub const MAX_PATTERNS_PER_CLAIM: usize = 20;
 /// Most active claims one task holds (#73): claims are compared pairwise.
 pub const MAX_CLAIMS_PER_TASK: usize = 50;
-/// Most overlaps listed in one message to another task.
-const MAX_OVERLAPS_PER_MESSAGE: usize = 10;
 
 fn invalid_pattern(text: &str, err: impl std::fmt::Display) -> AppError {
     let shown: String = text.chars().take(80).collect();
@@ -121,8 +119,8 @@ impl App {
     }
 
     /// `scope_claim`: claims repository paths for this task. Overlaps with other live tasks'
-    /// claims are returned to the agent and sent to each of those tasks as one `scope` message,
-    /// which wakes an idle task (AC-COM-3). A pattern the task already holds is not repeated.
+    /// claims are returned to the agent (AC-COM-3); no message is sent. A pattern the task
+    /// already holds is not repeated.
     ///
     /// # Errors
     /// `Invalid` patterns or note; store failures.
@@ -147,21 +145,16 @@ impl App {
                 "a task holds at most {MAX_CLAIMS_PER_TASK} scope claims ({holding} now); release some with scope_release or claim a wider glob"
             )));
         }
-        // Every overlap is reported to this agent; only new claims message the other tasks, so
-        // claiming a held path again does not wake them again (#73).
+        // Every overlap is reported to this agent only; no message goes to the other tasks
+        // (MSG-002).
         let mut overlaps: Vec<(&ScopeClaim, &ScopeClaim)> = Vec::new();
-        let mut fresh: Vec<(&ScopeClaim, &ScopeClaim)> = Vec::new();
         for claim in &claims {
-            let found: Vec<(&ScopeClaim, &ScopeClaim)> = conflicts(claim, &live.claims)
-                .into_iter()
-                .map(|theirs| (claim, theirs))
-                .collect();
-            let held = held_by_me(claim);
-            if !held {
-                fresh.extend(found.iter().copied());
-            }
-            overlaps.extend(found);
-            if !held {
+            overlaps.extend(
+                conflicts(claim, &live.claims)
+                    .into_iter()
+                    .map(|theirs| (claim, theirs)),
+            );
+            if !held_by_me(claim) {
                 let record = ScopeClaimRecord {
                     id: self.deps.crypto.new_id(),
                     task_id: claim.task.clone(),
@@ -174,57 +167,6 @@ impl App {
             }
         }
 
-        // One message per other task, listing its overlaps.
-        let mut told: Vec<&TaskRecord> = Vec::new();
-        for (_, theirs) in &fresh {
-            if let Some(other) = live.task(theirs)
-                && !told.iter().any(|t| t.id == other.id)
-            {
-                told.push(other);
-            }
-        }
-        for other in &told {
-            let mine: Vec<(&ScopeClaim, &ScopeClaim)> = fresh
-                .iter()
-                .filter(|(_, theirs)| theirs.task == other.id)
-                .copied()
-                .collect();
-            let mut lines: Vec<String> = mine
-                .iter()
-                .take(MAX_OVERLAPS_PER_MESSAGE)
-                .map(|(claim, theirs)| {
-                    format!(
-                        "- `{}` overlaps your claim `{}`",
-                        claim.pattern, theirs.pattern
-                    )
-                })
-                .collect();
-            if mine.len() > MAX_OVERLAPS_PER_MESSAGE {
-                lines.push(format!(
-                    "- … and {} more",
-                    mine.len() - MAX_OVERLAPS_PER_MESSAGE
-                ));
-            }
-            let title: String = ctx.task.title.chars().take(120).collect();
-            let why = if note.trim().is_empty() {
-                String::new()
-            } else {
-                let shown: String = note.trim().chars().take(300).collect();
-                format!("\nTheir note: {shown}")
-            };
-            let body = format!(
-                "Task #{} \"{title}\" claimed paths that overlap yours:\n{}{why}\nAgree who changes what with message_send kind=scope (to task #{}) before editing them.",
-                ctx.task.number,
-                lines.join("\n"),
-                ctx.task.number,
-            );
-            self.tool_message_send(
-                ctx,
-                &json!({"task_id": other.id.as_str(), "kind": "scope", "subject": "Scope overlap", "body": body}),
-            )
-            .await?;
-        }
-
         let reported: Vec<Value> = overlaps
             .iter()
             .map(|(claim, theirs)| live.overlap(&claim.pattern, theirs))
@@ -232,7 +174,7 @@ impl App {
         let advice = if reported.is_empty() {
             "No overlap with other tasks. Claims are advisory; release them with scope_release when that work is done."
         } else {
-            "The other tasks were told. Agree who changes what with message_send kind=scope before editing these paths."
+            "These paths overlap other tasks' claims. Avoid editing them while those claims are live, or choose different paths; read the other task with task_get."
         };
         Ok(json!({
             "claimed": claims.iter().map(|c| c.pattern.as_str()).collect::<Vec<_>>(),

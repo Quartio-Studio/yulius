@@ -1,11 +1,11 @@
 ---
 yulius-task: 71572985-c2dd-4f3d-baf1-bfc91a282cee
-status: in-progress
+status: done
 ---
 
 # SPEC-010: remove task-to-task messaging for now
 
-Status: in progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #9
 Scope authorization: user request (F 2026-10-12): "delete messaging-to-other-tasks feature for now".
@@ -36,11 +36,11 @@ stay (no migration); old task-to-task rows may still show in a task's panel.
 
 ## Plan
 
-- [ ] Tests first: message_send to people only, scope overlap without messages
-- [ ] Server: tool, scopes, briefing, digest
-- [ ] Web UI and mock
-- [ ] Specs and docs
-- [ ] Gates, review, delivery
+- [x] Tests first: message_send to people only, scope overlap without messages
+- [x] Server: tool, scopes, briefing, digest
+- [x] Web UI and mock
+- [x] Specs and docs
+- [x] Gates, review, delivery
 
 ## Acceptance criteria
 
@@ -58,3 +58,8 @@ Integration tests in `mcp_coordination.rs`, `supervision.rs`, `agent_hooks.rs`; 
 
 - COM-002 and AC-COM-2 are withdrawn, not deleted: tables and history stay so a future return needs no migration.
 - `task_get` and `tasks_list` stay: reading other tasks is not messaging.
+
+## Evidence
+
+- `scripts/dev ci` exit 0 (fmt, clippy, docs, repository check, tests).
+- e2e: `messages` and `rail` pass. On a host at load average 25-29, `consistency`, `editor`, `filedrop`, `terminal` (and others) time out; the same four files fail identically on unmodified `dev` (eef36c5), so they are load timeouts, not this change.

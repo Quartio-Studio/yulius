@@ -13,7 +13,7 @@ use crate::tasks::progress;
 use yulius_domain::steps::{self as rules, By, PlannedStep, StepStatus};
 
 /// Message kinds agents may send.
-pub const MESSAGE_KINDS: [&str; 4] = ["info", "question", "request", "scope"];
+pub const MESSAGE_KINDS: [&str; 3] = ["info", "question", "request"];
 /// Step statuses.
 pub const STEP_STATUSES: [&str; 5] = ["pending", "in_progress", "done", "skipped", "blocked"];
 /// Maximum steps per task (a plan of similar-effort steps, STP-006).
@@ -171,13 +171,18 @@ impl App {
         Ok(json!({ "context": context }))
     }
 
-    /// `message_send`: harness-independent message to a task (by id/number), a broadcast to the
-    /// other tasks (`to="all"`, COM-002), or an answer to the people using Yulius (`to="people"`,
-    /// COM-005, #46): shown in this task's Messages and in their notifications.
+    /// `message_send`: the agent's message to the people using Yulius (`to="people"`, COM-005,
+    /// #46): shown in this task's Messages and in their notifications. Messages to other tasks
+    /// are gone (COM-002 withdrawn, MSG-001); notices come from Yulius itself (`tell_task`).
     ///
     /// # Errors
-    /// `Invalid` input, `NotFound` recipient.
+    /// `Invalid` input.
     pub async fn tool_message_send(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
+        if args.get("to").and_then(Value::as_str) != Some("people") {
+            return Err(AppError::Invalid(
+                "message_send only tells or asks the people using Yulius: pass to=\"people\" (messages to other tasks are not supported)".into(),
+            ));
+        }
         let body = str_arg(args, "body")?.trim();
         if body.is_empty() || body.len() > 16 * 1024 {
             return Err(AppError::Invalid("body must be 1 byte to 16 KiB".into()));
@@ -195,95 +200,43 @@ impl App {
             .chars()
             .take(200)
             .collect();
-        let to = args.get("to").and_then(Value::as_str);
-        let broadcast = to == Some("all");
-        let people = to == Some("people");
-        let (to_task, recipients) = if people {
-            (None, Vec::new())
-        } else if broadcast {
-            let mut recipients: Vec<TaskId> = self
-                .deps
-                .store
-                .tasks(&ctx.task.sandbox_id, false)
-                .await?
-                .into_iter()
-                .filter(|t| t.id != ctx.task.id)
-                .map(|t| t.id)
-                .collect();
-            recipients.dedup();
-            (None, recipients)
-        } else {
-            let target = self.agent_task_ref(ctx, args).await?;
-            if target.id == ctx.task.id {
-                return Err(AppError::Invalid("cannot message yourself".into()));
-            }
-            (Some(target.id.clone()), vec![target.id])
-        };
         let record = MessageRecord {
             id: MessageId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
             sandbox_id: ctx.task.sandbox_id.clone(),
             from_task: Some(ctx.task.id.clone()),
             from_user: None,
-            to_task,
+            to_task: None,
             kind: kind.to_owned(),
             subject,
             body: body.to_owned(),
             created_at: self.now(),
         };
-        self.deps.store.insert_message(&record, &recipients).await?;
-        for r in &recipients {
-            let entry = crate::model::InboxEntry {
-                message: record.clone(),
-                delivered: false,
-                read: false,
-            };
-            if let Ok(view) = self.message_view(&entry).await {
-                self.events.publish(
-                    Some(ctx.task.sandbox_id.clone()),
-                    false,
-                    yulius_contracts::events::UiEvent::Message {
-                        task_id: r.to_string(),
-                        message: view,
-                    },
-                );
-            }
-            self.publish_task(r).await;
-            self.notify_message(r).await;
-        }
-        if people {
-            // No task receives it: the people see it in this task's thread and notifications.
-            let entry = crate::model::InboxEntry {
-                message: record.clone(),
-                delivered: false,
-                read: false,
-            };
-            if let Ok(view) = self.message_view(&entry).await {
-                self.events.publish(
-                    Some(ctx.task.sandbox_id.clone()),
-                    false,
-                    yulius_contracts::events::UiEvent::Message {
-                        task_id: ctx.task.id.to_string(),
-                        message: view,
-                    },
-                );
-            }
-            return Ok(
-                json!({"sent": true, "message_id": record.id.as_str(), "to": "people", "shown": "in this task's Messages and in people's notifications"}),
+        self.deps.store.insert_message(&record, &[]).await?;
+        // No task receives it: the people see it in this task's thread and notifications.
+        let entry = crate::model::InboxEntry {
+            message: record.clone(),
+            delivered: false,
+            read: false,
+        };
+        if let Ok(view) = self.message_view(&entry).await {
+            self.events.publish(
+                Some(ctx.task.sandbox_id.clone()),
+                false,
+                yulius_contracts::events::UiEvent::Message {
+                    task_id: ctx.task.id.to_string(),
+                    message: view,
+                },
             );
         }
-        Ok(json!({"sent": true, "message_id": record.id.as_str(), "recipients": recipients.len()}))
+        Ok(
+            json!({"sent": true, "message_id": record.id.as_str(), "to": "people", "shown": "in this task's Messages and in people's notifications"}),
+        )
     }
 
-    /// Hook for the supervisor to wake idle recipients (no-op until a supervisor is attached).
-    /// A message from Yulius itself to one task (a `request`: it reaches the agent at its next
+    /// A notice from Yulius itself to one task (a `request`: it reaches the agent at its next
     /// turn end, and an agent waiting at its prompt is woken for it). Used to keep delivery
     /// going without a person (F 2026-10-11: "the agent is autonomous").
-    pub(crate) async fn tell_task(
-        &self,
-        task: &crate::model::TaskRecord,
-        subject: &str,
-        body: String,
-    ) {
+    pub async fn tell_task(&self, task: &crate::model::TaskRecord, subject: &str, body: String) {
         let Ok(id) = MessageId::parse(&self.deps.crypto.new_id()) else {
             return;
         };
