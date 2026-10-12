@@ -1852,13 +1852,16 @@ translated. A switch resumes the task's own Claude session on another account.
 
 ### 7.4 Yulius MCP (internal listener `/mcp`, Streamable HTTP, JSON-RPC 2.0)
 
-Authentication: `Authorization: Bearer <task token>`; token → (task, attempt). Protocol versions
+Authentication: `Authorization: Bearer <task token>`; token → (task, attempt). A Cockpit's
+`ck_…` bearer (SPEC-037, ADR-0027) resolves to its owner and sandbox and is served only the
+management tools (tasks, automations, workflows, sessions). Protocol versions
 accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 
 | Tool | Purpose (requirements) |
 | --- | --- |
 | `project_context` | Project summary, architecture/decision index, recent changes, delivery rules (COM-004, DSC-009) |
 | `tasks_list`, `task_get` | Previous and parallel tasks: status, harness, branch, spec, steps, summary (COM-001) |
+| `task_create` | Create and start a task as New task does, origin `agent`, for the task's creator or the Cockpit's owner; at most 20 per project and rolling hour (SPEC-037 MGT-001..003) |
 | ~~`message_send`, `messages_inbox`~~ | Withdrawn (SPEC-028, ADR-0023): no message tools. |
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |

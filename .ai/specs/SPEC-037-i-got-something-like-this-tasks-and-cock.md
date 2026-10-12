@@ -1,11 +1,11 @@
 ---
 yulius-task: 078576a3-bcd3-4546-8c85-ee0bd5d4c210
-status: draft
+status: in-progress
 ---
 
 # SPEC-037: Tasks and the Cockpit create tasks and automations
 
-Status: draft
+Status: in progress
 Date: 2026-10-12
 Owner: Yulius task #35
 Scope authorization: user request: "I got something like this. Tasks and cockpit should be able to
@@ -95,11 +95,11 @@ flowchart LR
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] Task agents create tasks with task_create, bounded per project
-- [ ] The Cockpit is served the management tools under its own token
-- [ ] The Cockpit launches with the Yulius MCP server
-- [ ] Docs, ADR and architecture describe the managing Cockpit
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Task agents create tasks with task_create, bounded per project
+- [x] The Cockpit is served the management tools under its own token
+- [x] The Cockpit launches with the Yulius MCP server
+- [x] Docs, ADR and architecture describe the managing Cockpit
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -154,6 +154,6 @@ flowchart LR
   the window.
 - **Scope.** This task covers creating and listing tasks and automations, the user's examples.
   Stopping, archiving or deleting tasks and deleting automations from a Cockpit are separate
-  capabilities, filed as a follow-up issue.
+  capabilities, filed as follow-up issue #275.
 - Cockpits already running when the server is updated keep running without the tools until they
   are started again ("Start again", `/exit`, or the idle stop).

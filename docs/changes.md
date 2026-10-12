@@ -14,6 +14,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`.
 - A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
   wrapping over the condition's border (SPEC-031, task #29).
+- The Cockpit and task agents create tasks and automations (SPEC-037, ADR-0027; task #35). A new
+  `task_create` MCP tool creates a task the way New task does (workflow, mode, after a task or a
+  start rule), on the authority of the task's creator; tools create at most 20 tasks an hour
+  per project. The Cockpit now starts with the Yulius MCP server under its own bearer. It is
+  served the tools for tasks, automations, workflows and sessions, acting for its owner, so
+  "create a task from that" or "every day at 4am align the docs" just works. It asks before
+  creating anything. A Cockpit already running gets the tools when it starts again.
 - Attached images reach Claude Code as pasted images (SPEC-030, ADR-0026; task #28). A task with
   attached images starts with no CLI prompt. Yulius types its first message into the terminal:
   each image's path is pasted (Claude Code shows `[Image #N]` and sends an image block), then the
