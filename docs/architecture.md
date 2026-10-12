@@ -59,7 +59,7 @@ before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-dis
 
 Every user has one plain Claude Code session per sandbox, the Cockpit
 ([SPEC-021](../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
-[decision 0019](decisions/0019-cockpit-as-a-plain-shell-session.md)). It is a sandbox shell of
+[decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)). It is a sandbox shell of
 kind `cockpit` that runs `claude` instead of the login shell: no hooks, MCP or briefing, a pool
 subscription's token, and the newest conversation resumed whenever it starts again.
 

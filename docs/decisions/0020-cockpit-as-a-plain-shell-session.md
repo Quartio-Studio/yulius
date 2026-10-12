@@ -1,4 +1,4 @@
-# 0019. The Cockpit is a plain Claude Code session on the shell runtime
+# 0020. The Cockpit is a plain Claude Code session on the shell runtime
 
 ## Status
 

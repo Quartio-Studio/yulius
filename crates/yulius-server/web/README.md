@@ -246,7 +246,7 @@ the real server. Options (combine with `&`): `setup=1` (setup required; token
 `role=superadmin` (the default), `contained=0` (shows "Not isolated"), `github=0` (GitHub App not configured), `github_linked=0`
 (the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
 the home page asks them to sign in with GitHub), `sandboxes=0` (a fresh instance without sandboxes: the
-home screen's first steps), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
+home screen's first steps), `tasks=0` (sandboxes without tasks yet: no start rule to offer), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
 N×M until this one types or clicks into the terminal), `update=1` (a newer `main` is on offer; Update
 now walks through its phases in about six seconds) or `update=fail` (the same, rolled back),
 `helper=0` (no update helper), `jev=config` (a Jev key file is configured), `fail=<path>` (GET

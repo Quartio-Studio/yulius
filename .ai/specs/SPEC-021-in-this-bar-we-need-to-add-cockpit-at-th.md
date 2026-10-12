@@ -62,7 +62,7 @@ flowchart LR
   UI -->|"WS /api/shells/id/terminal"| SH
 ```
 
-- The Cockpit is a shell runtime of kind `Cockpit` ([ADR-0019](../../docs/decisions/0019-cockpit-as-a-plain-shell-session.md)):
+- The Cockpit is a shell runtime of kind `Cockpit` ([ADR-0020](../../docs/decisions/0020-cockpit-as-a-plain-shell-session.md)):
   same ownership, containment, adoption, terminal and idle reaping as shells, a different
   program. `ShellFile` records the kind (default `terminal`, so older records still adopt).
 - `HarnessPort::plan_cockpit` builds the plain launch: argv `claude [--resume <id>]`, env
@@ -104,7 +104,7 @@ flowchart LR
 
 ## Decisions
 
-- **Shell runtime, not a task** (ADR-0019): a task brings hooks, MCP, briefing, gates, a number,
+- **Shell runtime, not a task** (ADR-0020): a task brings hooks, MCP, briefing, gates, a number,
   a branch and a worktree; the user asked for a plain session. Shells already give per-user
   privacy, containment, restart adoption and the terminal.
 - **Per sandbox**: a Claude session needs a working directory and a sandbox's tools; the

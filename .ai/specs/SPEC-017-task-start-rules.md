@@ -36,7 +36,7 @@ special case `#N done`.
 | RUL-004 | Every task named by a rule must exist in the same sandbox, and must not be the task itself. | API test |
 | RUL-005 | A rule is evaluated again whenever any task it names changes, and on the background tick. | integration test |
 | RUL-006 | `after_task_id` keeps working unchanged and means `#N done`. A rule and `after_task_id` together are refused. | API test |
-| RUL-007 | Task summaries show the rule; Start now and Cancel stay available; the composer offers "When a rule is true…". | API and e2e tests |
+| RUL-007 | Task summaries show the rule; Start now and Cancel stay available; the composer offers "When a rule is true…", an editor of picked conditions since [SPEC-022](SPEC-022-when-rule-is-true-should-be-a-simple-edi.md). | API and e2e tests |
 
 ## Plan
 

@@ -1,5 +1,5 @@
 //! The Cockpit: every user's permanent Claude Code session in a sandbox, for quick questions and
-//! work that should not become a task (SPEC-021, ADR-0019).
+//! work that should not become a task (SPEC-021, ADR-0020).
 //!
 //! Contract:
 //! - one Cockpit per user and sandbox, for users with write access; [`App::cockpit_open`] returns

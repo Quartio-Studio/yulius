@@ -807,7 +807,7 @@ resolves to nothing, the run gets the server without that variable or token.
     else) speaks the terminal protocol (`state` has `attempt_seq` and `harness` `null`). A shell
     ends when its process exits (the server sends `exit` and closes), when it is closed, or after
     24 h without viewers; it keeps running across a server restart. Shells never change tasks.
-- Cockpit (SPEC-021, ADR-0019): every user's own plain Claude Code session per sandbox, a shell
+- Cockpit (SPEC-021, ADR-0020): every user's own plain Claude Code session per sandbox, a shell
   of kind `cockpit`.
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume

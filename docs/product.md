@@ -24,7 +24,8 @@ watching, steering and unblocking.
   deleted and comes back with its conversation.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
-  dependent tasks, also by a logical rule such as "#12 done and #13 done".
+  dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
+  builds from picked conditions (a task, its state, all or any).
 - **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are
   subscription-agnostic, switches and pauses are invisible to agents.
 - **Delivery discipline**: spec when it matters, effort-weighted steps, independent review,
