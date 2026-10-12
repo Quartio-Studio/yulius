@@ -327,6 +327,22 @@ impl App {
         }
     }
 
+    /// Whether the task's agent has background shells running right now (a fresh probe).
+    pub(crate) async fn shells_running_now(&self, task_id: &TaskId) -> bool {
+        let Ok(Some(attempt)) = self.deps.store.live_attempt(task_id).await else {
+            return false;
+        };
+        let Some(pid) = attempt.child_pid else {
+            return false;
+        };
+        let host = Arc::clone(&self.deps.session_host);
+        let probe = tokio::task::spawn_blocking(move || host.background_shells(pid));
+        matches!(
+            tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe).await,
+            Ok(Ok(Some(n))) if n > 0
+        )
+    }
+
     /// Since when the idle task's background shells have been running, when they are.
     pub(crate) fn background_shells_since(&self, task_id: &TaskId) -> Option<i64> {
         let runtime = self.existing_runtime(task_id)?;

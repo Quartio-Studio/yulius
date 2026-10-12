@@ -582,8 +582,12 @@ impl App {
             .store(false, Ordering::SeqCst);
         let current = ctx.attempt.account_id.clone();
         let pool = self.rotation_input(task, current.clone()).await?;
+        // A switch restarts the session and kills its background shells: a build or gate the
+        // agent left running would be lost (tasks #3 and #5, F 2026-10-11/12).
+        let shells_busy = self.shells_running_now(&task.id).await;
         let stays = match rotation::decide(&pool, Trigger::Proactive) {
             (Decision::Stay, _) => true,
+            (Decision::Switch { .. }, _) if shells_busy => true,
             // A switch was refused moments ago (the new session could not start): the agent
             // keeps working on its current subscription instead of being held.
             (Decision::Switch { .. }, _) if self.switch_cooling(&task.id) => true,

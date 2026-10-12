@@ -162,14 +162,48 @@ impl App {
         match (sandbox, prepared) {
             (Some(sandbox), Ok(())) => {
                 let sandbox = Arc::new(sandbox);
+                // Fail fast: the run's jobs share a cancel signal that follows the run's own
+                // (superseded, stopped) and fires when one of them fails, so a failed `quality`
+                // no longer leaves `e2e` holding the sandbox's CI lane for half an hour.
+                let (siblings_tx, siblings) = watch::channel(cancel.borrow().clone());
+                let siblings_tx = Arc::new(siblings_tx);
+                {
+                    let mut outer = cancel.clone();
+                    let forward = Arc::clone(&siblings_tx);
+                    tokio::spawn(async move {
+                        while outer.changed().await.is_ok() {
+                            let reason = outer.borrow().clone();
+                            if reason.is_some() {
+                                let _ = forward.send(reason);
+                                break;
+                            }
+                        }
+                    });
+                }
                 let mut handles = Vec::with_capacity(jobs.len());
                 for job in &jobs {
                     let app = Arc::clone(self);
                     let (sandbox, run, job) = (Arc::clone(&sandbox), run.clone(), job.clone());
                     let checkout = checkout_name(&job, &jobs);
-                    let cancel = cancel.clone();
+                    let job_cancel = siblings.clone();
+                    let stop_siblings = Arc::clone(&siblings_tx);
                     handles.push(tokio::spawn(async move {
-                        app.ci_job(&sandbox, &run, &job, &checkout, cancel).await;
+                        Arc::clone(&app)
+                            .ci_job(&sandbox, &run, &job, &checkout, job_cancel)
+                            .await;
+                        let failed =
+                            app.deps
+                                .store
+                                .ci_jobs(&run.id, false)
+                                .await
+                                .is_ok_and(|all| {
+                                    all.iter()
+                                        .any(|j| j.id == job.id && j.state == RunState::Failed)
+                                });
+                        if failed && stop_siblings.borrow().is_none() {
+                            let _ = stop_siblings
+                                .send(Some(format!("stopped early: job {} failed", job.name)));
+                        }
                     }));
                 }
                 for handle in handles {

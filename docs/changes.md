@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Agents meet fewer avoidable obstacles (SPEC-020):
+  - pinned tools are built once per home and linked into each worktree;
+  - the changes log merges with Git's union driver;
+  - memory pressure kills an agent's build before the agent, and agent Rust builds use a third of
+    the CPUs;
+  - CI reuses the result of a tree it already tested, stops a run's jobs when one fails, keeps a
+    superseded pull request's queue place, retries an errored run once and says it is not the code,
+    and tests a pull request with its own CI jobs;
+  - proactive switches wait for background shells;
+  - Yulius gives each task its spec number;
+  - onboarding runs as a goal task that must run every CI job.
 - Nothing refers to GitHub Actions runs any more: the delivery steps, the pull request template,
   the `yulius-git` and `yulius-verify` skills and the branch policy's promotion evidence use the
   `yulius/ci` status of the exact dev head (#184).

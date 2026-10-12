@@ -52,15 +52,22 @@ pub const ONBOARDING_TITLE: &str = "Prepare this repository for Yulius";
 /// The development-environment instruction every onboarding task starts with (F 2026-10-11:
 /// the preparation agent had no Rust toolchain afterwards).
 const ENVIRONMENT_SETUP: &str = "Set up this sandbox's development environment before anything \
-else, so you and every later task can build and test: install each toolchain and system \
-package the repository needs (its bootstrap script or docs; toolchain files such as \
-rust-toolchain.toml, .nvmrc / package.json engines, .python-version / pyproject.toml, go.mod, \
-Gemfile), with `sudo apt-get install` for system packages and the official installers for \
-toolchains (for example rustup into your home: `curl https://sh.rustup.rs -sSf | sh -s -- -y`). \
-~/.cargo/bin and ~/.local/bin are on PATH for every run; installed packages and your home \
-persist in this sandbox. Then run the repository's own test, lint and build commands until they \
-work, and record them in yulius.toml [commands]. A check that still cannot run is a problem to \
-report in the pull request, never a reason to skip it silently.";
+else, so you and every later task can build and test with zero obstacles (F 2026-10-12: agents met \
+missing toolchains that onboarding should have installed). First check what the sandbox already \
+has (`node --version`, `cargo --version`, `python3 --version`, `gh --version`, ...). Then install \
+each toolchain and system package the repository needs (its bootstrap script or docs; toolchain \
+files such as rust-toolchain.toml, .nvmrc / package.json engines, .python-version / \
+pyproject.toml, go.mod, Gemfile), with `sudo apt-get install` for system packages and the official \
+installers for toolchains (for example rustup into your home: `curl https://sh.rustup.rs -sSf | sh \
+-s -- -y`). ~/.cargo/bin and ~/.local/bin are on PATH for every run; your home persists and is \
+shared by every task's worktree, so install tools there once (never per worktree). Install what the \
+tests need too (browsers for end-to-end tests, test fixtures, services). Then run the repository's \
+test, lint and build commands until they work and record them in yulius.toml [commands]; run every \
+`[[ci.jobs]]` command exactly as written, from the repository root, until it passes: Yulius CI runs \
+it with an empty home, so a job installs what it needs itself (as `scripts/bootstrap.py \
+--install-rustup` does). A monorepo's jobs may run only its affected project's checks. End with a \
+summary of what works and how it was verified; a check that still cannot run is a problem to report \
+there, never a reason to skip it silently.";
 
 /// Title of the onboarding task of a repository that already follows the Yulius format.
 pub const ENVIRONMENT_TITLE: &str = "Set up this sandbox's environment";
@@ -385,7 +392,10 @@ impl App {
                 origin: TaskOrigin::Onboarding,
                 automation_run: None,
                 start: false,
-                mode: crate::model::TaskMode::Prompt,
+                // A goal task ends Done when its work is merged (SPEC-011); in prompt mode a
+                // finished preparation sat at "Your turn" and showed as needing a person
+                // (F 2026-10-11, task #1).
+                mode: crate::model::TaskMode::Goal,
             })
             .await?;
         // Tasks created without a run start archived; the preparation task must stay visible.
