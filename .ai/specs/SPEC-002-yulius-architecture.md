@@ -1049,7 +1049,7 @@ ciphertext; that instance-wide command (it must also re-seal accounts, GitHub to
 secrets) is a follow-up. After a suspected leak of `master.key` together with a database copy,
 re-encryption does not help: the values themselves must be rotated at their providers.
 
-**Team section.** (Since F 2026-10-12, SPEC-040 and ADR-0029: a team secret is a title, a value
+**Team section.** (Since F 2026-10-12, SPEC-040 and ADR-0030: a team secret is a title, a value
 and notes; older ones fold in when read; reveals need the person's own two-factor code entered in
 the browser session within 10 minutes instead of a recent sign-in; there is no per-secret seed;
 the people who manage an agent secret read it back the same way. The paragraph below is the
