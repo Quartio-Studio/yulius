@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Menus are compact and filter themselves (SPEC-038, ADR-0029; task #36). Every drop-down stays
+  inside the window and scrolls its items. Descriptions take one line, with the full text as a
+  tooltip. A menu of 8 or more items opens with a focused Filter box: typed words narrow it,
+  ↓/↑ and Enter pick, and Escape clears the filter first. "Run after" lists every live task on one
+  line ("#12 Checkout API · Working") under "After a task is done", not just the first 20.
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
@@ -22,10 +27,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   "create a task from that" or "every day at 4am align the docs" just works. It asks before
   creating anything. A Cockpit already running gets the tools when it starts again.
 - Menus are compact and filter themselves (SPEC-038, ADR-0027; task #36). Every drop-down stays
-  inside the window and scrolls its items. Descriptions take one line, with the full text as a
-  tooltip. A menu of 8 or more items opens with a focused Filter box: typed words narrow it,
-  ↓/↑ and Enter pick, and Escape clears the filter first. "Run after" lists every live task on one
-  line ("#12 Checkout API · Working") under "After a task is done", not just the first 20.
+- A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
+  wrapping over the condition's border (SPEC-031, task #29).
 - Attached images reach Claude Code as pasted images (SPEC-030, ADR-0026; task #28). A task with
   attached images starts with no CLI prompt. Yulius types its first message into the terminal:
   each image's path is pasted (Claude Code shows `[Image #N]` and sends an image block), then the

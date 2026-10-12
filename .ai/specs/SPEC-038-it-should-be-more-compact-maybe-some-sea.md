@@ -81,7 +81,7 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
   enough; a box in a 4-item menu would add a row and steal its keyboard.
 - **The filter sits outside the `role="menu"` list** (a `searchbox` labelled "Filter" with
   `aria-controls` on the list): ARIA menus may only own menu items, so the box is a sibling inside
-  the same floating panel. Recorded in ADR-0027.
+  the same floating panel. Recorded in ADR-0029.
 - **Descriptions are cut to one line** with the full text as tooltip rather than dropped: they
   still explain a choice at a glance (workflow steps, model notes).
 - **Review round 1** (fresh session, `om-code-review`): fixed test-first: IME composition keys
