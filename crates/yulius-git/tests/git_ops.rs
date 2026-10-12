@@ -7,8 +7,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use yulius_git::{
-    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, RemovalRefusal, WorktreeRemoval,
-    validate_branch_name,
+    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal,
+    WorktreeRemoval, validate_branch_name,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -171,6 +171,57 @@ fn branch_validation_matches_git_check_ref_format() -> TestResult {
     for name in ["@", "@{-1}", "HEAD", "a@{b"] {
         assert!(validate_branch_name(name).is_err(), "{name:?} accepted");
     }
+    Ok(())
+}
+
+#[test]
+fn merging_the_integration_branch_applies_merge_drivers_and_aborts_conflicts() -> TestResult {
+    // DLV-203: Yulius brings an armed branch up to date with a local merge, so `merge=union`
+    // resolves a shared changes log that a host's server-side update reports as a conflict.
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fs::write(repo.join(".gitattributes"), "changes.md merge=union\n")?;
+    fs::write(repo.join("changes.md"), "# Changes\n\n- first\n")?;
+    fx.git.commit_all(&repo, "changes log", &author())?;
+    let feature = fx.path("feature");
+    fx.git.worktree_add(&repo, &feature, "feat/x", "main")?;
+    fx.git
+        .set_local_identity(&feature, "Agent", "agent@example.invalid")?;
+    fs::write(
+        feature.join("changes.md"),
+        "# Changes\n\n- feature\n- first\n",
+    )?;
+    fx.git.commit_all(&feature, "feature entry", &author())?;
+    fs::write(
+        repo.join("changes.md"),
+        "# Changes\n\n- other pull request\n- first\n",
+    )?;
+    fx.git.commit_all(&repo, "other entry", &author())?;
+
+    let merged = fx.git.merge_into(&feature, "main")?;
+    let MergeInto::Merged(head) = merged else {
+        return Err(format!("expected a merge, got {merged:?}").into());
+    };
+    assert_eq!(fx.git.rev_parse(&feature, "HEAD")?, head);
+    let log = fs::read_to_string(feature.join("changes.md"))?;
+    assert!(
+        log.contains("- feature") && log.contains("- other pull request"),
+        "{log}"
+    );
+    assert_eq!(fx.git.merge_into(&feature, "main")?, MergeInto::UpToDate);
+
+    // A real conflict is aborted and named; the worktree is left as it was.
+    fs::write(feature.join("a.txt"), "feature\n")?;
+    fx.git.commit_all(&feature, "feature a", &author())?;
+    fs::write(repo.join("a.txt"), "main\n")?;
+    fx.git.commit_all(&repo, "main a", &author())?;
+    let before = fx.git.rev_parse(&feature, "HEAD")?;
+    assert_eq!(
+        fx.git.merge_into(&feature, "main")?,
+        MergeInto::Conflict(vec!["a.txt".to_owned()])
+    );
+    assert_eq!(fx.git.rev_parse(&feature, "HEAD")?, before);
+    assert!(fx.git.status_porcelain(&feature)?.is_empty(), "left clean");
     Ok(())
 }
 
