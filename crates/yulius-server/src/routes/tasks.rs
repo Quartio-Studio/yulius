@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
-use yulius_contracts::api::tasks::{FeedbackRequest, TaskDetail, TaskSummary};
+use yulius_contracts::api::tasks::{FeedbackRequest, TaskDetail, TaskPrompt, TaskSummary};
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -38,6 +38,15 @@ pub async fn detail(
     Path(tid): Path<String>,
 ) -> ApiResult<Json<TaskDetail>> {
     Ok(Json(app.task_detail(&ctx, &tid).await?))
+}
+
+/// `GET /api/tasks/{tid}/prompt` (SPEC-043).
+pub async fn prompt(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskPrompt>> {
+    Ok(Json(app.task_prompt(&ctx, &tid).await?))
 }
 
 pub async fn archive(

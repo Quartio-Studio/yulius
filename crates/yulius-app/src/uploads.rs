@@ -70,7 +70,7 @@ const MAX_ATTACHMENT_NAME_CHARS: usize = 100;
 /// Names tried for an attachment before giving up (`name`, `name-2`, …).
 const MAX_FREE_NAME_ATTEMPTS: u32 = 1000;
 /// Folder of every attachment in a sandbox directory.
-const ATTACHMENTS_DIR: &str = "attachments";
+pub(crate) const ATTACHMENTS_DIR: &str = "attachments";
 /// Shell attachment folders inspected at start-up.
 const MAX_PRUNED_ENTRIES: usize = 10_000;
 
