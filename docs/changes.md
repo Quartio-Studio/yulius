@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- The onboarding prompt tells the truth about Yulius CI (SPEC-020 ONB-001, task #34): the jobs'
+  home and `$YULIUS_CI_CACHE` are their own, start empty and persist across runs (they were
+  described as "an empty home"), so a job installs what it needs and never relies on an earlier
+  run; the agent proves it by running each job normally and in a clean checkout with a fresh
+  `HOME` and CI's environment. The `infra-bootstrap` skill says the same in its CI step. CI itself
+  is unchanged.
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
@@ -28,12 +34,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   happened. The transcript steps back over the limit errors and notices, and Claude Code redoes
   the lost turn by itself: it resubmits the unanswered message, or goes on after the last tool
   result.
-- The onboarding prompt tells the truth about Yulius CI (SPEC-020 ONB-001, task #34): the jobs'
-  home and `$YULIUS_CI_CACHE` are their own, start empty and persist across runs (they were
-  described as "an empty home"), so a job installs what it needs and never relies on an earlier
-  run; the agent proves it by running each job normally and in a clean checkout with a fresh
-  `HOME` and CI's environment. The `infra-bootstrap` skill says the same in its CI step. CI itself
-  is unchanged.
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.
