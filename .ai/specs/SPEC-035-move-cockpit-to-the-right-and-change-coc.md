@@ -126,3 +126,12 @@ flowchart LR
   only when the person opened the Agent (not on a new page or sandbox, nor when it recovers a lost
   process), with a studio → product test. A tool chosen from the rail itself now makes the rail the
   person's Tools choice, so it no longer disappears when that tool closes.
+- **Review round 3** (fresh session, REQUEST CHANGES at 1c50892): the rail-button change had no test
+  (added); closing the top-bar Agent with the rail's own Agent button kept the rail (only a click
+  that opens a tool now adopts the rail); a session recovered right after the person opened the
+  Agent lost the keyboard (the recovery now keeps the pending wish to focus). The nit that a slow
+  start could take the keyboard after the person moved on is fixed too: a start focuses only if the
+  keyboard is still where it was, nowhere, or in the Agent. Not changed: an `/agent` link to
+  another sandbox while an Agent is open starts it without the keyboard (rare; the person clicks
+  it). Round 3 is the last full round; a fourth, narrow review confirms these fixes because the
+  merge needs an approved head.

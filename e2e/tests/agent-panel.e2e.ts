@@ -173,3 +173,30 @@ test('switching to a sandbox whose Agent starts keeps the keyboard on the page',
   await expect(browser.locator(agentTerminal)).toHaveText(/cwd: .*product/);
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
 });
+
+// Review round 3: the rail shown for the top-bar Agent becomes the person's when they use it for
+// another tool, and goes again when the Agent is closed from the rail.
+test('a tool picked from the rail after the top-bar Agent keeps the rail', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await screen.getByRole('button', 'Show Agent').click();
+  const rail = screen.getByRole('navigation', 'Tools');
+  await rail.getByRole('button', 'Shell').click();
+  await rail.getByRole('button', 'Shell').click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await expect(rail).toBeVisible();
+});
+
+test('closing the top-bar Agent from the rail hides the rail again', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await screen.getByRole('button', 'Show Agent').click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Agent').click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
+});
+
+test('an Agent recovered right after opening it has the keyboard', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks', '&cockpit=gone'));
+  await screen.getByRole('button', 'Show Agent').click();
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+  await expect(browser.locator('.agent-term .xterm-helper-textarea')).toBeFocused();
+});

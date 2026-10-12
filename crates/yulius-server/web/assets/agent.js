@@ -31,6 +31,8 @@ export function createAgentView(ctx, sandbox) {
   let shown = false;
   let current = null;
   let recovering = false;
+  /** Whether the last mount was to take the keyboard, and from where (for a recovery after it). */
+  let asked = { focus: false, from: null };
 
   function drop() {
     if (terminal) terminal.destroy();
@@ -40,6 +42,8 @@ export function createAgentView(ctx, sandbox) {
   /** Opens the session; `focus` only when the person asked for the Agent (not a new page or sandbox). */
   async function open({ focus: wantFocus = true } = {}) {
     if (opening || !alive) return;
+    // Where the keyboard was: a slow start does not take it once the person has moved on.
+    const from = document.activeElement;
     opening = true;
     drop();
     setChildren(body, h('div', { class: 'placeholder placeholder-loading', role: 'status' }, 'Starting your Agent…'));
@@ -52,7 +56,7 @@ export function createAgentView(ctx, sandbox) {
       return;
     }
     opening = false;
-    if (alive) mount(shell, { focus: wantFocus });
+    if (alive) mount(shell, { focus: wantFocus && stayed(from), from });
   }
 
   /**
@@ -65,8 +69,10 @@ export function createAgentView(ctx, sandbox) {
     recovering = true;
     try {
       const shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit`);
-      // Recovered while the person may be working on the page beside it: the keyboard stays there.
-      if (alive && current && shell.id !== current.id) mount(shell, { focus: false });
+      // The keyboard stays where it is: in the Agent if it was there (or was going there when the
+      // session turned out to be gone), else with the page beside it.
+      const keep = el.contains(document.activeElement) || (asked.focus && stayed(asked.from));
+      if (alive && current && shell.id !== current.id) mount(shell, { focus: keep, from: asked.from });
     } catch {
       // The terminal shows its own connection state and Retry.
     } finally {
@@ -74,13 +80,20 @@ export function createAgentView(ctx, sandbox) {
     }
   }
 
+  /** The keyboard is still where it was when the start began (or nowhere, or in the Agent). */
+  const stayed = (from) => {
+    const now = document.activeElement;
+    return now === from || !now || now === document.body || el.contains(now);
+  };
+
   function focus() {
     // On phones a focused terminal raises the soft keyboard over the page (as in the task view).
     if (terminal && shown && !isPhone()) terminal.focus();
   }
 
-  function mount(shell, { focus: wantFocus = true } = {}) {
+  function mount(shell, { focus: wantFocus = true, from = null } = {}) {
     drop();
+    asked = { focus: wantFocus, from };
     current = shell;
     terminal = createTerminalView({
       transport: ctx.transport,
