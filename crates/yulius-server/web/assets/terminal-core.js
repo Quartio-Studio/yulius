@@ -70,12 +70,13 @@ const WHEEL_MAX_NOTCHES = 10;
  *                              that has not started yet); hidden as soon as there is output
  *   onReady()                  the terminal is shown (its first screen is drawn)
  *   onConnection(status)       the socket's status (connecting|open|reconnecting|failed|closed)
+ *   onFatal(message)           the server refused this terminal for good (not_found, unauthenticated)
  *   fileLinks                  optional {list(dir) → Promise<[{name, kind}]>, roots() → [absolute
  *                              folder paths], open({path, line, col}, event)}: paths of existing
  *                              files in the terminal's folder become links (termlinks.js)
  * Call start() after the element is in the document; destroy() when done.
  */
-export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, fontSize, fileLinks = null, followServerSize = false }) {
+export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, fontSize, fileLinks = null, followServerSize = false }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
   // Connection trouble floats over the terminal: it never changes the terminal's size.
@@ -217,7 +218,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       onNotice: (text) => { showNotice(text); if (onNotice) onNotice(text); },
       onExit: (message) => { exited = message; applySize(); render(); reveal(); if (onExit) onExit(message); },
       onError: (message) => {
-        if (['unauthenticated', 'not_found'].includes(message.code)) { fatal = message; reveal(); }
+        if (['unauthenticated', 'not_found'].includes(message.code)) { fatal = message; reveal(); if (onFatal) onFatal(message); }
         else showNotice(message.message || message.code || 'Terminal error');
         render();
       },
