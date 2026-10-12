@@ -841,6 +841,15 @@ impl App {
                         ..
                     }
                 ));
+        // The plan steps this session's transcript back over a usage limit (SPEC-034).
+        let stepped_back = match &mode {
+            SessionMode::Resume {
+                session_id,
+                continue_interrupted: true,
+                ..
+            } => Some(session_id.clone()),
+            _ => None,
+        };
         let attempt_id =
             AttemptId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
@@ -857,6 +866,9 @@ impl App {
             mcp: self.mcp_attachments(&sandbox).await?,
             credential,
         })?;
+        if let Some(session_id) = &stepped_back {
+            self.reindex_session(&task.sandbox_id, session_id).await;
+        }
         let mut launch = plan.plan;
         let task_token = hex_token(&self.deps.crypto.random_bytes());
         let host_token = self.deps.crypto.random_bytes();

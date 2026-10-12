@@ -292,6 +292,20 @@ impl App {
 
     /// A task session read from a stored copy moves to the native transcript once the task
     /// resumed it (the copy stops growing; the native file has the continuation).
+    /// A transcript rewritten in place (stepped back over a usage limit, SPEC-034) is indexed
+    /// again from its start: the index reads transcripts as append-only.
+    pub(crate) async fn reindex_session(&self, sandbox: &SandboxId, session_id: &str) {
+        let store = &self.deps.store;
+        let Ok(docs) = store.session_docs(sandbox).await else {
+            return;
+        };
+        for doc in docs.iter().filter(|d| d.session_id == session_id) {
+            if let Err(err) = store.reset_session_index(&doc.id).await {
+                tracing::warn!(error = %err, "could not reset a session's index");
+            }
+        }
+    }
+
     async fn follow_resumed_copies(&self, docs: &mut [SessionDocRecord]) -> AppResult<()> {
         let stored_root = self.config.data_dir.join("transcripts");
         for doc in docs.iter_mut() {
