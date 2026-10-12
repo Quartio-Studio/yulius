@@ -57,6 +57,27 @@ def dependency_errors(packages):
     return errors
 
 
+def integration_test_errors(packages):
+    """A composition crate links the whole product into every test binary (about 190 MB each, so
+    fifty files filled sandboxes: SPEC-033); its integration tests are modules of one `main.rs`."""
+    errors = []
+    for package in packages:
+        if package.get("metadata", {}).get("yulius", {}).get("layer") != "composition":
+            continue
+        tests = [t for t in package.get("targets", []) if "test" in t["kind"]]
+        if len(tests) > 1:
+            errors.append(f"{package['name']}: {len(tests)} integration test binaries each link the whole product; "
+                          "make the files modules of one tests/main.rs (autotests = false)")
+            continue
+        for target in tests:
+            main = Path(target["src_path"])
+            declared = set(re.findall(r"^\s*(?:pub\s+)?mod\s+(\w+)\s*;", main.read_text(), re.M))
+            for file in sorted(main.parent.glob("*.rs")):
+                if file != main and file.stem not in declared:
+                    errors.append(f"{package['name']}: tests/{file.name} never runs; declare `mod {file.stem};` in {main.name}")
+    return errors
+
+
 def skill_errors(path):
     """Repository skills deliberately use a plain scalar frontmatter subset."""
     text = path.read_text()
@@ -560,6 +581,7 @@ def check():
         path = Path(package["manifest_path"])
         errors.extend(manifest_errors(tomllib.loads(path.read_text()), package["name"]))
     errors.extend(dependency_errors(packages))
+    errors.extend(integration_test_errors(packages))
     if errors:
         raise ValueError("\n".join(errors))
     print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, UI design tokens")
