@@ -1613,7 +1613,16 @@ wake-ups do — or a user prompt record in the transcript), a new goal, a "not m
   still running" and Done when the count drops to 0 — Claude Code also wakes the agent when a shell
   ends, and that turn's clean Stop settles the task again. A probe that fails or exceeds 3 s reports
   nothing (the task is not held back; logged). Shells ended by Claude Code's background timeout or
-  `/exit` disappear from the count by themselves.
+  `/exit` disappear from the count by themselves. **Background agents** (Claude Code's `Agent` tool
+  with `run_in_background`) are no process of that tree: the record that closes a turn says how many
+  Claude Code still waits for, and the count is the larger of the two (a background Bash command is
+  in both), so a turn that ends with a review agent running reads Working, not Done (SPEC-032
+  STA-001; Monitor streams are still not counted).
+- **Going on after a stop (SPEC-032 STA-004, STA-005):** Yulius' Stop hook runs first and makes
+  the task idle; the goal evaluator's "not met" record, or assistant work newer than the last clean
+  Stop (a hook continued the turn, a wake-up started one), makes it `working` again
+  (`activity_on_goal_not_met`, `activity_on_work`). A replay reopens a turn the same way: an
+  assistant line after an end line means it is open.
 - Done also follows from a tested pull request on a `waiting` task (GIT-001); the UI combines both
   with one rule (failing checks → Needs you, shells → Working, goal achieved or PR tested → Done,
   checks still running → In review).
@@ -1836,7 +1845,10 @@ line that is exactly "[Request interrupted by user]" or "… for tool use": the 
 prompt), `end_turn`, usage limits, the goal's
 `goal_status` attachments (`sentinel` = a goal set — or cleared when `met: true` —, `met: false` = not
 met yet, `met: true` = achieved, `failed: true` = impossible; sidechain records ignored) and the
-`system` records `stop_hook_summary` / `turn_duration` that close a turn. After a restart, the
+`system` record `turn_duration` that closes a turn, with the background agents Claude Code still
+waits for (`pendingBackgroundAgentCount`; `stop_hook_summary` is also written when a Stop hook
+blocks and the turn goes on, so it ends nothing), and assistant lines that are not an `end_turn`
+(the agent works, SPEC-032). After a restart, the
 transcript of a reattached run is caught up first: observations before the first poll that reaches
 the end are reduced to their final state (§6.1 Finish rule); usage limits keep their immediate
 effect. A run started by the current server is watched live from its first line.
@@ -1904,7 +1916,7 @@ output) and is recorded. Responses:
   until a `200` (printed as usual), a 4xx (fails open) or 8 days pass (fails open); while held, a
   refused connection or a 5xx is retried every 2 s (a server restart). The CLI's `timeout` for
   these two events is 8 days + 1 h; the other events keep 15 s.
-- `Notification` / `PermissionRequest` → `needs_attention` when it asks a person to act (a permission prompt or a question); Claude Code's idle reminder (`notification_type: idle_prompt`, "waiting for your input") and `auth_success` leave the activity as it is, so a finished task stays `waiting`/`done` (F 2026-10-11).
+- `Notification` / `PermissionRequest` → `needs_attention` only for the `notification_type`s that ask a person to act: `permission_prompt`, `worker_permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`. Every other type (Claude Code 2.1.292 also sends `idle_prompt`, `auth_success`, `agent_completed`, `push_notification`, `quota_auto_resume_*`, `computer_use_*`, `model_refusal_fallback`, `auth_storage_failure`, and later releases add more) leaves the activity as it is, so a finished task stays `waiting`/`done` and a working one `working` (F 2026-10-11, SPEC-032 STA-002). Without `notification_type` (older CLIs) the idle text rule applies. The agent's next assistant line after such a notice makes the task `working` again (STA-003).
 - `SessionEnd` → no output; its `reason` is kept for the run until it exits: `prompt_input_exit`
   (`/exit`, Ctrl+C twice, Ctrl+D) and `logout` make the exit a normal close whatever its code;
   `clear` (the process goes on with a new session) drops an achieved goal (§6.1).
