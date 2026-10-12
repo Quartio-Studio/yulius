@@ -253,7 +253,8 @@ function createApp(root, transport) {
     ctx.defaultSandbox = () => defaultSandbox();
     ctx.openBrowserTab = (sandbox, tabId) => openBrowserTab(sandbox, tabId);
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
-    ctx.toggleAgent = () => panels.toggle('agent');
+    ctx.toggleAgent = () => panels.toggle('agent', { persistRail: false });
+    ctx.closePanel = () => panels.close();
     ctx.railVisible = () => panels.railVisible;
     ctx.setRailVisible = (visible) => panels.setRailVisible(visible);
     panels.mounted();
@@ -570,7 +571,7 @@ function createApp(root, transport) {
       navigate(`/s/${encodeURIComponent(sandbox.slug)}`, { replace: true });
     }
     if (route.name === 'composer' && route.panel && sandbox) {
-      shell.panels.open(route.panel);
+      shell.panels.open(route.panel, { persistRail: false });
       navigate(`/s/${encodeURIComponent(sandbox.slug)}`, { replace: true });
     }
     updateTitle();

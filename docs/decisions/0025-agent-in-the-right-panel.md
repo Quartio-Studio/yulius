@@ -19,7 +19,8 @@ panel, which stays beside the page.
 The web UI shows the Cockpit as **Agent**, the first tool of the right rail, opened in the tool
 panel beside the page; a top-bar Agent button opens or closes it even while the rail is hidden.
 The panel starts the session the first time it is shown and keeps it while hidden, like the other
-tools. A notice above the session says what it is for and links to New task. The left navigation
+tools. Opened from the top bar or a link while the rail is hidden, it shows the rail only until the
+panel closes, so the person's Tools choice stays. A notice above the session says what it is for and links to New task. The left navigation
 no longer lists it; `/s/<slug>/agent` and the old `/s/<slug>/cockpit` open the sandbox with the
 panel, as `/s/<slug>/browser` does. The server, its API (`/api/sandboxes/{sid}/cockpit`), the shell
 kind `cockpit` and stored records keep their names.

@@ -70,9 +70,13 @@ export function createPanelHost(ctx) {
     body);
   let maximized = false;
   let railVisible = Boolean(readJson(RAIL_KEY, false));
+  // The rail shown only for a panel opened without it (the top-bar Agent button): it goes again
+  // when that panel closes, and the remembered choice stays (SPEC-035 review).
+  let railForPanel = false;
 
   /** Shows or hides the whole rail (and closes the panel when hiding). */
   function setRailVisible(visible, { persist = true } = {}) {
+    if (persist) railForPanel = false;
     railVisible = visible;
     rail.hidden = !visible;
     const app = rail.closest('.app');
@@ -171,7 +175,10 @@ export function createPanelHost(ctx) {
     const label = KINDS.find(([name]) => name === k)[2];
     title.textContent = label;
     setChildren(headExtra, view.headExtra ? view.headExtra() : null);
-    if (!railVisible) setRailVisible(true);
+    if (!railVisible) {
+      railForPanel = opts.persistRail === false;
+      setRailVisible(true, { persist: !railForPanel });
+    }
     if (panel.hidden) {
       panel.hidden = false;
       // The panel's minimum comes out of the sidebar first, then the tool opens at its width.
@@ -200,11 +207,15 @@ export function createPanelHost(ctx) {
     }
     for (const view of views.values()) if (view.hide) view.hide();
     ctx.onPanelChange && ctx.onPanelChange(null);
+    if (railForPanel) {
+      railForPanel = false;
+      setRailVisible(false, { persist: false });
+    }
   }
 
-  function toggle(k) {
+  function toggle(k, opts) {
     if (kind === k && !panel.hidden) close();
-    else show(k);
+    else show(k, opts);
   }
 
   function destroyWhere(predicate) {
@@ -256,7 +267,8 @@ export function createPanelHost(ctx) {
         for (const [key, view] of views) if (key.startsWith('editor:') && view.taskChanged) view.taskChanged();
       }
       if (!sandbox && !panel.hidden) close();
-      else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind);
+      // Shown again for the new context, not opened by the person: the keyboard stays with the page.
+      else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind, { context: true });
       updateBadges();
     },
     open: show,

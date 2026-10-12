@@ -101,3 +101,64 @@ test('read access explains why the Agent is not available', async ({ app, browse
   await expect(screen.getByText('The Agent needs write access to this sandbox.')).toBeVisible();
   await expect(browser.locator(agentTerminal)).toBeHidden();
 });
+
+// Review round 1: New task from a task page hands the keyboard to the composer, not the Agent.
+test('New task from the Agent beside a task focuses the composer', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', 'Show Agent').click();
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+  await screen.getByRole('note', 'About the Agent').getByRole('link', 'New task').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+  // Typed text must become a task, never a message to the Agent.
+  await expect.poll(() => browser.evaluate(() => Boolean(document.activeElement?.closest('.agent-term')))).toBe(false);
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
+});
+
+test('on a phone, New task closes the Agent so the composer shows', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open(mock('/s/studio/agent'));
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+  await screen.getByRole('note', 'About the Agent').getByRole('link', 'New task').click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+});
+
+test('the Agent opens from the rail, keeps its session across tools and the top bar follows', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await screen.getByRole('button', /^Show tools/).click();
+  const rail = screen.getByRole('navigation', 'Tools');
+  await rail.getByRole('button', 'Agent').click();
+  await expect(screen.getByRole('button', 'Hide Agent')).toHaveAttribute('aria-pressed', 'true');
+  const terminal = browser.locator(agentTerminal);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  await browser.keyboard.type('why?');
+  await browser.keyboard.press('Enter');
+  await expect(terminal).toHaveText(/Good question/);
+
+  // Another tool in the panel: the button is released; back to the Agent, the same session.
+  await rail.getByRole('button', 'Shell').click();
+  await expect(screen.getByRole('button', 'Show Agent')).toHaveAttribute('aria-pressed', 'false');
+  await rail.getByRole('button', 'Agent').click();
+  await expect(terminal).toHaveText(/Good question/);
+});
+
+test('the top-bar Agent button does not leave the tools rail on for good', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
+  await screen.getByRole('button', 'Show Agent').click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+  await screen.getByRole('button', 'Hide Agent').click();
+  await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
+  await browser.reload();
+  await expect(screen.getByRole('button', 'Show Agent')).toBeVisible();
+  await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
+});
+
+test('switching sandbox with the Agent open shows that sandbox’s Agent', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/agent'));
+  await expect(screen.getByRole('button', 'Hide Agent')).toBeVisible();
+  await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^sandbox-3\b/).click();
+  await expect(screen.getByText('The Agent needs write access to this sandbox.')).toBeVisible();
+  // Read users get no New task link they cannot use.
+  await expect(screen.getByRole('note', 'About the Agent').getByRole('link', 'New task')).toBeHidden();
+});

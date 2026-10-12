@@ -14,12 +14,14 @@ import { isPhone } from './theme.js';
 
 /** The Agent's panel view: its quick-work notice above the session. Starts on the first show. */
 export function createAgentView(ctx, sandbox) {
-  const newTask = h('a', { href: href(`/s/${encodeURIComponent(sandbox.slug)}`), dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}` } }, 'New task');
+  const write = allows(sandbox.access, 'write');
+  // On phones the panel covers the page: it closes so the composer shows.
+  const newTask = write ? h('a', { href: href(`/s/${encodeURIComponent(sandbox.slug)}`), dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}` }, onClick: () => { if (isPhone() && ctx.closePanel) ctx.closePanel(); } }, 'New task') : null;
   // AGT-002: what the Agent is for, and where bigger work goes.
   const notice = h('div', { class: 'banner banner-info agent-note small', role: 'note', 'aria-label': 'About the Agent' },
     icon('info', { size: 16 }),
     h('span', { class: 'banner-text' },
-      h('strong', null, 'For quick work'), ': setting up automations, asking a quick question. Anything more complex, such as writing code, belongs in a task, not here: ', newTask, '.'));
+      h('strong', null, 'For quick work'), ': setting up automations, asking a quick question. Anything more complex, such as writing code, belongs in a task, not here', newTask ? [': ', newTask, '.'] : '.'));
   const body = h('div', { class: 'agent-term' });
   const el = h('div', { class: 'agent' }, notice, body);
   let terminal = null;
@@ -29,7 +31,6 @@ export function createAgentView(ctx, sandbox) {
   let shown = false;
   let current = null;
   let recovering = false;
-  const write = allows(sandbox.access, 'write');
 
   function drop() {
     if (terminal) terminal.destroy();
@@ -112,11 +113,12 @@ export function createAgentView(ctx, sandbox) {
 
   return {
     el,
-    show() {
+    show(opts = {}) {
       shown = true;
       // The session starts the first time the panel shows it, not when a sandbox opens.
       if (write && !started) { started = true; open(); return; }
-      if (terminal) setTimeout(() => { if (terminal) { terminal.refit(); focus(); } }, 0);
+      // Shown again for a new page (`context`), it only refits: the keyboard stays with the page.
+      if (terminal) setTimeout(() => { if (terminal) { terminal.refit(); if (!opts.context) focus(); } }, 0);
     },
     hide() { shown = false; },
     destroy() {

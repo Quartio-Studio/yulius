@@ -40,12 +40,12 @@ as writing code, belongs in a task.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| AGT-001 | The right rail's first tool is **Agent**: it opens the user's Agent session of the current sandbox (the SPEC-021 Cockpit, same API and behaviour: one per user and sandbox, resumed, Start again, recovered after a lost process, read users told why) in the right panel, beside the page in the centre. The session stays alive while the panel is hidden or shows another tool. | `e2e/tests/agent.e2e.ts` |
-| AGT-002 | The Agent panel shows a distinct notice above the session: it is for quick work (setting up automations, quick questions); anything more complex, such as writing code, should be done in a task. The notice offers "New task", which opens the new-task composer. | `agent.e2e.ts` |
-| AGT-003 | No "Cockpit" remains in the UI: the panel, its messages and errors say "Agent". | `agent.e2e.ts` |
-| AGT-004 | The left sidebar's navigation no longer lists the Cockpit. | `navigation.e2e.ts`, `agent.e2e.ts` |
-| AGT-005 | The top bar has an **Agent** button (sandbox pages only) that opens or closes the Agent panel, whether the rail is shown or not. | `agent.e2e.ts` |
-| AGT-006 | `/s/<slug>/agent` and the old `/s/<slug>/cockpit` open the sandbox with the Agent panel open, and the address becomes `/s/<slug>`. | `agent.e2e.ts` |
+| AGT-001 | The right rail's first tool is **Agent**: it opens the user's Agent session of the current sandbox (the SPEC-021 Cockpit, same API and behaviour: one per user and sandbox, resumed, Start again, recovered after a lost process, read users told why) in the right panel, beside the page in the centre. The session stays alive while the panel is hidden or shows another tool. | `e2e/tests/agent-panel.e2e.ts` |
+| AGT-002 | The Agent panel shows a distinct notice above the session: it is for quick work (setting up automations, quick questions); anything more complex, such as writing code, should be done in a task. The notice offers "New task", which opens the new-task composer. | `agent-panel.e2e.ts` |
+| AGT-003 | No "Cockpit" remains in the UI: the panel, its messages and errors say "Agent". | `agent-panel.e2e.ts` |
+| AGT-004 | The left sidebar's navigation no longer lists the Cockpit. | `navigation.e2e.ts`, `agent-panel.e2e.ts` |
+| AGT-005 | The top bar has an **Agent** button (sandbox pages only) that opens or closes the Agent panel, whether the rail is shown or not. | `agent-panel.e2e.ts` |
+| AGT-006 | `/s/<slug>/agent` and the old `/s/<slug>/cockpit` open the sandbox with the Agent panel open, and the address becomes `/s/<slug>`. | `agent-panel.e2e.ts` |
 
 ## Design
 
@@ -90,12 +90,12 @@ flowchart LR
 
 ## Test plan
 
-- e2e (mock), `e2e/tests/agent.e2e.ts` replacing `cockpit.e2e.ts`: opens from the top bar beside a
+- e2e (mock), `e2e/tests/agent-panel.e2e.ts` replacing `cockpit.e2e.ts` (`agent.e2e.ts` is the unrelated live-model test): opens from the top bar beside a
   task, notice and New task link, quick question answered, same session after close/reopen and
   after another page, Start again after `/exit`, a gone process recovered, a failed start says why
   with Try again, read access explained, `/agent` and `/cockpit` links, not in the sidebar, axe
   clean.
-- `navigation.e2e.ts`: the sandbox navigation without Cockpit.
+- `navigation.e2e.ts`: the sandbox navigation without Cockpit; `rail.e2e.ts`: Agent first in the rail.
 - The server's Cockpit tests (`crates/yulius/tests/cockpit.rs`) are unchanged and must still pass.
 
 ## Decisions
@@ -112,3 +112,12 @@ flowchart LR
 - **Old links redirect** rather than 404, as `/browser` does.
 - **Session starts on first show**, not when the panel host builds the view, so a sandbox visit does
   not take a subscription seat.
+- **Review round 1** (fresh session, REQUEST CHANGES at 163a1b2): New task in the notice beside a
+  task gave the keyboard back to the Agent (the panel re-shown for the new page focused it): a
+  panel shown again for a new page or task now only refits; on phones New task closes the panel so
+  the composer shows; the top-bar button and the `/agent` link show the rail only while the panel
+  is open, without changing the remembered Tools choice; read users get no New task link; the
+  spec's evidence names `agent-panel.e2e.ts`; tests added for each, for opening from the rail with
+  the top-bar button following, for the session kept across another tool, and for a sandbox
+  switch. Not changed: the button's name changes between Show and Hide Agent with
+  `aria-pressed`, as the Tools button does.
