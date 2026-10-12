@@ -10,7 +10,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
+use support::agents::{FakeAgentHarness, FakeAgentOptions, limit_resume_problems};
 use support::{FakeGitHub, TestResult};
 use yulius::wiring::clock::SystemClock;
 use yulius::wiring::git::GitAdapter;
@@ -571,6 +571,10 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
             first.provider_session_id, second.provider_session_id,
             "same session"
         );
+        // SPEC-034: the transcript steps back over the limit and Claude Code continues the turn
+        // itself; nothing like "Continue." is sent.
+        let problems = limit_resume_problems(Path::new(&second.run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
         assert!(
             !app.deps.store.switches(&id).await?.is_empty(),
             "decision recorded"

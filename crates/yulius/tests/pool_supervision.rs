@@ -12,7 +12,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
+use support::agents::{FakeAgentHarness, FakeAgentOptions, limit_resume_problems};
 use support::{FakeGitHub, TestResult};
 use yulius::wiring::clock::SystemClock;
 use yulius::wiring::git::GitAdapter;
@@ -822,12 +822,12 @@ fn a_pause_survives_a_server_restart() -> TestResult {
     Ok(())
 }
 
-/// AC-ROT-10: a turn the CLI itself interrupted with a usage limit, with every subscription
-/// exhausted, pauses at the limit; it resumes on the subscription that recovers with the only
-/// text the harness ever sends after a pause, a neutral "Continue." (no word about accounts,
-/// limits or pauses).
+/// AC-ROT-10, SPEC-034: a turn the CLI itself interrupted with a usage limit, with every
+/// subscription exhausted, pauses at the limit; it resumes on the subscription that recovers by a
+/// native resume that steps the transcript back over the limit and lets Claude Code continue the
+/// turn itself: no prompt, nothing typed, no "Continue.".
 #[test]
-fn a_turn_interrupted_by_a_limit_resumes_with_a_neutral_continue() -> TestResult {
+fn a_turn_interrupted_by_a_limit_resumes_without_a_typed_continue() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
@@ -836,6 +836,7 @@ fn a_turn_interrupted_by_a_limit_resumes_with_a_neutral_continue() -> TestResult
         let agent = FakeAgentOptions {
             transcript: true,
             limit_after: Some(1),
+            report_env: vec!["CLAUDE_CODE_RESUME_INTERRUPTED_TURN".into()],
             ..FakeAgentOptions::default()
         };
         let app = build_with(&data, &fake, probe.clone(), agent)?;
@@ -874,12 +875,15 @@ fn a_turn_interrupted_by_a_limit_resumes_with_a_neutral_continue() -> TestResult
             attempts[1].account_id.as_ref().map(AccountId::as_str),
             Some("b-second")
         );
-        let launch =
-            std::fs::read_to_string(Path::new(&attempts[1].run_dir).join("fake-launch.txt"))?;
-        assert!(
-            launch.contains(r#"prompt: Some("Continue.")"#),
-            "only a neutral continuation: {launch}"
-        );
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        wait_for("the flag in the agent's environment", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ENV CLAUDE_CODE_RESUME_INTERRUPTED_TURN=set") }
+        })
+        .await?;
+        assert!(!screen(&app, &id).contains("Continue."), "nothing typed");
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
