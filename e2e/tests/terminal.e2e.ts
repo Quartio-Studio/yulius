@@ -302,9 +302,39 @@ test('a read-only viewer’s click does not reach the program', async ({ app, br
   await app.open(mock('/s/sandbox-3/t/1'));
   await expect(screen.getByText('Read-only (GitHub: read)')).toBeVisible();
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  // What reaches the program's side (the mock refuses a read-only viewer's input, as the server
+  // does, so the screen alone would not show a click that was sent).
+  await browser.evaluate(() => {
+    const sent: string[] = [];
+    (window as unknown as { __sent: string[] }).__sent = sent;
+    for (const [, session] of (window as unknown as { __yuliusMock: { sessions: Map<string, { receive(ws: unknown, data: string): void }> } }).__yuliusMock.sessions) {
+      const receive = session.receive.bind(session);
+      session.receive = (ws, data) => { if (JSON.parse(data).type === 'input') sent.push(data); receive(ws, data); };
+    }
+  });
   const point = await spot(browser, 'Searched for 2 patterns');
   expect(point, 'the group is on the screen').not.toBeNull();
   await clickAt(browser, point!);
+  await settle();
+  await expect(rows(browser)).not.toHaveText(/loyalty_points/);
+  expect(await browser.evaluate(() => (window as unknown as { __sent: string[] }).__sent)).toEqual([]);
+});
+
+test('a click beside another viewer’s grid takes the size but does not reach the program', async ({ app, browser, screen }) => {
+  // Another viewer's 90×30 grid is centred in this wider box, with blank margins at its sides.
+  await app.open(mock('/s/studio/t/12', '&othercols=90&otherrows=30'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  await holdStill(browser);
+  const point = await spot(browser, 'Searched for 2 patterns');
+  expect(point, 'the group is on the screen').not.toBeNull();
+  const margin = await browser.evaluate(() => {
+    const box = document.querySelector('.taskview .term-fit')!.getBoundingClientRect();
+    const grid = document.querySelector('.taskview .xterm-screen')!.getBoundingClientRect();
+    return { left: box.left, width: grid.left - box.left };
+  });
+  expect(margin.width, 'the grid has a margin at its left').toBeGreaterThan(8);
+  await clickAt(browser, { x: margin.left + margin.width / 2, y: point!.y });
+  await expect(screen.getByText('Sized by another viewer')).toBeHidden();
   await settle();
   await expect(rows(browser)).not.toHaveText(/loyalty_points/);
 });
