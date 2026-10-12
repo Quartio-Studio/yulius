@@ -2005,7 +2005,7 @@ impl App {
     /// Records why the agent's head could not be pushed, for `yulius wait` (DLV-201). A branch
     /// rewritten after it was pushed is refused as not a fast-forward; the remedy merges the
     /// pushed head back in, so nothing is force-pushed.
-    fn set_push_problem(
+    pub(crate) fn set_push_problem(
         &self,
         task_id: &TaskId,
         head: &str,

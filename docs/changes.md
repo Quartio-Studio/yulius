@@ -16,6 +16,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Ten wrong codes in a row lock codes until the person confirms it is them again. Rolling back
   past this change needs care: the previous release reads secrets saved in the new form as
   having no password, and an edit there would drop the value.
+- Armed pull requests stay current by themselves (SPEC-050 DLV-203): when the integration branch
+  moves on, Yulius merges it into the idle task's branch (the repository's merge drivers apply, so
+  a shared changes log no longer conflicts) and pushes a fast-forward; the merge stays armed for
+  the new head. A real conflict is left to the agent with the files named.
 - Tasks run in parallel and finish without obstacles (SPEC-050):
   - a Done task no longer holds a session slot, so queued tasks start;
   - when Yulius cannot push an agent's head, `yulius wait` says why and how to fix it without a
