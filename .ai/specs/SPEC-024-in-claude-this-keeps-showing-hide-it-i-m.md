@@ -1,11 +1,11 @@
 ---
 yulius-task: 27142782-09d6-4403-b3b5-ff3968b7978c
-status: in-progress
+status: done
 ---
 
 # SPEC-024: Claude Code sessions start without the diff side panel
 
-Status: in-progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #22
 Scope authorization: user request (screenshot of task #20's terminal): "in claude this keeps
@@ -54,7 +54,7 @@ by itself to the right of the transcript.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Every Claude Code launch starts with the diff side panel closed
 - [x] Architecture spec and changes log say the panel stays closed
-- [ ] Independent review passes and the change merges into dev on green CI
+- [x] Independent review passes and the change merges into dev on green CI
 
 ## Acceptance criteria
 
@@ -87,5 +87,25 @@ by itself to the right of the transcript.
   Claude Code still creates and carries them itself, and a store error never blocks a launch.
 - **Disabling the plugin was rejected.** `enabledPlugins` would also remove `/diff`, and the panel
   is useful on request.
+- **The store is written without Claude Code's lock file.** A Claude Code session already running
+  in the same sandbox could lose one store update made at the same instant. Writes are atomic
+  (temp file and rename), so the file cannot be corrupted. This is the risk SPEC-002 already
+  accepts for `.claude.json` (R-11).
 - **No ADR.** This is one more default in an existing launch-preparation merge (like
   `autoCompactEnabled` in the run settings), not a new architectural choice.
+
+## Evidence
+
+- The panel's gate was read in the pinned Claude Code 2.1.292 bundle (`strings` on the CLI): the
+  built-in panel's `kTr` (`diffSidebarOpen`, 110 and 144 columns), and the `cc-plugin-diff` pane's
+  auto-open (`storeGet("open")`), `carryPanelPreference`, store path (`plugins/store`) and file
+  naming (`ue`). The pinned file names were recomputed with SHA-256.
+- Test-first: `cargo test -p yulius-harness --lib claude_config` failed on the new assertions
+  before each change (`diffSidebarOpen` was `Null`; the store's `"open"` stayed `true`). It then
+  passed: 4 of 4.
+- `scripts/dev ci` (2026-10-12, Linux, head `bad97c3`): exit 0; nextest 1151 tests passed and 16
+  skipped. `scripts/dev lint` was clean.
+- Independent review (fresh subagent, `om-code-review`, diff `58ad376..HEAD`). Round 1 asked for
+  changes: the plugin pane's own store. Round 2 approved; its remaining nits are recorded above.
+- Not verified live: a logged-in Claude Code TUI in a wide terminal (needs a paid interactive
+  session). The end-to-end suite was not run, because no web UI code changed.
