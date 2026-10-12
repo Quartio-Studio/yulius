@@ -12,7 +12,7 @@ Dashboard", with the other pages "to be expanded" (task #27).
 
 ## Decision
 
-`layout.js` keeps two lists: `NAV` (Cockpit, Tasks, Git, CI, Secrets, Dashboard) and `NAV_MORE`
+`layout.js` keeps two lists: `NAV` (Cockpit, Tasks, Git, CI labelled "CI (tests)", Secrets, Dashboard) and `NAV_MORE`
 (Sessions, Workflows, Skills, Automations, MCP). After `NAV` comes a "More" disclosure button
 (`aria-expanded`, `aria-controls`) that shows the `NAV_MORE` links in place below it. It starts
 collapsed; its state is a per-browser preference (`yulius.sidebarMoreOpen`), like the Stopped

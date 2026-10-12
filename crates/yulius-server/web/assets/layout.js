@@ -22,7 +22,7 @@ const NAV = [
   ['cockpit', 'Cockpit', 'gauge'],
   ['tasks', 'Tasks', 'tasks'],
   ['git', 'Git', 'branch'],
-  ['ci', 'CI', 'check'],
+  ['ci', 'CI (tests)', 'check'],
   ['secrets', 'Secrets', 'lock'],
   ['dashboard', 'Dashboard', 'chart'],
 ];

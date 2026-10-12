@@ -10,11 +10,12 @@ Date: 2026-10-12
 Owner: Yulius task #27
 Scope authorization: user request (task #27): "Too much elements here. Only Cockpit, Tasks, Git,
 CI (and CD in the future), Secrets and Dashboard should be here. Other should be to be expanded",
-with a screenshot of the sidebar's eleven navigation items.
+with a screenshot of the sidebar's eleven navigation items; then, during delivery: "in CI in
+brackets put 'tests'".
 
 ## Goal
 
-The sandbox navigation shows six pages: Cockpit, Tasks, Git, CI, Secrets and Dashboard. The rest
+The sandbox navigation shows six pages: Cockpit, Tasks, Git, CI (tests), Secrets and Dashboard. The rest
 (Sessions, Workflows, Skills, Automations, MCP) is behind one "More" toggle that expands them in
 place, so the sidebar leaves room for the task list and the pages used every day stay one click
 away.
@@ -36,7 +37,7 @@ away.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| NAV-001 | The sandbox navigation shows, in this order, Cockpit, Tasks, Git, CI, Secrets and Dashboard as links, then a "More" button. | `navigation.e2e.ts` |
+| NAV-001 | The sandbox navigation shows, in this order, Cockpit, Tasks, Git, "CI (tests)" (the CI page, whose title stays "CI"), Secrets and Dashboard as links, then a "More" button. | `navigation.e2e.ts` |
 | NAV-002 | "More" is a disclosure button (`aria-expanded`, `aria-controls`): collapsed by default it hides Sessions, Workflows, Skills, Automations and MCP; pressed it shows them below it, in that order, and pressed again hides them. | `navigation.e2e.ts` |
 | NAV-003 | The choice is remembered in this browser (`yulius.sidebarMoreOpen`) and survives a reload. | `navigation.e2e.ts` |
 | NAV-004 | Arriving at one of the More pages (a deep link, a reload, a move inside the app) shows the group expanded with that page marked current, for as long as that page is in view, without changing the remembered choice; closed there, it stays closed until another More page is opened, and More is marked as holding the current page (highlighted, `aria-current="true"`). When the group hides on leaving that page while focus is in it, focus moves to More. | `navigation.e2e.ts` |
@@ -51,7 +52,7 @@ away.
 
 ## Acceptance criteria
 
-- A user sees only Cockpit, Tasks, Git, CI, Secrets, Dashboard and More in the sandbox
+- A user sees only Cockpit, Tasks, Git, CI (tests), Secrets, Dashboard and More in the sandbox
   navigation; More reveals the other five pages and hides them again.
 - After a reload the group is as the user left it.
 - On a More page (for example `/s/<slug>/mcp`) the group is open with that page marked current.
@@ -94,3 +95,6 @@ away.
   page in another sandbox does not reopen a group closed on it (it is the same page; the choice
   carries), and reopening More on a More page saves "open" (it is the user's own action, like the
   toggle anywhere else).
+- **"CI (tests)"** (request during delivery): only the navigation label says what CI is; the CI
+  page keeps its title "CI", as the request names the sidebar entry and the page header has its
+  own subtitle (`runs on this Yulius machine`).

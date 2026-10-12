@@ -16,11 +16,12 @@ test('a task opens from the sidebar', async ({ app, browser, screen }) => {
 
 // Task #27 (SPEC-029): "Too much elements here. Only Cockpit, Tasks, Git, CI (and CD in the
 // future), Secrets and Dashboard should be here. Other should be to be expanded".
-const PRIMARY = [
+// Then: "in CI in brackets put 'tests'": the link says what CI is; the page keeps its title.
+const PRIMARY: [string, string, string?][] = [
   ['Cockpit', 'cockpit'],
   ['Tasks', 'tasks'],
   ['Git', 'git'],
-  ['CI', 'ci'],
+  ['CI (tests)', 'ci', 'CI'],
   ['Secrets', 'secrets'],
   ['Dashboard', 'dashboard'],
 ];
@@ -63,10 +64,10 @@ test('the sandbox pages open from the sandbox navigation', async ({ app, browser
   await app.open(mock('/s/studio/t/12'));
   const nav = screen.getByRole('navigation', 'Sandbox');
 
-  for (const [page, path] of PRIMARY) {
+  for (const [page, path, heading = page] of PRIMARY) {
     await nav.getByRole('link', page).click();
     await expect(browser).toHaveURL(new RegExp(`#/s/studio/${path}$`));
-    await expect(screen.getByRole('heading', { level: 1 })).toHaveText(page);
+    await expect(screen.getByRole('heading', { level: 1 })).toHaveText(heading);
   }
   await nav.getByRole('button', 'More').click();
   for (const [page, path] of MORE) {
