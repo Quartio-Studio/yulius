@@ -275,7 +275,10 @@ impl TranscriptWatch for Watch {
                     }
                     Observed::TurnComplete { .. } => out.push(Observation::TurnComplete),
                     Observed::Goal { outcome } => out.push(Observation::Goal(outcome)),
-                    Observed::TurnEnded => out.push(Observation::TurnEnded),
+                    Observed::TurnEnded { background_agents } => {
+                        out.push(Observation::TurnEnded { background_agents });
+                    }
+                    Observed::AgentWork { at } => out.push(Observation::AgentWork { at }),
                     Observed::LimitReached {
                         resets_at,
                         message,

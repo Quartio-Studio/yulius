@@ -28,7 +28,7 @@ test('a finished goal with a background shell still running stays Working and sa
   await app.open(mock('/s/studio/t/14'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#14 Start the preview server');
 
-  await expect(browser.locator('.strip-status')).toHaveText(/Working · 1 background shell still running/);
+  await expect(browser.locator('.strip-status')).toHaveText(/Working · 1 background task still running/);
   await expect(screen.getByRole('region', 'Working').getByRole('link', /Start the preview server/)).toBeVisible();
   await expect(screen.getByRole('region', 'Done').getByRole('link', /Start the preview server/)).toBeHidden();
 });
@@ -66,7 +66,7 @@ test('an idle agent with a background shell running is Working, not your turn', 
 
   // The turn ended while the agent's build runs in the background: it wakes by itself.
   await touchTask(browser, 12, { activity: 'waiting', background_shells: 1 });
-  await expect(browser.locator('.strip-status')).toHaveText(/Working · 1 background shell still running/);
+  await expect(browser.locator('.strip-status')).toHaveText(/Working · 1 background task still running/);
   await expect(screen.getByRole('region', 'Working').getByRole('link', /Checkout API/)).toBeVisible();
   await expect(browser.locator('.attention-bar')).toBeHidden();
 

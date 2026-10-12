@@ -122,6 +122,10 @@ pub struct TaskRuntime {
     pub(crate) background_shells: AtomicI64,
     /// Since when (ms) the idle agent's background shells have been running (0 = none).
     pub(crate) shells_since_ms: AtomicI64,
+    /// Background agents Claude Code still waited for when the last turn ended (its
+    /// `turn_duration` record, STA-001): they wake the session by themselves, so the idle task
+    /// is not done. Counted with the shells.
+    pub(crate) background_agents: AtomicU32,
     /// The run was reattached after a restart: the transcript it already wrote is history.
     pub(crate) replay_transcript: AtomicBool,
     /// Why Claude Code said the current session ends (`SessionEnd` hook), until the run exits.
@@ -175,6 +179,7 @@ impl TaskRuntime {
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             shells_since_ms: AtomicI64::new(0),
+            background_agents: AtomicU32::new(0),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
             hold_polled_ms: AtomicI64::new(0),
@@ -2193,6 +2198,7 @@ impl App {
         runtime.goal_submitted.store(false, Ordering::SeqCst);
         runtime.session_started.store(false, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
+        runtime.background_agents.store(0, Ordering::SeqCst);
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
         }
@@ -2397,6 +2403,7 @@ impl App {
                 // the CLI gave the hold up (an interrupt, its own hook timeout), so the task
                 // runs again (F 2026-10-10: the task follows its session).
                 self.hold_overtaken(task_id, at, Activity::Working).await;
+                runtime.background_agents.store(0, Ordering::SeqCst);
                 runtime.start_turn(self.now());
                 let _ = self
                     .deps
@@ -2419,7 +2426,11 @@ impl App {
                 self.turn_interrupted(task_id, at).await;
             }
             Observation::Goal(outcome) => self.goal_observed(task_id, outcome).await,
-            Observation::Session { .. } | Observation::TurnEnded => {}
+            Observation::TurnEnded { background_agents } => {
+                self.background_agents_observed(task_id, background_agents.unwrap_or(0))
+                    .await;
+            }
+            Observation::Session { .. } | Observation::AgentWork { .. } => {}
         }
     }
 

@@ -10,9 +10,12 @@
 //! Background shells the agent left running (Claude Code's "· 1 shell") are probed from the
 //! process table while the task is idle — at the clean Stop, when the goal is achieved and every
 //! [`SHELL_PROBE_MS`] — and reported with the task; the UI shows a done task with a shell still
-//! running as Working ("1 background shell still running"). A probe that cannot read the process
+//! running as Working ("1 background task still running"). A probe that cannot read the process
 //! table, or takes longer than [`SHELL_PROBE_TIMEOUT`], reports nothing: the task is not held
-//! back by it (Claude Code wakes the agent when a shell ends anyway).
+//! back by it (Claude Code wakes the agent when a shell ends anyway). Background agents are no
+//! process of that tree: Claude Code says how many it still waits for in the record that closes
+//! the turn (`pendingBackgroundAgentCount`, SPEC-032), and the larger of the two counts is the
+//! idle task's background work.
 //!
 //! After a restart the transcript of a reattached run is read again from its start; it is reduced
 //! to its final state ([`TranscriptFacts`]) and applied once, so a replayed prompt cannot put a
@@ -42,6 +45,9 @@ pub struct TranscriptFacts {
     pub turn_open: Option<bool>,
     /// Whether the session's goal stands achieved; `None` when nothing said either way.
     pub goal_achieved: Option<bool>,
+    /// Background agents Claude Code still waited for when the last turn ended (0 after a new
+    /// prompt or when it did not say).
+    pub background_agents: u32,
 }
 
 impl TranscriptFacts {
@@ -51,10 +57,15 @@ impl TranscriptFacts {
             Observation::UserTurn { .. } => {
                 self.turn_open = Some(true);
                 self.goal_achieved = Some(false);
+                self.background_agents = 0;
             }
-            Observation::TurnComplete
-            | Observation::TurnEnded
-            | Observation::TurnInterrupted { .. } => self.turn_open = Some(false),
+            Observation::TurnEnded { background_agents } => {
+                self.turn_open = Some(false);
+                self.background_agents = background_agents.unwrap_or(0);
+            }
+            Observation::TurnComplete | Observation::TurnInterrupted { .. } => {
+                self.turn_open = Some(false);
+            }
             Observation::Goal(GoalOutcome::Met) => {
                 self.goal_achieved = Some(true);
                 self.turn_open = Some(false);
@@ -71,6 +82,9 @@ impl TranscriptFacts {
                 self.goal_achieved = Some(false);
             }
             Observation::Session { .. } | Observation::LimitReached { .. } => {}
+            // An assistant line that is not a turn's end after a recorded end: a Stop hook
+            // continued the turn (STA-005).
+            Observation::AgentWork { .. } => self.turn_open = Some(true),
         }
     }
 }
@@ -184,6 +198,9 @@ impl App {
         if let Some(achieved) = facts.goal_achieved {
             runtime.goal_achieved.store(achieved, Ordering::SeqCst);
         }
+        runtime
+            .background_agents
+            .store(facts.background_agents, Ordering::SeqCst);
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
@@ -281,6 +298,14 @@ impl App {
             }
             None => -1,
         };
+        // Background agents are no process of the session's shell tree: Claude Code counts them
+        // in its turn record (STA-001). The count is the larger of the two views of the same
+        // background work (a background Bash command is in both).
+        let count = if idle {
+            count.max(i64::from(runtime.background_agents.load(Ordering::SeqCst)))
+        } else {
+            count
+        };
         let previous = runtime.background_shells.swap(count, Ordering::SeqCst);
         // How long the idle agent's shells have been running, which the UI shows (SHL-002).
         let now = self.now().0;
@@ -301,8 +326,33 @@ impl App {
         }
     }
 
-    /// Whether the task's agent has background shells running right now (a fresh probe).
+    /// Claude Code ended a turn and said how many background agents it still waits for: a change
+    /// settles the idle task's background work at once (STA-001).
+    pub(crate) async fn background_agents_observed(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        agents: u32,
+    ) {
+        let previous = self
+            .runtime(task_id)
+            .background_agents
+            .swap(agents, Ordering::SeqCst);
+        if previous != agents {
+            self.probe_idle_shells(task_id).await;
+        }
+    }
+
+    /// Whether the task's agent has background work running right now: a fresh probe of its
+    /// shells, or background agents its last turn end said it waits for.
     pub(crate) async fn shells_running_now(&self, task_id: &TaskId) -> bool {
+        if self
+            .runtime(task_id)
+            .background_agents
+            .load(Ordering::SeqCst)
+            > 0
+        {
+            return true;
+        }
         let Ok(Some(attempt)) = self.deps.store.live_attempt(task_id).await else {
             return false;
         };
@@ -348,6 +398,56 @@ mod tests {
         at: Some(Timestamp(1)),
     };
 
+    const ENDED: Observation = Observation::TurnEnded {
+        background_agents: None,
+    };
+    const WORK: Observation = Observation::AgentWork {
+        at: Some(Timestamp(2)),
+    };
+
+    /// STA-001: a replayed turn end that says background agents are pending keeps them, until the
+    /// next prompt.
+    #[test]
+    fn a_replay_keeps_the_background_agents_of_the_last_turn_end() {
+        let pending = Observation::TurnEnded {
+            background_agents: Some(2),
+        };
+        let waiting = reduce(&[PROMPT, Observation::TurnComplete, pending.clone()]);
+        assert_eq!(waiting.turn_open, Some(false));
+        assert_eq!(waiting.background_agents, 2);
+        // The wake-up is a user line: a new turn, nothing pending until it ends.
+        let woken = reduce(&[PROMPT, pending.clone(), PROMPT]);
+        assert_eq!((woken.turn_open, woken.background_agents), (Some(true), 0));
+        let done = reduce(&[PROMPT, pending, PROMPT, ENDED]);
+        assert_eq!((done.turn_open, done.background_agents), (Some(false), 0));
+    }
+
+    /// STA-005: a stop the hook continued (a goal not met, a notice) is no end of the turn:
+    /// assistant work after the turn's last end line reopens it, however the replay ends.
+    #[test]
+    fn work_after_a_stop_the_hook_continued_keeps_the_turn_open() {
+        let blocked = reduce(&[PROMPT, Observation::TurnComplete, WORK]);
+        assert_eq!(blocked.turn_open, Some(true));
+        // The agent finishes the continued turn: closed again by its own end.
+        let closed = reduce(&[
+            PROMPT,
+            Observation::TurnComplete,
+            WORK,
+            Observation::TurnComplete,
+            ENDED,
+        ]);
+        assert_eq!(closed.turn_open, Some(false));
+        // The person interrupted afterwards.
+        let stopped = reduce(&[
+            PROMPT,
+            WORK,
+            Observation::TurnInterrupted {
+                at: Some(Timestamp(3)),
+            },
+        ]);
+        assert_eq!(stopped.turn_open, Some(false));
+    }
+
     /// TSK-014: a replay is reduced to its final state, in transcript order.
     #[test]
     fn a_replayed_transcript_reduces_to_its_final_state() {
@@ -358,21 +458,18 @@ mod tests {
             PROMPT,
             Observation::TurnComplete,
             Observation::Goal(GoalOutcome::Met),
-            Observation::TurnEnded,
+            ENDED,
         ]);
         assert_eq!(
             finished,
             TranscriptFacts {
                 turn_open: Some(false),
-                goal_achieved: Some(true)
+                goal_achieved: Some(true),
+                background_agents: 0,
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.
-        let again = reduce(&[
-            Observation::Goal(GoalOutcome::Met),
-            Observation::TurnEnded,
-            PROMPT,
-        ]);
+        let again = reduce(&[Observation::Goal(GoalOutcome::Met), ENDED, PROMPT]);
         assert_eq!(again.turn_open, Some(true));
         assert_eq!(again.goal_achieved, Some(false));
         // Not met yet: the agent continues.
