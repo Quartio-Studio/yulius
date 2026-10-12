@@ -1,7 +1,7 @@
 //! Projects end to end over HTTP with real Git on local remotes: listings, import, create from
 //! a template, onboarding gate and removal (AC-PRJ-1, AC-PRJ-3..5, AC-IMP-2, AC-IMP-4).
 
-mod support;
+use crate::support;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};

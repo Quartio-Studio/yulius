@@ -6,12 +6,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
-- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0028; task #33): a top-bar Agent
+- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0029; task #33): a top-bar Agent
   button and the first tool of the right rail open the user's own Claude Code session in the tool
   panel beside the page, under a notice that it is for quick work (setting up automations, quick
   questions) and that anything more complex, such as writing code, belongs in a task (with a New
   task link). It is no longer in the left sidebar; `/s/<slug>/agent` and the old
   `/s/<slug>/cockpit` open the panel. The API and server keep the `cockpit` names.
+- CI runs are no longer refused over the sandbox's disk quota by the size of test builds
+  (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
+  190 MB executable linking the whole product, are now modules of one test binary
+  (`tests/main.rs`); a gate build's test executables drop from 9.2 GB to 1.3 GB. The repository
+  check rejects a second test binary or an undeclared test file. Run one file's tests with
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`.
 - A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
   wrapping over the condition's border (SPEC-031, task #29).
 - Attached images reach Claude Code as pasted images (SPEC-030, ADR-0026; task #28). A task with

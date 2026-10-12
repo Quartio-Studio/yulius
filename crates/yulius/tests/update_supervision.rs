@@ -5,7 +5,7 @@
 //! and a new server starting on the same port, and reaches the agent exactly as typed once the
 //! new server releases it; the session is the same process, never respawned.
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

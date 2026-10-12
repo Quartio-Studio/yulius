@@ -70,7 +70,7 @@ flowchart LR
 - `router.js` maps `agent` and `cockpit` like `browser` (composer + `panel: 'agent'`); `app.js`
   opens the panel and replaces the address.
 - The server is unchanged: API paths, the shell kind and `COCKPIT_NAME` stay (internal names; a
-  rollback still adopts the session). ADR-0028 records the move.
+  rollback still adopts the session). ADR-0029 records the move.
 
 ## Plan
 
@@ -100,7 +100,7 @@ flowchart LR
 
 ## Decisions
 
-- **"Right" means the right tool panel** (ADR-0028): the right side of the screen is where the
+- **"Right" means the right tool panel** (ADR-0029): the right side of the screen is where the
   tools live; a panel keeps the session beside the page in use, which suits quick work (ask about
   the task in view, set up an automation while looking at its page). Alternatives: a full page
   reached from the right of the top bar (still replaces the page), a fixed right column of its own
@@ -135,7 +135,7 @@ flowchart LR
   another sandbox while an Agent is open starts it without the keyboard (rare; the person clicks
   it). Round 3 is the last full round; a fourth, narrow review confirms these fixes because the
   merge needs an approved head.
-- **Merge of task #27** (SPEC-029, its ADR took 0025): this decision became ADR-0026, then ADR-0028 after tasks #28 and #32 took 0026 and 0027; the Cockpit
+- **Merge of task #27** (SPEC-029, its ADR took 0025): this decision became ADR-0026, then ADR-0029 after tasks #28, #32 and #31 took 0026 to 0028; the Cockpit
   is left out of the trimmed navigation and SPEC-029 NAV-001 says where it went.
 - **Review round 4** (fresh session, narrow, APPROVE at 4277747 with minors): the wish to focus
   from opening the Agent now ends when its first screen shows, so a recovery long after (a reboot)

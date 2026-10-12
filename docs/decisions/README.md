@@ -31,4 +31,5 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0025](0025-sandbox-navigation-more-group.md): Six sandbox pages in the sidebar, the rest under "More"
 - [0026](0026-attached-images-are-pasted.md): Attached images are pasted into the first message, not mentioned
 - [0027](0027-step-back-past-a-usage-limit.md): A usage limit steps the transcript back; Claude Code continues the cut turn
-- [0028](0028-agent-in-the-right-panel.md): The Cockpit is shown as the Agent, a tool in the right panel
+- [0028](0028-one-integration-test-binary.md): The product's integration tests are one test binary
+- [0029](0029-agent-in-the-right-panel.md): The Cockpit is shown as the Agent, a tool in the right panel

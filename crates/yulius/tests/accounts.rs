@@ -1,7 +1,7 @@
 //! Account administration and the native login flow over a scripted fake process host
 //! (AC-ROT-1, ROT-001/002/009, ACC-009; SPEC-002 §7.2 "Login", §8 masking/sealing).
 
-mod support;
+use crate::support;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};

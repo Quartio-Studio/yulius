@@ -4,7 +4,7 @@
 //! "Feature" workflow (none for a prompt-mode task); a prompt-mode task never gets a spec-first
 //! workflow from Auto; picked values are never sent to Jev. Jev is a fake: no real call is made.
 
-mod support;
+use crate::support;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
