@@ -3,7 +3,9 @@
 ## Status
 
 Accepted. Specified in [SPEC-021](../../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md).
-Its UI (a page first in the sidebar) is replaced by [0029](0029-agent-in-the-right-panel.md): the
+Amended by [0029](0029-cockpit-manages-through-mcp.md): the Cockpit gets the Yulius MCP server with
+the management tools; everything else below still holds.
+Its UI (a page first in the sidebar) is replaced by [0030](0030-agent-in-the-right-panel.md): the
 Agent, a tool in the right panel.
 
 ## Context

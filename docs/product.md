@@ -23,7 +23,9 @@ watching, steering and unblocking.
   right tool panel beside any page (top-bar Agent button, first in the tools rail), for quick work
   such as setting up automations or asking a quick question; anything more complex, such as
   writing code, belongs in a task, and its panel says so. `/clear` starts over, it cannot be
-  deleted and comes back with its conversation.
+  deleted and comes back with its conversation. It manages the project for its owner: asked to
+  "create a task from that" or to do something "every day at 4am", it creates the task or the
+  automation through Yulius's tools. Task agents can create tasks the same way (`task_create`).
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Agent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions

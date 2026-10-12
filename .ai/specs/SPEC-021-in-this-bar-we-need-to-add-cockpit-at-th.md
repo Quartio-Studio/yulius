@@ -42,7 +42,7 @@ conversation after an exit, an idle stop or a server restart.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | CKP-001 | Each user with write access has at most one Cockpit per sandbox. `POST /api/sandboxes/{sid}/cockpit` returns it, starting it when it is not running; concurrent calls start one. Read users are refused. | `cockpit.rs` tests |
-| CKP-002 | The Cockpit is plain Claude Code: no `--settings`, `--mcp-config`, hooks, status line, task token, briefing or `--dangerously-skip-permissions`; the Claude OAuth token of a pool subscription in its environment (never in argv), `CLAUDE_CONFIG_DIR` in the user's own home (`/home/<login>/.claude` when contained), the first-run screens and folder trust settled. Its environment is otherwise the user's terminal environment (identity, Git as their GitHub account through the workspace credential, ports). | harness unit test, `cockpit.rs` |
+| CKP-002 | The Cockpit is plain Claude Code: no `--settings`, hooks, status line, task token, briefing or `--dangerously-skip-permissions`; the Claude OAuth token of a pool subscription in its environment (never in argv), `CLAUDE_CONFIG_DIR` in the user's own home (`/home/<login>/.claude` when contained), the first-run screens and folder trust settled. Its only MCP addition is the Yulius server with the management tools (SPEC-037 MGT-004, ADR-0029). Its environment is otherwise the user's terminal environment (identity, Git as their GitHub account through the workspace credential, ports). | harness unit test, `cockpit.rs` |
 | CKP-003 | A Cockpit that is started again resumes the user's newest conversation in that sandbox (`--resume <id>`), after `/clear` the cleared one's successor; a first start has none; a conversation it could not resume (exit with an error within 10 s) is skipped next time, so the Cockpit never stays stuck. | `cockpit.rs` |
 | CKP-004 | The Cockpit cannot be deleted, closed or renamed: it is not in the shell list, the shell rename and close calls answer 404 for it, it does not count against the shells limit, and there is no delete route. | `cockpit.rs` |
 | CKP-005 | The Cockpit is private: only its owner can get or attach to it; other users get their own. | `cockpit.rs` |
@@ -89,12 +89,13 @@ flowchart LR
 - Another user of the same sandbox gets a different Cockpit and cannot attach to this one.
 - After `/exit` (or a server restart, or a day unwatched) opening the Cockpit continues the
   latest conversation.
-- No Yulius hook, MCP server or briefing reaches the Cockpit session.
+- No Yulius hook or briefing reaches the Cockpit session; its only Yulius MCP server is the
+  management one of SPEC-037.
 
 ## Test plan
 
-- Unit: `yulius-harness` `plan_cockpit` argv/env (no settings, MCP, hooks, bypass; token only
-  in secret env; `--resume` when given).
+- Unit: `yulius-harness` `plan_cockpit` argv/env (no settings, hooks, bypass, MCP other than
+  SPEC-037's Yulius server; tokens only in secret env; `--resume` when given).
 - Integration (`crates/yulius/tests/cockpit.rs`, real ptyhost, a fake `claude` script that
   prints its argv and whether the token is set): start, reuse, concurrency, privacy, read
   user refused, not listed/closable/renamable, resume after exit with the newest conversation,

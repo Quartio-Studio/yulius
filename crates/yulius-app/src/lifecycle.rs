@@ -15,7 +15,7 @@ use crate::auth::AuthContext;
 use crate::auto_choice::WorkflowPick;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::{StepRecord, TaskMode, TaskOrigin, TaskRecord};
+use crate::model::{StepRecord, TaskMode, TaskOrigin, TaskRecord, UserRecord};
 use crate::ports::store::TaskFieldUpdate;
 use crate::supervisor::{RunStart, branch_for};
 use crate::tasks::title_from_prompt;
@@ -249,7 +249,27 @@ impl App {
         req: &CreateTask,
     ) -> AppResult<TaskSummary> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::Work).await?;
+        let task = self
+            .create_task_as(&ctx.user, &sid, req, TaskOrigin::Ui)
+            .await?;
+        self.task_summary(&task).await
+    }
+
+    /// Creates a task on `user`'s authority the way New task does (access, workflow or Jev's
+    /// choice, mode, a predecessor or a start rule, the onboarding gate), from the UI or from an
+    /// agent tool (SPEC-037 MGT-001).
+    ///
+    /// # Errors
+    /// Access, validation and onboarding-gate errors.
+    pub async fn create_task_as(
+        self: &Arc<Self>,
+        user: &UserRecord,
+        sid: &SandboxId,
+        req: &CreateTask,
+        origin: TaskOrigin,
+    ) -> AppResult<TaskRecord> {
+        let sid = sid.clone();
+        self.require(user, &sid, Action::Work).await?;
         let harness = parse_harness(&req.harness)?;
         // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
         // choose (TSK-015).
@@ -291,7 +311,7 @@ impl App {
             .create_task_ruled(
                 NewTask {
                     sandbox: sid,
-                    created_by: ctx.user.id.clone(),
+                    created_by: user.id.clone(),
                     prompt: req.prompt.clone(),
                     harness,
                     title: req.title.clone(),
@@ -303,7 +323,7 @@ impl App {
                         .unwrap_or_default(),
                     model: req.model.clone().filter(|m| !m.trim().is_empty()),
                     effort: req.effort.clone().filter(|e| !e.trim().is_empty()),
-                    origin: TaskOrigin::Ui,
+                    origin,
                     automation_run: None,
                     start: true,
                     mode: choice.mode,
@@ -314,13 +334,13 @@ impl App {
             .await?;
         if choice.is_auto() {
             // The task exists and runs: a failed record only loses the "Auto →" label.
-            let actor = self.login_of(&ctx.user.id).await;
+            let actor = self.login_of(&user.id).await;
             if let Err(err) = self.record_auto_choice(&task.id, &actor, &choice).await {
                 tracing::warn!(error = %err, task = %task.id, "auto choice not recorded");
             }
             self.publish_task(&task.id).await;
         }
-        self.task_summary(&task).await
+        Ok(task)
     }
 
     /// Initial steps of a workflow usable in `sandbox` (no workflow → no steps; AUT-004).
