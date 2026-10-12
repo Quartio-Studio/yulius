@@ -781,7 +781,9 @@ route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
 });
 route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
-  await delay(900);
+  // A test may hold the proposal (`__yuliusMock.holdProposal = true`) to look at the card while
+  // Claude prepares it, and release it with `__yuliusMock.releaseProposal()`.
+  await (db.holdProposal ? new Promise((resolve) => { db.releaseProposal = resolve; }) : delay(900));
   const lines = String(body.prompt || '').split('\n').filter((l) => /^\s*(\d+[.)]|[-*•])\s/.test(l)).map((l) => l.trim());
   const backend = lines.filter((l) => MOCK_BACKEND.test(l));
   const ux = lines.filter((l) => !MOCK_BACKEND.test(l));
