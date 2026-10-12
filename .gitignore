@@ -35,3 +35,7 @@ __pycache__/
 !.env.example
 *.profraw
 /coverage/
+
+
+# APM dependencies
+apm_modules/

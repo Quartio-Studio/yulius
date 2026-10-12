@@ -10,6 +10,7 @@ import tomllib
 from urllib.parse import quote, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
+SKILL_BODY_LINES = 200
 LAYERS = {
     "domain": {"domain"},
     "contracts": {"contracts"},
@@ -75,8 +76,31 @@ def skill_errors(path):
     description = fields.get("description", "")
     if not description or len(description) > 1024 or ": " in description:
         errors.append(f"{path}: invalid plain scalar description")
-    if not text[match.end():].strip():
+    if description and not re.search(r"\bUse (?:when|for|on|before|after|this)\b", description):
+        errors.append(f"{path}: description must say when to use the skill (\"Use when ...\")")
+    body = text[match.end():]
+    if not body.strip():
         errors.append(f"{path}: empty instructions")
+    if len(body.splitlines()) > SKILL_BODY_LINES:
+        errors.append(f"{path}: body over {SKILL_BODY_LINES} lines; move detail to references/ or assets/")
+    return errors
+
+
+def skill_deployment_errors(source, targets):
+    """APM deploys .apm/skills to each target; a hand edit there is drift (ADR-0016)."""
+    def files(root):
+        return {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()} if root.is_dir() else {}
+    wanted = files(source)
+    errors = []
+    for target in targets:
+        found = files(target)
+        for rel, data in wanted.items():
+            if rel not in found:
+                errors.append(f"{target / rel}: missing deployment of .apm/skills/{rel}; run apm install")
+            elif found[rel] != data:
+                errors.append(f"{target / rel}: differs from .apm/skills/{rel}; edit the source and run apm install")
+        for rel in found.keys() - wanted.keys():
+            errors.append(f"{target / rel}: not in .apm/skills; edit the source and run apm install")
     return errors
 
 
@@ -521,11 +545,12 @@ def check():
         path = ROOT / name
         if path.is_file() and path.suffix == ".md":
             errors.extend(link_errors(path, ROOT))
-    skills = list((ROOT / ".agents/skills").glob("*/SKILL.md"))
+    skills = list((ROOT / ".apm/skills").glob("*/SKILL.md"))
     if not skills:
         errors.append("No repository skills found")
     for path in skills:
         errors.extend(skill_errors(path))
+    errors.extend(skill_deployment_errors(ROOT / ".apm/skills", [ROOT / ".agents/skills", ROOT / ".claude/skills"]))
     errors.extend(ui_errors())
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     cargo = ["rustup", "run", channel, "cargo"]
