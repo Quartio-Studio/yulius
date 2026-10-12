@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use yulius_domain::ids::SandboxId;
+use yulius_domain::ids::{SandboxId, TaskId};
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -23,6 +23,21 @@ use crate::model::TaskRecord;
 const WAIT_POLL: Duration = Duration::from_secs(2);
 /// Longest single wait request (the CLI asks again until its own limit).
 pub const WAIT_MAX: Duration = Duration::from_secs(55);
+
+/// The file in the data directory that keeps armed merges across restarts (SPEC-050 DLV-205): a
+/// deploy dropped every armed merge, and agents waited for merges that no longer existed.
+pub const ARMED_MERGES_FILE: &str = "armed-merges.json";
+
+/// Serializes changes to [`ARMED_MERGES_FILE`].
+static ARMED_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// One armed merge as saved: task id, head, review summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SavedArmed {
+    task: String,
+    head: String,
+    summary: String,
+}
 
 /// A merge armed by `delivery_merge` while the checks of the reviewed head still ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,11 +108,76 @@ impl App {
     /// Arms a merge of `head` for when its checks pass (`delivery_merge` while they still run).
     pub(crate) fn arm_merge(&self, task: &TaskRecord, head: &str, summary: &str) {
         self.forget_merge_outcome(task);
+        let merge = ArmedMerge {
+            head: head.to_owned(),
+            summary: summary.to_owned(),
+        };
+        self.save_armed(&task.id, Some(&merge));
         if let Ok(mut armed) = self.runtime(&task.id).armed_merge.lock() {
-            *armed = Some(ArmedMerge {
-                head: head.to_owned(),
-                summary: summary.to_owned(),
+            *armed = Some(merge);
+        }
+    }
+
+    /// Records `task`'s armed merge, or that it has none any more, in [`ARMED_MERGES_FILE`]
+    /// (written whole, then renamed into place). Failures are logged: the merge stays armed in
+    /// memory.
+    pub(crate) fn save_armed(&self, task: &TaskId, armed: Option<&ArmedMerge>) {
+        let _guard = ARMED_FILE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let path = self.config.data_dir.join(ARMED_MERGES_FILE);
+        let mut saved = read_armed(&path);
+        saved.retain(|entry| entry.task != task.as_str());
+        if let Some(armed) = armed {
+            saved.push(SavedArmed {
+                task: task.as_str().to_owned(),
+                head: armed.head.clone(),
+                summary: armed.summary.clone(),
             });
+        }
+        let written = serde_json::to_vec(&saved)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| {
+                let tmp = path.with_extension("json.tmp");
+                std::fs::write(&tmp, bytes)?;
+                std::fs::rename(&tmp, &path)
+            });
+        if let Err(err) = written {
+            tracing::warn!(error = %err, "armed merges could not be saved");
+        }
+    }
+
+    /// Puts back the armed merges of running tasks after a restart (DLV-205); the others are
+    /// forgotten.
+    pub async fn restore_armed_merges(&self) {
+        let path = self.config.data_dir.join(ARMED_MERGES_FILE);
+        let saved = {
+            let _guard = ARMED_FILE_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            read_armed(&path)
+        };
+        for entry in saved {
+            let Ok(task_id) = TaskId::parse(&entry.task) else {
+                continue;
+            };
+            let running = matches!(
+                self.deps.store.task(&task_id).await,
+                Ok(Some(task)) if task.status == yulius_domain::task::TaskStatus::Running
+            );
+            if !running {
+                self.save_armed(&task_id, None);
+                continue;
+            }
+            if let Ok(mut armed) = self.runtime(&task_id).armed_merge.lock()
+                && armed.is_none()
+            {
+                *armed = Some(ArmedMerge {
+                    head: entry.head,
+                    summary: entry.summary,
+                });
+                tracing::info!(task = %task_id, "armed merge restored after a restart");
+            }
         }
     }
 
@@ -146,11 +226,16 @@ impl App {
                 .lock()
                 .ok()
                 .and_then(|mut armed| armed.take());
-            if let Some(armed) = taken
-                && let Some(kept) = self.merge_armed_task(&task, armed).await
-                && let Ok(mut slot) = runtime.armed_merge.lock()
-            {
-                *slot = Some(kept);
+            if let Some(armed) = taken {
+                let kept = self.merge_armed_task(&task, armed.clone()).await;
+                if kept.as_ref() != Some(&armed) {
+                    self.save_armed(&task.id, kept.as_ref());
+                }
+                if let Some(kept) = kept
+                    && let Ok(mut slot) = runtime.armed_merge.lock()
+                {
+                    *slot = Some(kept);
+                }
             }
             runtime.merge_deciding.fetch_sub(1, Ordering::SeqCst);
         }
@@ -468,6 +553,14 @@ impl App {
             tokio::time::sleep(WAIT_POLL).await;
         }
     }
+}
+
+/// The saved armed merges; none when the file is missing or unreadable.
+fn read_armed(path: &std::path::Path) -> Vec<SavedArmed> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }
 
 fn short(sha: &str) -> &str {

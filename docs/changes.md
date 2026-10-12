@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Armed merges survive a server restart (a deploy no longer drops them) (SPEC-050 DLV-205).
 - Armed pull requests stay current by themselves (SPEC-050 DLV-203): when the integration branch
   moves on, Yulius merges it into the idle task's branch (the repository's merge drivers apply, so
   a shared changes log no longer conflicts) and pushes a fast-forward; the merge stays armed for
