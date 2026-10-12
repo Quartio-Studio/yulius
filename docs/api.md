@@ -806,7 +806,7 @@ resolves to nothing, the run gets the server without that variable or token.
     ends when its process exits (the server sends `exit` and closes), when it is closed, or after
     24 h without viewers; it keeps running across a server restart. Shells never change tasks.
 - Cockpit (SPEC-021, ADR-0020): every user's own plain Claude Code session per sandbox, a shell
-  of kind `cockpit`.
+  of kind `cockpit`; the web UI calls it the Agent and shows it in the right panel (SPEC-035).
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
     <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox

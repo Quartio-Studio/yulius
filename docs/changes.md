@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0025; task #33): a top-bar Agent
+  button and the first tool of the right rail open the user's own Claude Code session in the tool
+  panel beside the page, under a notice that it is for quick work (setting up automations, quick
+  questions) and that anything more complex, such as writing code, belongs in a task (with a New
+  task link). It is no longer in the left sidebar; `/s/<slug>/agent` and the old
+  `/s/<slug>/cockpit` open the panel. The API and server keep the `cockpit` names.
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.

@@ -3,6 +3,8 @@
 ## Status
 
 Accepted. Specified in [SPEC-021](../../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md).
+Its UI (a page first in the sidebar) is replaced by [0025](0025-agent-in-the-right-panel.md): the
+Agent, a tool in the right panel.
 
 ## Context
 
