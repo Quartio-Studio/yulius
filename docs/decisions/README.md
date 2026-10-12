@@ -28,3 +28,9 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0022](0022-native-task-attachments.md): Attached files reach Claude Code as `@path` mentions in its first message
 - [0023](0023-no-messages-until-delivery-is-reliable.md): No messages until their delivery is reliable
 - [0024](0024-default-model-and-effort.md): Tasks default to Opus 5.5 at high effort
+- [0025](0025-sandbox-navigation-more-group.md): Six sandbox pages in the sidebar, the rest under "More"
+- [0026](0026-attached-images-are-pasted.md): Attached images are pasted into the first message, not mentioned
+- [0027](0027-step-back-past-a-usage-limit.md): A usage limit steps the transcript back; Claude Code continues the cut turn
+- [0028](0028-one-integration-test-binary.md): The product's integration tests are one test binary
+- [0029](0029-cockpit-manages-through-mcp.md): The Cockpit and task agents manage the project through the Yulius MCP server
+- [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first

@@ -105,6 +105,11 @@ p { margin: 0; }
   .select option::checkmark { order: 1; margin-left: auto; color: var(--accent); }
   .select option:disabled { color: var(--muted); cursor: not-allowed; }
   .select-sm { padding: 0 4px 0 8px; }
+  /* A select that gives its button, `<select><button><selectedcontent></selectedcontent></button>…`,
+     shows a long picked label on one line ending in an ellipsis; without it the label wraps and
+     spills over the fixed-height control. */
+  .select > button { display: flex; flex: 1 1 auto; align-items: center; align-self: stretch; min-width: 0; margin-block: -1px; overflow: hidden; }
+  .select selectedcontent { display: block; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field-label { font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); font-weight: 500; }
@@ -323,6 +328,10 @@ p { margin: 0; }
 .nav-item:hover .icon, .nav-item.active .icon { color: var(--text-2); }
 .nav-item:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
 .nav-item.active { background: var(--accent-soft); color: var(--text); }
+/* "More" (SPEC-029): a disclosure button styled as a link, its pages below it in the same column. */
+.nav-toggle { width: 100%; border: 0; background: transparent; font-family: inherit; text-align: left; cursor: pointer; }
+.nav-more-chevron { display: inline-flex; margin-left: auto; }
+.nav-more { display: flex; flex-direction: column; gap: 4px; }
 .task-list { flex: 1 0 auto; padding: 8px 6px 12px; border-top: 1px solid var(--border); margin-top: 8px; }
 /* Active tasks (UI-005): groups — Needs you, Working, Stopped — of two-line rows. */
 /* Task list rows read like a chat list (WhatsApp, cmux): a state tile, a 16 px title with the age

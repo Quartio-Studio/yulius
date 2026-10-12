@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import re
 import unittest
-from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors
 
 
 def package(name, layer, dependencies=()):
@@ -48,6 +48,42 @@ class RepositoryContracts(unittest.TestCase):
             (root / "exists.md").write_text("# Exists")
             doc.write_text("[good](exists.md#heading)")
             self.assertEqual(link_errors(doc, root), [])
+
+    def test_composition_crate_links_its_integration_tests_into_one_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tests = Path(tmp) / "tests"
+            tests.mkdir()
+            (tests / "support").mkdir()
+            (tests / "support" / "mod.rs").write_text("")
+            for name in ("disk", "cli"):
+                (tests / f"{name}.rs").write_text("#[test]\nfn works() {}\n")
+
+            def crate(layer, *files):
+                targets = [{"name": "app", "kind": ["lib"], "src_path": f"{tmp}/src/lib.rs"}]
+                targets += [{"name": Path(f).stem, "kind": ["test"], "src_path": str(tests / f)} for f in files]
+                return {"name": "app", "manifest_path": f"{tmp}/Cargo.toml",
+                        "metadata": {"yulius": {"layer": layer}}, "targets": targets}
+
+            per_file = integration_test_errors([crate("composition", "disk.rs", "cli.rs")])
+            self.assertEqual(len(per_file), 1)
+            self.assertIn("2 integration test binaries", per_file[0])
+            self.assertEqual(integration_test_errors([crate("adapter", "disk.rs", "cli.rs")]), [])
+            no_target = integration_test_errors([crate("composition")])
+            self.assertEqual(len(no_target), 1)
+            self.assertIn("tests/main.rs", no_target[0])
+
+            (tests / "main.rs").write_text("mod support;\nmod disk;\n// mod cli;\n/* old:\nmod cli;\n*/\n")
+            stray = integration_test_errors([crate("composition", "main.rs")])
+            self.assertEqual(len(stray), 1)
+            self.assertIn("tests/cli.rs", stray[0])
+            (tests / "main.rs").write_text("mod support;\n#[cfg(unix)] pub(crate) mod disk;\n#[cfg(unix)]\nmod cli;\n")
+            self.assertEqual(integration_test_errors([crate("composition", "main.rs")]), [])
+
+            (tests / "flows").mkdir()
+            (tests / "flows" / "main.rs").write_text("#[test]\nfn works() {}\n")
+            directory = integration_test_errors([crate("composition", "main.rs")])
+            self.assertEqual(len(directory), 1)
+            self.assertIn("tests/flows/main.rs", directory[0])
 
     def test_skill_directory_must_match_name(self):
         with tempfile.TemporaryDirectory() as tmp:

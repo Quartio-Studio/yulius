@@ -230,6 +230,28 @@ test('a rule takes at most 16 conditions, as the server does', async ({ app, scr
   await expect(add).toBeEnabled();
 });
 
+test('a long task title stays on one line in a condition, ending in an ellipsis', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(async () => {
+    const url = '/assets/ruleeditor.js';
+    const { openRuleEditor } = await import(url);
+    const title = 'Too much elements here. Only Cockpit, Tasks, Git, CI (and CD in the future), Secrets and everything else in the rail';
+    openRuleEditor({ tasks: [{ id: 'a', number: 27, title, archived: false }], value: null, onUse: () => {} });
+  });
+  const editor = screen.getByRole('dialog', 'Start when a rule is true');
+  await expect(editor.getByRole('combobox', 'Task of condition 1')).toBeVisible();
+  const fit = await browser.evaluate(() => {
+    const select = document.querySelector('.rule-editor .rule-task') as HTMLElement;
+    const shown = select.querySelector('selectedcontent') as HTMLElement | null;
+    return {
+      fits: shown ? shown.getBoundingClientRect().height <= select.clientHeight && shown.getBoundingClientRect().right <= select.getBoundingClientRect().right : false,
+      truncated: shown ? shown.scrollWidth > shown.clientWidth : false,
+      lines: shown ? Math.round(shown.getBoundingClientRect().height / (parseFloat(getComputedStyle(shown).lineHeight) || parseFloat(getComputedStyle(shown).fontSize) * 1.2)) : 0,
+    };
+  });
+  expect(fit).toEqual({ fits: true, truncated: true, lines: 1 });
+});
+
 test('a sandbox without tasks offers no start rule', async ({ app, screen }) => {
   await app.open(mock('/s/studio', '&tasks=0'));
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();

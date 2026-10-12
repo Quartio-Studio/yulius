@@ -3,14 +3,14 @@
 //! restart (reconcile + reattach without respawn), crash exits and stop (SPEC-001 RUN-001..006,
 //! AC-RUN-1..4).
 
-mod support;
+use crate::support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
+use support::agents::{FakeAgentHarness, FakeAgentOptions, limit_resume_problems};
 use support::{FakeGitHub, TestResult};
 use yulius::wiring::clock::SystemClock;
 use yulius::wiring::git::GitAdapter;
@@ -27,7 +27,7 @@ use yulius_app::ports::usage::UsageProbe;
 use yulius_app::supervisor::RunStart;
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
-use yulius_domain::task::TaskStatus;
+use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
 use yulius_ptyhost::test_support::locate_fake_agent;
@@ -571,6 +571,10 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
             first.provider_session_id, second.provider_session_id,
             "same session"
         );
+        // SPEC-034: the transcript steps back over the limit and Claude Code continues the turn
+        // itself; nothing like "Continue." is sent.
+        let problems = limit_resume_problems(Path::new(&second.run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
         assert!(
             !app.deps.store.switches(&id).await?.is_empty(),
             "decision recorded"
@@ -1104,6 +1108,58 @@ fn tasks_queue_at_the_session_limit_and_start_when_a_slot_frees() -> TestResult 
             task(&app, &second).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SES-101: a Done task keeps its idle session but no longer holds a slot, so a queued task
+/// starts without the Done one being stopped (F 2026-10-12).
+#[test]
+fn a_done_task_frees_its_slot_for_a_queued_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 1)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let first = new_task(&app, &sandbox, &user, "First").await?;
+        wait_for("the first run", Duration::from_secs(30), || {
+            screen_contains(&app, &first, "FAKE-AGENT READY")
+        })
+        .await?;
+        let second = new_task(&app, &sandbox, &user, "Second").await?;
+        assert_eq!(task(&app, &second).await?.status, TaskStatus::Queued);
+        // Still working: the queue waits.
+        app.drain_queue().await;
+        assert_eq!(task(&app, &second).await?.status, TaskStatus::Queued);
+        app.deps
+            .store
+            .set_activity(&first, Some(Activity::Done), app.now())
+            .await?;
+        app.drain_queue().await;
+        wait_for("the queued task to start", Duration::from_secs(60), || {
+            screen_contains(&app, &second, "FAKE-AGENT READY")
+        })
+        .await?;
+        let done = task(&app, &first).await?;
+        assert_eq!(
+            done.status,
+            TaskStatus::Running,
+            "the Done task keeps its session"
+        );
+        for id in [&first, &second] {
+            app.stop_task_now(id).await?;
+        }
+        for id in [&first, &second] {
+            wait_for("the stop", Duration::from_secs(30), || async {
+                task(&app, id).await.is_ok_and(|t| !t.status.is_live())
+            })
+            .await?;
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

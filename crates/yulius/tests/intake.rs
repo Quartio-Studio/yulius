@@ -3,7 +3,7 @@
 //! need a person when it ends otherwise, and the `UserPromptSubmit` scope check with the
 //! decisions on a held prompt. Jev and Claude are fakes: no real call is made.
 
-mod support;
+use crate::support;
 
 use std::path::Path;
 use std::process::Command;

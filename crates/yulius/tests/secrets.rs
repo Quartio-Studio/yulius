@@ -3,7 +3,7 @@
 //! rest, access control, agent secrets applied to requests for their bound hosts only, the MCP
 //! tools and redaction of MCP results, fingerprints and MCP `${secret:NAME}` references.
 
-mod support;
+use crate::support;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

@@ -215,7 +215,7 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends) |
 | POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
-| DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
+| DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs, or if a Done task's session is still closing then |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
 | WS | `/api/tasks/{tid}/terminal` | read (input: write) | terminal protocol below |
@@ -812,7 +812,13 @@ resolves to nothing, the run gets the server without that variable or token.
     <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox
     repository, as the caller's sandbox identity, with the token of the pool's best subscription
     for Opus and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
-    terminal's environment (Git as the caller); no Yulius hooks, MCP, settings or approval bypass.
+    terminal's environment (Git as the caller); no Yulius hooks, settings or approval bypass. It
+    gets the Yulius MCP server (SPEC-037, ADR-0029): `--mcp-config` inline JSON for
+    `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
+    in the secret environment, valid while that Cockpit is live and its owner may work), and
+    `--allowedTools` for the read-only tools. It is served `tasks_list`, `task_get`,
+    `task_create`, `automation_create`, `automations_list`, `automation_update`,
+    `workflows_list`, `sessions_search` and `session_read`, acting for its owner.
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
     409 before the repository is cloned or without a Claude
     subscription, 429 while none has capacity. There is no delete: it is never in `GET …/shells`,

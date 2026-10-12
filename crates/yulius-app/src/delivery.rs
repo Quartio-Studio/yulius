@@ -2002,6 +2002,49 @@ impl App {
         }
     }
 
+    /// Records why the agent's head could not be pushed, for `yulius wait` (DLV-201). A branch
+    /// rewritten after it was pushed is refused as not a fast-forward; the remedy merges the
+    /// pushed head back in, so nothing is force-pushed.
+    fn set_push_problem(
+        &self,
+        task_id: &TaskId,
+        head: &str,
+        branch: &str,
+        pull: Option<u64>,
+        err: &AppError,
+    ) {
+        let reason = err.public_message();
+        let target = pull.map_or_else(|| format!("`{branch}`"), |n| format!("pull request #{n}"));
+        let short = head.get(..9).unwrap_or(head);
+        let text = if ["non-fast-forward", "fetch first", "[rejected]"]
+            .iter()
+            .any(|needle| reason.contains(needle))
+        {
+            format!(
+                "Yulius could not push {short} to {target}: GitHub refused it because the branch \
+                 there is not an ancestor of your HEAD (your branch was rebased or amended after \
+                 it was pushed). Do not force-push. Merge the pushed head back in: `git fetch \
+                 origin && git merge --no-edit origin/{branch}` (the same changes merge \
+                 cleanly), rerun the tests if anything changed, and end your turn: Yulius pushes \
+                 again. Bring the integration branch in by merging it, never by rebasing."
+            )
+        } else {
+            format!(
+                "Yulius could not push {short} to {target}: {reason} It tries again at the end of \
+                 your next turn; `delivery_status` shows the branch state."
+            )
+        };
+        if let Ok(mut problem) = self.runtime(task_id).push_problem.lock() {
+            *problem = Some((head.to_owned(), text));
+        }
+    }
+
+    fn clear_push_problem(&self, task_id: &TaskId) {
+        if let Ok(mut problem) = self.runtime(task_id).push_problem.lock() {
+            *problem = None;
+        }
+    }
+
     /// What Yulius did for a ready task: opened its pull request, or pushed commits made since
     /// to the open one (#68). `None` while the task is not ready (no branch or worktree, an
     /// invalid spec, an open step, uncommitted work, no commits ahead of the integration branch)
@@ -2064,8 +2107,10 @@ impl App {
                 .await;
             if let Err(err) = pushed {
                 self.release_auto_head(task_id);
+                self.set_push_problem(task_id, &head, &branch, Some(pull.number), &err);
                 return Err(err);
             }
+            self.clear_push_problem(task_id);
             return Ok(Some(format!(
                 "Yulius pushed your new commits to pull request #{}.",
                 pull.number
@@ -2099,15 +2144,43 @@ impl App {
             Err(err) => Err(refusal(&err)),
         };
         match opened {
-            Ok(number) => Ok(Some(format!(
-                "Yulius opened pull request #{number} into {}: the task is ready for review.",
-                profile.integration_branch
-            ))),
+            Ok(number) => {
+                self.clear_push_problem(task_id);
+                Ok(Some(format!(
+                    "Yulius opened pull request #{number} into {}: the task is ready for review.",
+                    profile.integration_branch
+                )))
+            }
             Err(err) => {
                 self.release_auto_head(task_id);
+                self.set_push_problem(task_id, &head, &branch, None, &err);
                 Err(err)
             }
         }
+    }
+
+    /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
+    /// shell runs, and the goal is achieved or the plan is complete with the change merged. The
+    /// session limit counts tasks by it (SES-101), many times a minute.
+    pub(crate) async fn task_is_done_locally(&self, task: &TaskRecord) -> bool {
+        use yulius_domain::task::{Activity, TaskStatus};
+        if task.status != TaskStatus::Running
+            || !task.activity.is_some_and(Activity::is_idle)
+            || self.background_shells_of(&task.id).unwrap_or(0) > 0
+        {
+            return false;
+        }
+        if task.activity == Some(Activity::Done) {
+            return true;
+        }
+        match self.deps.store.steps(&task.id).await {
+            Ok(steps) if !crate::sandboxes::plan_open(&steps) => {}
+            _ => return false,
+        }
+        matches!(
+            self.deps.store.delivery(&task.id).await,
+            Ok(Some(record)) if past_merge(&record.stage)
+        )
     }
 
     /// Whether a task is Done (#35, the sidebar's rule; SPEC-001 TSK-012, TSK-014): its turn

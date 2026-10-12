@@ -6,10 +6,10 @@
 //!
 //! ```sh
 //! YULIUS_LIVE_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-//!   cargo test -p yulius --test live_ui_mcp -- --ignored
+//!   cargo test -p yulius --test main live_ui_mcp:: -- --ignored
 //! ```
 
-mod support;
+use crate::support;
 
 use std::path::Path;
 use std::process::{Child, Command, Stdio};

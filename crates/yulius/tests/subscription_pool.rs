@@ -3,7 +3,7 @@
 //! (the agent gets nothing), the hold surviving a server restart, release when capacity
 //! returns, and the capacity view with its forecast. Real processes: `pool_supervision.rs`.
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

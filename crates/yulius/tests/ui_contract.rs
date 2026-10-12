@@ -13,7 +13,7 @@
 //!   imports is embedded, and UI routes fall back to the SPA shell while unknown `/api/`
 //!   paths and missing assets stay 404.
 
-mod support;
+use crate::support;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

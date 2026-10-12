@@ -176,6 +176,8 @@ pub struct App {
     pub(crate) isolation: OnceLock<Arc<dyn crate::ports::isolation::SandboxIsolation>>,
     /// Pull requests the Git overview last observed, for the "needs you" counts (#147).
     pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
+    /// Tasks created by tools in the last hour, per project (SPEC-037 MGT-003).
+    pub(crate) tool_tasks: crate::manage::ToolTaskWindow,
 }
 
 impl App {
@@ -206,6 +208,7 @@ impl App {
             ci: crate::ci::CiState::default(),
             isolation: OnceLock::new(),
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
+            tool_tasks: crate::manage::ToolTaskWindow::default(),
         })
     }
 

@@ -34,6 +34,7 @@ pub mod intake;
 pub mod isolation;
 pub mod jev_key;
 pub mod lifecycle;
+pub mod manage;
 pub mod mcp;
 pub mod mcp_config;
 pub mod model;

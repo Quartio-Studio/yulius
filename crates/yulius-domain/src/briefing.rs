@@ -46,7 +46,7 @@ const MAX_STEPS_LISTED: usize = 100;
 const MAX_ENVIRONMENTS_LISTED: usize = 8;
 
 /// Yulius MCP tools announced to every session (SPEC-002 §7.4), as `(name, purpose)`.
-pub const YULIUS_TOOLS: [(&str, &str); 34] = [
+pub const YULIUS_TOOLS: [(&str, &str); 35] = [
     (
         "project_context",
         "project summary, architecture and decision index, recent changes, delivery rules",
@@ -56,6 +56,7 @@ pub const YULIUS_TOOLS: [(&str, &str); 34] = [
         "previous and parallel tasks with status, branch, spec and steps",
     ),
     ("task_get", "one task in detail"),
+    ("task_create", "create and start a new task in this project"),
     (
         "sessions_search",
         "search earlier task sessions and imported Claude Code sessions (sessions are docs)",
@@ -530,10 +531,10 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          Work that changes nothing in the repository (research, a brainstorm, an answer) ends \
          with its result.\n\
          - Git (skill `git-hygiene`): work only on {branch}. Never commit or push to \
-         {integration} or {production}, never `--no-verify`, never rewrite shared branches (only \
-         your own, with `--force-with-lease`). Small conventional commits; nothing unrelated, \
-         generated or secret. No `git stash`: this worktree is yours. Stay current with \
-         {integration} and rerun the tests after a conflict. One concern per pull request (about \
+         {integration} or {production}, never `--no-verify`, never rewrite pushed commits (no \
+         rebase, amend or force push: Yulius pushes plainly). Small conventional commits; nothing \
+         unrelated, generated or secret. No `git stash`: this worktree is yours. Stay current by \
+         merging `origin/{integration}` and rerun the tests after a conflict. One concern per pull request (about \
          400 changed lines outside tests); split bigger work into chained tasks.\n\
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
          given only the diff range, the spec and skill `om-code-review`); fix findings \
@@ -1044,7 +1045,8 @@ mod tests {
             "at most 2 in progress",
             "skill `git-hygiene`",
             "No `git stash`",
-            "`--force-with-lease`",
+            "Yulius pushes plainly",
+            "merging `origin/",
             "no human acceptance step",
             "on green",
             "`delivery_merge`",

@@ -145,20 +145,28 @@ fn shell(env: &dyn Fn(&str) -> Option<String>) -> String {
     }
 }
 
+/// `nice`, which runs agent commands at a lower CPU priority than the agents and the sandbox's
+/// CI jobs: eight tasks building at once starved the CI gate every task waits for (load 50 on 12
+/// CPUs, F 2026-10-12). It execs the command, so the status is the command's.
+const NICE: &str = "/usr/bin/nice";
+/// How much lower (relative to the agent).
+const NICENESS: &str = "5";
+
 fn command(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> Option<Command> {
-    match args {
-        [] => None,
-        [line] => {
-            let mut command = Command::new(shell(env));
-            command.arg("-c").arg(line);
-            Some(command)
-        }
-        [program, rest @ ..] => {
-            let mut command = Command::new(program);
-            command.args(rest);
-            Some(command)
-        }
-    }
+    let (program, rest): (String, Vec<&str>) = match args {
+        [] => return None,
+        [line] => (shell(env), vec!["-c", line.as_str()]),
+        [program, rest @ ..] => (program.clone(), rest.iter().map(String::as_str).collect()),
+    };
+    let mut command = if std::path::Path::new(NICE).exists() {
+        let mut nice = Command::new(NICE);
+        nice.args(["-n", NICENESS, "--"]).arg(program);
+        nice
+    } else {
+        Command::new(program)
+    };
+    command.args(rest);
+    Some(command)
 }
 
 fn exit_code(status: ExitStatus) -> i32 {

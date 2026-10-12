@@ -21,7 +21,11 @@ watching, steering and unblocking.
   layer, home, shells per user, browser and editor.
 - **Cockpit**: every user's own plain Claude Code session per sandbox, first in the sidebar, for
   quick questions and work that should not become a task; `/clear` starts over, it cannot be
-  deleted and comes back with its conversation.
+  deleted and comes back with its conversation. It manages the project for its owner: asked to
+  "create a task from that" or to do something "every day at 4am", it creates the task or the
+  automation through Yulius's tools. Task agents can create tasks the same way (`task_create`).
+- **Sidebar**: the sandbox pages used every day (Cockpit, Tasks, Git, CI (tests), Secrets, Dashboard),
+  then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer

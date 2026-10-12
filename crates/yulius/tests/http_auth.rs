@@ -1,7 +1,7 @@
 //! End-to-end HTTP tests: setup, sign-in, CSRF, admission, GitHub-mirrored visibility and
 //! access on every sandbox and task route (AC-ACC-1..5).
 
-mod support;
+use crate::support;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};

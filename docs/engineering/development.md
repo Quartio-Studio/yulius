@@ -31,7 +31,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | Command | Actual work |
 | --- | --- |
 | `scripts/dev doctor` | Compiler/tool versions and Python prerequisite |
-| `scripts/dev check` | Local Markdown links, skills (frontmatter, "Use when" description, body size, deployments equal `.apm/skills`), Cargo inheritance/layers, web UI design tokens (no colour, type, radius or spacing literals in `styles.css`; WCAG contrast of every theme in `tokens.css`); checker regression tests; locked all-target compilation |
+| `scripts/dev check` | Local Markdown links, skills (frontmatter, "Use when" description, body size, deployments equal `.apm/skills`), Cargo inheritance/layers, one integration test binary for the composition crate, web UI design tokens (no colour, type, radius or spacing literals in `styles.css`; WCAG contrast of every theme in `tokens.css`); checker regression tests; locked all-target compilation |
 | `scripts/dev fmt` | Rust formatting mutation |
 | `scripts/dev lint` | Formatting verification and Clippy with warnings denied |
 | `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets |
@@ -39,6 +39,11 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | `scripts/dev ci` | doctor, check, lint, test, deps, then rustdoc with warnings denied |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
+The `yulius` crate's integration tests are modules of one test binary, `tests/main.rs`
+([ADR-0028](../decisions/0028-one-integration-test-binary.md)): declare a new file there, and run
+one file's tests with `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`
+(`cargo test -p yulius --test main <file>::` filters by substring: `supervision::` also runs
+`pool_supervision::`).
 Use the full gate after implementation stabilizes.
 
 The web UI has end-to-end tests in [`e2e/`](../../e2e/README.md): flows, accessibility (axe-core)

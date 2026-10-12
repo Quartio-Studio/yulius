@@ -6,6 +6,49 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Tasks run in parallel and finish without obstacles (SPEC-050):
+  - a Done task no longer holds a session slot, so queued tasks start;
+  - when Yulius cannot push an agent's head, `yulius wait` says why and how to fix it without a
+    force push, and agents bring `dev` in by merging, never by rewriting pushed commits;
+  - a shell that only runs `yulius wait` no longer counts as a build, so a waiting task reads as
+    waiting and its caches can go under disk pressure;
+  - agent commands run below CI and the agents in CPU priority;
+  - shells and the Cockpit keep GitHub across server restarts;
+  - a sandbox runs two CI runs at once, each lane with its own job checkouts, and worktree
+    registrations change one at a time (#206).
+- A Done task can be deleted (SPEC-039, ADR-0031, task #37). "Delete permanently…" closes its
+  idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
+  work or waiting for you has to be stopped first, and its menu says "Still running: stop the
+  task before deleting it".
+- CI runs are no longer refused over the sandbox's disk quota by the size of test builds
+  (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
+  190 MB executable linking the whole product, are now modules of one test binary
+  (`tests/main.rs`); a gate build's test executables drop from 9.2 GB to 1.3 GB. The repository
+  check rejects a second test binary or an undeclared test file. Run one file's tests with
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`.
+- A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
+  wrapping over the condition's border (SPEC-031, task #29).
+- The Cockpit and task agents create tasks and automations (SPEC-037, ADR-0029; task #35). A new
+  `task_create` MCP tool creates a task the way New task does (workflow, mode, after a task or a
+  start rule), on the authority of the task's creator; tools create at most 20 tasks an hour
+  per project. The Cockpit now starts with the Yulius MCP server under its own bearer. It is
+  served the tools for tasks, automations, workflows and sessions, acting for its owner, so
+  "create a task from that" or "every day at 4am align the docs" just works. It asks before
+  creating anything. A Cockpit already running gets the tools when it starts again.
+- Attached images reach Claude Code as pasted images (SPEC-030, ADR-0026; task #28). A task with
+  attached images starts with no CLI prompt. Yulius types its first message into the terminal:
+  each image's path is pasted (Claude Code shows `[Image #N]` and sends an image block), then the
+  text with the other files mentioned. Before this, an `@` mention showed the path and reached the
+  model as a Read tool call.
+- The sandbox navigation is shorter (SPEC-029, ADR-0025, task #27): Cockpit, Tasks, Git,
+  CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
+  Automations and MCP in place. Its state is remembered per browser; arriving at one of those
+  pages shows it open for that page.
+- A usage limit no longer types "Continue." into a task (SPEC-034, decision 0027, task #32): the
+  session moves to another subscription (or waits for the reset) and resumes as if the limit never
+  happened. The transcript steps back over the limit errors and notices, and Claude Code redoes
+  the lost turn by itself: it resubmits the unanswered message, or goes on after the last tool
+  result.
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.

@@ -63,6 +63,9 @@ pub struct WaitState {
     /// The head that armed merge was for.
     #[serde(default)]
     pub merge_outcome_head: Option<String>,
+    /// Why Yulius could not push this head, with what to do (DLV-201).
+    #[serde(default)]
+    pub push_problem: Option<String>,
 }
 
 impl WaitState {
@@ -318,6 +321,14 @@ impl App {
             .lock()
             .ok()
             .and_then(|outcome| outcome.clone());
+        let push_problem = self
+            .runtime(&task.id)
+            .push_problem
+            .lock()
+            .ok()
+            .and_then(|problem| problem.clone())
+            .filter(|(at, _)| !head.is_empty() && (at.starts_with(&head) || head.starts_with(at)))
+            .map(|(_, text)| text);
         Ok(WaitState {
             head,
             checks,
@@ -326,6 +337,7 @@ impl App {
             merge_armed: self.armed_merge(task),
             merge_outcome_head: outcome.as_ref().map(|o| o.head.clone()),
             merge_outcome: outcome.map(|o| o.text),
+            push_problem,
         })
     }
 

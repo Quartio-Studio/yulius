@@ -4,7 +4,7 @@
 //! sign-in the usage endpoint refuses (HTTP 403, F 2026-10-10) is not an error: its sessions
 //! report its usage.
 
-mod support;
+use crate::support;
 
 use std::collections::HashMap;
 use std::sync::Arc;

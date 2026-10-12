@@ -6,7 +6,7 @@
 //! secret, and forged headers sent straight to the listener, count against the peer; the secret
 //! never reaches a response or a log.
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};

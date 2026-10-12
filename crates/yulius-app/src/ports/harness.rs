@@ -28,6 +28,9 @@ pub enum SessionMode {
         session_id: String,
         /// Continuation prompt.
         prompt: Option<String>,
+        /// The run continues the turn a usage limit cut (SPEC-034): the transcript steps back
+        /// over the limit and the agent redoes the lost turn by itself; no prompt is sent.
+        continue_interrupted: bool,
     },
 }
 
@@ -94,6 +97,9 @@ pub struct CockpitLaunch {
     pub resume: Option<String>,
     /// Provider credential (the Claude OAuth token).
     pub credential: Secret,
+    /// The Yulius MCP server it manages the project with (SPEC-037): the internal listener's
+    /// URL and the Cockpit's bearer.
+    pub yulius: Option<(String, Secret)>,
 }
 
 /// A launch plan plus the session id known up front.

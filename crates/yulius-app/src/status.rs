@@ -89,7 +89,8 @@ impl App {
         Ok(StatusView {
             vm: vm_view(&snapshot),
             sessions: SessionCounts {
-                live: u32::try_from(live.len()).unwrap_or(u32::MAX),
+                // What the limit counts: Done tasks' idle sessions do not (SES-101).
+                live: self.sessions_in_use().await?,
                 limit: self.config.max_live_sessions,
                 queued: u32::try_from(queued).unwrap_or(u32::MAX),
             },
