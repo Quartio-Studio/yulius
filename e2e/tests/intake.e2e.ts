@@ -93,6 +93,7 @@ test('picked conditions become the canonical start rule text (unit, in the page)
       { id: 'b', number: 9, title: 'Nine', archived: false },
       { id: 'c', number: 5, title: 'Five', archived: true },
     ];
+    const live = tasks.filter((t) => !t.archived); // as ctx.store.tasksOf lists them
     const label = (o: { number: number; label: string }) => `${o.number}:${o.label}`;
     return {
       none: ruleText({ join: 'and', conditions: [] }),
@@ -107,10 +108,12 @@ test('picked conditions become the canonical start rule text (unit, in the page)
       empty: ruleChoices([{ id: 'c', number: 5, title: 'Five', archived: true }]).length,
       // The server takes at most 16 tasks in a rule (MAX_ATOMS in yulius-domain).
       max: RULE_MAX_CONDITIONS,
-      // A picked task that is no longer offered stays in its row, said as such.
-      listed: conditionChoices(ruleChoices(tasks), 9, tasks).map(label),
-      archived: conditionChoices(ruleChoices(tasks), 5, tasks).map(label),
-      gone: conditionChoices(ruleChoices(tasks), 7, tasks).map(label),
+      // A picked task that is no longer offered stays in its row. The store lists only tasks that
+      // are not archived, so a live one beyond the offered choices keeps its title, and one the
+      // store no longer has is archived or removed.
+      listed: conditionChoices(ruleChoices(tasks), 9, live).map(label),
+      older: conditionChoices(ruleChoices(tasks).slice(0, 1), 3, live).map(label),
+      unlisted: conditionChoices(ruleChoices(tasks), 5, live).map(label),
     };
   });
   expect(result).toEqual({
@@ -122,8 +125,8 @@ test('picked conditions become the canonical start rule text (unit, in the page)
     empty: 0,
     max: 16,
     listed: ['9:#9 Nine', '3:#3 Three'],
-    archived: ['9:#9 Nine', '3:#3 Three', '5:#5 Five (archived)'],
-    gone: ['9:#9 Nine', '3:#3 Three', '7:#7 (no longer in this sandbox)'],
+    older: ['9:#9 Nine', '3:#3 Three'],
+    unlisted: ['9:#9 Nine', '3:#3 Three', '5:#5 (archived or removed)'],
   });
 });
 

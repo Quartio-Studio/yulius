@@ -33,8 +33,9 @@ in the page.
 ## Consequences
 
 Picking a rule needs no typing and cannot be malformed: at most 16 conditions, the server's
-limit. A picked task that is archived or deleted before the task is created stays in the rule
-(the server then refuses a deleted one with a clear message) rather than being dropped unseen. The composer can express only flat
+limit. A picked task that is archived or deleted before the task is created stays in the rule as
+"#N (archived or removed)" (the server then refuses a deleted one with a clear message) rather
+than being dropped unseen. The composer can express only flat
 `and`/`or` rules over `done`, `merged` and `ended`; rules with `not` or mixed operators come
 through the API, and a task made that way still shows its rule everywhere. A new state in the
 language needs a row in `RULE_STATES`.

@@ -38,8 +38,8 @@ start rules themselves (SPEC-017) do not change.
 | RED-003 | The editor shows the sentence it builds ("Starts by itself when #12 done and #13 done") and Use this rule sets it; the text is the canonical form the server stores (`#12 done and #13 done`). | in-page unit test, e2e |
 | RED-004 | Opening the editor again shows the picked conditions, so they can be changed; Start now clears them. | e2e |
 | RED-005 | In a sandbox with no other task the menu does not offer a rule. | e2e |
-| RED-007 | A rule has at most 16 conditions, the server's limit: Add condition is disabled with a note at 16. A picked task that is no longer offered (archived since, or gone) stays in its row, labelled so, instead of being dropped. | e2e, in-page unit test |
 | RED-006 | The API keeps the full grammar (`not`, parentheses, mixed `and`/`or`); only the composer is simpler. | unchanged API tests |
+| RED-007 | A rule has at most 16 conditions, the server's limit: Add condition is disabled with a note at 16. A picked task that is no longer offered stays in its row instead of being dropped: with its title when it is only older than the offered ones, as "#N (archived or removed)" otherwise. | e2e, in-page unit test |
 
 ## Plan
 

@@ -36,13 +36,15 @@ export function ruleChoices(tasks) {
 
 /**
  * The options of one condition's task: the offered `choices`, plus the picked task `number` when
- * it is not among them (archived since, or gone), so reopening never changes a rule unseen.
+ * it is not among them, so reopening never changes a rule unseen. `tasks` are the store's tasks,
+ * which leave archived ones out: a task found there is only older than the choices, one not found
+ * was archived or removed since it was picked.
  */
 export function conditionChoices(choices, number, tasks) {
   const options = choices.map((t) => ({ number: t.number, label: `#${t.number} ${t.title}` }));
   if (choices.some((t) => t.number === number)) return options;
   const task = (tasks || []).find((t) => t.number === number);
-  return [...options, { number, label: task ? `#${number} ${task.title} (archived)` : `#${number} (no longer in this sandbox)` }];
+  return [...options, { number, label: task ? `#${number} ${task.title}` : `#${number} (archived or removed)` }];
 }
 
 /**
