@@ -8,9 +8,9 @@ Accepted. Specified in [SPEC-033](../../.ai/specs/SPEC-033-recently-i-got-dozens
 
 Cargo builds every file at the root of a crate's `tests/` as its own test executable. The `yulius`
 crate (the composition layer) had 50 of them, and each links the whole product: about 190 MB
-each, 9.2 GB measured in one gate build's directory. A worktree keeps several copies (the gate's `--all-features`
-build, ad-hoc `cargo test -p yulius` builds, and new hashes after dependency or toolchain
-changes), so task `target/` directories reached 21 to 49 GB. Working tasks' caches are never
+each, 9.2 GB measured in one gate build's directory. A worktree keeps several copies (the gate's
+`--all-features` build, ad-hoc `cargo test -p yulius` builds, and new hashes after dependency or
+toolchain changes), so task `target/` directories reached 21 to 49 GB. Working tasks' caches are never
 pruned (ADR-0017), so a few working tasks passed the sandbox's 100 GB quota and Yulius refused
 every CI run with "this sandbox uses 114.7 GB of its 100.0 GB disk quota" (task #31).
 
@@ -19,9 +19,11 @@ every CI run with "this sandbox uses 114.7 GB of its 100.0 GB disk quota" (task 
 `crates/yulius` sets `autotests = false` and declares one test target, `main`
 (`tests/main.rs`), whose modules are the test files, which stay where they were. The repository
 check (`integration_test_errors` in `scripts/check_repository.py`) fails when a composition-layer
-crate has more than one integration test target, or when a `.rs` file next to its `main.rs` is
-not declared as a module (it would silently never run). One file's tests run with
-`cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`; the `cargo test` filter `<file>::` is a substring match.
+crate has more than one integration test target, none at `tests/main.rs` while it has a `tests/`
+directory, a `.rs` file next to `main.rs` not declared as a module, or a `tests/<dir>/main.rs`
+(either would silently never run). One file's tests run with
+`cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`; the `cargo test`
+filter `<file>::` is a substring match.
 
 ## Alternatives
 

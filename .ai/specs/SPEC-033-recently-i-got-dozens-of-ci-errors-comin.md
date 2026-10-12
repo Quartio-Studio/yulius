@@ -90,20 +90,23 @@ The existing tests missed it because nothing checks how many test executables a 
 ## Evidence
 
 - Before: `ci/jobs/quality/target/debug/deps` of this sandbox (one gate build of `dev`): 11 GB, of
-  which 9.2 GB in 51 test executables; 50 `yulius` ones of 184 to 200 MB; their `--list` gives
-  266 tests.
-- `python3 scripts/check_repository.py` on the tree before the fix (commit e8dda95): failed with
+  which 9.2 GB in 51 test executables; 50 `yulius` ones of 184 to 200 MB; their `--list` gives 266
+  tests.
+- `python3 scripts/check_repository.py` on the tree before the fix (commit a93d30c): failed with
   `yulius: 50 integration test binaries each link the whole product; …`.
 - `cd scripts && python3 -m unittest test_check_repository`: 30 tests OK (the new case covers two
   targets, no target, a stray file, `mod` in comments, attributes and `pub(crate)`, a directory
   test, and a non-composition crate).
-- `scripts/dev ci` on c89647b: exit 0; nextest 1166 passed, 16 skipped (the 16 opt-in live tests,
-  as before). The `main` binary lists 266 tests (16 ignored), the same as before.
+- `scripts/dev ci` on 3368280 (the fix) and again on 7ea0f96 after rebasing onto `dev`: exit 0;
+  nextest 1166 passed, 16 skipped (the 16 opt-in live tests, as before). The `main` binary lists
+  266 tests (16 ignored), the same as before.
 - After: one 256 MB `main` test executable; test executables 1.34 GB (was 9.2 GB);
   `target/debug/deps` 2.6 GB (was 11 GB); whole `target/` 4.3 GB.
 - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^supervision::/)'`: 13 passed,
   253 skipped (only `supervision::`, not `pool_supervision::` or `update_supervision::`).
-- Independent review (fresh session, `om-code-review`) of c31606a: approved; its minor findings
-  (check gaps, substring filter wording, one disk figure, unfinished spec) fixed test-first.
+- Independent review (fresh session, `om-code-review`) of c31606a (before the rebase, now
+  f43cd33): approved; its minor findings (check gaps, substring filter wording, one disk figure,
+  unfinished spec) fixed test-first. A second review of 7ea0f96 approved; its minors (ADR listing
+  all four check failures, these commit references, a stale comment) fixed.
 - Not run: a real 100 GB sandbox with several working tasks; old copies already in task worktrees
   and the CI checkout go with the existing SPEC-008/SPEC-019 upkeep.
