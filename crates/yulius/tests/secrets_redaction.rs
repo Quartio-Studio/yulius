@@ -205,6 +205,14 @@ async fn the_bash_wrapper_redacts_every_form_of_a_value() -> TestResult {
     // Outside a Yulius run the wrapper is transparent.
     let outside = scrub_exec(None, &work, "echo outside")?;
     assert_eq!(String::from_utf8_lossy(&outside.stdout), "outside\n");
+
+    // Agent commands run 5 nice levels below the agent (CI jobs keep the CPU first).
+    if Path::new("/usr/bin/nice").exists() {
+        let level = |out: &[u8]| String::from_utf8_lossy(out).trim().parse::<i32>();
+        let own = level(&Command::new("/usr/bin/nice").output()?.stdout)?;
+        let wrapped = level(&scrub_exec(Some(&scrub), &work, "nice")?.stdout)?;
+        assert_eq!(wrapped, (own + 5).min(19));
+    }
     Ok(())
 }
 
