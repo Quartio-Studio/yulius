@@ -11,7 +11,7 @@ import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
-import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments } from './filedrop.js';
+import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -437,15 +437,17 @@ export function mountComposer(ctx, sandbox) {
       h('a', { class: 'composer-repo-link', href: sandbox.repo.url, target: '_blank', rel: 'noopener noreferrer', title: `Open ${sandbox.repo.owner}/${sandbox.repo.name} on GitHub` },
         icon('github', { size: 18 }), h('span', null, `${sandbox.repo.owner} / ${sandbox.repo.name}`)),
       h('span', { class: 'composer-branch', title: `New tasks branch from ${baseBranch}` }, icon('branch', { size: 16 }), h('span', null, baseBranch))) : null);
-  // Files added to the prompt wait here, shown as thumbnails; their paths join the text at start.
+  // Files added to the prompt wait here, shown as thumbnails that open the file; their paths join
+  // the text at start.
   let attached = [];
   const tray = h('ul', { class: 'composer-attachments', 'aria-label': 'Attached files', hidden: true });
   function renderTray() {
     for (const item of attached) if (!item.url && /^image\//.test(item.file.type)) item.url = URL.createObjectURL(item.file);
     tray.hidden = !attached.length;
     setChildren(tray, attached.map((item) => h('li', { class: 'composer-attachment', title: item.name },
-      item.url ? h('img', { src: item.url, alt: item.name }) : icon('file', { size: 20 }),
-      h('span', { class: 'composer-attachment-name' }, item.name),
+      h('button', { type: 'button', class: 'composer-attachment-open', 'aria-label': `Open ${item.name}`, onClick: () => openAttachment(item) },
+        item.url ? h('img', { src: item.url, alt: '' }) : icon('file', { size: 20 }),
+        h('span', { class: 'composer-attachment-name' }, item.name)),
       iconButton('x', `Remove ${item.name}`, () => { dropAttached([item]); renderTray(); }, { class: 'composer-attachment-remove' }))));
   }
   function dropAttached(items) {

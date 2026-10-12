@@ -514,6 +514,22 @@ export function withAttachments(text, attached) {
   return `${text}\n\n${attached.map((item) => `@${shellQuote(item.path)}`).join('\n')}`;
 }
 
+/**
+ * Opens a file attached on the new-task composer (SPEC-025): an image (it has a thumbnail URL)
+ * previews in a dialog at full size, any other file opens in a new tab, where the browser shows
+ * or downloads it.
+ */
+export function openAttachment(item) {
+  if (item.url) {
+    openModal({ title: item.name, wide: true, className: 'attachment-modal', body: h('img', { class: 'attachment-preview', src: item.url, alt: item.name }) });
+    return;
+  }
+  const url = URL.createObjectURL(item.file);
+  window.open(url, '_blank', 'noopener');
+  // The new tab has loaded it by then; the URL only holds the file in memory.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 /** Uploads a file dropped on the new-task composer of a sandbox, before its task exists. */
 export function draftAttachments(ctx, sandboxId) {
   return (file, options) => ctx.api.post(`/api/sandboxes/${enc(sandboxId)}/attachments?name=${encodeURIComponent(file.name)}`, file, options);
