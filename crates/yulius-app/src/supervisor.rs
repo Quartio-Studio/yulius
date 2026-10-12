@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
+use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
 use yulius_domain::rotation::{self, AccountView, Decision, Trigger};
@@ -51,6 +52,10 @@ pub const DEFAULT_SIZE: (u16, u16) = (120, 40);
 pub const WATCH_INTERVAL_MS: u64 = 1_000;
 /// Reattach attempts after an unexpected host disconnect.
 pub const REATTACH_ATTEMPTS: u32 = 3;
+/// How long a closed run may take to be recorded as ended after the close escalation (SPEC-039).
+const CLOSE_SETTLE_MS: i64 = 5_000;
+/// How often a close waiting for its run looks again without an update (SPEC-039).
+const CLOSE_RECHECK: Duration = Duration::from_secs(1);
 
 /// Why Yulius is ending a run.
 enum EndIntent {
@@ -1755,6 +1760,62 @@ impl App {
             }
         });
         Ok(())
+    }
+
+    /// Closes a finished, running task like [`Self::close_task_now`] and waits until its run has
+    /// ended and the task rests (SPEC-039), so its records and directories can go. A run that
+    /// already ended by itself is not a conflict. The close and the wait are bounded together by
+    /// the close escalation, after which the run is terminated and marked lost, plus
+    /// `CLOSE_SETTLE_MS`; the wait follows the task's update events and looks again every
+    /// `CLOSE_RECHECK` in case an update is never published.
+    ///
+    /// # Errors
+    /// `Conflict` when the run is still there at the bound.
+    pub async fn close_task_and_wait(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+        // Subscribed before closing, so the update that says the run ended is never missed.
+        let mut events = self.events.subscribe();
+        let total =
+            STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS + CLOSE_SETTLE_MS;
+        let bound = Duration::from_millis(u64::try_from(total).unwrap_or(25_000));
+        let ended = tokio::time::timeout(bound, async {
+            match self.close_task_now(task_id).await {
+                // Not running any more: whether it rests is checked below.
+                Ok(()) | Err(AppError::Conflict(_)) => {}
+                Err(err) => return Err(err),
+            }
+            loop {
+                let store = &self.deps.store;
+                let rests = store
+                    .task(task_id)
+                    .await?
+                    .is_none_or(|t| t.status.is_resting());
+                if rests && store.live_attempt(task_id).await?.is_none() {
+                    return Ok::<bool, AppError>(true);
+                }
+                loop {
+                    match tokio::time::timeout(CLOSE_RECHECK, events.recv()).await {
+                        Ok(Ok(envelope)) => {
+                            if matches!(&envelope.event, UiEvent::TaskUpdated { task }
+                                if task.id == task_id.as_str())
+                            {
+                                break;
+                            }
+                        }
+                        // No update for a while, or updates were missed: look again.
+                        Err(_) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => break,
+                        Ok(Err(broadcast::error::RecvError::Closed)) => return Ok(false),
+                    }
+                }
+            }
+        })
+        .await;
+        match ended {
+            Ok(Ok(true)) => Ok(()),
+            Ok(Err(err)) => Err(err),
+            Ok(Ok(false)) | Err(_) => Err(AppError::Conflict(
+                "the task's session is still closing; try again".into(),
+            )),
+        }
     }
 
     /// Stops a task: graceful shutdown with escalation, then (if needed) termination and `lost`.

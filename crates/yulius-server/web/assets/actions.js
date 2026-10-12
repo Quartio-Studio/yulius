@@ -6,7 +6,7 @@
 
 import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, iconButton, placeholder } from './dom.js';
-import { taskActions, taskInfo, allows } from './status.js';
+import { taskActions, taskInfo, allows, isLive } from './status.js';
 import { relLong } from './format.js';
 import { BRAND } from './brand.js';
 
@@ -30,8 +30,8 @@ export function openTaskMenu(ctx, anchor, task) {
     { separator: true },
     task.archived
       ? { label: 'Restore', disabled: !can.restore, onSelect: () => restoreTask(ctx, task) }
-      : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (allows(access, 'write') ? 'Stop the task before archiving' : why), onSelect: () => archiveTask(ctx, task) },
-    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (allows(access, 'write') ? 'Stop the task before deleting it' : why), onSelect: () => deleteTask(ctx, task) },
+      : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (allows(access, 'write') ? 'Still running: stop the task before archiving it' : why), onSelect: () => archiveTask(ctx, task) },
+    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (allows(access, 'write') ? 'Still running: stop the task before deleting it' : why), onSelect: () => deleteTask(ctx, task) },
   ], { align: anchor instanceof Element ? 'end' : 'start' });
 }
 
@@ -87,17 +87,25 @@ export function continueTask(ctx, task) {
   return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, {}), `Continuing #${task.number}…`);
 }
 
-/** Permanent deletion (TSK-009): an explicit confirmation; cannot be undone. */
+// The server closes a finished task's session before deleting it and may wait for the close's
+// escalation (25 s at most, SPEC-039): the request outlasts it.
+const DELETE_TIMEOUT_MS = 40000;
+
+/**
+ * Permanent deletion (TSK-009): an explicit confirmation; cannot be undone. A Done task's idle
+ * session is closed first (SPEC-039).
+ */
 export async function deleteTask(ctx, task) {
+  const closing = isLive(task.status) ? ' Its finished session is closed first.' : '';
   const ok = await confirmDialog({
     title: `Delete task #${task.number} permanently?`,
-    message: `“${task.title}” and its history, messages, steps and metrics are deleted, and its local worktree and branch are removed, including uncommitted changes. Pushed branches and pull requests on GitHub stay. This cannot be undone.`,
+    message: `“${task.title}” and its history, messages, steps and metrics are deleted, and its local worktree and branch are removed, including uncommitted changes. Pushed branches and pull requests on GitHub stay.${closing} This cannot be undone.`,
     confirmLabel: 'Delete permanently',
     danger: true,
   });
   if (!ok) return;
   try {
-    await ctx.api.del(`/api/tasks/${enc(task.id)}`);
+    await ctx.api.del(`/api/tasks/${enc(task.id)}`, { timeoutMs: DELETE_TIMEOUT_MS });
   } catch (error) {
     errorToast(error, `Couldn’t delete task #${task.number}`);
     return;
