@@ -188,14 +188,17 @@ sequenceDiagram
   before the UI existed (no Notes button). Each later test failed before its fix: 5 after round 1
   (one of them an original test made flaky by the first-load bug), 5 after round 2, and the
   2 round 3 tests also fail against round 2's `notes.js` (checked by swapping the file).
-- Full e2e suite (`npx e2e run`) at `a38b810`: 33 files passed, 1 skipped (`agent.e2e.ts`, needs a
-  model); 176 tests passed.
-- `scripts/dev ci` exit 0 at `0a54a65`, `a4dab7e`, `8a24ac1`, `7e7ae29` and `a38b810`: nextest
-  1191 tests passed, 16 skipped; repository contracts, lint, deps and docs passed.
+- Full e2e suite (`npx e2e run`) at `a38b810`: 176 passed; after merging `origin/dev`, at
+  `cdb8dd8`: 33 files passed, 1 skipped (`agent.e2e.ts`, needs a model); 177 tests passed.
+- `scripts/dev ci` exit 0 at `0a54a65`, `a4dab7e`, `8a24ac1` and `7e7ae29` (nextest 1191 passed,
+  16 skipped), and after the merge at `cdb8dd8`: nextest 1206 passed, 16 skipped; repository
+  contracts, lint, deps and docs passed.
 - `python3 scripts/check_repository.py --ui`: UI contracts passed.
 - Independent reviews in fresh sessions: round 1 request changes (2 major), round 2 request
-  changes (1 blocker, 1 major), round 3 request changes (1 blocker), confirmation approve with
-  minors (fixed); the merged head's delta after that approval was approved again.
+  changes (1 blocker, 1 major), round 3 request changes (1 blocker), confirmation approved
+  `7e7ae29` with minors (fixed in `a38b810`), then approved `cdb8dd8` (the fixes, the spec and the
+  merge of `origin/dev`). Accepted nit: on a very slow run the undo test's poll can pass on the
+  first save's retry instead of the check; it then still passes rightly but proves less.
 - Not tested here: two real browsers against a real server (the mock simulates the teammate),
   a real browser's `keepalive` request surviving a closed tab, and Safari.
 
