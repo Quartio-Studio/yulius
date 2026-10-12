@@ -70,6 +70,8 @@ Web UI changes: also run the end-to-end suite, `cd e2e && npm ci --ignore-script
 (Node 24.8+, test-only; see [e2e/README.md](e2e/README.md)).
 
 `scripts/dev` selects the pinned Rust even if Homebrew Cargo is first in PATH.
+The `yulius` crate's integration tests are one binary (ADR-0026): run one file's tests with
+`cargo test -p yulius --test main <file>::`, and declare a new test file in `tests/main.rs`.
 `cargo xtask <command>` also works with the pinned rustup toolchain and `.tools/bin` on PATH.
 Never claim a missing command was passed; do not skip gates or widen allowlists to get green.
 

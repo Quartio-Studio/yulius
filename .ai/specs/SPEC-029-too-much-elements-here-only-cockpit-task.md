@@ -67,7 +67,7 @@ away.
 
 ## Decisions
 
-- **Disclosure in place, not a popover menu** ([ADR-0025](../../docs/decisions/0025-sandbox-navigation-more-group.md)):
+- **Disclosure in place, not a popover menu** ([ADR-0026](../../docs/decisions/0025-sandbox-navigation-more-group.md)):
   the request says "expanded"; links in the sidebar keep the same look, focus order and route
   marking as the primary ones, work on the phone drawer unchanged, and need no menu layer.
 - **Collapsed by default, remembered per browser**, like the Stopped group: a layout preference,
