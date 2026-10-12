@@ -28,8 +28,13 @@ by itself to the right of the transcript.
   auto-opens from 110 columns; unset auto-opens from 144 columns. Yulius task terminals are wider
   than 144 columns on a laptop screen, and a fresh sandbox home has no key, so the panel opens in
   every task.
-- Toggling the panel by hand writes the key (`true` when opened, `false` when closed). One opening
-  is then remembered for every later session in that sandbox.
+- With the feature flag `tengu_quiet_dolphin` (on by default, cached as on in Yulius sandboxes),
+  the built-in plugin `cc-plugin-diff` draws the panel instead. It keeps its own key `"open"` in
+  `<CLAUDE_CONFIG_DIR>/plugins/store/cc-plugin-diff_builtin-<12 hex of SHA-256 of the id>.json`
+  and auto-opens unless that key is `false`. A store without the key is seeded once from
+  `diffSidebarOpen` (`carryPanelPreference`); a missing store is first carried from the legacy id
+  `diff@builtin`. `/diff` stores `true`, and a stored `true` also opens the pane at startup, so one
+  manual opening would be remembered for every later session in that sandbox.
 - Yulius already merges first-run keys into that file before each Claude Code launch
   (`ensure_claude_config`, `crates/yulius-harness/src/claude_config.rs`; SPEC-002 section on launch
   preparation). This change adds one key to that existing merge. No second mechanism is needed.
@@ -39,7 +44,8 @@ by itself to the right of the transcript.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | DSP-001 | Before every Claude Code launch (new or resumed), `<CLAUDE_CONFIG_DIR>/.claude.json` has `diffSidebarOpen: false`. | `claude_config` unit test |
-| DSP-002 | A `true` left by an earlier session (the panel opened by hand) is reset to `false` at the next launch. | same test |
+| DSP-002 | A `true` left by an earlier session (the panel opened by hand) is reset to `false` at the next launch, in `.claude.json` and in every existing diff plugin store (current and legacy id); other store keys are kept. | `claude_config` unit tests |
+| DSP-005 | A missing plugin store stays missing, and an unreadable one is left untouched without failing the launch. | same tests |
 | DSP-003 | Claude Code's other keys and the user's choices (theme, projects) are kept, as before. | existing merge test |
 | DSP-004 | The panel can still be opened by hand within a session (Claude Code's own toggle); Yulius does not remove it. | design: only the auto-open gate key is set |
 
@@ -54,13 +60,16 @@ by itself to the right of the transcript.
 
 - `ensure_claude_config` writes `diffSidebarOpen: false` into a missing config, an existing config
   without the key, and an existing config that has `true`.
+- It sets `"open": false` in existing diff plugin stores (current and legacy file names, pinned in
+  the test), keeps their other keys, and creates no store and fails no launch otherwise.
 - Existing tests of the merge keep passing; `scripts/dev ci` passes.
 - SPEC-002's launch-preparation paragraph lists the key.
 
 ## Test plan
 
-- Unit (`claude_config.rs`): a test that fails without the change covers a fresh config, a config
-  with `diffSidebarOpen: true` (reset to `false`) and preservation of other keys.
+- Unit (`claude_config.rs`): tests that fail without the change cover a fresh config, a config
+  with `diffSidebarOpen: true` (reset to `false`), plugin stores holding `"open": true` (reset,
+  other keys kept), a missing store (not created) and an unreadable one (left as is).
 - Not tested here: the rendered Claude Code TUI. Driving the real Claude Code in a wide terminal
   needs a paid, logged-in session. The gate in the bundle was read directly instead (Context).
 
@@ -73,5 +82,10 @@ by itself to the right of the transcript.
 - **Use the Claude Code key, not a terminal-width trick or a UI overlay.** Narrowing the PTY would
   waste screen space. Hiding part of the terminal in the web UI would hide real output. The key is
   Claude Code's own switch for exactly this behavior.
+- **Reset the plugin store too, found by the independent review.** The global key alone only
+  covers a fresh sandbox; the plugin pane reads its own store. Only existing stores are changed, so
+  Claude Code still creates and carries them itself, and a store error never blocks a launch.
+- **Disabling the plugin was rejected.** `enabledPlugins` would also remove `/diff`, and the panel
+  is useful on request.
 - **No ADR.** This is one more default in an existing launch-preparation merge (like
   `autoCompactEnabled` in the run settings), not a new architectural choice.

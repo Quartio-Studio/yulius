@@ -1796,8 +1796,10 @@ Launch preparation verified against the real CLIs (2026-10-07): with an isolated
 a folder-trust prompt whose default answer is "No, exit". Before each launch Yulius merges
 `hasCompletedOnboarding`, `theme`, `projects[<worktree realpath>].hasTrustDialogAccepted` (and
 `bypassPermissionsModeAccepted` for contained runs) into `<CLAUDE_CONFIG_DIR>/.claude.json`, keeping
-Claude's own keys. It also sets `diffSidebarOpen: false` on every launch, so Claude Code's diff side
-panel does not open by itself beside the transcript in a wide task terminal (SPEC-024). Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` at each launch.
+Claude's own keys. It also sets `diffSidebarOpen: false` there and `"open": false` in existing
+stores of the built-in diff plugin (`<CLAUDE_CONFIG_DIR>/plugins/store`), so Claude Code's diff side
+panel does not open by itself beside the transcript in a wide task terminal (SPEC-024).
+Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` at each launch.
 
 MCP servers (MCP-001/004) are part of every launch, not of an account: the supervisor passes the
 sandbox's effective servers (`App::mcp_attachments`: enabled instance servers, overridden by the
