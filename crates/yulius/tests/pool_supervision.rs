@@ -925,6 +925,7 @@ fn a_limit_on_the_only_subscription_resumes_past_the_limit_when_it_recovers() ->
             PauseKind::Limit
         );
 
+        let mut notices = app.runtime(&id).hub.watch();
         probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
         refresh(&app, &user, "a-first").await?;
         let _ = app.resume_round().await;
@@ -945,6 +946,17 @@ fn a_limit_on_the_only_subscription_resumes_past_the_limit_when_it_recovers() ->
         let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
         assert!(problems.is_empty(), "{problems:?}");
         assert!(!screen(&app, &id).contains("Continue."), "nothing typed");
+        let mut said = Vec::new();
+        while let Ok(frame) = notices.try_recv() {
+            if let yulius_app::hub::HubFrame::Notice(text) = frame {
+                said.push(text);
+            }
+        }
+        assert!(
+            said.iter().any(|n| n.contains("continues this session"))
+                && !said.iter().any(|n| n.contains("another")),
+            "the same subscription: {said:?}"
+        );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

@@ -753,9 +753,14 @@ impl App {
         let harness = task.harness;
         let Some(account) = self.choose_account(&task, requested.as_ref()).await? else {
             // No subscription has capacity: the task waits before starting, without a process
-            // (ROT-010); the resume loop starts it when capacity returns.
-            self.pause_task(&task.id, PauseKind::Start, None, None)
-                .await?;
+            // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
+            // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
+            let kind = if matches!(start, RunStart::AfterLimit) {
+                PauseKind::Limit
+            } else {
+                PauseKind::Start
+            };
+            self.pause_task(&task.id, kind, None, None).await?;
             return Ok(());
         };
         let credential = self.open_credential(&account)?;
@@ -1885,9 +1890,14 @@ impl App {
         let runtime = self.runtime(task_id);
         // The subscription changes under the hood (F 2026-10-10): viewers see that the session
         // continues, not which accounts are involved (Task details lists the switches).
-        runtime
-            .hub
-            .notice("↻ Yulius continues this session on another Claude subscription…");
+        // The policy may pick the same subscription (a limit that reset): no "another" then.
+        let elsewhere = account.is_some()
+            && attempt.as_ref().map(|a| a.account_id.as_ref()) != Some(account.as_ref());
+        runtime.hub.notice(if elsewhere {
+            "↻ Yulius continues this session on another Claude subscription…"
+        } else {
+            "↻ Yulius continues this session…"
+        });
         self.publish_task(task_id).await;
         if let Some(attempt) = attempt {
             let (tx, rx) = oneshot::channel();
