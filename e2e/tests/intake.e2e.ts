@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
 
 failOnPageErrors();
 
@@ -17,6 +17,7 @@ const MIXED = [
 
 test('a request mixing UI and backend work offers a split; a chain waits for its predecessor', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
+  await mockReady(browser);
   // The mock holds its proposal until released, so the waiting card is there to look at however
   // slowly the page is driven.
   await browser.evaluate(() => {
