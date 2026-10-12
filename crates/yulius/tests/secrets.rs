@@ -45,16 +45,13 @@ async fn create_team_secret(
         &h.router,
         Method::POST,
         "/api/team-secrets",
-        Some(
-            json!({"title": "Shared Gmail", "url": "https://mail.google.com",
-            "username": "team@acme.test", "password": MAIL_PASSWORD,
-            "notes": "recovery: 1111-2222", "totp": SEED}),
-        ),
+        Some(json!({"title": "Shared Gmail", "value": MAIL_PASSWORD,
+            "notes": "recovery: 1111-2222"})),
         creds,
     )
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
-    assert_hidden(&created.body, &[MAIL_PASSWORD, "1111-2222", SEED]);
+    assert_hidden(&created.body, &[MAIL_PASSWORD, "1111-2222"]);
     Ok(created.body["id"].as_str().ok_or("id")?.to_owned())
 }
 
@@ -69,25 +66,48 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
     let list = call(&h.router, Method::GET, "/api/team-secrets", None, &admin).await?;
     assert_eq!(list.status, StatusCode::OK);
     assert_eq!(list.body[0]["title"], "Shared Gmail");
-    assert_eq!(list.body[0]["username"], "team@acme.test");
-    assert_eq!(list.body[0]["has_password"], true);
-    assert_eq!(list.body[0]["has_totp"], true);
-    assert_hidden(&list.body, &[MAIL_PASSWORD, "1111-2222", SEED]);
+    assert_eq!(list.body[0]["has_value"], true);
+    assert_eq!(list.body[0]["has_notes"], true);
+    assert!(list.body[0].get("username").is_none());
+    assert_hidden(&list.body, &[MAIL_PASSWORD, "1111-2222"]);
+
+    // Only a title, a value and notes (SPEC-040 R1).
+    for legacy in ["url", "username", "password", "totp"] {
+        let refused = call(
+            &h.router,
+            Method::POST,
+            "/api/team-secrets",
+            Some(json!({"title": "Old form", legacy: "x"})),
+            &admin,
+        )
+        .await?;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{legacy}");
+    }
 
     // Signed in a moment ago: fresh. Eleven minutes later: confirm first.
     let reveal = format!("/api/team-secrets/{id}/reveal");
     let shown = call(&h.router, Method::POST, &reveal, Some(json!({})), &admin).await?;
     assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
-    assert_eq!(shown.body["password"], MAIL_PASSWORD);
+    assert_eq!(shown.body["value"], MAIL_PASSWORD);
     h.clock.0.fetch_add(minutes(11), Ordering::SeqCst);
     let refused = call(&h.router, Method::POST, &reveal, Some(json!({})), &admin).await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
     assert_eq!(refused.body["error"]["code"], "reauth_required");
     assert_eq!(refused.body["reauth"]["methods"], json!(["password"]));
     assert_hidden(&refused.body, &[MAIL_PASSWORD]);
-    let totp = format!("/api/team-secrets/{id}/totp");
-    let code_refused = call(&h.router, Method::POST, &totp, None, &admin).await?;
-    assert_eq!(code_refused.body["error"]["code"], "reauth_required");
+    let no_codes = call(
+        &h.router,
+        Method::POST,
+        &format!("/api/team-secrets/{id}/totp"),
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(
+        no_codes.status,
+        StatusCode::NOT_FOUND,
+        "no per-secret codes"
+    );
 
     // A wrong password is refused (403: the session stays), the right one opens 10 minutes.
     let wrong = call(
@@ -113,29 +133,23 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
         &h.router,
         Method::POST,
         &reveal,
-        Some(json!({"purpose": "copy", "fields": ["password"]})),
+        Some(json!({"purpose": "copy", "fields": ["value"]})),
         &admin,
     )
     .await?;
-    assert_eq!(copy.body["password"], MAIL_PASSWORD);
+    assert_eq!(copy.body["value"], MAIL_PASSWORD);
     assert!(copy.body["notes"].is_null(), "only the asked field");
     let full = call(&h.router, Method::POST, &reveal, None, &admin).await?;
     assert_eq!(full.body["notes"], "recovery: 1111-2222");
-    assert_eq!(full.body["totp"], SEED);
-
-    // The code is RFC 6238's for the seed at the (test) clock's time.
-    let code = call(&h.router, Method::POST, &totp, None, &admin).await?;
-    let now = h.app.now().0;
-    let hmac = h.app.deps.crypto.totp_hmac(
-        yulius_domain::vault::totp::OtpAlgorithm::Sha1,
-        b"12345678901234567890",
-        yulius_domain::vault::totp::counter(now, 30),
-    );
-    assert_eq!(
-        code.body["code"],
-        yulius_domain::vault::totp::code_from_hmac(&hmac, 6)
-    );
-    assert_eq!(code.body["period"], 30);
+    let old_field = call(
+        &h.router,
+        Method::POST,
+        &reveal,
+        Some(json!({"fields": ["password"]})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(old_field.status, StatusCode::UNPROCESSABLE_ENTITY);
 
     // Ten minutes after confirming, confirm again.
     h.clock.0.fetch_add(minutes(10), Ordering::SeqCst);
@@ -168,7 +182,6 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
         "vault.team.create",
         "vault.team.reveal",
         "vault.team.copy",
-        "vault.team.totp",
         "vault.reauth",
         "vault.reauth.failed",
     ] {
@@ -177,30 +190,29 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
             "{action} missing from {actions:?}"
         );
     }
-    assert_hidden(&activity.body, &[MAIL_PASSWORD, "1111-2222", SEED]);
+    assert_hidden(&activity.body, &[MAIL_PASSWORD, "1111-2222"]);
 
-    // Edit and delete.
+    // Edit (an empty field clears it) and delete.
     let patched = call(
         &h.router,
         Method::PATCH,
         &format!("/api/team-secrets/{id}"),
-        Some(json!({"username": "", "totp": ""})),
+        Some(json!({"notes": ""})),
         &admin,
     )
     .await?;
     assert_eq!(patched.status, StatusCode::OK);
-    assert!(patched.body["username"].is_null());
-    assert_eq!(patched.body["has_totp"], false);
-    assert_eq!(patched.body["has_password"], true);
-    let bad_seed = call(
+    assert_eq!(patched.body["has_notes"], false);
+    assert_eq!(patched.body["has_value"], true);
+    let old_patch = call(
         &h.router,
         Method::PATCH,
         &format!("/api/team-secrets/{id}"),
-        Some(json!({"totp": "not base32!"})),
+        Some(json!({"totp": ""})),
         &admin,
     )
     .await?;
-    assert_eq!(bad_seed.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(old_patch.status, StatusCode::UNPROCESSABLE_ENTITY);
     let deleted = call(
         &h.router,
         Method::DELETE,
@@ -210,6 +222,66 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
     )
     .await?;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    Ok(())
+}
+
+/// AC2 (SPEC-040 R2): a team secret stored in the old form keeps every value: the password is the
+/// value, and the address, user name and seed lead the notes.
+#[tokio::test]
+async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
+    use yulius_app::ports::vault::{VaultSecretRecord, VaultSection};
+    let h = support::harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let old = json!({"url": "https://mail.google.com", "username": "team@acme.test",
+        "password": MAIL_PASSWORD, "notes": "recovery: 1111-2222", "totp": SEED});
+    let envelope = h
+        .app
+        .deps
+        .crypto
+        .envelope_seal(b"old-gmail|team", old.to_string().as_bytes())?;
+    let now = h.app.now();
+    h.app
+        .deps
+        .store
+        .vault_insert(&VaultSecretRecord {
+            id: "old-gmail".into(),
+            section: VaultSection::Team,
+            sandbox_id: None,
+            name: "Shared Gmail".into(),
+            description: String::new(),
+            hosts: Vec::new(),
+            injection: "none".into(),
+            header_name: None,
+            fields: vec!["password".into(), "notes".into(), "totp".into()],
+            envelope,
+            created_by: "superadmin".into(),
+            created_at: now,
+            updated_by: "superadmin".into(),
+            updated_at: now,
+            value_updated_at: now,
+            last_used_at: None,
+        })
+        .await?;
+    let list = call(&h.router, Method::GET, "/api/team-secrets", None, &admin).await?;
+    assert_eq!(list.body[0]["has_value"], true);
+    assert_eq!(list.body[0]["has_notes"], true);
+    let shown = call(
+        &h.router,
+        Method::POST,
+        "/api/team-secrets/old-gmail/reveal",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+    assert_eq!(shown.body["value"], MAIL_PASSWORD);
+    assert_eq!(
+        shown.body["notes"],
+        format!(
+            "Address: https://mail.google.com\nUser name: team@acme.test\n\
+             Two-factor seed: {SEED}\n\nrecovery: 1111-2222"
+        )
+    );
     Ok(())
 }
 
@@ -241,7 +313,7 @@ async fn members_confirm_with_a_new_github_sign_in() -> TestResult {
     let again = admit_again(&h, "anna", 501).await?;
     let shown = call(&h.router, Method::POST, &reveal, None, &again).await?;
     assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
-    assert_eq!(shown.body["password"], MAIL_PASSWORD);
+    assert_eq!(shown.body["value"], MAIL_PASSWORD);
     let activity = call(
         &h.router,
         Method::GET,
@@ -912,7 +984,7 @@ async fn nothing_is_stored_in_clear() -> TestResult {
         &admin,
     )
     .await?;
-    assert_eq!(shown.body["password"], MAIL_PASSWORD);
+    assert_eq!(shown.body["value"], MAIL_PASSWORD);
     Ok(())
 }
 

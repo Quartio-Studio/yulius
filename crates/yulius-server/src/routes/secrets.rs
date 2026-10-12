@@ -28,7 +28,6 @@ pub fn public() -> Router<AppState> {
             patch(team_update).delete(team_delete),
         )
         .route("/api/team-secrets/{id}/reveal", post(team_reveal))
-        .route("/api/team-secrets/{id}/totp", post(team_totp))
         .route("/api/auth/reauth", get(reauth_status).post(reauth))
         .route("/api/secrets/activity", get(activity))
         .route(
@@ -124,14 +123,6 @@ async fn team_reveal(
 ) -> Result<Response, ApiError> {
     let request = body.map(|Json(b)| b).unwrap_or_default();
     Ok(revealed(app.reveal_team_secret(&ctx, &id, &request).await?))
-}
-
-async fn team_totp(
-    State(app): State<AppState>,
-    Auth(ctx): Auth,
-    Path(id): Path<String>,
-) -> Result<Response, ApiError> {
-    Ok(revealed(app.team_secret_totp(&ctx, &id).await?))
 }
 
 async fn reauth_status(
