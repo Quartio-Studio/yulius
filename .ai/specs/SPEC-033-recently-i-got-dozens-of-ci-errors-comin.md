@@ -77,7 +77,7 @@ The existing tests missed it because nothing checks how many test executables a 
 ## Decisions
 
 - One binary for the composition crate only: its executables are 190 MB because they link
-  everything; the other crates' are small, so their per-file targets stay (recorded in ADR-0028).
+  everything; the other crates' are small, so their per-file targets stay (recorded in ADR-0029).
 - Files stay where they are (`tests/<name>.rs`) and become modules of `tests/main.rs`; paths in
   earlier specs and `include_str!` stay valid. One file's tests run with
   `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`; the `cargo test` filter `<file>::` is a substring match.
