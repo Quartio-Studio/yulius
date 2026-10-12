@@ -25,6 +25,9 @@ pub struct FakeAgentOptions {
     pub hooks: bool,
     /// Leave a background shell of this many seconds from the goal turn (`--goal-background`).
     pub goal_background: Option<u64>,
+    /// The goal turn ends with a background agent pending that finishes after this many seconds
+    /// and wakes the session (`--goal-agent`).
+    pub goal_agent: Option<u64>,
     /// Delay the goal turn by this many milliseconds (`--goal-delay-ms`).
     pub goal_delay_ms: Option<u64>,
     /// Lose the first typed lines like a TUI that drops a submit (`--drop-lines`).
@@ -115,6 +118,9 @@ impl HarnessPort for FakeAgentHarness {
         }
         if let Some(seconds) = self.options.goal_background {
             argv.extend(["--goal-background".into(), seconds.to_string()]);
+        }
+        if let Some(seconds) = self.options.goal_agent {
+            argv.extend(["--goal-agent".into(), seconds.to_string()]);
         }
         if let Some(ms) = self.options.goal_delay_ms {
             argv.extend(["--goal-delay-ms".into(), ms.to_string()]);
