@@ -12,6 +12,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `GET /api/tasks/{tid}/messages`. Agents learn about their checks, delivery and armed merges from
   `yulius wait` (which now says how an armed merge ended), `ci_status` and `delivery_status`. The
   stored messages stay as history.
+- Claude Code sessions in a task terminal no longer open Claude Code's diff side panel by themselves
+  ("No changes this session" on the right); it still opens by hand within a session (SPEC-024).
 - Ended worktrees holding only end-to-end output (`.e2e`), the APM cache (`apm_modules`) or Claude
   Code's own `.claude/` state are removed too (SPEC-019; seven were kept on the first deploy).
 - Agents meet fewer avoidable obstacles (SPEC-020):
