@@ -1005,6 +1005,7 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 .rule-condition { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .rule-condition .rule-task { flex: 1 1 auto; min-width: 0; }
 .rule-condition .rule-state { flex: none; }
+.rule-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .rule-preview { margin: 0; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-2); overflow-wrap: anywhere; }
 @media (max-width: 480px) { .rule-condition { flex-wrap: wrap; } .rule-condition .rule-task { flex-basis: 100%; } }
 

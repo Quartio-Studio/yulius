@@ -87,7 +87,13 @@ test('picked conditions become the canonical start rule text (unit, in the page)
   await app.open(mock('/s/studio'));
   const result = await browser.evaluate(async () => {
     const url = '/assets/ruleeditor.js';
-    const { ruleText, ruleChoices } = await import(url);
+    const { ruleText, ruleChoices, conditionChoices, RULE_MAX_CONDITIONS } = await import(url);
+    const tasks = [
+      { id: 'a', number: 3, title: 'Three', archived: false },
+      { id: 'b', number: 9, title: 'Nine', archived: false },
+      { id: 'c', number: 5, title: 'Five', archived: true },
+    ];
+    const label = (o: { number: number; label: string }) => `${o.number}:${o.label}`;
     return {
       none: ruleText({ join: 'and', conditions: [] }),
       one: ruleText({ join: 'or', conditions: [{ number: 12, state: 'done' }] }),
@@ -99,6 +105,12 @@ test('picked conditions become the canonical start rule text (unit, in the page)
         { id: 'c', number: 5, title: 'Five', archived: true },
       ]).map((t: { number: number }) => t.number),
       empty: ruleChoices([{ id: 'c', number: 5, title: 'Five', archived: true }]).length,
+      // The server takes at most 16 tasks in a rule (MAX_ATOMS in yulius-domain).
+      max: RULE_MAX_CONDITIONS,
+      // A picked task that is no longer offered stays in its row, said as such.
+      listed: conditionChoices(ruleChoices(tasks), 9, tasks).map(label),
+      archived: conditionChoices(ruleChoices(tasks), 5, tasks).map(label),
+      gone: conditionChoices(ruleChoices(tasks), 7, tasks).map(label),
     };
   });
   expect(result).toEqual({
@@ -108,6 +120,10 @@ test('picked conditions become the canonical start rule text (unit, in the page)
     any: '#12 done or #4 ended or #3 done',
     choices: [9, 3],
     empty: 0,
+    max: 16,
+    listed: ['9:#9 Nine', '3:#3 Three'],
+    archived: ['9:#9 Nine', '3:#3 Three', '5:#5 Five (archived)'],
+    gone: ['9:#9 Nine', '3:#3 Three', '7:#7 (no longer in this sandbox)'],
   });
 });
 
@@ -130,6 +146,8 @@ test('"Run after" builds a start rule from picked conditions; the task waits for
 
   // A second condition, and whether all or any of them must hold (RED-002).
   await editor.getByRole('button', 'Add condition').click();
+  // A new condition names a task not named yet: the newest one, #14.
+  await expect(editor.getByRole('combobox', 'Task of condition 2')).toHaveValue('14');
   await editor.getByRole('combobox', 'Task of condition 2').selectOption({ label: '#4 Payment webhook' });
   await editor.getByRole('combobox', 'State of condition 2').selectOption({ label: 'has ended' });
   await expect(editor.getByText(/^Starts by itself when/)).toHaveText('Starts by itself when #12 done and #4 ended');
@@ -190,6 +208,23 @@ test('a picked rule opens again with its conditions, can be changed, and Start n
   await screen.getByRole('button', /Run after: When/).click();
   await screen.getByRole('menuitemradio', /^Start now/).click();
   await expect(screen.getByRole('button', /Run after: Start now/)).toBeVisible();
+});
+
+test('a rule takes at most 16 conditions, as the server does', async ({ app, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('menuitemradio', /^When a rule is true/).click();
+  const editor = screen.getByRole('dialog', 'Start when a rule is true');
+  const add = editor.getByRole('button', 'Add condition');
+  for (let n = 2; n <= 16; n += 1) {
+    await add.click();
+    await expect(editor.getByRole('combobox', `Task of condition ${n}`)).toBeVisible();
+  }
+  await expect(add).toBeDisabled();
+  await expect(editor.getByText('A rule names at most 16 conditions.')).toBeVisible();
+  await editor.getByRole('button', 'Remove condition 16').click();
+  await expect(add).toBeEnabled();
 });
 
 test('a sandbox without tasks offers no start rule', async ({ app, screen }) => {

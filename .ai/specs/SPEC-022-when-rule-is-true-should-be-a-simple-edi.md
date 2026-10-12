@@ -38,6 +38,7 @@ start rules themselves (SPEC-017) do not change.
 | RED-003 | The editor shows the sentence it builds ("Starts by itself when #12 done and #13 done") and Use this rule sets it; the text is the canonical form the server stores (`#12 done and #13 done`). | in-page unit test, e2e |
 | RED-004 | Opening the editor again shows the picked conditions, so they can be changed; Start now clears them. | e2e |
 | RED-005 | In a sandbox with no other task the menu does not offer a rule. | e2e |
+| RED-007 | A rule has at most 16 conditions, the server's limit: Add condition is disabled with a note at 16. A picked task that is no longer offered (archived since, or gone) stays in its row, labelled so, instead of being dropped. | e2e, in-page unit test |
 | RED-006 | The API keeps the full grammar (`not`, parentheses, mixed `and`/`or`); only the composer is simpler. | unchanged API tests |
 
 ## Plan
@@ -74,5 +75,8 @@ start rules themselves (SPEC-017) do not change.
   a second input mode doubles what has to be tested and explained.
 - **Native `<select>` controls** for task and state: keyboard and screen-reader support for free,
   styled by the existing `.select` rules.
+- **A picked rule is not pruned when a task it names disappears** (review, minor): dropping a
+  condition would let the task start earlier than asked; the server refuses the rule with "the rule
+  names #N, which does not exist in this sandbox" and nothing is lost, so the person decides.
 - The editor lives in its own module (`ruleeditor.js`) with a pure `ruleText` function, so the
   sentence it builds is unit-tested without the dialog.
