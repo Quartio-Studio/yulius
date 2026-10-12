@@ -41,8 +41,13 @@ example when it starts deploying for real), and record every change as a decisio
    matrices to translate): each job's run steps become the gate script or a `[[ci.jobs]]` entry,
    matrices become `matrix` values, actions (`uses:`) become the equivalent commands, services
    (databases, caches) become disposable local containers or processes started by the script,
-   and secrets come from the project's agent secrets, never inline. Run the gate locally and show
-   it passes. Then delete `.github/workflows/` in the same pull request, so gates and merges rely
+   and secrets come from the project's agent secrets, never inline. Yulius CI gives the jobs a
+   `HOME` and a cache (`$YULIUS_CI_CACHE`) of their own, separate from the agent's: they start
+   empty and persist across runs, as do each job's checkout and its ignored files. A job installs
+   what it needs itself and never depends on what an earlier run left behind, or it passes on the
+   cache and fails on a fresh machine. Run the gate locally and show it passes, from the
+   repository root both normally and with a fresh home
+   (`env HOME="$(mktemp -d)" PATH=/usr/local/bin:/usr/bin:/bin sh -c '<command>'`). Then delete `.github/workflows/` in the same pull request, so gates and merges rely
    only on Yulius CI results (`ci_status`). Merge gating needs no rulesets: Yulius enforces the
    gate at merge.
 3. **Environments.** Define dev (after integration) and production (after promotion) in
