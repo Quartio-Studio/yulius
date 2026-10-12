@@ -90,7 +90,7 @@ covered by a test: a full `localStorage` (DRF-007 by code review), Safari's thum
 
 - Browser-side, not a server draft API: the request is about one person's unfinished input in their
   browser; uploads already live on the server, so only small metadata is stored locally. A server
-  draft would add schema, endpoints and cross-device semantics nobody asked for. (ADR 0019)
+  draft would add schema, endpoints and cross-device semantics nobody asked for. (ADR 0020)
 - `localStorage`, not `sessionStorage`: a closed tab or a crashed browser also lost work; the
   existing preference keys use `localStorage`, and sign-out clears drafts like notifications.
 - Thumbnails are stored scaled down instead of the original bytes, so a few images stay well inside
@@ -111,10 +111,13 @@ covered by a test: a full `localStorage` (DRF-007 by code review), Safari's thum
 - Review round 3 approved. Accepted without a fourth round: if another tab's 300 ms save timer fires
   in the milliseconds between a sign-out's key removal and its marker reaching that tab, that
   draft's key stays stored until the next sign-out or start.
+- Merged with #20 (SPEC-022): the start rule is the editor's `{ join, conditions }` object; the
+  draft stores it as such and keeps a stored one only when well formed (states done, merged or
+  ended, task numbers, at most 16 conditions). This ADR became 0020 (0019 is the rule editor's).
 
 ## Evidence
 
-- `npx e2e run tests/drafts.e2e.ts`: 10 of 10 pass. Each behaviour test failed before its change
+- `npx e2e run tests/drafts.e2e.ts`: 11 of 11 pass (after merging #20, a start rule kept across a reload). Each behaviour test failed before its change
   (prompt empty after returning; choices back to Auto; nothing after a reload; a stored key after
   sign-out; a held upload not shown; no refusal of a second start; another tab's sign-out ignored).
 - `npx e2e run` (full suite): 32 files passed, 1 skipped (`agent.e2e.ts`, needs a model);

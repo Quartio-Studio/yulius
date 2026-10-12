@@ -21,6 +21,8 @@ const FORGOTTEN_KEY = 'yulius.draftsForgotten';
 /** The server removes a composer's uploaded files after a week (`DRAFT_MAX_AGE`, uploads.rs). */
 const MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 const MAX_THUMBS = 12;
+/** As many conditions as the rule editor allows (RULE_MAX_CONDITIONS, ruleeditor.js). */
+const MAX_RULE_CONDITIONS = 16;
 const THUMB_PX = 160;
 /** Typing is stored at most this often. */
 const SAVE_DELAY_MS = 300;
@@ -33,7 +35,7 @@ const timers = new Map();
 const listeners = new Map();
 
 function emptyDraft() {
-  return { text: '', mode: null, workflowId: null, afterTaskId: '', startRule: '', attached: [], starting: false };
+  return { text: '', mode: null, workflowId: null, afterTaskId: '', startRule: null, attached: [], starting: false };
 }
 
 const keyOf = (userId, sandboxId) => `${PREFIX}${userId || 'anonymous'}.${sandboxId}`;
@@ -179,8 +181,17 @@ function restore(key) {
     }));
   return {
     text: text(stored.text), mode: choice(stored.mode), workflowId: choice(stored.workflowId),
-    afterTaskId: text(stored.afterTaskId), startRule: text(stored.startRule), attached,
+    afterTaskId: text(stored.afterTaskId), startRule: rule(stored.startRule), attached,
   };
+}
+
+/** A stored start rule (SPEC-022: `{ join, conditions: [{ number, state }] }`) when well formed. */
+function rule(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.conditions)) return null;
+  const conditions = value.conditions.filter((c) => c && Number.isInteger(c.number) && c.number > 0
+    && ['done', 'merged', 'ended'].includes(c.state)).map((c) => ({ number: c.number, state: c.state }));
+  if (!conditions.length || conditions.length !== value.conditions.length || conditions.length > MAX_RULE_CONDITIONS) return null;
+  return { join: value.join === 'or' ? 'or' : 'and', conditions };
 }
 
 /** A data URL of the image scaled to fit THUMB_PX, or null when it cannot be drawn. */

@@ -999,6 +999,16 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 /* The composer's split proposal (TSK-011; F 2026-10-10 layout): below the prompt box, compact rows
    with an editable title, a one-line preview and the prompt collapsed; one primary action. */
+/* The start-rule editor (SPEC-022): one row per condition, a task and its state. */
+.rule-editor .seg { align-self: flex-start; }
+.rule-conditions { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.rule-condition { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rule-condition .rule-task { flex: 1 1 auto; min-width: 0; }
+.rule-condition .rule-state { flex: none; }
+.rule-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rule-preview { margin: 0; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-2); overflow-wrap: anywhere; }
+@media (max-width: 480px) { .rule-condition { flex-wrap: wrap; } .rule-condition .rule-task { flex-basis: 100%; } }
+
 .split-card {
   display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
   background: var(--surface); box-shadow: var(--shadow-raised); font-size: var(--fs-sm); line-height: var(--lh-sm);

@@ -60,7 +60,7 @@ before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-dis
 The web UI is plain ES modules. Server state comes from the API and the UI event stream
 (`store.js`); what only one person's browser needs stays in `localStorage`: preferences (theme,
 column widths, model and effort), the notification history, and the new-task composer's drafts
-([decision 0019](decisions/0019-composer-drafts-in-the-browser.md)). Sign-out removes the
+([decision 0020](decisions/0020-composer-drafts-in-the-browser.md)). Sign-out removes the
 notification history and the drafts.
 
 ```mermaid

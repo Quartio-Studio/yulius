@@ -249,3 +249,33 @@ test('signing out in another browser tab forgets this tab\'s draft too', async (
   await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('');
   expect(await storedDrafts(browser)).toEqual([]);
 });
+
+test('a picked start rule comes back after a reload; a malformed stored one is dropped', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('textbox', 'Task prompt').fill('Wait for the others');
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('menuitemradio', /^When a rule is true/).click();
+  const editor = screen.getByRole('dialog', 'Start when a rule is true');
+  await editor.getByRole('combobox', 'Task of condition 1').selectOption({ label: '#12 Checkout API' });
+  await editor.getByRole('button', 'Add condition').click();
+  await editor.getByRole('combobox', 'Task of condition 2').selectOption({ label: '#4 Payment webhook' });
+  await editor.getByRole('combobox', 'State of condition 2').selectOption({ label: 'has ended' });
+  await editor.getByText('Any is true').click();
+  await editor.getByRole('button', 'Use this rule').click();
+  await expect(screen.getByRole('button', /Run after: When #12 done or #4 ended/)).toBeVisible();
+
+  await browser.reload();
+  await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('Wait for the others');
+  await expect(screen.getByRole('button', /Run after: When #12 done or #4 ended/)).toBeVisible();
+
+  await browser.evaluate(() => {
+    const key = Object.keys(localStorage).find((k) => k.startsWith('yulius.draft.') && k.endsWith('.sb_studio'))!;
+    const draft = JSON.parse(localStorage.getItem(key)!);
+    draft.startRule = { join: 'and', conditions: [{ number: 12, state: 'done); drop' }] };
+    localStorage.setItem(key, JSON.stringify(draft));
+  });
+  await browser.reload();
+  await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('Wait for the others');
+  await expect(screen.getByRole('button', /Run after: Start now/)).toBeVisible();
+});
