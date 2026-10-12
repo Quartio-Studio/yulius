@@ -299,7 +299,7 @@ export class TerminalSocket {
   }
 
   /** Send keyboard/paste input with a monotonically increasing client sequence. */
-  /** `scroll`: a wheel turn for a full-screen app; it does not take control (#78). */
+  /** `scroll`: a wheel turn or a click reported to a full-screen app; it does not take control (#78, #25). */
   sendInput(data, { scroll = false } = {}) {
     if (!this.socket.isOpen || !data) return false;
     this.inputSeq += 1;

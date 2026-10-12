@@ -256,6 +256,112 @@ test('another viewer’s size fills this box, with a chip instead of a banner, u
   await expect.poll(async () => (await layout()).rows).toBeGreaterThan(30);
 });
 
+test('a click on Claude Code’s output expands it, as in a native terminal; a drag still selects', async ({ app, browser }) => {
+  // Task #25: the mock draws full screen with mouse reporting, like Claude Code, and toggles a
+  // collapsed tool group on a primary click at its row.
+  await app.open(mock('/s/studio/t/12'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns, read 1 file/);
+  await holdStill(browser);
+  const expanded = /loyalty_points/;
+  const group = async () => {
+    const point = await spot(browser, 'Searched for 2 patterns');
+    expect(point, 'the group is on the screen').not.toBeNull();
+    return point!;
+  };
+
+  // A drag across the group selects its text and does not reach the program.
+  await selectRow(browser, 'Searched for 2 patterns');
+  await settle();
+  await expect(rows(browser)).not.toHaveText(expanded);
+
+  // A click expands it at once, a second click collapses it.
+  await clickAt(browser, await group());
+  await expect(rows(browser)).toHaveText(expanded);
+  await expect(row(browser, 'Searched for 2 patterns')).not.toHaveText(/click to expand/);
+  await clickAt(browser, await group());
+  await expect(rows(browser)).not.toHaveText(expanded);
+
+  // A double-click selects a word and toggles the group once: its first click is sent, its second
+  // (click count 2, dispatched in the page: the test mouse always presses with count 1) is not. The
+  // expanded group moved up (the transcript is bottom-aligned), so the second click aims at it again.
+  await clickAt(browser, await group());
+  await expect(rows(browser)).toHaveText(expanded);
+  await browser.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y)!;
+    const at = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, detail: 2 };
+    target.dispatchEvent(new PointerEvent('pointerdown', { ...at, buttons: 1, isPrimary: true }));
+    target.dispatchEvent(new MouseEvent('mousedown', { ...at, buttons: 1 }));
+    target.dispatchEvent(new PointerEvent('pointerup', { ...at, buttons: 0, isPrimary: true }));
+    target.dispatchEvent(new MouseEvent('mouseup', { ...at, buttons: 0 }));
+  }, await group());
+  await settle();
+  await expect(rows(browser)).toHaveText(expanded);
+});
+
+test('a read-only viewer’s click does not reach the program', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/sandbox-3/t/1'));
+  await expect(screen.getByText('Read-only (GitHub: read)')).toBeVisible();
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  // What reaches the program's side (the mock refuses a read-only viewer's input, as the server
+  // does, so the screen alone would not show a click that was sent).
+  await browser.evaluate(() => {
+    const sent: string[] = [];
+    (window as unknown as { __sent: string[] }).__sent = sent;
+    for (const [, session] of (window as unknown as { __yuliusMock: { sessions: Map<string, { receive(ws: unknown, data: string): void }> } }).__yuliusMock.sessions) {
+      const receive = session.receive.bind(session);
+      session.receive = (ws, data) => { if (JSON.parse(data).type === 'input') sent.push(data); receive(ws, data); };
+    }
+  });
+  const point = await spot(browser, 'Searched for 2 patterns');
+  expect(point, 'the group is on the screen').not.toBeNull();
+  await clickAt(browser, point!);
+  await settle();
+  await expect(rows(browser)).not.toHaveText(/loyalty_points/);
+  expect(await browser.evaluate(() => (window as unknown as { __sent: string[] }).__sent)).toEqual([]);
+});
+
+test('a click beside another viewer’s grid takes the size but does not reach the program', async ({ app, browser, screen }) => {
+  // Another viewer's 90×30 grid is centred in this wider box, with blank margins at its sides.
+  await app.open(mock('/s/studio/t/12', '&othercols=90&otherrows=30'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  await holdStill(browser);
+  const point = await spot(browser, 'Searched for 2 patterns');
+  expect(point, 'the group is on the screen').not.toBeNull();
+  const margin = await browser.evaluate(() => {
+    const box = document.querySelector('.taskview .term-fit')!.getBoundingClientRect();
+    const grid = document.querySelector('.taskview .xterm-screen')!.getBoundingClientRect();
+    return { left: box.left, width: grid.left - box.left };
+  });
+  expect(margin.width, 'the grid has a margin at its left').toBeGreaterThan(8);
+  await clickAt(browser, { x: margin.left + margin.width / 2, y: point!.y });
+  await expect(screen.getByText('Sized by another viewer')).toBeHidden();
+  await settle();
+  await expect(rows(browser)).not.toHaveText(/loyalty_points/);
+});
+
+test('a click is reported in the program’s mouse encoding', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const reports = await browser.evaluate(async () => {
+    const url = '/assets/mousefilter.js';
+    const { createMouseFilter } = await import(url);
+    const on = (modes: string) => {
+      const filter = createMouseFilter();
+      filter.feed(new TextEncoder().encode(modes));
+      return filter;
+    };
+    return {
+      sgr: on('\x1b[?1000h\x1b[?1006h').clickReport(12, 7),
+      x10: on('\x1b[?1000h').clickReport(12, 7),
+      far: on('\x1b[?1000h').clickReport(500, 300),
+    };
+  });
+  expect(reports).toEqual({
+    sgr: '\x1b[<0;12;7M\x1b[<0;12;7m',
+    x10: '\x1b[M ,\'\x1b[M#,\'',
+    far: `\x1b[M ÿÿ\x1b[M#ÿÿ`,
+  });
+});
+
 test('file paths in the task terminal open the editor at the file and line', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(rows(browser)).toHaveText(/Not links:/);
