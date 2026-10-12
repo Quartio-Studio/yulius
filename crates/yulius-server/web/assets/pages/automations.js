@@ -1,5 +1,6 @@
 // Automations page (AUT-001..005): cron schedules with UTC offset, run history, Run now. An
-// automation opens in its builder (automationedit.js, UI-039); so does New automation.
+// automation opens in its builder (automationedit.js, UI-039); so does New automation. Below the
+// list, the ready-made automations not added yet, each enabled with one click (SPEC-042 AUT-009).
 
 import { enc } from '../api.js';
 import { h, badge, iconBadge, itemCard, iconButton, openModal, toast, confirmDialog, errorToast, toggle, setChildren, placeholder, emptyState } from '../dom.js';
@@ -34,8 +35,42 @@ export function mountAutomationsPage(ctx, sandbox) {
     return h('a', { href: href(path), dataset: { route: path } }, `#${task.number}`);
   };
 
-  const reload = loader(host, 'the automations', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/automations`), (list) => {
+  // The suggestions are optional: when they cannot be read, the page still shows the list.
+  const fetchAll = () => Promise.all([
+    ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/automations`),
+    ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/automation-templates`).catch(() => []),
+  ]);
+  const reload = loader(host, 'the automations', fetchAll, ([list, templates]) => {
     const items = Array.isArray(list) ? list : [];
+    const offered = (Array.isArray(templates) ? templates : []).filter((t) => !t.automation_id);
+    return h('div', { class: 'stack' }, automationList(items), offered.length ? readyMade(offered) : null);
+  });
+
+  function readyMade(templates) {
+    return h('section', { class: 'stack-sm', 'aria-labelledby': 'automations-ready-made' },
+      h('h2', { class: 'page-section-title', id: 'automations-ready-made' }, 'Ready-made', h('span', { class: 'muted' }, 'enable in one click, edit it afterwards')),
+      h('div', { class: 'item-list' }, templates.map((t) => itemCard({
+        iconName: 'zap',
+        title: t.name,
+        description: t.description,
+        extra: h('div', { class: 'item-meta' }, `${describeCron(t.cron)} · ${utcOffset(t.utc_offset_minutes)}`),
+        controls: [h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: !write, title: write ? null : 'Requires write access', 'aria-label': `Enable ${t.name}`, onClick: (event) => enableTemplate(t, event.currentTarget) }, 'Enable')],
+      }))));
+  }
+
+  async function enableTemplate(t, button) {
+    button.disabled = true; // one automation per press
+    try {
+      await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/automation-templates/${enc(t.id)}/enable`);
+      toast(`${t.name} enabled.`, { kind: 'ok' });
+      reload();
+    } catch (error) {
+      button.disabled = false;
+      errorToast(error, 'Couldn’t enable automation');
+    }
+  }
+
+  function automationList(items) {
     if (items.length === 0) return emptyState({ iconName: 'zap', title: 'No automations yet', text: 'Start tasks on a schedule — for example, every day at 09:00 a task that works through yesterday’s customer feedback.', action: write ? createButton('New automation', create) : null });
     return h('div', { class: 'item-list' }, items.map((a) => itemCard({
       iconName: 'zap',
@@ -65,7 +100,7 @@ export function mountAutomationsPage(ctx, sandbox) {
       openLabel: write ? `Edit ${a.name}` : `Open ${a.name}`,
       dim: !a.enabled,
     })));
-  });
+  }
 
   function editable(a) {
     return { name: a.name, cron: a.cron, utc_offset_minutes: a.utc_offset_minutes, prompt: a.prompt, workflow_id: a.workflow_id || null, enabled: a.enabled };
