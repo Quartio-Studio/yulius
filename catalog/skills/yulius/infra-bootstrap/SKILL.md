@@ -47,12 +47,14 @@ example when it starts deploying for real), and record every change as a decisio
    what it needs itself and never depends on what an earlier run left behind, or it passes on the
    cache and fails on a fresh machine. Run the gate locally and show it passes, from the
    repository root both normally and, once committed, in a clean checkout with a fresh home and
-   only CI's variables:
+   CI's environment (this prints the job's exit status and removes everything it made):
 
    ```sh
-   d="$(mktemp -d)"; git worktree add --detach "$d/repo" HEAD && (cd "$d/repo" &&
-     env -i HOME="$(mktemp -d)" YULIUS_CI_CACHE="$(mktemp -d)" PATH=/usr/local/bin:/usr/bin:/bin \
-       LANG=C.UTF-8 CI=true YULIUS_CI=1 sh -c '<command>'); git worktree remove --force "$d/repo"
+   d="$(mktemp -d "$HOME/.ci-proof.XXXXXX")"; mkdir "$d/home" "$d/cache"
+   git worktree add --detach "$d/repo" HEAD && (cd "$d/repo" && env -i HOME="$d/home" \
+     YULIUS_CI_CACHE="$d/cache" PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 TERM=dumb \
+     NO_COLOR=1 CI=true GIT_TERMINAL_PROMPT=0 YULIUS_CI=1 sh -c '<command>' </dev/null); s=$?
+   git worktree remove --force "$d/repo"; chmod -R u+w "$d"; rm -rf "$d"; echo "exit $s"
    ```
 
    Then delete `.github/workflows/` in the same pull request, so gates and merges rely only on
