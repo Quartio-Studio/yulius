@@ -1,10 +1,11 @@
 //! Agents wait without polling (SPEC-011): `delivery_merge` called while the checks of the
 //! reviewed head still run arms a merge that Yulius performs as soon as they pass, and
 //! `yulius wait` (the sandbox CLI, `POST /internal/agent/wait`) blocks until the checks at the
-//! agent's head finish, its delivery moves or Yulius sends it a notice.
+//! agent's head finish, its delivery moves or an armed merge is decided, and says how it was
+//! (SPEC-028 MSR-003).
 //!
-//! Everything here reads Yulius's own records (CI runs, deliveries, the inbox): waiting never
-//! costs a GitHub request.
+//! Everything here reads Yulius's own records (CI runs, deliveries, the armed merge and its
+//! outcome): waiting never costs a GitHub request.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +32,15 @@ pub(crate) struct ArmedMerge {
     pub summary: String,
 }
 
+/// How an armed merge ended (merged, refused or dropped), kept until the next one is armed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MergeOutcome {
+    /// The head that was armed.
+    pub head: String,
+    /// One line for the agent: what happened and what to do next.
+    pub text: String,
+}
+
 /// What `yulius wait` watches for a task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct WaitState {
@@ -46,11 +56,12 @@ pub struct WaitState {
     pub stage: String,
     /// A merge is armed for when the checks pass.
     pub merge_armed: bool,
-    /// Yulius notices for the task the agent has not seen yet.
-    pub unread: u32,
-    /// Subject of the newest unread notice.
+    /// How the last armed merge ended (MSR-003), until another one is armed.
     #[serde(default)]
-    pub latest_notice: Option<String>,
+    pub merge_outcome: Option<String>,
+    /// The head that armed merge was for.
+    #[serde(default)]
+    pub merge_outcome_head: Option<String>,
 }
 
 impl WaitState {
@@ -67,10 +78,24 @@ impl WaitState {
 impl App {
     /// Arms a merge of `head` for when its checks pass (`delivery_merge` while they still run).
     pub(crate) fn arm_merge(&self, task: &TaskRecord, head: &str, summary: &str) {
-        if let Ok(mut armed) = self.runtime(&task.id).armed_merge.lock() {
+        let runtime = self.runtime(&task.id);
+        if let Ok(mut outcome) = runtime.merge_outcome.lock() {
+            *outcome = None;
+        }
+        if let Ok(mut armed) = runtime.armed_merge.lock() {
             *armed = Some(ArmedMerge {
                 head: head.to_owned(),
                 summary: summary.to_owned(),
+            });
+        }
+    }
+
+    /// Keeps how the armed merge of `head` ended, for `yulius wait`.
+    fn merge_decided(&self, task: &TaskRecord, head: &str, text: String) {
+        if let Ok(mut outcome) = self.runtime(&task.id).merge_outcome.lock() {
+            *outcome = Some(MergeOutcome {
+                head: head.to_owned(),
+                text,
             });
         }
     }
@@ -83,8 +108,8 @@ impl App {
     }
 
     /// Performs the armed merges of a sandbox whose checks passed (after every CI run and from
-    /// the delivery loop). An armed merge is dropped, and the agent told, when the branch moved
-    /// on, the checks failed or the merge was refused.
+    /// the delivery loop). An armed merge is dropped when the branch moved on, the checks failed
+    /// or the merge was refused; `yulius wait` says which.
     pub async fn merge_armed(self: &Arc<Self>, sandbox: &SandboxId) {
         let Ok(tasks) = self.deps.store.tasks(sandbox, false).await else {
             return;
@@ -123,23 +148,31 @@ impl App {
             None => None,
         };
         if head.as_deref() != Some(armed.head.as_str()) {
-            self.tell_task(
+            self.merge_decided(
                 task,
-                "The merge you armed was dropped: the branch moved on",
+                &armed.head,
                 format!(
-                    "You armed the merge of {} with `delivery_merge`, but the branch is now at \
-                     {}. Get the independent review of the new head and call `delivery_merge` \
-                     again.",
+                    "The merge you armed was dropped: you armed {} with `delivery_merge`, but the \
+                     branch is now at {}. Get the independent review of the new head and call \
+                     `delivery_merge` again.",
                     short(&armed.head),
                     head.as_deref().map_or("an unknown commit", short)
                 ),
-            )
-            .await;
+            );
             return None;
         }
         let user = match self.deps.store.user(&task.created_by).await {
             Ok(Some(user)) if user.disabled_at.is_none() => user,
-            _ => return None,
+            _ => {
+                self.merge_decided(
+                    task,
+                    &armed.head,
+                    "The merge you armed was dropped: the task's creator can no longer act. \
+                     Open an issue (`issue_create`) and end with your summary."
+                        .to_owned(),
+                );
+                return None;
+            }
         };
         let auth = AuthContext {
             user,
@@ -159,7 +192,17 @@ impl App {
         let require_checks = crate::delivery::delivery_profile(&sandbox).require_checks;
         let green = pr.checks == "success" || (pr.checks == "none" && !require_checks);
         if pr.checks == "failure" {
-            // The checks notice says why; the agent fixes and arms again.
+            self.merge_decided(
+                task,
+                &armed.head,
+                format!(
+                    "The merge you armed was dropped: the checks of pull request #{} failed at \
+                     {}. Read why with `ci_status`, fix it test-first, get the review of the new \
+                     head and call `delivery_merge` again.",
+                    pr.number,
+                    short(&armed.head)
+                ),
+            );
             return None;
         }
         if !green {
@@ -192,34 +235,32 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
                 }
-                self.tell_task(
+                self.merge_decided(
                     task,
-                    "Yulius merged your pull request",
+                    &armed.head,
                     format!(
-                        "Pull request #{number} is merged into `{base}` at {}: its checks passed, \
-                         and you armed the merge with the review of that head. Finish what the \
-                         delivery profile still asks for this stage (`delivery_status`; deploy \
-                         and verify an integration environment with `delivery_deploy`), then end \
-                         with your summary. Do not promote unless the task asks for it.",
+                        "Yulius merged pull request #{number} into `{base}` at {}: its checks \
+                         passed. Finish what the delivery profile still asks for this stage \
+                         (`delivery_status`; deploy and verify an integration environment with \
+                         `delivery_deploy`), then end with your summary. Do not promote unless \
+                         the task asks for it.",
                         short(&armed.head)
                     ),
-                )
-                .await;
+                );
                 None
             }
             Err(err) => {
-                self.tell_task(
+                self.merge_decided(
                     task,
-                    "Yulius could not merge your pull request",
+                    &armed.head,
                     format!(
-                        "The checks of pull request #{number} passed at {}, but the merge you \
-                         armed was refused: {}. Fix that (`delivery_status` says what is \
-                         missing) and call `delivery_merge` again.",
+                        "The merge you armed was refused: the checks of pull request #{number} \
+                         passed at {}, but {}. Fix that (`delivery_status` says what is missing) \
+                         and call `delivery_merge` again.",
                         short(&armed.head),
                         err.public_message()
                     ),
-                )
-                .await;
+                );
                 None
             }
         }
@@ -251,22 +292,20 @@ impl App {
             .delivery(&task.id)
             .await?
             .map_or_else(|| "none".to_owned(), |record| record.stage.encode());
-        // New notices: neither read (`messages_inbox`) nor delivered into the session's context
-        // by a hook (the agent saw those).
-        let unread: Vec<_> = store
-            .inbox(&task.id, true, 50)
-            .await?
-            .into_iter()
-            .filter(|entry| !entry.delivered)
-            .collect();
+        let outcome = self
+            .runtime(&task.id)
+            .merge_outcome
+            .lock()
+            .ok()
+            .and_then(|outcome| outcome.clone());
         Ok(WaitState {
             head,
             checks,
             checks_detail,
             stage,
             merge_armed: self.armed_merge(task),
-            unread: u32::try_from(unread.len()).unwrap_or(u32::MAX),
-            latest_notice: unread.last().map(|entry| entry.message.subject.clone()),
+            merge_outcome_head: outcome.as_ref().map(|o| o.head.clone()),
+            merge_outcome: outcome.map(|o| o.text),
         })
     }
 

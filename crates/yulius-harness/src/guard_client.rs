@@ -124,7 +124,7 @@ pub fn pre_tool_use(input: &mut dyn Read, output: &mut dyn Write) -> i32 {
         "Yulius refused this command: `{tool} -f '{pattern}'` runs inside `bash -c`, whose own \
          command line contains '{pattern}', so it always finds itself (a wait on it never ends, \
          and pkill kills this shell). Wait on a PID instead (`cmd & pid=$!; wait $pid`), anchor \
-         the pattern (`^…`) or use the bracket trick (`[x]yz`); for checks, a merge or a notice \
+         the pattern (`^…`) or use the bracket trick (`[x]yz`); for checks or a merge, \
          start `yulius wait` with run_in_background and end your turn."
     );
     let answer = serde_json::json!({

@@ -192,13 +192,8 @@ async fn caches_and_worktrees_of_ended_tasks_go_after_a_grace_period() -> BoxRes
     assert!(report.freed >= 4 * 2 * BIG as u64, "{report:?}");
     // The branch of a removed worktree stays, so Continue can recreate it.
     assert!(git(&w.repo, &["branch", "--list", "feat/t-closed"])?.contains("feat/t-closed"));
-    // Kept worktrees' agents are told; the removed ones have nothing to be told.
-    let told = w.told("t-crash").await?;
-    assert_eq!(told.len(), 1);
-    assert!(
-        told[0].contains("`target`") && told[0].contains("`out`"),
-        "{told:?}"
-    );
+    // MSR-002 (SPEC-028): nobody is told through messages.
+    assert!(w.told("t-crash").await?.is_empty());
     assert!(w.told("t-closed").await?.is_empty());
     assert!(w.told("t-work").await?.is_empty());
     Ok(())
@@ -238,11 +233,7 @@ async fn idle_tasks_lose_their_caches_only_under_pressure_and_the_largest_first(
         "a working task is never pruned"
     );
     assert_eq!(report.caches, 1, "{report:?}");
-    let told = w.told("t-big").await?;
-    assert!(
-        told.len() == 1 && told[0].contains("`target`") && told[0].contains("MB"),
-        "{told:?}"
-    );
+    assert!(w.told("t-big").await?.is_empty(), "MSR-002: no message");
     Ok(())
 }
 

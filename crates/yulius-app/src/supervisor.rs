@@ -77,8 +77,6 @@ pub struct TaskRuntime {
     watcher_alive: Arc<AtomicBool>,
     /// Last keyboard input from a viewer (ms).
     pub last_input_ms: AtomicI64,
-    /// When Yulius last typed its wake-up text with no prompt submitted since (ms, 0 = none).
-    pub(crate) wake_typed_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
     pub proactive_switch: AtomicBool,
     /// The current run called a Yulius hook: its Stop hook is the turn boundary that decides
@@ -93,9 +91,6 @@ pub struct TaskRuntime {
     /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
     /// not repeated every turn.
     pub(crate) auto_pr_head: Mutex<Option<String>>,
-    /// The pull request head and checks result last told to the agent ("head:state"), so a
-    /// result is told once (F 2026-10-11: agents deliver on their own).
-    pub(crate) checks_told: Mutex<Option<String>>,
     /// When a person last typed into the task's terminal (ms, 0 = never): a prompt submitted
     /// soon after is theirs (TSK-013).
     pub(crate) typed_at_ms: AtomicI64,
@@ -112,15 +107,15 @@ pub struct TaskRuntime {
     /// A merge `delivery_merge` armed while the checks still ran (SPEC-011): Yulius performs it
     /// once they pass.
     pub(crate) armed_merge: Mutex<Option<crate::agent_wait::ArmedMerge>>,
+    /// How the last armed merge ended, for `yulius wait` (SPEC-028 MSR-003).
+    pub(crate) merge_outcome: Mutex<Option<crate::agent_wait::MergeOutcome>>,
     /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
     /// transcript does not reopen it.
     pub(crate) last_stop_ms: AtomicI64,
     /// Background shells the agent left running, as last probed (-1 = not known).
     pub(crate) background_shells: AtomicI64,
-    /// Since when (ms) the idle agent's background shells have been running (0 = none), and
-    /// whether the agent was told they run long (complaint 1: dead shells).
+    /// Since when (ms) the idle agent's background shells have been running (0 = none).
     pub(crate) shells_since_ms: AtomicI64,
-    pub(crate) shells_told: AtomicBool,
     /// The run was reattached after a restart: the transcript it already wrote is history.
     pub(crate) replay_transcript: AtomicBool,
     /// Why Claude Code said the current session ends (`SessionEnd` hook), until the run exits.
@@ -156,24 +151,22 @@ impl TaskRuntime {
             usage: Arc::new(Mutex::new(UsageSnapshot::default())),
             watcher_alive: Arc::new(AtomicBool::new(false)),
             last_input_ms: AtomicI64::new(0),
-            wake_typed_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
             limit_resets_at: AtomicI64::new(0),
             turn_started_ms: AtomicI64::new(0),
             active_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
-            checks_told: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
             session_started: AtomicBool::new(false),
             armed_merge: Mutex::new(None),
+            merge_outcome: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             shells_since_ms: AtomicI64::new(0),
-            shells_told: AtomicBool::new(false),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
             hold_polled_ms: AtomicI64::new(0),

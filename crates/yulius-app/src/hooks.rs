@@ -391,10 +391,6 @@ impl App {
         input: &HookInput,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
-        // Whatever was in the input box was submitted, a wake-up included.
-        self.runtime(&ctx.task.id)
-            .wake_typed_ms
-            .store(0, Ordering::SeqCst);
         // A prompt held for capacity stays held while its pause lasts (also across a restart).
         let refreshed;
         let ctx = match store.open_pause(&ctx.task.id).await? {

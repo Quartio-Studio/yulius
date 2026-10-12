@@ -959,7 +959,7 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
     assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
     f.h.github.set_checks(&head, ChecksState::Success);
     // F 2026-10-11: behind its base under a strict ruleset, GitHub would refuse with "required
-    // status checks are expected"; Yulius says what that means, here and in the task's inbox.
+    // status checks are expected"; Yulius says what that means.
     let set_behind = |behind: bool| {
         if let Ok(mut pulls) = f.h.github.pulls.lock()
             && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
@@ -980,15 +980,10 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
     f.h.app.reconcile_deliveries().await;
     f.h.app.reconcile_deliveries().await;
     let t1 = TaskId::parse("t1")?;
-    let inbox = f.h.store.inbox(&t1, true, 50).await?;
-    let told = |subject: &str| {
-        inbox
-            .iter()
-            .filter(|m| m.message.subject == subject)
-            .count()
-    };
-    assert_eq!(told("Your pull request is behind its base: update it"), 1);
-    assert_eq!(told("Your pull request's checks are green: merge it"), 0);
+    assert!(
+        f.h.store.task_messages(&t1, 50).await?.is_empty(),
+        "MSR-002 (SPEC-028): no message"
+    );
     set_behind(false);
     let merged = f
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
@@ -1994,17 +1989,8 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
         ["feat/1-checkout-api->feat/1-checkout-api token=token-bob"]
     );
     assert_eq!(f.h.github.actors_of("create_pull"), ["bob"]);
-    // F 2026-10-11: the agent's turn ended, its work did not; Yulius tells it to deliver.
-    let told = f.h.store.inbox(&t1, true, 10).await?;
-    assert!(
-        told.iter().any(
-            |m| m.message.subject == "Your pull request is open: deliver it"
-                && m.message.kind == "request"
-                && m.message.body.contains("delivery_merge")
-                && m.message.body.contains("without asking anyone")
-        ),
-        "{told:?}"
-    );
+    // MSR-002 (SPEC-028): the opened pull request is said in the terminal, not by message.
+    assert!(f.h.store.task_messages(&t1, 10).await?.is_empty());
     f.h.app.auto_open_pr(&t1).await;
     assert_eq!(pulls_opened(), 1, "one pull request per task");
 
@@ -2024,19 +2010,8 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
         "the creator pushes the follow-up too"
     );
 
-    // F 2026-10-11: the background round tells the agent what its pull request needs, once per
-    // head and result: a conflict with the base first (GitHub runs no checks on it), then red
-    // checks (fix them), then green ones (merge).
-    let (store, task) = (&f.h.store, &t1);
-    let told = |subject: &'static str| async move {
-        let inbox = store.inbox(task, true, 50).await?;
-        Ok::<usize, Box<dyn std::error::Error>>(
-            inbox
-                .iter()
-                .filter(|m| m.message.subject == subject)
-                .count(),
-        )
-    };
+    // MSR-002 (SPEC-028): a conflict, red checks and green ones message nobody; `yulius wait`
+    // and `delivery_status` say them.
     let set_mergeable = |mergeable: Option<bool>| {
         if let Ok(mut pulls) = f.h.github.pulls.lock()
             && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
@@ -2046,26 +2021,12 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
     };
     set_mergeable(Some(false));
     f.h.app.reconcile_deliveries().await;
-    f.h.app.reconcile_deliveries().await;
-    assert_eq!(
-        told("Your pull request conflicts with its base: resolve it").await?,
-        1
-    );
     set_mergeable(Some(true));
     f.h.github.set_checks(&follow_up, ChecksState::Failure);
     f.h.app.reconcile_deliveries().await;
-    f.h.app.reconcile_deliveries().await;
-    assert_eq!(
-        told("Your pull request's checks failed: fix them").await?,
-        1
-    );
     f.h.github.set_checks(&follow_up, ChecksState::Success);
     f.h.app.reconcile_deliveries().await;
-    f.h.app.reconcile_deliveries().await;
-    assert_eq!(
-        told("Your pull request's checks are green: merge it").await?,
-        1
-    );
+    assert!(f.h.store.task_messages(&t1, 50).await?.is_empty());
 
     // Merged on GitHub: the background round follows it; nobody read the task meanwhile.
     yulius_app::ports::github::GitHubPort::merge_pull(
@@ -2666,8 +2627,8 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
 }
 
 /// SPEC-011: `delivery_merge` while the checks of the reviewed head still run arms the merge;
-/// Yulius merges exactly that head once they pass and tells the agent, and `yulius wait` (the
-/// internal wait endpoint) sees each step without any polling by the agent.
+/// Yulius merges exactly that head once they pass, and `yulius wait` (the internal wait endpoint)
+/// sees each step and how the merge ended (MSR-003) without any polling by the agent.
 #[tokio::test]
 async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
     let f = fixture(&DeliveryProfile::studio()).await?;
@@ -2723,18 +2684,20 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
     assert_eq!(before.body["stage"], "pr_open");
     assert_eq!(before.body["merge_armed"], false);
 
-    let armed = call(
-        &internal,
-        Method::POST,
-        "/mcp",
-        Some(
-            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-            "name": "delivery_merge",
-            "arguments": {"reviewed_head": head, "review_summary": "approve"}}}),
-        ),
-        &agent,
-    )
-    .await?;
+    let arm = || {
+        call(
+            &internal,
+            Method::POST,
+            "/mcp",
+            Some(
+                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": "delivery_merge",
+                "arguments": {"reviewed_head": head, "review_summary": "approve"}}}),
+            ),
+            &agent,
+        )
+    };
+    let armed = arm().await?;
     assert_eq!(armed.body["result"]["isError"], false, "{}", armed.body);
     let state = wait(before.body.clone()).await?;
     assert_eq!(state.body["merge_armed"], true, "{}", state.body);
@@ -2744,7 +2707,33 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
     f.h.app.merge_armed(&sandbox).await;
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
 
-    // Green: Yulius merges the armed head, clears it and tells the agent.
+    // MSR-003: the branch moves on, so the armed merge is dropped and the wait says why.
+    commit_file(&wt, "landing.txt", "v2", "Landing v2")?;
+    let moved = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.merge_armed(&sandbox).await;
+    let dropped = wait(state.body.clone()).await?;
+    assert_eq!(dropped.body["merge_armed"], false, "{}", dropped.body);
+    let outcome = dropped.body["merge_outcome"].as_str().unwrap_or_default();
+    assert!(
+        outcome.contains("dropped") && outcome.contains(&moved[..9]),
+        "{}",
+        dropped.body
+    );
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+
+    // Back at the reviewed head and armed again.
+    git(&wt, &["reset", "--hard", &head])?;
+    let armed = arm().await?;
+    assert_eq!(armed.body["result"]["isError"], false, "{}", armed.body);
+    let state = wait(dropped.body.clone()).await?;
+    assert_eq!(state.body["merge_armed"], true, "{}", state.body);
+    assert_eq!(
+        state.body["merge_outcome"],
+        Value::Null,
+        "a new arm forgets the old outcome"
+    );
+
+    // Green: Yulius merges the armed head, clears it and keeps how it ended for the wait.
     f.h.github.set_checks(&head, ChecksState::Success);
     f.h.app.merge_armed(&sandbox).await;
     // Merged (the studio profile then promotes by its own policy).
@@ -2753,9 +2742,20 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
     let after = wait(state.body.clone()).await?;
     assert_eq!(after.body["stage"], stage, "{}", after.body);
     assert_eq!(after.body["merge_armed"], false);
-    assert_eq!(
-        after.body["latest_notice"],
-        "Yulius merged your pull request"
+    let outcome = after.body["merge_outcome"].as_str().unwrap_or_default();
+    assert!(
+        outcome.starts_with("Yulius merged pull request #1") && outcome.contains("`quartio`"),
+        "{}",
+        after.body
     );
+    assert_eq!(after.body["merge_outcome_head"], head.as_str());
+    assert!(
+        f.h.store
+            .task_messages(&TaskId::parse("t1")?, 10)
+            .await?
+            .is_empty(),
+        "MSR-002: no message"
+    );
+
     Ok(())
 }

@@ -1,14 +1,14 @@
-//! Agent-side coordination: task awareness, messages and steps (SPEC-001 COM-001..003,
+//! Agent-side coordination: task awareness, scopes and steps (SPEC-001 COM-001, COM-003,
 //! STP-001/002). Callers are agents authenticated by their run's task token.
 
 use serde_json::{Value, json};
-use yulius_domain::ids::{MessageId, StepId, TaskId};
+use yulius_domain::ids::{StepId, TaskId};
 
 use crate::auth::rfc3339;
 use crate::context::App;
 use crate::discipline::{step_by_title, step_states};
 use crate::error::{AppError, AppResult};
-use crate::model::{AttemptRecord, MessageRecord, StepRecord, TaskRecord};
+use crate::model::{AttemptRecord, StepRecord, TaskRecord};
 use crate::tasks::progress;
 use yulius_domain::steps::{self as rules, By, PlannedStep, StepStatus};
 
@@ -169,41 +169,6 @@ impl App {
         Ok(json!({ "context": context }))
     }
 
-    /// A notice from Yulius itself to one task (a `request`: it reaches the agent at its next
-    /// turn end, and an agent waiting at its prompt is woken for it). Used to keep delivery
-    /// going without a person (F 2026-10-11: "the agent is autonomous").
-    pub async fn tell_task(&self, task: &crate::model::TaskRecord, subject: &str, body: String) {
-        let Ok(id) = MessageId::parse(&self.deps.crypto.new_id()) else {
-            return;
-        };
-        let message = MessageRecord {
-            id,
-            sandbox_id: task.sandbox_id.clone(),
-            from_task: None,
-            from_user: None,
-            to_task: Some(task.id.clone()),
-            kind: "request".into(),
-            subject: subject.to_owned(),
-            body,
-            created_at: self.now(),
-        };
-        match self
-            .deps
-            .store
-            .insert_message(&message, std::slice::from_ref(&task.id))
-            .await
-        {
-            Ok(()) => self.notify_message(&task.id).await,
-            Err(err) => tracing::warn!(error = %err, task = %task.id, "could not tell the task"),
-        }
-    }
-
-    pub(crate) async fn notify_message(&self, task: &TaskId) {
-        if let Some(waker) = self.message_waker.get() {
-            waker.message_arrived(task).await;
-        }
-    }
-
     /// `steps_set`: replaces the task's plan (STP-001, STP-006): 1 to [`MAX_STEPS`] unique steps,
     /// each with an optional status and effort (1-3). A step whose title matches a current step
     /// keeps its identity, note, status and effort unless given; a finished step stays finished.
@@ -362,11 +327,4 @@ impl App {
         );
         self.publish_task(&task.id).await;
     }
-}
-
-/// Supervisor callback used to wake idle tasks when messages arrive (SPEC-001 COM-005).
-#[async_trait::async_trait]
-pub trait MessageWaker: Send + Sync {
-    /// A message was stored for `task`.
-    async fn message_arrived(&self, task: &TaskId);
 }

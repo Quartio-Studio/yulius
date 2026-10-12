@@ -30,8 +30,6 @@ use crate::ports::harness::Observation;
 
 /// How often the background shells of an idle task are probed (ms).
 pub const SHELL_PROBE_MS: i64 = 5_000;
-/// How long an idle agent's background shells run before Yulius tells it (once per episode).
-const SHELLS_LONG_MS: i64 = 30 * 60 * 1000;
 
 /// Longest a shell probe may take before its result counts as unknown.
 pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -284,36 +282,12 @@ impl App {
             None => -1,
         };
         let previous = runtime.background_shells.swap(count, Ordering::SeqCst);
-        // How long the idle agent's shells have been running: told once after a while, since a
-        // wait that can never end keeps the task "working" for hours (complaint 1).
+        // How long the idle agent's shells have been running, which the UI shows (SHL-002).
         let now = self.now().0;
         if count > 0 && previous <= 0 {
             runtime.shells_since_ms.store(now, Ordering::SeqCst);
-            runtime.shells_told.store(false, Ordering::SeqCst);
         } else if count <= 0 {
             runtime.shells_since_ms.store(0, Ordering::SeqCst);
-        }
-        let since = runtime.shells_since_ms.load(Ordering::SeqCst);
-        if count > 0
-            && since > 0
-            && now - since >= SHELLS_LONG_MS
-            && !runtime.shells_told.swap(true, Ordering::SeqCst)
-            && let Ok(Some(task)) = self.deps.store.task(task_id).await
-        {
-            self.tell_task(
-                &task,
-                "Your background shells keep running while you are idle",
-                format!(
-                    "{count} background shell{} you started {} min ago still run while your turn \
-                     has ended. If one waits for something that cannot happen (a `pgrep -f` loop, \
-                     `tail -f`, a long `sleep`), stop it (KillShell) so the task does not look \
-                     busy. To wait for checks, a merge or a notice, start `yulius wait` with \
-                     run_in_background instead. A server you keep on purpose can stay.",
-                    if count == 1 { "" } else { "s" },
-                    (now - since) / 60_000
-                ),
-            )
-            .await;
         }
         if previous != count {
             if count > 0 {
