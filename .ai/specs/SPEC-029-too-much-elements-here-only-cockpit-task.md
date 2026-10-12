@@ -39,14 +39,14 @@ away.
 | NAV-001 | The sandbox navigation shows, in this order, Cockpit, Tasks, Git, CI, Secrets and Dashboard as links, then a "More" button. | `navigation.e2e.ts` |
 | NAV-002 | "More" is a disclosure button (`aria-expanded`, `aria-controls`): collapsed by default it hides Sessions, Workflows, Skills, Automations and MCP; pressed it shows them below it, in that order, and pressed again hides them. | `navigation.e2e.ts` |
 | NAV-003 | The choice is remembered in this browser (`yulius.sidebarMoreOpen`) and survives a reload. | `navigation.e2e.ts` |
-| NAV-004 | Arriving at one of the More pages (a deep link, a reload, a move inside the app) shows the group expanded with that page marked current, for as long as that page is in view, without changing the remembered choice; closed there, it stays closed until another More page is opened. | `navigation.e2e.ts` |
+| NAV-004 | Arriving at one of the More pages (a deep link, a reload, a move inside the app) shows the group expanded with that page marked current, for as long as that page is in view, without changing the remembered choice; closed there, it stays closed until another More page is opened, and More is marked as holding the current page (highlighted, `aria-current="true"`). When the group hides on leaving that page while focus is in it, focus moves to More. | `navigation.e2e.ts` |
 | NAV-005 | No WCAG 2.x A/AA violation in the sidebar either way; the toggle works from the keyboard (Enter, Space). | `navigation.e2e.ts` (axe) |
 
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Sidebar shows six primary pages and a collapsible More group (UI, e2e)
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Sidebar shows six primary pages and a collapsible More group (UI, e2e)
+- [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -87,3 +87,10 @@ away.
   hides on leaving its page moves to More instead of the top of the document, and More is marked
   active when it is closed on one of its pages, so the current page is always marked (tests in
   `navigation.e2e.ts`, failing before). Line wraps of the docs fixed.
+- **Review round 3** (fresh session, APPROVE at 8a3c567 with minors): the closed More now also
+  says it holds the current page to screen readers (`aria-current="true"`; "page" would claim the
+  button is the page), NAV-004 and the e2e README record the focus move and the mark, and the test
+  checks that More follows Dashboard. Not changed, by decision after three rounds: the same More
+  page in another sandbox does not reopen a group closed on it (it is the same page; the choice
+  carries), and reopening More on a More page saves "open" (it is the user's own action, like the
+  toggle anywhere else).

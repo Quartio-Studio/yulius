@@ -38,7 +38,7 @@ test('the sandbox navigation shows six pages and expands the rest under More', a
   const more = nav.getByRole('button', 'More');
 
   await expect(nav.getByRole('link')).toHaveCount(PRIMARY.length);
-  await expect(browser.locator('nav.nav a.nav-item:visible')).toHaveText(PRIMARY.map(([page]) => page));
+  await expect(browser.locator('nav.nav > .nav-item')).toHaveText([...PRIMARY.map(([page]) => page), 'More']);
   await expect(more).toHaveAttribute('aria-expanded', 'false');
   for (const [page] of MORE) await expect(nav.getByRole('link', page)).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
@@ -104,6 +104,7 @@ test('a page under More opens with the group expanded and the page current', asy
   await more.press('Enter');
   await expect(more).toHaveAttribute('aria-expanded', 'false');
   await expect(browser.locator('nav.nav .nav-toggle.active')).toHaveCount(1);
+  await expect(more).toHaveAttribute('aria-current', 'true');
   await go('/s/studio/skills/nope');
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Skill not found');
   await expect(more).toHaveAttribute('aria-expanded', 'false');
@@ -121,6 +122,7 @@ test('a page under More opens with the group expanded and the page current', asy
   await expect(more).toHaveAttribute('aria-expanded', 'false');
   await expect(more).toBeFocused();
   await expect(browser.locator('nav.nav .nav-toggle.active')).toHaveCount(0);
+  await expect(more).not.toHaveAttribute('aria-current');
 });
 
 test('another sandbox opens from the sandbox tabs', async ({ app, browser, screen }) => {

@@ -553,8 +553,10 @@ export function createSidebar(ctx) {
     // Focus in a group about to hide goes to More rather than to the top of the page.
     if (!open && moreGroup.contains(document.activeElement)) moreToggle.focus();
     moreGroup.hidden = !open;
-    // Closed on one of its pages, More marks where the current page is.
-    moreToggle.classList.toggle('active', !open && Boolean(morePage));
+    // Closed on one of its pages, More marks where the current page is, also for screen readers.
+    const holdsCurrent = !open && Boolean(morePage);
+    moreToggle.classList.toggle('active', holdsCurrent);
+    if (holdsCurrent) moreToggle.setAttribute('aria-current', 'true'); else moreToggle.removeAttribute('aria-current');
     moreToggle.setAttribute('aria-expanded', String(open));
     setChildren(moreChevron, icon(open ? 'down' : 'right', { size: 12 }));
   }
