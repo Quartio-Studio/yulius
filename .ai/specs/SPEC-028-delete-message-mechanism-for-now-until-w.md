@@ -1,11 +1,11 @@
 ---
 yulius-task: 2990b193-4021-4296-83bc-926f0b7dfbb7
-status: in-progress
+status: done
 ---
 
 # SPEC-028: remove the message mechanism for now
 
-Status: in progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #26
 Scope authorization: user request (F 2026-10-12, task #26): "delete message mechanism for now until
@@ -60,8 +60,8 @@ SPEC-011 DLV-012's "a notice arrives" (replaced by MSR-003).
 - [x] Yulius stores no notices and types no wake-ups; `yulius wait` says how an armed merge ended
 - [x] The web UI has no Messages: rail tool, sidebar badge, notifications and the messages route are gone
 - [x] Specs, ADR and docs say messaging is withdrawn for now
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -91,3 +91,22 @@ SPEC-011 DLV-012's "a notice arrives" (replaced by MSR-003).
   (lost on restart, as the armed merge is).
 - Keep the tables and the store API: a later return needs no migration, and the export keeps history.
 - The scope-change notice is not replaced: the skipped steps carry the user's note.
+- A merge being decided still reads as armed (a counter next to the armed merge), and every
+  `delivery_merge` call forgets an earlier outcome: found by the independent review (round 1).
+
+## Evidence
+
+- `scripts/dev ci` exit 0 (fmt, clippy `-D warnings`, docs, repository check, 1151 tests passed,
+  16 skipped) on the review-fix head; the last commit only tightens `wait_cli::settled` and is
+  covered by its unit test, `cargo clippy -p yulius` and a final `scripts/dev ci` before merge.
+- e2e: 129 passed, 1 skipped (full suite). One earlier full run had `intake.e2e.ts` fail on
+  `__yuliusMock` not yet loaded; it passed 3 of 3 alone and the next full run. Filed as #246 (it
+  races the mock's start; not this change).
+- Tests that fail without the change: `mcp_coordination.rs` (tools gone, instructions),
+  `agent_hooks.rs::stored_messages_reach_no_hook`, `delivery.rs::an_armed_merge_happens_when_the_checks_pass`
+  (outcome, deciding gap), `an_armed_merge_says_why_it_was_dropped_or_refused`, `http_auth.rs`
+  (route 404), `briefing.rs`, `wait_cli.rs`, e2e `rail.e2e.ts` (seen red before the UI change).
+- Independent review (fresh read-only session, `om-code-review`): round 1 REQUEST CHANGES (2 major,
+  fixed test-first), round 2 APPROVE fc1d339 with one minor (stale outcome), fixed test-first.
+- Not covered here: the errored CI run retry kept in `delivery.rs` has no test (it had none before;
+  #251). Not exercised: a real Claude Code session waking from `yulius wait` (unchanged mechanism).

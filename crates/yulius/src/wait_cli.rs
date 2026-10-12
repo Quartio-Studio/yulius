@@ -62,7 +62,10 @@ fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
     // How an armed merge ended (MSR-003): when it is decided during this wait, or already was
     // at this head when the wait starts.
     let decided = match before {
-        Some(before) => before.merge_armed && !now.merge_armed,
+        // Arming clears the outcome, so a real decision always brings a new one.
+        Some(before) => {
+            before.merge_armed && !now.merge_armed && now.merge_outcome != before.merge_outcome
+        }
         None => {
             !now.merge_armed
                 && !now.head.is_empty()
@@ -263,6 +266,12 @@ mod tests {
         assert!(line.starts_with("Yulius merged pull request #1"), "{line}");
         // Unarmed with no outcome (taken back by an immediate merge): not a decision to report.
         assert!(settled(&state("running"), Some(&armed)).is_none());
+        // An outcome already there while it read as armed is old news, not this decision.
+        let stale_armed = WaitState {
+            merge_armed: true,
+            ..dropped.clone()
+        };
+        assert!(settled(&dropped, Some(&stale_armed)).is_none());
         // At another head, an old outcome is not news.
         let elsewhere = WaitState {
             merge_outcome_head: Some("fedcba987".into()),
