@@ -12,6 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   run; the agent proves it by running each job normally and in a clean checkout with a fresh
   `HOME` and CI's environment. The `infra-bootstrap` skill says the same in its CI step. CI itself
   is unchanged.
+- A Done task can be deleted (SPEC-039, ADR-0031, task #37). "Delete permanently…" closes its
+  idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
+  work or waiting for you has to be stopped first, and its menu says "Still running: stop the
+  task before deleting it".
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
@@ -20,6 +24,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`.
 - A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
   wrapping over the condition's border (SPEC-031, task #29).
+- The Cockpit and task agents create tasks and automations (SPEC-037, ADR-0029; task #35). A new
+  `task_create` MCP tool creates a task the way New task does (workflow, mode, after a task or a
+  start rule), on the authority of the task's creator; tools create at most 20 tasks an hour
+  per project. The Cockpit now starts with the Yulius MCP server under its own bearer. It is
+  served the tools for tasks, automations, workflows and sessions, acting for its owner, so
+  "create a task from that" or "every day at 4am align the docs" just works. It asks before
+  creating anything. A Cockpit already running gets the tools when it starts again.
 - Attached images reach Claude Code as pasted images (SPEC-030, ADR-0026; task #28). A task with
   attached images starts with no CLI prompt. Yulius types its first message into the terminal:
   each image's path is pasted (Claude Code shows `[Image #N]` and sends an image block), then the

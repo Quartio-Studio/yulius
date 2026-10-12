@@ -46,7 +46,7 @@ const MAX_STEPS_LISTED: usize = 100;
 const MAX_ENVIRONMENTS_LISTED: usize = 8;
 
 /// Yulius MCP tools announced to every session (SPEC-002 §7.4), as `(name, purpose)`.
-pub const YULIUS_TOOLS: [(&str, &str); 34] = [
+pub const YULIUS_TOOLS: [(&str, &str); 35] = [
     (
         "project_context",
         "project summary, architecture and decision index, recent changes, delivery rules",
@@ -56,6 +56,7 @@ pub const YULIUS_TOOLS: [(&str, &str); 34] = [
         "previous and parallel tasks with status, branch, spec and steps",
     ),
     ("task_get", "one task in detail"),
+    ("task_create", "create and start a new task in this project"),
     (
         "sessions_search",
         "search earlier task sessions and imported Claude Code sessions (sessions are docs)",

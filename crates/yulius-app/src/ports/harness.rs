@@ -97,6 +97,9 @@ pub struct CockpitLaunch {
     pub resume: Option<String>,
     /// Provider credential (the Claude OAuth token).
     pub credential: Secret,
+    /// The Yulius MCP server it manages the project with (SPEC-037): the internal listener's
+    /// URL and the Cockpit's bearer.
+    pub yulius: Option<(String, Secret)>,
 }
 
 /// A launch plan plus the session id known up front.

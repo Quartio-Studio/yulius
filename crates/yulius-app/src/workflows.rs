@@ -23,7 +23,7 @@ use yulius_domain::time::Timestamp;
 
 use crate::auth::AuthContext;
 use crate::context::App;
-use crate::coordination::{AgentContext, MAX_STEPS};
+use crate::coordination::{MAX_STEPS, ProjectCaller};
 use crate::error::{AppError, AppResult};
 use crate::model::TaskRecord;
 
@@ -497,8 +497,8 @@ impl App {
     ///
     /// # Errors
     /// Store failures.
-    pub async fn tool_workflows_list(&self, ctx: &AgentContext) -> AppResult<Value> {
-        let workflows = self.workflows_for(&ctx.task.sandbox_id).await?;
+    pub async fn tool_workflows_list(&self, caller: &ProjectCaller) -> AppResult<Value> {
+        let workflows = self.workflows_for(&caller.sandbox).await?;
         Ok(json!({
             "workflows": workflows.iter().map(|w| json!({
                 "id": w.id,
