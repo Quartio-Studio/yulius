@@ -13,6 +13,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   field: the password becomes the value, and the address, user name and seed move into the
   notes. Agent secrets lose the per-secret seed and take a user name only for Basic credentials.
   The people who manage an agent secret can now read it after a code. Agents still never see it.
+  Ten wrong codes in a row lock codes until the person confirms it is them again. Rolling back
+  past this change needs care: the previous release reads secrets saved in the new form as
+  having no password, and an edit there would drop the value.
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
