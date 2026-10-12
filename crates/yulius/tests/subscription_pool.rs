@@ -20,10 +20,10 @@ use support::{
 use yulius_app::context::App;
 use yulius_app::model::Secret;
 use yulius_app::model::{
-    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, PauseKind, PauseRecord, TaskMode,
-    TaskOrigin, TaskRecord, UsageSampleRecord,
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MessageRecord, PauseKind, PauseRecord,
+    TaskMode, TaskOrigin, TaskRecord, UsageSampleRecord,
 };
-use yulius_app::ports::store::{AccountStore, TaskStore, UserStore};
+use yulius_app::ports::store::{AccountStore, CoordinationStore, TaskStore, UserStore};
 use yulius_app::ports::store_ext::CapacityStore;
 use yulius_app::ports::usage::{UsageFailure, UsageProbe};
 use yulius_domain::harness::{Harness as Agent, Provider};
@@ -293,6 +293,22 @@ async fn a_held_opening_turn_stays_the_opening_turn_until_its_stop_is_answered()
         "a held poll is not the end of the opening turn"
     );
 
+    // A person's request meanwhile would block an ordinary Stop (the gate's inbox reason).
+    let message = MessageRecord {
+        id: yulius_domain::ids::MessageId::parse("m-open")?,
+        sandbox_id: yulius_domain::ids::SandboxId::parse("s1")?,
+        from_task: None,
+        from_user: Some(yulius_domain::ids::UserId::parse("u1")?),
+        to_task: Some(task.clone()),
+        kind: "request".into(),
+        subject: "Also the footer".into(),
+        body: "Make the footer blue too.".into(),
+        created_at: now(&h),
+    };
+    h.store
+        .insert_message(&message, std::slice::from_ref(&task))
+        .await?;
+
     advance(&h, 2 * HOUR + 1_000);
     let _ = h.app.resume_round().await;
     let (code, _, body) = hook(&h.internal, "Stop", json!({})).await?;
@@ -301,8 +317,9 @@ async fn a_held_opening_turn_stays_the_opening_turn_until_its_stop_is_answered()
         !h.app.runtime(&task).opening_turn.load(Ordering::SeqCst),
         "the answered Stop ends the opening turn"
     );
-    assert_ne!(
-        body["decision"], "block",
+    // Answered as it is: no gate, nudge or rotation reaches the agent.
+    assert!(
+        body.is_null() || body == json!({}),
         "the opening turn is not gated: {body}"
     );
     Ok(())
