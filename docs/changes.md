@@ -6,16 +6,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
-- A Done task can be deleted (SPEC-039, ADR-0031, task #37). "Delete permanently…" closes its
-  idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
-  work or waiting for you has to be stopped first, and its menu says "Still running: stop the
-  task before deleting it".
-- CI runs are no longer refused over the sandbox's disk quota by the size of test builds
-  (SPEC-033, ADR-0029, task #31): the `yulius` crate's 50 integration test files, each its own
-  190 MB executable linking the whole product, are now modules of one test binary
-  (`tests/main.rs`); a gate build's test executables drop from 9.2 GB to 1.3 GB. The repository
-  check rejects a second test binary or an undeclared test file. Run one file's tests with
-  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`.
 - Secrets are a title, a value and notes, and reading one needs your own two-factor code
   (SPEC-040, ADR-0030, task #39). The first reveal sets two-factor up: an authenticator key and
   link, confirmed by a first code. After that, a code unlocks the vault in that browser for 10
@@ -26,6 +16,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Ten wrong codes in a row lock codes until the person confirms it is them again. Rolling back
   past this change needs care: the previous release reads secrets saved in the new form as
   having no password, and an edit there would drop the value.
+- A Done task can be deleted (SPEC-039, ADR-0031, task #37). "Delete permanently…" closes its
+  idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
+  work or waiting for you has to be stopped first, and its menu says "Still running: stop the
+  task before deleting it".
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
