@@ -359,6 +359,79 @@ mod tests {
     }
 
     #[test]
+    fn images_are_the_files_claude_code_pastes_as_images() {
+        for image in ["/s/a.png", "/s/b.JPG", "/s/c.jpeg", "/s/d.gif", "/s/e.WebP"] {
+            assert!(is_image(image), "{image}");
+        }
+        for other in ["/s/a.svg", "/s/b.txt", "/s/png", "/s/c.png.zip", "/s/d.bmp"] {
+            assert!(!is_image(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn without_images_the_first_message_stays_the_command_line_prompt() {
+        let request = Request::parse("Look\n@/srv/notes.txt");
+        assert_eq!(
+            request.opening(false),
+            Some(Opening::Prompt("Look\n\n@\"/srv/notes.txt\"".into()))
+        );
+        assert_eq!(
+            request.opening(true),
+            request.attachments_message().map(Opening::Prompt)
+        );
+        assert_eq!(Request::parse("Only text").opening(true), None);
+        assert_eq!(
+            Request::parse("Only text").opening(false),
+            Some(Opening::Prompt("Only text".into()))
+        );
+    }
+
+    #[test]
+    fn images_are_pasted_and_other_files_mentioned_in_a_typed_first_message() {
+        // SPEC-030: an `@` mention reaches the model as a Read tool call; a pasted image path
+        // is attached natively (`[Image #1]`).
+        let request = Request::parse("Make it blue\n@/srv/a.png\n@'/srv/my shot.JPG'\n@/srv/b.txt");
+        assert_eq!(
+            request.opening(false),
+            Some(Opening::Typed {
+                images: vec!["/srv/a.png".into(), "/srv/my shot.JPG".into()],
+                text: "Make it blue\n\n@\"/srv/b.txt\"".into(),
+            })
+        );
+        let Some(Opening::Typed { images, text }) = request.opening(true) else {
+            panic!("a goal task with images types its first message");
+        };
+        assert_eq!(images, ["/srv/a.png", "/srv/my shot.JPG"]);
+        assert!(
+            text.starts_with("The files attached to this task. Its goal follows"),
+            "{text}"
+        );
+        assert!(text.ends_with("\n\n@\"/srv/b.txt\""), "{text}");
+        // Only images: nothing to mention, the text is the request (or empty).
+        assert_eq!(
+            Request::parse("@/srv/a.png").opening(false),
+            Some(Opening::Typed {
+                images: vec!["/srv/a.png".into()],
+                text: String::new(),
+            })
+        );
+        let Some(Opening::Typed { text, .. }) = Request::parse("@/srv/a.png").opening(true) else {
+            panic!("a goal task with an image types its first message");
+        };
+        assert!(!text.contains('@'), "{text}");
+    }
+
+    #[test]
+    fn a_typed_first_message_carries_no_control_character() {
+        let request = Request::parse("Look\u{1b}[201~ here\n@/srv/a.png\n@/srv/b\u{1b}.png");
+        let Some(Opening::Typed { images, text }) = request.opening(false) else {
+            panic!("an image is attached");
+        };
+        assert_eq!(images, ["/srv/a.png"]);
+        assert!(!text.contains('\u{1b}'), "{text:?}");
+    }
+
+    #[test]
     fn a_short_request_is_the_goal_with_the_definition_of_done() {
         let goal = goal_condition(
             &Request::parse("Stopped tasks flash Working, fix"),

@@ -1,0 +1,106 @@
+---
+yulius-task: acd7ef52-4090-4440-b058-d9b436dee9ff
+status: in-progress
+---
+
+# SPEC-030: Attached images reach Claude Code as pasted images, not as paths
+
+Status: in progress
+Date: 2026-10-12
+Owner: Yulius task #28
+Scope authorization: user request ("I asked previous task to attach images as files, natively, but
+it doesnt seem to work. Fix."), with a screenshot of a task terminal showing the first message as
+`@"/…/pasted-….png"` followed by `Read 1 file`.
+
+## Goal
+
+An image attached on the new-task composer reaches the task's Claude Code session the way a person
+pasting it would: the prompt shows `[Image #1]` and the first user message carries the image,
+not a path the session reads with a tool.
+
+## Context
+
+- SPEC-025 (task #23, ADR-0022) mentions every attached file as `@"/path"` in the session's first
+  message, given as the CLI prompt argument (`yulius_domain::request`, `supervisor.rs`).
+- Symptom (the screenshot, and this task's own session): the terminal shows the long path and
+  `Read 1 file`; the transcript records a `file` attachment.
+- Root cause, measured on Claude Code 2.1.292 against a local mock of the Messages API (driver in
+  Evidence): an `@` mention is attached as a synthetic Read tool call. The request carries
+  `<system-reminder>Called the Read tool with the following input: {"file_path": …}` and the
+  image as that call's result, before the text that still holds the path. Only a paste
+  (bracketed paste of the image's path into the TUI) is attached natively: the prompt reads
+  `[Image #1] …` and the user message has an `image` block. The CLI prompt argument never turns a
+  path into an image: a bare path stays text. SPEC-025's evidence checked that an `image` block was
+  sent, not how; its tests check the launch argument only, so nothing caught the difference.
+- Claude Code takes a pasted path as an image when it matches `/\.(png|jpe?g|gif|webp)$/i` (read
+  from its bundle). Text in the same input can still carry `@"/path"` mentions of other files:
+  measured, the text file's content is attached and the Enter is not taken by the autocomplete.
+- Pastes written in one burst lose the image (measured): each paste has to be taken before the
+  next one is written.
+
+## Requirements
+
+| ID | Requirement | Evidence |
+| --- | --- | --- |
+| PIMG-001 | A task's attached file is an image when its path ends in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` (any case). Without images the first message is unchanged (SPEC-025 ATT-002/ATT-003). | `request.rs` unit tests |
+| PIMG-002 | A fresh session of a task with attached images starts with no CLI prompt. Once its TUI reads input, Yulius pastes each image's path as its own bracketed paste, waiting after each until the screen shows `[Image #N]` or the output settled (at most 5 s). It then pastes the text and sends Enter. In prompt mode the text is the request plus a quoted mention of each other file. In goal mode it is the SPEC-025 attachments message, with images left out of the mentions. | `request.rs` unit tests; `task_done.rs` tests |
+| PIMG-003 | In goal mode, `/goal` is typed after the Stop hook of that typed first message (SPEC-025 ATT-003), and that Stop is not gated. | `task_done.rs` goal test |
+| PIMG-004 | No control character reaches a paste: attachment paths with one are not attachments, and the text keeps only newlines and tabs (as SPEC-025). | `request.rs` unit test |
+
+## Acceptance criteria
+
+- AC-PIMG-1: a prompt-mode task created with `Make it blue` and `@/srv/shot.png` launches Claude Code
+  with no prompt argument, and its terminal receives a paste of `/srv/shot.png`, then a paste of
+  `Make it blue`, then Enter.
+- AC-PIMG-2: a goal-mode task with an attached image gets the image pasted in its first message,
+  then its `/goal` once that turn ended.
+- AC-PIMG-3: a task with only a text file attached still mentions it in the CLI prompt (unchanged).
+
+## Plan
+
+- [x] Reproduce the defect and find its root cause
+- [ ] Write the fix spec and the regression test that fails
+- [ ] Images reach Claude Code as pasted [Image #N] in both modes
+- [ ] Independent review, gates green and delivery to dev
+
+## Test plan
+
+- Unit (`yulius-domain` `request.rs`): image detection by extension; the opening of a task with
+  images (typed: images and text, other files mentioned), without images (the CLI prompt as
+  before), in goal mode (`None` without files); no control characters.
+- Integration (`crates/yulius/tests/task_done.rs`, fake agent): the fake agent learns bracketed
+  pastes like Claude Code (an image path becomes `[Image #N]`, text is kept). A prompt-mode task
+  with an image launches with no prompt and the agent answers `[Image #1] Make it blue`. A
+  goal-mode task with an image gets `[Image #1]` and then `GOAL SET`. Both fail before the fix:
+  the image is a mention in the launch prompt.
+- Manual, outside the gate: the mock-API driver against the installed Claude Code (Evidence).
+- Not covered: a live model answering about the image (needs a paid credential).
+
+## Decisions
+
+- Images are pasted into the TUI, the only channel measured to attach an image natively. The
+  alternatives were keeping `@` mentions (a Read tool call, the reported defect), a bare path in
+  the CLI prompt (stays text), and Claude Code's `--file` (Files API ids only). Recorded as
+  ADR-0025, which supersedes ADR-0022's choice for images.
+- Other files stay `@` mentions. That is how Claude Code attaches a text file natively; a pasted
+  non-image path is only text.
+- Only a session with images gives up the CLI prompt. Typing races a person's keys and depends
+  on TUI readiness, so tasks without images keep the measured CLI path.
+- Each paste waits for its `[Image #N]` on the screen, or for output to settle (500 ms quiet
+  after a change). It never waits on a fixed sleep and gives up after 5 s. Without that wait a
+  burst of pastes loses the image (measured).
+- The first message is typed once, never retried: a retried paste could send the request twice.
+
+## Evidence
+
+- Mock-API driver (manual, scratch only, not committed): a Python HTTP server on 127.0.0.1 answering
+  `/v1/messages` with a fixed SSE reply and logging each request body; Claude Code 2.1.292 run in a
+  PTY with `pexpect`, a scratch `HOME` (onboarding done, folder trusted, fake key approved),
+  `ANTHROPIC_BASE_URL` set to the mock and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
+  - `claude 'look at this\n@"/abs/red.png"'`: the user message is a `Called the Read tool`
+    reminder, an `image` block and the text with the path (the defect).
+  - `claude '/abs/red.png'` and `claude 'look at this\n/abs/red.png'`: text only, no image.
+  - Paste `/abs/red.png`, paste `/abs/sp ace/my shot.png`, paste
+    `look at this\nsecond line\n\n@"/abs/notes.txt"`, Enter (0.3 s apart): text
+    `[Image #1] [Image #2]look at this…`, two `image` blocks, and the notes file's content attached.
+  - The same pastes and Enter in one write: the image is lost.

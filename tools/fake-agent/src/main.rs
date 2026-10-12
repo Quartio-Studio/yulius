@@ -72,6 +72,11 @@
 //! `DONE opening` and its Stop hook) before it reads input. With the terminal's echo, a line typed
 //! during that turn shows before `DONE opening`.
 //!
+//! Bracketed pastes (`ESC [200~ … ESC [201~`) are read like Claude Code 2.1.292 reads them: a
+//! pasted path ending in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` becomes `[Image #N] ` (N
+//! counts the images of the message), other pasted text is kept as typed, newlines included; the
+//! message is submitted by the Enter after it.
+//!
 //! `--tui` draws like a full-screen agent TUI (Claude Code 2.1.x): the alternate screen with a
 //! header box, the transcript and an input box between two rules along the bottom, all as wide
 //! as the terminal, redrawn in full whenever the terminal is resized (SIGWINCH). Printed lines
@@ -793,6 +798,52 @@ fn read_line(input: &mut impl BufRead) -> io::Result<Option<String>> {
     Ok(Some(text.trim_end_matches(['\n', '\r']).to_owned()))
 }
 
+const PASTE_START: &str = "\x1b[200~";
+const PASTE_END: &str = "\x1b[201~";
+
+/// Reads one submitted message: a line, or several when a bracketed paste holds newlines.
+fn read_message(input: &mut impl BufRead) -> io::Result<Option<String>> {
+    let Some(mut message) = read_line(input)? else {
+        return Ok(None);
+    };
+    while message.matches(PASTE_START).count() > message.matches(PASTE_END).count() {
+        let Some(next) = read_line(input)? else {
+            break;
+        };
+        message.push('\n');
+        message.push_str(&next);
+    }
+    Ok(Some(render_pastes(&message)))
+}
+
+/// A message with its bracketed pastes read like Claude Code (see the module docs).
+fn render_pastes(message: &str) -> String {
+    let mut out = String::new();
+    let mut images = 0;
+    let mut rest = message;
+    while let Some(start) = rest.find(PASTE_START) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + PASTE_START.len()..];
+        let (pasted, next) = after
+            .split_once(PASTE_END)
+            .unwrap_or((after, ""));
+        let lower = pasted.to_ascii_lowercase();
+        if pasted.starts_with('/')
+            && [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+                .iter()
+                .any(|ext| lower.ends_with(ext))
+        {
+            images += 1;
+            out.push_str(&format!("[Image #{images}] "));
+        } else {
+            out.push_str(pasted);
+        }
+        rest = next;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// One `/goal` turn (see the module docs).
 fn goal_turn(
     options: &Options,
@@ -879,7 +930,7 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let mut to_drop = options.drop_lines;
-    while let Some(line) = read_line(&mut input)? {
+    while let Some(line) = read_message(&mut input)? {
         // A submit the TUI lost (`--drop-lines`): the first typed lines never reach the agent.
         if to_drop > 0 && !line.is_empty() {
             to_drop -= 1;
@@ -1175,6 +1226,21 @@ mod tests {
         assert_eq!(rfc3339(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(rfc3339(951_782_400_123), "2000-02-29T00:00:00.123Z");
         assert_eq!(rfc3339(1_791_368_133_456), "2026-10-07T10:15:33.456Z");
+    }
+
+    #[test]
+    fn pasted_image_paths_become_images_and_other_pastes_stay_text() {
+        let message =
+            "\x1b[200~/a/b.png\x1b[201~\x1b[200~/a/my shot.JPG\x1b[201~\x1b[200~Look\nhere\x1b[201~";
+        assert_eq!(render_pastes(message), "[Image #1] [Image #2] Look\nhere");
+        assert_eq!(render_pastes("/goal plain"), "/goal plain");
+        assert_eq!(
+            render_pastes("\x1b[200~/a/notes.txt\x1b[201~"),
+            "/a/notes.txt"
+        );
+        let mut input = io::Cursor::new(b"\x1b[200~one\ntwo\x1b[201~\nnext\n".to_vec());
+        assert_eq!(read_message(&mut input).ok().flatten().as_deref(), Some("one\ntwo"));
+        assert_eq!(read_message(&mut input).ok().flatten().as_deref(), Some("next"));
     }
 
     #[test]

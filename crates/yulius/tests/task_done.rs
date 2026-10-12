@@ -422,14 +422,19 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
             "{request}"
         );
         assert!(request.contains("\n- /srv/shots/header.png"), "{request}");
-        // SPEC-025 ATT-003: the attached file is mentioned in the session's first message, so
-        // Claude Code attaches it natively; the goal is still typed after it.
+        // SPEC-030 PIMG-002: an attached image is pasted into the session's first message, so
+        // Claude Code attaches it natively (`[Image #1]`), not mentioned in the command line;
+        // the goal is still typed after that message's turn.
         let launch = first_launch(&app, &id).await?;
-        assert!(
-            launch.contains("prompt: Some(\"The files attached to this task.")
-                && launch.contains("\\n\\n@\\\"/srv/shots/header.png\\\"\")"),
-            "{launch}"
-        );
+        assert!(launch.contains("prompt: None"), "{launch}");
+        let screen = app.runtime(&id).hub.screen_text();
+        let pasted = screen
+            .find("ECHO: [Image #1] The files attached to this task.")
+            .ok_or_else(|| screen.clone())?;
+        let typed = screen.find("/goal ").ok_or_else(|| screen.clone())?;
+        assert!(pasted < typed, "the goal came first:\n{screen}");
+        assert!(!screen.contains("STOP BLOCKED"), "{screen}");
+        assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
         assert!(request.contains("## Definition of done"), "{request}");
         // The goal names the file (a request with attached files is never inlined).
         assert!(
@@ -465,7 +470,8 @@ fn the_goal_is_typed_after_the_turn_on_the_attached_files() -> TestResult {
             .create_task_internal(NewTask {
                 sandbox: sandbox.clone(),
                 created_by: user.clone(),
-                prompt: "Make the header blue\n\n@/srv/shot.png".into(),
+                // Not an image: mentioned in the command-line prompt (SPEC-025, SPEC-030).
+                prompt: "Make the header blue\n\n@/srv/notes.txt".into(),
                 harness: Harness::ClaudeCode,
                 title: Some("Blue header".into()),
                 workflow_id: None,
@@ -491,6 +497,57 @@ fn the_goal_is_typed_after_the_turn_on_the_attached_files() -> TestResult {
             "the goal was typed during the opening turn:\n{screen}"
         );
         assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-030 PIMG-002: a prompt-mode task with an attached image starts with no command-line
+/// prompt; its first message is typed into the TUI with the image pasted (`[Image #1]`, as
+/// Claude Code attaches a pasted image) and the other files mentioned.
+#[test]
+fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            session_start: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Make it blue\n\n@/srv/shot.png\n@/srv/notes.txt".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Blue".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Prompt,
+            })
+            .await?
+            .id;
+        wait_for("the first message", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "ECHO: [Image #1] Make it blue")
+        })
+        .await?;
+        let launch = first_launch(&app, &id).await?;
+        assert!(launch.contains("prompt: None"), "{launch}");
+        let screen = app.runtime(&id).hub.screen_text();
+        assert!(screen.contains("@\"/srv/notes.txt\""), "{screen}");
+        assert!(!screen.contains("@\"/srv/shot.png\""), "{screen}");
+        assert_eq!(screen.matches("ECHO: [Image #1]").count(), 1, "{screen}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
