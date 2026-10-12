@@ -198,6 +198,7 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
         LaunchMode::Resume {
             session_id: SESSION.into(),
             prompt: Some("--continue after the limit".into()),
+            continue_interrupted: false,
         },
         false,
     );
@@ -232,6 +233,45 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
         mcp["mcpServers"].as_object().map(|m| m.len()),
         Some(1),
         "the yulius server is always attached"
+    );
+    Ok(())
+}
+
+/// SPEC-034: a resume after a usage limit sends no prompt; Claude Code continues the interrupted
+/// turn itself (`CLAUDE_CODE_RESUME_INTERRUPTED_TURN`). A plain resume does not set the flag.
+#[test]
+fn claude_resume_continuing_the_interrupted_turn_sends_no_prompt() -> TestResult {
+    let continued = plan_launch(&claude_request(
+        LaunchMode::Resume {
+            session_id: SESSION.into(),
+            prompt: Some("Continue.".into()),
+            continue_interrupted: true,
+        },
+        false,
+    ))?;
+    assert_eq!(continued.argv.last().map(String::as_str), Some("high"));
+    assert!(!continued.argv.iter().any(|a| a == "--" || a == "Continue."));
+    assert!(
+        continued
+            .env
+            .iter()
+            .any(|(k, v)| k == "CLAUDE_CODE_RESUME_INTERRUPTED_TURN" && v == "1"),
+        "{:?}",
+        continued.env
+    );
+    let plain = plan_launch(&claude_request(
+        LaunchMode::Resume {
+            session_id: SESSION.into(),
+            prompt: None,
+            continue_interrupted: false,
+        },
+        false,
+    ))?;
+    assert!(
+        !plain
+            .env
+            .iter()
+            .any(|(k, _)| k == "CLAUDE_CODE_RESUME_INTERRUPTED_TURN")
     );
     Ok(())
 }
@@ -280,6 +320,7 @@ fn invalid_requests_are_rejected_without_echoing_values() {
         LaunchMode::Resume {
             session_id: "--help".into(),
             prompt: None,
+            continue_interrupted: false,
         },
         false,
     );

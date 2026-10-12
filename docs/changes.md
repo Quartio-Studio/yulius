@@ -7,7 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-12
 
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
-  (SPEC-033, ADR-0027, task #31): the `yulius` crate's 50 integration test files, each its own
+  (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
   (`tests/main.rs`); a gate build's test executables drop from 9.2 GB to 1.3 GB. The repository
   check rejects a second test binary or an undeclared test file. Run one file's tests with
@@ -23,6 +23,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
   Automations and MCP in place. Its state is remembered per browser; arriving at one of those
   pages shows it open for that page.
+- A usage limit no longer types "Continue." into a task (SPEC-034, decision 0027, task #32): the
+  session moves to another subscription (or waits for the reset) and resumes as if the limit never
+  happened. The transcript steps back over the limit errors and notices, and Claude Code redoes
+  the lost turn by itself: it resubmits the unanswered message, or goes on after the last tool
+  result.
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.

@@ -77,7 +77,7 @@ The existing tests missed it because nothing checks how many test executables a 
 ## Decisions
 
 - One binary for the composition crate only: its executables are 190 MB because they link
-  everything; the other crates' are small, so their per-file targets stay (recorded in ADR-0027).
+  everything; the other crates' are small, so their per-file targets stay (recorded in ADR-0028).
 - Files stay where they are (`tests/<name>.rs`) and become modules of `tests/main.rs`; paths in
   earlier specs and `include_str!` stay valid. One file's tests run with
   `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`; the `cargo test` filter `<file>::` is a substring match.
@@ -108,8 +108,8 @@ The existing tests missed it because nothing checks how many test executables a 
   f43cd33): approved; its minor findings (check gaps, substring filter wording, one disk figure,
   unfinished spec) fixed test-first. A second review of 7ea0f96 approved; its minors (ADR listing
   all four check failures, these commit references, a stale comment) fixed.
-- After merging `dev` (d60846e, which added a `task_done` test): `scripts/dev ci` exit 0, nextest
-  1173 passed, 16 skipped; `main` lists 267 tests, equal to the 267 test attributes. The ADR is
-  0027 (0025 and 0026 were taken on `dev` meanwhile).
+- After merging `dev` up to 3c55d35 (which added `task_done` and `pool_supervision` tests):
+  `scripts/dev ci` exit 0, nextest 1184 passed, 16 skipped; `main` lists 269 tests, equal to the 269
+  test attributes. The ADR is 0028 (0025, 0026 and 0027 were taken on `dev` meanwhile).
 - Not run: a real 100 GB sandbox with several working tasks; old copies already in task worktrees
   and the CI checkout go with the existing SPEC-008/SPEC-019 upkeep.

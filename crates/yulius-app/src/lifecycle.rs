@@ -419,13 +419,22 @@ impl App {
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let account = parse_account(req)?;
-        self.switch_task_now(
-            &task.id,
-            account,
-            "manual",
-            Some("Continue the task exactly where you left off.".into()),
-        )
-        .await?;
+        // A turn a usage limit cut goes on past the limit, with nothing typed (SPEC-034).
+        let at_limit = matches!(
+            self.deps.store.open_pause(&task.id).await?,
+            Some(pause) if pause.kind == crate::model::PauseKind::Limit
+        );
+        if at_limit {
+            self.switch_after_limit(&task.id, account, "manual").await?;
+        } else {
+            self.switch_task_now(
+                &task.id,
+                account,
+                "manual",
+                Some("Continue the task exactly where you left off.".into()),
+            )
+            .await?;
+        }
         let task = self
             .deps
             .store
