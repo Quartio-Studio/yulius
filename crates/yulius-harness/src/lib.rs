@@ -8,6 +8,7 @@
 
 pub mod claude;
 pub mod claude_config;
+pub mod guard_client;
 pub mod hook_client;
 pub mod launch;
 pub mod login;

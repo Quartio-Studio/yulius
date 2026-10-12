@@ -138,6 +138,9 @@ impl App {
                 && task.activity.is_some_and(Activity::is_idle))
             .then(|| self.background_shells_of(&task.id))
             .flatten(),
+            background_shells_since: self
+                .background_shells_since(&task.id)
+                .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms))),
         })
     }
 

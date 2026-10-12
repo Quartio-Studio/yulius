@@ -84,6 +84,10 @@ pub fn run_hook_with(
     if harness == "claude" && event == "PostToolUse" {
         return crate::scrub_client::post_tool_use(input, output, env);
     }
+    // Commands that can never work as meant are refused here too, before they run.
+    if harness == "claude" && event == "PreToolUse" {
+        return crate::guard_client::pre_tool_use(input, output);
+    }
     if let Ok(body) = forward(harness, event, input, env, HOOK_TIMEOUT, hold) {
         let _ignored = output.write_all(&body).and_then(|()| output.flush());
     }

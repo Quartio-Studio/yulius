@@ -117,6 +117,10 @@ pub struct TaskRuntime {
     pub(crate) last_stop_ms: AtomicI64,
     /// Background shells the agent left running, as last probed (-1 = not known).
     pub(crate) background_shells: AtomicI64,
+    /// Since when (ms) the idle agent's background shells have been running (0 = none), and
+    /// whether the agent was told they run long (complaint 1: dead shells).
+    pub(crate) shells_since_ms: AtomicI64,
+    pub(crate) shells_told: AtomicBool,
     /// The run was reattached after a restart: the transcript it already wrote is history.
     pub(crate) replay_transcript: AtomicBool,
     /// Why Claude Code said the current session ends (`SessionEnd` hook), until the run exits.
@@ -168,6 +172,8 @@ impl TaskRuntime {
             armed_merge: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
+            shells_since_ms: AtomicI64::new(0),
+            shells_told: AtomicBool::new(false),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
             hold_polled_ms: AtomicI64::new(0),
