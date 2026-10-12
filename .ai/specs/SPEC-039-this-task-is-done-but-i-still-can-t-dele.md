@@ -58,8 +58,8 @@ user reported.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Deleting a Done task closes its session, then deletes it (server and API)
-- [ ] Task menu offers Delete for Done tasks and says why otherwise
+- [x] Deleting a Done task closes its session, then deletes it (server and API)
+- [x] Task menu offers Delete for Done tasks and says why otherwise
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
