@@ -83,6 +83,34 @@ test('a short request starts at once and "Run after" chains it', async ({ app, b
   await expect(browser.locator('.strip-status')).toHaveText(/Queued after #12/);
 });
 
+test('picked conditions become the canonical start rule text (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/ruleeditor.js';
+    const { ruleText, ruleChoices } = await import(url);
+    return {
+      none: ruleText({ join: 'and', conditions: [] }),
+      one: ruleText({ join: 'or', conditions: [{ number: 12, state: 'done' }] }),
+      all: ruleText({ join: 'and', conditions: [{ number: 12, state: 'done' }, { number: 13, state: 'merged' }] }),
+      any: ruleText({ join: 'or', conditions: [{ number: 12, state: 'done' }, { number: 4, state: 'ended' }, { number: 3, state: 'done' }] }),
+      choices: ruleChoices([
+        { id: 'a', number: 3, title: 'Three', archived: false },
+        { id: 'b', number: 9, title: 'Nine', archived: false },
+        { id: 'c', number: 5, title: 'Five', archived: true },
+      ]).map((t: { number: number }) => t.number),
+      empty: ruleChoices([{ id: 'c', number: 5, title: 'Five', archived: true }]).length,
+    };
+  });
+  expect(result).toEqual({
+    none: '',
+    one: '#12 done',
+    all: '#12 done and #13 merged',
+    any: '#12 done or #4 ended or #3 done',
+    choices: [9, 3],
+    empty: 0,
+  });
+});
+
 test('"Run after" takes a logical rule; the task waits for it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
