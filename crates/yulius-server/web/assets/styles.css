@@ -427,7 +427,7 @@ button.task-group-head:hover { color: var(--text); }
 .app.panel-max .panel { width: auto !important; }
 .app.panel-max .panel-resize { display: none; }
 .tools-toggle.active { background: var(--accent-soft); color: var(--text); }
-.btn-agent { height: var(--control-md); padding: 0 10px; gap: 6px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.btn-agent { height: var(--control-md); padding: 0 12px; gap: 6px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .agent-toggle.active { background: var(--accent-soft); border-color: var(--accent-border); color: var(--text); }
 /* The rail's items stay inside it (F 2026-10-09): each pill is the rail's width less 6 px on either
    side of the edge line, its label gives way (ellipsis) before the count leaves the pill, and the
