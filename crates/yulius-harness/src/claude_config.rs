@@ -21,8 +21,9 @@ const DIFF_SIDEBAR_OPEN: &str = "diffSidebarOpen";
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Merges onboarding completion, trust for `worktree` and a closed diff side panel into the
-/// Claude global config of `config_dir` (created 0700 when missing). `bypass_permissions` also records acceptance of the
-/// `--dangerously-skip-permissions` warning (contained runs only). Idempotent.
+/// Claude global config of `config_dir` (created 0700 when missing). `bypass_permissions` also
+/// records acceptance of the `--dangerously-skip-permissions` warning (contained runs only).
+/// Idempotent.
 ///
 /// # Errors
 /// I/O failures, or an existing config that is not a JSON object or is larger than 8 MiB.
