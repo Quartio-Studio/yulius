@@ -1,11 +1,11 @@
 ---
 yulius-task: 9d013409-2398-4152-868a-a728a52539ab
-status: in-progress
+status: done
 ---
 
 # SPEC-010: a goal-mode task's `/goal` is always submitted
 
-Status: draft
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #16
 Scope authorization: user request: "when I sent a task, it was written as a goal but didnt
@@ -43,7 +43,7 @@ confirmations, so a slow transcript cannot duplicate the text in practice.
 ## Plan
 
 - [x] Confirm the submit from observations and retry it, bounded
-- [ ] Regression test with a fake agent that drops the first typed line
+- [x] Regression test with a fake agent that drops the first typed line
 
 ## Acceptance criteria
 
