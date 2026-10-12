@@ -151,9 +151,9 @@ pub struct AgentSecretView {
     pub injection_text: String,
     /// The placeholder agents' code uses (`yulius-secret-NAME`).
     pub placeholder: String,
-    /// Whether a user name is stored (Basic credentials, website logins).
+    /// Whether a user name is stored (Basic credentials; older secrets: website logins).
     pub has_username: bool,
-    /// Whether a TOTP seed is stored (website two-factor codes).
+    /// Whether an older secret stores a TOTP seed (none can be added since SPEC-040).
     pub has_totp: bool,
     /// Who added it.
     pub created_by: String,
@@ -189,18 +189,15 @@ pub struct AgentSecretInput {
     /// Header for `header`.
     #[serde(default)]
     pub header_name: Option<String>,
-    /// User name (Basic credentials, website logins).
+    /// User name of `basic` credentials (only there).
     #[serde(default)]
     pub username: Option<String>,
     /// The value (at least 8 characters).
     pub value: String,
-    /// TOTP seed (website two-factor codes).
-    #[serde(default)]
-    pub totp: Option<String>,
 }
 
-/// Update body: an absent field stays; an empty `username` or `totp` clears it; `value`
-/// replaces the value.
+/// Update body: an absent field stays; an empty `username` clears it; `value` replaces the
+/// value.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSecretPatch {
@@ -219,15 +216,12 @@ pub struct AgentSecretPatch {
     /// Header for `header`.
     #[serde(default)]
     pub header_name: Option<String>,
-    /// User name.
+    /// User name of `basic` credentials.
     #[serde(default)]
     pub username: Option<String>,
     /// New value.
     #[serde(default)]
     pub value: Option<String>,
-    /// TOTP seed.
-    #[serde(default)]
-    pub totp: Option<String>,
 }
 
 /// One vault audit entry.

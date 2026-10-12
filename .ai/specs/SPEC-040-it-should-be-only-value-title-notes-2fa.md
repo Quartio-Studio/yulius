@@ -79,9 +79,9 @@ them), and people can now read an agent secret's value too, behind the same two-
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Team secrets hold a title, a value and notes, and older ones fold into that form
-- [ ] People set up two-factor and unlock the vault with a code
-- [ ] Every reveal needs a vault unlock, and people can read agent secrets they manage
-- [ ] Agent secrets drop the per-secret TOTP seed, and the user name serves Basic only
+- [x] People set up two-factor and unlock the vault with a code
+- [x] Every reveal needs a vault unlock, and people can read agent secrets they manage
+- [x] Agent secrets drop the per-secret TOTP seed, and the user name serves Basic only
 - [ ] The Secrets page asks for the code, sets up two-factor and shows title, value and notes
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
