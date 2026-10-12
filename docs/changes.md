@@ -12,6 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   questions) and that anything more complex, such as writing code, belongs in a task (with a New
   task link). It is no longer in the left sidebar; `/s/<slug>/agent` and the old
   `/s/<slug>/cockpit` open the panel. The API and server keep the `cockpit` names.
+- A Done task can be deleted (SPEC-039, ADR-0031, task #37). "Delete permanently…" closes its
+  idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
+  work or waiting for you has to be stopped first, and its menu says "Still running: stop the
+  task before deleting it".
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
