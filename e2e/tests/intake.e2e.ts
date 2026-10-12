@@ -19,6 +19,9 @@ test('a request mixing UI and backend work offers a split; a chain waits for its
   await app.open(mock('/s/studio'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(MIXED);
+  // The mock keeps the proposal in flight until released, so the waiting state is checked
+  // however slowly the page runs (a fixed delay raced with a loaded machine).
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { holdProposal: boolean } }).__yuliusMock.holdProposal = true; });
   await prompt.press('ControlOrMeta+Enter');
 
   // While Claude prepares the proposal the card shimmers below the box; one task already works.
@@ -26,6 +29,7 @@ test('a request mixing UI and backend work offers a split; a chain waits for its
   await expect(card).toHaveText(/Splitting your request…/);
   await expect(card.getByRole('status')).toHaveText('Preparing a split proposal…');
   await expect(card.getByRole('button', 'Keep as one task')).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { holdProposal: boolean } }).__yuliusMock.holdProposal = false; });
 
   await expect(card).toHaveText(/Split into 2 tasks\?/);
   await expect(card.getByRole('textbox', 'Title of task 1')).toHaveValue('UX: interface fixes');
