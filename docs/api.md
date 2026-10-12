@@ -205,7 +205,7 @@ limited to the agent's sandbox.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule` |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); without `model` the task runs `claude-opus-5-5` and without `effort` at `high` (none for Haiku; SPEC-023); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule` |
 | POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool}`: whether a new task mixes separate workstreams (TSK-011). `checked` is false — and the verdict `one` — for prompts under 40 words, without a Jev key and when Jev fails or takes over 2.5 s |
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
@@ -809,8 +809,9 @@ resolves to nothing, the run gets the server without that variable or token.
   of kind `cockpit`.
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
-    <newest conversation>]` in the sandbox repository, as the caller's sandbox identity, with the
-    token of the pool's best subscription and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
+    <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox
+    repository, as the caller's sandbox identity, with the token of the pool's best subscription
+    for Opus and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
     terminal's environment (Git as the caller); no Yulius hooks, MCP, settings or approval bypass.
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
     409 before the repository is cloned or without a Claude

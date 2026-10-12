@@ -1817,7 +1817,7 @@ warning) while nothing answers to it.
 
 | Concern | Claude Code (verified 2.1.292 flags) |
 | --- | --- |
-| New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json [--model m] [--effort e] [--dangerously-skip-permissions when contained] "<prompt>"` |
+| New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json --model <m, default claude-opus-5-5> [--effort <e, default high; none for Haiku>] [--dangerously-skip-permissions when contained] "<prompt>"` |
 | Resume | `claude --resume <uuid> … ["<continuation>"]` |
 | Credentials | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`); `CLAUDE_CONFIG_DIR=<sandbox>/home/.claude` |
 | Updates | `DISABLE_AUTOUPDATER=1` in every session and sign-in terminal: the operator updates the CLI on the host (docs/operations.md); a contained session could only fail to update itself (#45) |

@@ -43,7 +43,7 @@ impl UsageWindow {
 /// account-wide windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ModelFamily {
-    /// No per-model cap applies (default model, Haiku, unknown names).
+    /// No per-model cap applies (Haiku, unknown names).
     #[default]
     Any,
     /// An Opus model: the weekly Opus cap binds too.
@@ -53,7 +53,8 @@ pub enum ModelFamily {
 }
 
 impl ModelFamily {
-    /// The family of a task's model setting (`None` = the CLI's default model).
+    /// The family of a task's model setting (`None` = unknown; callers pass the default model
+    /// of a task that names none).
     #[must_use]
     pub fn of(model: Option<&str>) -> Self {
         let Some(model) = model else {

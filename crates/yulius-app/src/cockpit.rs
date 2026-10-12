@@ -108,7 +108,15 @@ impl App {
                 "the sandbox repository is not cloned yet".into(),
             ));
         }
-        let account = self.pool_account(Provider::Anthropic).await?;
+        // The Cockpit runs the default model, Opus 5.5: its weekly Opus cap binds (SPEC-023).
+        let account = self
+            .pool_account(
+                Provider::Anthropic,
+                yulius_domain::usage::ModelFamily::of(Some(
+                    yulius_domain::harness::DEFAULT_CLAUDE_MODEL,
+                )),
+            )
+            .await?;
         let credential = self.open_credential(&account)?;
         let id = self.new_shell_id();
         let runtime = self.new_shell_runtime(

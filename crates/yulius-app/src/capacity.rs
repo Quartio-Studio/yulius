@@ -200,14 +200,15 @@ impl App {
         })
     }
 
-    /// The subscription a one-off request outside any task (a split proposal) runs on: the best
-    /// placement of the pool.
+    /// The subscription a run outside any task (a split proposal, a Cockpit) runs on: the best
+    /// placement of the pool for a run of `family`, whose weekly cap binds too.
     ///
     /// # Errors
     /// `Conflict` without any Claude subscription, `Capacity` while none has capacity.
     pub(crate) async fn pool_account(
         &self,
         provider: yulius_domain::harness::Provider,
+        family: ModelFamily,
     ) -> AppResult<crate::model::AccountRecord> {
         let accounts = self.account_views().await?;
         if !accounts.iter().any(|a| a.provider == provider) {
@@ -218,7 +219,7 @@ impl App {
         let input = RotationInput {
             current: None,
             task_provider: provider,
-            family: ModelFamily::Any,
+            family,
             accounts,
             now: self.now(),
             threshold: rotation::THRESHOLD,

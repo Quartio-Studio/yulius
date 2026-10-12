@@ -19,9 +19,10 @@ The Cockpit is a **shell of kind `cockpit`**: the shell runtime (ownership, cont
 terminal protocol, adoption after a restart, the idle reaper) running `claude [--resume <id>]`
 instead of the login shell. `POST /api/sandboxes/{sid}/cockpit` returns the caller's running
 Cockpit or starts one under a lock (one per user and sandbox). Each start takes the pool's best
-subscription (`pool_account`) and passes its token in the secret environment; the harness port
-plans the launch (`plan_cockpit`: no settings, MCP config, model or approval bypass) and settles
-Claude Code's first-run screens and folder trust in `~/.claude` of the user's own home. A start
+subscription for an Opus run (`pool_account`) and passes its token in the secret environment;
+the harness port plans the launch (`plan_cockpit`: no settings, MCP config or approval bypass;
+the default model and effort of ADR-0024) and settles Claude Code's first-run screens and
+folder trust in `~/.claude` of the user's own home. A start
 resumes the newest conversation file for the repository there, so `/clear`, `/exit`, an idle
 stop or a lost process never lose it. The Cockpit is never listed, renamed or closed as a
 terminal and does not count against the terminal limit; files can be dropped onto it.

@@ -1,7 +1,8 @@
 // Models and effort levels the new-task composer offers (SPEC-001 UI-021). Grouped by provider so
 // another harness's models can join the list; each provider names the harness that runs them.
 // Yulius runs Claude Code only today (TSK-003). A model id goes to Claude Code's `--model` and a
-// level to `--effort`; choosing "Default" sends neither and leaves it to Claude Code.
+// level to `--effort`; choosing "Default" sends neither and the task runs Yulius's default,
+// Opus 5.5 at high effort (task #21).
 
 /** This browser's defaults for new tasks (the composer and Settings share them). */
 export const MODEL_PREF_KEY = 'yulius.composer.model';
@@ -55,7 +56,7 @@ export function findEffort(id) {
 /** Menu items to pick a model (grouped by provider); `onPick(id|null)`. */
 export function modelMenuItems(selected, onPick) {
   return [
-    { label: 'Default', description: 'Claude Code’s default for the subscription', checked: selected === null, onSelect: () => onPick(null) },
+    { label: 'Default', description: 'Opus 5.5', checked: selected === null, onSelect: () => onPick(null) },
     ...PROVIDERS.flatMap((provider) => [
       { header: provider.name },
       ...provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === selected, onSelect: () => onPick(model.id) })),
@@ -66,7 +67,7 @@ export function modelMenuItems(selected, onPick) {
 /** Menu items to pick an effort level; `onPick(id|null)`. */
 export function effortMenuItems(selected, onPick) {
   return [
-    { label: 'Default', description: 'Claude Code decides', checked: selected === null, onSelect: () => onPick(null) },
+    { label: 'Default', description: 'High (none for Haiku)', checked: selected === null, onSelect: () => onPick(null) },
     ...EFFORTS.map((effort) => ({ label: effort.name, description: effort.description, checked: effort.id === selected, onSelect: () => onPick(effort.id) })),
   ];
 }

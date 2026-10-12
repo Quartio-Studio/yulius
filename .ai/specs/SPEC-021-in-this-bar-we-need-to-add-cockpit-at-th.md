@@ -65,7 +65,7 @@ flowchart LR
 - The Cockpit is a shell runtime of kind `Cockpit` ([ADR-0020](../../docs/decisions/0020-cockpit-as-a-plain-shell-session.md)):
   same ownership, containment, adoption, terminal and idle reaping as shells, a different
   program. `ShellFile` records the kind (default `terminal`, so older records still adopt).
-- `HarnessPort::plan_cockpit` builds the plain launch: argv `claude [--resume <id>]`, env
+- `HarnessPort::plan_cockpit` builds the plain launch: argv `claude [--resume <id>] --model claude-opus-5-5 --effort high` (SPEC-023), env
   `CLAUDE_CONFIG_DIR`, `DISABLE_AUTOUPDATER=1`, secret env `CLAUDE_CODE_OAUTH_TOKEN`, and
   prepares `<home>/.claude/.claude.json` (onboarding done, theme, trust of the repository).
 - A per-app async lock serialises Cockpit starts so a double click starts one.
@@ -113,7 +113,9 @@ flowchart LR
   conversation; the newest conversation file is known and picks up `/clear` successors.
 - **No `--dangerously-skip-permissions`**: "plain" means Claude Code as a person starts it; the
   user switches modes with Shift+Tab. Reversible.
-- **Default model**: no `--model`, the subscription's default; `/model` changes it.
+- **Default model**: Opus 5.5 at high effort (`--model claude-opus-5-5 --effort high`, SPEC-023
+  DEF-004, superseding "no `--model`, the subscription's default"); `/model` changes it until
+  the Cockpit starts again. The subscription is chosen by the weekly Opus cap too.
 - **Subscription**: the pool's best placement at each start (`pool_account`); the Cockpit does
   not take a task session slot and is not moved between subscriptions while it runs (a limit
   shows in Claude Code; Start again picks another). The token is visible to the user's own
