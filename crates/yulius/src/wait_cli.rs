@@ -75,13 +75,13 @@ fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
     if decided && let Some(outcome) = &now.merge_outcome {
         return Some(outcome.clone());
     }
-    if let Some(before) = before {
-        if now.stage != before.stage {
-            return Some(format!(
-                "Delivery moved: {} -> {}. Check `delivery_status` for what is left.",
-                before.stage, now.stage
-            ));
-        }
+    if let Some(before) = before
+        && now.stage != before.stage
+    {
+        return Some(format!(
+            "Delivery moved: {} -> {}. Check `delivery_status` for what is left.",
+            before.stage, now.stage
+        ));
     }
     if now.checks_ended() && !now.merge_armed {
         let head = short(&now.head);
