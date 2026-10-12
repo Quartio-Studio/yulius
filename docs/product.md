@@ -40,7 +40,8 @@ watching, steering and unblocking.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent.
-- **Editor, terminals, Git view, automations, workflow catalog** in one web UI. Messages are
+- **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
+  the window and filter as people type when they are long. Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
   `yulius wait`, `ci_status` and `delivery_status`.
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
