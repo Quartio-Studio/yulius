@@ -63,3 +63,12 @@ nothing depended on the removed files.
 
 - Also delete `.github/actionlint.yaml`: it only configured linting of the deleted workflows.
 - Leave `scripts/check_git_policy.py` untouched (instruction), noting its stale `ci.yml` query.
+
+## Evidence
+
+- `scripts/dev ci` on macOS (2026-10-12): 1108 tests passed; repository check passed.
+- Yulius CI on #225 (`13bb48d`): `quality` and `e2e` passed; `yulius/ci` published and required.
+- Follow-up (2026-10-12): the delivery steps in `docs/engineering/git.md`, the pull request
+  template, the `yulius-git` and `yulius-verify` skills and `scripts/check_git_policy.py` (its
+  promotion evidence is now the `yulius/ci` status of the exact dev head, not an Actions run) no
+  longer refer to GitHub Actions push runs.

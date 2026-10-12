@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Nothing refers to GitHub Actions runs any more: the delivery steps, the pull request template,
+  the `yulius-git` and `yulius-verify` skills and the branch policy's promotion evidence use the
+  `yulius/ci` status of the exact dev head (#184).
 - Task-to-task messaging is removed for now: `message_send` only tells or asks people (`to="people"`), `scope_claim` shows an overlap to the claiming agent only and messages nobody, and the briefing, digest and Messages panel speak of Yulius's notices. Notices, the inbox, the digest and the idle wake-up are unchanged (SPEC-012, COM-002 withdrawn).
 - A task's state reads the same everywhere and matches what it waits for (tasks #11, #13, #14):
   an idle agent whose background shells still run is Working, not "Your turn", and the task view

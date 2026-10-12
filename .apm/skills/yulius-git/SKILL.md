@@ -21,11 +21,10 @@ commits and tracked/untracked/ignored user data. Keep permanent dev/main worktre
 Avoid `gh pr merge --delete-branch` in a linked worktree; use repository remote
 auto-deletion and explicit local worktree-then-branch cleanup from the dev worktree.
 
-Require successful push CI on the exact resulting dev SHA before promotion. Open
-dev → main with a release title; after promotion checks pass, author-merge with a
-merge commit, never squash. Keep both permanent branches. Wait for successful push
-CI on the resulting main SHA before reporting delivery complete. No deployment
-environment exists yet; do not claim CI proves a deployed app works.
+Require a successful `yulius/ci` status on the exact resulting dev SHA. A task's work
+ends there; promote only when the task asks for a release: open dev → main with a
+release title; after its checks pass, author-merge with a merge commit, never squash.
+Keep both permanent branches. Do not claim CI proves a deployed app works.
 
 Distinguish pending, cancelled, failed and absent checks from success. Poll live
 run IDs; do not restart merely because observation timed out. Reconcile a moved
