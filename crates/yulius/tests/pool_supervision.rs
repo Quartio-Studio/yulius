@@ -4,7 +4,7 @@
 //! a turn in its transcript; hook holds are covered by `subscription_pool.rs`. MCP servers reach
 //! every run on every subscription (MCP-004, AC-MCP-3).
 
-mod support;
+use crate::support;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};

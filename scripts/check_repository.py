@@ -57,6 +57,42 @@ def dependency_errors(packages):
     return errors
 
 
+def _declared_modules(rust):
+    """Names of `mod name;` items, attributes and visibility allowed, comments ignored."""
+    code = re.sub(r"/\*.*?\*/", "", rust, flags=re.S)
+    code = re.sub(r"//[^\n]*", "", code)
+    return set(re.findall(r"^\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;", code, re.M))
+
+
+def integration_test_errors(packages):
+    """A composition crate links the whole product into every test binary (about 190 MB each, so
+    fifty files filled sandboxes: SPEC-033); its integration tests are modules of one
+    `tests/main.rs`, and nothing under `tests/` may be left out of it."""
+    errors = []
+    for package in packages:
+        if package.get("metadata", {}).get("yulius", {}).get("layer") != "composition":
+            continue
+        name = package["name"]
+        tests = [t for t in package.get("targets", []) if "test" in t["kind"]]
+        main = Path(package["manifest_path"]).parent / "tests" / "main.rs"
+        if len(tests) > 1:
+            errors.append(f"{name}: {len(tests)} integration test binaries each link the whole product; "
+                          "make the files modules of one tests/main.rs (autotests = false)")
+            continue
+        if not tests or Path(tests[0]["src_path"]) != main:
+            if main.parent.is_dir():
+                errors.append(f"{name}: its integration tests must be the one [[test]] target at tests/main.rs")
+            continue
+        declared = _declared_modules(main.read_text())
+        for file in sorted(main.parent.glob("*.rs")):
+            if file != main and file.stem not in declared:
+                errors.append(f"{name}: tests/{file.name} never runs; declare `mod {file.stem};` in tests/main.rs")
+        for file in sorted(main.parent.glob("*/main.rs")):
+            errors.append(f"{name}: tests/{file.parent.name}/main.rs never runs (autotests = false); "
+                          "make it a module of tests/main.rs")
+    return errors
+
+
 def skill_errors(path):
     """Repository skills deliberately use a plain scalar frontmatter subset."""
     text = path.read_text()
@@ -560,9 +596,10 @@ def check():
         path = Path(package["manifest_path"])
         errors.extend(manifest_errors(tomllib.loads(path.read_text()), package["name"]))
     errors.extend(dependency_errors(packages))
+    errors.extend(integration_test_errors(packages))
     if errors:
         raise ValueError("\n".join(errors))
-    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, UI design tokens")
+    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, UI design tokens, one product test binary")
 
 
 if __name__ == "__main__":

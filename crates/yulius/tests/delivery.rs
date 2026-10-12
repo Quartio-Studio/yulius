@@ -2,7 +2,7 @@
 //! over the application with a fake GitHub whose pull requests and refs are backed by a real
 //! bare repository, and a test-local `GitPort` over the real `git` command line.
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

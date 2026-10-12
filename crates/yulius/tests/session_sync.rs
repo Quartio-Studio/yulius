@@ -8,7 +8,7 @@
 //! Code's hooks through the real `yulius hook` client against the internal listener; keys typed
 //! through the terminal API a viewer uses; real worktrees.
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

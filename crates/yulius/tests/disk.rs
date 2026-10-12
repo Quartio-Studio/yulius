@@ -3,7 +3,7 @@
 //! removed, the worktrees of closed and cancelled tasks go, idle tasks lose theirs only under
 //! pressure, working tasks never, and the agent is told what was freed.
 
-mod support;
+use crate::support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

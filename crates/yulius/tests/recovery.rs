@@ -2,7 +2,7 @@
 //! codes lock recovery for good (also under parallel guessing), a recovery resets the password,
 //! ends sessions and issues a new code, and a signed-in superadmin can regenerate the code.
 
-mod support;
+use crate::support;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
