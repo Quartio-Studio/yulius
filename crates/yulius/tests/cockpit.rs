@@ -42,10 +42,21 @@ const ORIGIN: &str = "https://yulius.test";
 const WAIT: Duration = Duration::from_secs(20);
 const TOKEN: &str = "synthetic-oauth-token";
 
-/// Prints its arguments and environment, then stays as an interactive shell.
+/// Prints its arguments (the MCP config and allowed tools, too long for a line, go to files in
+/// its config dir) and environment, then stays as an interactive shell.
 const FAKE_CLAUDE: &str = "#!/bin/sh\n\
 if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/fail-resume\" ]; then exit 3; fi\n\
-echo \"cockpit-args:[$*]\"\n\
+args=; prev=\n\
+for a in \"$@\"; do\n\
+  case \"$prev\" in\n\
+    --mcp-config) printf %s \"$a\" > \"$CLAUDE_CONFIG_DIR/launch-mcp-config\" ;;\n\
+    --allowedTools) printf %s \"$a\" > \"$CLAUDE_CONFIG_DIR/launch-allowed-tools\" ;;\n\
+    *) case \"$a\" in --mcp-config|--allowedTools) ;; *) args=\"$args $a\" ;; esac ;;\n\
+  esac\n\
+  prev=$a\n\
+done\n\
+echo \"cockpit-args:[${args# }]\"\n\
+echo \"bearer:${YULIUS_COCKPIT_TOKEN:-none}\"\n\
 echo \"token:${CLAUDE_CODE_OAUTH_TOKEN:-none}\"\n\
 echo \"config:$CLAUDE_CONFIG_DIR\"\n\
 echo \"cwd:$(pwd)\"\n\
@@ -253,13 +264,42 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     let config = PathBuf::from(printed(&screen, "config")?);
     assert!(config.ends_with("home/.claude"), "{config:?}");
     assert!(config.starts_with(&f.data), "{config:?}");
+    // The Yulius MCP server, its bearer only in the environment, accepted by `/mcp` (SPEC-037
+    // MGT-004, AC-MGT-3).
+    let mcp_config: Value =
+        serde_json::from_slice(&std::fs::read(config.join("launch-mcp-config"))?)?;
+    let yulius = &mcp_config["mcpServers"]["yulius"];
+    assert_eq!(
+        yulius["url"],
+        format!("{}/mcp", f.h.app.config.internal_url)
+    );
+    assert_eq!(
+        yulius["headers"]["Authorization"],
+        "Bearer ${YULIUS_COCKPIT_TOKEN}"
+    );
+    let allowed = std::fs::read_to_string(config.join("launch-allowed-tools"))?;
+    assert!(allowed.contains("mcp__yulius__tasks_list"), "{allowed}");
+    assert!(
+        !allowed.contains("task_create"),
+        "creating asks first: {allowed}"
+    );
+    let bearer = printed(&screen, "bearer")?;
+    assert!(bearer.starts_with("ck_"), "{bearer}");
+    let tools = mcp(&f, &bearer, "tools/list", json!({})).await?;
+    assert!(
+        tools["result"]["tools"]
+            .as_array()
+            .is_some_and(|t| t.iter().any(|t| t["name"] == "task_create")),
+        "{tools}"
+    );
     let settled: Value = serde_json::from_slice(&std::fs::read(config.join(".claude.json"))?)?;
     assert_eq!(settled["hasCompletedOnboarding"], true);
     assert!(settled["bypassPermissionsModeAccepted"].is_null());
     assert!(settled["projects"][repo.to_string_lossy().as_ref()].is_object());
-    // The token never reaches the shell record or argv.
+    // The tokens never reach the shell record or argv.
     let record = std::fs::read_to_string(f.data.join("shells").join(&id).join("shell.json"))?;
     assert!(!record.contains(TOKEN));
+    assert!(!record.contains(&bearer));
     assert!(record.contains("\"kind\":\"cockpit\""), "{record}");
 
     // Not a terminal: never listed, renamed or closed, and not counted against the terminals

@@ -4,9 +4,11 @@
 //! Contract:
 //! - one Cockpit per user and sandbox, for users with write access; [`App::cockpit_open`] returns
 //!   the running one or starts it, and concurrent calls start one (CKP-001, CKP-005);
-//! - it is plain Claude Code: no Yulius hooks, MCP server, settings, briefing or gates, the
-//!   token of a pool subscription in its environment, its config in the user's own home, run in
-//!   the sandbox repository as the user's sandbox identity (CKP-002);
+//! - it is plain Claude Code: no Yulius hooks, settings, briefing or gates, the token of a pool
+//!   subscription in its environment, its config in the user's own home, run in the sandbox
+//!   repository as the user's sandbox identity (CKP-002);
+//! - it manages the project through the Yulius MCP server with its own bearer, served only the
+//!   management tools and acting for its owner, checked at every call (SPEC-037 MGT-004..007);
 //! - a Cockpit started again resumes the user's newest conversation there, so `/clear`,
 //!   `/exit`, an idle stop and a lost process never lose it (CKP-003);
 //! - it is a shell of kind [`ShellKind::Cockpit`]: private, adopted after a restart and ended
@@ -238,6 +240,10 @@ impl App {
             config_dir_host: space.home_host.join(".claude"),
             resume: resume.clone(),
             credential,
+            yulius: Some((
+                self.config.internal_url.clone(),
+                crate::model::Secret(runtime.cockpit_token(self.deps.crypto.as_ref())),
+            )),
         })?;
         if let Some(id) = resume {
             let _ = runtime.resumed.set((id, self.now()));

@@ -180,6 +180,10 @@ impl HarnessPort for HarnessAdapter {
             credential: Credential::ClaudeOauthToken(HSecret::new(
                 l.credential.expose().to_owned(),
             )),
+            yulius: l.yulius.as_ref().map(|(url, token)| launch::CockpitYulius {
+                url: url.clone(),
+                token: HSecret::new(token.expose().to_owned()),
+            }),
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
         // A person answers the prompts, so approvals stay on (no bypass acceptance recorded).
