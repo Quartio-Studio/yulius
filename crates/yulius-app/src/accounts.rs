@@ -312,6 +312,9 @@ pub const USAGE_ON_DEMAND_MS: i64 = 30 * 1000;
 /// Back-off after the usage endpoint refused a sign-in that may not read usage (a
 /// `setup-token`, ADR-17): asked again once a day in case the sign-in changed.
 pub const USAGE_NOT_SHARED_BACKOFF_MS: i64 = DAY_MS;
+/// How soon after a successful reading an account is asked again (each reading of an idle
+/// subscription is one real request).
+pub const USAGE_READ_EVERY_MS: i64 = 5 * 60 * 1000;
 /// Longest back-off taken from a provider's `Retry-After`.
 pub const USAGE_BACKOFF_MAX_MS: i64 = 2 * 60 * 60 * 1000;
 
@@ -618,6 +621,7 @@ impl App {
         let Ok(accounts) = self.deps.store.accounts().await else {
             return;
         };
+        let live = self.deps.store.live_attempts().await.unwrap_or_default();
         for account in accounts.iter().filter(|a| {
             a.credential.is_some()
                 && !matches!(
@@ -629,16 +633,19 @@ impl App {
             if not_before.get(&account.id).is_some_and(|at| *at > now) {
                 continue;
             }
-            // Read moments ago (a running session reports it live): nothing to ask.
-            if account_usage(account)
-                .observed_at
-                .is_some_and(|at| now.millis_since(at) < USAGE_FRESH_MS)
+            // Its running tasks report the usage already (ADR-17), and a reading from moments
+            // ago needs no request.
+            if in_use_count(&account.id, &live) > 0
+                || account_usage(account)
+                    .observed_at
+                    .is_some_and(|at| now.millis_since(at) < USAGE_FRESH_MS)
             {
                 continue;
             }
             match self.fetch_and_record_usage(account).await {
                 Ok(()) => {
-                    not_before.remove(&account.id);
+                    // An idle subscription is read from a real request: ask again in minutes.
+                    not_before.insert(account.id.clone(), now.plus_millis(USAGE_READ_EVERY_MS));
                 }
                 Err(failure) => {
                     let wait = match (failure.kind, failure.retry_after) {
