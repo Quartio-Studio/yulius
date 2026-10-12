@@ -57,6 +57,10 @@ confirmations (8 s), so a slow transcript cannot duplicate the text in practice.
 
 - Retry in place rather than restarting the session: the session is healthy, only the input was lost.
 
+- Finished by hand (2026-10-12, after review): the goal is typed only after the SessionStart
+  hook and quiet output, the retries wait 5–30 s, a long request gets a goal too (it names the
+  request file), and a goal never taken flags the task (SPEC-011).
+
 ## Evidence
 
 - `scripts/dev check`: finished clean (all crates compile).

@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Tasks finish on `dev` by themselves (SPEC-011; tasks #10, #12, #16): a goal task starts from a
+  request file (the request, its attached files to open, the definition of done) and a `/goal`
+  that names it, typed once Claude Code's session started and confirmed, so long requests get a
+  goal and attached images reach the model; the standard profile has no manual `dev` checkpoint;
+  `delivery_merge` while the checks run arms the merge and Yulius merges when they pass; agents
+  wait with `yulius wait` instead of polling; the briefing and notices end at the merge into
+  `dev` (never promote unless asked) and fit Claude Code's hook limit; tasks run Opus by default
+  with auto-compact on and 10-minute Bash timeouts.
 - Task-to-task messaging is removed for now: `message_send` only tells or asks people (`to="people"`), `scope_claim` shows an overlap to the claiming agent only and messages nobody, and the briefing, digest and Messages panel speak of Yulius's notices. Notices, the inbox, the digest and the idle wake-up are unchanged (SPEC-012, COM-002 withdrawn).
 - A task's state reads the same everywhere and matches what it waits for (tasks #11, #13, #14):
   an idle agent whose background shells still run is Working, not "Your turn", and the task view

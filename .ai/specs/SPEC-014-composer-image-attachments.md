@@ -48,6 +48,10 @@ Browser e2e for drop and paste (mock server). Not covered: that a live Claude Co
 - `@path` mentions instead of bare paths so the agent receives the file; a bare path made the agent look for it.
 - Limit: in goal mode the `/goal` condition is text; an `@` mention there may not attach the image. Unverified.
 
+- Finished by hand (2026-10-12, after review): an `@path` inside a short goal-mode prompt never
+  reached the model, because such a prompt was typed only as `/goal`. Attachments now go through the
+  task's request file as files to open with the Read tool (SPEC-011), in goal and prompt mode.
+
 ## Evidence
 
 - `npx e2e run tests/filedrop.e2e.ts` (7 tests): the composer test passes in every run (IMG-001). Terminal tests fail intermittently with `operation timed out: locator(".taskview-term .xterm-rows")` (a different one each run, before any path assertion); a full 7 of 7 pass occurred in 3 of 5 runs. Not diagnosed.
