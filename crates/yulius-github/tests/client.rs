@@ -968,8 +968,8 @@ async fn retry_budget_bounds_total_time() -> TestResult {
     let config = GitHubConfig {
         retry: RetryPolicy {
             max_attempts: 3,
-            max_total: Duration::from_millis(300),
-            base_delay: Duration::from_millis(200),
+            max_total: Duration::from_millis(1000),
+            base_delay: Duration::from_millis(400),
         },
         ..fake.config()
     };
@@ -980,7 +980,10 @@ async fn retry_budget_bounds_total_time() -> TestResult {
         client.get_repo(&token, "acme", "app").await,
         Err(GitHubError::Upstream(500))
     );
-    // 200 ms then 400 ms backoff would exceed the 300 ms budget: only two attempts.
+    // A retry waits while elapsed + delay stays under the budget. The 400 ms then 800 ms
+    // backoff cannot fit in 1 s, so exactly two attempts are made, however slow the first
+    // request is (it has 600 ms before the second stops fitting; a 100 ms margin made this
+    // fail on a loaded CI machine).
     assert_eq!(fake.count("GET", "/repos/acme/app"), 2);
     assert!(started.elapsed() < Duration::from_secs(3));
     Ok(())

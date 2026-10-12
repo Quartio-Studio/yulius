@@ -721,7 +721,11 @@ crossing 98 %; else at most every 15 s) and sampled for the burn rate at most ev
 (`usage_samples.source` = `session`). An idle subscription has no fresh reading: its last one
 counts until its windows reset (then fresh, §2.4 policy), unknown ranks last. The probe stays for
 sign-ins that may read the endpoint; its 403 is "not shared": no error, an old note cleared, asked
-again a day later. A subscription also used outside Yulius is seen as Claude saw it at the last
+again a day later. **Idle subscriptions (F 2026-10-11, #4):** on that 403 (or 429, which production answers) the probe sends one
+one-token message on the cheapest model and reads the same `anthropic-ratelimit-unified-5h/7d`
+headers (utilization as a fraction, reset in Unix seconds), so a subscription shows usage all the
+time, not only while a task runs; the background round skips subscriptions with a live task. The
+request starts the 5-hour window of an idle subscription. A subscription also used outside Yulius is seen as Claude saw it at the last
 response of a Yulius session.
 
 **What "maximally use all resources" means: use it or lose it.** Capacity is perishable: a
