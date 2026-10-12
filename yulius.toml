@@ -18,10 +18,8 @@ preset = "standard"
 integration_branch = "dev"
 production_branch = "main"
 
-# Translated from .github/workflows (ci.yml quality-linux, e2e.yml web-ui).
-# Not carried over: quality-macos (macOS has no Yulius runner; run `scripts/dev ci` on a Mac
-# before promotion) and policy.yml branch-policy (needs the pull request event and a GitHub
-# token, which CI jobs do not have; scripts/check_git_policy.py stays a manual/merge-gate check).
+# macOS has no Yulius runner: run `scripts/dev ci` on a Mac before promotion. The branch policy
+# (scripts/check_git_policy.py) is checked by hand until it joins Yulius's merge gate (#223).
 [[ci.jobs]]
 name = "quality"
 command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"

@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- GitHub Actions are gone from this repository: Yulius CI is the only CI (`quality` and `e2e` in
+  `[[ci.jobs]]`), the rulesets require only the `yulius/ci` commit status, and `.github/workflows`
+  and `.github/actionlint.yaml` are deleted. macOS is checked with `scripts/dev ci` on a Mac before
+  promotion; the branch policy is checked by hand until it joins Yulius's merge gate (#223). The
+  `ci_setup` tool and the CI page still handle other projects' workflows (#184).
 - A subscription whose only task is running but idle is read again: the usage round skipped every
   subscription with a running task, but an idle session reports nothing, so its reading went stale
   (5.6 h on production); it now skips only fresh readings (SPEC-007 USG-002, #4).

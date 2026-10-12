@@ -1294,8 +1294,10 @@ worktree's `yulius.toml` configures and the steps:
 
 The CI page names workflows still on the integration branch.
 
-**This repository (Quartio-Studio/yulius).** It keeps its Actions CI in this change. Taking it over
-needs the following, in order:
+**This repository (Quartio-Studio/yulius).** The takeover is done (2026-10-12, #184): the App has
+the permissions, `[[ci.jobs]]` holds quality and e2e, the rulesets require only `yulius/ci`
+(integration 5225204) and `.github/workflows/` is deleted. The branch policy moves into Yulius's
+merge gate (#223) and is checked by hand until then. The steps it took, in order:
 
 1. Give the App "Commit statuses: Read and write" and "Workflows: Read and write", and accept them on
    the installation.
