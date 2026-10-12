@@ -33,5 +33,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0027](0027-step-back-past-a-usage-limit.md): A usage limit steps the transcript back; Claude Code continues the cut turn
 - [0028](0028-one-integration-test-binary.md): The product's integration tests are one test binary
 - [0029](0029-cockpit-manages-through-mcp.md): The Cockpit and task agents manage the project through the Yulius MCP server
-- [0027](0027-menus-filter-when-long.md): Menus are compact and filter themselves when long
-- [0029](0029-menus-filter-when-long.md): Menus are compact and filter themselves when long
+- [0030](0030-menus-filter-when-long.md): Menus are compact and filter themselves when long

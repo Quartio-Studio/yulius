@@ -178,7 +178,7 @@ notification history and the drafts.
 
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
-([decision 0029](decisions/0029-menus-filter-when-long.md)).
+([decision 0030](decisions/0030-menus-filter-when-long.md)).
 
 ```mermaid
 flowchart LR
