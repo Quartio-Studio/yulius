@@ -17,7 +17,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
   Automations and MCP in place. Its state is remembered per browser; arriving at one of those
   pages shows it open for that page.
-- A task's status follows what its agent is doing (SPEC-032, ADR-0026; task #30): a task whose
+- A task's status follows what its agent is doing (SPEC-032, ADR-0027; task #30): a task whose
   agent ended its turn but still waits for a background agent (a reviewer) is Working with "1
   background task still running", not Done; a goal check that says "not met", or any stop the
   session goes on from, makes the task Working again instead of leaving "Your turn" (or Done);
