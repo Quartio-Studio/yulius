@@ -3,12 +3,12 @@ yulius-task: a634a17b-e4fb-4cb9-af93-7abd463d08ce
 status: done
 ---
 
-# SPEC-005: `the_task_follows_its_session_however_it_stops` no longer flakes
+# SPEC-005: flaky tests that block Yulius CI no longer flake
 
 Status: implemented
 Date: 2026-10-11
 Owner: Yulius task #5
-Scope authorization: user request ("Fix the flaky test yulius::session_sync
+Scope authorization: user requests (the second adds three more flakes to PR #201: "You own flaky tests, and they now block every merge ... no retries, no sleeps"; the first: "Fix the flaky test yulius::session_sync
 the_task_follows_its_session_however_it_stops ... find the race test-first, and fix the cause
 (test or product), not by retrying or sleeping")
 
@@ -18,6 +18,17 @@ the_task_follows_its_session_however_it_stops ... find the race test-first, and 
 every run, including on a loaded host. It failed once in `scripts/dev ci` (1083 of 1084 passed)
 during onboarding and passed on the rerun. The fix removes the race; it does not retry the test
 or add a sleep.
+
+## Added flakes (same PR)
+
+Yulius CI is the only merge gate and runs in a sandbox shared with several compiling agents, so
+timing-sensitive tests fail there (the e2e job took 13-16 min against 3 min on GitHub).
+
+| ID | Test | Cause | Fix |
+| --- | --- | --- | --- |
+| FLK-004 | `wiring::jev::tests::a_slow_answer_times_out_within_the_deadline` | The timer started before `client()` built the HTTP client, so client construction counted against a 2 s bound. | Build the client first, time only the call, bound it by 3 s (the fake answers after 5 s). |
+| FLK-005 | e2e `intake.e2e.ts` "a request mixing UI and backend work offers a split ..." | It asserted the transient "Preparing a split proposal…" status, which the mock replaced 900 ms after the request: a slow page missed it. | The mock can hold its proposal (`__yuliusMock.holdProposal`); the test holds it, sees the status, then releases it. The transient state is still covered, deterministically. |
+| FLK-006 | e2e `filedrop.e2e.ts` "a text file dropped on the editor opens in a tab" | Not an ordering race: the drop listeners exist when the view is built and the upload completes (the failure screenshot shows the tab selected and "Added 2 files"). The first open of any file loads Monaco, and the drop pipeline (list, upload, list, list, content) needs several round trips; both exceeded the 5 s default on a starved page. | Warm the editor by opening README.md and wait for `window.monaco` (the condition, bounded at 60 s); then wait for the dropped file's tab with a 20 s bound on the outcome. |
 
 ## Context
 
@@ -52,6 +63,11 @@ If the event never arrives, the test fails after 10 s with "timed out waiting fo
 event", rather than a misleading empty-list assertion. No production code or contract changes.
 
 ## Acceptance criteria
+
+- FLK-004..006: the e2e filedrop test failed 8 of 12 runs before the change on a host at load
+  average 20-30; with the warm-up alone 1 of 12, with the outcome bound 0 of 16. The intake test
+  passed 8 of 8 (its failure was not reproduced beforehand; the hold removes the dependence on
+  timing by construction). The jev test is verified by `scripts/dev ci` and a run under load.
 
 - The test passes 10 of 10 runs under the CPU load that failed it 3 of 14 times before.
 - `scripts/dev ci` passes.
