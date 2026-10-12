@@ -1,4 +1,4 @@
-# 0022. No messages until their delivery is reliable
+# 0023. No messages until their delivery is reliable
 
 ## Status
 

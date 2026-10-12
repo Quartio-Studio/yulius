@@ -330,7 +330,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | COM-002 | ~~Tasks can communicate through a Yulius-level protocol (any task can message another).~~ Withdrawn (F 2026-10-12, "delete messaging-to-other-tasks feature for now"; SPEC-012 MSG-001, MSG-002): agents no longer message other tasks and nothing sends task-to-task messages. Yulius's own notices to a task and the agent's messages to people (COM-005) stay. | T 13:33–13:48, T 23:47, WA 13:05, F 2026-10-12 (withdrawn) | C | ~~AC-COM-2~~ |
 | COM-003 | Tasks can claim scopes (who works on what) to avoid conflicts; an overlap is shown to the claiming agent in its result, and no other task is messaged (F 2026-10-12, SPEC-012). | T 23:31–23:41 | E | AC-COM-3 |
 | COM-004 | Every task starts with the context of the whole project: project summary, architecture, decisions, recent changes, parallel tasks. | T 34:38–35:00, WA 13:44 | E | AC-COM-4 |
-| COM-005 | ~~A notice from Yulius to an idle task can wake it; users see messages in the UI; an agent tells or asks people with `message_send` `to="people"`; the task's Messages panel shows notices and agents' messages to people.~~ Withdrawn (F 2026-10-12, task #26: "delete message mechanism for now until we make the infra very good"; SPEC-028, ADR-0022): there are no message tools, stored notices, wake-ups, Messages panel, unread counts or message notifications. People talk to the agent in its Claude Code terminal; agents learn about their checks, delivery and armed merges from `yulius wait`, `ci_status` and `delivery_status`. | —, F 2026-10-09, F 2026-10-10, F 2026-10-12 (withdrawn) | C | ~~AC-COM-2~~ |
+| COM-005 | ~~A notice from Yulius to an idle task can wake it; users see messages in the UI; an agent tells or asks people with `message_send` `to="people"`; the task's Messages panel shows notices and agents' messages to people.~~ Withdrawn (F 2026-10-12, task #26: "delete message mechanism for now until we make the infra very good"; SPEC-028, ADR-0023): there are no message tools, stored notices, wake-ups, Messages panel, unread counts or message notifications. People talk to the agent in its Claude Code terminal; agents learn about their checks, delivery and armed merges from `yulius wait`, `ci_status` and `delivery_status`. | —, F 2026-10-09, F 2026-10-10, F 2026-10-12 (withdrawn) | C | ~~AC-COM-2~~ |
 
 ### 5.8 Discipline (DSC)
 
@@ -944,7 +944,7 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 - 2026-10-12 (`F 2026-10-12`, task #26, "delete message mechanism for now until we make the infra very good"):
   messages are removed altogether (COM-005 and AC-COM-2 withdrawn; DLV-008, UI-017, UI-020, AC-UI-21,
-  AC-UI-36 and the layout adjusted; SPEC-028, ADR-0022).
+  AC-UI-36 and the layout adjusted; SPEC-028, ADR-0023).
 - 2026-10-11 (`F 2026-10-11`): agents are autonomous — never asking a person, issues for what
   only a person can do — and Yulius tells a task when its pull request opened and when its checks
   passed or failed, so delivery goes on to the merge without anyone (DLV-008 changed).

@@ -104,6 +104,9 @@ pub struct TaskRuntime {
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
     pub(crate) session_started: AtomicBool,
+    /// The goal-mode session opened with a first message (its attached files, SPEC-025) whose
+    /// turn has not ended yet: its goal is typed after that turn's Stop hook.
+    pub opening_turn: AtomicBool,
     /// A merge `delivery_merge` armed while the checks still ran (SPEC-011): Yulius performs it
     /// once they pass.
     pub(crate) armed_merge: Mutex<Option<crate::agent_wait::ArmedMerge>>,
@@ -165,6 +168,7 @@ impl TaskRuntime {
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
             session_started: AtomicBool::new(false),
+            opening_turn: AtomicBool::new(false),
             armed_merge: Mutex::new(None),
             merge_outcome: Mutex::new(None),
             merge_deciding: AtomicU32::new(0),
@@ -299,6 +303,9 @@ const GOAL_QUIET: Duration = Duration::from_millis(1500);
 /// Upper bound for waiting until the TUI is ready for the goal (its SessionStart hook and quiet
 /// output); a busy host starts Claude Code slowly.
 const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(90);
+/// Upper bound for waiting until the turn on a goal session's first message ended; after it the
+/// goal is typed anyway (Claude Code queues it behind a running turn).
+const GOAL_OPENING_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long Claude Code may take to record the goal after each submit before Yulius tries again:
 /// Enter alone (the Enter was lost), the line again over a cleared prompt box (the text was
 /// lost), then Enter alone, waiting longer each time.
@@ -745,12 +752,16 @@ impl App {
             ),
             (RunStart::Resume { prompt }, None) | (RunStart::Fresh { prompt }, _) => {
                 // In goal mode the task starts with its `/goal` (the request and the definition
-                // of done, SPEC-011); otherwise the request is the first message, with its
-                // attached files to open.
+                // of done, SPEC-011), after a first message with its attached files when it has
+                // any; otherwise the request is the first message. Files are mentioned, so
+                // Claude Code attaches them natively (SPEC-025).
                 let prompt = prompt.clone().or_else(|| {
-                    (!goal_mode).then(|| {
-                        yulius_domain::request::Request::parse(&task.prompt).first_message()
-                    })
+                    let request = yulius_domain::request::Request::parse(&task.prompt);
+                    if goal_mode {
+                        request.attachments_message()
+                    } else {
+                        Some(request.first_message())
+                    }
                 });
                 (
                     SessionMode::New {
@@ -761,6 +772,17 @@ impl App {
                 )
             }
         };
+        let opens_with_turn = goal_mode
+            && matches!(
+                &mode,
+                SessionMode::New {
+                    prompt: Some(_),
+                    ..
+                } | SessionMode::Resume {
+                    prompt: Some(_),
+                    ..
+                }
+            );
         let attempt_id =
             AttemptId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
@@ -855,6 +877,10 @@ impl App {
         };
         store.insert_attempt(&attempt).await?;
         let runtime = self.runtime(&task.id);
+        // Before the spawn, so the opening turn's Stop hook can never come first.
+        runtime
+            .opening_turn
+            .store(opens_with_turn, Ordering::SeqCst);
         let size = runtime.hub.size();
         let spawned = match self
             .deps
@@ -988,7 +1014,8 @@ impl App {
     }
 
     /// Types `/goal <condition>` into the attempt once its TUI reads input: after Claude Code's
-    /// SessionStart hook arrived and [`GOAL_QUIET`] without new output (or at most
+    /// SessionStart hook arrived, the turn on a first message ended (its Stop hook, at most
+    /// [`GOAL_OPENING_TIMEOUT`]) and [`GOAL_QUIET`] without new output (or at most
     /// [`GOAL_READY_TIMEOUT`] after the start). The submit is confirmed by what Claude Code
     /// records about the goal and retried with growing waits; a goal never taken flags the task.
     fn spawn_goal(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId, condition: &str) {
@@ -1019,11 +1046,21 @@ impl App {
                 // Without hooks (an old CLI) the first output is the only sign of life.
                 let hooked = runtime.session_started.load(Ordering::SeqCst)
                     || started.elapsed() >= GOAL_READY_TIMEOUT / 2;
-                let ready = hooked && last > 0 && quiet_since.elapsed() >= GOAL_QUIET;
-                if ready || started.elapsed() >= GOAL_READY_TIMEOUT {
+                // A turn on the first message (the attached files) runs: quiet output is no sign
+                // its end came, its Stop hook is (SPEC-025).
+                let opening = runtime.opening_turn.load(Ordering::SeqCst);
+                let ready = hooked && !opening && last > 0 && quiet_since.elapsed() >= GOAL_QUIET;
+                let limit = if opening {
+                    GOAL_OPENING_TIMEOUT
+                } else {
+                    GOAL_READY_TIMEOUT
+                };
+                if ready || started.elapsed() >= limit {
                     break;
                 }
             }
+            // The opening turn is over, or given up on: a later Stop is the goal's own.
+            runtime.opening_turn.store(false, Ordering::SeqCst);
             runtime.goal_submitted.store(false, Ordering::SeqCst);
             let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
             for (attempt, wait) in GOAL_SUBMIT_WAITS.iter().enumerate() {

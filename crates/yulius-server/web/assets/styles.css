@@ -1238,7 +1238,16 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
   position: relative; display: flex; align-items: center; justify-content: center; width: 72px; height: 72px;
   border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface)); color: var(--text-2); overflow: hidden;
 }
+.composer-attachment-open {
+  display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 0; border: 0;
+  background: transparent; color: inherit; cursor: pointer;
+}
+button.composer-attachment-open:has(img) { cursor: zoom-in; }
+span.composer-attachment-open { cursor: default; }
+.composer-attachment-open:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: -2px; }
 .composer-attachment img { width: 100%; height: 100%; object-fit: cover; }
+.attachment-modal .modal-body { display: flex; justify-content: center; }
+.attachment-preview { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; }
 .composer-attachment-name { position: absolute; inset: auto 0 0; padding: 0 4px; overflow: hidden; background: var(--surface-2); color: var(--text); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
 .composer-attachment-remove { position: absolute; top: 2px; right: 2px; }
 .composer-prompt::placeholder { color: var(--text-faint); }

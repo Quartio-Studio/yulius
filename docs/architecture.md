@@ -58,7 +58,7 @@ before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-dis
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
-[decision 0022](decisions/0022-no-messages-until-delivery-is-reliable.md)): nothing is stored for
+[decision 0023](decisions/0023-no-messages-until-delivery-is-reliable.md)): nothing is stored for
 an agent, injected by a hook or typed into its session. An agent pulls what it needs: it waits
 with `yulius wait` in a background shell, which Claude Code wakes it from, and reads
 `ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait.
@@ -73,6 +73,29 @@ sequenceDiagram
     W->>Y: POST /internal/agent/wait (long poll)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
     W-->>A: one line, then exits: Claude Code wakes the agent
+```
+
+## Task start
+
+A task's agent is a native Claude Code session. Files attached on the new-task composer are
+uploaded to the sandbox's drafts folder and mentioned (`@path`) in the session's first message,
+the CLI prompt argument, which Claude Code attaches natively (an image as an image). A goal task
+then gets its `/goal` typed into the terminal; the request file in the sandbox home keeps the
+whole request ([SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
+[SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
+[decision 0022](decisions/0022-native-task-attachments.md)).
+
+```mermaid
+sequenceDiagram
+    participant UI as Composer
+    participant S as Yulius server
+    participant C as Claude Code (PTY)
+    UI->>S: upload each file (drafts folder)
+    UI->>S: create task (prompt + @path lines)
+    S->>C: launch with first message: text (prompt mode) or "files attached" (goal mode) + @path mentions
+    C-->>C: attaches each mentioned file (image block)
+    C->>S: Stop hook of that turn (goal mode)
+    S->>C: types /goal <condition>
 ```
 
 ## Cockpit
