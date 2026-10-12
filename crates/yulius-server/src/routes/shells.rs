@@ -1,6 +1,6 @@
 //! Sandbox shells: `GET`/`POST /api/sandboxes/{sid}/shells`, `PATCH`/`DELETE
-//! /api/sandboxes/{sid}/shells/{id}` and `WS /api/shells/{id}/terminal` (docs/api.md; SPEC-001
-//! UI-015, UI-016, AC-UI-7). The WebSocket speaks the task terminal protocol.
+//! /api/sandboxes/{sid}/shells/{id}`, the Cockpit `POST /api/sandboxes/{sid}/cockpit` and
+//! `WS /api/shells/{id}/terminal` (docs/api.md; SPEC-001 UI-015, UI-016, AC-UI-7; SPEC-021). The WebSocket speaks the task terminal protocol.
 
 use std::time::Duration;
 
@@ -72,6 +72,16 @@ pub async fn create(
         )
         .await?;
     Ok((StatusCode::CREATED, Json(dto(shell))))
+}
+
+/// `POST /api/sandboxes/{sid}/cockpit`: the caller's Cockpit, started when it is not running
+/// (SPEC-021). Its terminal is `WS /api/shells/{id}/terminal`.
+pub async fn cockpit(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<Shell>> {
+    Ok(Json(dto(app.cockpit_open(&ctx, &sid).await?)))
 }
 
 pub async fn rename(
