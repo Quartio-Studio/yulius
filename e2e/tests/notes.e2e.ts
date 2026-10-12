@@ -13,6 +13,9 @@ type MockNotes = {
     notes: Record<string, { body: string; revision: number }>;
     editNote: (scope: string, body: string, by: string, options?: { announce?: boolean }) => void;
     failNoteSaves: boolean;
+    failNoteLoads: boolean;
+    loseNoteResponse: boolean;
+    keepaliveRequests: string[];
   };
 };
 
@@ -35,6 +38,7 @@ test('a notepad saves by itself and comes back after a reload', async ({ app, br
   const tabs = screen.getByRole('tablist', 'Notes');
   await expect(tabs.getByRole('tab', 'This sandbox')).toHaveAttribute('aria-selected', 'true');
   const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await expect(notes).not.toHaveAttribute('readonly', '');
   await notes.click();
   await browser.keyboard.type('Staging DB password rotates on Friday');
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
@@ -44,6 +48,7 @@ test('a notepad saves by itself and comes back after a reload', async ({ app, br
   await browser.reload();
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
   await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('Staging DB password rotates on Friday');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
   await expect(screen.getByText(/Edited by mkarp/)).toBeVisible();
 });
 
@@ -132,4 +137,96 @@ test('read access shows sandbox notes read-only and team notes editable', async 
   await expect(screen.getByText(/Editing this sandbox’s notes needs write access/)).toBeVisible();
   await screen.getByRole('tab', 'Team').click();
   await expect(screen.getByRole('textbox', 'Team notes')).not.toHaveAttribute('readonly', '');
+});
+
+// Review round 1 (SPEC-041): ways typed text could be lost.
+
+const setMock = (browser: Browser, key: 'failNoteSaves' | 'failNoteLoads' | 'loseNoteResponse', value: boolean) =>
+  browser.evaluate(([k, v]) => { ((window as unknown as MockNotes).__yuliusMock as Record<string, unknown>)[k as string] = v; }, [key, value] as const);
+
+test('a notepad is read-only until it is loaded; a failed load says so and retries', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await editAs(browser, 'sandbox:sb_studio', 'already here');
+  await setMock(browser, 'failNoteLoads', true);
+  await openNotes(screen);
+  const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Couldn’t load the notes, retrying…');
+  await expect(notes).toHaveAttribute('readonly', '');
+  await setMock(browser, 'failNoteLoads', false);
+  await expect(notes).toHaveValue('already here');
+  await expect(notes).not.toHaveAttribute('readonly', '');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+});
+
+test('text typed just before a reload is kept and saved', async ({ app, browser, screen }) => {
+  // Before the app's listeners: once the test sets the flag, the person has confirmed leaving
+  // (the browser's prompt is not drawn in a test).
+  await browser.addInitScript(() => {
+    window.addEventListener('beforeunload', (event) => {
+      if ((window as unknown as { __leaveConfirmed?: boolean }).__leaveConfirmed) event.stopImmediatePropagation();
+    });
+  });
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await notes.fill('typed in a hurry');
+  // Unsaved text asks the browser to confirm leaving the page.
+  expect(await browser.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  })).toBe(true);
+  // Hiding the page saves at once, with a request that outlives the page.
+  await browser.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await expect.poll(() => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.keepaliveRequests)).toEqual(['/api/sandboxes/sb_studio/notes']);
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+
+  await notes.fill('typed in a bigger hurry');
+  await browser.evaluate(() => { (window as unknown as { __leaveConfirmed?: boolean }).__leaveConfirmed = true; });
+  await browser.reload();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('typed in a bigger hurry');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  expect(await stored(browser, 'sandbox:sb_studio')).toBe('typed in a bigger hurry');
+});
+
+test('undoing back to the saved text after a failure reads Saved', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await notes.fill('kept');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await setMock(browser, 'failNoteSaves', true);
+  await notes.fill('kept, then more');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Not saved, retrying…');
+  await notes.fill('kept');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+});
+
+test('a save whose answer was lost is not a conflict with oneself', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await setMock(browser, 'loseNoteResponse', true);
+  await notes.fill('stored, answer lost');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Not saved, retrying…');
+  await setMock(browser, 'loseNoteResponse', false);
+  await notes.fill('stored, answer lost, and more');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await expect(screen.getByRole('alert')).toBeHidden();
+  expect(await stored(browser, 'sandbox:sb_studio')).toBe('stored, answer lost, and more');
+});
+
+test('notes fit a phone', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await notes.fill('on the go');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await expect(screen.getByRole('tab', 'Team')).toBeVisible();
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
 });

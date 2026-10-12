@@ -72,17 +72,28 @@ async fn sandbox_notes_follow_github_access() -> TestResult {
     .await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
 
-    // Without access the sandbox does not exist.
-    for creds in [&carol] {
-        let hidden = call(
-            &h.router,
-            Method::GET,
-            "/api/sandboxes/s1/notes",
-            None,
-            creds,
-        )
-        .await?;
-        assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+    // Without access the sandbox does not exist, for reading and for saving; nor does a bad id.
+    let hidden = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/notes",
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+    let hidden = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/notes",
+        Some(json!({"body": "x", "revision": 1})),
+        &carol,
+    )
+    .await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+    for path in ["/api/sandboxes/no%20such/notes", "/api/sandboxes/s9/notes"] {
+        let missing = call(&h.router, Method::GET, path, None, &alice).await?;
+        assert_eq!(missing.status, StatusCode::NOT_FOUND, "{path}");
     }
 
     // Each sandbox has its own notepad.
@@ -233,6 +244,18 @@ async fn a_note_is_bounded() -> TestResult {
     assert_eq!(refused.body["error"]["code"], "invalid");
     let current = call(&h.router, Method::GET, "/api/notes", None, &alice).await?;
     assert_eq!(current.body["revision"], 1);
+
+    // A request body past the route's limit (2 MiB) is refused before it is read.
+    let huge = "x".repeat(3 << 20);
+    let refused = call(
+        &h.router,
+        Method::PUT,
+        "/api/notes",
+        Some(json!({"body": huge, "revision": 1})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::PAYLOAD_TOO_LARGE);
 
     // Unknown fields are refused rather than ignored.
     let odd = call(

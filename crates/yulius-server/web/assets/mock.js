@@ -1820,7 +1820,9 @@ route('DELETE', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p }) => {
 
 // ---- Notes (SPEC-041): one notepad per sandbox and one for the team; a save names the revision it
 // started from and a stale one is refused (409). Kept in sessionStorage so a reload finds them, as
-// it would on the server. Tests edit as a teammate (`editNote`) and fail saves (`failNoteSaves`).
+// it would on the server. Tests edit as a teammate (`editNote`), fail saves (`failNoteSaves`) and
+// loads (`failNoteLoads`), lose a stored save's answer (`loseNoteResponse`) and see which requests
+// were sent to outlive the page (`keepaliveRequests`).
 
 const NOTES_KEY = 'yulius.mock.notes';
 
@@ -1862,12 +1864,20 @@ function saveNote(db, scope, body) {
   if (typeof body.body !== 'string' || !Number.isInteger(body.revision)) fail(422, 'invalid', 'body and revision are required');
   if (new TextEncoder().encode(body.body).length > 256 * 1024) fail(422, 'invalid', 'notes hold at most 256 KiB');
   if (noteView(db, scope).revision !== body.revision) fail(409, 'conflict', 'someone else changed these notes; load them again');
-  return putNote(db, scope, body.body, db.me.user.login);
+  const note = putNote(db, scope, body.body, db.me.user.login);
+  // Stored, but the answer does not arrive (a timeout or a dropped connection).
+  if (db.loseNoteResponse) fail(503, 'unavailable', 'The answer was lost on purpose');
+  return note;
 }
 
-route('GET', '/api/notes', ({ db }) => noteView(db, 'team'));
+function loadNote(db, scope) {
+  if (db.failNoteLoads) fail(503, 'unavailable', 'The mock server is unavailable on purpose');
+  return noteView(db, scope);
+}
+
+route('GET', '/api/notes', ({ db }) => loadNote(db, 'team'));
 route('PUT', '/api/notes', ({ db, body }) => saveNote(db, 'team', body));
-route('GET', `/api/sandboxes/${ID}/notes`, ({ db, p }) => noteView(db, `sandbox:${sandboxOf(db, p[0]).id}`));
+route('GET', `/api/sandboxes/${ID}/notes`, ({ db, p }) => loadNote(db, `sandbox:${sandboxOf(db, p[0]).id}`));
 route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
@@ -3375,11 +3385,13 @@ export function createMockTransport(params) {
   // A teammate's save of a notepad (`team` or `sandbox:<sid>`); `announce: false` holds back its
   // event, as if it were still on its way (SPEC-041).
   db.editNote = (scope, body, by = 'alice', options) => putNote(db, scope, body, by, options);
+  db.keepaliveRequests = [];
   notesOf(db);
   return {
     kind: 'mock',
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: (url, init = {}) => {
+      if (init.keepalive) db.keepaliveRequests.push(url);
       const work = handleFetch(db, url, init);
       const { signal } = init;
       if (!signal) return work;

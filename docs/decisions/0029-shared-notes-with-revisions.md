@@ -39,4 +39,6 @@ notes are shared by everyone signed in.
 One extra small table and four routes. History is a counter, not versions: an overwritten text is
 recoverable only from the person's own screen at the moment of the conflict. Two people typing at
 once get the conflict choice instead of a merge. A note's size is bounded and there is one row per
-notepad, so storage grows only with sandboxes.
+notepad (one for the team and one per sandbox ever written; a removed sandbox's notes stay, like its
+other history). Unsaved text that a hidden page could not send is kept in that browser tab's
+sessionStorage and offered on the next load.

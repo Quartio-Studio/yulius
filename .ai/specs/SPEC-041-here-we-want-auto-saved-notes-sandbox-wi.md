@@ -43,14 +43,14 @@ without a reload. When two people type at the same time, neither text is lost wi
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | NOT-001 | The tools rail shows **Notes** after Shell. Its panel has two tabs, "This sandbox" and "Team", and remembers the last one per browser. | e2e `notes.e2e.ts`, `rail.e2e.ts` |
-| NOT-002 | A notepad saves by itself 600 ms after the last keystroke, and also when the text box loses focus, the panel closes or hides, or the page is hidden. The head shows the state: "Saving…", "Saved", or "Not saved, retrying…" after a failure. A failed save is retried with growing pauses (1 s doubling up to 30 s) while the text differs from what was saved. | e2e `notes.e2e.ts` (reload shows text; failure then recovery) |
+| NOT-002 | A notepad saves by itself 600 ms after the last keystroke, and also when the text box loses focus, the panel closes or hides, or the page is hidden. The head shows the state: "Loading…", "Saving…", "Saved", or "Not saved, retrying…" after a failure. A failed save (network, 408, 429 or 5xx) is retried with growing pauses (1 s doubling up to 30 s) while the text differs from what was saved; other refusals are shown and retried after the next edit. Typed text is not lost on the way: the text box is read-only until the note is loaded (a failed load says so and is retried); a hidden page sends its save as a request that outlives the page and keeps the unsaved text in sessionStorage, which the next load offers again (as a conflict when someone saved meanwhile; removed at sign-out); leaving with unsaved text asks first; a save whose answer was lost is recognised and not shown as a conflict. | e2e `notes.e2e.ts` (reload; failure then recovery; load failure; typed just before a reload; undo after a failure; lost answer) |
 | NOT-003 | Sandbox notes: one per sandbox, shared by everyone who can view it. Reading needs read access (`View`), editing needs write access (`Work`). A reader sees the text read-only with a line saying why. A sandbox nobody may see answers 404. | Rust `notes::sandbox_notes_follow_github_access` |
 | NOT-004 | Team notes: one for the instance, read and edited by every signed-in person. | Rust `notes::team_notes_are_shared_by_everyone_signed_in` |
 | NOT-005 | `GET /api/notes` and `GET /api/sandboxes/{sid}/notes` return `{scope, body, revision, updated_at, updated_by}`. A notepad never written is `{body: "", revision: 0}`. `PUT` takes `{body, revision}`, where `revision` is the revision the edit started from. It stores the text as revision + 1 and returns the note. When the stored revision differs, it answers `409 conflict` and stores nothing. | Rust `notes::*` |
-| NOT-006 | Bounded: a body holds at most 256 KiB of UTF-8 (larger: `422 invalid`). There is exactly one row per notepad, so storage grows only with sandboxes. | Rust `notes::a_note_is_bounded` |
-| NOT-007 | Every stored edit publishes `note.updated {scope, sandbox_id, revision, updated_by}` on `WS /api/events`. A sandbox note's event reaches only people who can view that sandbox. An open notepad with no unsaved typing loads the newer text and keeps the caret where it was. | Rust `notes::an_edit_is_announced_to_viewers`; e2e (a teammate's edit appears) |
+| NOT-006 | Bounded: a body holds at most 256 KiB of UTF-8 (larger: `422 invalid`; a request over 2 MiB: 413). There is exactly one row per notepad: one for the team and one per sandbox ever written. | Rust `notes::a_note_is_bounded` |
+| NOT-007 | Every stored edit publishes `note.updated {scope, sandbox_id, revision, updated_by}` on `WS /api/events`. A sandbox note's event reaches only people who can view that sandbox. An open notepad with no unsaved typing loads the newer text and keeps the caret and scroll where they were; an older answer never replaces a newer revision. | Rust `notes::an_edit_is_announced_to_viewers` (envelope scoped to the sandbox; the stream's per-sandbox filter is `http_auth::event_streams_follow_revoked_access_and_close_for_disabled_users`); e2e (a teammate's edit appears) |
 | NOT-008 | Edits at the same time: a save refused with 409 loads the current note. If it equals the local text, the notepad simply adopts it. Otherwise a banner names who changed it and offers "Keep mine" (saves the local text over the newer revision) and "Use theirs" (replaces the local text). Until the person picks one, nothing is saved and the local text stays on screen. | e2e `notes.e2e.ts` (conflict, both choices) |
-| NOT-009 | Accessible: tabs are a `tablist`, the text box is labelled, the save state is a polite live region, and the open panel has no WCAG A/AA violations (axe). It works at 390 px. | e2e `notes.e2e.ts` (axe, phone) |
+| NOT-009 | Accessible: tabs are a `tablist` (arrows, Home, End), the text box is labelled (and described by the read-only line), the save state is a polite live region, and the open panel has no WCAG A/AA violations (axe). It works at 390 px. | e2e `notes.e2e.ts` (axe; "notes fit a phone") |
 
 ## Acceptance criteria
 
@@ -75,7 +75,7 @@ without a reload. When two people type at the same time, neither text is lost wi
 ## Design
 
 **Storage.** Migration `0013_notes.sql` creates `notes(scope TEXT PRIMARY KEY, body TEXT NOT NULL,
-revision INTEGER NOT NULL, updated_by TEXT, updated_at INTEGER NOT NULL)`. `scope` is `team` or
+revision INTEGER NOT NULL, updated_by TEXT NOT NULL, updated_at INTEGER NOT NULL)`. `scope` is `team` or
 `sandbox:<sid>`. `NoteStore` (in `store_ext.rs`) has two methods. `note(scope)` returns the stored
 note, if any. `put_note(scope, body, base_revision, by, at)` is a compare-and-set in one
 transaction: it updates the row whose revision equals the base, or inserts revision 1 when the base
@@ -140,3 +140,14 @@ sequenceDiagram
   (`mdeditor.js`). Notes are quick text, the textarea keeps the caret stable across live reloads,
   and the block editor's re-render would not.
 - History is kept only as a revision counter. Versions and undo across sessions are out of scope.
+- Review round 1 (request changes, 2 major): typing before the first load was overwritten and a
+  failed load was silent, so the text box is now read-only until loaded and a failed load is shown
+  and retried. A save on page hide could be cancelled with the page, so it is now sent with
+  `keepalive` (bodies up to 60 KiB) and the unsaved text is kept in sessionStorage per user and
+  notepad for the next load; leaving with unsaved text asks first (like the other editors). Minors
+  fixed: a stuck "retrying" state, a conflict with one's own save whose answer was lost, retrying
+  only network/408/429/5xx (a text over 256 KiB is refused in the browser), bounded retries after
+  the view is gone, older loads never replacing newer revisions, a reload after "Use theirs", and
+  the missing tests (phone, 404 on PUT, 413). Not added: a second WebSocket test for the
+  per-sandbox event filter, which is generic and already tested in `http_auth.rs`. Notes of a
+  removed sandbox stay in the table, like its other history (sandboxes are removed softly).
