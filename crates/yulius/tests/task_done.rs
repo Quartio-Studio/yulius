@@ -812,3 +812,73 @@ fn a_done_task_can_be_archived() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-039 (DDL-001): a Done task can be deleted like an ended one: its idle session is closed
+/// first, and the deletion returns only once the run has ended, so nothing of it is left behind.
+#[test]
+fn a_done_task_can_be_deleted_its_session_is_closed_first() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        wait_for("the shell probe", Duration::from_secs(90), || async {
+            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
+        })
+        .await?;
+        let attempt = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("the Done task has no live session")?;
+        let agent_pid = attempt.child_pid.ok_or("no agent pid")?;
+        let mut events = app.events.subscribe();
+        let started = Instant::now();
+        app.delete_task(&ctx, id.as_str()).await?;
+        // Closed gracefully, not stopped and not lost through the 20 s escalation.
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "the close took {:?}",
+            started.elapsed()
+        );
+        let mut closed = false;
+        while let Ok(envelope) = events.try_recv() {
+            if let UiEvent::TaskUpdated { task } = envelope.event
+                && task.id == id.as_str()
+                && task.status == "closed"
+            {
+                closed = true;
+            }
+        }
+        assert!(closed, "the task was closed before it was deleted");
+        assert!(
+            app.deps.store.task(&id).await?.is_none(),
+            "the task is deleted"
+        );
+        assert!(
+            !Path::new(&attempt.run_dir).exists(),
+            "the run directory is removed"
+        );
+        assert!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(i32::try_from(agent_pid)?), None)
+                .is_err(),
+            "the session ended before the task was deleted"
+        );
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

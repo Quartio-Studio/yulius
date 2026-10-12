@@ -88,3 +88,24 @@ test('a finished task whose pull request is tested can be archived and is closed
   const status = await browser.evaluate(() => (window as unknown as { __yuliusMock: { tasks: { number: number; sandbox_id: string; status: string }[] } }).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 11)?.status);
   expect(status).toBe('closed');
 });
+
+// F 2026-10-12 (task #37, SPEC-039): "This task is done but I still can't delete it."
+test('a Done task can be deleted from its menu; a working one says it has to be stopped first', async ({ app, browser, screen }) => {
+  // #12 is still at work: Delete stays off and says why in words.
+  await app.open(mock('/s/studio/t/12'));
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  const blocked = screen.getByRole('menuitem', /^Delete permanently/);
+  await expect(blocked).toHaveAttribute('aria-disabled', 'true');
+  await expect(blocked).toHaveText(/Still running: stop the task before deleting it/);
+  await browser.keyboard.press('Escape');
+
+  // #13's goal is achieved: Done, although its session idles. Delete closes it and deletes it.
+  await app.open(mock('/s/studio/t/13'));
+  await expect(browser.locator('.strip-status')).toHaveText(/^Done/);
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', /^Delete permanently/).click();
+  await expect(screen.getByRole('dialog')).toHaveText(/finished session is closed first/);
+  await screen.getByRole('button', 'Delete permanently').click();
+  await expect(screen.getByText('Task #13 deleted.')).toBeVisible();
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeHidden();
+});

@@ -876,7 +876,9 @@ route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
 route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  if (['starting', 'running', 'switching', 'stopping'].includes(task.status)) fail(409, 'conflict', 'stop the task before deleting it');
+  // A finished task is closed as it is deleted (SPEC-039); any other live task is stopped first.
+  const finished = task.status === 'running' && taskInfo(summary(task), null, pullOf(task)).group === 'done';
+  if (['starting', 'running', 'switching', 'stopping'].includes(task.status) && !finished) fail(409, 'conflict', 'stop the task before deleting it');
   db.tasks = db.tasks.filter((t) => t.id !== task.id);
   recount(db);
   emit(db, { type: 'task.removed', task_id: task.id });

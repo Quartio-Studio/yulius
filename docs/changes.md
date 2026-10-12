@@ -11,6 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   tooltip. A menu of 8 or more items opens with a focused Filter box: typed words narrow it,
   ↓/↑ and Enter pick, and Escape clears the filter first. "Run after" lists every live task on one
   line ("#12 Checkout API · Working") under "After a task is done", not just the first 20.
+- A Done task can be deleted (SPEC-039, ADR-0031, task #37). "Delete permanently…" closes its
+  idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
+  work or waiting for you has to be stopped first, and its menu says "Still running: stop the
+  task before deleting it".
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
