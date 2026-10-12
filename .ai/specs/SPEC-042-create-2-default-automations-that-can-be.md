@@ -22,8 +22,9 @@ example task related to a bug should report an issue after confirming the proble
 Every project's Automations page offers two ready-made automations, "Keep the docs up to date" and
 "Work through open issues", each enabled with one click and then an ordinary automation (editable,
 pausable, deletable). Both run daily at 03:00 CEST. Tasks report a bug they confirm as a GitHub
-issue, except tasks told not to (the issue automation, so it cannot feed itself). On this
-instance both automations are enabled today.
+issue, except tasks told not to (the issue automation, so it cannot feed itself). Nothing runs
+until a person enables it: on this instance both automations exist, disabled, for a person to
+switch on.
 
 ## Context
 
@@ -80,8 +81,9 @@ instance both automations are enabled today.
   found on the way), it reports it with `issue_create` unless an open issue already tracks it (then
   it references that issue), and a task told not to create issues comments on the existing issue
   instead. The Fix workflow's instructions say the same at the reproduction step.
-- OPS-010: On this instance (project Quartio-Studio/yulius) both automations exist and are enabled,
-  with the catalog's content, before 03:00 CEST on 2026-10-13.
+- OPS-010: On this instance (project Quartio-Studio/yulius) both automations exist with the
+  catalog's content and are disabled; a person enables them in the Automations section. Agents
+  do not enable them (coordinator, 2026-10-13).
 
 ## Plan
 
@@ -91,6 +93,7 @@ instance both automations are enabled today.
 - [ ] Automations page offers ready-made automations with Enable
 - [ ] Tasks report confirmed bugs as issues (briefing and Fix workflow)
 - [ ] Both automations enabled on this instance
+- [ ] Instance automations left disabled for a person to enable
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Gates green, documentation current, delivered into dev
 
@@ -108,8 +111,8 @@ instance both automations are enabled today.
   automation to the list as enabled and the suggestion disappears; no WCAG violations.
 - AC-DSC-10: the briefing contains the bug-reporting rule; the Fix workflow mentions reporting the
   confirmed bug.
-- AC-OPS-4: `automations_list` on this instance shows both automations enabled with next run at
-  2026-10-13T01:00:00Z.
+- AC-OPS-4: `automations_list` on this instance shows both automations with the catalog's prompts,
+  `enabled: false` and no next run.
 
 ## Test plan
 
@@ -138,5 +141,11 @@ instance both automations are enabled today.
   rule every task follows) instead of fixing many issues on one branch; the parallel part is the
   read-only verification by subagents and the Fix tasks running side by side. At most 5 tasks per
   run bounds the load and the subscription use.
+- The request said "Enable them on our machine so they can already run today". The automations
+  were created enabled on 2026-10-12; the coordinator disabled both before their first run (the
+  issue automation would have started work from about 36 open issues at once) and asked for
+  defaults that ship disabled and that a person turns on. They stay on the instance, disabled,
+  and agents do not enable them. The product already behaves that way: a ready-made automation
+  runs only after a person presses Enable.
 - `automation_create` for agents gains no `template` argument in this change; agents create the
   same automation by name, cron and prompt. Recorded as a follow-up issue.
