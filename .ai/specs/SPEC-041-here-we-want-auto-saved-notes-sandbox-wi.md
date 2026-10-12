@@ -47,7 +47,7 @@ without a reload. When two people type at the same time, neither text is lost wi
 | NOT-003 | Sandbox notes: one per sandbox, shared by everyone who can view it. Reading needs read access (`View`), editing needs write access (`Work`). A reader sees the text read-only with a line saying why. A sandbox nobody may see answers 404. | Rust `notes::sandbox_notes_follow_github_access` |
 | NOT-004 | Team notes: one for the instance, read and edited by every signed-in person. | Rust `notes::team_notes_are_shared_by_everyone_signed_in` |
 | NOT-005 | `GET /api/notes` and `GET /api/sandboxes/{sid}/notes` return `{scope, body, revision, updated_at, updated_by}`. A notepad never written is `{body: "", revision: 0}`. `PUT` takes `{body, revision}`, where `revision` is the revision the edit started from. It stores the text as revision + 1 and returns the note. When the stored revision differs, it answers `409 conflict` and stores nothing. | Rust `notes::*` |
-| NOT-006 | Bounded: a body holds at most 256 KiB of UTF-8 (larger: `400 invalid`). There is exactly one row per notepad, so storage grows only with sandboxes. | Rust `notes::a_note_is_bounded` |
+| NOT-006 | Bounded: a body holds at most 256 KiB of UTF-8 (larger: `422 invalid`). There is exactly one row per notepad, so storage grows only with sandboxes. | Rust `notes::a_note_is_bounded` |
 | NOT-007 | Every stored edit publishes `note.updated {scope, sandbox_id, revision, updated_by}` on `WS /api/events`. A sandbox note's event reaches only people who can view that sandbox. An open notepad with no unsaved typing loads the newer text and keeps the caret where it was. | Rust `notes::an_edit_is_announced_to_viewers`; e2e (a teammate's edit appears) |
 | NOT-008 | Edits at the same time: a save refused with 409 loads the current note. If it equals the local text, the notepad simply adopts it. Otherwise a banner names who changed it and offers "Keep mine" (saves the local text over the newer revision) and "Use theirs" (replaces the local text). Until the person picks one, nothing is saved and the local text stays on screen. | e2e `notes.e2e.ts` (conflict, both choices) |
 | NOT-009 | Accessible: tabs are a `tablist`, the text box is labelled, the save state is a polite live region, and the open panel has no WCAG A/AA violations (axe). It works at 390 px. | e2e `notes.e2e.ts` (axe, phone) |
@@ -89,7 +89,7 @@ login, else the user's name.
 
 **API.** `crates/yulius-contracts/src/api/notes.rs` (`Note`, `SaveNote`) and
 `crates/yulius-server/src/routes/notes.rs` provide `GET/PUT /api/notes` and
-`GET/PUT /api/sandboxes/{sid}/notes`. Their body limit is 512 KiB, which leaves room for JSON
+`GET/PUT /api/sandboxes/{sid}/notes`. Their body limit is 2 MiB, which leaves room for JSON
 escaping; the application enforces the 256 KiB limit.
 
 **Web.** `assets/notes.js` exports `createNotesView(ctx, sandbox)` for `panels.js`. The view holds

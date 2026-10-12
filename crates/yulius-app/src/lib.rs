@@ -37,6 +37,7 @@ pub mod lifecycle;
 pub mod mcp;
 pub mod mcp_config;
 pub mod model;
+pub mod notes;
 pub mod onboarding;
 pub mod ports;
 pub mod preview;
