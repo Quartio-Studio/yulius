@@ -451,6 +451,20 @@ impl App {
         gate: &Gate,
         by: &str,
     ) -> AppResult<CiRunRecord> {
+        self.ci_queue_placed(sandbox, reference, sha, gate, by, self.now())
+            .await
+    }
+
+    /// [`App::ci_queue`] with its place in the queue (`queued_at`).
+    async fn ci_queue_placed(
+        &self,
+        sandbox: &SandboxRecord,
+        reference: CiRef,
+        sha: &str,
+        gate: &Gate,
+        by: &str,
+        queued_at: Timestamp,
+    ) -> AppResult<CiRunRecord> {
         let run = CiRunRecord {
             id: self.deps.crypto.new_id(),
             sandbox_id: sandbox.id.clone(),
@@ -463,7 +477,7 @@ impl App {
             status_for: None,
             status_note: None,
             status_attempts: 0,
-            queued_at: self.now(),
+            queued_at,
             started_at: None,
             ended_at: None,
         };
@@ -585,6 +599,18 @@ impl App {
             .collect();
         let only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
         let plan = dom::plan(&only_targets, &facts);
+        // A pull request's new head keeps the place in the queue of the run it supersedes: it
+        // went to the back at every push before, behind every other pull request (up to 73
+        // minutes of waiting, F 2026-10-12).
+        let mut places: HashMap<String, Timestamp> = HashMap::new();
+        for (run_id, _) in &plan.supersede {
+            if let Some(old) = runs
+                .iter()
+                .find(|r| &r.id == run_id && r.state == RunState::Queued)
+            {
+                places.insert(old.reference.key(), old.queued_at);
+            }
+        }
         for (run_id, successor) in plan.supersede {
             let reason = match successor {
                 Some(sha) => format!("superseded by {}", short(&sha)),
@@ -596,17 +622,105 @@ impl App {
         }
         for target in plan.queue {
             if let Some((_, gate)) = targets.iter().find(|(t, _)| *t == target) {
-                self.ci_queue(
+                // A branch commit whose tree a run already passed (a squash merge of an
+                // up-to-date pull request) reuses that result instead of running again: every
+                // merge used to cost a second 12-20 minute run in the sandbox's one lane.
+                if matches!(target.reference, CiRef::Branch(_))
+                    && self.ci_reuse_tree(sandbox, &target, gate, &runs).await?
+                {
+                    continue;
+                }
+                let place = places
+                    .get(&target.reference.key())
+                    .copied()
+                    .unwrap_or_else(|| self.now());
+                self.ci_queue_placed(
                     sandbox,
                     target.reference.clone(),
                     &target.sha,
                     gate,
                     "yulius",
+                    place,
                 )
                 .await?;
             }
         }
         Ok(())
+    }
+
+    /// Records a passed run for `target` when a recent passed run tested a commit with the same
+    /// tree (and therefore the same jobs); `false` when there is none.
+    async fn ci_reuse_tree(
+        &self,
+        sandbox: &SandboxRecord,
+        target: &Target,
+        gate: &Gate,
+        runs: &[CiRunRecord],
+    ) -> AppResult<bool> {
+        let repo = self.sandbox_repo(&sandbox.id);
+        let Some(tree) = self.deps.git.tree_of(&repo, &target.sha).await? else {
+            return Ok(false);
+        };
+        let mut source = None;
+        for run in runs
+            .iter()
+            .filter(|r| r.state == RunState::Passed && r.sha != target.sha)
+        {
+            if self.deps.git.tree_of(&repo, &run.sha).await?.as_deref() == Some(tree.as_str()) {
+                source = Some(run);
+                break;
+            }
+        }
+        let Some(source) = source else {
+            return Ok(false);
+        };
+        let now = self.now();
+        let note = format!(
+            "not run again: {} has the same tree as {} ({}), which passed",
+            short(&target.sha),
+            short(&source.sha),
+            source.reference.key()
+        );
+        let run = CiRunRecord {
+            id: self.deps.crypto.new_id(),
+            sandbox_id: sandbox.id.clone(),
+            reference: target.reference.clone(),
+            sha: target.sha.clone(),
+            source: gate.source,
+            state: RunState::Passed,
+            reason: Some(note.clone()),
+            requested_by: "yulius".to_owned(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: now,
+            started_at: Some(now),
+            ended_at: Some(now),
+        };
+        let jobs: Vec<CiJobRecord> = gate
+            .jobs
+            .iter()
+            .enumerate()
+            .map(|(index, job)| CiJobRecord {
+                id: self.deps.crypto.new_id(),
+                run_id: run.id.clone(),
+                ordinal: u32::try_from(index).unwrap_or(u32::MAX),
+                name: job.name.clone(),
+                key: job.key.clone(),
+                command: job.command.clone(),
+                matrix: job.matrix.clone(),
+                state: RunState::Passed,
+                reason: Some(note.clone()),
+                exit_code: Some(0),
+                output: format!("{note}.\n"),
+                started_at: Some(now),
+                ended_at: Some(now),
+            })
+            .collect();
+        self.deps.store.insert_ci_run(&run, &jobs).await?;
+        tracing::info!(sandbox = %sandbox.slug, run = %run.id, sha = %short(&target.sha), reused = %short(&source.sha), "CI result reused for the same tree");
+        self.ci_publish(&run.id).await;
+        Ok(true)
     }
 
     /// Cancels a run: a queued one at once, a running one through its executor (which kills

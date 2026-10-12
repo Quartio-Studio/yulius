@@ -405,6 +405,11 @@ impl GitPort for GitAdapter {
         blocking(move || git.resolve_commit(&repo, &rev)).await
     }
 
+    async fn tree_of(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
+        let (git, repo, rev) = (self.git(), repo.to_path_buf(), rev.to_owned());
+        blocking(move || git.tree_of(&repo, &rev)).await
+    }
+
     async fn show_file(&self, repo: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {
         let (git, repo, rev, path) = (
             self.git(),

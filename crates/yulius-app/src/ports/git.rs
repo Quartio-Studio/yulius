@@ -183,6 +183,11 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, rev);
         unsupported("resolving commits")
     }
+    /// The tree commit `rev` records; `None` when unknown or the adapter cannot tell.
+    async fn tree_of(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
+        let _ = (repo, rev);
+        Ok(None)
+    }
     /// A file (repository-relative `path`) at `rev`; `None` when absent.
     async fn show_file(&self, repo: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {
         let _ = (repo, rev, path);

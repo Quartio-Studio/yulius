@@ -33,6 +33,21 @@ impl Git {
         }
     }
 
+    /// The tree a commit records (`rev^{tree}`); `None` for an unknown revision.
+    ///
+    /// # Errors
+    /// Invalid input or Git failures.
+    pub fn tree_of(&self, repo: &Path, rev: &str) -> Result<Option<String>, GitError> {
+        crate::validate::validate_revision(rev)?;
+        let output = self.run(
+            Invocation::new(self, "rev-parse", Some(repo))
+                .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
+                .arg(format!("{rev}^{{tree}}")),
+        )?;
+        let tree = output.stdout_trimmed();
+        Ok((output.status.success() && crate::repo::is_object_id(&tree)).then_some(tree))
+    }
+
     /// The contents of `path` (repository-relative) at `rev`; `None` when the file does not
     /// exist there. At most [`Git::max_output_bytes`] are read.
     ///
