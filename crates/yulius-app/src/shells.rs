@@ -78,12 +78,33 @@ const SHELL_FILE_VERSION: u32 = 1;
 /// Time allowed to reattach to one surviving shell at startup.
 const ADOPT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// What runs in a shell: the user's login shell (a terminal), or their Cockpit, a plain Claude
+/// Code session that is not a terminal (SPEC-021: never listed, renamed or closed as one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShellKind {
+    /// A terminal tab of the Shell panel.
+    #[default]
+    Terminal,
+    /// The user's Cockpit ([`crate::cockpit`]).
+    Cockpit,
+}
+
 /// Registry of live shells. The registry is process-local; the shells themselves survive a
 /// server restart and are adopted again from their run directories.
 #[derive(Default)]
 pub struct ShellState {
     shells: Mutex<HashMap<String, Arc<ShellRuntime>>>,
     program: OnceLock<PathBuf>,
+    /// The Cockpit's program instead of `claude` (tests).
+    pub(crate) cockpit_program: OnceLock<PathBuf>,
+    /// Serialises the Cockpit starts of one user in one sandbox (one Cockpit each); other users
+    /// and sandboxes never wait for them.
+    #[allow(clippy::type_complexity)]
+    pub(crate) cockpit_start: Mutex<HashMap<(UserId, SandboxId), Arc<tokio::sync::Mutex<()>>>>,
+    /// The conversation each user's Cockpit could not resume (it exited at once), by sandbox:
+    /// the next start begins a fresh one instead of failing the same way.
+    pub(crate) cockpit_unresumable: Mutex<HashMap<(UserId, SandboxId), String>>,
     /// The next creation number (tab order among shells created in the same millisecond).
     next_seq: AtomicU64,
 }
@@ -91,6 +112,9 @@ pub struct ShellState {
 /// One live shell.
 pub struct ShellRuntime {
     id: String,
+    pub(crate) kind: ShellKind,
+    /// The conversation a Cockpit was started to resume, and when its process was spawned.
+    pub(crate) resumed: OnceLock<(String, Timestamp)>,
     sandbox: SandboxId,
     creator: UserId,
     task: Option<TaskId>,
@@ -145,6 +169,9 @@ struct ShellFile {
     created_at: i64,
     #[serde(default)]
     seq: u64,
+    /// Terminal or Cockpit (absent in records written before the Cockpit: a terminal).
+    #[serde(default)]
+    kind: ShellKind,
     /// Sealed host token, lowercase hex.
     token: String,
 }
@@ -364,31 +391,51 @@ impl App {
         let mut own: Vec<Arc<ShellRuntime>> = self
             .sandbox_shells(sandbox)
             .into_iter()
-            .filter(|shell| &shell.creator == user)
+            .filter(|shell| &shell.creator == user && shell.kind == ShellKind::Terminal)
             .collect();
         own.sort_by(|a, b| (a.created_at, a.seq, &a.id).cmp(&(b.created_at, b.seq, &b.id)));
         own
     }
 
-    /// The caller's live shell `id` of `sandbox` (write access required).
+    /// The caller's live terminal `id` of `sandbox` (write access required); never their
+    /// Cockpit, which cannot be renamed or closed (SPEC-021 CKP-004).
     ///
     /// # Errors
-    /// `NotFound` for unknown, ended or closing shells, other users' shells and shells of
-    /// another sandbox; access errors.
+    /// `NotFound` for unknown, ended or closing shells, Cockpits, other users' shells and shells
+    /// of another sandbox; access errors.
     pub(crate) async fn own_shell(
         &self,
         ctx: &AuthContext,
         sandbox: &str,
         id: &str,
     ) -> AppResult<Arc<ShellRuntime>> {
+        self.own_shell_of(ctx, sandbox, id, Some(ShellKind::Terminal))
+            .await
+    }
+
+    /// The caller's live shell `id` of `sandbox`, of `kind` when given (write access required).
+    ///
+    /// # Errors
+    /// As [`Self::own_shell`].
+    pub(crate) async fn own_shell_of(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+        id: &str,
+        kind: Option<ShellKind>,
+    ) -> AppResult<Arc<ShellRuntime>> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require(&ctx.user, &sandbox_id, Action::Work).await?;
         self.shell(id)
-            .filter(|shell| shell.creator == ctx.user.id && shell.sandbox == sandbox_id)
+            .filter(|shell| {
+                shell.creator == ctx.user.id
+                    && shell.sandbox == sandbox_id
+                    && kind.is_none_or(|kind| shell.kind == kind)
+            })
             .ok_or(AppError::NotFound)
     }
 
-    fn shell_env(
+    pub(crate) fn shell_env(
         &self,
         sandbox: &SandboxRecord,
         space: &UserSpace,
@@ -460,14 +507,16 @@ impl App {
                 (repo, None)
             }
         };
-        let random = self.deps.crypto.random_bytes();
-        let id = hex_token(random.get(..8).unwrap_or(&random));
+        let id = self.new_shell_id();
         let runtime = {
             let mut map = self.shells.shells.lock().map_err(AppError::internal)?;
             let own: Vec<String> = map
                 .values()
                 .filter(|shell| {
-                    shell.sandbox == record.id && shell.creator == ctx.user.id && shell.is_live()
+                    shell.sandbox == record.id
+                        && shell.creator == ctx.user.id
+                        && shell.kind == ShellKind::Terminal
+                        && shell.is_live()
                 })
                 .map(|shell| shell.name())
                 .collect();
@@ -482,25 +531,15 @@ impl App {
                     .find(|candidate| !own.contains(candidate))
                     .unwrap_or_else(|| "Terminal".into())
             });
-            let runtime = Arc::new(ShellRuntime {
-                id: id.clone(),
-                sandbox: record.id.clone(),
-                creator: ctx.user.id.clone(),
-                task: task_id,
-                folder: std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone()),
-                name: Mutex::new(name),
-                created_at: self.now(),
-                seq: self.shells.next_seq.fetch_add(1, Ordering::SeqCst),
-                run_dir: shell_dir_root(&self.config.data_dir).join(&id),
-                token: self.deps.crypto.random_bytes(),
-                hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
-                writer: tokio::sync::Mutex::new(None),
-                ended: AtomicBool::new(false),
-                closing: AtomicBool::new(false),
-                ended_tx: watch::channel(false).0,
-                idle_since_ms: AtomicI64::new(self.now().0),
-                pump: Mutex::new(None),
-            });
+            let runtime = self.new_shell_runtime(
+                &id,
+                ShellKind::Terminal,
+                &record.id,
+                &ctx.user.id,
+                task_id,
+                &cwd,
+                name,
+            );
             map.insert(id.clone(), Arc::clone(&runtime));
             runtime
         };
@@ -528,12 +567,7 @@ impl App {
                 Ok(runtime.info())
             }
             Err(err) => {
-                runtime.ended.store(true, Ordering::SeqCst);
-                if let Ok(mut map) = self.shells.shells.lock() {
-                    map.remove(&id);
-                }
-                let _ = self.deps.session_host.terminate(&runtime.run_dir);
-                let _ = std::fs::remove_dir_all(&runtime.run_dir);
+                self.discard_shell(&runtime);
                 Err(err)
             }
         }
@@ -592,7 +626,7 @@ impl App {
     }
 
     /// Writes the shell's record for a later server process (see the module docs).
-    fn save_shell(&self, runtime: &ShellRuntime) -> AppResult<()> {
+    pub(crate) fn save_shell(&self, runtime: &ShellRuntime) -> AppResult<()> {
         let sealed = self.deps.crypto.seal(&runtime.token)?;
         let file = ShellFile {
             version: SHELL_FILE_VERSION,
@@ -603,9 +637,71 @@ impl App {
             name: runtime.name(),
             created_at: runtime.created_at.0,
             seq: runtime.seq,
+            kind: runtime.kind,
             token: hex_token(&sealed.0),
         };
         write_shell_file(&runtime.run_dir, &file).map_err(AppError::internal)
+    }
+
+    /// A new random shell id (16 hex digits).
+    pub(crate) fn new_shell_id(&self) -> String {
+        let random = self.deps.crypto.random_bytes();
+        hex_token(random.get(..8).unwrap_or(&random))
+    }
+
+    /// A shell runtime not started yet (the caller registers it, then spawns it).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_shell_runtime(
+        &self,
+        id: &str,
+        kind: ShellKind,
+        sandbox: &SandboxId,
+        creator: &UserId,
+        task: Option<TaskId>,
+        cwd: &Path,
+        name: String,
+    ) -> Arc<ShellRuntime> {
+        Arc::new(ShellRuntime {
+            id: id.to_owned(),
+            kind,
+            resumed: OnceLock::new(),
+            sandbox: sandbox.clone(),
+            creator: creator.clone(),
+            task,
+            folder: std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()),
+            name: Mutex::new(name),
+            created_at: self.now(),
+            seq: self.shells.next_seq.fetch_add(1, Ordering::SeqCst),
+            run_dir: shell_dir_root(&self.config.data_dir).join(id),
+            token: self.deps.crypto.random_bytes(),
+            hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
+            writer: tokio::sync::Mutex::new(None),
+            ended: AtomicBool::new(false),
+            closing: AtomicBool::new(false),
+            ended_tx: watch::channel(false).0,
+            idle_since_ms: AtomicI64::new(self.now().0),
+            pump: Mutex::new(None),
+        })
+    }
+
+    /// Registers a started shell (a Cockpit; terminals register under the creation check).
+    pub(crate) fn register_shell(&self, runtime: &Arc<ShellRuntime>) -> AppResult<()> {
+        self.shells
+            .shells
+            .lock()
+            .map_err(AppError::internal)?
+            .insert(runtime.id.clone(), Arc::clone(runtime));
+        Ok(())
+    }
+
+    /// Forgets a shell that failed to start and removes whatever it left.
+    pub(crate) fn discard_shell(&self, runtime: &ShellRuntime) {
+        runtime.ended.store(true, Ordering::SeqCst);
+        if let Ok(mut map) = self.shells.shells.lock() {
+            map.remove(&runtime.id);
+        }
+        let _ = self.deps.session_host.terminate(&runtime.run_dir);
+        let _ = std::fs::remove_dir_all(&runtime.run_dir);
     }
 
     async fn launch_shell(
@@ -615,8 +711,6 @@ impl App {
         runtime: &ShellRuntime,
         cwd: &Path,
     ) -> AppResult<Box<dyn RunReader>> {
-        std::fs::create_dir_all(&runtime.run_dir).map_err(AppError::internal)?;
-        let _ = std::fs::set_permissions(&runtime.run_dir, std::fs::Permissions::from_mode(0o700));
         let program = self.shell_program();
         let plan = LaunchPlan {
             argv: vec![program.to_string_lossy().into_owned(), "-l".into()],
@@ -626,12 +720,23 @@ impl App {
             files: Vec::new(),
             containment: space.containment.clone(),
         };
+        self.spawn_shell(runtime, &plan).await
+    }
+
+    /// Starts `plan` in the shell's own run directory and attaches to it.
+    pub(crate) async fn spawn_shell(
+        &self,
+        runtime: &ShellRuntime,
+        plan: &LaunchPlan,
+    ) -> AppResult<Box<dyn RunReader>> {
+        std::fs::create_dir_all(&runtime.run_dir).map_err(AppError::internal)?;
+        let _ = std::fs::set_permissions(&runtime.run_dir, std::fs::Permissions::from_mode(0o700));
         let host = &self.deps.session_host;
         host.spawn(
             &runtime.run_dir,
             &runtime.id,
             &runtime.id,
-            &plan,
+            plan,
             &runtime.token,
             DEFAULT_SIZE,
         )
@@ -657,7 +762,11 @@ impl App {
         Ok(attached.reader)
     }
 
-    fn start_pump(self: &Arc<Self>, runtime: &Arc<ShellRuntime>, reader: Box<dyn RunReader>) {
+    pub(crate) fn start_pump(
+        self: &Arc<Self>,
+        runtime: &Arc<ShellRuntime>,
+        reader: Box<dyn RunReader>,
+    ) {
         let app = Arc::clone(self);
         let shell = Arc::clone(runtime);
         let task = tokio::spawn(async move { app.pump_shell(shell, reader).await });
@@ -713,6 +822,7 @@ impl App {
             return;
         }
         *runtime.writer.lock().await = None;
+        self.note_cockpit_exit(runtime, exit.and_then(|e| e.code));
         runtime.hub.exit("closed", exit.and_then(|e| e.code));
         runtime.ended_tx.send_replace(true);
         if let Ok(mut map) = self.shells.shells.lock() {
@@ -979,6 +1089,8 @@ impl App {
         let folder = self.shell_folder(&sandbox, task.as_ref()).await;
         let runtime = Arc::new(ShellRuntime {
             id: file.id.clone(),
+            kind: file.kind,
+            resumed: OnceLock::new(),
             sandbox,
             creator: UserId::parse(&file.creator).map_err(|_| AppError::NotFound)?,
             task,

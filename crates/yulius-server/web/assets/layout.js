@@ -17,6 +17,8 @@ import { isPhone } from './theme.js';
 const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
 
 const NAV = [
+  // The user's own plain Claude Code session (SPEC-021): first, above the task pages.
+  ['cockpit', 'Cockpit', 'gauge'],
   ['tasks', 'Tasks', 'tasks'],
   ['sessions', 'Sessions', 'chat'],
   ['git', 'Git', 'branch'],
