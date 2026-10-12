@@ -83,3 +83,7 @@ away.
   that page only (test: deep link, then Tasks and a reload stay collapsed). Tests now cover an
   in-app move to a More page, closing it there from the keyboard (Enter, Space) and staying closed
   within that page; the web README's `layout.js` row mentions More.
+- **Review round 2** (fresh session, APPROVE at a18ce08 with minors): focus inside a group that
+  hides on leaving its page moves to More instead of the top of the document, and More is marked
+  active when it is closed on one of its pages, so the current page is always marked (tests in
+  `navigation.e2e.ts`, failing before). Line wraps of the docs fixed.

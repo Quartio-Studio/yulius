@@ -550,7 +550,11 @@ export function createSidebar(ctx) {
   nav.append(...primaryLinks.map((link) => link.el), moreToggle, moreGroup);
   function paintMore() {
     const open = moreOpen || moreShown;
+    // Focus in a group about to hide goes to More rather than to the top of the page.
+    if (!open && moreGroup.contains(document.activeElement)) moreToggle.focus();
     moreGroup.hidden = !open;
+    // Closed on one of its pages, More marks where the current page is.
+    moreToggle.classList.toggle('active', !open && Boolean(morePage));
     moreToggle.setAttribute('aria-expanded', String(open));
     setChildren(moreChevron, icon(open ? 'down' : 'right', { size: 12 }));
   }
@@ -648,10 +652,10 @@ export function createSidebar(ctx) {
     // the user's own choice stays as it was (SPEC-029 NAV-004).
     const current = routed && moreLinks.some((link) => link.page === route.page) ? route.page : null;
     if (current !== morePage) {
+      morePage = current;
       moreShown = Boolean(current);
       paintMore();
     }
-    morePage = current;
   }
 
   // Active tasks (UI-005), grouped so what needs the user comes first: "Needs you", "Working",

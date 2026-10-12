@@ -552,8 +552,8 @@ and mail, and **agent secrets** agents use without seeing them.
 - Left sidebar (300 px, 200 px below 1024 px; resizable, UI-044): the logo and wordmark (home), New
   task with its shortcut, the sandbox navigation (Cockpit — the user's own plain Claude Code
   session, SPEC-021 — then Tasks, Git, CI, Secrets, Dashboard, and "More", which expands Sessions,
-  Workflows, Skills, Automations and MCP in place, SPEC-029), then the active task list grouped by what the user must
-  do — "Needs you" (permission prompt, Your turn, a browser request, a held prompt, a blocked chain,
+  Workflows, Skills, Automations and MCP in place, SPEC-029), then the active task list grouped
+  by what the user must do — "Needs you" (permission prompt, Your turn, a browser request, a held prompt, a blocked chain,
   failing checks), "Working" (working, starting, queued, paused, continuing, queued after another
   task, a background shell still running, in review), "Done" (goal achieved, or a complete plan with a tested
   pull request) and "Stopped" (stopped, crashed, failed; collapsible). Each row shows a distinct SVG

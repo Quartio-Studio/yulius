@@ -99,9 +99,11 @@ test('a page under More opens with the group expanded and the page current', asy
   await expect(more).toHaveAttribute('aria-expanded', 'true');
   await expect(nav.getByRole('link', 'Skills')).toHaveAttribute('aria-current', 'page');
 
-  // Closed there from the keyboard, it stays closed within that page.
+  // Closed there from the keyboard, it stays closed within that page, and More marks where the
+  // current page is.
   await more.press('Enter');
   await expect(more).toHaveAttribute('aria-expanded', 'false');
+  await expect(browser.locator('nav.nav .nav-toggle.active')).toHaveCount(1);
   await go('/s/studio/skills/nope');
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Skill not found');
   await expect(more).toHaveAttribute('aria-expanded', 'false');
@@ -110,6 +112,15 @@ test('a page under More opens with the group expanded and the page current', asy
   await expect(more).toHaveAttribute('aria-expanded', 'true');
   await more.press('Space');
   await expect(more).toHaveAttribute('aria-expanded', 'false');
+
+  // Focus inside a group that closes on leaving its page moves to More, not to the page's top.
+  await go('/s/studio/workflows');
+  await nav.getByRole('link', 'Workflows').focus();
+  await go('/s/studio/tasks');
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  await expect(more).toHaveAttribute('aria-expanded', 'false');
+  await expect(more).toBeFocused();
+  await expect(browser.locator('nav.nav .nav-toggle.active')).toHaveCount(0);
 });
 
 test('another sandbox opens from the sandbox tabs', async ({ app, browser, screen }) => {
