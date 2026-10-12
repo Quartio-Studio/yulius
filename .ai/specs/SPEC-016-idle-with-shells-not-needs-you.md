@@ -3,7 +3,7 @@ yulius-task: 99b109c2-ad46-4a92-858d-70fe61d3f63c
 status: in-progress
 ---
 
-# SPEC-010: an idle agent with background work running does not "need you"
+# SPEC-016: an idle agent with background work running does not "need you"
 
 Status: draft
 Date: 2026-10-12
