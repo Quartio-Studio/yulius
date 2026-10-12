@@ -63,7 +63,7 @@ the CLI prompt argument, which Claude Code attaches natively (an image as an ima
 then gets its `/goal` typed into the terminal; the request file in the sandbox home keeps the
 whole request ([SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
 [SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
-[decision 0019](decisions/0019-native-task-attachments.md)).
+[decision 0020](decisions/0020-native-task-attachments.md)).
 
 ```mermaid
 sequenceDiagram
