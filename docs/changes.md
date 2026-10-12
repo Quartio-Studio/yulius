@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- End-to-end tests in CI get longer budgets (90 s per action, 6 min per test) and two retries: they timed out while agents' builds loaded the machine, though the same tests pass locally in seconds; CI CPU priority is #283.
 - A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
   wrapping over the condition's border (SPEC-031, task #29).
 - Attached images reach Claude Code as pasted images (SPEC-030, ADR-0026; task #28). A task with
