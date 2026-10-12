@@ -75,7 +75,7 @@ test('a short request starts at once and "Run after" chains it', async ({ app, b
   // The choices are the sandbox's tasks: wait until the list has loaded.
   await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
   await screen.getByRole('button', /Run after: Start now/).click();
-  await screen.getByRole('menuitemradio', /^After #12 Checkout API/).click();
+  await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('Write the checkout UI tests');
   await screen.getByRole('button', 'Start task').click();

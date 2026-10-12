@@ -119,3 +119,20 @@ test('an item matches when its label, description or hint holds every typed word
   });
   expect(result).toEqual([true, true, true, true, true, false, true, false]);
 });
+
+test('"Run after" lists each task on one line under one heading, every live task offered', async ({ app, browser, screen }) => {
+  // `tasks=many`: 30 more queued tasks in studio, more than the menu used to show.
+  await app.open(mock('/s/studio', '&tasks=many'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await expect(screen.getByText('After a task is done')).toBeVisible();
+  const row = screen.getByRole('menuitemradio', /^#12 Checkout API/);
+  await expect(row).toHaveAttribute('title', 'Starts by itself when #12 is done');
+  const rows = await browser.evaluate(() => [...document.querySelectorAll('.menu-item')]
+    .filter((el) => /^#\d+ /.test(el.textContent || ''))
+    .map((el) => ({ height: Math.round(el.getBoundingClientRect().height), rich: el.classList.contains('rich') })));
+  expect(rows.length).toBe(39);
+  expect(rows.every((r) => !r.rich && r.height <= 32)).toBe(true);
+  await row.click();
+  await expect(screen.getByRole('button', /Run after: After #12/)).toBeVisible();
+});

@@ -87,7 +87,7 @@ test('the mode, workflow and "Run after" come back with the draft', async ({ app
   await screen.getByRole('button', /^Workflow:/).click();
   await screen.getByRole('menuitemradio', /^Fix \(default\)/).click();
   await screen.getByRole('button', /Run after: Start now/).click();
-  await screen.getByRole('menuitemradio', /^After #12 Checkout API/).click();
+  await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
 
   await leaveAndReturn(browser, screen);
 
@@ -117,7 +117,7 @@ test('the draft survives a reload and is cleared once the task starts', async ({
   await screen.getByRole('button', /^Mode:/).click();
   await screen.getByRole('menuitemradio', /^Goal/).click();
   await screen.getByRole('button', /Run after: Start now/).click();
-  await screen.getByRole('menuitemradio', /^After #12 Checkout API/).click();
+  await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
   // The image's small thumbnail is made a moment after the drop; the draft is stored once the
   // page goes away, whatever the debounce.
   await expect.poll(() => storedThumbs(browser)).toBe(1);
