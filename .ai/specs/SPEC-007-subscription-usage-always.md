@@ -31,7 +31,7 @@ window, weekly window) at all times, not only after a task ran on it.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | USG-001 | When the usage endpoint refuses a sign-in (403) or throttles it (429, what production answers), the probe reads the 5-hour and weekly windows from the `anthropic-ratelimit-unified-5h/7d` headers of a one-token message on the cheapest model. | `wiring::usage::tests::a_refused_sign_in_is_read_from_the_headers`, `a_throttled_usage_endpoint_is_read_from_the_headers`, `rate_limit_headers_become_percent_windows` |
-| USG-002 | Subscriptions with a live task are not probed: their sessions already report usage. | `accounts.rs::refresh_usage_round` |
+| USG-002 | A subscription is skipped only while its reading is fresh (under 90 s); a running but idle task reports nothing, so a subscription in use is read again once its reading is old. | `subscription_pool.rs::a_running_but_idle_subscription_is_read_again_when_its_reading_is_old` |
 | USG-004 | After a reading the subscription is asked again no sooner than 5 minutes (each reading is a real request); #195's 90 s freshness skip and shared back-off still apply. | `accounts.rs::refresh_usage_round` |
 | USG-003 | The page no longer says usage "shows once a task runs"; an unread window says "Reading usage…" and the footer says usage is read every few minutes. | `layout.js` |
 
@@ -41,6 +41,7 @@ window, weekly window) at all times, not only after a task ran on it.
 - [x] The page says usage is being read instead of waiting for a task
 - [x] The fallback path is covered by a test; clippy and fmt are green
 - [x] ADR-17 and the changes log are updated
+- [x] A running but idle subscription is read again (the in-use skip is removed, production finding)
 
 ## Acceptance criteria
 
@@ -66,3 +67,6 @@ Unit tests for the header parser and a mock-server test of the 403 fallback; the
 - `cargo test -p yulius --test account_usage`: 5 passed.
 - `scripts/dev check`, `cargo clippy -p yulius -p yulius-app --all-targets`, `cargo fmt --check`: clean.
 - Not run: the e2e suite; a real subscription (checked on the instance after deploy).
+- Production follow-up (2026-10-12): `a_running_but_idle_subscription_is_read_again_when_its_reading_is_old`
+  failed before the in-use skip was removed (0 requests) and passes after; `subscription_pool` (8) and
+  `account_usage` (6) pass; clippy and `cargo fmt --check` clean.
