@@ -114,7 +114,7 @@ impl App {
     ///
     /// # Errors
     /// `Forbidden` for API tokens, wrong or reused codes (audited) and while locked after
-    /// [`MAX_FAILED_CODES`] wrong codes, `Invalid` without two-factor, `Capacity` after 5
+    /// 10 wrong codes in a row, `Invalid` without two-factor, `Capacity` after 5
     /// attempts a minute, store failures.
     pub async fn unlock_vault(&self, ctx: &AuthContext, code: &str) -> AppResult<ReauthStatus> {
         let session = browser_session(ctx)?;
