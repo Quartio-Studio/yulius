@@ -1,0 +1,114 @@
+---
+yulius-task: 1dba5af7-9ed0-4c9c-a623-34492bd9e086
+status: in-progress
+---
+
+# SPEC-035: the Cockpit becomes the Agent, in the right panel
+
+Status: in progress
+Date: 2026-10-12
+Owner: Yulius task #33
+Scope authorization: user request: "Move cockpit to the right and change cockpit to "Agent". Add
+distinct message that it's for quick work like setting up automations, asking quick questions etc
+and everything more complex like writing code should happen directly in tasks, and not there".
+
+## Goal
+
+The user's own plain Claude Code session of a sandbox (SPEC-021, the "Cockpit") is called
+**Agent** and lives on the right of the screen, in the tool panel next to Browser, Editor and
+Shell, so it can be used beside any page instead of replacing it. Its panel says plainly what it is
+for: quick work such as setting up automations or asking a quick question; anything bigger, such
+as writing code, belongs in a task.
+
+## Context
+
+- SPEC-021 / ADR-0020: the Cockpit is a shell of kind `cockpit` started by
+  `POST /api/sandboxes/{sid}/cockpit`; the UI is a full page (`pages/cockpit.js`) at
+  `/s/<slug>/cockpit`, first in the left sidebar's navigation (`NAV`, `layout.js`).
+- The right side of the screen is the tool rail and its resizable panel (`panels.js`, UI-042,
+  UI-044): Browser, Editor and Shell, each a view kept alive per sandbox while hidden. The rail is
+  hidden by default and shown with the top bar's Tools toggle; opening a panel shows it.
+- `/s/<slug>/browser` already opens a right panel from a link: the router maps it to the composer
+  and `app.js` opens the panel, then replaces the address with `/s/<slug>`.
+- Task #27 (SPEC-029, running in parallel) trims the left navigation to Cockpit, Tasks, Git, CI,
+  Secrets and Dashboard with the rest under "More"; whichever merges second drops the Cockpit
+  entry from the trimmed list.
+- Only the UI names the Cockpit for people; the API, the shell kind (`cockpit`) and the stored
+  records are internal names.
+
+## Requirements
+
+| ID | Requirement | Evidence |
+| --- | --- | --- |
+| AGT-001 | The right rail's first tool is **Agent**: it opens the user's Agent session of the current sandbox (the SPEC-021 Cockpit, same API and behaviour: one per user and sandbox, resumed, Start again, recovered after a lost process, read users told why) in the right panel, beside the page in the centre. The session stays alive while the panel is hidden or shows another tool. | `e2e/tests/agent.e2e.ts` |
+| AGT-002 | The Agent panel shows a distinct notice above the session: it is for quick work (setting up automations, quick questions); anything more complex, such as writing code, should be done in a task. The notice offers "New task", which opens the new-task composer. | `agent.e2e.ts` |
+| AGT-003 | No "Cockpit" remains in the UI: the panel, its messages and errors say "Agent". | `agent.e2e.ts` |
+| AGT-004 | The left sidebar's navigation no longer lists the Cockpit. | `navigation.e2e.ts`, `agent.e2e.ts` |
+| AGT-005 | The top bar has an **Agent** button (sandbox pages only) that opens or closes the Agent panel, whether the rail is shown or not. | `agent.e2e.ts` |
+| AGT-006 | `/s/<slug>/agent` and the old `/s/<slug>/cockpit` open the sandbox with the Agent panel open, and the address becomes `/s/<slug>`. | `agent.e2e.ts` |
+
+## Design
+
+```mermaid
+flowchart LR
+  TOP["Top bar: Agent button"] --> HOST["panels.js: open('agent')"]
+  RAIL["Right rail: Agent · Browser · Editor · Shell"] --> HOST
+  LINK["/s/slug/agent or /s/slug/cockpit"] -->|"router: composer + panel"| HOST
+  HOST --> VIEW["agent.js: notice + terminal"]
+  VIEW -->|"POST /api/sandboxes/sid/cockpit"| API["Cockpit API (SPEC-021, unchanged)"]
+```
+
+- `pages/cockpit.js` becomes `agent.js`, `createAgentView(ctx, sandbox)`: the same open, recover
+  and Start again logic, returning a panel view (`el`, `show`, `hide`, `destroy`) like the Shell
+  view. It starts the session the first time the panel shows it (not when the panel is built),
+  and focuses the terminal on each show (not on phones).
+- `panels.js` `KINDS` gets `['agent', 'spark', 'Agent']` first; `createView('agent')` builds it.
+- The notice is a `note` region at the top of the view: "For quick work: setting up automations,
+  asking a quick question. Anything more complex, such as writing code, belongs in a task." with a
+  "New task" link to `/s/<slug>`.
+- `layout.js` drops the Cockpit from `NAV`; the tab row gets an Agent button (`ctx.toggleAgent`).
+- `router.js` maps `agent` and `cockpit` like `browser` (composer + `panel: 'agent'`); `app.js`
+  opens the panel and replaces the address.
+- The server is unchanged: API paths, the shell kind and `COCKPIT_NAME` stay (internal names; a
+  rollback still adopts the session). ADR-0025 records the move.
+
+## Plan
+
+- [x] Read the product context and related work, then write and validate the spec
+- [ ] The Agent opens in the right panel with its quick-work notice
+- [ ] The Agent leaves the left navigation; the top bar and old links open it
+- [ ] Independent review in a fresh session, findings fixed test-first
+- [ ] Every gate green, docs and the changes log updated
+
+## Acceptance criteria
+
+- On any sandbox page, clicking Agent (top bar or rail) opens the Agent session on the right while
+  the page stays in the centre; closing and reopening shows the same conversation.
+- The Agent panel shows the quick-work notice with a New task link above the terminal.
+- The sidebar has no Cockpit; nothing in the UI says "Cockpit".
+- An old `/s/<slug>/cockpit` link opens the sandbox with the Agent panel.
+
+## Test plan
+
+- e2e (mock), `e2e/tests/agent.e2e.ts` replacing `cockpit.e2e.ts`: opens from the top bar beside a
+  task, notice and New task link, quick question answered, same session after close/reopen and
+  after another page, Start again after `/exit`, a gone process recovered, a failed start says why
+  with Try again, read access explained, `/agent` and `/cockpit` links, not in the sidebar, axe
+  clean.
+- `navigation.e2e.ts`: the sandbox navigation without Cockpit.
+- The server's Cockpit tests (`crates/yulius/tests/cockpit.rs`) are unchanged and must still pass.
+
+## Decisions
+
+- **"Right" means the right tool panel** (ADR-0025): the right side of the screen is where the
+  tools live; a panel keeps the session beside the page in use, which suits quick work (ask about
+  the task in view, set up an automation while looking at its page). Alternatives: a full page
+  reached from the right of the top bar (still replaces the page), a fixed right column of its own
+  (a second panel system).
+- **Top-bar button too**: the rail is hidden by default, so a rail button alone would hide the
+  Agent from people who never open Tools.
+- **Internal names stay `cockpit`**: renaming the API, shell kind and stored records would change
+  public contracts and persistence for no user-visible gain.
+- **Old links redirect** rather than 404, as `/browser` does.
+- **Session starts on first show**, not when the panel host builds the view, so a sandbox visit does
+  not take a subscription seat.
