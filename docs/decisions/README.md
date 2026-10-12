@@ -34,3 +34,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0028](0028-one-integration-test-binary.md): The product's integration tests are one test binary
 - [0029](0029-cockpit-manages-through-mcp.md): The Cockpit and task agents manage the project through the Yulius MCP server
 - [0030](0030-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
+- [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first

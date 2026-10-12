@@ -237,13 +237,14 @@ export function allows(access, minimum) {
 
 /**
  * Actions available for a task given sandbox access (UI-013, §6.3). `pr` is the task's pull
- * request (store.pullsOf()), so a task the sidebar shows as Done can be archived.
+ * request (store.pullsOf()), so a task the sidebar shows as Done can be archived or deleted.
  */
 export function taskActions(task, access, pr) {
   const write = allows(access, 'write');
   const live = isLive(task.status);
   const chained = task.status === 'chained';
   const ended = !live && !chained;
+  const finished = live && taskInfo(task, null, pr).group === 'done';
   return {
     stop: write && (live || chained) && task.status !== 'stopping',
     startNow: write && chained,
@@ -251,9 +252,10 @@ export function taskActions(task, access, pr) {
     deliver: write && !task.archived,
     feedback: allows(access, 'read'),
     // A finished task (Done by the one rule of taskInfo: goal achieved, or plan complete with its
-    // pull request merged or tested, and no shell left) is closed as it is archived (TSK-014).
-    archive: write && (ended || (live && taskInfo(task, null, pr).group === 'done')) && !task.archived,
+    // pull request merged or tested, and no shell left) is closed as it is archived (TSK-014) or
+    // deleted (SPEC-039).
+    archive: write && (ended || finished) && !task.archived,
     restore: write && task.archived,
-    delete: write && (ended || chained) && task.status !== 'stopping',
+    delete: write && (ended || chained || finished) && task.status !== 'stopping',
   };
 }
