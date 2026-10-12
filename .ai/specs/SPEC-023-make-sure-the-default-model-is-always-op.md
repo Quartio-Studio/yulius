@@ -55,7 +55,7 @@ switches and the composer's "Default" all go through the one launch plan
 ## Decisions
 
 - Pin the full model id rather than the `opus` alias, and apply the default at launch rather than
-  storing it on the task (ADR-0019).
+  storing it on the task (ADR-0020).
 - Haiku is recognised by name, as `ModelFamily::of` already recognises Opus and Sonnet; the UI's
   model list (`models.js`, `effort: false`) stays the place that lists models.
 - The split proposer (`SPLIT_MODEL`) is a short one-off request, not a task, and keeps its model.
