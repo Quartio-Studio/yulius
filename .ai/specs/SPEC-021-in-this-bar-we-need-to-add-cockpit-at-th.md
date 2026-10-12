@@ -1,0 +1,122 @@
+---
+yulius-task: 245b6d60-1c11-48f6-a647-e3da81ae89b0
+status: in-progress
+---
+
+# SPEC-021: Cockpit, every user's permanent plain Claude session
+
+Status: in progress
+Date: 2026-10-12
+Owner: Yulius task #19
+Scope authorization: user request: "In this bar we need to add "Cockpit" at the top - this should
+be one permament claude session, every user gets own session. User can run /clear there but can't
+delete it. It's for quick btws and work that shouldn't become a task. Go." (screenshot: the
+sandbox sidebar, New task above Tasks, Sessions, Git, …), then: "this should be a plain session
+without any additional requirements hooks etc".
+
+## Goal
+
+Every user has one Claude Code session per sandbox, the Cockpit, first in the sidebar's
+navigation. It is for quick questions and small work that should not become a task: a plain
+Claude Code session with no Yulius hooks, MCP, briefing, steps, spec or delivery gates. It is
+always there: the user can `/clear` it but never delete or close it, and it comes back with its
+conversation after an exit, an idle stop or a server restart.
+
+## Context
+
+- Tasks (`crates/yulius-app/src/supervisor.rs`) always launch Claude Code with Yulius's hooks,
+  status line, MCP server, briefing and discipline (`yulius-harness` `plan_claude`); a task also
+  has a number, a branch and a worktree. None of that is wanted here.
+- Sandbox shells (`crates/yulius-app/src/shells.rs`, UI-015/UI-016) are already per user and
+  sandbox, private, run as the user's sandbox identity in the sandbox repository, get no task
+  token or hooks, survive a server restart (adopted from `shells/<id>/shell.json`) and are
+  reaped after a day without viewers. Their WebSocket speaks the task terminal protocol.
+- A request outside any task already takes a subscription from the pool with
+  `App::pool_account` (split proposals, `intake.rs`).
+- Claude Code handles `/clear` itself (a new conversation in the same process). Its
+  conversations are files under `<CLAUDE_CONFIG_DIR>/projects/<cwd slug>/`; the harness port
+  finds the newest one (`newest_claude_session`).
+
+## Requirements
+
+| ID | Requirement | Evidence |
+| --- | --- | --- |
+| CKP-001 | Each user with write access has at most one Cockpit per sandbox. `POST /api/sandboxes/{sid}/cockpit` returns it, starting it when it is not running; concurrent calls start one. Read users are refused. | `cockpit.rs` tests |
+| CKP-002 | The Cockpit is plain Claude Code: no `--settings`, `--mcp-config`, hooks, status line, task token, briefing or `--dangerously-skip-permissions`; the Claude OAuth token of a pool subscription in its environment (never in argv), `CLAUDE_CONFIG_DIR` in the user's own home, the first-run screens and folder trust settled. | harness unit test, `cockpit.rs` |
+| CKP-003 | A Cockpit that is started again resumes the user's newest conversation in that sandbox (`--resume <id>`), after `/clear` the cleared one's successor; a first start has none. | `cockpit.rs` |
+| CKP-004 | The Cockpit cannot be deleted, closed or renamed: it is not in the shell list, the shell rename and close calls answer 404 for it, it does not count against the shells limit, and there is no delete route. | `cockpit.rs` |
+| CKP-005 | The Cockpit is private: only its owner can get or attach to it; other users get their own. | `cockpit.rs` |
+| CKP-006 | A running Cockpit survives a server restart (adopted as the Cockpit, not as a terminal); an idle one is ended after a day without viewers like shells and resumes on the next open. | `cockpit.rs` |
+| CKP-007 | Without a subscription with capacity the call fails with a clear reason (`Conflict`/`Capacity`), nothing is left running. | `cockpit.rs` |
+| CKP-008 | Sidebar: "Cockpit" is the first item of the sandbox navigation, opening `/s/<slug>/cockpit`: the Cockpit's terminal filling the centre with a short line saying what it is; an ended Cockpit offers "Start again"; read users see why they cannot use it. | `e2e/tests/cockpit.e2e.ts`, `navigation.e2e.ts` |
+
+## Design
+
+```mermaid
+flowchart LR
+  UI["Sidebar: Cockpit → /s/slug/cockpit"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
+  APP -->|"pool_account + open_credential"| POOL[("Subscription pool")]
+  APP -->|"newest conversation"| HP["HarnessPort::plan_cockpit"]
+  HP --> PLAN["claude [--resume id], token env, CLAUDE_CONFIG_DIR=~/.claude"]
+  APP -->|"ShellKind::Cockpit"| SH["Shell runtime (user space, sandbox repo)"]
+  UI -->|"WS /api/shells/id/terminal"| SH
+```
+
+- The Cockpit is a shell runtime of kind `Cockpit` ([ADR-0019](../../docs/decisions/0019-cockpit-as-a-plain-shell-session.md)):
+  same ownership, containment, adoption, terminal and idle reaping as shells, a different
+  program. `ShellFile` records the kind (default `terminal`, so older records still adopt).
+- `HarnessPort::plan_cockpit` builds the plain launch: argv `claude [--resume <id>]`, env
+  `CLAUDE_CONFIG_DIR`, `DISABLE_AUTOUPDATER=1`, secret env `CLAUDE_CODE_OAUTH_TOKEN`, and
+  prepares `<home>/.claude/.claude.json` (onboarding done, theme, trust of the repository).
+- A per-app async lock serialises Cockpit starts so a double click starts one.
+- UI: `NAV` gets `['cockpit', 'Cockpit', 'terminal']` first; `pages/cockpit.js` posts, then
+  mounts `createTerminalView` on `/api/shells/<id>/terminal`. Mock mode serves the call.
+
+## Plan
+
+- [x] Read the product context and related work, then write and validate the spec
+- [ ] A user's plain Cockpit session starts and resumes on a pool subscription (API, harness plan, tests)
+- [ ] The Cockpit is permanent and private: no close or rename, adopted after restart, reaped and resumed (tests)
+- [ ] Cockpit first in the sidebar opens its terminal (page, mock, e2e)
+- [ ] Independent review in a fresh session, findings fixed test-first
+- [ ] Every gate green, docs and the changes log updated
+
+## Acceptance criteria
+
+- A write user clicks Cockpit and gets a working Claude Code session in the sandbox repository;
+  a second click, another tab or a reload shows the same session.
+- `/clear` gives a fresh conversation in the same Cockpit; there is no way to delete it.
+- Another user of the same sandbox gets a different Cockpit and cannot attach to this one.
+- After `/exit` (or a server restart, or a day unwatched) opening the Cockpit continues the
+  latest conversation.
+- No Yulius hook, MCP server or briefing reaches the Cockpit session.
+
+## Test plan
+
+- Unit: `yulius-harness` `plan_cockpit` argv/env (no settings, MCP, hooks, bypass; token only
+  in secret env; `--resume` when given).
+- Integration (`crates/yulius/tests/cockpit.rs`, real ptyhost, a fake `claude` script that
+  prints its argv and whether the token is set): start, reuse, concurrency, privacy, read
+  user refused, not listed/closable/renamable, resume after exit with the newest conversation,
+  adoption after restart, no subscription → error and nothing running.
+- e2e (mock): Cockpit first in the navigation, opens its terminal, ended state offers Start
+  again; navigation test updated.
+
+## Decisions
+
+- **Shell runtime, not a task** (ADR-0019): a task brings hooks, MCP, briefing, gates, a number,
+  a branch and a worktree; the user asked for a plain session. Shells already give per-user
+  privacy, containment, restart adoption and the terminal.
+- **Per sandbox**: a Claude session needs a working directory and a sandbox's tools; the
+  Cockpit runs in the sandbox repository like a shell.
+- **Resume by id, not `--continue`**: `--continue` exits with an error when there is no
+  conversation; the newest conversation file is known and picks up `/clear` successors.
+- **No `--dangerously-skip-permissions`**: "plain" means Claude Code as a person starts it; the
+  user switches modes with Shift+Tab. Reversible.
+- **Default model**: no `--model`, the subscription's default; `/model` changes it.
+- **Subscription**: the pool's best placement at each start (`pool_account`); the Cockpit does
+  not take a task session slot and is not moved between subscriptions while it runs (a limit
+  shows in Claude Code; Start again picks another). The token is visible to the user's own
+  session, as it already is to the agents of tasks they start.
+- **Idle**: the process ends after a day without viewers like shells; the conversation stays
+  and resumes, so the Cockpit itself is permanent.
