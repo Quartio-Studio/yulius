@@ -3,7 +3,7 @@ yulius-task: 9d013409-2398-4152-868a-a728a52539ab
 status: done
 ---
 
-# SPEC-010: a goal-mode task's `/goal` is always submitted
+# SPEC-018: a goal-mode task's `/goal` is always submitted
 
 Status: implemented
 Date: 2026-10-12
