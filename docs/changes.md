@@ -6,16 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
-- The sandbox navigation is shorter (SPEC-029, ADR-0026, task #27): Cockpit, Tasks, Git,
-  CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
-  Automations and MCP in place. Its state is remembered per browser; arriving at one of those
-  pages shows it open for that page.
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0026, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
   (`tests/main.rs`); a gate build's test executables drop from 9.2 GB to 1.3 GB. The repository
   check rejects a second test binary or an undeclared test file. Run one file's tests with
-  `cargo test -p yulius --test main <file>::`.
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`.
+- The sandbox navigation is shorter (SPEC-029, ADR-0025, task #27): Cockpit, Tasks, Git,
+  CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
+  Automations and MCP in place. Its state is remembered per browser; arriving at one of those
+  pages shows it open for that page.
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.

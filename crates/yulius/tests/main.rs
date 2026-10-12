@@ -2,7 +2,9 @@
 //! module. Every test binary links the whole product (about 190 MB), so fifty of them filled
 //! sandboxes' disks. Add a file next to this one and declare it below; the repository check fails
 //! on a file that is not declared. Run one file's tests with
-//! `cargo test -p yulius --test main <file>::`.
+//! `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`
+//! (the `cargo test` filter `<file>::` is a substring: `supervision::` also runs
+//! `pool_supervision::`).
 
 mod support;
 

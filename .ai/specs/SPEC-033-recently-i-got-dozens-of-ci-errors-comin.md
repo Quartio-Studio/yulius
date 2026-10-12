@@ -1,11 +1,11 @@
 ---
 yulius-task: 3269ff66-bd71-4ab4-9331-c2e839e6eef3
-status: in-progress
+status: done
 ---
 
 # SPEC-033: the product's integration tests build one binary, not fifty
 
-Status: in progress
+Status: done
 Date: 2026-10-12
 Owner: Yulius task #31
 Scope authorization: user request (F 2026-10-12): "recently I got dozens of CI errors coming from
@@ -33,7 +33,7 @@ Root cause, measured in this sandbox's CI checkout (`ci/jobs/quality/target`, on
   own crate, and each links the whole product statically (web UI assets, every adapter, Tokio,
   Axum…): about 190 MB each (34 MB code, 24 MB read-only data, 62 MB line tables, 53 MB symbols).
   The other crates' test executables are 10 to 45 MB.
-- One copy is about 9.5 GB, and a worktree keeps several: the gate builds with `--all-features`,
+- One copy is about 9.2 GB, and a worktree keeps several: the gate builds with `--all-features`,
   an agent's `cargo test -p yulius --test X` without it, and any dependency or toolchain change
   gives new hashes; Cargo never removes the old files. Task transcripts show 21, 38, 42, 46, 48
   and 49 GB `target/` directories (tasks #4, #5, #8, #22; SPEC-008 incident).
@@ -47,15 +47,15 @@ The existing tests missed it because nothing checks how many test executables a 
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| NFR-010 | The composition crate (`yulius`, the one linking the whole product) builds exactly one integration test executable: `crates/yulius/tests/main.rs`, whose modules are the test files (`autotests = false`). The repository check fails when such a crate has more than one integration test target, or when a `.rs` file next to its `main.rs` is not declared as a module of it (it would silently not run). | `scripts/test_check_repository.py`, `scripts/dev check` |
+| NFR-010 | The composition crate (`yulius`, the one linking the whole product) builds exactly one integration test executable: `crates/yulius/tests/main.rs`, whose modules are the test files (`autotests = false`). The repository check fails when such a crate has more than one integration test target, none at `tests/main.rs` while it has a `tests/` directory, a `.rs` file next to `main.rs` not declared as a module of it, or a `tests/<dir>/main.rs` (either would silently not run). | `scripts/test_check_repository.py`, `scripts/dev check` |
 
 ## Plan
 
-- [ ] Root cause measured: 50 test executables of about 190 MB each
-- [ ] Spec and a repository check that fails on the current tree
-- [ ] The yulius integration tests build as one binary, every gate green
-- [ ] ADR, development docs and changes log describe the single test binary
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Root cause measured: 50 test executables of about 190 MB each
+- [x] Spec and a repository check that fails on the current tree
+- [x] The yulius integration tests build as one binary, every gate green
+- [x] ADR, development docs and changes log describe the single test binary
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -79,10 +79,31 @@ The existing tests missed it because nothing checks how many test executables a 
 - One binary for the composition crate only: its executables are 190 MB because they link
   everything; the other crates' are small, so their per-file targets stay (recorded in ADR-0026).
 - Files stay where they are (`tests/<name>.rs`) and become modules of `tests/main.rs`; paths in
-  earlier specs and `include_str!` stay valid. A test is now selected with
-  `cargo test -p yulius --test main <file>::` (nextest: `-E 'binary(main)'`).
+  earlier specs and `include_str!` stay valid. One file's tests run with
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`; the `cargo test` filter `<file>::` is a substring match.
 - Reducing debug info (`strip`, `split-debuginfo`) was rejected as the fix: it saves about a third
   of each executable but keeps fifty copies of the code and symbols, and it costs line numbers
   in backtraces.
 - Pruning working tasks' caches was rejected: deleting a running build's `target/` breaks the
   agent's next build and SPEC-008 keeps working tasks untouched on purpose.
+
+## Evidence
+
+- Before: `ci/jobs/quality/target/debug/deps` of this sandbox (one gate build of `dev`): 11 GB, of
+  which 9.2 GB in 51 test executables; 50 `yulius` ones of 184 to 200 MB; their `--list` gives
+  266 tests.
+- `python3 scripts/check_repository.py` on the tree before the fix (commit e8dda95): failed with
+  `yulius: 50 integration test binaries each link the whole product; …`.
+- `cd scripts && python3 -m unittest test_check_repository`: 30 tests OK (the new case covers two
+  targets, no target, a stray file, `mod` in comments, attributes and `pub(crate)`, a directory
+  test, and a non-composition crate).
+- `scripts/dev ci` on c89647b: exit 0; nextest 1166 passed, 16 skipped (the 16 opt-in live tests,
+  as before). The `main` binary lists 266 tests (16 ignored), the same as before.
+- After: one 256 MB `main` test executable; test executables 1.34 GB (was 9.2 GB);
+  `target/debug/deps` 2.6 GB (was 11 GB); whole `target/` 4.3 GB.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^supervision::/)'`: 13 passed,
+  253 skipped (only `supervision::`, not `pool_supervision::` or `update_supervision::`).
+- Independent review (fresh session, `om-code-review`) of c31606a: approved; its minor findings
+  (check gaps, substring filter wording, one disk figure, unfinished spec) fixed test-first.
+- Not run: a real 100 GB sandbox with several working tasks; old copies already in task worktrees
+  and the CI checkout go with the existing SPEC-008/SPEC-019 upkeep.

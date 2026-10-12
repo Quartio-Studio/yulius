@@ -61,20 +61,29 @@ class RepositoryContracts(unittest.TestCase):
             def crate(layer, *files):
                 targets = [{"name": "app", "kind": ["lib"], "src_path": f"{tmp}/src/lib.rs"}]
                 targets += [{"name": Path(f).stem, "kind": ["test"], "src_path": str(tests / f)} for f in files]
-                return {"name": "app", "metadata": {"yulius": {"layer": layer}}, "targets": targets}
+                return {"name": "app", "manifest_path": f"{tmp}/Cargo.toml",
+                        "metadata": {"yulius": {"layer": layer}}, "targets": targets}
 
             per_file = integration_test_errors([crate("composition", "disk.rs", "cli.rs")])
             self.assertEqual(len(per_file), 1)
             self.assertIn("2 integration test binaries", per_file[0])
             self.assertEqual(integration_test_errors([crate("adapter", "disk.rs", "cli.rs")]), [])
+            no_target = integration_test_errors([crate("composition")])
+            self.assertEqual(len(no_target), 1)
+            self.assertIn("tests/main.rs", no_target[0])
 
-            (tests / "main.rs").write_text("mod support;\nmod disk;\n")
+            (tests / "main.rs").write_text("mod support;\nmod disk;\n// mod cli;\n/* old:\nmod cli;\n*/\n")
             stray = integration_test_errors([crate("composition", "main.rs")])
             self.assertEqual(len(stray), 1)
             self.assertIn("tests/cli.rs", stray[0])
-            (tests / "main.rs").write_text("mod support;\nmod disk;\n#[cfg(unix)]\nmod cli;\n")
+            (tests / "main.rs").write_text("mod support;\n#[cfg(unix)] pub(crate) mod disk;\n#[cfg(unix)]\nmod cli;\n")
             self.assertEqual(integration_test_errors([crate("composition", "main.rs")]), [])
-            self.assertEqual(integration_test_errors([crate("composition")]), [])
+
+            (tests / "flows").mkdir()
+            (tests / "flows" / "main.rs").write_text("#[test]\nfn works() {}\n")
+            directory = integration_test_errors([crate("composition", "main.rs")])
+            self.assertEqual(len(directory), 1)
+            self.assertIn("tests/flows/main.rs", directory[0])
 
     def test_skill_directory_must_match_name(self):
         with tempfile.TemporaryDirectory() as tmp:
