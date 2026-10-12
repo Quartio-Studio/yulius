@@ -107,7 +107,9 @@ export function statusInfo(task) {
   // task at its turn boundary without telling the agent. Nothing is for the user to do: it
   // continues by itself. A task never pauses while another subscription has room.
   if (status === 'waiting_capacity') return { glyph: '⏸', icon: 'st-paused', tone: 'queued', label: 'Paused', group: 'working' };
-  if (status === 'stopping') return { glyph: '■', icon: 'st-stopped', tone: 'stopping', label: 'Stopping', group: 'working' };
+  // A stop was asked for: the task is on its way out, so it sits with the ended ones rather than
+  // flashing under Working until the process is gone.
+  if (status === 'stopping') return { glyph: '■', icon: 'st-stopped', tone: 'stopping', label: 'Stopping', group: 'ended' };
   // Waiting for another task to be Done (TSK-012); when that task ended otherwise, a person
   // decides: Start now or Cancel. It never starts by itself then.
   if (status === 'chained') {
