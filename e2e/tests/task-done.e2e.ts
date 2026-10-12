@@ -40,3 +40,16 @@ test('the Tasks page groups a task with an achieved goal under Done', async ({ a
   await expect(browser.locator('.tl-group.group-done')).toHaveText(/Improve the code/);
   await expect(browser.locator('.tl-group.group-working')).toHaveText(/Start the preview server/);
 });
+
+test('a task being stopped moves straight to Stopped, never into Working', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('region', 'Working').getByRole('link', /Checkout API/)).toBeVisible();
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', /^Stop/).click();
+  await screen.getByRole('button', 'Stop task').click();
+
+  // While the process goes away ("Stopping") the sidebar already lists it under Stopped.
+  await expect(screen.getByRole('region', 'Stopped').getByRole('link', /Checkout API\s*, Stopping/)).toBeVisible();
+  await expect(screen.getByRole('region', 'Working').getByRole('link', /Checkout API/)).toBeHidden();
+});
