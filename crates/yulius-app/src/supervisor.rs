@@ -75,6 +75,8 @@ pub struct TaskRuntime {
     watcher_alive: Arc<AtomicBool>,
     /// Last keyboard input from a viewer (ms).
     pub last_input_ms: AtomicI64,
+    /// When Yulius last typed its wake-up text with no prompt submitted since (ms, 0 = none).
+    pub(crate) wake_typed_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
     pub proactive_switch: AtomicBool,
     /// The current run called a Yulius hook: its Stop hook is the turn boundary that decides
@@ -139,6 +141,7 @@ impl TaskRuntime {
             usage: Arc::new(Mutex::new(UsageSnapshot::default())),
             watcher_alive: Arc::new(AtomicBool::new(false)),
             last_input_ms: AtomicI64::new(0),
+            wake_typed_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
             limit_resets_at: AtomicI64::new(0),

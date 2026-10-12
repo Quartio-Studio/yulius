@@ -4,6 +4,8 @@ The goal is a verified user outcome, with enough durable context for the next
 engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry point.
 [Git delivery](git.md) defines dev/main branches, author self-merges and post-merge gates.
 
+0. **Primitives:** skills, personas, instructions and hooks follow
+   [the primitive standard](primitives.md); a primitive change is reviewed like code.
 1. **Orient:** inspect Git and branch/worktree assignments; each local branch has
    its own worktree. Create the task branch and worktree together from dev, then
    inspect relevant code/specs and observed behavior. State the

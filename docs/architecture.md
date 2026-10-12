@@ -53,7 +53,23 @@ A sandbox has a soft disk quota. The application prunes build caches of tasks th
 work every 5 minutes (ended tasks, then idle ones from 90 % of the quota), removes the worktrees
 of closed and cancelled tasks, and a switch checks the quota and the other start preconditions
 before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md),
-[decision 0016](decisions/0016-sandbox-disk-upkeep.md)).
+[decision 0017](decisions/0017-sandbox-disk-upkeep.md)).
+
+## Agent primitives
+
+Repository skills are APM primitives ([ADR-0016](decisions/0016-apm-for-agent-primitives.md),
+[standard](engineering/primitives.md)): the sources in `.apm/skills` are deployed by `apm install`
+to the harness directories Yulius already discovers, and the repository check rejects drift.
+
+```mermaid
+flowchart LR
+    src[".apm/skills (source)"] -->|apm install| a[".agents/skills"]
+    src -->|apm install| c[".claude/skills"]
+    lock["apm.yml + apm.lock.yaml"] --> src
+    a --> yulius["Yulius skill discovery (REPOSITORY_SKILL_DIRS)"]
+    c --> yulius
+    src -.->|check_repository.py: deployments equal sources| gate["scripts/dev check"]
+```
 
 ## Runtime
 

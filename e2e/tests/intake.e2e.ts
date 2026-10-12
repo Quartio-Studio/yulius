@@ -17,8 +17,12 @@ const MIXED = [
 
 test('a request mixing UI and backend work offers a split; a chain waits for its predecessor', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  // Hold the mock's proposal so the preparing state is there to look at however slow the browser is.
-  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { holdProposal: boolean } }).__yuliusMock.holdProposal = true; });
+  // The mock holds its proposal until released, so the waiting card is there to look at however
+  // slowly the page is driven.
+  await browser.evaluate(() => {
+    const mocked = window as unknown as { __yuliusMock: { holdProposal?: Promise<void>; releaseProposal?: () => void } };
+    mocked.__yuliusMock.holdProposal = new Promise<void>((resolve) => { mocked.__yuliusMock.releaseProposal = resolve; });
+  });
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(MIXED);
   await prompt.press('ControlOrMeta+Enter');

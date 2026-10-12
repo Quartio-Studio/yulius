@@ -27,6 +27,10 @@ const DELIVERY_EVERY: Duration = Duration::from_secs(3 * 60);
 /// Text typed into an idle agent session.
 const WAKE_TEXT: &str =
     "Yulius: you have new messages. Read them with the messages_inbox tool and act on them.";
+/// Pause between the wake-up text and its Enter, so the session reads them as typing.
+const WAKE_SUBMIT_PAUSE: Duration = Duration::from_millis(300);
+/// A wake-up typed this recently and never submitted is still in the input box: Enter alone.
+const WAKE_UNSENT_MS: i64 = 10 * 60_000;
 
 struct IdleWaker(Weak<App>);
 
@@ -128,9 +132,20 @@ impl App {
             self.schedule_wake(task_id.clone(), remaining + 500);
             return;
         }
-        let mut text = WAKE_TEXT.as_bytes().to_vec();
-        text.push(b'\r');
-        if let Err(err) = self.send_input(task_id, &text).await {
+        // F 2026-10-12: text and Enter written together read as a paste with a newline, so the
+        // prompt never submitted, the agent never woke, and every later wake piled onto the input
+        // box. The text goes first and Enter on its own; a wake still unsent needs Enter only.
+        let runtime = self.runtime(task_id);
+        let typed = runtime.wake_typed_ms.load(Ordering::SeqCst);
+        if typed == 0 || now - typed > WAKE_UNSENT_MS {
+            if let Err(err) = self.send_input(task_id, WAKE_TEXT.as_bytes()).await {
+                tracing::debug!(error = %err, task = %task_id, "wake failed");
+                return;
+            }
+            runtime.wake_typed_ms.store(now, Ordering::SeqCst);
+            tokio::time::sleep(WAKE_SUBMIT_PAUSE).await;
+        }
+        if let Err(err) = self.send_input(task_id, b"\r").await {
             tracing::debug!(error = %err, task = %task_id, "wake failed");
         }
     }
