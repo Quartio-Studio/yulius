@@ -63,8 +63,8 @@ instance both automations are enabled today.
   too. Enabling one adds it to the list, enabled, and removes the suggestion.
 - AUT-010: "Keep the docs up to date" runs daily at 03:00 UTC+2 with workflow Docs. Its prompt
   reviews the changes merged since this automation's previous task (the last day; `tasks_list`
-  with `limit` 200, else the last 26 hours when the docs were kept before), or the documentation
-  as a whole when the automation was just enabled; fixes only documents; reports code that is wrong with
+  with `limit` 200, else the last 26 hours when the automation ran before), or the documentation
+  as a whole on the automation's first run; fixes only documents; reports code that is wrong with
   `issue_create` after checking for an existing issue; changes nothing when nothing is outdated.
 - AUT-011: "Work through open issues" runs daily at 03:00 UTC+2. Its prompt takes open issues (not
   pull requests) whose author association is `OWNER`, `MEMBER` or `COLLABORATOR`, or that a bot
