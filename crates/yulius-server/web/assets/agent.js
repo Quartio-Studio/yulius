@@ -37,7 +37,8 @@ export function createAgentView(ctx, sandbox) {
     terminal = null;
   }
 
-  async function open() {
+  /** Opens the session; `focus` only when the person asked for the Agent (not a new page or sandbox). */
+  async function open({ focus: wantFocus = true } = {}) {
     if (opening || !alive) return;
     opening = true;
     drop();
@@ -47,11 +48,11 @@ export function createAgentView(ctx, sandbox) {
       shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit`);
     } catch (err) {
       opening = false;
-      if (alive) setChildren(body, h('div', { class: 'agent-msg' }, loadError(`Couldn’t start the Agent: ${err.message}`, open)));
+      if (alive) setChildren(body, h('div', { class: 'agent-msg' }, loadError(`Couldn’t start the Agent: ${err.message}`, () => open())));
       return;
     }
     opening = false;
-    if (alive) mount(shell);
+    if (alive) mount(shell, { focus: wantFocus });
   }
 
   /**
@@ -64,7 +65,8 @@ export function createAgentView(ctx, sandbox) {
     recovering = true;
     try {
       const shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit`);
-      if (alive && current && shell.id !== current.id) mount(shell);
+      // Recovered while the person may be working on the page beside it: the keyboard stays there.
+      if (alive && current && shell.id !== current.id) mount(shell, { focus: false });
     } catch {
       // The terminal shows its own connection state and Retry.
     } finally {
@@ -77,7 +79,7 @@ export function createAgentView(ctx, sandbox) {
     if (terminal && shown && !isPhone()) terminal.focus();
   }
 
-  function mount(shell) {
+  function mount(shell, { focus: wantFocus = true } = {}) {
     drop();
     current = shell;
     terminal = createTerminalView({
@@ -86,7 +88,7 @@ export function createAgentView(ctx, sandbox) {
       onLink: (uri, event) => ctx.openLink(uri, event),
       readOnlyLabel: () => 'Read-only',
       exitMessage: () => ({ tone: 'info', text: 'The Agent stopped. Its conversation is kept.' }),
-      exitActions: () => [{ label: 'Start again', run: open }],
+      exitActions: () => [{ label: 'Start again', run: () => open() }],
       onFatal: (message) => { if (message.code === 'not_found') recover(); },
       onConnection: (status) => { if (status === 'reconnecting' || status === 'failed') recover(); },
       // Paths in its output open in the Editor, as in a terminal of the sandbox repository.
@@ -100,7 +102,7 @@ export function createAgentView(ctx, sandbox) {
     attachTerminalDrop(ctx, terminal, { label: 'Drop to send to Claude', upload: shellAttachments(ctx, sandbox.id, shell.id) });
     setChildren(body, terminal.el);
     terminal.start();
-    focus();
+    if (wantFocus) focus();
   }
 
   if (!write) {
@@ -116,7 +118,7 @@ export function createAgentView(ctx, sandbox) {
     show(opts = {}) {
       shown = true;
       // The session starts the first time the panel shows it, not when a sandbox opens.
-      if (write && !started) { started = true; open(); return; }
+      if (write && !started) { started = true; open({ focus: !opts.context }); return; }
       // Shown again for a new page (`context`), it only refits: the keyboard stays with the page.
       if (terminal) setTimeout(() => { if (terminal) { terminal.refit(); if (!opts.context) focus(); } }, 0);
     },

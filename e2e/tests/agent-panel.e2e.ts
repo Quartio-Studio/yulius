@@ -162,3 +162,14 @@ test('switching sandbox with the Agent open shows that sandbox’s Agent', async
   // Read users get no New task link they cannot use.
   await expect(screen.getByRole('note', 'About the Agent').getByRole('link', 'New task')).toBeHidden();
 });
+
+// Review round 2: the new sandbox's Agent starts beside the page without taking the keyboard.
+test('switching to a sandbox whose Agent starts keeps the keyboard on the page', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', 'Show Agent').click();
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+  await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^product\b/).click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+  await expect(browser.locator(agentTerminal)).toHaveText(/cwd: .*product/);
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
+});

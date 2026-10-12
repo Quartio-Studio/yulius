@@ -121,3 +121,8 @@ flowchart LR
   the top-bar button following, for the session kept across another tool, and for a sandbox
   switch. Not changed: the button's name changes between Show and Hide Agent with
   `aria-pressed`, as the Tools button does.
+- **Review round 2** (fresh session, REQUEST CHANGES at 47b5eb4): switching sandbox with the Agent
+  open started the new sandbox's Agent and moved the keyboard into it; the session now takes focus
+  only when the person opened the Agent (not on a new page or sandbox, nor when it recovers a lost
+  process), with a studio → product test. A tool chosen from the rail itself now makes the rail the
+  person's Tools choice, so it no longer disappears when that tool closes.
