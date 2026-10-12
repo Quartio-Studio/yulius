@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::git::{
-    BranchInfo, CommitInfo, DiffStat, GitPort, ReviewChanges, WorktreeInfo,
+    BranchInfo, CommitInfo, DiffStat, GitPort, MergeIntegration, ReviewChanges, WorktreeInfo,
 };
 use yulius_contracts::api::git::{ChangedFile, DiffHunk, DiffLine, TaskCommit};
 use yulius_git::{
@@ -367,6 +367,26 @@ impl GitPort for GitAdapter {
         let (git, repo) = (self.git_with_token(token), repo.to_path_buf());
         let refspec = format!("refs/heads/{local_branch}:refs/heads/{remote_branch}");
         blocking(move || git.push(&repo, "origin", &refspec)).await
+    }
+
+    async fn merge_integration(
+        &self,
+        worktree: &Path,
+        integration: &str,
+        token: &Secret,
+    ) -> AppResult<MergeIntegration> {
+        let (git, worktree) = (self.git_with_token(token), worktree.to_path_buf());
+        let rev = format!("origin/{integration}");
+        blocking(move || {
+            git.fetch(&worktree, "origin")?;
+            git.merge_into(&worktree, &rev)
+        })
+        .await
+        .map(|merged| match merged {
+            yulius_git::MergeInto::UpToDate => MergeIntegration::UpToDate,
+            yulius_git::MergeInto::Merged(head) => MergeIntegration::Merged(head),
+            yulius_git::MergeInto::Conflict(files) => MergeIntegration::Conflict(files),
+        })
     }
 
     async fn import_bundle(

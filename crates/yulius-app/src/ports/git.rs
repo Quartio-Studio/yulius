@@ -175,6 +175,17 @@ pub trait GitPort: Send + Sync {
             "reverting a task's changes is not available on this instance".into(),
         ))
     }
+    /// Fetches origin with `token`, then merges `origin/<integration>` into the worktree's branch
+    /// with its own identity and the repository's merge drivers; a conflict is aborted (DLV-203).
+    async fn merge_integration(
+        &self,
+        worktree: &Path,
+        integration: &str,
+        token: &Secret,
+    ) -> AppResult<MergeIntegration> {
+        let _ = (worktree, integration, token);
+        unsupported("merging the integration branch")
+    }
     /// Pushes `local_branch` to `remote_branch` on origin using `token`.
     async fn push(
         &self,
@@ -257,4 +268,15 @@ pub trait GitPort: Send + Sync {
         bundle: &Path,
         prefix: &str,
     ) -> AppResult<Vec<String>>;
+}
+
+/// What [`GitPort::merge_integration`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeIntegration {
+    /// The branch already contains the integration branch.
+    UpToDate,
+    /// The new head after the merge.
+    Merged(String),
+    /// The merge conflicted in these paths and was aborted.
+    Conflict(Vec<String>),
 }

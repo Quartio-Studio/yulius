@@ -2002,9 +2002,6 @@ impl App {
         }
     }
 
-    /// Records why the agent's head could not be pushed, for `yulius wait` (DLV-201). A branch
-    /// rewritten after it was pushed is refused as not a fast-forward; the remedy merges the
-    /// pushed head back in, so nothing is force-pushed.
     /// Records why Yulius did not push or open the pull request at the end of a turn, for
     /// `yulius wait` (SPEC-050 DLV-204): an agent that expects delivery learns what blocks it
     /// instead of waiting for a pull request that never comes (#34 waited 42 minutes). Only for
@@ -2046,7 +2043,10 @@ impl App {
         }
     }
 
-    fn set_push_problem(
+    /// Records why the agent's head could not be pushed, for `yulius wait` (DLV-201). A branch
+    /// rewritten after it was pushed is refused as not a fast-forward; the remedy merges the
+    /// pushed head back in, so nothing is force-pushed.
+    pub(crate) fn set_push_problem(
         &self,
         task_id: &TaskId,
         head: &str,
