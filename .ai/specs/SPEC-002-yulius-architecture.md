@@ -1212,8 +1212,9 @@ space-separated values) or `[commands] gate` (one job named `gate`) in `yulius.t
   - an active run whose reference moved to another commit, or disappeared, is cancelled with
     "superseded by <sha>".
 - *Dispatcher* (woken on queue and on runner release, else every 15 s): starts the oldest queued
-  run of each sandbox with nothing executing. A sandbox runs one run at a time, because its jobs
-  use the sandbox's CI checkouts. A partial unique index makes a second running run impossible.
+  runs of each sandbox, one per free lane (`YULIUS_CI_LANES`, default 2; SPEC-021). Each lane has
+  its own job checkouts (`<job>@<lane>` past the first), so two runs never share one. Disk
+  upkeep's claim of a sandbox's checkouts waits for every lane and holds them all.
 - *Jobs* of a run run in parallel. Each holds one of `YULIUS_CI_MAX_JOBS` (default 4) instance-wide
   slots, waiting for one cancellably.
 
@@ -2304,7 +2305,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Held prompts per task | one pending (a newer one supersedes) | — |
 | Revert stop wait | 30 s | nothing reverted, conflict |
 | CI jobs at once (instance, ADR-21) | 4 (`YULIUS_CI_MAX_JOBS`) | jobs wait for a slot (cancellable) |
-| CI runs at once per sandbox | 1 | the next waits in the queue |
+| CI runs at once per sandbox | 2 (`YULIUS_CI_LANES`) | the next waits in the queue |
 | CI job time | 30 min (`YULIUS_CI_JOB_TIMEOUT_MIN`) | process group killed; job `error` "timed out" |
 | CI job output | 512 KiB kept, log ≤ 256 MiB | oldest discarded with a note / job ended "more than 256 MiB of output" |
 | CI configuration | 16 job definitions, 32 jobs, 16 matrix values, 2,000-byte commands | `yulius.toml` problem shown; no CI from it |

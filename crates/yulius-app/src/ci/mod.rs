@@ -13,7 +13,8 @@
 //!   requests, plans with [`yulius_domain::ci::plan`]: queues new heads and cancels runs whose
 //!   reference moved (superseded) or disappeared;
 //! - the **dispatcher** starts the oldest queued run of each sandbox that has none executing
-//!   (one run per sandbox at a time: its jobs use the sandbox's persistent CI checkouts);
+//!   (up to [`CiSettings::lanes`] runs per sandbox at a time, each lane with its own persistent
+//!   job checkouts);
 //! - a run's jobs run in parallel, each holding one of [`CiSettings::max_jobs`] instance-wide
 //!   slots; a job runs through the process host ([`crate::ports::session::SessionHost`]) inside
 //!   the sandbox's containment, with no secret in its environment, for at most
@@ -87,6 +88,9 @@ pub struct CiSettings {
     pub enabled: bool,
     /// Jobs running at once on this machine (all sandboxes).
     pub max_jobs: u32,
+    /// Runs of one sandbox executing at once, each in its own job checkouts (F 2026-10-12: one
+    /// run at a time made parallel tasks wait behind each other for hours).
+    pub lanes: u32,
     /// Wall-clock limit of one job.
     pub job_timeout: Duration,
     /// How often each sandbox is checked for new heads.
@@ -98,6 +102,7 @@ impl Default for CiSettings {
         Self {
             enabled: true,
             max_jobs: 4,
+            lanes: 2,
             job_timeout: Duration::from_secs(30 * 60),
             poll: Duration::from_secs(60),
         }
@@ -213,7 +218,8 @@ pub struct CiState {
     slots: OnceLock<Arc<Semaphore>>,
     /// Executing runs: their cancellation (the reason, once cancelled).
     executing: Mutex<HashMap<String, watch::Sender<Option<String>>>>,
-    /// Sandboxes with an executing run.
+    /// Lanes in use (`<sandbox>/<lane>` for an executing run) and whole-sandbox claims
+    /// (`<sandbox>`, disk upkeep).
     busy: Mutex<HashSet<String>>,
     gates: Mutex<HashMap<String, GateView>>,
     pub(crate) hygiene: Mutex<HashMap<String, yulius_contracts::api::ci::HygieneReport>>,
@@ -224,6 +230,26 @@ pub struct CiState {
 
 fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
+}
+
+/// Whether anything of `sandbox` is in `busy`: a lane (`<sandbox>/<n>`) or a claim.
+fn busy_in(busy: &HashSet<String>, sandbox: &str) -> bool {
+    busy.iter().any(|key| {
+        key == sandbox
+            || key
+                .strip_prefix(sandbox)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// A free lane of `sandbox` (and marks it), unless the sandbox is claimed or every lane runs.
+fn take_lane(busy: &mut HashSet<String>, sandbox: &str, lanes: u32) -> Option<u32> {
+    if busy.contains(sandbox) {
+        return None;
+    }
+    let lane = (0..lanes.max(1)).find(|lane| !busy.contains(&format!("{sandbox}/{lane}")))?;
+    busy.insert(format!("{sandbox}/{lane}"));
+    Some(lane)
 }
 
 fn job_view(job: &CiJobRecord, with_output: bool) -> CiJob {
@@ -311,22 +337,21 @@ impl App {
         self.sandbox_dir(sandbox).join("ci")
     }
 
-    /// Whether a run of `sandbox` is executing: its job checkouts are in use.
+    /// Whether a run of `sandbox` is executing (in any lane) or its checkouts are claimed.
     pub(crate) fn ci_busy(&self, sandbox: &SandboxId) -> bool {
         self.ci
             .busy
             .lock()
-            .map_or(true, |busy| busy.contains(sandbox.as_str()))
+            .map_or(true, |busy| busy_in(&busy, sandbox.as_str()))
     }
 
     /// Claims `sandbox`'s CI checkouts (the dispatcher starts no run there while claimed), for
     /// work that removes files in them (disk upkeep); `false` when a run executes or another
     /// claim holds them. End it with [`App::ci_release`].
     pub fn ci_claim(&self, sandbox: &SandboxId) -> bool {
-        self.ci
-            .busy
-            .lock()
-            .is_ok_and(|mut busy| busy.insert(sandbox.as_str().to_owned()))
+        self.ci.busy.lock().is_ok_and(|mut busy| {
+            !busy_in(&busy, sandbox.as_str()) && busy.insert(sandbox.as_str().to_owned())
+        })
     }
 
     /// Ends a claim of [`App::ci_claim`] and lets the dispatcher start queued runs.
@@ -964,35 +989,30 @@ impl App {
         }
     }
 
-    /// Starts every queued run whose sandbox has no executing run.
+    /// Starts the oldest queued runs of every sandbox, as many as it has free lanes
+    /// ([`CiSettings::lanes`]); the instance-wide job slots still bound the machine's load.
     pub async fn ci_dispatch(self: &Arc<Self>) {
         let Ok(active) = self.deps.store.active_ci_runs().await else {
             return;
         };
-        let running: HashSet<String> = active
-            .iter()
-            .filter(|run| run.state == RunState::Running)
-            .map(|run| run.sandbox_id.as_str().to_owned())
-            .collect();
+        let lanes = self.config.ci.lanes.max(1);
         for run in active.into_iter().filter(|r| r.state == RunState::Queued) {
             let sandbox = run.sandbox_id.as_str().to_owned();
-            if running.contains(&sandbox) {
-                continue;
-            }
             let (tx, rx) = watch::channel(None);
-            {
+            let lane = {
                 let Ok(mut busy) = self.ci.busy.lock() else {
                     return;
                 };
-                if !busy.insert(sandbox.clone()) {
+                let Some(lane) = take_lane(&mut busy, &sandbox, lanes) else {
                     continue;
-                }
+                };
                 if let Ok(mut executing) = self.ci.executing.lock() {
                     executing.insert(run.id.clone(), tx);
                 }
-            }
+                lane
+            };
             let app = Arc::clone(self);
-            tokio::spawn(async move { app.ci_execute(run, rx).await });
+            tokio::spawn(async move { app.ci_execute(run, rx, lane).await });
         }
     }
 
@@ -1225,5 +1245,40 @@ impl App {
         let (sandbox, _) = self.ci_sandbox(ctx, sandbox_id, Action::Work).await?;
         self.ci_sync_sandbox(&sandbox).await?;
         self.ci_overview(ctx, sandbox_id).await
+    }
+}
+
+#[cfg(test)]
+mod lane_tests {
+    use super::{busy_in, take_lane};
+    use std::collections::HashSet;
+
+    #[test]
+    fn a_sandbox_runs_as_many_runs_as_it_has_lanes_and_never_while_claimed() {
+        let mut busy = HashSet::new();
+        assert_eq!(take_lane(&mut busy, "s1", 2), Some(0));
+        assert_eq!(take_lane(&mut busy, "s1", 2), Some(1));
+        assert_eq!(take_lane(&mut busy, "s1", 2), None, "both lanes run");
+        assert_eq!(
+            take_lane(&mut busy, "s2", 2),
+            Some(0),
+            "sandboxes are independent"
+        );
+        assert!(
+            busy_in(&busy, "s1") && !busy_in(&busy, "s"),
+            "no prefix confusion"
+        );
+        busy.remove("s1/0");
+        assert_eq!(
+            take_lane(&mut busy, "s1", 2),
+            Some(0),
+            "a freed lane is reused"
+        );
+        let mut claimed: HashSet<String> = ["s3".to_owned()].into();
+        assert_eq!(
+            take_lane(&mut claimed, "s3", 2),
+            None,
+            "a disk claim holds every lane"
+        );
     }
 }

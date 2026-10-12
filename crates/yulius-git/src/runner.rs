@@ -9,9 +9,9 @@ use std::ffi::{OsStr, OsString};
 use std::io::{ErrorKind, Read};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -124,6 +124,23 @@ enum Stream {
     Stderr(std::io::Result<Vec<u8>>),
 }
 
+/// Changes to a repository's worktree registrations run one at a time in this process: a
+/// `git worktree prune` that runs while an add has created `.git/worktrees/<name>` but not yet
+/// written it removes the directory, and the add fails ("failed to read
+/// .git/worktrees/<name>/commondir"; two CI lanes creating checkouts at once, SPEC-021).
+static WORKTREE_CHANGES: Mutex<()> = Mutex::new(());
+
+/// Whether `args` add, move, remove or prune worktrees.
+fn changes_worktrees(args: &[OsString]) -> bool {
+    args.first()
+        .is_some_and(|a| a.as_os_str() == OsStr::new("worktree"))
+        && args.get(1).is_some_and(|a| {
+            ["add", "move", "remove", "prune"]
+                .iter()
+                .any(|c| a.as_os_str() == OsStr::new(c))
+        })
+}
+
 impl Git {
     /// Runs and requires exit status 0.
     pub(crate) fn run_ok(&self, invocation: Invocation<'_>) -> Result<Output, GitError> {
@@ -138,6 +155,11 @@ impl Git {
 
     /// Runs and returns the output whatever the exit status.
     pub(crate) fn run(&self, invocation: Invocation<'_>) -> Result<Output, GitError> {
+        let _changes = changes_worktrees(&invocation.args).then(|| {
+            WORKTREE_CHANGES
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        });
         let mut command = Command::new(&self.exe);
         command
             .args(FIXED_CONFIG)

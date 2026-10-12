@@ -39,11 +39,14 @@ stash@{n}`), check the result, then drop that entry only. Never stash or clear o
 
 ## Staying current
 
-- Bring your branch up to date with the integration branch the way the project says: rebase
-  your own branch before the pull request, or merge the integration branch into it.
-- Rewrite only your own, unshared branch history. Force-push only your own branch, and only
-  with `git push --force-with-lease`. Never rewrite, force-push or delete the integration or
-  production branch, and never rewrite commits someone else built on.
+- Bring your branch up to date by merging the integration branch into it
+  (`git fetch origin && git merge origin/<integration>`). The final squash merge keeps the
+  integration branch linear anyway.
+- Never rewrite commits once they are pushed: no rebase, amend or force push (not even
+  `--force-with-lease`). Yulius pushes your branch with a plain push, so a rewritten branch can no
+  longer be pushed and your pull request stays on the old head. Before the first push you may
+  tidy your own commits. Never rewrite, force-push or delete the integration or production
+  branch.
 - Resolve conflicts by understanding both sides. Never take "ours" or "theirs" blindly; rerun
   the tests after every conflict resolution.
 

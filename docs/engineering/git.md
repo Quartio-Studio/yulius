@@ -188,9 +188,9 @@ branches or use forced ref updates to refresh a checked-out branch.
 - Do not delete a shared or dirty worktree. Never use `git reset --hard`, `git clean`,
   force pushes or branch deletion as a routine way to resolve conflicts.
 - Bring a feature up to date by merging `origin/dev`, resolving conflicts, and rerunning
-  affected checks. The final squash keeps `dev` linear. A rebase is optional only
-  on your exclusively owned feature branch; coordinate and use `--force-with-lease`.
-  Never rewrite `dev` or `main`, and never use plain `--force`.
+  affected checks. The final squash keeps `dev` linear. Never rebase, amend or force-push
+  commits once they are pushed (Yulius pushes task branches with a plain push, so a rewritten
+  branch can no longer be pushed), and never rewrite `dev` or `main`.
 - Failed post-merge `dev` checks block promotion. Fix on a new branch from `dev` and
   use the same PR/test sequence. Failed `main` checks stop further delivery; diagnose,
   then fix/revert through `dev` and promote. Do not bypass the process with a direct

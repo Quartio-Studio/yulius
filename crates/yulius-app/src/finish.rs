@@ -363,10 +363,15 @@ impl App {
         }
         self.probe_idle_shells(task_id).await;
         if next == Some(Activity::Done) {
-            // Tasks chained after this one start once it is Done (TSK-012); not from this loop,
-            // which must go on reading the record that says what is still pending.
+            // Tasks chained after this one start once it is Done (TSK-012), and a Done task no
+            // longer counts against the session limit (SES-101): a queued task can start now.
+            // Not from this loop, which must go on reading the record that says what is still
+            // pending.
             let (app, task_id) = (Arc::clone(self), task_id.clone());
-            tokio::spawn(async move { app.advance_chains(&task_id).await });
+            tokio::spawn(async move {
+                app.advance_chains(&task_id).await;
+                app.drain_queue().await;
+            });
         }
     }
 
