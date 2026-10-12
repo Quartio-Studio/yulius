@@ -124,6 +124,11 @@ pub trait GitPort: Send + Sync {
     async fn has_ignored_files(&self, _worktree: &Path) -> AppResult<bool> {
         Ok(true)
     }
+    /// The worktree's ignored files (directories with a trailing `/`); `None` when the adapter
+    /// cannot tell (then nothing is removed).
+    async fn ignored_entries(&self, _worktree: &Path) -> AppResult<Option<Vec<String>>> {
+        Ok(None)
+    }
     /// Installs the pre-push guard rejecting pushes to `protected` branches.
     async fn install_push_guard(&self, worktree: &Path, protected: &[String]) -> AppResult<()>;
     /// Sets the commit identity of a worktree.

@@ -131,6 +131,26 @@ impl Git {
         Ok(!output.stdout.is_empty())
     }
 
+    /// The worktree's ignored files, directories summarised with a trailing `/` (as
+    /// `git ls-files --others --ignored --exclude-standard --directory` lists them).
+    pub fn ignored_entries(&self, worktree: &Path) -> Result<Vec<String>, GitError> {
+        let output = self.run_ok(Invocation::new(self, "ls-files", Some(worktree)).args([
+            "--no-optional-locks",
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ]))?;
+        Ok(output
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| String::from_utf8_lossy(entry).into_owned())
+            .collect())
+    }
+
     /// Diff statistics of `base...head` (from their merge base to `head`, as a pull request
     /// shows them). External diff drivers and text conversion are disabled.
     pub fn diff_stat(&self, repo: &Path, base: &str, head: &str) -> Result<DiffStat, GitError> {

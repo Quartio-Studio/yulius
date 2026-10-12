@@ -175,6 +175,7 @@ function seed(params) {
       ...(extra.mode ? { mode: extra.mode } : {}),
       // Background shells the idle agent left running (TSK-014).
       background_shells: extra.shells ?? null,
+      background_shells_since: extra.shells ? new Date(Date.now() - 12 * MIN).toISOString() : null,
     };
   };
   const pr = (number, title, state, base, checks) => ({ number, url: `https://github.com/Quartio-Studio/${number > 400 ? 'product' : 'studio'}/pull/${number}`, title, state, base, head: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, checks });
@@ -306,6 +307,7 @@ function summary(task) {
     auto: task.auto ? { ...task.auto } : null,
     // Background shells an idle agent left running (TSK-014).
     background_shells: task.status === 'running' ? task.background_shells ?? null : null,
+    background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
   };
 }
 

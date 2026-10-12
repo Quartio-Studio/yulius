@@ -227,7 +227,7 @@ export function mountTaskView(ctx, sandbox, task) {
     setChildren(statusEl,
       statusMark(info),
       h('span', { class: 'strip-state' }, info.label, reset ? h('span', { class: 'strip-reset' }, ` · ${reset}`) : null,
-        info.shells ? h('span', { class: 'strip-reset' }, ` · ${shellsLine(info.shells)}`) : null));
+        info.shells ? h('span', { class: 'strip-reset' }, ` · ${shellsLine(info.shells, info.shellsSince)}`) : null));
     // The chain shows on both tasks (TSK-012): what this task runs after, what runs after it.
     const slug = encodeURIComponent((ctx.store.sandboxById(sandbox.id) || sandbox).slug);
     const chainLink = (link, text, title) => (link.task_id

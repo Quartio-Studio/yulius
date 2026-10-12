@@ -67,6 +67,10 @@ pub struct TaskSummary {
     /// probed (TSK-014). Null when not known or not idle.
     #[serde(default)]
     pub background_shells: Option<u32>,
+    /// Since when those shells have been running, RFC 3339 (complaint 1: a wait that never
+    /// ends shows its age). Null when none run or not known.
+    #[serde(default)]
+    pub background_shells_since: Option<String>,
     /// The task this one runs after (SPEC-001 TSK-012): while `chained` it waits for it; the
     /// link stays after the task started.
     #[serde(default)]

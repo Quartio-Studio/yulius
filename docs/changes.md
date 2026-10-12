@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Sandboxes stay clean and background shells stay honest (SPEC-019): an idle task's caches go after
+  4 hours whatever the quota, never while its background shells still run a build; ended tasks'
+  worktrees go when only rebuildable directories are ignored; orphan worktrees and removed
+  sandboxes' worktrees and CI checkouts are pruned after a day; a Bash `pgrep -f`/`pkill -f` that
+  would match itself is refused before it runs; an idle agent is told once when its background
+  shells run 30 minutes, and the UI shows their age.
 - Task-to-task messaging is removed for now: `message_send` only tells or asks people (`to="people"`), `scope_claim` shows an overlap to the claiming agent only and messages nobody, and the briefing, digest and Messages panel speak of Yulius's notices. Notices, the inbox, the digest and the idle wake-up are unchanged (SPEC-012, COM-002 withdrawn).
 - A task's state reads the same everywhere and matches what it waits for (tasks #11, #13, #14):
   an idle agent whose background shells still run is Working, not "Your turn", and the task view
