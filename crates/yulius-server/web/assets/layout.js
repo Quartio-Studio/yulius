@@ -17,8 +17,6 @@ import { isPhone } from './theme.js';
 const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
 
 const NAV = [
-  // The user's own plain Claude Code session (SPEC-021): first, above the task pages.
-  ['cockpit', 'Cockpit', 'gauge'],
   ['tasks', 'Tasks', 'tasks'],
   ['sessions', 'Sessions', 'chat'],
   ['git', 'Git', 'branch'],
@@ -33,7 +31,7 @@ const NAV = [
 
 // ---------------------------------------------------------------- tab row
 
-/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, notifications, tools toggle. */
+/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, notifications, Agent, tools toggle. */
 export function createTabRow(ctx) {
   const tabs = h('nav', { class: 'tabrow-tabs', 'aria-label': 'Sandboxes' });
   const select = h('select', { class: 'select tab-select', 'aria-label': 'Sandbox', onChange: () => {
@@ -72,6 +70,16 @@ export function createTabRow(ctx) {
     toolsButton.setAttribute('aria-pressed', String(visible));
     labelTools();
   };
+  // The Agent (SPEC-035 AGT-005): the user's own session for quick work, in the right panel; one
+  // click opens or closes it, whether the tools rail shows or not.
+  const agentButton = h('button', { type: 'button', class: 'btn btn-agent agent-toggle', 'aria-label': 'Show Agent', 'aria-pressed': 'false', title: 'Agent: your own Claude Code session for quick work', onClick: () => ctx.toggleAgent && ctx.toggleAgent() },
+    icon('spark', { size: 16 }), h('span', { class: 'agent-toggle-text', 'aria-hidden': 'true' }, 'Agent'));
+  ctx.onPanelChange = (kind) => {
+    const open = kind === 'agent';
+    agentButton.classList.toggle('active', open);
+    agentButton.setAttribute('aria-pressed', String(open));
+    agentButton.setAttribute('aria-label', open ? 'Hide Agent' : 'Show Agent');
+  };
   const notifications = createNotificationCenter(ctx);
   ctx.notifications = notifications;
   const statusPanel = createStatusPanel(ctx, statusButton);
@@ -83,7 +91,7 @@ export function createTabRow(ctx) {
     tabs,
     select,
     addButton,
-    h('div', { class: 'tabrow-right' }, contained, statusButton, notifications.button, toolsButton),
+    h('div', { class: 'tabrow-right' }, contained, statusButton, notifications.button, agentButton, toolsButton),
   );
 
   let currentSlug = null;

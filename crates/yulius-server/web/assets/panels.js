@@ -1,4 +1,4 @@
-// Right rail (Browser, Editor, Shell) and its resizable panel; each tool keeps the width
+// Right rail (Agent, Browser, Editor, Shell) and its resizable panel; each tool keeps the width
 // its user gave it (UI-044). The whole rail is hidden by default (F 2026-10-07) and shown with the
 // top-bar Tools toggle, remembered per browser; opening a panel from a link shows it.
 // Sandbox-scoped panels stay alive while hidden so the browser stream, editor and shell sessions
@@ -10,6 +10,7 @@ import { createTerminalView } from './terminal.js';
 import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { createBrowserPanel } from './browser.js';
 import { createEditorView } from './editorview.js';
+import { createAgentView } from './agent.js';
 import { allows } from './status.js';
 import { readJson, writeJson } from './store.js';
 import { createSplitter, layoutPrefs } from './splitter.js';
@@ -24,6 +25,8 @@ const MAX_KEY = 'yulius.panelMaximized';
 /** Default panel width per kind (share of the work area); the editor needs room. */
 const DEFAULT_FRACTION = { editor: 0.62 };
 const KINDS = [
+  // The user's own Claude Code session for quick work (SPEC-035): first, the tool used most.
+  ['agent', 'spark', 'Agent'],
   ['browser', 'globe', 'Browser'],
   ['editor', 'code', 'Editor'],
   ['shell', 'terminal', 'Shell'],
@@ -147,6 +150,7 @@ export function createPanelHost(ctx) {
 
   function createView(k) {
     if (!sandbox) return simpleView(h('div', { class: 'panel-msg' }, 'Open a sandbox first.'));
+    if (k === 'agent') return createAgentView(ctx, sandbox);
     if (k === 'browser') return createBrowserPanel(ctx, sandbox);
     if (k === 'editor') return createEditorView(ctx, sandbox, () => task);
     if (k === 'shell') return createShellView(ctx, sandbox, () => task);
@@ -220,7 +224,7 @@ export function createPanelHost(ctx) {
     buttons.get('browser').title = requests && requests.size ? 'Browser — an agent needs your action' : 'Browser';
     buttons.get('browser').setAttribute('aria-label', requests && requests.size ? 'Browser, an agent needs your action' : 'Browser');
     const write = sandbox && allows(sandbox.access, 'write');
-    for (const k of ['browser', 'editor', 'shell']) {
+    for (const [k] of KINDS) {
       const button = buttons.get(k);
       button.disabled = !sandbox;
       button.classList.toggle('readonly', Boolean(sandbox) && !write);

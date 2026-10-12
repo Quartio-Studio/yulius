@@ -19,7 +19,6 @@ test('the sandbox pages open from the sandbox navigation', async ({ app, browser
   const nav = screen.getByRole('navigation', 'Sandbox');
 
   for (const [page, path] of [
-    ['Cockpit', 'cockpit'],
     ['Tasks', 'tasks'],
     ['Sessions', 'sessions'],
     ['Git', 'git'],

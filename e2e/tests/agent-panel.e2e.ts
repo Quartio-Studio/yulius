@@ -1,0 +1,103 @@
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+import { axeViolations, failOnPageErrors, mock } from './support.ts';
+
+failOnPageErrors();
+
+// The Agent (SPEC-035, formerly the Cockpit of SPEC-021): every user's own plain Claude Code session
+// per sandbox, in the right tool panel beside the page, for quick work that should not become a task.
+
+const agentTerminal = '.agent-term .xterm-rows';
+
+test('the Agent opens on the right beside the page, says what it is for and keeps its session', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+
+  await screen.getByRole('button', 'Show Agent').click();
+  const panel = screen.getByRole('region', 'Tool panel');
+  await expect(panel).toBeVisible();
+  // The task stays in the centre: the Agent is beside it, not instead of it.
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Agent')).toHaveAttribute('aria-pressed', 'true');
+
+  // The notice: quick work here, anything bigger (writing code) in a task.
+  const note = screen.getByRole('note', 'About the Agent');
+  await expect(note).toHaveText(/quick work.*automations.*quick question/i);
+  await expect(note).toHaveText(/writing code.*task/i);
+
+  const terminal = browser.locator(agentTerminal);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  // The keyboard is in the session: a quick question gets an answer.
+  await expect(browser.locator('.agent-term .xterm-helper-textarea')).toBeFocused();
+  await browser.keyboard.type('why?');
+  await browser.keyboard.press('Enter');
+  await expect(terminal).toHaveText(/Good question/);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Nothing calls it the Cockpit any more.
+  expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/Cockpit/);
+
+  // Hidden and shown again, and after another page, it is the same session.
+  await screen.getByRole('button', 'Hide Agent').click();
+  await expect(panel).toBeHidden();
+  await screen.getByRole('navigation', 'Sandbox').getByRole('link', 'Tasks').click();
+  await screen.getByRole('button', 'Show Agent').click();
+  await expect(terminal).toHaveText(/Good question/);
+});
+
+test('the Agent notice opens a new task for bigger work', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await screen.getByRole('button', 'Show Agent').click();
+  await screen.getByRole('note', 'About the Agent').getByRole('link', 'New task').click();
+  await expect(browser).toHaveURL(/#\/s\/studio$/);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+});
+
+test('the Agent is not in the left navigation', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('navigation', 'Sandbox').getByRole('link', 'Tasks')).toBeVisible();
+  const items = await browser.evaluate(() => [...document.querySelectorAll('nav.nav a')].map((a) => a.textContent));
+  expect(items.filter((text) => /Cockpit|Agent/.test(text ?? ''))).toEqual([]);
+});
+
+for (const path of ['agent', 'cockpit']) {
+  test(`/s/<slug>/${path} opens the sandbox with the Agent`, async ({ app, browser, screen }) => {
+    await app.open(mock(`/s/studio/${path}`));
+    await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+    await expect(browser).toHaveURL(/#\/s\/studio$/);
+    await expect(screen.getByRole('button', 'Hide Agent')).toBeVisible();
+  });
+}
+
+test('a stopped Agent starts again with its conversation', async ({ app, browser, screen }) => {
+  // Wide enough that the panel's terminal does not wrap the welcome line.
+  await browser.setViewport({ width: 1920, height: 1000 });
+  await app.open(mock('/s/studio/agent'));
+  const terminal = browser.locator(agentTerminal);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  await browser.locator('.agent-term .xterm-helper-textarea').focus();
+  await browser.keyboard.type('/exit');
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByText('The Agent stopped. Its conversation is kept.')).toBeVisible();
+
+  await screen.getByRole('button', 'Start again').click();
+  await expect(terminal).toHaveText(/resumed your last conversation/);
+});
+
+test('an Agent whose process is gone is started again by itself', async ({ app, browser }) => {
+  // The panel got an Agent that no longer runs (the machine rebooted): it does not stay stuck on it.
+  await app.open(mock('/s/studio/agent', '&cockpit=gone'));
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+});
+
+test('an Agent that cannot start says why and offers to try again', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/agent', '&cockpit=fail'));
+  await expect(screen.getByRole('alert')).toHaveText(/Couldn’t start the Agent: no subscription has capacity right now/);
+  await expect(screen.getByRole('button', 'Try again')).toBeVisible();
+});
+
+test('read access explains why the Agent is not available', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/sandbox-3/agent'));
+  await expect(screen.getByText('The Agent needs write access to this sandbox.')).toBeVisible();
+  await expect(browser.locator(agentTerminal)).toBeHidden();
+});

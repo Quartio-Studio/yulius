@@ -33,7 +33,6 @@ import { mountAutomationsPage } from './pages/automations.js';
 import { mountSessionsPage, mountSessionView } from './pages/sessions.js';
 import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
-import { mountCockpitPage } from './pages/cockpit.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
 import { mountInstancePage } from './pages/instance.js';
@@ -51,7 +50,6 @@ const MOCK = params.get('mock') === '1';
 const LAST_SANDBOX_KEY = 'yulius.lastSandbox';
 
 const SANDBOX_PAGES = {
-  cockpit: (ctx, sandbox) => mountCockpitPage(ctx, sandbox),
   tasks: (ctx, sandbox) => mountTasksPage(ctx, sandbox),
   sessions: (ctx, sandbox) => mountSessionsPage(ctx, sandbox),
   git: (ctx, sandbox) => mountGitPage(ctx, sandbox),
@@ -255,6 +253,7 @@ function createApp(root, transport) {
     ctx.defaultSandbox = () => defaultSandbox();
     ctx.openBrowserTab = (sandbox, tabId) => openBrowserTab(sandbox, tabId);
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
+    ctx.toggleAgent = () => panels.toggle('agent');
     ctx.railVisible = () => panels.railVisible;
     ctx.setRailVisible = (visible) => panels.setRailVisible(visible);
     panels.mounted();
@@ -568,6 +567,10 @@ function createApp(root, transport) {
     shell.panels.setContext(sandbox, task);
     if (route.name === 'composer' && route.browserTab !== undefined && sandbox) {
       shell.panels.open('browser', { tabId: route.browserTab });
+      navigate(`/s/${encodeURIComponent(sandbox.slug)}`, { replace: true });
+    }
+    if (route.name === 'composer' && route.panel && sandbox) {
+      shell.panels.open(route.panel);
       navigate(`/s/${encodeURIComponent(sandbox.slug)}`, { replace: true });
     }
     updateTitle();
