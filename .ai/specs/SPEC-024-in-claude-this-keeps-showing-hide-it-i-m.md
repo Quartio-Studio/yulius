@@ -46,7 +46,7 @@ by itself to the right of the transcript.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Every Claude Code launch starts with the diff side panel closed
+- [x] Every Claude Code launch starts with the diff side panel closed
 - [ ] Architecture spec and changes log say the panel stays closed
 - [ ] Independent review passes and the change merges into dev on green CI
 

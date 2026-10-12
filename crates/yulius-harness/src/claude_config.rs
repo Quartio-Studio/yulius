@@ -15,11 +15,13 @@ use crate::launch::PlannedFile;
 
 /// File name inside the config dir.
 pub const CLAUDE_GLOBAL_CONFIG: &str = ".claude.json";
+/// Claude Code's preference for its diff side panel; `false` keeps the panel from opening itself.
+const DIFF_SIDEBAR_OPEN: &str = "diffSidebarOpen";
 /// Largest existing config read; a larger file is treated as corrupt and left untouched.
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Merges onboarding completion and trust for `worktree` into the Claude global config of
-/// `config_dir` (created 0700 when missing). `bypass_permissions` also records acceptance of the
+/// Merges onboarding completion, trust for `worktree` and a closed diff side panel into the
+/// Claude global config of `config_dir` (created 0700 when missing). `bypass_permissions` also records acceptance of the
 /// `--dangerously-skip-permissions` warning (contained runs only). Idempotent.
 ///
 /// # Errors
@@ -63,6 +65,10 @@ pub fn ensure_claude_config(
     root.insert("hasCompletedOnboarding".into(), Value::Bool(true));
     root.entry("theme")
         .or_insert_with(|| Value::String("dark".into()));
+    // Claude Code opens its diff side panel by itself in a wide terminal (from 144 columns, or
+    // 110 once it was opened by hand), squeezing the transcript in the task view (SPEC-024).
+    // `false` stops the auto-open on every launch; the panel still opens by hand in a session.
+    root.insert(DIFF_SIDEBAR_OPEN.into(), Value::Bool(false));
     if bypass_permissions {
         root.insert("bypassPermissionsModeAccepted".into(), Value::Bool(true));
     }
@@ -131,6 +137,29 @@ mod tests {
         let value: Value =
             serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
         assert_eq!(value["bypassPermissionsModeAccepted"], true);
+        Ok(())
+    }
+
+    #[test]
+    fn every_launch_starts_with_the_diff_side_panel_closed() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let config = dir.path().join(".claude");
+        let read = |config: &std::path::Path| -> Result<Value, Box<dyn std::error::Error>> {
+            Ok(serde_json::from_str(&std::fs::read_to_string(
+                config.join(CLAUDE_GLOBAL_CONFIG),
+            )?)?)
+        };
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert_eq!(read(&config)?["diffSidebarOpen"], json!(false));
+        // Opening the panel by hand in a session writes `true`; the next launch closes it again.
+        std::fs::write(
+            config.join(CLAUDE_GLOBAL_CONFIG),
+            r#"{"userID":"abc","diffSidebarOpen":true}"#,
+        )?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        let value = read(&config)?;
+        assert_eq!(value["diffSidebarOpen"], json!(false));
+        assert_eq!(value["userID"], "abc");
         Ok(())
     }
 
