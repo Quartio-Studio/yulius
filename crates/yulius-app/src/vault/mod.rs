@@ -1,7 +1,7 @@
 //! Secrets vault (SPEC-001 VLT-001..009, SPEC-002 ADR-20).
 //!
-//! Two sections: **team secrets** (every member lists and edits them; revealing a password,
-//! notes, a TOTP seed or a code needs a re-authentication within 10 minutes, and is audited) and
+//! Two sections: **team secrets** (every member lists and edits them; revealing a value or notes
+//! needs a re-authentication within 10 minutes, and is audited) and
 //! **agent secrets** (agents use them without seeing them: the egress proxy adds them to
 //! requests for their bound hosts, `browser_fill_secret` types them into pages of those hosts,
 //! and every channel through which an agent reads is redacted of their values and encodings).
@@ -82,24 +82,57 @@ fn field(value: Option<&str>, name: &str, trim: bool) -> AppResult<Option<String
     Ok(Some(value.to_owned()))
 }
 
-/// Team secret payload (sealed as JSON).
+/// Team secret payload (sealed as JSON): a value and notes (SPEC-040).
 #[derive(Default, Serialize, Deserialize)]
+#[serde(from = "StoredTeamPayload")]
 pub(crate) struct TeamPayload {
-    #[serde(default)]
-    pub url: Option<String>,
-    #[serde(default)]
-    pub username: Option<String>,
-    #[serde(default)]
-    pub password: Option<String>,
-    #[serde(default)]
+    pub value: Option<String>,
     pub notes: Option<String>,
-    #[serde(default)]
-    pub totp: Option<String>,
 }
 
 impl Drop for TeamPayload {
     fn drop(&mut self) {
+        for value in [&mut self.value, &mut self.notes].into_iter().flatten() {
+            value.zeroize();
+        }
+    }
+}
+
+impl TeamPayload {
+    fn fields(&self) -> Vec<String> {
+        [
+            ("value", self.value.is_some()),
+            ("notes", self.notes.is_some()),
+        ]
+        .into_iter()
+        .filter(|(_, present)| *present)
+        .map(|(name, _)| name.to_owned())
+        .collect()
+    }
+}
+
+/// A sealed team payload in either form: the current one, or the one before SPEC-040 (an
+/// address, a user name, a password, notes and a TOTP seed).
+#[derive(Default, Deserialize)]
+struct StoredTeamPayload {
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    totp: Option<String>,
+}
+
+impl Drop for StoredTeamPayload {
+    fn drop(&mut self) {
         for value in [
+            &mut self.value,
             &mut self.url,
             &mut self.username,
             &mut self.password,
@@ -114,17 +147,36 @@ impl Drop for TeamPayload {
     }
 }
 
-impl TeamPayload {
-    fn fields(&self) -> Vec<String> {
-        [
-            ("password", self.password.is_some()),
-            ("notes", self.notes.is_some()),
-            ("totp", self.totp.is_some()),
+impl From<StoredTeamPayload> for TeamPayload {
+    /// Folds the old form without losing a value: the password becomes the value, and the
+    /// address, user name and seed lead the notes.
+    fn from(mut stored: StoredTeamPayload) -> Self {
+        let mut lines: Vec<String> = [
+            ("Address", stored.url.take()),
+            ("User name", stored.username.take()),
+            ("Two-factor seed", stored.totp.take()),
         ]
         .into_iter()
-        .filter(|(_, present)| *present)
-        .map(|(name, _)| name.to_owned())
-        .collect()
+        .filter_map(|(label, value)| value.map(|v| format!("{label}: {v}")))
+        .collect();
+        let notes = stored.notes.take();
+        let notes = if lines.is_empty() {
+            notes
+        } else {
+            if let Some(notes) = notes {
+                lines.push(String::new());
+                lines.push(notes);
+            }
+            let joined = lines.join("\n");
+            for line in &mut lines {
+                line.zeroize();
+            }
+            Some(joined)
+        };
+        Self {
+            value: stored.value.take().or_else(|| stored.password.take()),
+            notes,
+        }
     }
 }
 

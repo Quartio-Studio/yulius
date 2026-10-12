@@ -3,56 +3,41 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A team secret in lists: its secret fields are only flagged.
+/// A team secret in lists: a title; its value and notes are only flagged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamSecretView {
     /// Id.
     pub id: String,
     /// Title, e.g. "Shared Gmail".
     pub title: String,
-    /// Sign-in address.
-    pub url: Option<String>,
-    /// User name or email.
-    pub username: Option<String>,
-    /// Whether a password is stored.
-    pub has_password: bool,
+    /// Whether a value is stored.
+    pub has_value: bool,
     /// Whether notes are stored.
     pub has_notes: bool,
-    /// Whether a TOTP seed is stored (codes on demand).
-    pub has_totp: bool,
     /// Who added it.
     pub created_by: String,
     /// Who changed it last.
     pub updated_by: String,
     /// When it changed last.
     pub updated_at: String,
-    /// When a secret field changed last.
+    /// When the value or the notes changed last.
     pub value_updated_at: String,
-    /// The secret fields are older than 180 days: rotate them.
+    /// The value is older than 180 days: rotate it.
     pub rotate_due: bool,
 }
 
-/// Create body (every field but the title optional).
+/// Create body: a title, a value and notes (SPEC-040).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TeamSecretInput {
     /// Title.
     pub title: String,
-    /// Sign-in address.
+    /// The secret value (a password, a key, a recovery code…).
     #[serde(default)]
-    pub url: Option<String>,
-    /// User name or email.
-    #[serde(default)]
-    pub username: Option<String>,
-    /// Password.
-    #[serde(default)]
-    pub password: Option<String>,
-    /// Notes (recovery codes, security answers…).
+    pub value: Option<String>,
+    /// Notes (user name, address, security answers…), encrypted like the value.
     #[serde(default)]
     pub notes: Option<String>,
-    /// TOTP seed: base32 or an `otpauth://totp/…` URI.
-    #[serde(default)]
-    pub totp: Option<String>,
 }
 
 /// Update body: an absent field stays, an empty string clears it.
@@ -62,21 +47,12 @@ pub struct TeamSecretPatch {
     /// Title (never cleared).
     #[serde(default)]
     pub title: Option<String>,
-    /// Sign-in address.
+    /// Value.
     #[serde(default)]
-    pub url: Option<String>,
-    /// User name or email.
-    #[serde(default)]
-    pub username: Option<String>,
-    /// Password.
-    #[serde(default)]
-    pub password: Option<String>,
+    pub value: Option<String>,
     /// Notes.
     #[serde(default)]
     pub notes: Option<String>,
-    /// TOTP seed.
-    #[serde(default)]
-    pub totp: Option<String>,
 }
 
 /// `POST /api/team-secrets/{id}/reveal` body.
@@ -86,20 +62,18 @@ pub struct RevealRequest {
     /// `show` (default) or `copy`, recorded in the audit trail.
     #[serde(default)]
     pub purpose: Option<String>,
-    /// Fields to reveal: `password`, `notes`, `totp` (default: every stored one).
+    /// Fields to reveal: `value`, `notes` (default: both).
     #[serde(default)]
     pub fields: Option<Vec<String>>,
 }
 
 /// Revealed fields (served with `Cache-Control: no-store`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TeamSecretReveal {
-    /// Password.
-    pub password: Option<String>,
+pub struct SecretReveal {
+    /// The value.
+    pub value: Option<String>,
     /// Notes.
     pub notes: Option<String>,
-    /// The TOTP seed as stored.
-    pub totp: Option<String>,
 }
 
 /// A current TOTP code.
