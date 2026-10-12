@@ -147,3 +147,7 @@ call returns, since Claude Code writes nothing before.
   a continued turn dying without a Stop, synthetic lines, flag clearing, unknown probe count, doc
   claims). All fixed test-first except the proactive switch at a turn boundary, issue #271;
   flicker before the goal verdict #264; Monitor streams #265.
+- Unrelated flake met on the way (host load average 40 to 56): `local_ci::runs_jobs_in_parallel_…`
+  read a commit status as `pending` right after the run turned `Failed` (the status is published
+  after the state). Fixed in the test helper: `settle()` also waits until no commit's latest status
+  is `pending` (a wait on a condition, no retry); the five `local_ci` tests pass.
