@@ -10,7 +10,7 @@
 //!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
 //!            [--limit-after N] [--report-env NAME]... [--tui]
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-delay-ms MS] [--drop-lines N]
-//!            [--interrupts] [--rate-limits-file PATH]
+//!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //! ```
 //!
 //! Modes:
@@ -66,6 +66,12 @@
 //! the `rate_limits` object read from PATH (when it exists) in its input, and prints
 //! `STATUS <line>`.
 //!
+//! `--session-start` (with `--hooks`) runs Claude Code's `SessionStart` hook before anything else.
+//! `--opening-turn-ms MS` stands for a first message given on the command line (Claude Code's
+//! prompt argument): the session starts with a turn like `/work MS opening` (`WORKING`, then
+//! `DONE opening` and its Stop hook) before it reads input. With the terminal's echo, a line typed
+//! during that turn shows before `DONE opening`.
+//!
 //! `--tui` draws like a full-screen agent TUI (Claude Code 2.1.x): the alternate screen with a
 //! header box, the transcript and an input box between two rules along the bottom, all as wide
 //! as the terminal, redrawn in full whenever the terminal is resized (SIGWINCH). Printed lines
@@ -118,6 +124,8 @@ struct Options {
     hooks: Option<PathBuf>,
     goal_background: Option<u64>,
     goal_delay_ms: u64,
+    opening_turn_ms: Option<u64>,
+    session_start: bool,
     drop_lines: u32,
     interrupts: bool,
     rate_limits_file: Option<PathBuf>,
@@ -145,6 +153,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         hooks: None,
         goal_background: None,
         goal_delay_ms: 0,
+        opening_turn_ms: None,
+        session_start: false,
         drop_lines: 0,
         interrupts: false,
         rate_limits_file: None,
@@ -197,6 +207,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             }
             "--drop-lines" => options.drop_lines = parse_number(&flag, args.next())?,
             "--interrupts" => options.interrupts = true,
+            "--session-start" => options.session_start = true,
+            "--opening-turn-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.opening_turn_ms = Some(ms.min(MAX_WORK_MS));
+            }
             "--rate-limits-file" => {
                 options.rate_limits_file =
                     Some(args.next().ok_or("--rate-limits-file needs a path")?.into());
@@ -600,6 +615,16 @@ impl Hooks {
         })
     }
 
+    /// `SessionStart` (`source: startup`), as Claude Code runs it before its prompt box reads.
+    fn session_start(&self) {
+        run_hook(
+            &self.exe,
+            "SessionStart",
+            &json!({"session_id": self.session_id, "hook_event_name": "SessionStart",
+                "source": "startup"}),
+        );
+    }
+
     /// `SessionEnd` with `reason`.
     fn session_end(&self, reason: &str) {
         run_hook(
@@ -838,6 +863,19 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     status_line(options, hooks.as_ref())?;
     let mut turns = 0u64;
     let mut limited = false;
+    if let (true, Some(hooks)) = (options.session_start, &hooks) {
+        hooks.session_start();
+    }
+    if let Some(ms) = options.opening_turn_ms {
+        turns += 1;
+        work_turn(
+            options,
+            &format!("/work {ms} opening"),
+            transcript.as_ref(),
+            hooks.as_ref(),
+            keys,
+        )?;
+    }
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let mut to_drop = options.drop_lines;

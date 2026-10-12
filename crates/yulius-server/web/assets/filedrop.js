@@ -514,6 +514,32 @@ export function withAttachments(text, attached) {
   return `${text}\n\n${attached.map((item) => `@${shellQuote(item.path)}`).join('\n')}`;
 }
 
+/** Attached files shown as they are in a tab: none of these runs script as this site. */
+const VIEWABLE_TYPE = /^(application\/pdf|audio\/|video\/)/;
+/** Attached files shown as plain text: a page (`text/html`), XML or script would otherwise run. */
+const TEXT_TYPE = /^(text\/|application\/(json|xml|javascript|x-sh|x-yaml|yaml|toml)\b)/;
+
+/**
+ * Opens a file attached on the new-task composer (SPEC-025). An image previews in a dialog at
+ * full size (`image`: its URL, or a draft's stored thumbnail once the file is gone). Otherwise the
+ * file (`item.file`, this page only) opens in a new tab as plain text when it is text, as it is
+ * when it is a PDF, audio or video, and downloads when it is anything else. An attached file is
+ * untrusted: a tab opened from this page shares its origin, so it never opens as a page.
+ * `url(blob)` gives the object URL the caller keeps for the item (and revokes with it).
+ */
+export function openAttachment(item, { image, url }) {
+  if (image) {
+    openModal({ title: item.name, wide: true, className: 'attachment-modal', body: h('img', { class: 'attachment-preview', src: image, alt: item.name }) });
+    return;
+  }
+  if (!item.file) return;
+  const type = item.type || item.file.type || '';
+  const text = TEXT_TYPE.test(type);
+  const href = url(text ? new Blob([item.file], { type: 'text/plain;charset=utf-8' }) : item.file);
+  if (text || VIEWABLE_TYPE.test(type)) window.open(href, '_blank', 'noopener');
+  else h('a', { href, download: item.name }).click();
+}
+
 /** Uploads a file dropped on the new-task composer of a sandbox, before its task exists. */
 export function draftAttachments(ctx, sandboxId) {
   return (file, options) => ctx.api.post(`/api/sandboxes/${enc(sandboxId)}/attachments?name=${encodeURIComponent(file.name)}`, file, options);
