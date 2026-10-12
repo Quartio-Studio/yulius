@@ -1,6 +1,6 @@
 """Behavioral tests for routing, naming and exact-SHA promotion evidence."""
 import unittest
-from check_git_policy import validate_pr, validate_dev_run
+from check_git_policy import validate_pr, validate_dev_status
 
 REPO = "Quartio-Studio/yulius-v2"
 
@@ -9,9 +9,8 @@ def pr(head="feat/42-task-cancellation", base="dev", title="feat(tasks): add can
     return {"head": {"ref": head, "repo": {"full_name": repo}}, "base": {"ref": base}, "title": title}
 
 
-def run(sha="abc", status="completed", conclusion="success", event="push", branch="dev", identifier=1):
-    return {"head_sha": sha, "status": status, "conclusion": conclusion,
-            "event": event, "head_branch": branch, "id": identifier}
+def status(state="success", context="yulius/ci", identifier=1):
+    return {"state": state, "context": context, "id": identifier}
 
 
 class GitPolicy(unittest.TestCase):
@@ -32,14 +31,13 @@ class GitPolicy(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_pr(pr(head="dev", base="main", title="release: promote dev to main", repo="other/fork"), REPO)
 
-    def test_exact_successful_dev_push_is_required(self):
-        self.assertEqual(validate_dev_run([run()], "abc"), 1)
-        for runs in [[], [run(sha="old")], [run(event="pull_request")], [run(branch="main")],
-                     [run(status="in_progress", conclusion=None)], [run(conclusion="failure")],
-                     [run(conclusion="cancelled")], [run(conclusion="skipped")]]:
-            with self.subTest(runs=runs), self.assertRaises(ValueError):
-                validate_dev_run(runs, "abc")
+    def test_a_successful_yulius_ci_status_on_the_dev_head_is_required(self):
+        self.assertEqual(validate_dev_status([status()], "abc"), 1)
+        for statuses in [[], [status(context="ci/other")], [status(state="pending")],
+                         [status(state="failure")], [status(state="error")]]:
+            with self.subTest(statuses=statuses), self.assertRaises(ValueError):
+                validate_dev_status(statuses, "abc")
 
-    def test_later_failed_run_cannot_be_hidden_by_older_success(self):
+    def test_a_newer_failure_cannot_be_hidden_by_an_older_success(self):
         with self.assertRaises(ValueError):
-            validate_dev_run([run(), run(identifier=2, conclusion="failure")], "abc")
+            validate_dev_status([status(state="failure", identifier=2), status()], "abc")

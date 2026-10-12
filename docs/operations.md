@@ -541,7 +541,7 @@ stay with the App. The manifest flow requests these repository permissions:
 | Issues | Read and write | Agents log follow-up work, bugs and flaky tests as issues with Definition-of-Ready labels (`issue_create`, DLV-008); missing labels are created. Requested since 2026-10-10; an App created before needs it added (below). |
 | Checks | Read | Read check runs on pull request heads: GitHub Actions and every other Checks API app. |
 | Commit statuses | Read and write | Publish the result of Yulius's own CI as the status `yulius/ci` on each tested commit (write, since 2026-10-11), and read statuses of projects without Yulius CI. |
-| Workflows | Read and write | Push the onboarding commit that deletes `.github/workflows/` (Yulius is the only CI). Requested since 2026-10-11. |
+| Workflows | Read and write | Push the onboarding commit that deletes `.github/workflows/` (Yulius is the only CI). Granted on 2026-10-12. |
 | Administration | Read and write | Create repositories in an organization (New sandbox) and add branch rulesets to them. |
 | Metadata | Read | Mandatory for every App: repository facts and the signed-in person's permission level, which Yulius mirrors. |
 | Members (organization) | Read | Requested by the manifest; no current Yulius call uses it. |

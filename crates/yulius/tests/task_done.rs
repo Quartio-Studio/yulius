@@ -329,10 +329,41 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
     Ok(())
 }
 
-/// TSK-014, UI-006: a Done task (goal achieved, no shell left) can be archived: the session is
-/// closed as it is archived. A task that only waits for the user still has to be stopped first.
+/// TSK-010: a goal typed into a TUI that drops the first submit is typed again until Claude
+/// Code takes it, so the task starts instead of showing the goal unsubmitted.
 #[test]
-fn a_done_task_can_be_archived() -> TestResult {
+fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            drop_lines: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        wait_for("the goal to start", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        wait_for("Done", Duration::from_secs(30), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-011: a goal task starts from its request file (the request, its attached files and the
+/// definition of done) and a `/goal` that names it, typed once the session started.
+#[test]
+fn a_goal_task_starts_from_its_request_file() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
@@ -344,26 +375,47 @@ fn a_done_task_can_be_archived() -> TestResult {
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
-        let ctx = yulius_app::auth::AuthContext {
-            user: app.deps.store.user(&user).await?.ok_or("user")?,
-            csrf_token: None,
-            session_hash: None,
-        };
-        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-        wait_for("the shell probe", Duration::from_secs(90), || async {
-            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
+        let record = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Make the header blue\n\n@/srv/shots/header.png".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Blue header".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Goal,
+            })
+            .await?;
+        let id = record.id;
+        wait_for("the goal to start", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
-        let archived = app.archive_task(&ctx, id.as_str(), true).await?;
-        assert!(archived.archived);
-        // Closed, not stopped: the finished session ends like one the user left.
-        wait_for("the close", Duration::from_secs(30), || async {
-            task(&app, &id)
-                .await
-                .is_ok_and(|t| t.status == TaskStatus::Closed)
-        })
-        .await?;
-        Ok::<(), BoxError>(())
+        let file = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("home/.yulius/tasks")
+            .join(format!("{}.md", record.number));
+        let request = std::fs::read_to_string(&file)?;
+        assert!(
+            request.contains("## Request\n\nMake the header blue\n"),
+            "{request}"
+        );
+        assert!(request.contains("\n- /srv/shots/header.png"), "{request}");
+        assert!(request.contains("## Definition of done"), "{request}");
+        // The goal names the file (a request with attached files is never inlined).
+        assert!(
+            screen_contains(&app, &id, "Everything requested in").await,
+            "{}",
+            app.runtime(&id).hub.screen_text()
+        );
+        stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
@@ -580,5 +632,45 @@ async fn a_chain_starts_when_its_predecessor_achieves_its_goal() -> TestResult {
         .await?;
     h.app.advance_chains(&pred.id).await;
     assert_eq!(chain_status(&h, &next_id).await, Some(TaskStatus::Queued));
+    Ok(())
+}
+
+/// TSK-014, UI-006: a Done task (goal achieved, no shell left) can be archived: the session is
+/// closed as it is archived. A task that only waits for the user still has to be stopped first.
+#[test]
+fn a_done_task_can_be_archived() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        wait_for("the shell probe", Duration::from_secs(90), || async {
+            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
+        })
+        .await?;
+        let archived = app.archive_task(&ctx, id.as_str(), true).await?;
+        assert!(archived.archived);
+        // Closed, not stopped: the finished session ends like one the user left.
+        wait_for("the close", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Closed)
+        })
+        .await?;
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }

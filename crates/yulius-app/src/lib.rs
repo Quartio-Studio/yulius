@@ -5,6 +5,7 @@ pub mod access;
 pub mod accounts;
 pub mod admin;
 pub mod agent_delivery;
+pub mod agent_wait;
 pub mod analytics;
 pub mod auth;
 pub mod auto_choice;

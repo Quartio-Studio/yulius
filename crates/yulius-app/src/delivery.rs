@@ -259,6 +259,12 @@ pub fn profile_from_contract(profile: &Profile) -> AppResult<DeliveryProfile> {
             verify,
         });
     }
+    // DLV-010: the manual `dev` checkpoint of the former standard preset is gone.
+    if preset == Preset::Standard
+        && matches!(environments.as_slice(), [only] if DeliveryProfile::is_legacy_standard_checkpoint(only))
+    {
+        environments.clear();
+    }
     let parsed = DeliveryProfile {
         preset,
         integration_branch: profile.integration_branch.trim().to_owned(),
@@ -832,10 +838,12 @@ impl Observed {
 /// for help from the user, it handles ci, creates issues, pr and merge to dev").
 const DELIVER_ON_YOUR_OWN: &str = "Carry on without asking anyone. `ci_status` shows the gate on \
 the exact head; fix a failure test-first and commit (Yulius pushes it to the pull request); keep \
-the branch up to date with the integration branch. When the checks are green, get the \
-independent review of that exact head and merge with `delivery_merge`, then deploy, verify and \
-promote where the profile asks (`delivery_deploy`, `delivery_promote`). Yulius tells you when \
-the checks finish.";
+the branch up to date with the integration branch. Get the independent review of the exact head \
+and call `delivery_merge`: on green it merges at once, while the checks still run it arms the \
+merge and Yulius merges when they pass. Then deploy and verify the environments after the \
+integration branch where the profile has them (`delivery_deploy`), and end with your summary. \
+Never promote unless the task asks for it. To wait, start `yulius wait` with run_in_background \
+and end your turn; Yulius also tells you when the checks finish.";
 
 impl App {
     async fn dlv_sandbox_of(&self, task: &TaskRecord) -> AppResult<SandboxRecord> {
@@ -2227,8 +2235,10 @@ impl App {
                 "Your pull request's checks are green: merge it",
                 format!(
                     "The checks of pull request #{} passed at {}. Get the independent review of \
-                     that exact head if you have not, then merge it with `delivery_merge`, and \
-                     deploy, verify and promote where the profile asks. Do not ask anyone.",
+                     that exact head if you have not, then merge it with `delivery_merge`, \
+                     deploy and verify the environments after the integration branch where the \
+                     profile has them, and end with your summary. Never promote unless the task \
+                     asks for it. Do not ask anyone.",
                     pull.number,
                     pull.head_sha.chars().take(9).collect::<String>()
                 ),
@@ -3631,6 +3641,28 @@ mod tests {
             profile_from_contract(&unknown),
             Err(AppError::Invalid(_))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_standard_checkpoint_reads_as_the_new_standard() -> TestResult {
+        let mut legacy = profile_to_contract(&DeliveryProfile::standard());
+        legacy.environments = vec![EnvironmentView {
+            name: "dev".into(),
+            after: "integration".into(),
+            command: None,
+            verify: "manual".into(),
+        }];
+        assert_eq!(profile_from_contract(&legacy)?, DeliveryProfile::standard());
+
+        // A dev environment with a command is a deliberate choice and stays.
+        legacy.environments[0].command = Some("./deploy-dev.sh".into());
+        legacy.environments[0].verify = "command".into();
+        assert_eq!(profile_from_contract(&legacy)?.environments.len(), 1);
+
+        // Product keeps its manual checkpoints.
+        let product = profile_to_contract(&DeliveryProfile::product());
+        assert_eq!(profile_from_contract(&product)?, DeliveryProfile::product());
         Ok(())
     }
 

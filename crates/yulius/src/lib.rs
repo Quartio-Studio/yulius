@@ -5,4 +5,5 @@ pub mod doctor;
 pub mod sandbox_cli;
 pub mod serve;
 pub mod update_helper;
+pub mod wait_cli;
 pub mod wiring;

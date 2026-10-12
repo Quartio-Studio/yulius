@@ -45,7 +45,8 @@ merging. Every local branch, including `dev` and `main`, must have its own workt
 Create a typed branch and worktree together from `origin/dev` with `git worktree add -b`;
 never switch an existing worktree to another branch. Never work directly on
 `dev` or `main`. Author self-review + passing checks → squash PR to dev → verify
-post-merge dev CI → merge-commit promotion PR to main → verify post-merge main CI.
+post-merge dev CI: a task's work ends there. Promotion (merge-commit PR dev → main, then verify
+post-merge main) happens only when a task asks for a release (F 2026-10-12).
 No external reviewer approval is required. After merge, safely remove the task
 worktree before deleting its local branch; keep dev/main and their worktrees.
 Use `.agents/skills/yulius-git/SKILL.md` for authorized delivery.

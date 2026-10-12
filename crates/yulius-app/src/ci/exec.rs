@@ -230,6 +230,10 @@ impl App {
         }
         tracing::info!(run = %run.id, state = state.as_str(), "CI run ended");
         self.ci_publish(&run.id).await;
+        // A merge armed while these checks ran happens now (SPEC-011).
+        let app = Arc::clone(self);
+        let sandbox = run.sandbox_id.clone();
+        tokio::spawn(async move { app.merge_armed(&sandbox).await });
     }
 
     /// Makes sure the run's commit is in the sandbox clone (fetching once if not).
