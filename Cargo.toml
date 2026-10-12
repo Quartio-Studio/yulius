@@ -106,6 +106,15 @@ unimplemented = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
 
+# Debug and test builds keep file and line numbers (panics, backtraces) but not full debug info:
+# one worktree's test build reached 48 GB, mostly debug info, and five parallel tasks filled the
+# sandbox's 100 GB disk quota within the hour (F 2026-10-11).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

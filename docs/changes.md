@@ -12,7 +12,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   without a "Use when/for" sentence or over 200 lines, a primitive design standard
   (`docs/engineering/primitives.md`) and the `yulius-primitives` skill apply the pattern
   vocabulary, and `infra-bootstrap` now audits a project's conventions into primitives.
-
+- A green pull request behind its base (the repository requires up-to-date branches) is not
+  mistaken for a missing permission: the task is told to merge the base, and `delivery_merge`
+  says why it refuses.
+- A task whose pull request conflicts with its base is told to merge the base and resolve it;
+  GitHub runs no checks on a conflicting pull request, so the agent would otherwise wait for them.
+- Debug and test builds keep only line tables (dependencies none): a worktree's test build had
+  reached 48 GB and parallel tasks filled the sandbox disk quota, so CI runs and session starts
+  were refused.
+- Agents carry delivery through on their own: Yulius tells a task when its pull request opened and
+  when its checks passed or failed, the Stop gate asks for a missing spec at once (and follows a
+  renamed one), and the briefing says never to ask a person — an issue covers what only a person
+  can do.
 - Yulius CI `quality` job failed at once on a clean machine (no rustup): `scripts/bootstrap.py`
   installs it when the run is unattended or given `--install-rustup` (no default toolchain, no
   profile edits).
@@ -23,6 +34,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - The GitHub CLI is logged in as the user in sandbox shells and editors: a `gh` shim fetches the
   user's own GitHub token per call (nothing stored on disk), like Git's credential helper
   ([SPEC-004](../.ai/specs/SPEC-004-gh-cli-login.md)).
+- Subscriptions show usage all the time: for a sign-in the usage endpoint refuses, an idle
+  subscription is read from the rate-limit headers of a one-token request every few minutes
+  instead of waiting for a task (ADR-17, #4).
 - Repository prepared for Yulius: `yulius.toml`, product summary, architecture, decision
   records, changes log; GitHub Actions jobs translated into Yulius CI
   (the workflows stay until the GitHub App may post commit statuses and change workflow files).

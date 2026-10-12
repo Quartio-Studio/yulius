@@ -828,6 +828,15 @@ impl Observed {
     }
 }
 
+/// What an agent does after Yulius opened its pull request (F 2026-10-11: "agent doesn't ask
+/// for help from the user, it handles ci, creates issues, pr and merge to dev").
+const DELIVER_ON_YOUR_OWN: &str = "Carry on without asking anyone. `ci_status` shows the gate on \
+the exact head; fix a failure test-first and commit (Yulius pushes it to the pull request); keep \
+the branch up to date with the integration branch. When the checks are green, get the \
+independent review of that exact head and merge with `delivery_merge`, then deploy, verify and \
+promote where the profile asks (`delivery_deploy`, `delivery_promote`). Yulius tells you when \
+the checks finish.";
+
 impl App {
     async fn dlv_sandbox_of(&self, task: &TaskRecord) -> AppResult<SandboxRecord> {
         self.deps
@@ -962,34 +971,17 @@ impl App {
                 "The task has no worktree yet, so its spec cannot be read.".into(),
             );
         };
-        let path = match &task.spec_path {
-            Some(path) => path.clone(),
-            None => match self.dlv_discover_spec(task, &worktree).await {
-                (_, Some(found)) => {
-                    let update = TaskFieldUpdate {
-                        spec_path: Some(found.clone()),
-                        ..TaskFieldUpdate::default()
-                    };
-                    if let Err(err) = self
-                        .deps
-                        .store
-                        .update_task(&task.id, &update, self.now())
-                        .await
-                    {
-                        tracing::warn!(error = %err, "registering the discovered spec failed");
-                    }
-                    found
-                }
-                (dir, None) => {
-                    return SpecCheck::problem(
-                        None,
-                        format!(
-                            "No spec is registered for this task and no Markdown file under `{dir}` has `yulius-task: {}` frontmatter; write the task spec there.",
-                            task.id
-                        ),
-                    );
-                }
-            },
+        let path = match self.task_spec_path(task, &worktree).await {
+            Ok(path) => path,
+            Err(dir) => {
+                return SpecCheck::problem(
+                    None,
+                    format!(
+                        "No spec is registered for this task and no Markdown file under `{dir}` has `yulius-task: {}` frontmatter; write the task spec there.",
+                        task.id
+                    ),
+                );
+            }
         };
         match read_repo_file(&worktree, &path, MAX_SPEC_BYTES).await {
             Ok(text) => {
@@ -1004,6 +996,43 @@ impl App {
                 }
             }
             Err(message) => SpecCheck::problem(Some(path.clone()), format!("Spec {message}.")),
+        }
+    }
+
+    /// The repository path of the task's spec: the registered one while that file exists, else
+    /// the one whose frontmatter names the task — registered on the way, so a renamed spec is
+    /// followed instead of blocking the agent on a path it cannot change (F 2026-10-11).
+    /// `Err(dir)` when there is none; `dir` is the specs directory searched.
+    pub(crate) async fn task_spec_path(
+        &self,
+        task: &TaskRecord,
+        worktree: &Path,
+    ) -> Result<String, String> {
+        if let Some(path) = &task.spec_path
+            && safe_relative(path)
+            && worktree.join(path).is_file()
+        {
+            return Ok(path.clone());
+        }
+        match self.dlv_discover_spec(task, worktree).await {
+            (_, Some(found)) => {
+                if task.spec_path.as_deref() != Some(found.as_str()) {
+                    let update = TaskFieldUpdate {
+                        spec_path: Some(found.clone()),
+                        ..TaskFieldUpdate::default()
+                    };
+                    if let Err(err) = self
+                        .deps
+                        .store
+                        .update_task(&task.id, &update, self.now())
+                        .await
+                    {
+                        tracing::warn!(error = %err, "registering the discovered spec failed");
+                    }
+                }
+                Ok(found)
+            }
+            (dir, None) => Err(dir),
         }
     }
 
@@ -1899,7 +1928,20 @@ impl App {
     /// retried for the same head.
     pub async fn auto_open_pr(&self, task_id: &TaskId) {
         match self.try_auto_open_pr(task_id).await {
-            Ok(Some(done)) => self.runtime(task_id).hub.notice(done),
+            Ok(Some(done)) => {
+                self.runtime(task_id).hub.notice(done.clone());
+                // The agent's turn has ended; its work has not: it delivers on its own.
+                if done.starts_with("Yulius opened")
+                    && let Ok(Some(task)) = self.deps.store.task(task_id).await
+                {
+                    self.tell_task(
+                        &task,
+                        "Your pull request is open: deliver it",
+                        format!("{done}\n\n{DELIVER_ON_YOUR_OWN}"),
+                    )
+                    .await;
+                }
+            }
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(task = %task_id, error = %err, "automatic pull request failed");
@@ -2127,17 +2169,100 @@ impl App {
             };
             let profile = delivery_profile(sandbox);
             for (task, before) in open {
-                if self
+                if let Ok(observed) = self
                     .dlv_observe(sandbox, &task, &profile, Some(&token))
                     .await
-                    .is_ok()
-                    && let Ok(Some(after)) = store.delivery(&task.id).await
-                    && after.stage != before
                 {
-                    self.publish_task(&task.id).await;
+                    self.tell_checks(&task, &observed).await;
+                    if let Ok(Some(after)) = store.delivery(&task.id).await
+                        && after.stage != before
+                    {
+                        self.publish_task(&task.id).await;
+                    }
                 }
             }
         }
+    }
+
+    /// Tells the agent, once per pull request head and result, that its checks finished: green
+    /// means merge now, red means fix it (F 2026-10-11: agents deliver without a person). A pull
+    /// request that conflicts with its base comes first: GitHub runs no checks on it, so without
+    /// this the agent would wait for checks that never come.
+    async fn tell_checks(&self, task: &TaskRecord, observed: &Observed) {
+        let Some(pull) = observed.pr.as_ref().filter(|p| is_open(p)) else {
+            return;
+        };
+        let conflicts = pull.mergeable == Some(false);
+        let (subject, body) = match observed.checks {
+            _ if conflicts => (
+                "Your pull request conflicts with its base: resolve it",
+                format!(
+                    "Pull request #{} conflicts with `{}` at {}, so its checks do not run. Merge \
+                     `origin/{}` into the branch, resolve the conflicts keeping both sides' \
+                     intent, run the gates and commit: Yulius pushes it and the checks run \
+                     again. Do not ask anyone.",
+                    pull.number,
+                    pull.base,
+                    pull.head_sha.chars().take(9).collect::<String>(),
+                    pull.base
+                ),
+            ),
+            // F 2026-10-11: GitHub refuses a pull request behind its base under a strict
+            // ruleset ("required status checks are expected"), and an agent read that as a
+            // missing permission and stopped.
+            ChecksState::Success if pull.behind => (
+                "Your pull request is behind its base: update it",
+                format!(
+                    "The checks of pull request #{} passed at {}, but `{}` moved on and the \
+                     repository requires an up-to-date branch, so GitHub refuses the merge. Merge \
+                     `origin/{}` into the branch, run the gates and commit: Yulius pushes it, the \
+                     checks run again and Yulius tells you when they pass. Do not ask anyone.",
+                    pull.number,
+                    pull.head_sha.chars().take(9).collect::<String>(),
+                    pull.base,
+                    pull.base
+                ),
+            ),
+            ChecksState::Success => (
+                "Your pull request's checks are green: merge it",
+                format!(
+                    "The checks of pull request #{} passed at {}. Get the independent review of \
+                     that exact head if you have not, then merge it with `delivery_merge`, and \
+                     deploy, verify and promote where the profile asks. Do not ask anyone.",
+                    pull.number,
+                    pull.head_sha.chars().take(9).collect::<String>()
+                ),
+            ),
+            ChecksState::Failure => (
+                "Your pull request's checks failed: fix them",
+                format!(
+                    "The checks of pull request #{} failed at {}. Read why (`ci_status`, the \
+                     run's log), fix the cause test-first and commit: Yulius pushes it to the \
+                     pull request and the checks run again. Do not ask anyone.",
+                    pull.number,
+                    pull.head_sha.chars().take(9).collect::<String>()
+                ),
+            ),
+            _ => return,
+        };
+        let key = if conflicts {
+            format!("{}:conflicts", pull.head_sha)
+        } else if pull.behind && observed.checks == ChecksState::Success {
+            format!("{}:behind", pull.head_sha)
+        } else {
+            format!("{}:{:?}", pull.head_sha, observed.checks)
+        };
+        let runtime = self.runtime(&task.id);
+        {
+            let Ok(mut told) = runtime.checks_told.lock() else {
+                return;
+            };
+            if told.as_deref() == Some(key.as_str()) {
+                return;
+            }
+            *told = Some(key);
+        }
+        self.tell_task(task, subject, body).await;
     }
 
     // ---------------------------------------------------------------- merge
@@ -2200,6 +2325,16 @@ impl App {
             .pr
             .clone()
             .ok_or_else(|| AppError::Conflict("the pull request cannot be read".into()))?;
+        // GitHub's own refusal ("required status checks are expected") reads like a missing
+        // permission; say what it means and what to do (F 2026-10-11).
+        if pull.behind {
+            return Err(AppError::Conflict(format!(
+                "the branch is behind `{base}` and the repository requires it to be up to date: \
+                 merge `origin/{base}` into it, push, wait for the checks on the new head, then \
+                 merge that head",
+                base = pull.base
+            )));
+        }
         let merge_sha = self
             .deps
             .github
