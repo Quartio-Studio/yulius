@@ -6,12 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
-- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0027; task #33): a top-bar Agent
+- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0028; task #33): a top-bar Agent
   button and the first tool of the right rail open the user's own Claude Code session in the tool
   panel beside the page, under a notice that it is for quick work (setting up automations, quick
   questions) and that anything more complex, such as writing code, belongs in a task (with a New
   task link). It is no longer in the left sidebar; `/s/<slug>/agent` and the old
   `/s/<slug>/cockpit` open the panel. The API and server keep the `cockpit` names.
+- A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
+  wrapping over the condition's border (SPEC-031, task #29).
 - Attached images reach Claude Code as pasted images (SPEC-030, ADR-0026; task #28). A task with
   attached images starts with no CLI prompt. Yulius types its first message into the terminal:
   each image's path is pasted (Claude Code shows `[Image #N]` and sends an image block), then the
@@ -21,6 +23,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
   Automations and MCP in place. Its state is remembered per browser; arriving at one of those
   pages shows it open for that page.
+- A usage limit no longer types "Continue." into a task (SPEC-034, decision 0027, task #32): the
+  session moves to another subscription (or waits for the reset) and resumes as if the limit never
+  happened. The transcript steps back over the limit errors and notices, and Claude Code redoes
+  the lost turn by itself: it resubmits the unanswered message, or goes on after the last tool
+  result.
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.

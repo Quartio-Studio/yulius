@@ -28,6 +28,9 @@ pub enum SessionMode {
         session_id: String,
         /// Continuation prompt.
         prompt: Option<String>,
+        /// The run continues the turn a usage limit cut (SPEC-034): the transcript steps back
+        /// over the limit and the agent redoes the lost turn by itself; no prompt is sent.
+        continue_interrupted: bool,
     },
 }
 
