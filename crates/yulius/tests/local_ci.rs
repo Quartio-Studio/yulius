@@ -593,3 +593,50 @@ async fn contained_jobs_see_only_their_sandbox() -> TestResult {
     );
     Ok(())
 }
+
+/// A squash merge of an up-to-date pull request has exactly the tree its run tested: the
+/// integration branch reuses that result instead of running everything again (F 2026-10-12:
+/// every merge cost a second run in the sandbox's one CI lane).
+#[tokio::test]
+async fn a_merge_with_a_tested_tree_reuses_its_result() -> TestResult {
+    let f = fixture().await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let runs = f.get("/api/sandboxes/s1/ci").await?;
+    assert!(
+        runs["runs"]
+            .as_array()
+            .ok_or("runs")?
+            .iter()
+            .any(|r| r["reference"] == "pr/1" && r["state"] == "passed"),
+        "{runs}"
+    );
+
+    // Squash-merge feat/one into dev: a new commit with the pull request head's tree.
+    git(&f.work, &["checkout", "-q", "-b", "dev", "origin/dev"])?;
+    git(&f.work, &["merge", "-q", "--squash", "feat/one"])?;
+    git(&f.work, &["commit", "-q", "-m", "feature (#1)"])?;
+    git(&f.work, &["push", "-q", "origin", "dev"])?;
+    let merged = git(&f.work, &["rev-parse", "HEAD"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let dev_run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["sha"] == merged.as_str())
+        .cloned()
+        .ok_or("dev run")?;
+    assert_eq!(dev_run["state"], "passed", "{dev_run}");
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            dev_run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    let output = detail["jobs"][0]["output"].as_str().unwrap_or_default();
+    assert!(output.contains("not run again"), "{output}");
+    assert_eq!(f.last_status(&merged).ok_or("status")?.0, "success");
+    Ok(())
+}

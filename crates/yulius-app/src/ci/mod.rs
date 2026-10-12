@@ -562,8 +562,21 @@ impl App {
             ) {
                 continue;
             }
+            let own = match self.ci_jobs_at(&repo, &pull.head_sha).await {
+                Ok(jobs) if !jobs.is_empty() => Some(jobs),
+                _ => None,
+            };
             let gate = match &view.gate {
-                Some(gate) => Some(gate.clone()),
+                // A pull request that changes the CI (an agent scoping a monorepo's jobs to
+                // its project, F 2026-10-12) is tested with its own jobs; one that removes them
+                // all is still tested with the integration branch's.
+                Some(gate) => Some(match own {
+                    Some(jobs) if jobs != gate.jobs => Gate {
+                        jobs,
+                        source: GateSource::PullRequest,
+                    },
+                    _ => gate.clone(),
+                }),
                 // Bootstrap: the integration branch has no CI yet; the pull request that adds
                 // it is tested with its own configuration.
                 None if view.problem.is_none() => {
