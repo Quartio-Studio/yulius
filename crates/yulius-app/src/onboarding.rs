@@ -66,14 +66,18 @@ test, lint and build commands until they work and record them in yulius.toml [co
 `[[ci.jobs]]` command exactly as written, from the repository root, until it passes. Yulius CI \
 gives the sandbox's jobs their own HOME and cache ($YULIUS_CI_CACHE), separate from yours: they \
 start empty and persist across runs, as does each job's checkout with its ignored files (build \
-outputs, dependency directories), and the job's PATH lacks that home's ~/.cargo/bin and ~/.local/bin. So a job must install \
-what it needs itself (as `scripts/bootstrap.py --install-rustup` does) and never depend on anything \
-an earlier run, your home or this worktree left behind: such a job passes on the cache and fails on \
-a fresh sandbox or after a cache prune. Prove it: run each job command from the repository root \
-with a fresh home (`env HOME=\"$(mktemp -d)\" PATH=/usr/local/bin:/usr/bin:/bin sh -c \
-'<command>'`) and normally. A monorepo's jobs may run only its affected project's checks. End with a \
-summary of what works and how it was verified; a check that still cannot run is a problem to report \
-there, never a reason to skip it silently.";
+outputs, dependency directories), and the job's PATH lacks that home's ~/.cargo/bin and \
+~/.local/bin. So a job must install what it needs itself (as `scripts/bootstrap.py \
+--install-rustup` does) and never depend on anything an earlier run, your home or this worktree \
+left behind: such a job passes on the cache and fails on a fresh sandbox or after a cache prune. \
+Prove it: run each job command normally, then commit and run it once more from the root of a clean \
+checkout with a fresh home and only CI's variables (`d=\"$(mktemp -d)\"; git worktree add --detach \
+\"$d/repo\" HEAD && (cd \"$d/repo\" && env -i HOME=\"$(mktemp -d)\" \
+YULIUS_CI_CACHE=\"$(mktemp -d)\" PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 CI=true \
+YULIUS_CI=1 sh -c '<command>'); git worktree remove --force \"$d/repo\"`). A monorepo's jobs \
+may run only its affected project's checks. End with a summary of what works and how it was \
+verified; a check that still cannot run is a problem to report there, never a reason to skip it \
+silently.";
 
 /// Title of the onboarding task of a repository that already follows the Yulius format.
 pub const ENVIRONMENT_TITLE: &str = "Set up this sandbox's environment";
@@ -967,8 +971,11 @@ mod tests {
                 "ignored files",
                 "install what it needs itself",
                 "never depend on anything an earlier run",
-                "HOME=\"$(mktemp -d)\"",
-                "and normally",
+                "PATH lacks that home's ~/.cargo/bin",
+                "run each job command normally",
+                "git worktree add --detach",
+                "env -i HOME=\"$(mktemp -d)\"",
+                "YULIUS_CI_CACHE=\"$(mktemp -d)\"",
             ] {
                 assert!(prompt.contains(wording), "missing {wording:?}");
             }

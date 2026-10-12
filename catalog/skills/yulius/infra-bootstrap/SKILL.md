@@ -46,10 +46,18 @@ example when it starts deploying for real), and record every change as a decisio
    empty and persist across runs, as do each job's checkout and its ignored files. A job installs
    what it needs itself and never depends on what an earlier run left behind, or it passes on the
    cache and fails on a fresh machine. Run the gate locally and show it passes, from the
-   repository root both normally and with a fresh home
-   (`env HOME="$(mktemp -d)" PATH=/usr/local/bin:/usr/bin:/bin sh -c '<command>'`). Then delete `.github/workflows/` in the same pull request, so gates and merges rely
-   only on Yulius CI results (`ci_status`). Merge gating needs no rulesets: Yulius enforces the
-   gate at merge.
+   repository root both normally and, once committed, in a clean checkout with a fresh home and
+   only CI's variables:
+
+   ```sh
+   d="$(mktemp -d)"; git worktree add --detach "$d/repo" HEAD && (cd "$d/repo" &&
+     env -i HOME="$(mktemp -d)" YULIUS_CI_CACHE="$(mktemp -d)" PATH=/usr/local/bin:/usr/bin:/bin \
+       LANG=C.UTF-8 CI=true YULIUS_CI=1 sh -c '<command>'); git worktree remove --force "$d/repo"
+   ```
+
+   Then delete `.github/workflows/` in the same pull request, so gates and merges rely only on
+   Yulius CI results (`ci_status`). Merge gating needs no rulesets: Yulius enforces the gate at
+   merge.
 3. **Environments.** Define dev (after integration) and production (after promotion) in
    `yulius.toml` `[delivery]` as `[[delivery.environments]]` entries with an idempotent deploy
    `command` and `verify = "command"` for a smoke test against the deployed app (health endpoint,
