@@ -33,6 +33,16 @@ pub(crate) struct ArmedMerge {
     pub summary: String,
 }
 
+/// What keeping an armed merge current did (DLV-203).
+enum Current {
+    /// The branch contains the integration branch, or it is not Yulius's to touch now.
+    Unchanged,
+    /// Yulius merged the integration branch in and pushed this head: the merge stays armed.
+    Moved(String),
+    /// A real conflict, for the agent: the armed merge is dropped with this text.
+    Conflict(String),
+}
+
 /// How an armed merge ended (merged, refused or dropped), kept until the next one is armed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MergeOutcome {
@@ -63,6 +73,9 @@ pub struct WaitState {
     /// The head that armed merge was for.
     #[serde(default)]
     pub merge_outcome_head: Option<String>,
+    /// Why Yulius could not push this head, with what to do (DLV-201).
+    #[serde(default)]
+    pub push_problem: Option<String>,
 }
 
 impl WaitState {
@@ -209,6 +222,21 @@ impl App {
             );
             return None;
         };
+        // DLV-203: a branch behind its base is brought up to date first, so the run that decides
+        // is on what would be merged and GitHub's up-to-date rule never refuses it.
+        match self.keep_armed_current(task, &sandbox).await {
+            Current::Unchanged => {}
+            Current::Moved(head) => {
+                return Some(ArmedMerge {
+                    head,
+                    summary: armed.summary,
+                });
+            }
+            Current::Conflict(text) => {
+                self.merge_decided(task, &armed.head, text);
+                return None;
+            }
+        }
         let require_checks = crate::delivery::delivery_profile(&sandbox).require_checks;
         let green = pr.checks == "success" || (pr.checks == "none" && !require_checks);
         if pr.checks == "failure" {
@@ -286,6 +314,85 @@ impl App {
         }
     }
 
+    /// DLV-203: an armed pull request whose branch no longer contains the integration branch is
+    /// brought up to date by Yulius, gently: it merges `origin/<integration>` into the task's
+    /// worktree (the repository's merge drivers apply, unlike a host's server-side update) and
+    /// pushes the result as a plain fast-forward. Only while the agent is idle with nothing
+    /// running and nothing uncommitted; a real conflict is aborted and left to the agent. The
+    /// review carries over: the merge brings in only commits already reviewed and merged.
+    async fn keep_armed_current(
+        self: &Arc<Self>,
+        task: &TaskRecord,
+        sandbox: &crate::model::SandboxRecord,
+    ) -> Current {
+        use crate::ports::git::MergeIntegration;
+        use yulius_domain::task::{Activity, TaskStatus};
+        let (Some(worktree), Some(branch)) =
+            (task.worktree_path.as_deref(), task.branch.as_deref())
+        else {
+            return Current::Unchanged;
+        };
+        let worktree = std::path::Path::new(worktree);
+        let idle = task.status == TaskStatus::Running
+            && task.activity.is_some_and(Activity::is_idle)
+            && self.background_shells_of(&task.id).unwrap_or(0) == 0;
+        if !idle || self.deps.git.has_changes(worktree).await.unwrap_or(true) {
+            return Current::Unchanged;
+        }
+        let integration = crate::delivery::delivery_profile(sandbox).integration_branch;
+        let Ok(token) = self.task_github_token(task, sandbox).await else {
+            return Current::Unchanged;
+        };
+        match self
+            .deps
+            .git
+            .merge_integration(worktree, &integration, &token)
+            .await
+        {
+            Ok(MergeIntegration::UpToDate) => Current::Unchanged,
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "an armed pull request could not be brought up to date");
+                Current::Unchanged
+            }
+            Ok(MergeIntegration::Conflict(files)) => {
+                let listed: Vec<String> = files.iter().take(8).map(|f| format!("`{f}`")).collect();
+                Current::Conflict(format!(
+                    "The merge you armed is on hold: `{branch}` conflicts with `{integration}` in \
+                     {}. Bring it in yourself: `git fetch origin && git merge \
+                     origin/{integration}`, resolve those files, rerun the affected tests, \
+                     commit and end your turn so Yulius pushes; then get the review of the new \
+                     head and call `delivery_merge` again. Never rebase or force-push.",
+                    listed.join(", ")
+                ))
+            }
+            Ok(MergeIntegration::Merged(head)) => {
+                match self.deps.git.push(worktree, branch, branch, &token).await {
+                    Ok(()) => {
+                        let detail = format!(
+                            "merged {integration} into {branch} at {head} for the armed merge"
+                        );
+                        let _ = self
+                            .deps
+                            .store
+                            .audit(
+                                self.now(),
+                                "yulius",
+                                "delivery.branch_updated",
+                                Some(&format!("{}#{}", sandbox.slug, task.number)),
+                                Some(&detail),
+                            )
+                            .await;
+                        Current::Moved(head)
+                    }
+                    Err(err) => {
+                        self.set_push_problem(&task.id, &head, branch, None, &err);
+                        Current::Unchanged
+                    }
+                }
+            }
+        }
+    }
+
     /// The state `yulius wait` compares (local records only).
     ///
     /// # Errors
@@ -318,6 +425,14 @@ impl App {
             .lock()
             .ok()
             .and_then(|outcome| outcome.clone());
+        let push_problem = self
+            .runtime(&task.id)
+            .push_problem
+            .lock()
+            .ok()
+            .and_then(|problem| problem.clone())
+            .filter(|(at, _)| !head.is_empty() && (at.starts_with(&head) || head.starts_with(at)))
+            .map(|(_, text)| text);
         Ok(WaitState {
             head,
             checks,
@@ -326,6 +441,7 @@ impl App {
             merge_armed: self.armed_merge(task),
             merge_outcome_head: outcome.as_ref().map(|o| o.head.clone()),
             merge_outcome: outcome.map(|o| o.text),
+            push_problem,
         })
     }
 

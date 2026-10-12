@@ -11,6 +11,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   tooltip. A menu of 8 or more items opens with a focused Filter box: typed words narrow it,
   ↓/↑ and Enter pick, and Escape clears the filter first. "Run after" lists every live task on one
   line ("#12 Checkout API · Working") under "After a task is done", not just the first 20.
+- Armed pull requests stay current by themselves (SPEC-050 DLV-203): when the integration branch
+  moves on, Yulius merges it into the idle task's branch (the repository's merge drivers apply, so
+  a shared changes log no longer conflicts) and pushes a fast-forward; the merge stays armed for
+  the new head. A real conflict is left to the agent with the files named.
+- Tasks run in parallel and finish without obstacles (SPEC-050):
+  - a Done task no longer holds a session slot, so queued tasks start;
+  - when Yulius cannot push an agent's head, `yulius wait` says why and how to fix it without a
+    force push, and agents bring `dev` in by merging, never by rewriting pushed commits;
+  - a shell that only runs `yulius wait` no longer counts as a build, so a waiting task reads as
+    waiting and its caches can go under disk pressure;
+  - agent commands run below CI and the agents in CPU priority;
+  - shells and the Cockpit keep GitHub across server restarts;
+  - a sandbox runs two CI runs at once, each lane with its own job checkouts, and worktree
+    registrations change one at a time (#206).
 - A Done task can be deleted (SPEC-039, ADR-0031, task #37). "Delete permanently…" closes its
   idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
   work or waiting for you has to be stopped first, and its menu says "Still running: stop the

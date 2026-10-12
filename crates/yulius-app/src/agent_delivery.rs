@@ -167,6 +167,24 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         let require_checks = crate::delivery::delivery_profile(&sandbox).require_checks;
+        // A branch behind its base cannot be merged on green: arm it, and Yulius brings it up to
+        // date and merges once the checks of what would be merged pass (DLV-203).
+        let profile = crate::delivery::delivery_profile(&sandbox);
+        let behind = !self
+            .deps
+            .git
+            .is_ancestor(
+                std::path::Path::new(worktree),
+                &format!("origin/{}", profile.integration_branch),
+                "HEAD",
+            )
+            .await
+            .unwrap_or(true);
+        let checks = if behind && matches!(checks, "success" | "none") {
+            "behind"
+        } else {
+            checks
+        };
         match checks {
             "success" => {}
             "none" if !require_checks => {}

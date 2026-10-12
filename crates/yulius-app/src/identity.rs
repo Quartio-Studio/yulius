@@ -121,12 +121,20 @@ esac
     )
 }
 
-/// Registry of workspace tokens (process-local; user processes do not survive a restart).
+/// Registry of workspace tokens. A token is derived from a server secret kept in the data
+/// directory, the user and the sandbox, so it stays valid across restarts: shells, the Cockpit
+/// and editors survive a restart (they are adopted) and keep their environment, and their `gh`
+/// and Git lost GitHub after every deploy while tokens were random per server lifetime
+/// (F 2026-10-12, SPEC-050 IDN-101). The maps cache tokens already derived.
 #[derive(Default)]
 pub struct WorkspaceGrants {
     by_token: Mutex<HashMap<String, (UserId, SandboxId)>>,
     by_owner: Mutex<HashMap<(UserId, SandboxId), String>>,
+    secret: std::sync::OnceLock<String>,
 }
+
+/// The file in the data directory that holds the workspace token secret (hex, mode 0600).
+pub const WORKSPACE_SECRET_FILE: &str = "workspace-token.key";
 
 /// Paths and settings of a user's process space in one sandbox.
 #[derive(Debug, Clone)]
@@ -504,25 +512,105 @@ impl App {
         })
     }
 
-    /// The workspace token of `user` in `sandbox` (stable for the server's lifetime).
+    /// The workspace token secret: read from the data directory, created there on first use. When
+    /// the file cannot be read or written, a secret for this server's lifetime (tokens then end
+    /// with it, as before).
+    fn workspace_secret(&self) -> &str {
+        self.workspace_grants.secret.get_or_init(|| {
+            let path = self.config.data_dir.join(WORKSPACE_SECRET_FILE);
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let text = text.trim();
+                if text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return text.to_owned();
+                }
+            }
+            let secret = hex_token(&self.deps.crypto.random_bytes());
+            let written = (|| -> std::io::Result<()> {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&path)?;
+                file.write_all(secret.as_bytes())
+            })();
+            if let Err(err) = written {
+                tracing::warn!(error = %err, "the workspace token secret could not be saved; tokens end with this server");
+            }
+            secret
+        })
+    }
+
+    /// The workspace token of `user` in `sandbox`: the same across restarts (IDN-101).
     fn workspace_token(&self, user: &UserId, sandbox: &SandboxId) -> String {
         let key = (user.clone(), sandbox.clone());
-        let mut owners = self
+        if let Some(token) = self
             .workspace_grants
             .by_owner
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(token) = owners.get(&key) {
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+        {
             return token.clone();
         }
-        let token = format!("ws_{}", hex_token(&self.deps.crypto.random_bytes()));
-        owners.insert(key.clone(), token.clone());
+        let token = self.derive_workspace_token(user, sandbox);
+        self.remember_workspace_token(&token, key);
+        token
+    }
+
+    fn derive_workspace_token(&self, user: &UserId, sandbox: &SandboxId) -> String {
+        let material = format!(
+            "yulius-workspace\n{}\n{}\n{}",
+            self.workspace_secret(),
+            user.as_str(),
+            sandbox.as_str()
+        );
+        format!("ws_{}", self.deps.crypto.sha256_hex(material.as_bytes()))
+    }
+
+    fn remember_workspace_token(&self, token: &str, key: (UserId, SandboxId)) {
+        self.workspace_grants
+            .by_owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.clone(), token.to_owned());
         self.workspace_grants
             .by_token
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(token.clone(), key);
-        token
+            .insert(token.to_owned(), key);
+    }
+
+    /// Whose workspace token `token` is: from the cache, else derived again for every user and
+    /// sandbox (a token issued before a restart).
+    async fn workspace_owner(&self, token: &str) -> AppResult<(UserId, SandboxId)> {
+        if let Some(owner) = self
+            .workspace_grants
+            .by_token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(token)
+            .cloned()
+        {
+            return Ok(owner);
+        }
+        if !token.starts_with("ws_") {
+            return Err(AppError::Unauthenticated);
+        }
+        let users = self.deps.store.users().await?;
+        let sandboxes = self.deps.store.sandboxes().await?;
+        for user in &users {
+            for sandbox in &sandboxes {
+                let derived = self.derive_workspace_token(&user.id, &sandbox.id);
+                if crate::auth::constant_time_eq(derived.as_bytes(), token.as_bytes()) {
+                    let key = (user.id.clone(), sandbox.id.clone());
+                    self.remember_workspace_token(&derived, key.clone());
+                    return Ok(key);
+                }
+            }
+        }
+        Err(AppError::Unauthenticated)
     }
 
     /// A GitHub credential for a user process: the user's own token (the superadmin without a
@@ -538,14 +626,7 @@ impl App {
         host: &str,
         path: Option<&str>,
     ) -> AppResult<GitCredential> {
-        let (user_id, sandbox_id) = self
-            .workspace_grants
-            .by_token
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(token)
-            .cloned()
-            .ok_or(AppError::Unauthenticated)?;
+        let (user_id, sandbox_id) = self.workspace_owner(token).await?;
         if host != "github.com" {
             return Err(AppError::Forbidden(
                 "credentials are only issued for github.com".into(),
