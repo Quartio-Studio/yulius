@@ -10,6 +10,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
   work or waiting for you has to be stopped first, and its menu says "Still running: stop the
   task before deleting it".
+- Two ready-made automations, enabled in one click on the Automations page (SPEC-042, ADR-0032,
+  task #41): "Keep the docs up to date" (the last day's changes, or all docs on the first run)
+  and "Work through open issues" (the core team's open issues verified in parallel by
+  subagents, a Fix task for each actionable one, never a new issue), both nightly at 03:00 CEST.
+  They live in `catalog/automations/`. Tasks now report a bug they confirm with `issue_create`
+  unless an issue already tracks it (briefing and the Fix workflow). Both are enabled on the
+  team's instance.
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary

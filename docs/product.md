@@ -40,6 +40,10 @@ watching, steering and unblocking.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent.
+- **Automations**: tasks on a schedule. Two ready-made ones are enabled in one click on the
+  Automations page: "Keep the docs up to date" and "Work through open issues" (the core team's
+  issues verified in parallel, a Fix task for each actionable one, no new issues), nightly at
+  03:00 CEST.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI. Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
   `yulius wait`, `ci_status` and `delivery_status`.

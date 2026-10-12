@@ -34,3 +34,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0028](0028-one-integration-test-binary.md): The product's integration tests are one test binary
 - [0029](0029-cockpit-manages-through-mcp.md): The Cockpit and task agents manage the project through the Yulius MCP server
 - [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first
+- [0032](0032-ready-made-automations-catalog.md): Ready-made automations ship as a catalog, enabled in one click and matched by name
