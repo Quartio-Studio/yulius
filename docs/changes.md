@@ -12,6 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   run; the agent proves it by running each job normally and in a clean checkout with a fresh
   `HOME` and CI's environment. The `infra-bootstrap` skill says the same in its CI step. CI itself
   is unchanged.
+- Armed pull requests stay current by themselves (SPEC-050 DLV-203): when the integration branch
+  moves on, Yulius merges it into the idle task's branch (the repository's merge drivers apply, so
+  a shared changes log no longer conflicts) and pushes a fast-forward; the merge stays armed for
+  the new head. A real conflict is left to the agent with the files named.
 - Tasks run in parallel and finish without obstacles (SPEC-050):
   - a Done task no longer holds a session slot, so queued tasks start;
   - when Yulius cannot push an agent's head, `yulius wait` says why and how to fix it without a
