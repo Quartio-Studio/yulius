@@ -108,7 +108,7 @@ login shell: no hooks, MCP or briefing, a pool subscription's token, and the new
 resumed whenever it starts again. The web UI shows it in the right tool panel beside the page,
 under a notice that it is for quick work only
 ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
-[decision 0025](decisions/0025-agent-in-the-right-panel.md)).
+[decision 0026](decisions/0026-agent-in-the-right-panel.md)).
 
 ```mermaid
 flowchart LR

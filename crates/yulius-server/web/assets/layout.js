@@ -16,18 +16,23 @@ import { isPhone } from './theme.js';
 /** Sidebar widths (UI-044): its range, and what it leaves the panel and the centre (as panels.js). */
 const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
 
+// The sandbox pages used every day (SPEC-029); a CD page would join CI here.
 const NAV = [
   ['tasks', 'Tasks', 'tasks'],
-  ['sessions', 'Sessions', 'chat'],
   ['git', 'Git', 'branch'],
-  ['ci', 'CI', 'check'],
+  ['ci', 'CI (tests)', 'check'],
+  ['secrets', 'Secrets', 'lock'],
+  ['dashboard', 'Dashboard', 'chart'],
+];
+// The rest, under "More": collapsed by default, remembered per browser (SPEC-029).
+const NAV_MORE = [
+  ['sessions', 'Sessions', 'chat'],
   ['workflows', 'Workflows', 'workflow'],
   ['skills', 'Skills', 'book'],
   ['automations', 'Automations', 'zap'],
   ['mcp', 'MCP', 'plug'],
-  ['secrets', 'Secrets', 'lock'],
-  ['dashboard', 'Dashboard', 'chart'],
 ];
+const MORE_OPEN_KEY = 'yulius.sidebarMoreOpen';
 
 // ---------------------------------------------------------------- tab row
 
@@ -535,6 +540,35 @@ export function createSidebar(ctx) {
   const newTask = h('a', { class: 'btn btn-newtask', href: '#', dataset: { route: '/' }, title: `New task (${shortcut})`, 'aria-keyshortcuts': NEW_TASK_ARIA },
     h('span', { class: 'newtask-plus', 'aria-hidden': 'true' }, icon('plus', { size: 16 })), h('span', null, 'New task'), h('span', { class: 'newtask-key', 'aria-hidden': 'true' }, shortcut));
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sandbox' });
+  // Links are built once and updated in place, so a focused link keeps focus across routes.
+  const navLink = ([page, label, iconName]) => ({ page, el: h('a', { class: 'nav-item' }, h('span', { class: 'nav-slot' }, icon(iconName, { size: 20 })), h('span', null, label)) });
+  const primaryLinks = NAV.map(navLink);
+  const moreLinks = NAV_MORE.map(navLink);
+  const moreGroup = h('div', { class: 'nav-more', id: 'nav-more' }, moreLinks.map((link) => link.el));
+  const moreChevron = h('span', { class: 'nav-more-chevron' });
+  let moreOpen = readJson(MORE_OPEN_KEY, false) === true; // the user's choice, kept
+  let moreShown = false; // opened for the More page in view only, never kept
+  let morePage = null; // the More page last shown, so it opens the group once per visit
+  const moreToggle = h('button', { type: 'button', class: 'nav-item nav-toggle', 'aria-controls': 'nav-more', onClick: () => {
+    moreOpen = !(moreOpen || moreShown);
+    moreShown = false;
+    writeJson(MORE_OPEN_KEY, moreOpen);
+    paintMore();
+  } }, h('span', { class: 'nav-slot' }, icon('more', { size: 20 })), h('span', null, 'More'), moreChevron);
+  nav.append(...primaryLinks.map((link) => link.el), moreToggle, moreGroup);
+  function paintMore() {
+    const open = moreOpen || moreShown;
+    // Focus in a group about to hide goes to More rather than to the top of the page.
+    if (!open && moreGroup.contains(document.activeElement)) moreToggle.focus();
+    moreGroup.hidden = !open;
+    // Closed on one of its pages, More marks where the current page is, also for screen readers.
+    const holdsCurrent = !open && Boolean(morePage);
+    moreToggle.classList.toggle('active', holdsCurrent);
+    if (holdsCurrent) moreToggle.setAttribute('aria-current', 'true'); else moreToggle.removeAttribute('aria-current');
+    moreToggle.setAttribute('aria-expanded', String(open));
+    setChildren(moreChevron, icon(open ? 'down' : 'right', { size: 12 }));
+  }
+  paintMore();
   const list = h('div', { class: 'task-list', 'aria-label': 'Active tasks' });
   const avatar = h('span', { class: 'avatar', 'aria-hidden': 'true' }, '?');
   const userName = h('span', { class: 'user-name' });
@@ -615,17 +649,23 @@ export function createSidebar(ctx) {
     const readOnly = Boolean(target && target.access && !allows(target.access, 'write'));
     if (readOnly) newTask.setAttribute('aria-disabled', 'true'); else newTask.removeAttribute('aria-disabled');
     newTask.title = readOnly ? 'Requires write access' : `New task (${shortcut})`;
-    // Links are built once and updated in place, so a focused link keeps focus across routes.
-    if (!nav.children.length) nav.append(...NAV.map(([, label, iconName]) => h('a', { class: 'nav-item' }, h('span', { class: 'nav-slot' }, icon(iconName, { size: 20 })), h('span', null, label))));
-    NAV.forEach(([page], i) => {
-      const link = nav.children[i];
+    const routed = Boolean(route && ['page', 'gitTask', 'taskInfo', 'skill', 'workflow', 'automation', 'mcpServer', 'session'].includes(route.name));
+    for (const { page, el: link } of [...primaryLinks, ...moreLinks]) {
       const path = slug ? `/s/${slug}/${page}` : '/';
-      const active = Boolean(route && ['page', 'gitTask', 'taskInfo', 'skill', 'workflow', 'automation', 'mcpServer', 'session'].includes(route.name) && route.page === page);
+      const active = routed && route.page === page;
       link.href = href(path);
       link.dataset.route = path;
       link.classList.toggle('active', active);
       if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
-    });
+    }
+    // A page under More opens the group while it is in view, so the current page is not hidden;
+    // the user's own choice stays as it was (SPEC-029 NAV-004).
+    const current = routed && moreLinks.some((link) => link.page === route.page) ? route.page : null;
+    if (current !== morePage) {
+      morePage = current;
+      moreShown = Boolean(current);
+      paintMore();
+    }
   }
 
   // Active tasks (UI-005), grouped so what needs the user comes first: "Needs you", "Working",

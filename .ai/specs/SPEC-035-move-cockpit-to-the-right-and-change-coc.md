@@ -70,7 +70,7 @@ flowchart LR
 - `router.js` maps `agent` and `cockpit` like `browser` (composer + `panel: 'agent'`); `app.js`
   opens the panel and replaces the address.
 - The server is unchanged: API paths, the shell kind and `COCKPIT_NAME` stay (internal names; a
-  rollback still adopts the session). ADR-0025 records the move.
+  rollback still adopts the session). ADR-0026 records the move.
 
 ## Plan
 
@@ -100,7 +100,7 @@ flowchart LR
 
 ## Decisions
 
-- **"Right" means the right tool panel** (ADR-0025): the right side of the screen is where the
+- **"Right" means the right tool panel** (ADR-0026): the right side of the screen is where the
   tools live; a panel keeps the session beside the page in use, which suits quick work (ask about
   the task in view, set up an automation while looking at its page). Alternatives: a full page
   reached from the right of the top bar (still replaces the page), a fixed right column of its own
