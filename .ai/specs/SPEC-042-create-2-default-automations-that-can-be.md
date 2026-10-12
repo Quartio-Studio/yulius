@@ -1,11 +1,11 @@
 ---
 yulius-task: dfbc2988-8901-436f-ac6d-bc5969940928
-status: draft
+status: done
 ---
 
 # SPEC-042: ready-made automations, enabled in one click
 
-Status: draft
+Status: done
 Date: 2026-10-12
 Scope authorization: user request (task #41, MrFishPL, 2026-10-12): "Create 2 default automations
 that can be easily enabled in automations section: (1) everyday on 3am cest, queue or run a task
@@ -87,15 +87,15 @@ switch on.
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] Ready-made automation catalog parsed from catalog/automations with the two prompts
-- [ ] Templates listed and enabled in one call through the API
-- [ ] Automations page offers ready-made automations with Enable
-- [ ] Tasks report confirmed bugs as issues (briefing and Fix workflow)
-- [ ] Both automations enabled on this instance
-- [ ] Instance automations left disabled for a person to enable
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Gates green, documentation current, delivered into dev
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Ready-made automation catalog parsed from catalog/automations with the two prompts
+- [x] Templates listed and enabled in one call through the API
+- [x] Automations page offers ready-made automations with Enable
+- [x] Tasks report confirmed bugs as issues (briefing and Fix workflow)
+- [x] Both automations enabled on this instance
+- [x] Instance automations left disabled for a person to enable
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Gates green, documentation current, delivered into dev
 
 ## Acceptance criteria
 
@@ -149,3 +149,26 @@ switch on.
   runs only after a person presses Enable.
 - `automation_create` for agents gains no `template` argument in this change; agents create the
   same automation by name, cron and prompt. Recorded as a follow-up issue.
+
+## Evidence
+
+- `cargo test -p yulius-domain automation_format` (parser: valid file, defaults, each error with its
+  line) and `cargo test -p yulius-app templates` / `workflows::catalog` (the shipped catalog has
+  exactly `docs-up-to-date` and `open-issues` at `0 3 * * *`, offset 120, every workflow resolves,
+  the prompts carry the issue rules; the Fix workflow reports confirmed defects): pass.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^automations::/)'`: 12/12,
+  including `ready_made_automations_are_enabled_in_one_call` (AC-AUT-7: list, 201 create, 200
+  re-enable, match by name, 403 read-only, 404 unknown) and
+  `simultaneous_enables_never_duplicate_an_automation` (failed `[201, 201]` before the lock; 404
+  without access).
+- `cargo test -p yulius-domain briefing`: the bug-reporting rule is present (AC-DSC-10); the
+  needle failed before the change.
+- e2e `tests/automations.e2e.ts` (AC-AUT-8): failed against the previous page, passes now; the
+  whole suite: 159 passed, 1 skipped.
+- `scripts/dev ci` (format, clippy, tests, deps, docs): exit 0 at 42e7f2b and at 87e8281.
+- Independent reviews in fresh sessions: round 1 approved 42e7f2b (minors fixed test-first in
+  fb8dfc0, 87e8281), round 2 approved 6816f32 (minors fixed in 303cd8b).
+- AC-OPS-4: `automations_list` on the instance shows "Keep the docs up to date" (c7cfc08b,
+  `wf-docs`) and "Work through open issues" (1a189dfa), both `0 3 * * *` at offset 120 with the
+  catalog's prompts, `enabled: false`, no next run (disabled by the coordinator; left so).
+- Follow-up: #293 (agents enable a ready-made automation by id).
