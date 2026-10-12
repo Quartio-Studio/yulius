@@ -88,8 +88,10 @@ export function openRuleEditor({ tasks, value, onUse }) {
 
   function row(condition, index) {
     const n = index + 1;
+    // The button with <selectedcontent> lets a long task title end in an ellipsis instead of wrapping.
     const task = h('select', { class: 'select select-sm rule-task', 'aria-label': `Task of condition ${n}`, onChange: (event) => { condition.number = Number(event.target.value); showPreview(); } },
-      conditionChoices(choices, condition.number, tasks).map((o) => h('option', { value: String(o.number), selected: o.number === condition.number }, o.label)));
+      h('button', null, h('selectedcontent')),
+      ...conditionChoices(choices, condition.number, tasks).map((o) => h('option', { value: String(o.number), selected: o.number === condition.number }, o.label)));
     const state = h('select', { class: 'select select-sm rule-state', 'aria-label': `State of condition ${n}`, onChange: (event) => { condition.state = event.target.value; showPreview(); } },
       RULE_STATES.map((s) => h('option', { value: s.value, selected: s.value === condition.state }, s.label)));
     return h('li', { class: 'rule-condition' }, task, state,

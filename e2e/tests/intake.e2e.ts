@@ -244,12 +244,12 @@ test('a long task title stays on one line in a condition, ending in an ellipsis'
     const select = document.querySelector('.rule-editor .rule-task') as HTMLElement;
     const shown = select.querySelector('selectedcontent') as HTMLElement | null;
     return {
-      clipped: select.scrollHeight > select.clientHeight,
+      fits: shown ? shown.getBoundingClientRect().height <= select.clientHeight : false,
       truncated: shown ? shown.scrollWidth > shown.clientWidth : false,
       lines: shown ? Math.round(shown.getBoundingClientRect().height / parseFloat(getComputedStyle(shown).lineHeight)) : 0,
     };
   });
-  expect(fit).toEqual({ clipped: false, truncated: true, lines: 1 });
+  expect(fit).toEqual({ fits: true, truncated: true, lines: 1 });
 });
 
 test('a sandbox without tasks offers no start rule', async ({ app, screen }) => {

@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
+  wrapping over the condition's border (SPEC-031, task #29).
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.
