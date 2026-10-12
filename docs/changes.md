@@ -4,8 +4,20 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-12
+
+- Agents wake on new messages again: Yulius typed its notice and Enter in one write, which Claude
+  Code read as a paste with a newline, so the notice never submitted and piled up in the input box;
+  Enter now follows separately, and an unsent notice is only submitted.
+
 ## 2026-10-11
 
+- Agent primitives follow the agentic-coding workshop methodology (SPEC-005, ADR-0016): repository
+  skills are APM packages (`.apm/skills` source, `apm.yml`, `apm.lock.yaml`, generated
+  `.agents/skills` and `.claude/skills`), the repository check rejects deployment drift and skills
+  without a "Use when/for" sentence or over 200 lines, a primitive design standard
+  (`docs/engineering/primitives.md`) and the `yulius-primitives` skill apply the pattern
+  vocabulary, and `infra-bootstrap` now audits a project's conventions into primitives.
 - A green pull request behind its base (the repository requires up-to-date branches) is not
   mistaken for a missing permission: the task is told to merge the base, and `delivery_merge`
   says why it refuses.

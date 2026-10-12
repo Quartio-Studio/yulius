@@ -2445,6 +2445,8 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-12 (F 2026-10-12): the wake-up notice (COM-005) is typed, then submitted with a separate
+  Enter after a pause; a wake-up still unsent is only submitted, never typed again.
 - 2026-10-11 (F 2026-10-11): a pull request behind its base is told to update and refused by
   `delivery_merge` with that reason (strict rulesets).
 - 2026-10-11 (F 2026-10-11): the delivery loop also tells a task when its pull request conflicts

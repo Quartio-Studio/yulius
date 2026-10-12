@@ -26,7 +26,7 @@ See [development instructions](docs/engineering/development.md) for commands and
 - [Git delivery](docs/engineering/git.md): feature → dev → main, self-merges and cleanup.
 - [Engineering workflow](docs/engineering/workflow.md): specify, implement, verify and review.
 - [Rust rules](docs/engineering/rust.md) and [dependency boundaries](docs/engineering/architecture.md).
-- [Repository skills](.agents/skills): specification, Rust implementation, runners, verification and review.
+- [Repository skills](.apm/skills) (APM sources; [standard](docs/engineering/primitives.md)): specification, Rust implementation, runners, verification and review.
 - [Future specification guidance](docs/engineering/specifications.md).
 
 Checks need no production credentials, database or model subscription.

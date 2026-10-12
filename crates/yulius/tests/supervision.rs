@@ -1057,6 +1057,22 @@ fn messages_wake_idle_tasks_and_a_normal_exit_closes_the_task() -> TestResult {
             !screen_contains(&app, &sender, "you have new messages").await,
             "only the recipient is woken"
         );
+        // F 2026-10-12: a wake that was not submitted (this agent runs no hooks) is never typed
+        // again on top of itself; later wakes only press Enter.
+        app.tool_message_send(
+            &ctx,
+            &serde_json::json!({"number": number, "kind": "info", "subject": "Again",
+                "body": "One more message."}),
+        )
+        .await?;
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let notices = app
+            .runtime(&recipient)
+            .hub
+            .screen_text()
+            .matches("ECHO: Yulius: you have new messages")
+            .count();
+        assert_eq!(notices, 1, "the wake-up text is typed once");
 
         // A normal exit of the agent closes the task; no shell is spawned.
         app.send_input(&sender, b"/exit\r").await?;
