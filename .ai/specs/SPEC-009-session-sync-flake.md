@@ -3,7 +3,7 @@ yulius-task: a634a17b-e4fb-4cb9-af93-7abd463d08ce
 status: done
 ---
 
-# SPEC-005: flaky tests that block Yulius CI no longer flake
+# SPEC-009: flaky tests that block Yulius CI no longer flake
 
 Status: implemented
 Date: 2026-10-11
