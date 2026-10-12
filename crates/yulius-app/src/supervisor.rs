@@ -109,6 +109,9 @@ pub struct TaskRuntime {
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
     pub(crate) session_started: AtomicBool,
+    /// The goal-mode session opened with a first message (its attached files, SPEC-025) whose
+    /// turn has not ended yet: its goal is typed after that turn's Stop hook.
+    pub(crate) opening_turn: AtomicBool,
     /// A merge `delivery_merge` armed while the checks still ran (SPEC-011): Yulius performs it
     /// once they pass.
     pub(crate) armed_merge: Mutex<Option<crate::agent_wait::ArmedMerge>>,
@@ -169,6 +172,7 @@ impl TaskRuntime {
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
             session_started: AtomicBool::new(false),
+            opening_turn: AtomicBool::new(false),
             armed_merge: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
@@ -302,6 +306,9 @@ const GOAL_QUIET: Duration = Duration::from_millis(1500);
 /// Upper bound for waiting until the TUI is ready for the goal (its SessionStart hook and quiet
 /// output); a busy host starts Claude Code slowly.
 const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(90);
+/// Upper bound for waiting until the turn on a goal session's first message ended; after it the
+/// goal is typed anyway (Claude Code queues it behind a running turn).
+const GOAL_OPENING_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long Claude Code may take to record the goal after each submit before Yulius tries again:
 /// Enter alone (the Enter was lost), the line again over a cleared prompt box (the text was
 /// lost), then Enter alone, waiting longer each time.
@@ -768,6 +775,17 @@ impl App {
                 )
             }
         };
+        let opens_with_turn = goal_mode
+            && matches!(
+                &mode,
+                SessionMode::New {
+                    prompt: Some(_),
+                    ..
+                } | SessionMode::Resume {
+                    prompt: Some(_),
+                    ..
+                }
+            );
         let attempt_id =
             AttemptId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
@@ -922,6 +940,9 @@ impl App {
                 .await?;
         }
         self.attach_run(&task.id, &attempt, &host_token).await?;
+        runtime
+            .opening_turn
+            .store(opens_with_turn, Ordering::SeqCst);
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         if goal_mode {
@@ -1026,8 +1047,16 @@ impl App {
                 // Without hooks (an old CLI) the first output is the only sign of life.
                 let hooked = runtime.session_started.load(Ordering::SeqCst)
                     || started.elapsed() >= GOAL_READY_TIMEOUT / 2;
-                let ready = hooked && last > 0 && quiet_since.elapsed() >= GOAL_QUIET;
-                if ready || started.elapsed() >= GOAL_READY_TIMEOUT {
+                // A turn on the first message (the attached files) runs: quiet output is no sign
+                // its end came, its Stop hook is (SPEC-025).
+                let opening = runtime.opening_turn.load(Ordering::SeqCst);
+                let ready = hooked && !opening && last > 0 && quiet_since.elapsed() >= GOAL_QUIET;
+                let limit = if opening {
+                    GOAL_OPENING_TIMEOUT
+                } else {
+                    GOAL_READY_TIMEOUT
+                };
+                if ready || started.elapsed() >= limit {
                     break;
                 }
             }

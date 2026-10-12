@@ -383,6 +383,8 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
+            // Claude Code runs a turn on the first message (the attached file).
+            opening_turn_ms: Some(0),
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
@@ -425,7 +427,7 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
         let launch = first_launch(&app, &id).await?;
         assert!(
             launch.contains("prompt: Some(\"The files attached to this task.")
-                && launch.contains("\\n\\n@/srv/shots/header.png\")"),
+                && launch.contains("\\n\\n@\\\"/srv/shots/header.png\\\"\")"),
             "{launch}"
         );
         assert!(request.contains("## Definition of done"), "{request}");
@@ -435,6 +437,60 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
             "{}",
             app.runtime(&id).hub.screen_text()
         );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-025 ATT-003: a goal task with attached files opens with a turn on them (its first message);
+/// the goal is typed once that turn ended (its Stop hook), not into the middle of it, and once.
+#[test]
+fn the_goal_is_typed_after_the_turn_on_the_attached_files() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            session_start: true,
+            // Silent for longer than the quiet time after which a goal is otherwise typed.
+            opening_turn_ms: Some(6_000),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Make the header blue\n\n@/srv/shot.png".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Blue header".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Goal,
+            })
+            .await?
+            .id;
+        wait_for("the goal to start", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        let screen = app.runtime(&id).hub.screen_text();
+        let done = screen.find("DONE opening").ok_or_else(|| screen.clone())?;
+        let typed = screen.find("/goal ").ok_or_else(|| screen.clone())?;
+        assert!(
+            done < typed,
+            "the goal was typed during the opening turn:\n{screen}"
+        );
+        assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

@@ -78,23 +78,14 @@ impl Request {
     }
 }
 
-/// One mention per line (`@/a/b.png`, `@"/a/b c.png"` with whitespace), which Claude Code
-/// attaches itself; a path no mention can carry (whitespace and a double quote, or a control
-/// character) is listed to open with the Read tool instead.
+/// One mention per line, always quoted (`@"/a/b.png"`: Claude Code reads an unquoted mention
+/// only up to its last letter or digit), which Claude Code attaches itself. A path no mention can
+/// carry (a double quote, or `#`, which starts a line range) is listed to open with the Read
+/// tool instead.
 fn mentions(paths: &[String]) -> String {
-    let mut lines = Vec::new();
-    let mut unmentionable = Vec::new();
-    for path in paths {
-        if path.chars().any(char::is_control) {
-            unmentionable.push(path);
-        } else if !path.chars().any(char::is_whitespace) {
-            lines.push(format!("@{path}"));
-        } else if path.contains('"') {
-            unmentionable.push(path);
-        } else {
-            lines.push(format!("@\"{path}\""));
-        }
-    }
+    let (mentionable, unmentionable): (Vec<&String>, Vec<&String>) =
+        paths.iter().partition(|p| !p.contains(['"', '#']));
+    let mut lines: Vec<String> = mentionable.iter().map(|p| format!("@\"{p}\"")).collect();
     if !unmentionable.is_empty() {
         let mut list = String::from("Open with the Read tool:");
         for path in unmentionable {
@@ -135,12 +126,13 @@ fn attachment_path(line: &str) -> Option<String> {
         }
         rest.to_owned()
     };
-    (path.starts_with('/') && path.len() > 1).then_some(path)
+    // A control character (an escape sequence, NUL) never reaches the agent's prompt as a path.
+    (path.starts_with('/') && path.len() > 1 && !path.chars().any(char::is_control)).then_some(path)
 }
 
 fn attachments_section(paths: &[String]) -> String {
     let mut out = String::from(
-        "These files were attached to the session's first message; open one again with the Read \
+        "These files were given in the session's first message; open one again with the Read \
          tool (it shows images) if you need it:",
     );
     for path in paths {
@@ -307,20 +299,32 @@ mod tests {
 
     #[test]
     fn the_first_message_mentions_the_files_so_claude_code_attaches_them() {
-        let request = Request::parse("Look\n@/srv/a.png\n@'/srv/my shot.png'");
+        // Always quoted: Claude Code reads an unquoted mention only up to its last letter or
+        // digit (`notes.`, `c++` would lose their ends).
+        let request = Request::parse("Look\n@/srv/a.png\n@'/srv/my shot.png'\n@/srv/c++");
         assert_eq!(
             request.first_message(),
-            "Look\n\n@/srv/a.png\n@\"/srv/my shot.png\""
+            "Look\n\n@\"/srv/a.png\"\n@\"/srv/my shot.png\"\n@\"/srv/c++\""
         );
-        assert_eq!(Request::parse("@/srv/a.png").first_message(), "@/srv/a.png");
+        assert_eq!(
+            Request::parse("@/srv/a.png").first_message(),
+            "@\"/srv/a.png\""
+        );
         assert_eq!(Request::parse("Just text").first_message(), "Just text");
-        // A path no mention can carry (a quote and a space) is left for the Read tool.
-        let odd = Request::parse("Look\n@'/srv/say \"hi\".png'").first_message();
+        // A path no mention can carry (a double quote, or `#`, which Claude Code reads as a
+        // line range) is left for the Read tool.
+        let odd = Request::parse("Look\n@/srv/say\"hi\".png\n@/srv/issue#3.png").first_message();
         assert!(!odd.contains('@'), "{odd}");
         assert!(
-            odd.ends_with("Open with the Read tool:\n- /srv/say \"hi\".png"),
+            odd.ends_with("Open with the Read tool:\n- /srv/say\"hi\".png\n- /srv/issue#3.png"),
             "{odd}"
         );
+    }
+
+    #[test]
+    fn a_line_with_a_control_character_is_never_an_attachment() {
+        let request = Request::parse("Look\n@/srv/a\u{1b}[2J.png\n@/srv/b\u{0}.png");
+        assert!(request.attachments.is_empty(), "{request:?}");
     }
 
     #[test]
@@ -336,7 +340,7 @@ mod tests {
             "{message}"
         );
         assert!(
-            message.ends_with("\n\n@/srv/a.png\n@/srv/b.txt"),
+            message.ends_with("\n\n@\"/srv/a.png\"\n@\"/srv/b.txt\""),
             "{message}"
         );
     }
@@ -392,7 +396,7 @@ mod tests {
         assert!(file.contains("## Request\n\nMake it fast\nreally\n"));
         assert!(
             file.contains(
-                "## Attached files\n\nThese files were attached to the session's first message"
+                "## Attached files\n\nThese files were given in the session's first message"
             ),
             "{file}"
         );
