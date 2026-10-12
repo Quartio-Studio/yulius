@@ -1,0 +1,10 @@
+name: yulius
+version: 0.1.0
+description: Yulius engineering skills (SPEC-005, ADR-0016). Edit .apm/skills, then run apm install.
+targets:
+  - claude
+  - codex
+dependencies:
+  apm: []
+  mcp: []
+includes: auto

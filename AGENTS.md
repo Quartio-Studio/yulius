@@ -37,6 +37,7 @@ may post commit statuses and change workflow files, then they are removed.
 | Agent adapter / process / streaming | [Runtime contracts](docs/engineering/runtime-contracts.md), `.agents/skills/yulius-runner/SKILL.md` |
 | Tests, tooling, CI | [Development](docs/engineering/development.md), `.agents/skills/yulius-verify/SKILL.md` |
 | Review | [Engineering workflow](docs/engineering/workflow.md), `.agents/skills/yulius-review/SKILL.md` |
+| Skills, personas, instructions, hooks | [Agent primitives](docs/engineering/primitives.md), `.agents/skills/yulius-primitives/SKILL.md` |
 
 ## Git delivery
 
@@ -93,7 +94,10 @@ Never claim a missing command was passed; do not skip gates or widen allowlists 
 Keep reference research and speculative product specs outside the repository as
 local-only notes unless the user requests otherwise.
 
-The canonical skills are in `.agents/skills`; other tool instructions only point here.
+Skills are APM primitives ([ADR-0016](docs/decisions/0016-apm-for-agent-primitives.md)): edit
+`.apm/skills/<name>/`, run `apm install` (`pip install apm-cli`), commit the sources, the generated
+`.agents/skills` and `.claude/skills`, and `apm.lock.yaml`. Never edit the generated copies; the
+repository check fails on drift. Other tool instructions only point here.
 Change an invariant in one canonical document, link it from related specs, and update
 its check in the same change. Use [the handoff template](.ai/templates/handoff.md) for
 work spanning sessions. Keep sensitive run evidence under ignored `.ai/runs/`.

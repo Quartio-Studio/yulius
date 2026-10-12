@@ -59,6 +59,17 @@ example when it starts deploying for real), and record every change as a decisio
    the Definition of Ready (summary, current and expected behavior, out of scope, acceptance
    criteria), a pull request template (summary, spec, evidence, review verdict, `Fixes #N`),
    `.gitignore` and `.gitattributes` for the stack, and automatic deletion of merged branches.
+6. **Conventions as primitives (instrumentation audit).** Rules that live only in people's heads
+   are invisible to agents. List the project's conventions (setup, logging, structure, release,
+   review, decision log), note where each lives (heads, code, guidelines, tooling, docs), rank them
+   by failure cost (critical: blocks progress or corrupts results; high: hurts reproducibility;
+   medium: causes rework; low: style) and map each to a primitive: a path-scoped instruction, a
+   restricted agent, a skill, a prompt, a memory or ADR, a spec, or a hook. Prefer a deterministic
+   check in the gate over any instruction a model must remember. Write the starter set for the
+   critical and high items only, small: skills with a "Use when ..." description, templates in
+   `assets/`, noisy work behind a script that prints a short result. Where the project can use an
+   agent package manager (`apm.yml`, lockfile, one source directory deployed to each harness, a drift check in the gate),
+   set it up as its own pull request and record the choice as an ADR.
 
 ## Done when
 
@@ -67,3 +78,4 @@ example when it starts deploying for real), and record every change as a decisio
   reports on it.
 - Dev and production deploy and verify by command.
 - The docs describe the project as it is, and each choice has an ADR.
+- The critical and high-cost conventions are codified as primitives or checked by the gate.

@@ -46,6 +46,22 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | composition | `yulius` (configuration, wiring, subcommands) |
 | tooling | `tools/` (fake agent, xtask) |
 
+## Agent primitives
+
+Repository skills are APM primitives ([ADR-0016](decisions/0016-apm-for-agent-primitives.md),
+[standard](engineering/primitives.md)): the sources in `.apm/skills` are deployed by `apm install`
+to the harness directories Yulius already discovers, and the repository check rejects drift.
+
+```mermaid
+flowchart LR
+    src[".apm/skills (source)"] -->|apm install| a[".agents/skills"]
+    src -->|apm install| c[".claude/skills"]
+    lock["apm.yml + apm.lock.yaml"] --> src
+    a --> yulius["Yulius skill discovery (REPOSITORY_SKILL_DIRS)"]
+    c --> yulius
+    src -.->|check_repository.py: deployments equal sources| gate["scripts/dev check"]
+```
+
 ## Runtime
 
 - Each task run is owned by a detached `ptyhost`; the server reattaches after restart.

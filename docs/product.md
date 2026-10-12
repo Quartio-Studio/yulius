@@ -31,6 +31,8 @@ watching, steering and unblocking.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent.
 - **Editor, terminals, Git view, messages, automations, workflow catalog** in one web UI.
+- **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
+  every harness and checked for drift; onboarding codifies a project's conventions as primitives.
 - **Secrets vault**: team secrets people reveal; agent secrets agents use but never see.
 - **Updates**: Yulius updates itself from `main` without losing running work.
 

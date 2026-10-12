@@ -1,0 +1,4 @@
+.apm/** text eol=lf
+.agents/** text eol=lf
+.claude/** text eol=lf
+apm.lock.yaml text eol=lf
