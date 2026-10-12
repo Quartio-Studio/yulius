@@ -45,7 +45,7 @@ start rules themselves (SPEC-017) do not change.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Picked conditions become the start rule text the server reads
 - [x] The composer's "When a rule is true…" opens a condition editor instead of a text box
-- [ ] A picked rule opens again for changes, and a sandbox without tasks says so
+- [x] A picked rule opens again for changes, and a sandbox without tasks says so
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -62,8 +62,8 @@ start rules themselves (SPEC-017) do not change.
 - e2e (`intake.e2e.ts`): build a two-condition rule with Any, see the chip and the queued task;
   reopen the editor and find the conditions; remove a row; Start now clears the rule; axe on the
   open editor.
-- e2e: a sandbox whose only tasks are archived or none offers no rule (mock sandbox without
-  tasks).
+- e2e: a sandbox without tasks (mock switch `tasks=0`) offers no rule; archived tasks are left
+  out by `ruleChoices` (unit test).
 
 ## Decisions
 

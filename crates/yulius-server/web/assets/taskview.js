@@ -3,7 +3,7 @@
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
-import { openRuleEditor, ruleText } from './ruleeditor.js';
+import { openRuleEditor, ruleChoices, ruleText } from './ruleeditor.js';
 import { createTerminalView } from './terminal.js';
 import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround, shellsLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, chainCandidates, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
@@ -520,8 +520,11 @@ export function mountComposer(ctx, sandbox) {
       { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule, onSelect: () => { afterTaskId = ''; startRule = null; renderChips(); prompt.focus(); } },
       candidates.length ? { separator: true } : null,
       ...candidates.slice(0, 20).map((t) => ({ label: `After #${t.number} ${t.title}`, icon: 'branch', description: `Starts by itself when #${t.number} is done · ${statusInfo(t).label}`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; renderChips(); prompt.focus(); } })),
-      { separator: true },
-      { label: 'When a rule is true…', icon: 'branch', description: 'Pick tasks and whether they are done, merged or ended', checked: Boolean(startRule), onSelect: openRuleDialog },
+      // A rule names tasks of this sandbox, so a sandbox without any offers none (SPEC-022).
+      ...(ruleChoices(ctx.store.tasksOf(sandbox.id)).length ? [
+        { separator: true },
+        { label: 'When a rule is true…', icon: 'branch', description: 'Pick tasks and whether they are done, merged or ended', checked: Boolean(startRule), onSelect: openRuleDialog },
+      ] : []),
     ]);
   }
 

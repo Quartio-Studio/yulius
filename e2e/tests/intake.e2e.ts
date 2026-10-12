@@ -126,17 +126,17 @@ test('"Run after" builds a start rule from picked conditions; the task waits for
   await expect(editor.getByRole('radiogroup', 'Start when')).toHaveCount(0);
   await editor.getByRole('combobox', 'Task of condition 1').selectOption({ label: '#12 Checkout API' });
   await expect(editor.getByRole('combobox', 'State of condition 1')).toHaveValue('done');
-  await expect(editor.getByRole('status')).toHaveText('Starts by itself when #12 done');
+  await expect(editor.getByText(/^Starts by itself when/)).toHaveText('Starts by itself when #12 done');
 
   // A second condition, and whether all or any of them must hold (RED-002).
   await editor.getByRole('button', 'Add condition').click();
   await editor.getByRole('combobox', 'Task of condition 2').selectOption({ label: '#4 Payment webhook' });
   await editor.getByRole('combobox', 'State of condition 2').selectOption({ label: 'has ended' });
-  await expect(editor.getByRole('status')).toHaveText('Starts by itself when #12 done and #4 ended');
+  await expect(editor.getByText(/^Starts by itself when/)).toHaveText('Starts by itself when #12 done and #4 ended');
   // The segment's label takes the click, as for a person.
   await editor.getByText('Any is true').click();
   await expect(editor.getByRole('radio', 'Any is true')).toBeChecked();
-  await expect(editor.getByRole('status')).toHaveText('Starts by itself when #12 done or #4 ended');
+  await expect(editor.getByText(/^Starts by itself when/)).toHaveText('Starts by itself when #12 done or #4 ended');
   expect(await axeViolations(browser)).toEqual([]);
 
   await editor.getByRole('button', 'Use this rule').click();
@@ -145,6 +145,59 @@ test('"Run after" builds a start rule from picked conditions; the task waits for
   await screen.getByRole('button', 'Start task').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
   await expect(browser.locator('.attention-bar')).toHaveText(/Queued by a rule\. It starts by itself when #12 done or #4 ended\./);
+});
+
+test('a picked rule opens again with its conditions, can be changed, and Start now clears it', async ({ app, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('menuitemradio', /^When a rule is true/).click();
+  let editor = screen.getByRole('dialog', 'Start when a rule is true');
+  await editor.getByRole('combobox', 'Task of condition 1').selectOption({ label: '#12 Checkout API' });
+  await editor.getByRole('button', 'Add condition').click();
+  await editor.getByRole('combobox', 'Task of condition 2').selectOption({ label: '#4 Payment webhook' });
+  await editor.getByRole('combobox', 'State of condition 2').selectOption({ label: 'has ended' });
+  await editor.getByText('Any is true').click();
+  await editor.getByRole('button', 'Use this rule').click();
+  await expect(screen.getByRole('button', /Run after: When #12 done or #4 ended/)).toBeVisible();
+
+  // Opening it again shows what was picked (RED-004).
+  await screen.getByRole('button', /Run after: When/).click();
+  await screen.getByRole('menuitemradio', /^When a rule is true/).click();
+  editor = screen.getByRole('dialog', 'Start when a rule is true');
+  await expect(editor.getByRole('combobox', 'Task of condition 1')).toHaveValue('12');
+  await expect(editor.getByRole('combobox', 'Task of condition 2')).toHaveValue('4');
+  await expect(editor.getByRole('combobox', 'State of condition 2')).toHaveValue('ended');
+  await expect(editor.getByRole('radio', 'Any is true')).toBeChecked();
+
+  // Removing a condition leaves one: no all/any choice, no remove button.
+  await editor.getByRole('button', 'Remove condition 1').click();
+  await expect(editor.getByRole('combobox', 'Task of condition 1')).toHaveValue('4');
+  await expect(editor.getByRole('combobox', 'Task of condition 2')).toHaveCount(0);
+  await expect(editor.getByRole('radiogroup', 'Start when')).toHaveCount(0);
+  await expect(editor.getByRole('button', /^Remove condition/)).toHaveCount(0);
+  await expect(editor.getByText(/^Starts by itself when/)).toHaveText('Starts by itself when #4 ended');
+  await editor.getByRole('button', 'Use this rule').click();
+  await expect(screen.getByRole('button', /Run after: When #4 ended/)).toBeVisible();
+
+  // Cancel keeps the rule; Start now clears it.
+  await screen.getByRole('button', /Run after: When/).click();
+  await screen.getByRole('menuitemradio', /^When a rule is true/).click();
+  editor = screen.getByRole('dialog', 'Start when a rule is true');
+  await editor.getByRole('button', 'Add condition').click();
+  await editor.getByRole('button', 'Cancel').click();
+  await expect(screen.getByRole('button', /Run after: When #4 ended$/)).toBeVisible();
+  await screen.getByRole('button', /Run after: When/).click();
+  await screen.getByRole('menuitemradio', /^Start now/).click();
+  await expect(screen.getByRole('button', /Run after: Start now/)).toBeVisible();
+});
+
+test('a sandbox without tasks offers no start rule', async ({ app, screen }) => {
+  await app.open(mock('/s/studio', '&tasks=0'));
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await expect(screen.getByRole('menuitemradio', /^Start now/)).toBeVisible();
+  await expect(screen.getByRole('menuitemradio', /^When a rule is true/)).toHaveCount(0);
 });
 
 test('a held prompt shows its choices; "Run after this task" chains a new task', async ({ app, browser, screen }) => {
