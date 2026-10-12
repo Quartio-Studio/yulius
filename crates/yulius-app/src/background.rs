@@ -78,6 +78,7 @@ impl App {
         });
         // Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
         self.start_ci();
+        self.start_disk_upkeep();
         // Account usage in its own loop: a slow provider never delays queue draining.
         let app = Arc::clone(self);
         tokio::spawn(async move {

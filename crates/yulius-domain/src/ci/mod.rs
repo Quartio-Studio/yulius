@@ -667,6 +667,9 @@ pub enum StaleReason {
     TaskArchived(u32),
     /// A task worktree whose task's pull request is merged.
     TaskMerged(u32),
+    /// A task worktree whose task is closed or was cancelled (its branch keeps the work;
+    /// Continue recreates the worktree).
+    TaskEnded(u32),
     /// A registered worktree whose directory is gone.
     Missing,
 }
@@ -684,6 +687,7 @@ impl StaleReason {
             Self::TaskDeleted => "task_deleted",
             Self::TaskArchived(_) => "task_archived",
             Self::TaskMerged(_) => "task_merged",
+            Self::TaskEnded(_) => "task_ended",
             Self::Missing => "missing",
         }
     }
@@ -700,6 +704,7 @@ impl StaleReason {
             Self::TaskDeleted => "its task was deleted".to_owned(),
             Self::TaskArchived(n) => format!("task #{n} is archived"),
             Self::TaskMerged(n) => format!("task #{n}'s pull request is merged"),
+            Self::TaskEnded(n) => format!("task #{n} is closed or cancelled"),
             Self::Missing => "its directory is gone".to_owned(),
         }
     }
@@ -794,6 +799,8 @@ pub enum WorktreeOwner {
         merged: bool,
         /// A process of the task is live (starting, running, switching, stopping).
         live: bool,
+        /// The task is closed or was cancelled.
+        ended: bool,
     },
     /// Not a task worktree (unknown owner): never stale.
     Other,
@@ -818,6 +825,11 @@ pub fn classify_worktree(owner: WorktreeOwner, prunable: bool) -> Option<StaleRe
             merged: true,
             ..
         } => Some(StaleReason::TaskMerged(number)),
+        WorktreeOwner::Task {
+            number,
+            ended: true,
+            ..
+        } => Some(StaleReason::TaskEnded(number)),
         WorktreeOwner::Task { .. } => None,
     }
 }
@@ -1165,7 +1177,20 @@ mod tests {
             archived,
             merged,
             live,
+            ended: false,
         };
+        let ended = WorktreeOwner::Task {
+            number: 5,
+            archived: false,
+            merged: false,
+            live: false,
+            ended: true,
+        };
+        assert_eq!(
+            classify_worktree(ended, false),
+            Some(StaleReason::TaskEnded(5))
+        );
+        assert!(StaleReason::TaskEnded(5).safe());
         assert_eq!(
             classify_worktree(WorktreeOwner::Deleted, false),
             Some(StaleReason::TaskDeleted)

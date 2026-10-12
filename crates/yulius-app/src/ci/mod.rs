@@ -311,6 +311,32 @@ impl App {
         self.sandbox_dir(sandbox).join("ci")
     }
 
+    /// Whether a run of `sandbox` is executing: its job checkouts are in use.
+    pub(crate) fn ci_busy(&self, sandbox: &SandboxId) -> bool {
+        self.ci
+            .busy
+            .lock()
+            .map_or(true, |busy| busy.contains(sandbox.as_str()))
+    }
+
+    /// Claims `sandbox`'s CI checkouts (the dispatcher starts no run there while claimed), for
+    /// work that removes files in them (disk upkeep); `false` when a run executes or another
+    /// claim holds them. End it with [`App::ci_release`].
+    pub fn ci_claim(&self, sandbox: &SandboxId) -> bool {
+        self.ci
+            .busy
+            .lock()
+            .is_ok_and(|mut busy| busy.insert(sandbox.as_str().to_owned()))
+    }
+
+    /// Ends a claim of [`App::ci_claim`] and lets the dispatcher start queued runs.
+    pub fn ci_release(&self, sandbox: &SandboxId) {
+        if let Ok(mut busy) = self.ci.busy.lock() {
+            busy.remove(sandbox.as_str());
+        }
+        self.ci_wake();
+    }
+
     /// Wakes the dispatcher (a run was queued or a runner freed).
     pub(crate) fn ci_wake(&self) {
         self.ci.wake.notify_one();

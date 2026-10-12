@@ -180,6 +180,7 @@ struct Document {
     docs: Option<Table>,
     commands: Option<Table>,
     delivery: Option<Table>,
+    disk: Option<Table>,
     environments: Vec<Table>,
     ci_jobs: Vec<Table>,
 }
@@ -189,6 +190,7 @@ enum Target {
     Docs,
     Commands,
     Delivery,
+    Disk,
     Environment,
     CiJob,
 }
@@ -196,6 +198,7 @@ enum Target {
 const DOCS_KEYS: &str = "product, architecture, decisions, specs_dir, changes, agents";
 const COMMAND_KEYS: &str = "test, lint, build, gate";
 const DELIVERY_KEYS: &str = "preset, integration_branch, production_branch, merge, promote, auto_promote, require_checks, environments";
+const DISK_KEYS: &str = "caches";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
 const CI_JOB_KEYS: &str = "name, command, matrix";
 
@@ -348,7 +351,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                 entries: Vec::new(),
             };
             target = match (name.as_str(), array) {
-                ("docs" | "commands" | "delivery", true) => {
+                ("docs" | "commands" | "delivery" | "disk", true) => {
                     return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
                 }
                 ("delivery.environments", false) => {
@@ -365,10 +368,11 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                     document.ci_jobs.push(fresh);
                     Target::CiJob
                 }
-                (known @ ("docs" | "commands" | "delivery"), false) => {
+                (known @ ("docs" | "commands" | "delivery" | "disk"), false) => {
                     let (slot, target) = match known {
                         "docs" => (&mut document.docs, Target::Docs),
                         "commands" => (&mut document.commands, Target::Commands),
+                        "disk" => (&mut document.disk, Target::Disk),
                         _ => (&mut document.delivery, Target::Delivery),
                     };
                     if slot.is_some() {
@@ -386,6 +390,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
             Target::Docs => document.docs.as_mut(),
             Target::Commands => document.commands.as_mut(),
             Target::Delivery => document.delivery.as_mut(),
+            Target::Disk => document.disk.as_mut(),
             Target::Environment => document.environments.last_mut(),
             Target::CiJob => document.ci_jobs.last_mut(),
         };
@@ -701,6 +706,41 @@ pub fn parse_yulius_toml(text: &str) -> Result<ProjectConfig, FormatError> {
 /// Returns the first [`FormatError`] with its line number.
 pub fn parse_yulius_toml_docs(text: &str) -> Result<DocsLayout, FormatError> {
     parse_yulius_toml(text).map(|config| config.docs)
+}
+
+/// The build-cache directories `yulius.toml` declares (`[disk] caches = "target build/cache"`,
+/// space-separated, relative to the repository root; SPEC-008). A file that does not parse
+/// declares none.
+///
+/// # Errors
+/// The first [`FormatError`] of the file.
+pub fn parse_yulius_toml_caches(text: &str) -> Result<Vec<String>, FormatError> {
+    let document = parse_document(text)?;
+    let mut caches = Vec::new();
+    for entry in document
+        .disk
+        .as_ref()
+        .map(|t| t.entries.as_slice())
+        .unwrap_or_default()
+    {
+        if entry.key != "caches" {
+            return Err(unknown("disk", entry, DISK_KEYS));
+        }
+        for path in string_value(entry)?.split_whitespace() {
+            let path = check_repo_path(path).map_err(|reason| {
+                err(
+                    entry.line,
+                    ConfigProblem::InvalidValue {
+                        key: entry.key.clone(),
+                        value: clip(path),
+                        allowed: reason,
+                    },
+                )
+            })?;
+            caches.push(path);
+        }
+    }
+    Ok(caches)
 }
 
 fn quote(text: &str) -> String {
@@ -1112,6 +1152,21 @@ mod tests {
             problem("[[ci.jobs]]\nname = \"X\"\ncommand = \"y\"\n"),
             Some((1, ConfigProblem::Ci(CiConfigError::InvalidJobName(_))))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn declared_caches_are_repository_relative_paths() -> TestResult {
+        let caches = parse_yulius_toml_caches("[disk]\ncaches = \"target build/cache/\"\n")?;
+        assert_eq!(caches, ["target", "build/cache"]);
+        assert!(parse_yulius_toml_caches("[docs]\nproduct = \"a.md\"\n")?.is_empty());
+        for bad in ["/etc", "../x", "a/../b"] {
+            let text = format!("[disk]\ncaches = \"{bad}\"\n");
+            assert!(parse_yulius_toml_caches(&text).is_err(), "{bad}");
+        }
+        assert!(parse_yulius_toml_caches("[disk]\nother = \"x\"\n").is_err());
+        // The rest of the contract still parses with the table present.
+        assert!(parse_yulius_toml("[disk]\ncaches = \"target\"\n").is_ok());
         Ok(())
     }
 }

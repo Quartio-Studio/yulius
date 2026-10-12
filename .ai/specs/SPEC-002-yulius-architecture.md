@@ -1404,7 +1404,7 @@ Hence the shared, ownership-shifted **base** under a kernel overlay with a per-s
      - **Out to the host's loopback:** the sandbox's dev-server ports (PRJ-010), bound on the host only while something listens on them inside (the holder polls `/proc/net/tcp*` every second). Connections reach servers bound to `127.0.0.1` or `::1` inside, so previews, the welcome page's port list and the sandbox browser keep working.
 5. **Limits.**
    - **cgroups.** With `Delegate=yes` and `DelegateSubgroup=server` on the unit, the server keeps its own processes in `server/`, moves processes left from before delegation to `legacy/`, and gives each sandbox `sandboxes/<sid>/` with `memory.max`, `cpu.max` and `pids.max`. The holder, `slirp4netns` and every run of the sandbox are in it. Defaults: half the RAM, all CPUs but two, 8192 tasks.
-   - **Disk.** ext4 project quotas need the filesystem unmounted, so disk is a **soft quota**: the sandbox directory plus its upper layer, measured in the background (bounded walk). Over `YULIUS_SANDBOX_DISK_GB` (default 100), new runs are refused with the figures; live runs continue.
+   - **Disk.** ext4 project quotas need the filesystem unmounted, so disk is a **soft quota**: the sandbox directory plus its upper layer, measured in the background (bounded walk). Over `YULIUS_SANDBOX_DISK_GB` (default 100), new runs are refused with the figures (after a fresh measurement when the reading is older than a minute, and after Yulius pruned the build caches of tasks that do not work, SPEC-008); live runs continue.
 6. **Seccomp** (x86-64; other architectures: none, logged).
    - **Refused with `EPERM`:** kernel modules, kexec, `bpf`, `perf_event_open`, `userfaultfd`, keyrings, `io_uring_*`, `open_by_handle_at`, mount APIs, `pivot_root`, swap, reboot, `syslog`, `acct`, `quotactl`, `iopl`/`ioperm`, x32 calls.
    - **Nested user namespaces:** `unshare`/`clone` with `CLONE_NEWUSER` are refused; `clone3` answers `ENOSYS`, so libc falls back to `clone`.
@@ -2343,7 +2343,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | `slirp4netns` dies | upkeep tick | Restarted against the live holder; egress back within 30 s. |
 | Server restart with live holders | `host.json` + namespace inodes | Holders adopted, relays re-served; runs never notice except relayed connections in flight. |
 | Host packages change (apt upgrade, new Claude Code) | fingerprint | New base built in the background; holders move to it when idle; packages a sandbox installed stay in its layer. |
-| Over the disk quota | background measurement | New sessions refused with the figures; live ones continue. |
+| Over the disk quota | background measurement, re-measured when older than a minute | Caches of tasks that do not work are pruned first (SPEC-008); then new sessions are refused with the figures; live ones continue; a switch checks this before it ends the running session. |
 
 ## 11. Testing and evidence plan
 
