@@ -40,7 +40,7 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
 | MNU-002 | An item's description is one line, cut with an ellipsis; the full text is the item's tooltip. Rows with a description are no taller than 44 px. | e2e |
 | MNU-003 | A menu with 8 or more items to choose from has a filter box ("Filter", a search field) above its items, focused when the menu opens. Shorter menus have none and keep today's first-letter jumps. | e2e |
 | MNU-004 | Typing in the filter shows only the items whose label, description or hint contain every typed word (case-insensitive); headers and separators hide while it has text; with no match the menu says "No matches". | e2e, in-page unit test |
-| MNU-005 | From the filter, ↓ moves to the first shown item and Enter picks it; ↑ on the first item goes back to the filter; a letter typed on an item goes into the filter; Escape clears a filter with text, and closes the menu when it is empty. | e2e |
+| MNU-005 | From the filter, ↓ moves to the first shown item, ↑ to the last, and Enter picks the first; ↑ on the first item goes back to the filter; a letter typed on an item goes into the filter; Escape clears a filter with text, and closes the menu when it is empty. | e2e |
 | MNU-006 | "Run after" lists each task on one line, "#N title" with its status on the right, under the heading "After a task is done", and offers every live task of the sandbox (no cut at 20) since the filter finds one. | e2e |
 | MNU-007 | An open menu, filtered or not, has no WCAG 2.x A/AA violations. | e2e (axe) |
 
@@ -48,7 +48,7 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Every menu fits the window, with one-line descriptions and scrolling items
-- [ ] A long menu has a filter box that narrows its items from the keyboard
+- [x] A long menu has a filter box that narrows its items from the keyboard
 - [ ] "Run after" lists tasks as one-line rows under one heading
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs, ADR and the changes log updated, delivered to dev

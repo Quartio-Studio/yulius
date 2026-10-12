@@ -475,23 +475,45 @@ export function closeMenu() {
   }
 }
 
+/** A menu with this many items to choose from gets a filter box (SPEC-038 MNU-003). */
+export const MENU_FILTER_MIN = 8;
+
+/** Whether a menu item holds every word of `query` in its label, description, hint or title. */
+export function menuMatches(item, query) {
+  const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const text = [item.label, item.description, item.hint, item.title].filter(Boolean).join(' ').toLowerCase();
+  return words.every((word) => text.includes(word));
+}
+
+let menuIds = 0;
+
 /**
  * Show a menu at an anchor element or {x, y} point.
  * items: [{label, onSelect, disabled, danger, hint, description, checked, icon, header, separator, href}]
  * `description` adds a second line; `checked` (true/false) makes the item a choice with a check mark;
  * `keepOpen` keeps the menu open after selecting (multi-select filters), flipping the check in place.
+ * A menu of MENU_FILTER_MIN items or more opens with a filter box above them.
  */
 export function openMenu(anchor, items, { align = 'start' } = {}) {
   closeMenu();
   const button = anchor instanceof HTMLElement && anchor.hasAttribute('aria-haspopup') ? anchor : null;
   if (button) button.setAttribute('aria-expanded', 'true');
-  // The panel floats and holds the list of items, which scrolls when the window is too short.
-  const list = h('div', { class: 'menu-list', role: 'menu' });
-  const menu = h('div', { class: 'menu' }, list);
+  // The panel floats and holds the list of items, which scrolls when the window is too short. The
+  // filter is the list's sibling: a role="menu" may own only menu items.
+  menuIds += 1;
+  const list = h('div', { class: 'menu-list', role: 'menu', id: `menu-list-${menuIds}` });
+  const choices = items.filter((item) => item && !item.separator && !item.header);
+  const filter = choices.length >= MENU_FILTER_MIN
+    ? h('input', { type: 'search', class: 'input menu-filter', placeholder: 'Filter', 'aria-label': 'Filter', 'aria-controls': list.id, autocomplete: 'off', spellcheck: 'false' })
+    : null;
+  const empty = filter ? h('div', { class: 'menu-empty', role: 'status' }) : null;
+  const menu = h('div', { class: 'menu' }, filter, list, empty);
+  const rows = [];
+  const dividers = [];
   for (const item of items) {
     if (!item) continue;
-    if (item.separator) { list.append(h('div', { class: 'menu-sep', role: 'separator' })); continue; }
-    if (item.header) { list.append(h('div', { class: 'menu-header' }, item.header)); continue; }
+    if (item.separator) { dividers.push(list.appendChild(h('div', { class: 'menu-sep', role: 'separator' }))); continue; }
+    if (item.header) { dividers.push(list.appendChild(h('div', { class: 'menu-header' }, item.header))); continue; }
     const choice = typeof item.checked === 'boolean';
     // A disabled item says why on its second line, not only in a mouse tooltip.
     const description = item.description || (item.disabled && item.title ? item.title : null);
@@ -519,7 +541,21 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       item.icon ? h('span', { class: 'menu-icon' }, icon(item.icon, { size: 15 })) : null,
       label, item.hint ? h('span', { class: 'menu-hint' }, item.hint) : null);
     list.append(el);
+    rows.push({ item, el });
   }
+  /** Shows the items matching the filter; headers and separators only while it is empty. */
+  const applyFilter = () => {
+    const query = filter.value.trim();
+    let shown = 0;
+    for (const { item, el } of rows) {
+      el.hidden = !menuMatches(item, query);
+      if (!el.hidden) shown += 1;
+    }
+    for (const divider of dividers) divider.hidden = query !== '';
+    empty.textContent = shown ? '' : 'No matches';
+    list.scrollTop = 0;
+  };
+  if (filter) filter.addEventListener('input', applyFilter);
   document.body.append(menu);
   const rect = anchor instanceof Element ? anchor.getBoundingClientRect() : { left: anchor.x, right: anchor.x, top: anchor.y, bottom: anchor.y };
   const mw = menu.offsetWidth;
@@ -534,25 +570,51 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   const up = mh > below && above > below;
   const room = Math.max(0, up ? above : below);
   if (mh > room) menu.style.maxHeight = `${room}px`;
-  const top = up ? rect.top - 4 - Math.min(mh, room) : rect.bottom + 4;
   menu.style.left = `${left}px`;
-  menu.style.top = `${Math.max(8, top)}px`;
+  // A menu above its anchor is held by its bottom edge, so a filtered, shorter menu stays next to
+  // the anchor; a filtered menu keeps its width.
+  if (up) menu.style.bottom = `${window.innerHeight - (rect.top - 4)}px`;
+  else menu.style.top = `${rect.bottom + 4}px`;
+  if (filter) menu.style.width = `${mw}px`;
   const onDoc = (event) => { if (!menu.contains(event.target)) closeMenu(); };
   const onKey = (event) => {
     // Focus goes back to the button before the menu closes (a button shown only while its menu is
     // open would hide first and could not take focus).
+    // Escape first clears a filter with text (SPEC-038 MNU-005).
+    if (event.key === 'Escape' && filter && filter.value) { event.preventDefault(); event.stopPropagation(); filter.value = ''; applyFilter(); filter.focus(); return; }
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
     // APG menu: arrows wrap, Home/End jump, a letter moves to the next item starting with it,
     // Tab leaves (closing the menu). Disabled items stay focusable so their reason can be read.
-    const buttons = [...menu.querySelectorAll('.menu-item')];
+    const buttons = [...list.querySelectorAll('.menu-item:not([hidden])')];
     const index = buttons.indexOf(document.activeElement);
+    const typed = event.key.length === 1 && /\S/.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey;
+    if (filter && document.activeElement === filter) {
+      // In the filter: ↓ goes to the first shown item, ↑ to the last, Enter picks the first one
+      // that can be picked; other keys edit the text.
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        buttons.find((el) => el.getAttribute('aria-disabled') !== 'true')?.click();
+        return;
+      }
+      if (event.key === 'Tab') { event.preventDefault(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
+      const to = event.key === 'ArrowDown' ? buttons[0] : event.key === 'ArrowUp' ? buttons[buttons.length - 1] : null;
+      if (to) { event.preventDefault(); to.focus(); }
+      return;
+    }
+    if (filter && ((event.key === 'ArrowUp' && index === 0) || typed)) {
+      // ↑ on the first item goes back to the filter; a letter typed on an item goes into it.
+      event.preventDefault();
+      filter.focus();
+      if (typed) { filter.value += event.key; applyFilter(); }
+      return;
+    }
     let next = -1;
     if (event.key === 'ArrowDown') next = (index + 1) % buttons.length;
     else if (event.key === 'ArrowUp') next = (index - 1 + buttons.length) % buttons.length;
     else if (event.key === 'Home') next = 0;
     else if (event.key === 'End') next = buttons.length - 1;
     else if (event.key === 'Tab') { event.preventDefault(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
-    else if (event.key.length === 1 && /\S/.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    else if (typed) {
       const letter = event.key.toLowerCase();
       for (let step = 1; step <= buttons.length; step += 1) {
         const candidate = buttons[(index + step) % buttons.length];
@@ -576,7 +638,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       if (button) button.setAttribute('aria-expanded', 'false');
     },
   };
-  const first = menu.querySelector('.menu-item:not([aria-disabled="true"])') || menu.querySelector('.menu-item');
+  const first = filter || menu.querySelector('.menu-item:not([aria-disabled="true"])') || menu.querySelector('.menu-item');
   if (first) first.focus({ preventScroll: true });
   return menu;
 }
