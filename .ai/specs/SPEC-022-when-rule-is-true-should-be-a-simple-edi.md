@@ -44,7 +44,7 @@ start rules themselves (SPEC-017) do not change.
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Picked conditions become the start rule text the server reads
-- [ ] The composer's "When a rule is true…" opens a condition editor instead of a text box
+- [x] The composer's "When a rule is true…" opens a condition editor instead of a text box
 - [ ] A picked rule opens again for changes, and a sandbox without tasks says so
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated

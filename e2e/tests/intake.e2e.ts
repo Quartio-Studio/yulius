@@ -111,18 +111,40 @@ test('picked conditions become the canonical start rule text (unit, in the page)
   });
 });
 
-test('"Run after" takes a logical rule; the task waits for it', async ({ app, browser, screen }) => {
+test('"Run after" builds a start rule from picked conditions; the task waits for it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^When a rule is true/).click();
-  await screen.getByRole('textbox', /^Rule/).fill('#12 done and #4 done');
-  await screen.getByRole('button', 'Use this rule').click();
-  await expect(screen.getByRole('button', /Run after: When #12 done and #4 done/)).toBeVisible();
+
+  // An editor of conditions, not a sentence to type (SPEC-022 RED-001).
+  const editor = screen.getByRole('dialog', 'Start when a rule is true');
+  await expect(editor).toBeVisible();
+  await expect(editor.getByRole('textbox')).toHaveCount(0);
+  await expect(editor.getByRole('combobox', 'Task of condition 1')).toBeVisible();
+  // One condition needs no all/any choice.
+  await expect(editor.getByRole('radiogroup', 'Start when')).toHaveCount(0);
+  await editor.getByRole('combobox', 'Task of condition 1').selectOption({ label: '#12 Checkout API' });
+  await expect(editor.getByRole('combobox', 'State of condition 1')).toHaveValue('done');
+  await expect(editor.getByRole('status')).toHaveText('Starts by itself when #12 done');
+
+  // A second condition, and whether all or any of them must hold (RED-002).
+  await editor.getByRole('button', 'Add condition').click();
+  await editor.getByRole('combobox', 'Task of condition 2').selectOption({ label: '#4 Payment webhook' });
+  await editor.getByRole('combobox', 'State of condition 2').selectOption({ label: 'has ended' });
+  await expect(editor.getByRole('status')).toHaveText('Starts by itself when #12 done and #4 ended');
+  // The segment's label takes the click, as for a person.
+  await editor.getByText('Any is true').click();
+  await expect(editor.getByRole('radio', 'Any is true')).toBeChecked();
+  await expect(editor.getByRole('status')).toHaveText('Starts by itself when #12 done or #4 ended');
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await editor.getByRole('button', 'Use this rule').click();
+  await expect(screen.getByRole('button', /Run after: When #12 done or #4 ended/)).toBeVisible();
   await screen.getByRole('textbox', 'Task prompt').fill('Write the checkout UI tests');
   await screen.getByRole('button', 'Start task').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
-  await expect(browser.locator('.attention-bar')).toHaveText(/Queued by a rule\. It starts by itself when #12 done and #4 done\./);
+  await expect(browser.locator('.attention-bar')).toHaveText(/Queued by a rule\. It starts by itself when #12 done or #4 ended\./);
 });
 
 test('a held prompt shows its choices; "Run after this task" chains a new task', async ({ app, browser, screen }) => {

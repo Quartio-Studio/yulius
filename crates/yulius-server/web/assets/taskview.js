@@ -2,7 +2,8 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, openModal, field, statusMark, singleFlight, keepFocus } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
+import { openRuleEditor, ruleText } from './ruleeditor.js';
 import { createTerminalView } from './terminal.js';
 import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround, shellsLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, chainCandidates, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
@@ -388,8 +389,9 @@ export function mountComposer(ctx, sandbox) {
   let workflows = [];
   // Run after another task of this sandbox (TSK-012): the new task waits until it is Done.
   let afterTaskId = '';
-  // Or wait for a logical sentence over the sandbox's tasks (SPEC-017), like `#12 done and #13 done`.
-  let startRule = '';
+  // Or wait for a logical sentence over the sandbox's tasks (SPEC-017), like `#12 done and #13 done`,
+  // picked as conditions in the rule editor (SPEC-022): `{ join, conditions }` or null.
+  let startRule = null;
   let split = null; // the split card while it shows (TSK-011)
   let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
   let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
@@ -480,9 +482,10 @@ export function mountComposer(ctx, sandbox) {
     workflowChip.title = workflowId === AUTO ? 'Jev picks the workflow that fits, or none: features get a spec, research and questions do not' : wfLabel;
     const after = (ctx.store.tasksOf(sandbox.id) || []).find((t) => t.id === afterTaskId);
     if (afterTaskId && !after) afterTaskId = '';
-    const ruleLabel = startRule.length > 28 ? `${startRule.slice(0, 27)}…` : startRule;
-    setChildren(afterChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, startRule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
-    afterChip.title = startRule ? `Starts by itself when ${startRule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
+    const rule = startRule ? ruleText(startRule) : '';
+    const ruleLabel = rule.length > 28 ? `${rule.slice(0, 27)}…` : rule;
+    setChildren(afterChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, rule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
+    afterChip.title = rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
     modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: Claude Code’s default';
@@ -514,32 +517,26 @@ export function mountComposer(ctx, sandbox) {
   function openAfterMenu(anchor) {
     const candidates = chainCandidates(ctx, sandbox);
     openMenu(anchor, [
-      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule, onSelect: () => { afterTaskId = ''; startRule = ''; renderChips(); prompt.focus(); } },
+      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule, onSelect: () => { afterTaskId = ''; startRule = null; renderChips(); prompt.focus(); } },
       candidates.length ? { separator: true } : null,
-      ...candidates.slice(0, 20).map((t) => ({ label: `After #${t.number} ${t.title}`, icon: 'branch', description: `Starts by itself when #${t.number} is done · ${statusInfo(t).label}`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = ''; renderChips(); prompt.focus(); } })),
+      ...candidates.slice(0, 20).map((t) => ({ label: `After #${t.number} ${t.title}`, icon: 'branch', description: `Starts by itself when #${t.number} is done · ${statusInfo(t).label}`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; renderChips(); prompt.focus(); } })),
       { separator: true },
-      { label: 'When a rule is true…', icon: 'branch', description: 'For example #12 done and #13 done', checked: Boolean(startRule), onSelect: openRuleDialog },
+      { label: 'When a rule is true…', icon: 'branch', description: 'Pick tasks and whether they are done, merged or ended', checked: Boolean(startRule), onSelect: openRuleDialog },
     ]);
   }
 
-  /** A start rule (SPEC-017): "#12 done and (#13 done or #14 ended)". The server checks it. */
+  /** A start rule (SPEC-017) picked as conditions (SPEC-022); the server checks it. */
   function openRuleDialog() {
-    const input = h('input', { class: 'input mono', type: 'text', value: startRule, placeholder: '#12 done and #13 done', maxlength: 500, autocomplete: 'off', spellcheck: 'false' });
-    openModal({
-      title: 'Start when a rule is true',
-      body: h('div', { class: 'stack' },
-        field('Rule', input, 'Tasks are #numbers of this sandbox. States: done (default), merged, ended. Combine with and, or, not and parentheses.')),
-      actions: [
-        { label: 'Cancel', value: false },
-        { label: 'Use this rule', kind: 'primary', run: () => {
-          startRule = input.value.trim();
-          if (startRule) afterTaskId = '';
-          renderChips();
-          prompt.focus();
-        } },
-      ],
+    openRuleEditor({
+      tasks: ctx.store.tasksOf(sandbox.id),
+      value: startRule,
+      onUse: (rule) => {
+        startRule = rule;
+        afterTaskId = '';
+        renderChips();
+        prompt.focus();
+      },
     });
-    input.focus();
   }
 
   function openModelMenu(anchor) {
@@ -681,7 +678,7 @@ export function mountComposer(ctx, sandbox) {
     renderTray();
     fit();
     afterTaskId = '';
-    startRule = '';
+    startRule = null;
     ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
   }
 
@@ -775,7 +772,7 @@ export function mountComposer(ctx, sandbox) {
       working(autoStage());
       const body = bodyFor(text);
       if (afterTaskId) body.after_task_id = afterTaskId;
-      if (startRule) body.start_rule = startRule;
+      if (startRule) body.start_rule = ruleText(startRule);
       opened(await createTask(body));
     } catch (error) {
       errorToast(error, 'Couldn’t start the task');
