@@ -78,6 +78,12 @@ fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
     if decided && let Some(outcome) = &now.merge_outcome {
         return Some(outcome.clone());
     }
+    // Yulius could not push this head (DLV-201): no run will come until the agent acts.
+    if let Some(problem) = &now.push_problem
+        && before.is_none_or(|before| before.push_problem.as_ref() != Some(problem))
+    {
+        return Some(problem.clone());
+    }
     if let Some(before) = before
         && now.stage != before.stage
     {
@@ -278,6 +284,23 @@ mod tests {
             ..dropped
         };
         assert!(settled(&elsewhere, None).is_none());
+    }
+
+    /// DLV-201: a head Yulius could not push ends the wait with why and what to do, once.
+    #[test]
+    fn a_push_problem_ends_the_wait() {
+        let refused = WaitState {
+            push_problem: Some("Yulius could not push 012345678 to pull request #7: …".into()),
+            ..state("none")
+        };
+        let line = settled(&refused, None).unwrap_or_default();
+        assert!(
+            line.starts_with("Yulius could not push 012345678"),
+            "{line}"
+        );
+        let line = settled(&refused, Some(&state("none"))).unwrap_or_default();
+        assert!(line.starts_with("Yulius could not push"), "{line}");
+        assert!(settled(&refused, Some(&refused)).is_none(), "already said");
     }
 
     #[test]
