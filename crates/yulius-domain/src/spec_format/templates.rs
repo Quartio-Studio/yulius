@@ -366,8 +366,8 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
          verify production. There is no human acceptance step; the gates decide.\n\
          \n\
          - One task, one branch, one worktree from `dev`; never commit or push to `dev` or\n  \
-           `main` directly, never `--no-verify`, no `git stash` as a tool, force-push only your\n  \
-           own branch with `--force-with-lease`.\n\
+           `main` directly, never `--no-verify`, no `git stash` as a tool, never rebase or\n  \
+           force-push pushed commits (merge `dev` in instead).\n\
          - Small atomic commits with conventional messages; pull requests of one concern, about\n  \
            400 changed lines outside tests. Features are squash-merged into `dev`.\n\
          - CI runs on our own machines through Yulius CI (the `gate` command in `yulius.toml`);\n  \

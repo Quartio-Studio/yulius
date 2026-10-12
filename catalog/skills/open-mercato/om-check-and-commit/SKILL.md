@@ -38,8 +38,8 @@ publish only a branch in a good state. Publishing is part of the autonomous pipe
      generated junk, secrets and large binaries.
    - Small atomic commits with conventional subjects (`feat(scope): ...`, `fix(scope): ...`,
      `chore(scope): ...`), each one concern.
-   - Never `--no-verify`; never amend or rewrite published commits of a shared branch; never
-     force-push, except your own branch with `--force-with-lease`; no `git stash` as a tool.
+   - Never `--no-verify`; never amend, rebase or force-push pushed commits (bring the
+     integration branch in with a merge); no `git stash` as a tool.
    - Push your task branch (never the integration or production branch).
 6. **Report** in 3-6 lines: the gate result per command (anything not run, and why), the fixes
    made, and the commit and branch pushed, or the exact blocker.
