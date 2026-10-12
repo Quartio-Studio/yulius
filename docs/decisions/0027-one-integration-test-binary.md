@@ -1,4 +1,4 @@
-# 0026. The product's integration tests are one test binary
+# 0027. The product's integration tests are one test binary
 
 ## Status
 

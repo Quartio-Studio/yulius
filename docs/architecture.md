@@ -78,12 +78,18 @@ sequenceDiagram
 ## Task start
 
 A task's agent is a native Claude Code session. Files attached on the new-task composer are
-uploaded to the sandbox's drafts folder and mentioned (`@path`) in the session's first message,
-the CLI prompt argument, which Claude Code attaches natively (an image as an image). A goal task
-then gets its `/goal` typed into the terminal; the request file in the sandbox home keeps the
-whole request ([SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
+uploaded to the sandbox's drafts folder and reach the session's first message natively. Without
+an image, that message is the CLI prompt argument and each file is mentioned there (`@path`).
+With an image, the session starts with no prompt and Yulius types the message into the TUI. Each
+image's path is pasted on its own, and Claude Code shows it as `[Image #N]` and sends an image
+block. The text is pasted next, with the other files mentioned, then Enter (an `@` mention of an
+image would only be a Read tool call). A goal task then gets its `/goal` typed into the terminal;
+the request file in the sandbox home keeps the whole request
+([SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
 [SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
-[decision 0022](decisions/0022-native-task-attachments.md)).
+[SPEC-030](../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md),
+[decisions 0022](decisions/0022-native-task-attachments.md) and
+[0026](decisions/0026-attached-images-are-pasted.md)).
 
 ```mermaid
 sequenceDiagram
@@ -92,8 +98,18 @@ sequenceDiagram
     participant C as Claude Code (PTY)
     UI->>S: upload each file (drafts folder)
     UI->>S: create task (prompt + @path lines)
-    S->>C: launch with first message: text (prompt mode) or "files attached" (goal mode) + @path mentions
-    C-->>C: attaches each mentioned file (image block)
+    alt no attached image
+        S->>C: launch with first message: text (prompt mode) or "files attached" (goal mode) + @path mentions
+        C-->>C: attaches each mentioned file
+    else attached images
+        S->>C: launch with no prompt
+        C->>S: SessionStart hook, then quiet output
+        loop each image
+            S->>C: bracketed paste of its path
+            C-->>S: screen shows [Image #N]
+        end
+        S->>C: bracketed paste of the text (+ @path mentions of other files), Enter
+    end
     C->>S: Stop hook of that turn (goal mode)
     S->>C: types /goal <condition>
 ```
