@@ -3,7 +3,7 @@ yulius-task: bd35c31c-5eeb-470b-b720-6ef91d8c2bc3
 status: done
 ---
 
-# SPEC-010: a task being stopped is not listed under Working
+# SPEC-015: a task being stopped is not listed under Working
 
 Status: implemented
 Date: 2026-10-12
