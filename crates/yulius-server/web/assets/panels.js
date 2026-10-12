@@ -567,7 +567,7 @@ function createMessagesView(ctx, sandbox, task) {
   const el = h('div', { class: 'panel-view' }, list);
   const messages = new Map();
   const myLogin = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null;
-  // The agent asks people (message_send to="people", or a broadcast): the answer is typed in its
+  // The agent asks people (message_send to="people"): the answer is typed in its
   // terminal, like every other word to the agent.
   const asksPeople = (m) => Boolean(m.from && m.from.task_id === task.id && !m.to_task_id && (m.kind === 'question' || m.kind === 'request'));
   const replyable = allows(sandbox.access, 'write') && Boolean(ctx.replyInTerminal);
