@@ -1,11 +1,11 @@
 ---
 yulius-task: 1dba5af7-9ed0-4c9c-a623-34492bd9e086
-status: in-progress
+status: done
 ---
 
 # SPEC-035: the Cockpit becomes the Agent, in the right panel
 
-Status: in progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #33
 Scope authorization: user request: "Move cockpit to the right and change cockpit to "Agent". Add
@@ -75,10 +75,10 @@ flowchart LR
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The Agent opens in the right panel with its quick-work notice
-- [ ] The Agent leaves the left navigation; the top bar and old links open it
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] The Agent opens in the right panel with its quick-work notice
+- [x] The Agent leaves the left navigation; the top bar and old links open it
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -135,3 +135,26 @@ flowchart LR
   another sandbox while an Agent is open starts it without the keyboard (rare; the person clicks
   it). Round 3 is the last full round; a fourth, narrow review confirms these fixes because the
   merge needs an approved head.
+- **Merge of task #27** (SPEC-029, its ADR took 0025): this decision became ADR-0026; the Cockpit
+  is left out of the trimmed navigation and SPEC-029 NAV-001 says where it went.
+- **Review round 4** (fresh session, narrow, APPROVE at 4277747 with minors): the wish to focus
+  from opening the Agent now ends when its first screen shows, so a recovery long after (a reboot)
+  leaves the keyboard on the page (mock `rebootCockpits()`); the slow-start guard got its test
+  (mock `&cockpit=slow`); SPEC-029 NAV-001 notes the move. Not changed: ADR-0025's title ("Six
+  sandbox pages") is history, explained by its status note.
+
+## Evidence
+
+- `npx e2e run` (mock, full suite) at 4277747 (after merging dev): 32 files passed, 1 skipped (the
+  live-model `agent.e2e.ts`); 170 tests passed. `agent-panel.e2e.ts` failed before the change (9 of
+  9: no Agent button, notice, routes; Cockpit in the sidebar), and each review-round test failed
+  before its fix (New task focus, phones, rail kept on, sandbox switch, rail closed from the rail,
+  recovery right after opening, recovery long after opening).
+- `scripts/dev ci` (repository contracts, script tests, check, fmt, clippy `-D warnings`, nextest,
+  doctests, deny, machete, doc) at 4277747: exit 0, 1166 tests run, 1166 passed, 16 skipped
+  (`crates/yulius/tests/cockpit.rs` unchanged and passing).
+- Manual check in the Yulius browser (mock, 1280×800): the top-bar Agent button opens the Agent
+  beside task #12 with the notice and New task link; Agent first in the rail; no Cockpit in the
+  sidebar.
+- Not verified here: a real `claude` session behind the Agent (the server path is unchanged from
+  SPEC-021 and covered by its tests); the phone layout only through e2e at 390 px, not on a device.

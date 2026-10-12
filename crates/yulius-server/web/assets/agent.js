@@ -103,6 +103,9 @@ export function createAgentView(ctx, sandbox) {
       exitMessage: () => ({ tone: 'info', text: 'The Agent stopped. Its conversation is kept.' }),
       exitActions: () => [{ label: 'Start again', run: () => open() }],
       onFatal: (message) => { if (message.code === 'not_found') recover(); },
+      // Once its first screen shows, the wish to focus from opening it is spent: a later recovery
+      // leaves the keyboard where it is.
+      onReady: () => { asked = { focus: false, from: null }; },
       onConnection: (status) => { if (status === 'reconnecting' || status === 'failed') recover(); },
       // Paths in its output open in the Editor, as in a terminal of the sandbox repository.
       fileLinks: {

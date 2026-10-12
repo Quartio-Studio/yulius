@@ -1781,11 +1781,13 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
 });
 // The user's Cockpit (SPEC-021): one plain Claude Code session per sandbox, started on demand,
 // never listed, renamed or closed as a terminal. `&cockpit=fail` makes it fail to start;
-// `&cockpit=gone` answers the first call with a Cockpit whose process is already gone (a reboot).
-route('POST', `/api/sandboxes/${ID}/cockpit`, ({ db, p }) => {
+// `&cockpit=gone` answers the first call with a Cockpit whose process is already gone (a reboot);
+// `&cockpit=slow` answers after 1.5 s; `__yuliusMock.rebootCockpits()` ends running ones abruptly.
+route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   const scenario = new URLSearchParams(location.search).get('cockpit');
   if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
+  if (scenario === 'slow') await delay(1500);
   if (scenario === 'gone' && !db.cockpitGone) {
     db.cockpitGone = true;
     return { id: `ck_${p[0]}_gone`, name: 'Cockpit', task_id: null, folder: `/srv/yulius/sandboxes/studio/repo`, created_at: new Date().toISOString() };
@@ -3316,6 +3318,14 @@ export function createMockTransport(params) {
     for (const session of db.sessions.values()) for (const ws of [...(session.viewers || [])]) ws.serverClose(1006, '');
   };
   db.goOnline = () => { db.offline = false; };
+  // The machine rebooted: every Cockpit's process is gone, its viewers lose the connection.
+  db.rebootCockpits = () => {
+    for (const shell of [...db.shells.values()]) {
+      if (!shell.cockpit) continue;
+      db.shells.delete(shell.id);
+      for (const ws of [...((shell.session && shell.session.viewers) || [])]) ws.serverClose(1006, '');
+    }
+  };
   return {
     kind: 'mock',
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.

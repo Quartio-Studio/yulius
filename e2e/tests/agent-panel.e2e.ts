@@ -200,3 +200,30 @@ test('an Agent recovered right after opening it has the keyboard', async ({ app,
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
   await expect(browser.locator('.agent-term .xterm-helper-textarea')).toBeFocused();
 });
+
+// Review round 4: a slow start leaves the keyboard where the person put it in the meantime.
+test('an Agent that starts slowly does not take the keyboard from the page', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&cockpit=slow'));
+  await screen.getByRole('button', 'Show Agent').click();
+  await screen.getByRole('textbox', 'Task prompt').click();
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
+});
+
+// Review round 4: the wish to focus on opening does not outlive the opening.
+test('an Agent recovered long after it was opened leaves the keyboard on the page', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('button', 'Show Agent').click();
+  const terminal = browser.locator(agentTerminal);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  await browser.keyboard.type('why?');
+  await browser.keyboard.press('Enter');
+  await expect(terminal).toHaveText(/Good question/);
+  await browser.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { rebootCockpits(): void } }).__yuliusMock.rebootCockpits());
+  // A new session (the old conversation's output is gone from the screen).
+  await expect(terminal).not.toHaveText(/Good question/);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  await expect.poll(() => browser.evaluate(() => Boolean(document.activeElement?.closest('.agent-term')))).toBe(false);
+});
