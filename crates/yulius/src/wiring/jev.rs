@@ -614,12 +614,15 @@ mod tests {
     #[tokio::test]
     async fn a_slow_answer_times_out_within_the_deadline() -> TestResult {
         let server = fake(200, valid().to_string(), Duration::from_secs(5)).await?;
+        // Building the client (TLS roots, connection pool) is not part of the deadline: time only
+        // the call, and bound it by the fake's 5 s answer, which a working deadline never waits for.
+        let jev = client(&server.url)?;
         let started = std::time::Instant::now();
-        let result = client(&server.url)?
+        let result = jev
             .evaluate("state", &SPLIT_QUESTION, Duration::from_millis(200))
             .await;
         assert_eq!(result, Err(JevFailure::Timeout));
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(3));
         Ok(())
     }
 
