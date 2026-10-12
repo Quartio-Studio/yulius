@@ -70,6 +70,8 @@ finish on their own:
   - never a promotion unless the request asks.
 - **Attachments.** The composer adds `@path` lines. `Request::parse` lifts them out into
   "Attached files: open each one with the Read tool", which shows images to the model.
+  (Superseded by SPEC-025: the files are mentioned in the session's first message, which Claude
+  Code attaches natively; the request file still lists them.)
 - **Armed merges.** An armed merge lives on the task's runtime. A restart forgets it; the agent's
   `yulius wait` then still returns on the green checks, and the agent merges.
 - **The `yulius` command.** Agents get it as a shim next to the `gh` shim that only allows `wait`.

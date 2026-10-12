@@ -55,6 +55,29 @@ of closed and cancelled tasks, and a switch checks the quota and the other start
 before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md),
 [decision 0017](decisions/0017-sandbox-disk-upkeep.md)).
 
+## Task start
+
+A task's agent is a native Claude Code session. Files attached on the new-task composer are
+uploaded to the sandbox's drafts folder and mentioned (`@path`) in the session's first message,
+the CLI prompt argument, which Claude Code attaches natively (an image as an image). A goal task
+then gets its `/goal` typed into the terminal; the request file in the sandbox home keeps the
+whole request ([SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
+[SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
+[decision 0022](decisions/0022-native-task-attachments.md)).
+
+```mermaid
+sequenceDiagram
+    participant UI as Composer
+    participant S as Yulius server
+    participant C as Claude Code (PTY)
+    UI->>S: upload each file (drafts folder)
+    UI->>S: create task (prompt + @path lines)
+    S->>C: launch with first message: text (prompt mode) or "files attached" (goal mode) + @path mentions
+    C-->>C: attaches each mentioned file (image block)
+    C->>S: Stop hook of that turn (goal mode)
+    S->>C: types /goal <condition>
+```
+
 ## Cockpit
 
 Every user has one plain Claude Code session per sandbox, the Cockpit

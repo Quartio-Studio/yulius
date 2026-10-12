@@ -568,6 +568,15 @@ impl App {
             refreshed = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
             task = &refreshed;
         }
+        // The turn on a goal session's first message (its attached files) ended, not held: it
+        // stops as it is, without gates or rotation, so the goal is typed next (SPEC-025).
+        let opening = self
+            .runtime(&task.id)
+            .opening_turn
+            .swap(false, Ordering::SeqCst);
+        if opening && task.mode == TaskMode::Goal {
+            return Ok(HookReply::Output(HookOutput::default()));
+        }
         if let Err(err) = self.sync_steps_from_spec(task).await {
             tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
         }

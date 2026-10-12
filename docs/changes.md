@@ -9,6 +9,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.
+- A file attached on the new-task composer opens when its chip is clicked (an image in a preview,
+  another file in a new tab), and the task's Claude Code session receives attached files natively
+  as `@path` mentions in its first message, an image as an image, instead of paths to open with the
+  Read tool (SPEC-025, decision 0022).
 - A half-written new task is kept (SPEC-026, task #24): its prompt, attached files (with thumbnails)
   and choices come back after visiting another page or reloading, per sandbox; starting the task
   clears it, signing out removes it.

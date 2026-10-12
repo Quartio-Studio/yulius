@@ -56,7 +56,7 @@ switches and the composer's "Default" all go through the one launch plan
 ## Decisions
 
 - Pin the full model id rather than the `opus` alias, and apply the default at launch rather than
-  storing it on the task (ADR-0022).
+  storing it on the task (ADR-0023).
 - Haiku is recognised by name, as `ModelFamily::of` already recognises Opus and Sonnet; the UI's
   model list (`models.js`, `effort: false`) stays the place that lists models.
 - The Cockpit, merged into `dev` while this task was in review, started without `--model` (the

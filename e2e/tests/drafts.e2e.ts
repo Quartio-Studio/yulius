@@ -128,6 +128,13 @@ test('the draft survives a reload and is cleared once the task starts', async ({
   await expect(attachmentNames(browser)).toHaveText(['screen.png', 'notes.pdf']);
   // The image keeps a (stored, scaled) thumbnail.
   await expect(browser.locator('.composer-attachment img')).toHaveCount(1);
+  // SPEC-025: it still opens, as its thumbnail; the PDF's bytes stayed with the old page, so its
+  // chip is not a button any more.
+  await screen.getByRole('button', 'Open screen.png').click();
+  await expect(screen.getByRole('dialog', 'screen.png').getByRole('img', 'screen.png')).toBeVisible();
+  await browser.locator('dialog.modal').press('Escape');
+  await expect(browser.locator('dialog.modal')).toHaveCount(0);
+  await expect(browser.locator('button.composer-attachment-open')).toHaveCount(1);
   await expect(screen.getByRole('button', 'Mode: Goal')).toBeVisible();
   await expect(screen.getByRole('button', 'Run after: After #12')).toBeVisible();
 

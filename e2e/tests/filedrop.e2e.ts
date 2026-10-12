@@ -171,4 +171,55 @@ test('files dropped or pasted on the new-task prompt show as thumbnails and join
   });
   await expect(browser.locator('.composer-attachment img')).toHaveCount(2);
   await expect(prompt).toHaveValue('Fix the layout in');
+
+  // SPEC-025 ATT-001: a chip opens its file; an image previews in a dialog that Esc closes.
+  await screen.getByRole('button', 'Open screen-shot.png').click();
+  await expect(screen.getByRole('dialog', 'screen-shot.png').getByRole('img', 'screen-shot.png')).toBeVisible();
+  await browser.locator('dialog.modal').press('Escape');
+  await expect(browser.locator('dialog.modal')).toHaveCount(0);
+  await expect(browser.locator('.composer-attachment')).toHaveCount(2);
+  // Remove only removes.
+  await screen.getByRole('button', 'Remove screen-shot.png').click();
+  await expect(browser.locator('dialog.modal')).toHaveCount(0);
+  await expect(browser.locator('.composer-attachment')).toHaveCount(1);
+});
+
+test('an attached page opens as plain text and an unknown file downloads, never running as the site', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+  await installDrop(browser);
+  await browser.evaluate(() => {
+    const w = window as unknown as { __opened: string[]; __downloads: string[][] };
+    w.__opened = [];
+    w.__downloads = [];
+    window.open = (url?: string | URL) => { w.__opened.push(String(url)); return null; };
+    HTMLAnchorElement.prototype.click = function click(this: HTMLAnchorElement) { w.__downloads.push([this.href, this.download]); };
+  });
+  await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['bug.html', '<script>alert(1)</script>', 'text/html'], ['logs.zip', 'PK', 'application/zip']], ['drop']));
+  await screen.getByRole('button', 'Open bug.html').click();
+  await screen.getByRole('button', 'Open logs.zip').click();
+  const result = await browser.evaluate(async () => {
+    const w = window as unknown as { __opened: string[]; __downloads: string[][] };
+    const types = await Promise.all(w.__opened.map(async (url) => (await (await fetch(url)).blob()).type.split(';')[0]));
+    return { types, downloads: w.__downloads.map(([href, name]) => [href.slice(0, 5), name]) };
+  });
+  expect(result.types).toEqual(['text/plain']);
+  expect(result.downloads).toEqual([['blob:', 'logs.zip']]);
+});
+
+test('a file attached on the new-task prompt that is not an image opens in a new tab', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+  await installDrop(browser);
+  await browser.evaluate(() => {
+    (window as unknown as { __opened: unknown[] }).__opened = [];
+    window.open = (...args: unknown[]) => { (window as unknown as { __opened: unknown[] }).__opened.push(args); return null; };
+  });
+  await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['notes.txt', 'hello', 'text/plain']], ['drop']));
+  await screen.getByRole('button', 'Open notes.txt').click();
+  const opened = await browser.evaluate(() => (window as unknown as { __opened: string[][] }).__opened);
+  expect(opened).toHaveLength(1);
+  expect(opened[0][0]).toMatch(/^blob:/);
+  expect(opened[0][1]).toBe('_blank');
+  await expect(browser.locator('dialog.modal')).toHaveCount(0);
 });

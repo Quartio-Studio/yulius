@@ -11,7 +11,7 @@ import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
-import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments } from './filedrop.js';
+import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -443,21 +443,33 @@ export function mountComposer(ctx, sandbox) {
       h('a', { class: 'composer-repo-link', href: sandbox.repo.url, target: '_blank', rel: 'noopener noreferrer', title: `Open ${sandbox.repo.owner}/${sandbox.repo.name} on GitHub` },
         icon('github', { size: 18 }), h('span', null, `${sandbox.repo.owner} / ${sandbox.repo.name}`)),
       h('span', { class: 'composer-branch', title: `New tasks branch from ${baseBranch}` }, icon('branch', { size: 16 }), h('span', null, baseBranch))) : null);
-  // Files added to the prompt wait in the draft, shown as thumbnails; their paths join the text at
-  // start. An image's thumbnail is drawn from its file (an object URL of this view).
+  // Files added to the prompt wait in the draft, shown as thumbnails that open the file; their
+  // paths join the text at start. An image's thumbnail is drawn from its file (an object URL of
+  // this view); a file opened in a tab has its own (`tabUrls`). A draft restored after a reload
+  // keeps no file: an image previews its stored thumbnail, another file cannot be opened.
   const urls = new Map();
+  const tabUrls = new Map();
   const tray = h('ul', { class: 'composer-attachments', 'aria-label': 'Attached files', hidden: true });
   function renderTray() {
-    forgetUrls([...urls.keys()].filter((item) => !draft.attached.includes(item)));
+    forgetUrls([...new Set([...urls.keys(), ...tabUrls.keys()])].filter((item) => !draft.attached.includes(item)));
     for (const item of draft.attached) if (!urls.has(item) && item.file && /^image\//.test(item.type)) urls.set(item, URL.createObjectURL(item.file));
     tray.hidden = !draft.attached.length;
-    setChildren(tray, draft.attached.map((item) => h('li', { class: 'composer-attachment', title: item.name },
-      urls.has(item) || item.thumb ? h('img', { src: urls.get(item) || item.thumb, alt: item.name }) : icon('file', { size: 20 }),
-      h('span', { class: 'composer-attachment-name' }, item.name),
-      iconButton('x', `Remove ${item.name}`, () => { dropAttached([item]); renderTray(); }, { class: 'composer-attachment-remove' }))));
+    setChildren(tray, draft.attached.map((item) => {
+      const image = urls.get(item) || item.thumb;
+      const face = [image ? h('img', { src: image, alt: '' }) : icon('file', { size: 20 }), h('span', { class: 'composer-attachment-name' }, item.name)];
+      const open = image || item.file
+        ? h('button', { type: 'button', class: 'composer-attachment-open', 'aria-label': `Open ${item.name}`, onClick: () => openAttachment(item, { image, url: (blob) => {
+          if (!tabUrls.has(item)) tabUrls.set(item, URL.createObjectURL(blob));
+          return tabUrls.get(item);
+        } }) }, ...face)
+        : h('span', { class: 'composer-attachment-open', title: `${item.name}: attach it again to open it here` }, ...face);
+      return h('li', { class: 'composer-attachment', title: item.name },
+        open,
+        iconButton('x', `Remove ${item.name}`, () => { dropAttached([item]); renderTray(); }, { class: 'composer-attachment-remove' }));
+    }));
   }
   function forgetUrls(items) {
-    for (const item of items) if (urls.has(item)) { URL.revokeObjectURL(urls.get(item)); urls.delete(item); }
+    for (const map of [urls, tabUrls]) for (const item of items) if (map.has(item)) { URL.revokeObjectURL(map.get(item)); map.delete(item); }
   }
   function dropAttached(items) {
     forgetUrls(items);
