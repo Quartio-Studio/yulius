@@ -3,7 +3,7 @@ yulius-task: e2a485d6-ea7b-4727-b43e-284366ca0ad5
 status: done
 ---
 
-# SPEC-010: a Done task can be archived
+# SPEC-013: a Done task can be archived
 
 Status: implemented
 Date: 2026-10-12
