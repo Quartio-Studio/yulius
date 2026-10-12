@@ -5,7 +5,7 @@
 //! worktree that the agent reads at the same path (inside bubblewrap on Linux) and that goes
 //! with its task or shell.
 
-mod support;
+use crate::support;
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};

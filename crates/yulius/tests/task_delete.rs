@@ -1,7 +1,7 @@
 //! Permanent task deletion (SPEC-001 TSK-009, AC-TSK-8): write users delete resting tasks with
 //! their records and directories; live tasks and read users are refused.
 
-mod support;
+use crate::support;
 
 use axum::http::{Method, StatusCode};
 use serde_json::json;

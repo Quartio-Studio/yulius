@@ -3,7 +3,7 @@
 //! never listed, renamed or closed as a terminal, resumed with the newest conversation when it
 //! starts again, adopted after a server restart, reaped when unwatched for a day (SPEC-021).
 
-mod support;
+use crate::support;
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};

@@ -4,7 +4,7 @@
 //! users, other sandboxes, cross-site callers and Yulius itself — and the guarantee that a page
 //! on a preview origin can never use the user's Yulius session.
 
-mod support;
+use crate::support;
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;

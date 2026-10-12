@@ -7,6 +7,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-12
 
 - End-to-end tests in CI get longer budgets (90 s per action, 6 min per test) and two retries: they timed out while agents' builds loaded the machine, though the same tests pass locally in seconds; CI CPU priority is #283.
+- CI runs are no longer refused over the sandbox's disk quota by the size of test builds
+  (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
+  190 MB executable linking the whole product, are now modules of one test binary
+  (`tests/main.rs`); a gate build's test executables drop from 9.2 GB to 1.3 GB. The repository
+  check rejects a second test binary or an undeclared test file. Run one file's tests with
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`.
 - A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
   wrapping over the condition's border (SPEC-031, task #29).
 - Attached images reach Claude Code as pasted images (SPEC-030, ADR-0026; task #28). A task with

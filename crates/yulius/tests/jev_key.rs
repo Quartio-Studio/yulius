@@ -2,7 +2,7 @@
 //! step does), replaced, removed and tested through the API, sealed at rest, used by task intake
 //! at once, `YULIUS_JEV_API_KEY_FILE` honoured while nothing is saved, and never returned.
 
-mod support;
+use crate::support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

@@ -17,12 +17,12 @@
 //!
 //! ```sh
 //! YULIUS_LIVE_DISPLAY=1 YULIUS_LIVE_CHROME=/usr/bin/google-chrome \
-//!   cargo test -p yulius --test live_display -- --ignored --nocapture --test-threads 1
+//!   cargo test -p yulius --test main live_display:: -- --ignored --nocapture --test-threads 1
 //! ```
 //! `YULIUS_LIVE_DISPLAY_BASE` (default 90) is the first display number used; `YULIUS_BROWSER_FPS`
 //! sets the video frame rate (default 60).
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

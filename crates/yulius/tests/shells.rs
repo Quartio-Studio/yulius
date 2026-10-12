@@ -5,7 +5,7 @@
 //! that keep running across a server restart and are adopted again (SPEC-001 UI-015, UI-016,
 //! AC-UI-7, AC-UI-8, HRN-002; F 2026-10-09).
 
-mod support;
+use crate::support;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

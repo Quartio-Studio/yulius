@@ -3,7 +3,7 @@
 //! (due run, restart deduplication, catch-up, disabled and previous-active skips, failures) and
 //! the agent tools (AC-AUT-1..5).
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
