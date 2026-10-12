@@ -102,7 +102,7 @@ a PTY):
 
 ## Decisions
 
-- **Patch the transcript, let Claude Code continue natively** (ADR-0025) instead of typing a
+- **Patch the transcript, let Claude Code continue natively** (ADR-0027) instead of typing a
   prompt: it is what the person asked for, it uses the CLI's own interrupted-turn resume (hidden
   meta message, or the lost prompt resubmitted as itself), and the experiment shows the flag alone
   leaves the limit lines on screen and is subject to a staleness bound.

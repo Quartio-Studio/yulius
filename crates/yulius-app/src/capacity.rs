@@ -17,7 +17,7 @@
 //! first and resumes each task the policy places, waiting [`crate::context::AppConfig`]
 //! `resume_stagger_ms` between two resumes: in place when the paused process's account has
 //! capacity again (the held hook simply answers on its next poll), otherwise by a native resume
-//! on the chosen account.
+//! on the chosen account. A `limit` pause always takes the native resume past the limit.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

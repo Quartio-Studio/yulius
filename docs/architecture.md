@@ -55,6 +55,31 @@ of closed and cancelled tasks, and a switch checks the quota and the other start
 before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md),
 [decision 0017](decisions/0017-sandbox-disk-upkeep.md)).
 
+## Usage limits
+
+When a subscription's usage limit cuts a turn, the task goes on as if the limit never happened
+([SPEC-034](../.ai/specs/SPEC-034-in-previous-tasks-we-have-hit-a-session.md),
+[decision 0027](decisions/0027-step-back-past-a-usage-limit.md)): on another subscription at
+once, or on its own after the reset. The harness adapter steps the transcript back over the
+limit, and Claude Code resumes the same session with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1`, so
+it redoes the lost turn by itself. Nothing is typed.
+
+```mermaid
+sequenceDiagram
+    participant C as Claude Code (account A)
+    participant T as Transcript (JSONL)
+    participant S as Supervisor
+    participant H as Harness adapter
+    participant N as Claude Code (account B)
+    C->>T: usage-limit error + limit notices
+    T->>S: LimitReached (transcript watcher)
+    S->>C: SIGTERM (idle at the limit)
+    S->>H: plan Resume { continue_interrupted }
+    H->>T: step back: drop errors and notices, relink parentUuid
+    H->>N: claude --resume id (flag set, no prompt)
+    N->>T: the lost turn, redone
+```
+
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
