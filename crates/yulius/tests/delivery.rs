@@ -2626,129 +2626,193 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
     Ok(())
 }
 
-/// SPEC-011: `delivery_merge` while the checks of the reviewed head still run arms the merge;
-/// Yulius merges exactly that head once they pass, and `yulius wait` (the internal wait endpoint)
-/// sees each step and how the merge ended (MSR-003) without any polling by the agent.
-#[tokio::test]
-async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
-    let f = fixture(&DeliveryProfile::studio()).await?;
-    let wt = f
-        .add_task("t1", "Landing page", "feat/1-landing", "quartio")
-        .await?;
-    commit_file(&wt, "landing.txt", "v1", "Landing")?;
-    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
-    let opened = f
-        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
-        .await?;
-    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
-    let head = git(&wt, &["rev-parse", "HEAD"])?;
-    f.h.github.set_checks(&head, ChecksState::Pending);
-    f.h.store
-        .insert_attempt(&AttemptRecord {
-            id: AttemptId::parse("a1")?,
-            task_id: TaskId::parse("t1")?,
-            seq: 1,
-            harness: Harness::ClaudeCode,
-            account_id: None,
-            provider_session_id: None,
-            launch_kind: LaunchKind::New,
-            state: AttemptState::Live,
-            run_dir: "/tmp/none".into(),
-            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
-            host_token: Sealed(vec![0]),
-            ptyhost_pid: None,
-            child_pid: None,
-            started_at: Timestamp(1),
-            ended_at: None,
-            exit_code: None,
-            exit_reason: None,
+/// A task with an open pull request at `head` (checks pending) and a live run whose agent calls
+/// the internal endpoints with `agent`.
+struct ArmedTask {
+    f: Fixture,
+    wt: PathBuf,
+    head: String,
+    internal: axum::Router,
+    agent: Creds,
+}
+
+impl ArmedTask {
+    async fn new() -> BoxResult<Self> {
+        let f = fixture(&DeliveryProfile::studio()).await?;
+        let wt = f
+            .add_task("t1", "Landing page", "feat/1-landing", "quartio")
+            .await?;
+        commit_file(&wt, "landing.txt", "v1", "Landing")?;
+        commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+        let opened = f
+            .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+            .await?;
+        assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+        let head = git(&wt, &["rev-parse", "HEAD"])?;
+        f.h.github.set_checks(&head, ChecksState::Pending);
+        f.h.store
+            .insert_attempt(&AttemptRecord {
+                id: AttemptId::parse("a1")?,
+                task_id: TaskId::parse("t1")?,
+                seq: 1,
+                harness: Harness::ClaudeCode,
+                account_id: None,
+                provider_session_id: None,
+                launch_kind: LaunchKind::New,
+                state: AttemptState::Live,
+                run_dir: "/tmp/none".into(),
+                token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
+                host_token: Sealed(vec![0]),
+                ptyhost_pid: None,
+                child_pid: None,
+                started_at: Timestamp(1),
+                ended_at: None,
+                exit_code: None,
+                exit_reason: None,
+            })
+            .await?;
+        let internal = yulius_server::internal_router(f.h.app.clone())
+            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
+        let agent = Creds {
+            bearer: Some("tok-agent".into()),
+            ..Creds::default()
+        };
+        Ok(Self {
+            f,
+            wt,
+            head,
+            internal,
+            agent,
         })
-        .await?;
-    let internal = yulius_server::internal_router(f.h.app.clone())
-        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
-    let agent = Creds {
-        bearer: Some("tok-agent".into()),
-        ..Creds::default()
-    };
-    let wait = |since: Value| {
-        call(
-            &internal,
+    }
+
+    /// `yulius wait` at the reviewed head: the state now (`since` null) or its next change.
+    async fn wait(&self, since: Value) -> BoxResult<Value> {
+        let r = call(
+            &self.internal,
             Method::POST,
             "/internal/agent/wait",
-            Some(json!({"head": head, "since": since, "timeout_secs": 3})),
-            &agent,
+            Some(json!({"head": self.head, "since": since, "timeout_secs": 3})),
+            &self.agent,
         )
-    };
-    let before = wait(Value::Null).await?;
-    assert_eq!(before.status, StatusCode::OK, "{}", before.body);
-    assert_eq!(before.body["stage"], "pr_open");
-    assert_eq!(before.body["merge_armed"], false);
+        .await?;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        Ok(r.body)
+    }
 
-    let arm = || {
-        call(
-            &internal,
+    /// `delivery_merge` of the reviewed head; its tool result.
+    async fn merge(&self) -> BoxResult<Value> {
+        let r = call(
+            &self.internal,
             Method::POST,
             "/mcp",
             Some(
                 json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
                 "name": "delivery_merge",
-                "arguments": {"reviewed_head": head, "review_summary": "approve"}}}),
+                "arguments": {"reviewed_head": self.head, "review_summary": "approve"}}}),
             ),
-            &agent,
+            &self.agent,
         )
-    };
-    let armed = arm().await?;
-    assert_eq!(armed.body["result"]["isError"], false, "{}", armed.body);
-    let state = wait(before.body.clone()).await?;
-    assert_eq!(state.body["merge_armed"], true, "{}", state.body);
+        .await?;
+        Ok(r.body["result"].clone())
+    }
+
+    async fn arm(&self) -> TestResult {
+        let armed = self.merge().await?;
+        assert_eq!(armed["isError"], false, "{armed}");
+        let state = self.wait(Value::Null).await?;
+        assert_eq!(state["merge_armed"], true, "{state}");
+        assert_eq!(
+            state["merge_outcome"],
+            Value::Null,
+            "a new arm forgets the old outcome"
+        );
+        Ok(())
+    }
+
+    fn set_behind(&self, behind: bool) {
+        if let Ok(mut pulls) = self.f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+        {
+            pull.behind = behind;
+        }
+    }
+
+    async fn outcome(&self) -> BoxResult<String> {
+        let state = self.wait(Value::Null).await?;
+        assert_eq!(state["merge_armed"], false, "{state}");
+        Ok(state["merge_outcome"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned())
+    }
+}
+
+/// SPEC-011: `delivery_merge` while the checks of the reviewed head still run arms the merge;
+/// Yulius merges exactly that head once they pass, and `yulius wait` (the internal wait endpoint)
+/// sees each step and how the merge ended (MSR-003) without any polling by the agent.
+#[tokio::test]
+async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let before = t.wait(Value::Null).await?;
+    assert_eq!(before["stage"], "pr_open");
+    assert_eq!(before["merge_armed"], false);
+    t.arm().await?;
 
     // Checks still running: nothing happens.
     let sandbox = SandboxId::parse("s1")?;
     f.h.app.merge_armed(&sandbox).await;
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
 
-    // MSR-003: the branch moves on, so the armed merge is dropped and the wait says why.
-    commit_file(&wt, "landing.txt", "v2", "Landing v2")?;
-    let moved = git(&wt, &["rev-parse", "HEAD"])?;
+    // MSR-003: while Yulius decides (GitHub is slow), the merge still reads as armed, so a wait
+    // never ends on a decision that was not made.
+    let hold = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let deciding = tokio::spawn(async move {
+        app.merge_armed(&SandboxId::parse("s1")?).await;
+        Ok::<_, yulius_domain::ids::IdError>(())
+    });
+    f.h.github.checks_entered.notified().await;
+    let during = t.wait(Value::Null).await?;
+    f.h.github.release_checks(&hold);
+    deciding.await??;
+    assert_eq!(during["merge_armed"], true, "{during}");
+    assert_eq!(
+        t.wait(Value::Null).await?["merge_armed"],
+        true,
+        "still armed: checks pending"
+    );
+
+    // The branch moves on, so the armed merge is dropped and the wait says why.
+    commit_file(&t.wt, "landing.txt", "v2", "Landing v2")?;
+    let moved = git(&t.wt, &["rev-parse", "HEAD"])?;
     f.h.app.merge_armed(&sandbox).await;
-    let dropped = wait(state.body.clone()).await?;
-    assert_eq!(dropped.body["merge_armed"], false, "{}", dropped.body);
-    let outcome = dropped.body["merge_outcome"].as_str().unwrap_or_default();
+    let outcome = t.outcome().await?;
     assert!(
         outcome.contains("dropped") && outcome.contains(&moved[..9]),
-        "{}",
-        dropped.body
+        "{outcome}"
     );
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
 
     // Back at the reviewed head and armed again.
-    git(&wt, &["reset", "--hard", &head])?;
-    let armed = arm().await?;
-    assert_eq!(armed.body["result"]["isError"], false, "{}", armed.body);
-    let state = wait(dropped.body.clone()).await?;
-    assert_eq!(state.body["merge_armed"], true, "{}", state.body);
-    assert_eq!(
-        state.body["merge_outcome"],
-        Value::Null,
-        "a new arm forgets the old outcome"
-    );
+    git(&t.wt, &["reset", "--hard", &t.head])?;
+    t.arm().await?;
 
     // Green: Yulius merges the armed head, clears it and keeps how it ended for the wait.
-    f.h.github.set_checks(&head, ChecksState::Success);
+    f.h.github.set_checks(&t.head, ChecksState::Success);
     f.h.app.merge_armed(&sandbox).await;
     // Merged (the studio profile then promotes by its own policy).
     let stage = f.delivery("t1").await?["stage"].clone();
     assert_ne!(stage, "pr_open");
-    let after = wait(state.body.clone()).await?;
-    assert_eq!(after.body["stage"], stage, "{}", after.body);
-    assert_eq!(after.body["merge_armed"], false);
-    let outcome = after.body["merge_outcome"].as_str().unwrap_or_default();
+    let after = t.wait(Value::Null).await?;
+    assert_eq!(after["stage"], stage, "{after}");
+    let outcome = t.outcome().await?;
     assert!(
         outcome.starts_with("Yulius merged pull request #1") && outcome.contains("`quartio`"),
-        "{}",
-        after.body
+        "{outcome}"
     );
-    assert_eq!(after.body["merge_outcome_head"], head.as_str());
+    assert_eq!(after["merge_outcome_head"], t.head.as_str());
     assert!(
         f.h.store
             .task_messages(&TaskId::parse("t1")?, 10)
@@ -2756,6 +2820,46 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
             .is_empty(),
         "MSR-002: no message"
     );
+    Ok(())
+}
 
+/// MSR-003: an armed merge whose checks fail or that GitHub refuses ends the wait with why; a
+/// merge made at once afterwards leaves no stale outcome behind.
+#[tokio::test]
+async fn an_armed_merge_says_why_it_was_dropped_or_refused() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+
+    // Red checks: dropped, with what to do.
+    t.arm().await?;
+    f.h.github.set_checks(&t.head, ChecksState::Failure);
+    f.h.app.merge_armed(&sandbox).await;
+    let outcome = t.outcome().await?;
+    assert!(
+        outcome.contains("dropped") && outcome.contains("checks") && outcome.contains("failed"),
+        "{outcome}"
+    );
+
+    // Green but behind its base: GitHub's refusal is said.
+    f.h.github.set_checks(&t.head, ChecksState::Pending);
+    t.arm().await?;
+    t.set_behind(true);
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    f.h.app.merge_armed(&sandbox).await;
+    let outcome = t.outcome().await?;
+    assert!(
+        outcome.starts_with("The merge you armed was refused") && outcome.contains("behind"),
+        "{outcome}"
+    );
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+
+    // Up to date again, merged at once by `delivery_merge`: the refusal is not news any more.
+    t.set_behind(false);
+    let merged = t.merge().await?;
+    assert_eq!(merged["isError"], false, "{merged}");
+    assert_ne!(f.delivery("t1").await?["stage"], "pr_open");
+    let state = t.wait(Value::Null).await?;
+    assert_eq!(state["merge_outcome"], Value::Null, "{state}");
     Ok(())
 }

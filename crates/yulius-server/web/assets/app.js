@@ -413,7 +413,7 @@ function createApp(root, transport) {
     shell.panels.open('editor', { file });
   }
 
-  /** Links from the terminal, messages and pages (UI-011, BRW-004). */
+  /** Links from the terminal and pages (UI-011, BRW-004). */
   function openLink(uri) {
     const me = store.state.me;
     const link = parseAppLink(uri, me && me.instance ? me.instance.public_url : null);

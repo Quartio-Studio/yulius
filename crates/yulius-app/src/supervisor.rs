@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -109,6 +109,9 @@ pub struct TaskRuntime {
     pub(crate) armed_merge: Mutex<Option<crate::agent_wait::ArmedMerge>>,
     /// How the last armed merge ended, for `yulius wait` (SPEC-028 MSR-003).
     pub(crate) merge_outcome: Mutex<Option<crate::agent_wait::MergeOutcome>>,
+    /// Armed-merge decisions in progress (the armed merge is taken out meanwhile): `yulius wait`
+    /// still reads the merge as armed until it is decided or put back.
+    pub(crate) merge_deciding: AtomicU32,
     /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
     /// transcript does not reopen it.
     pub(crate) last_stop_ms: AtomicI64,
@@ -164,6 +167,7 @@ impl TaskRuntime {
             session_started: AtomicBool::new(false),
             armed_merge: Mutex::new(None),
             merge_outcome: Mutex::new(None),
+            merge_deciding: AtomicU32::new(0),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             shells_since_ms: AtomicI64::new(0),

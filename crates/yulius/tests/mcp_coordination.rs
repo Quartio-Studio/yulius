@@ -175,6 +175,13 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     .await?;
     assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(init["result"]["serverInfo"]["name"], "yulius");
+    let instructions = init["result"]["instructions"]
+        .as_str()
+        .ok_or("instructions")?;
+    assert!(
+        !instructions.contains("message"),
+        "MSR-001: the server instructions mention no messages: {instructions}"
+    );
     let list = rpc(&internal, "tok-claude", "tools/list", json!({})).await?;
     let names: Vec<&str> = list["result"]["tools"]
         .as_array()

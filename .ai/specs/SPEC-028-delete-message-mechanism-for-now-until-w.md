@@ -45,7 +45,7 @@ What still tells the agent the same things without messages:
 | MSR-001 | The Yulius MCP server serves no `message_send` and no `messages_inbox`; calling either is an unknown-tool error. The server instructions, tool list in the briefing and the briefing itself do not mention messages, notices or an inbox. | `mcp_coordination.rs`, `briefing.rs` |
 | MSR-002 | Yulius writes no message rows: delivery (pull request opened, checks failed, conflicts, behind), armed-merge outcomes, long-running background shells, freed disk space and the intake's scope change tell nobody through messages. | `delivery.rs`, `disk.rs`, `intake.rs` tests |
 | MSR-003 | When a merge armed with `delivery_merge` is decided, `yulius wait` ends with how: merged (pull request and base), refused (with the reason) or dropped because the branch moved on. | `agent_wait` / `wait_cli` tests |
-| MSR-004 | No hook injects a notice digest, the turn-end gate has no "urgent messages" reason, and nothing is typed into an idle session to wake it (the idle waker, its delay and its typed-text state are gone). | `agent_hooks.rs`, `supervision.rs` |
+| MSR-004 | No hook injects a notice digest, the turn-end gate has no "urgent messages" reason, and nothing is typed into an idle session to wake it (the idle waker, its delay and its typed-text state are gone). | `agent_hooks.rs`; the waker is deleted from `background.rs` |
 | MSR-005 | The web UI has no Messages: the tool rail is Browser, Editor and Shell; no unread badge on a task row or the rail; no notification for an agent message. `GET /api/tasks/{tid}/messages` is gone and the task view has no `unread_messages`. | e2e `rail`, `http_auth.rs` |
 | MSR-006 | Stored messages stay (no migration) and the project export still carries them; the `wake_enabled` task column stays unused. | review |
 
@@ -77,7 +77,7 @@ SPEC-011 DLV-012's "a notice arrives" (replaced by MSR-003).
 
 - Integration (`crates/yulius/tests`): `mcp_coordination.rs` (tools gone), `delivery.rs` (armed merge
   outcome in the wait state; no message rows), `agent_hooks.rs` (no digest, no urgent gate),
-  `supervision.rs` (the idle-wake test goes), `intake.rs` (scope change: steps skipped, no message),
+  `supervision.rs` (the idle-wake test goes; the normal-exit part stays), `intake.rs` (scope change: steps skipped, no message),
   `http_auth.rs` (route gone).
 - Unit: `briefing.rs` (no messages section), `wait_cli.rs` (settled line for each outcome).
 - e2e: `rail.e2e.ts` (three tools), `messages.e2e.ts` deleted.

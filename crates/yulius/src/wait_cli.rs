@@ -82,11 +82,6 @@ fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
                 before.stage, now.stage
             ));
         }
-        if before.merge_armed && !now.merge_armed {
-            return Some(
-                "The merge you armed was decided. Check `delivery_status` for how.".to_owned(),
-            );
-        }
     }
     if now.checks_ended() && !now.merge_armed {
         let head = short(&now.head);
@@ -266,6 +261,8 @@ mod tests {
         // A wait started after the decision, at the decided head, is told at once.
         let line = settled(&merged, None).unwrap_or_default();
         assert!(line.starts_with("Yulius merged pull request #1"), "{line}");
+        // Unarmed with no outcome (taken back by an immediate merge): not a decision to report.
+        assert!(settled(&state("running"), Some(&armed)).is_none());
         // At another head, an old outcome is not news.
         let elsewhere = WaitState {
             merge_outcome_head: Some("fedcba987".into()),

@@ -156,6 +156,8 @@ impl App {
                  the new head in a fresh session first"
             )));
         }
+        // The agent hears this call's own answer: an earlier armed merge's outcome is old news.
+        self.forget_merge_outcome(&ctx.task);
         let before = self.task_delivery(&auth, &task_id).await?;
         let checks = before.pr.as_ref().map_or("none", |p| p.checks.as_str());
         let sandbox = self
@@ -190,10 +192,10 @@ impl App {
                     "merged": false,
                     "armed": true,
                     "checks": other,
-                    "next": "Yulius merges this exact head as soon as its checks pass and tells \
-                             you (or why it could not). Start `yulius wait` with \
-                             run_in_background and end your turn; do not call delivery_merge \
-                             again for this head.",
+                    "next": "Yulius merges this exact head as soon as its checks pass. Start \
+                             `yulius wait` with run_in_background and end your turn: it says how \
+                             the merge ended (or why it could not merge); do not call \
+                             delivery_merge again for this head.",
                 }));
             }
         }

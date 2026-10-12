@@ -1110,10 +1110,9 @@ fn tasks_queue_at_the_session_limit_and_start_when_a_slot_frees() -> TestResult 
     Ok(())
 }
 
-/// AC-TSK-3: an agent's normal exit closes its task. MSR-004 (SPEC-028): a stored message never
-/// wakes a task that waits idle: nothing is typed into its terminal.
+/// AC-TSK-3: an agent's normal exit closes its task; another task of the sandbox keeps running.
 #[test]
-fn a_normal_exit_closes_the_task_and_idle_tasks_are_never_typed_into() -> TestResult {
+fn a_normal_exit_closes_the_task() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
     let data = dir.path().canonicalize()?;
@@ -1131,35 +1130,6 @@ fn a_normal_exit_closes_the_task_and_idle_tasks_are_never_typed_into() -> TestRe
             })
             .await?;
         }
-        // The recipient finished its turn (what its Stop hook reports) and nobody types; an old
-        // message row for it stays in the store.
-        app.deps
-            .store
-            .set_activity(
-                &recipient,
-                Some(yulius_domain::task::Activity::Waiting),
-                app.now(),
-            )
-            .await?;
-        let target = task(&app, &recipient).await?;
-        app.deps
-            .store
-            .insert_message(
-                &yulius_app::model::MessageRecord {
-                    id: yulius_domain::ids::MessageId::parse("m1")?,
-                    sandbox_id: target.sandbox_id.clone(),
-                    from_task: None,
-                    from_user: None,
-                    to_task: Some(target.id.clone()),
-                    kind: "request".into(),
-                    subject: "Schema".into(),
-                    body: "Does the invoices table keep the currency column?".into(),
-                    created_at: app.now(),
-                },
-                std::slice::from_ref(&target.id),
-            )
-            .await?;
-
         // A normal exit of the agent closes the task; no shell is spawned.
         app.send_input(&sender, b"/exit\r").await?;
         wait_for("the closed sender", Duration::from_secs(20), || async {
@@ -1170,10 +1140,6 @@ fn a_normal_exit_closes_the_task_and_idle_tasks_are_never_typed_into() -> TestRe
         .await?;
         let attempts = app.deps.store.attempts(&sender).await?;
         assert_eq!(attempts.last().and_then(|a| a.exit_code), Some(0));
-        assert!(
-            !screen_contains(&app, &recipient, "Yulius:").await,
-            "nothing was typed into the idle task"
-        );
         app.stop_task_now(&recipient).await?;
         wait_for("the stop", Duration::from_secs(30), || async {
             task(&app, &recipient)

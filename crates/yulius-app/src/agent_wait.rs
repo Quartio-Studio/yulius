@@ -8,6 +8,7 @@
 //! outcome): waiting never costs a GitHub request.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -78,15 +79,19 @@ impl WaitState {
 impl App {
     /// Arms a merge of `head` for when its checks pass (`delivery_merge` while they still run).
     pub(crate) fn arm_merge(&self, task: &TaskRecord, head: &str, summary: &str) {
-        let runtime = self.runtime(&task.id);
-        if let Ok(mut outcome) = runtime.merge_outcome.lock() {
-            *outcome = None;
-        }
-        if let Ok(mut armed) = runtime.armed_merge.lock() {
+        self.forget_merge_outcome(task);
+        if let Ok(mut armed) = self.runtime(&task.id).armed_merge.lock() {
             *armed = Some(ArmedMerge {
                 head: head.to_owned(),
                 summary: summary.to_owned(),
             });
+        }
+    }
+
+    /// Forgets how an earlier armed merge ended (a new `delivery_merge` call answers for itself).
+    pub(crate) fn forget_merge_outcome(&self, task: &TaskRecord) {
+        if let Ok(mut outcome) = self.runtime(&task.id).merge_outcome.lock() {
+            *outcome = None;
         }
     }
 
@@ -100,11 +105,15 @@ impl App {
         }
     }
 
+    /// Whether a merge is armed, counting one being decided right now (taken out of the slot
+    /// while GitHub is asked): a wait must not read that gap as a decision.
     fn armed_merge(&self, task: &TaskRecord) -> bool {
-        self.runtime(&task.id)
-            .armed_merge
-            .lock()
-            .is_ok_and(|armed| armed.is_some())
+        let runtime = self.runtime(&task.id);
+        runtime.merge_deciding.load(Ordering::SeqCst) > 0
+            || runtime
+                .armed_merge
+                .lock()
+                .is_ok_and(|armed| armed.is_some())
     }
 
     /// Performs the armed merges of a sandbox whose checks passed (after every CI run and from
@@ -115,18 +124,22 @@ impl App {
             return;
         };
         for task in tasks {
-            // Taken while it is decided, so a CI end and the delivery loop never merge twice.
-            let taken = self
-                .runtime(&task.id)
+            // Taken while it is decided, so a CI end and the delivery loop never merge twice; the
+            // count keeps it armed for `yulius wait` until it is decided or put back.
+            let runtime = self.runtime(&task.id);
+            runtime.merge_deciding.fetch_add(1, Ordering::SeqCst);
+            let taken = runtime
                 .armed_merge
                 .lock()
                 .ok()
                 .and_then(|mut armed| armed.take());
             if let Some(armed) = taken
                 && let Some(kept) = self.merge_armed_task(&task, armed).await
+                && let Ok(mut slot) = runtime.armed_merge.lock()
             {
-                self.arm_merge(&task, &kept.head, &kept.summary);
+                *slot = Some(kept);
             }
+            runtime.merge_deciding.fetch_sub(1, Ordering::SeqCst);
         }
     }
 
@@ -187,6 +200,13 @@ impl App {
             return Some(armed);
         };
         let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await else {
+            self.merge_decided(
+                task,
+                &armed.head,
+                "The merge you armed was dropped: the project's sandbox could not be read. Check \
+                 `delivery_status` and call `delivery_merge` again."
+                    .to_owned(),
+            );
             return None;
         };
         let require_checks = crate::delivery::delivery_profile(&sandbox).require_checks;

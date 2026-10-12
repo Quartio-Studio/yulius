@@ -11,7 +11,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   session, and no Messages panel, unread counts, message notifications or
   `GET /api/tasks/{tid}/messages`. Agents learn about their checks, delivery and armed merges from
   `yulius wait` (which now says how an armed merge ended), `ci_status` and `delivery_status`. The
-  stored messages stay as history.
+  stored messages stay as history. A `yulius wait` already running when the server updates exits
+  with "cannot be reached" once (its answer changed shape); start it again.
 - Claude Code sessions in a task terminal no longer open Claude Code's diff side panel by themselves
   ("No changes this session" on the right); it still opens by hand within a session (SPEC-024).
 - Ended worktrees holding only end-to-end output (`.e2e`), the APM cache (`apm_modules`) or Claude

@@ -325,8 +325,6 @@ export function mountTaskView(ctx, sandbox, task) {
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
       if (wasLive && current.status === 'closed' && ctx.onTaskClosed) ctx.onTaskClosed(current);
     },
-    /** Focuses the terminal to answer the agent (the quick input on phones). */
-    reply,
     get task() { return current; },
     get detail() { return detail; },
     destroy() {
