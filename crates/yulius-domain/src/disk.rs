@@ -59,9 +59,7 @@ pub fn owner_of(
     match status {
         TaskStatus::Closed | TaskStatus::Stopped(_) | TaskStatus::Failed(_) => Some(Owner::Ended),
         TaskStatus::Queued | TaskStatus::Chained | TaskStatus::WaitingCapacity => Some(idle()),
-        TaskStatus::Running
-            if activity.is_some_and(Activity::is_idle) && !background_shells =>
-        {
+        TaskStatus::Running if activity.is_some_and(Activity::is_idle) && !background_shells => {
             Some(idle())
         }
         TaskStatus::Running
@@ -76,6 +74,15 @@ pub fn owner_of(
 #[must_use]
 pub fn only_rebuildable(ignored: &[String], caches: &[String]) -> bool {
     ignored.iter().all(|entry| {
+        // Git also lists an untracked directory that holds only ignored files (`e2e/` next to
+        // `e2e/node_modules/`): its listed contents decide.
+        if entry.ends_with('/')
+            && ignored
+                .iter()
+                .any(|other| other.len() > entry.len() && other.starts_with(entry.as_str()))
+        {
+            return true;
+        }
         let entry = entry.trim_end_matches('/');
         let last = entry.rsplit('/').next().unwrap_or(entry);
         REBUILDABLE.contains(&last)
@@ -287,11 +294,21 @@ mod tests {
             None
         );
         assert_eq!(
-            owner_of(TaskStatus::Running, Some(Activity::Done), true, IDLE_PRUNE_AFTER_MS),
+            owner_of(
+                TaskStatus::Running,
+                Some(Activity::Done),
+                true,
+                IDLE_PRUNE_AFTER_MS
+            ),
             None
         );
         assert_eq!(
-            owner_of(TaskStatus::Running, Some(Activity::Waiting), false, IDLE_PRUNE_AFTER_MS),
+            owner_of(
+                TaskStatus::Running,
+                Some(Activity::Waiting),
+                false,
+                IDLE_PRUNE_AFTER_MS
+            ),
             Some(Owner::Ended)
         );
         assert_eq!(
@@ -303,14 +320,34 @@ mod tests {
     #[test]
     fn a_worktree_whose_ignored_files_are_rebuildable_loses_nothing() {
         assert!(only_rebuildable(
-            &names(&["target/", ".tools/", "e2e/node_modules/", "crates/x/__pycache__/"]),
+            &names(&[
+                "target/",
+                ".tools/",
+                "e2e/node_modules/",
+                "crates/x/__pycache__/"
+            ]),
             &[]
         ));
-        assert!(only_rebuildable(&names(&["build/cache/"]), &names(&["build/cache"])));
+        assert!(only_rebuildable(
+            &names(&["build/cache/"]),
+            &names(&["build/cache"])
+        ));
         assert!(only_rebuildable(&[], &[]));
+        // An untracked directory holding only ignored files is listed too; its contents decide.
+        assert!(only_rebuildable(
+            &names(&["e2e/", "e2e/node_modules/"]),
+            &[]
+        ));
+        assert!(!only_rebuildable(
+            &names(&["e2e/", "e2e/node_modules/", "e2e/.env"]),
+            &[]
+        ));
         // Local configuration or data that only lives here keeps the worktree.
         assert!(!only_rebuildable(&names(&["target/", ".env"]), &[]));
-        assert!(!only_rebuildable(&names(&["notes/"]), &names(&["build/cache"])));
+        assert!(!only_rebuildable(
+            &names(&["notes/"]),
+            &names(&["build/cache"])
+        ));
     }
 
     #[test]

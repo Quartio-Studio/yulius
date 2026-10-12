@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yulius_domain::disk::{
-    Candidate, Owner, bytes_to_free, cache_paths, human, job_cache_cap, only_rebuildable,
-    owner_of, plan_prune,
+    Candidate, Owner, bytes_to_free, cache_paths, human, job_cache_cap, only_rebuildable, owner_of,
+    plan_prune,
 };
 use yulius_domain::ids::{MessageId, TaskId};
 use yulius_domain::spec_format::parse_yulius_toml_caches;
@@ -309,7 +309,10 @@ impl App {
             })
             .unwrap_or_default();
         for (name, worktree, modified) in entries {
-            if tasks.contains(&name) || now - modified < ORPHAN_AFTER_MS || !worktree.join(".git").exists() {
+            if tasks.contains(&name)
+                || now - modified < ORPHAN_AFTER_MS
+                || !worktree.join(".git").exists()
+            {
                 continue;
             }
             for (relative, path, bytes) in self.find_caches(&worktree).await {
@@ -441,7 +444,8 @@ impl App {
         owner_of(
             task.status,
             task.activity,
-            self.background_shells_of(&task.id).is_some_and(|count| count > 0),
+            self.background_shells_of(&task.id)
+                .is_some_and(|count| count > 0),
             self.now().0 - task.updated_at.0,
         )
     }
@@ -474,7 +478,9 @@ impl App {
                     )
                     .await;
                 }
-                _ => tracing::warn!(path = %path.display(), "a removed sandbox's directory could not be purged"),
+                _ => {
+                    tracing::warn!(path = %path.display(), "a removed sandbox's directory could not be purged")
+                }
             }
         }
     }

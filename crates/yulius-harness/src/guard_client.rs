@@ -57,7 +57,10 @@ pub fn self_matching_pattern(command: &str) -> Option<(String, String)> {
 }
 
 fn is_separator(word: &str) -> bool {
-    matches!(word, ";" | "&&" | "||" | "|" | "&" | ")" | "do" | "then" | "done" | "fi")
+    matches!(
+        word,
+        ";" | "&&" | "||" | "|" | "&" | ")" | "do" | "then" | "done" | "fi"
+    )
 }
 
 /// Shell-ish words: quotes group, `;`, `&&`, `||`, `|`, `&` and `)` separate (good enough to
@@ -67,7 +70,7 @@ fn split_words(command: &str) -> Vec<String> {
     let mut word = String::new();
     let mut quote: Option<char> = None;
     let mut chars = command.chars().peekable();
-    let mut push = |word: &mut String, words: &mut Vec<String>| {
+    let push = |word: &mut String, words: &mut Vec<String>| {
         if !word.is_empty() {
             words.push(std::mem::take(word));
         }
@@ -143,10 +146,19 @@ mod tests {
     #[test]
     fn waits_and_kills_that_match_themselves_are_found() {
         for (command, pattern) in [
-            (r#"until ! pgrep -f "scripts/dev ci"; do sleep 10; done"#, "scripts/dev ci"),
-            ("while pgrep -f 'xtask ci' >/dev/null; do sleep 5; done", "xtask ci"),
+            (
+                r#"until ! pgrep -f "scripts/dev ci"; do sleep 10; done"#,
+                "scripts/dev ci",
+            ),
+            (
+                "while pgrep -f 'xtask ci' >/dev/null; do sleep 5; done",
+                "xtask ci",
+            ),
             ("pkill -f cargo-nextest", "cargo-nextest"),
-            ("sleep 2 && /usr/bin/pgrep -af 'e2e-web install'", "e2e-web install"),
+            (
+                "sleep 2 && /usr/bin/pgrep -af 'e2e-web install'",
+                "e2e-web install",
+            ),
             ("pgrep --full 'npm ci'", "npm ci"),
         ] {
             assert_eq!(
@@ -183,10 +195,19 @@ mod tests {
             "tool_name": "Bash",
             "tool_input": {"command": "until ! pgrep -f 'scripts/dev ci'; do sleep 10; done"}
         }));
-        assert!(denied.contains("\"permissionDecision\":\"deny\""), "{denied}");
+        assert!(
+            denied.contains("\"permissionDecision\":\"deny\""),
+            "{denied}"
+        );
         assert!(denied.contains("yulius wait"), "{denied}");
-        assert!(run(serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "cargo test"}})).is_empty());
-        assert!(run(serde_json::json!({"tool_name": "Read", "tool_input": {"file_path": "/x"}})).is_empty());
+        assert!(
+            run(serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "cargo test"}}))
+                .is_empty()
+        );
+        assert!(
+            run(serde_json::json!({"tool_name": "Read", "tool_input": {"file_path": "/x"}}))
+                .is_empty()
+        );
         assert!(run(serde_json::json!("not an event")).is_empty());
     }
 }
