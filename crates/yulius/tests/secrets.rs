@@ -55,10 +55,10 @@ async fn create_team_secret(
     Ok(created.body["id"].as_str().ok_or("id")?.to_owned())
 }
 
-/// AC-VLT-1, AC-VLT-2: shared list, gated reveals, the superadmin's password confirmation,
-/// TOTP codes and the activity trail.
+/// AC-VLT-1, AC-VLT-2, SPEC-040 AC1/AC3: a title, a value and notes; shared list, reveals
+/// behind a two-factor unlock, and the activity trail.
 #[tokio::test]
-async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> TestResult {
+async fn team_secrets_are_shared_and_reveals_need_a_two_factor_code() -> TestResult {
     let h = support::harness()?;
     let admin = setup_superadmin_creds(&h).await?;
     let id = create_team_secret(&h, &admin).await?;
@@ -84,16 +84,13 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
         assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{legacy}");
     }
 
-    // Signed in a moment ago: fresh. Eleven minutes later: confirm first.
+    // Signed in a moment ago, even with the password confirmed: two-factor is mandatory
+    // (SPEC-040 R4).
     let reveal = format!("/api/team-secrets/{id}/reveal");
-    let shown = call(&h.router, Method::POST, &reveal, Some(json!({})), &admin).await?;
-    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
-    assert_eq!(shown.body["value"], MAIL_PASSWORD);
-    h.clock.0.fetch_add(minutes(11), Ordering::SeqCst);
     let refused = call(&h.router, Method::POST, &reveal, Some(json!({})), &admin).await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
     assert_eq!(refused.body["error"]["code"], "reauth_required");
-    assert_eq!(refused.body["reauth"]["methods"], json!(["password"]));
+    assert_eq!(refused.body["reauth"]["two_factor"], "missing");
     assert_hidden(&refused.body, &[MAIL_PASSWORD]);
     let no_codes = call(
         &h.router,
@@ -108,8 +105,8 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
         StatusCode::NOT_FOUND,
         "no per-secret codes"
     );
-
-    // A wrong password is refused (403: the session stays), the right one opens 10 minutes.
+    // A wrong password is refused (403: the session stays); the right one confirms identity
+    // but does not unlock.
     let wrong = call(
         &h.router,
         Method::POST,
@@ -128,7 +125,13 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
     )
     .await?;
     assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
-    assert_eq!(ok.body["fresh"], true);
+    assert_eq!(ok.body["identity_fresh"], true);
+    assert_eq!(ok.body["fresh"], false);
+    let still = call(&h.router, Method::POST, &reveal, None, &admin).await?;
+    assert_eq!(still.body["error"]["code"], "reauth_required");
+
+    // Set up and confirmed: the code unlocks reveals for 10 minutes.
+    let seed = enroll(&h, &admin).await?;
     let copy = call(
         &h.router,
         Method::POST,
@@ -151,10 +154,15 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
     .await?;
     assert_eq!(old_field.status, StatusCode::UNPROCESSABLE_ENTITY);
 
-    // Ten minutes after confirming, confirm again.
+    // Ten minutes after the code, a new code.
     h.clock.0.fetch_add(minutes(10), Ordering::SeqCst);
     let again = call(&h.router, Method::POST, &reveal, None, &admin).await?;
     assert_eq!(again.body["error"]["code"], "reauth_required");
+    assert_eq!(again.body["reauth"]["two_factor"], "on");
+    let unlocked = unlock(&h, &admin, &code_at(&h, &seed, 0)?).await?;
+    assert_eq!(unlocked.status, StatusCode::OK, "{}", unlocked.body);
+    let shown = call(&h.router, Method::POST, &reveal, None, &admin).await?;
+    assert_eq!(shown.body["value"], MAIL_PASSWORD);
 
     // API tokens never reveal.
     let bearer = superadmin_bearer(&h).await?;
@@ -225,6 +233,207 @@ async fn team_secrets_are_shared_and_reveals_need_a_fresh_confirmation() -> Test
     Ok(())
 }
 
+/// The current code of a base32 `seed` at the test clock's time, `steps` periods away.
+fn code_at(
+    h: &support::Harness,
+    seed: &str,
+    steps: i64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use yulius_domain::vault::totp::{code_from_hmac, counter, parse_otp};
+    let config = parse_otp(seed)?;
+    let now = h.app.now().0 + steps * 30_000;
+    let hmac = h
+        .app
+        .deps
+        .crypto
+        .totp_hmac(config.algorithm, &config.secret, counter(now, 30));
+    Ok(code_from_hmac(&hmac, 6))
+}
+
+/// A code that is not the current one (nor the ones a step away).
+fn wrong_code(h: &support::Harness, seed: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let taken = [
+        code_at(h, seed, -1)?,
+        code_at(h, seed, 0)?,
+        code_at(h, seed, 1)?,
+    ];
+    Ok((0..4)
+        .map(|n| format!("{n}{n}{n}{n}{n}{n}"))
+        .find(|c| !taken.contains(c))
+        .ok_or("no wrong code")?)
+}
+
+async fn unlock(
+    h: &support::Harness,
+    creds: &Creds,
+    code: &str,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &h.router,
+        Method::POST,
+        "/api/auth/unlock",
+        Some(json!({"code": code})),
+        creds,
+    )
+    .await
+}
+
+/// Sets up and confirms two-factor for `creds`; returns the seed.
+async fn enroll(h: &support::Harness, creds: &Creds) -> Result<String, Box<dyn std::error::Error>> {
+    let setup = call(&h.router, Method::POST, "/api/auth/two-factor", None, creds).await?;
+    assert_eq!(setup.status, StatusCode::CREATED, "{}", setup.body);
+    let seed = setup.body["secret"].as_str().ok_or("secret")?.to_owned();
+    let confirmed = unlock(h, creds, &code_at(h, &seed, 0)?).await?;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+    Ok(seed)
+}
+
+/// AC3, AC4 (SPEC-040 R4–R6): two-factor is set up once per person, confirmed by a first code,
+/// and unlocks the vault for 10 minutes; codes are single-use, checked within one step and
+/// rate limited; API tokens cannot set it up or unlock.
+#[tokio::test]
+async fn two_factor_is_set_up_once_and_unlocks_the_vault() -> TestResult {
+    let h = support::harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let status = call(&h.router, Method::GET, "/api/auth/reauth", None, &admin).await?;
+    assert_eq!(status.body["two_factor"], "missing");
+    assert_eq!(status.body["fresh"], false);
+    assert_eq!(status.body["identity_fresh"], true);
+
+    let setup = call(
+        &h.router,
+        Method::POST,
+        "/api/auth/two-factor",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(setup.status, StatusCode::CREATED, "{}", setup.body);
+    let seed = setup.body["secret"].as_str().ok_or("secret")?.to_owned();
+    assert_eq!(seed.len(), 32, "160 bits of base32");
+    let uri = setup.body["uri"].as_str().ok_or("uri")?;
+    assert!(uri.starts_with("otpauth://totp/"), "{uri}");
+    assert!(uri.contains(&format!("secret={seed}")), "{uri}");
+    let pending = call(&h.router, Method::GET, "/api/auth/reauth", None, &admin).await?;
+    assert_eq!(pending.body["two_factor"], "pending");
+    // Until confirmed, setting up again starts over with a new seed.
+    let again = call(
+        &h.router,
+        Method::POST,
+        "/api/auth/two-factor",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(again.status, StatusCode::CREATED);
+    let seed = again.body["secret"].as_str().ok_or("secret")?.to_owned();
+
+    let wrong = unlock(&h, &admin, &wrong_code(&h, &seed)?).await?;
+    assert_eq!(wrong.status, StatusCode::FORBIDDEN, "{}", wrong.body);
+    let code = code_at(&h, &seed, 0)?;
+    let confirmed = unlock(&h, &admin, &code).await?;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+    assert_eq!(confirmed.body["fresh"], true);
+    assert_eq!(confirmed.body["two_factor"], "on");
+    let replayed = unlock(&h, &admin, &code).await?;
+    assert_eq!(replayed.status, StatusCode::FORBIDDEN, "a code works once");
+    let replaced = call(
+        &h.router,
+        Method::POST,
+        "/api/auth/two-factor",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(
+        replaced.status,
+        StatusCode::CONFLICT,
+        "a confirmed seed stays"
+    );
+
+    // The next period's code unlocks; one from two periods ago does not.
+    h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+    let late = unlock(&h, &admin, &code_at(&h, &seed, -2)?).await?;
+    assert_eq!(late.status, StatusCode::FORBIDDEN);
+    let next = unlock(&h, &admin, &code_at(&h, &seed, 0)?).await?;
+    assert_eq!(next.status, StatusCode::OK, "{}", next.body);
+    // Ten minutes later the vault is locked again.
+    h.clock.0.fetch_add(minutes(10), Ordering::SeqCst);
+    let locked = call(&h.router, Method::GET, "/api/auth/reauth", None, &admin).await?;
+    assert_eq!(locked.body["fresh"], false);
+
+    // Five attempts a minute.
+    for _ in 0..5 {
+        let refused = unlock(&h, &admin, &wrong_code(&h, &seed)?).await?;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    }
+    let limited = unlock(&h, &admin, &code_at(&h, &seed, 0)?).await?;
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+
+    // API tokens neither set up nor unlock.
+    let bearer = superadmin_bearer(&h).await?;
+    let token_setup = call(
+        &h.router,
+        Method::POST,
+        "/api/auth/two-factor",
+        None,
+        &bearer,
+    )
+    .await?;
+    assert_eq!(token_setup.status, StatusCode::FORBIDDEN);
+    let token_unlock = unlock(&h, &bearer, "123456").await?;
+    assert_eq!(token_unlock.status, StatusCode::FORBIDDEN);
+
+    let activity = call(
+        &h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &admin,
+    )
+    .await?;
+    let actions: Vec<&str> = activity
+        .body
+        .as_array()
+        .ok_or("activity")?
+        .iter()
+        .filter_map(|e| e["action"].as_str())
+        .collect();
+    for action in [
+        "vault.2fa.setup",
+        "vault.2fa.confirm",
+        "vault.unlock",
+        "vault.unlock.failed",
+    ] {
+        assert!(
+            actions.contains(&action),
+            "{action} missing from {actions:?}"
+        );
+    }
+    assert_hidden(&activity.body, &[&seed, &code]);
+    Ok(())
+}
+
+/// AC4: setting up needs a recent sign-in or confirmation, so a stolen session alone cannot
+/// enroll its own authenticator.
+#[tokio::test]
+async fn setting_up_two_factor_needs_a_recent_sign_in() -> TestResult {
+    let h = support::harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    let anna = admit_and_sign_in(&h, &admin, "anna", 501, false).await?;
+    h.clock.0.fetch_add(minutes(11), Ordering::SeqCst);
+    let stale = call(&h.router, Method::POST, "/api/auth/two-factor", None, &anna).await?;
+    assert_eq!(stale.status, StatusCode::FORBIDDEN);
+    assert_eq!(stale.body["error"]["code"], "reauth_required");
+    assert_eq!(stale.body["reauth"]["identity_fresh"], false);
+    assert_eq!(stale.body["reauth"]["methods"], json!(["github"]));
+    let again = admit_again(&h, "anna", 501).await?;
+    let seed = enroll(&h, &again).await?;
+    assert!(!seed.is_empty());
+    Ok(())
+}
+
 /// AC2 (SPEC-040 R2): a team secret stored in the old form keeps every value: the password is the
 /// value, and the address, user name and seed lead the notes.
 #[tokio::test]
@@ -265,6 +474,7 @@ async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
     let list = call(&h.router, Method::GET, "/api/team-secrets", None, &admin).await?;
     assert_eq!(list.body[0]["has_value"], true);
     assert_eq!(list.body[0]["has_notes"], true);
+    enroll(&h, &admin).await?;
     let shown = call(
         &h.router,
         Method::POST,
@@ -285,7 +495,8 @@ async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
     Ok(())
 }
 
-/// A GitHub member sees every team secret (flat), and confirms by signing in with GitHub again.
+/// A GitHub member sees every team secret (flat), confirms identity by signing in with GitHub
+/// again, and reveals after setting up two-factor.
 #[tokio::test]
 async fn members_confirm_with_a_new_github_sign_in() -> TestResult {
     let h = support::harness()?;
@@ -309,8 +520,12 @@ async fn members_confirm_with_a_new_github_sign_in() -> TestResult {
     )
     .await?;
     assert_eq!(password.status, StatusCode::FORBIDDEN);
-    // Signing in with GitHub again is a fresh session.
+    // Signing in with GitHub again confirms it is her: she sets up two-factor, whose first code
+    // unlocks. The sign-in alone reveals nothing.
     let again = admit_again(&h, "anna", 501).await?;
+    let signed_in = call(&h.router, Method::POST, &reveal, None, &again).await?;
+    assert_eq!(signed_in.body["error"]["code"], "reauth_required");
+    enroll(&h, &again).await?;
     let shown = call(&h.router, Method::POST, &reveal, None, &again).await?;
     assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
     assert_eq!(shown.body["value"], MAIL_PASSWORD);
@@ -418,9 +633,36 @@ async fn add_agent_secret(
     .await
 }
 
-/// AC-VLT-5: who may see and manage agent secrets; values never come back.
+/// A browser session for a seeded user (signed in now).
+async fn browser_session(
+    h: &support::Harness,
+    user: &str,
+) -> Result<Creds, Box<dyn std::error::Error>> {
+    use yulius_app::model::WebSessionRecord;
+    use yulius_app::ports::store::SessionStore as _;
+    let cookie = format!("session-cookie-of-{user}");
+    let now = h.app.now();
+    h.store
+        .insert_web_session(&WebSessionRecord {
+            id_hash: h.app.deps.crypto.sha256_hex(cookie.as_bytes()),
+            user_id: yulius_domain::ids::UserId::parse(user)?,
+            csrf_token: format!("csrf-of-{user}"),
+            created_at: now,
+            expires_at: now.plus_millis(minutes(600)),
+            revoked_at: None,
+        })
+        .await?;
+    Ok(Creds {
+        cookie: Some(cookie),
+        csrf: Some(format!("csrf-of-{user}")),
+        bearer: None,
+    })
+}
+
+/// AC-VLT-5, SPEC-040 AC5: who may see, manage and read agent secrets; values come back only
+/// from a reveal by someone who manages the secret, after a two-factor unlock.
 #[tokio::test]
-async fn agent_secrets_follow_sandbox_access_and_stay_write_only() -> TestResult {
+async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> TestResult {
     let w = world().await?;
     let stripe = json!({"name": "STRIPE_KEY", "description": "test-mode key",
         "hosts": ["api.stripe.test"], "value": STRIPE});
@@ -541,6 +783,47 @@ async fn agent_secrets_follow_sandbox_access_and_stay_write_only() -> TestResult
         let response = add_agent_secret(&w, &w.writer, "s1", body.clone()).await?;
         assert_eq!(response.status, status, "{body}: {}", response.body);
     }
+
+    // People who manage it read it back after a two-factor unlock (SPEC-040 R7); readers
+    // cannot, outsiders do not see it, API tokens never reveal.
+    let reveal = format!("/api/agent-secrets/{id}/reveal");
+    let writer = browser_session(&w.h, "u-alice").await?;
+    let reader = browser_session(&w.h, "u-bob").await?;
+    let outsider = browser_session(&w.h, "u-carol").await?;
+    let locked = call(&w.h.router, Method::POST, &reveal, None, &writer).await?;
+    assert_eq!(locked.status, StatusCode::FORBIDDEN);
+    assert_eq!(locked.body["error"]["code"], "reauth_required");
+    assert_hidden(&locked.body, &[STRIPE]);
+    enroll(&w.h, &writer).await?;
+    let shown = call(&w.h.router, Method::POST, &reveal, None, &writer).await?;
+    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+    assert_eq!(shown.body["value"], STRIPE);
+    assert_eq!(shown.body["notes"], "test-mode key");
+    enroll(&w.h, &reader).await?;
+    let by_reader = call(&w.h.router, Method::POST, &reveal, None, &reader).await?;
+    assert_eq!(by_reader.status, StatusCode::FORBIDDEN);
+    assert_hidden(&by_reader.body, &[STRIPE]);
+    let by_outsider = call(&w.h.router, Method::POST, &reveal, None, &outsider).await?;
+    assert_eq!(by_outsider.status, StatusCode::NOT_FOUND);
+    let by_token = call(&w.h.router, Method::POST, &reveal, None, &w.admin).await?;
+    assert_eq!(by_token.status, StatusCode::FORBIDDEN);
+    assert_hidden(&by_token.body, &[STRIPE]);
+    let activity = call(
+        &w.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &writer,
+    )
+    .await?;
+    assert!(
+        activity.body.as_array().is_some_and(|a| a
+            .iter()
+            .any(|e| e["actor"] == "alice" && e["action"] == "vault.agent.reveal")),
+        "{}",
+        activity.body
+    );
+    assert_hidden(&activity.body, &[STRIPE]);
 
     // A replaced value is never returned either.
     let replaced = call(
@@ -950,6 +1233,7 @@ async fn nothing_is_stored_in_clear() -> TestResult {
     let agent = call(&h.router, Method::POST, "/api/sandboxes/s1/agent-secrets",
         Some(json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "username": "stripe-user-x", "value": STRIPE, "totp": SEED})), &w_user).await?;
     assert_eq!(agent.status, StatusCode::CREATED, "{}", agent.body);
+    let seed = enroll(&h, &admin).await?;
     let backup = data.join("backup.db");
     store.backup_to(&backup).await?;
     let mut files = vec![data.join("yulius.db"), backup];
@@ -967,6 +1251,7 @@ async fn nothing_is_stored_in_clear() -> TestResult {
             STRIPE,
             "stripe-user-x",
             "mail.google.com",
+            &seed,
         ] {
             assert!(
                 !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),

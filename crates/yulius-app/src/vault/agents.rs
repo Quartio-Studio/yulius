@@ -1,8 +1,11 @@
-//! Managing agent secrets (VLT-004, VLT-009): sandbox secrets by members with write access,
-//! instance-wide ones by instance administrators; members who can view a sandbox list names and
-//! bindings; values are write-only for everyone.
+//! Managing agent secrets (VLT-004, VLT-009, SPEC-040): sandbox secrets by members with write
+//! access, instance-wide ones by instance administrators; members who can view a sandbox list
+//! names and bindings; the people who manage a secret read its value back after a two-factor
+//! unlock. Agents never do.
 
-use yulius_contracts::api::secrets::{AgentSecretInput, AgentSecretPatch, AgentSecretView};
+use yulius_contracts::api::secrets::{
+    AgentSecretInput, AgentSecretPatch, AgentSecretView, RevealRequest, SecretReveal,
+};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
 use yulius_domain::vault::hosts::parse_hosts;
@@ -11,7 +14,8 @@ use yulius_domain::vault::{
     Injection, ROTATE_AFTER_MS, SecretName, check_agent_value, placeholder,
 };
 
-use super::{AgentPayload, field, invalid};
+use super::team::{pick, reveal_request, shown};
+use super::{AgentPayload, Revealed, field, invalid};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
@@ -355,5 +359,42 @@ impl App {
             &record.name,
         )
         .await
+    }
+
+    /// `POST /api/agent-secrets/{id}/reveal`: the value and the notes (its description) for a
+    /// person who manages the secret, after a two-factor unlock; audited as
+    /// `vault.agent.reveal` or `vault.agent.copy`.
+    ///
+    /// # Errors
+    /// `NotFound` for invisible secrets, `Forbidden` for people who cannot manage it and for API
+    /// tokens, `Invalid` requests, store failures.
+    pub async fn reveal_agent_secret(
+        &self,
+        ctx: &AuthContext,
+        id: &str,
+        request: &RevealRequest,
+    ) -> AppResult<Revealed<SecretReveal>> {
+        let (purpose, wanted) = reveal_request(request)?;
+        let record = self.agent_record(ctx, id).await?;
+        self.require_manage_agent(ctx, record.sandbox_id.as_ref())
+            .await?;
+        if let Some(status) = self.fresh_or_status(ctx).await? {
+            return Ok(Revealed::ReauthRequired(status));
+        }
+        let payload: AgentPayload = self.open_payload(&record)?;
+        let notes = (!record.description.is_empty()).then(|| record.description.clone());
+        let revealed = pick(&wanted, &Some(payload.value.clone()), &notes);
+        self.vault_audit(
+            &Self::vault_actor(ctx),
+            if purpose == "copy" {
+                "vault.agent.copy"
+            } else {
+                "vault.agent.reveal"
+            },
+            Some(id),
+            &format!("{} ({})", record.name, shown(&revealed)),
+        )
+        .await?;
+        Ok(Revealed::Values(revealed))
     }
 }
