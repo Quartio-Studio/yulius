@@ -871,7 +871,7 @@ route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
 route('POST', `/api/tasks/${ID}/archive`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  if (LIVE.has(task.status)) fail(409, 'conflict', 'Stop the task before archiving it.');
+  if (LIVE.has(task.status) && !(task.status === 'running' && task.activity === 'done' && !task.background_shells)) fail(409, 'conflict', 'Stop the task before archiving it.');
   touch(db, task, { archived: true });
   return summary(task);
 });

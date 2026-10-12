@@ -8,6 +8,7 @@ use yulius_contracts::api::tasks::{
 };
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::Action;
+use std::sync::Arc;
 use yulius_domain::task::{Activity, TaskStatus};
 
 use crate::auth::{AuthContext, rfc3339};
@@ -265,18 +266,25 @@ impl App {
         })
     }
 
-    /// Archives a resting task (UI-006).
+    /// Archives a resting task (UI-006), or a Done one (TSK-014): the agent finished its goal
+    /// and idles with no background shell, so there is nothing left to wait for and it is
+    /// stopped as it is archived.
     ///
     /// # Errors
-    /// `Conflict` for live tasks.
+    /// `Conflict` for other live tasks.
     pub async fn archive_task(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         id: &str,
         archive: bool,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
-        if archive && !task.status.is_resting() {
+        let done = task.status == TaskStatus::Running
+            && task.activity == Some(Activity::Done)
+            && self.background_shells_of(&task.id).unwrap_or(0) == 0;
+        if archive && done {
+            self.stop_task_now(&task.id).await?;
+        } else if archive && !task.status.is_resting() {
             return Err(AppError::Conflict(
                 "stop the task before archiving it".into(),
             ));
