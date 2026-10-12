@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Merging into `dev` no longer waits for a person: the `standard` delivery profile has no manual `dev` checkpoint, so after the merge on green checks the next action is promotion; stored profiles with the old checkpoint read as the new one (SPEC-011 DLV-009, DLV-010, #10).
 - GitHub Actions are gone from this repository: Yulius CI is the only CI (`quality` and `e2e` in
   `[[ci.jobs]]`), the rulesets require only the `yulius/ci` commit status, and `.github/workflows`
   and `.github/actionlint.yaml` are deleted. macOS is checked with `scripts/dev ci` on a Mac before

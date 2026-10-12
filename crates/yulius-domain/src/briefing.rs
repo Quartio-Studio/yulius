@@ -1107,7 +1107,7 @@ mod tests {
             "- 2026-10-07 Catalog: Product list and detail pages.",
             "- #13 Search (claude, running) on `feat/search`; scopes: `src/search/**`",
             "You have 2 unread messages",
-            "pull request (squash) into `dev` → environment `dev` (confirmed by a person) → promotion to `main` (merge commit, by a person)",
+            "pull request (squash) into `dev` → promotion to `main` (merge commit, by a person)",
         ] {
             assert!(text.contains(needle), "missing {needle}\n{text}");
         }

@@ -7,7 +7,7 @@
 //!
 //! | Preset | Branches | Merge | Promotion | Environments |
 //! | --- | --- | --- | --- | --- |
-//! | `standard` | `dev` → `main` | squash | merge commit, manual | `dev` checkpoint after integration |
+//! | `standard` | `dev` → `main` | squash | merge commit, manual | none: the green merge is the dev delivery |
 //! | `product` | `quartio` → `main` | merge | fast-forward, manual | `dev-vm` after integration, `rollout` after production |
 //! | `studio` | `quartio` → `main` | merge | fast-forward, **automatic** | none; checks not required |
 //!
@@ -271,8 +271,8 @@ fn manual_checkpoint(name: &str, after: Stage) -> Environment {
 }
 
 impl DeliveryProfile {
-    /// Standard: PR (squash) into `dev`, a manual `dev` checkpoint, merge-commit promotion
-    /// PR `dev` → `main` by a person (DLV-002).
+    /// Standard: PR (squash) into `dev` on green checks, merge-commit promotion PR
+    /// `dev` → `main`. No environment: the merge on green is the dev delivery (DLV-002, DLV-009).
     #[must_use]
     pub fn standard() -> Self {
         Self {
@@ -283,8 +283,14 @@ impl DeliveryProfile {
             promote: PromoteMethod::MergeCommit,
             auto_promote: false,
             require_checks: true,
-            environments: vec![manual_checkpoint("dev", Stage::Integration)],
+            environments: Vec::new(),
         }
+    }
+
+    /// Whether `env` is the manual `dev` checkpoint the standard preset carried before DLV-009.
+    #[must_use]
+    pub fn is_legacy_standard_checkpoint(env: &Environment) -> bool {
+        *env == manual_checkpoint("dev", Stage::Integration)
     }
 
     /// Product: PR (merge) into `quartio`, explicit `dev-vm` deployment and verification,
@@ -1129,10 +1135,8 @@ mod tests {
         assert_eq!(standard.merge, MergeMethod::Squash);
         assert_eq!(standard.promote, PromoteMethod::MergeCommit);
         assert!(!standard.auto_promote && standard.require_checks);
-        assert_eq!(
-            standard.environments,
-            vec![manual_checkpoint("dev", Stage::Integration)]
-        );
+        // DLV-009: the green merge is the dev delivery; no person confirms it.
+        assert!(standard.environments.is_empty());
 
         let product = DeliveryProfile::product();
         assert_eq!(product.integration_branch, "quartio");
@@ -1230,23 +1234,8 @@ mod tests {
         stage = user(&stage, &DeliveryAction::Merge, &profile, &open)?;
         assert_eq!(stage, DeliveryStage::MergedIntegration);
 
-        // The dev checkpoint precedes promotion.
+        // DLV-009: nothing waits for a person between the merge and promotion.
         let merged = with_pr(PrState::Merged);
-        assert_eq!(
-            next_actions(&stage, &profile, &merged),
-            vec![NextAction::ConfirmEnvironment("dev".to_owned())]
-        );
-        assert!(matches!(
-            user(&stage, &DeliveryAction::Promote, &profile, &merged),
-            Err(DeliveryError::NotAvailable {
-                action: "promote",
-                ..
-            })
-        ));
-        stage = user(&stage, &confirm("dev"), &profile, &merged)?;
-        assert_eq!(stage, DeliveryStage::EnvDone("dev".to_owned()));
-
-        // Promotion is a person's action.
         assert_eq!(
             next_actions(&stage, &profile, &merged),
             vec![NextAction::Promote { automatic: false }]
@@ -1458,6 +1447,9 @@ mod tests {
     #[test]
     fn command_verified_environment_completes_from_command_result() -> TestResult {
         let mut profile = DeliveryProfile::standard();
+        profile
+            .environments
+            .push(manual_checkpoint("dev", Stage::Integration));
         profile.environments[0].command = Some("make deploy-dev".to_owned());
         profile.environments[0].verify = Verify::Command;
         profile.validate()?;
@@ -1629,7 +1621,9 @@ mod tests {
 
     #[test]
     fn profile_validation() {
-        let base = DeliveryProfile::standard();
+        let mut base = DeliveryProfile::standard();
+        base.environments
+            .push(manual_checkpoint("dev", Stage::Integration));
         let same = DeliveryProfile {
             production_branch: "dev".to_owned(),
             ..base.clone()
