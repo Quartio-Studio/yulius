@@ -153,6 +153,9 @@ impl App {
     /// Re-evaluates the tasks waiting for `predecessor`: starts them when it is Done, marks
     /// them as needing a person when it ended otherwise, leaves them waiting meanwhile.
     pub async fn advance_chains(self: &Arc<Self>, predecessor: &TaskId) {
+        // A predecessor that just stopped may still wait for background agents; its turn record
+        // says (SPEC-032 STA-001).
+        self.await_turn_record(predecessor).await;
         // Waiting start rules may name this task anywhere (SPEC-017 RUL-005).
         if let Ok(Some(before)) = self.deps.store.task(predecessor).await {
             self.advance_rule_chains(&before.sandbox_id).await;

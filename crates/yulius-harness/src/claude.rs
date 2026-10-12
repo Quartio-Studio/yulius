@@ -210,8 +210,11 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
     }
     if str_of(message, "stop_reason") == Some("end_turn") {
         out.push(Observed::TurnComplete { duration_ms: None });
-    } else if !bool_of(record, "isSidechain") {
-        // A sub-agent's lines (sidechain) are not the session's work.
+    } else if !bool_of(record, "isSidechain")
+        && owned_str(message, "model").as_deref() != Some(SYNTHETIC_MODEL)
+    {
+        // A sub-agent's lines (sidechain) and the lines Claude Code writes itself ("No response
+        // requested.", `<synthetic>`, `stop_sequence`) are not the session's work.
         out.push(Observed::AgentWork {
             at: str_of(record, "timestamp").and_then(parse_rfc3339),
         });
@@ -546,6 +549,15 @@ mod tests {
         assert!(work(assistant(r#""tool_use""#, false)));
         assert!(work(assistant("null", false)));
         assert!(!work(assistant(r#""end_turn""#, false)));
+        // Claude Code's own synthetic line ("No response requested.") is not work.
+        let synthetic = observe_line(
+            r#"{"type":"assistant","isSidechain":false,"timestamp":"2026-10-10T05:38:01.385Z","message":{"id":"m2","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"No response requested."}],"stop_reason":"stop_sequence"}}"#,
+        );
+        assert!(
+            !synthetic
+                .iter()
+                .any(|o| matches!(o, Observed::AgentWork { .. }))
+        );
         assert!(
             assistant(r#""end_turn""#, false)
                 .contains(&Observed::TurnComplete { duration_ms: None })

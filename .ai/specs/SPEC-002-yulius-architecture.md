@@ -1621,8 +1621,11 @@ wake-ups do — or a user prompt record in the transcript), a new goal, a "not m
 - **Going on after a stop (SPEC-032 STA-004, STA-005):** Yulius' Stop hook runs first and makes
   the task idle; the goal evaluator's "not met" record, or assistant work newer than the last clean
   Stop (a hook continued the turn, a wake-up started one), makes it `working` again
-  (`activity_on_goal_not_met`, `activity_on_work`). A replay reopens a turn the same way: an
-  assistant line after an end line means it is open.
+  (`activity_on_goal_not_met`, `activity_on_work`); if that turn then closes (`turn_duration`)
+  with no Stop hook of its own (an API error), the task is idle again. A replay folds the same
+  way (an assistant line after an end line means the turn is open), so a restart no longer makes
+  a continued, working task `waiting`. The pending-agent count comes with the turn record, a poll
+  after the Stop hook: chain starts wait up to 3 s for it.
 - Done also follows from a tested pull request on a `waiting` task (GIT-001); the UI combines both
   with one rule (failing checks → Needs you, shells → Working, goal achieved or PR tested → Done,
   checks still running → In review).

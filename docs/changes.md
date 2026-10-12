@@ -23,7 +23,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   session goes on from, makes the task Working again instead of leaving "Your turn" (or Done);
   informational Claude Code notices (a background agent finished, push, quota resume, …) no longer
   flag "Needs your action", and the agent's next work takes a real flag back once answered; a
-  restart no longer reads a continued turn as ended. Monitor streams are still not counted.
+  restart no longer demotes a working task whose turn a Stop hook continued. Monitor streams are
+  still not counted.
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.

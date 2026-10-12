@@ -34,6 +34,9 @@ pub struct FakeAgentOptions {
     pub goal_continue_ms: Option<u64>,
     /// See `goal_continue_ms`.
     pub goal_continue_verdict: bool,
+    /// With the verdict: the continued turn dies (an API error) and closes with no Stop hook
+    /// (`--goal-continue-dies`).
+    pub goal_continue_dies: bool,
     /// Delay the goal turn by this many milliseconds (`--goal-delay-ms`).
     pub goal_delay_ms: Option<u64>,
     /// Lose the first typed lines like a TUI that drops a submit (`--drop-lines`).
@@ -133,6 +136,9 @@ impl HarnessPort for FakeAgentHarness {
         }
         if self.options.goal_continue_verdict {
             argv.push("--goal-continue-verdict".into());
+        }
+        if self.options.goal_continue_dies {
+            argv.push("--goal-continue-dies".into());
         }
         if let Some(ms) = self.options.goal_delay_ms {
             argv.extend(["--goal-delay-ms".into(), ms.to_string()]);
