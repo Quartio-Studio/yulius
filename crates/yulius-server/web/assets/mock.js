@@ -781,9 +781,8 @@ route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
 });
 route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
-  // A test can keep the proposal in flight (__yuliusMock.holdProposal = true) to check the waiting state.
-  while (db.holdProposal) await delay(25);
-  await delay(900);
+  // A test can hold the answer (`__yuliusMock.holdProposal = promise`) to look at the waiting card.
+  await (db.holdProposal || delay(900));
   const lines = String(body.prompt || '').split('\n').filter((l) => /^\s*(\d+[.)]|[-*•])\s/.test(l)).map((l) => l.trim());
   const backend = lines.filter((l) => MOCK_BACKEND.test(l));
   const ux = lines.filter((l) => !MOCK_BACKEND.test(l));

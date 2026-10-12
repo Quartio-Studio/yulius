@@ -17,11 +17,14 @@ const MIXED = [
 
 test('a request mixing UI and backend work offers a split; a chain waits for its predecessor', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
+  // The mock holds its proposal until released, so the waiting card is there to look at however
+  // slowly the page is driven.
+  await browser.evaluate(() => {
+    const mocked = window as unknown as { __yuliusMock: { holdProposal?: Promise<void>; releaseProposal?: () => void } };
+    mocked.__yuliusMock.holdProposal = new Promise<void>((resolve) => { mocked.__yuliusMock.releaseProposal = resolve; });
+  });
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(MIXED);
-  // The mock keeps the proposal in flight until released, so the waiting state is checked
-  // however slowly the page runs (a fixed delay raced with a loaded machine).
-  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { holdProposal: boolean } }).__yuliusMock.holdProposal = true; });
   await prompt.press('ControlOrMeta+Enter');
 
   // While Claude prepares the proposal the card shimmers below the box; one task already works.
@@ -29,7 +32,7 @@ test('a request mixing UI and backend work offers a split; a chain waits for its
   await expect(card).toHaveText(/Splitting your request…/);
   await expect(card.getByRole('status')).toHaveText('Preparing a split proposal…');
   await expect(card.getByRole('button', 'Keep as one task')).toBeVisible();
-  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { holdProposal: boolean } }).__yuliusMock.holdProposal = false; });
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { releaseProposal: () => void } }).__yuliusMock.releaseProposal());
 
   await expect(card).toHaveText(/Split into 2 tasks\?/);
   await expect(card.getByRole('textbox', 'Title of task 1')).toHaveValue('UX: interface fixes');

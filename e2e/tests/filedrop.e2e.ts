@@ -81,10 +81,19 @@ test('dropping a file that exists asks before replacing it', async ({ app, brows
 test('a text file dropped on the editor opens in a tab', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await openEditor(screen);
-  await expect(screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md')).toBeVisible();
+  const tree = screen.getByRole('tree', 'Files');
+  await expect(tree.getByRole('treeitem', 'README.md')).toBeVisible();
+  // The editor (Monaco, many files) loads when the first file opens. That cold load is not what
+  // this test is about and takes however long the machine needs: wait for it as a condition, so
+  // the drop below is judged against a ready editor.
+  await tree.getByRole('treeitem', 'README.md').click();
+  await expect.poll(() => browser.evaluate(() => Boolean((window as unknown as { monaco?: unknown }).monaco)), { timeout: 60000 }).toBe(true);
+  await expect(screen.getByRole('tab', 'README.md')).toHaveAttribute('aria-selected', 'true');
   await installDrop(browser);
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.ed-stage', [['hello.md', '# Hello\n', 'text/markdown'], ['logo.png', 'not really a png', 'image/png']]));
-  await expect(screen.getByRole('tab', 'hello.md')).toHaveAttribute('aria-selected', 'true');
+  // The drop is listed, uploaded, listed again and then opened: several round trips, each as slow
+  // as the page is starved. The condition is the tab, not a time.
+  await expect(screen.getByRole('tab', 'hello.md')).toHaveAttribute('aria-selected', 'true', { timeout: 20000 });
   // The image is added, not opened.
   await expect(screen.getByRole('tree', 'Files').getByRole('treeitem', 'logo.png')).toBeVisible();
   await expect(screen.getByRole('tab', 'logo.png')).toBeHidden();

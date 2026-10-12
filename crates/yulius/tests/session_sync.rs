@@ -332,15 +332,20 @@ fn the_task_follows_its_session_however_it_stops() -> TestResult {
         .await?;
         let last = app.deps.store.attempts(&id).await?.pop().ok_or("attempt")?;
         assert_eq!(last.exit_code, Some(0));
+        // The store changes first and the event follows it, so wait for the event.
         let mut seen = Vec::new();
-        while let Ok(envelope) = events.try_recv() {
-            if let UiEvent::TaskUpdated { task } = envelope.event
-                && task.id == id.as_str()
-            {
-                seen.push(task.status);
+        wait_for("the closed event", Duration::from_secs(10), || {
+            while let Ok(envelope) = events.try_recv() {
+                if let UiEvent::TaskUpdated { task } = envelope.event
+                    && task.id == id.as_str()
+                {
+                    seen.push(task.status);
+                }
             }
-        }
-        assert_eq!(seen.last().map(String::as_str), Some("closed"), "{seen:?}");
+            let closed = seen.last().map(String::as_str) == Some("closed");
+            async move { closed }
+        })
+        .await?;
         app.terminal_leave(&attach).await;
 
         // /exit: SessionEnd, then a clean exit.
