@@ -665,44 +665,52 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
 /// STA-004, STA-005 (SPEC-032, task #24 between 15:55:22 and 15:55:30): Yulius's Stop hook ends
 /// the goal turn (the task is idle), then Claude Code sends the agent on: the evaluator's "not
 /// met" verdict, or another Stop hook that continues the turn. The task is Working while the
-/// agent goes on, and Done once its goal is achieved.
-#[test]
-fn a_stop_the_session_goes_on_from_does_not_leave_the_task_waiting() -> TestResult {
+/// agent goes on, and Done once its goal is achieved. One test per way, each within the
+/// integration suite's time limit.
+fn a_session_goes_on_from_its_stop(verdict: bool, marker: &str) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
     let rt = runtime()?;
-    for (verdict, marker) in [(true, "GOAL NOT MET"), (false, "STOP CONTINUED")] {
-        let (_dir, data) = data_dir()?;
-        rt.block_on(async {
-            let agent = FakeAgentOptions {
-                transcript: true,
-                hooks: true,
-                goal_continue_ms: Some(12_000),
-                goal_continue_verdict: verdict,
-                ..FakeAgentOptions::default()
-            };
-            let (app, _) = start(&data, &fake, agent, 0).await?;
-            let (sandbox, user) = seed(&app, &data).await?;
-            let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-            wait_for(marker, Duration::from_secs(90), || {
-                screen_contains(&app, &id, marker)
-            })
-            .await?;
-            // Well before the agent's next record (the verdict case: 12 s), the task works.
-            wait_for(
-                "Working while the session goes on",
-                Duration::from_secs(8),
-                || async { activity(&app, &id).await == Some(Activity::Working) },
-            )
-            .await?;
-            wait_for("Done", Duration::from_secs(60), || async {
-                activity(&app, &id).await == Some(Activity::Done)
-            })
-            .await?;
-            stop(&app, &id).await
-        })?;
-    }
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_continue_ms: Some(10_000),
+            goal_continue_verdict: verdict,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for(marker, Duration::from_secs(90), || {
+            screen_contains(&app, &id, marker)
+        })
+        .await?;
+        // Well before the agent's next record (the verdict case: 10 s), the task works.
+        wait_for(
+            "Working while the session goes on",
+            Duration::from_secs(7),
+            || async { activity(&app, &id).await == Some(Activity::Working) },
+        )
+        .await?;
+        wait_for("Done", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+#[test]
+fn a_goal_not_met_does_not_leave_the_task_waiting() -> TestResult {
+    a_session_goes_on_from_its_stop(true, "GOAL NOT MET")
+}
+
+#[test]
+fn a_stop_a_hook_continued_does_not_leave_the_task_waiting() -> TestResult {
+    a_session_goes_on_from_its_stop(false, "STOP CONTINUED")
 }
 
 /// STA-004 (review of SPEC-032): the goal verdict "not met" sends the agent on, then an API error

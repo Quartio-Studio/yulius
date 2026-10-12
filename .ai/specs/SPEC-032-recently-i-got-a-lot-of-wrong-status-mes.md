@@ -137,9 +137,11 @@ call returns, since Claude Code writes nothing before.
   `NeedsAttention`; the harness record test did not compile before the new `Observed` variants.
   Mutation checks (each fix removed in turn) fail the integration tests: the pending agent
   (`a_pending_background_agent_keeps_the_task_working_until_it_finishes`), a rejected goal and a
-  continued stop (`a_stop_the_session_goes_on_from_does_not_leave_the_task_waiting`, both
-  variants) and a continued turn that dies (`a_continued_turn_that_dies_without_a_stop_…`).
-- `scripts/dev ci` (2026-10-12, after the review's first round): 1177 tests passed, 16 skipped.
+  continued stop (`a_goal_not_met_does_not_leave_the_task_waiting`,
+  `a_stop_a_hook_continued_does_not_leave_the_task_waiting`) and a continued turn that dies (`a_continued_turn_that_dies_without_a_stop_…`).
+- `scripts/dev ci` (2026-10-13, final head, merged with dev): see the run of the pull request;
+  locally 1210 tests with the integration suite's time limit respected after splitting the
+  two-variant test (it exceeded nextest's 120 s on a loaded host).
 - e2e `task-done.e2e.ts`: 6 passed (the "background task" wording).
 - Independent review, round 1: request changes (pending count known only after the Stop,
   a continued turn dying without a Stop, synthetic lines, flag clearing, unknown probe count, doc
