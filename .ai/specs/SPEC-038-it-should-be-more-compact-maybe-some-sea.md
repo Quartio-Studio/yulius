@@ -104,6 +104,11 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
   publishes its commit status, so under load the test read "pending". Reproduced with a 300 ms
   delay before the publish; `settle()` now also waits until no finished run's status is pending.
   Kept in this change because it blocked the gate; it touches only the test helper.
+- **A racing e2e setup fixed on the way** (`mockReady()` in `e2e/tests/support.ts`): mock.js is
+  a dynamic import, so under load `app.open` returned before `window.__yuliusMock` existed and
+  three tests (drafts, intake) failed reading it. Reproduced with a 500 ms delay before the
+  import; with that delay and the helper the whole suite passes. Kept here because it failed this
+  branch's gate after merging dev (#289).
 - **Native selects stay native**: the browser's list already has type-to-select and phone pickers;
   replacing them is a separate, larger change with no reported pain.
 
@@ -119,5 +124,9 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
   reproduced with a delay and fixed in 9c0784d; 20 isolated runs and 10 runs of the file passed.
 - Seen in the browser (mock, `tasks=many`, 1280×800): "Run after" opens above its chip with a
   focused Filter and one-line rows; "check" leaves #12 Checkout API and #6 Fix flaky checkout test.
+- After merging dev (9bc1c13, #289): the full e2e suite failed once at load average ~28 in
+  `drafts.e2e.ts` ("Cannot read properties of undefined (reading 'tasks')"); reproduced with a
+  delay before the mock import and fixed with `mockReady()`; with the delay the whole suite
+  passed (177 passed, 1 skipped).
 - Not tested here: a real phone keyboard and touch screen (emulated by a height-only resize and
   a `(pointer: coarse)` media query), and classic (non-overlay) scrollbars.
