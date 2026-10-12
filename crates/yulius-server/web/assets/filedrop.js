@@ -514,20 +514,28 @@ export function withAttachments(text, attached) {
   return `${text}\n\n${attached.map((item) => `@${shellQuote(item.path)}`).join('\n')}`;
 }
 
+/** Attached files shown as they are in a tab: none of these runs script as this site. */
+const VIEWABLE_TYPE = /^(application\/pdf|audio\/|video\/)/;
+/** Attached files shown as plain text: a page (`text/html`), XML or script would otherwise run. */
+const TEXT_TYPE = /^(text\/|application\/(json|xml|javascript|x-sh|x-yaml|yaml|toml)\b)/;
+
 /**
- * Opens a file attached on the new-task composer (SPEC-025): an image (it has a thumbnail URL)
- * previews in a dialog at full size, any other file opens in a new tab, where the browser shows
- * or downloads it.
+ * Opens a file attached on the new-task composer (SPEC-025). An image (it has a thumbnail URL)
+ * previews in a dialog at full size. A text file opens in a new tab as plain text and a PDF, audio
+ * or video as it is; anything else downloads. An attached file is untrusted: a tab opened from
+ * this page shares its origin, so it never opens as a page. The tab's URL lives while the chip
+ * does (`item.openUrl`, revoked when it is removed).
  */
 export function openAttachment(item) {
   if (item.url) {
     openModal({ title: item.name, wide: true, className: 'attachment-modal', body: h('img', { class: 'attachment-preview', src: item.url, alt: item.name }) });
     return;
   }
-  const url = URL.createObjectURL(item.file);
-  window.open(url, '_blank', 'noopener');
-  // The new tab has loaded it by then; the URL only holds the file in memory.
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  const type = item.file.type || '';
+  const text = TEXT_TYPE.test(type);
+  if (!item.openUrl) item.openUrl = URL.createObjectURL(text ? new Blob([item.file], { type: 'text/plain;charset=utf-8' }) : item.file);
+  if (text || VIEWABLE_TYPE.test(type)) window.open(item.openUrl, '_blank', 'noopener');
+  else h('a', { href: item.openUrl, download: item.name }).click();
 }
 
 /** Uploads a file dropped on the new-task composer of a sandbox, before its task exists. */

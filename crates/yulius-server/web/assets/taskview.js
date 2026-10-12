@@ -451,7 +451,7 @@ export function mountComposer(ctx, sandbox) {
       iconButton('x', `Remove ${item.name}`, () => { dropAttached([item]); renderTray(); }, { class: 'composer-attachment-remove' }))));
   }
   function dropAttached(items) {
-    for (const item of items) if (item.url) URL.revokeObjectURL(item.url);
+    for (const item of items) for (const url of [item.url, item.openUrl]) if (url) URL.revokeObjectURL(url);
     attached = attached.filter((item) => !items.includes(item));
   }
   setChildren(box,

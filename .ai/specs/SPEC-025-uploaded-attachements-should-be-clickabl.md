@@ -40,10 +40,10 @@ content block), not as a path the agent has to open with the Read tool.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| ATT-001 | Each composer attachment chip is a button ("Open <name>"). An image opens in a preview dialog at full size (closed by Esc, × or a click outside); any other file opens in a new browser tab. The remove button only removes. | e2e `filedrop.e2e.ts` |
-| ATT-002 | A prompt-mode task's first message is its text followed by one mention per attached file on its own line: `@/path`, or `@"/path"` when the path has whitespace. No "open with the Read tool" list. | `request.rs` unit tests |
-| ATT-003 | A goal-mode task with attached files starts its session with a first message (the CLI prompt) that says the files belong to the task and its goal follows, then mentions each file as in ATT-002; `/goal` is typed as before. Without attached files the session starts with no first message, as today. | `request.rs` unit tests; `task_done.rs` goal test |
-| ATT-004 | The request file still lists the attached paths, saying they were attached to the session's first message (open one again with the Read tool if needed). | `request.rs` unit test |
+| ATT-001 | Each composer attachment chip is a button ("Open <name>"). An image opens in a preview dialog at full size (closed by Esc, × or a click outside). A text file (HTML, XML and scripts included) opens in a new tab as plain text, a PDF, audio or video as it is, anything else downloads: an attached file never runs as the Yulius site. The remove button only removes. | e2e `filedrop.e2e.ts` |
+| ATT-002 | A prompt-mode task's first message is its text followed by one mention per attached file on its own line, always quoted (`@"/path"`). A path no mention can carry (a `"` or `#`) is listed after "Open with the Read tool:" instead. An `@` line with a control character is not an attachment. | `request.rs` unit tests |
+| ATT-003 | A goal-mode task with attached files starts its session with a first message (the CLI prompt) that says the files belong to the task and its goal follows, then mentions each file as in ATT-002. `/goal` is typed once that turn's Stop hook arrived (at most 5 minutes later), and that Stop is not gated. Without attached files the session starts with no first message, as today. | `request.rs` unit tests; `task_done.rs` goal tests |
+| ATT-004 | The request file still lists the attached paths, saying they were given in the session's first message (open one again with the Read tool if needed). | `request.rs` unit test |
 
 ## Acceptance criteria
 
@@ -54,9 +54,9 @@ content block), not as a path the agent has to open with the Read tool.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A prompt-mode task's first message attaches its files natively as @mentions
-- [ ] A goal-mode task's files reach Claude Code natively in a first message before /goal
-- [ ] Composer attachment chips open the file when clicked
+- [x] A prompt-mode task's first message attaches its files natively as @mentions
+- [x] A goal-mode task's files reach Claude Code natively in a first message before /goal
+- [x] Composer attachment chips open the file when clicked
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -82,12 +82,16 @@ content block), not as a path the agent has to open with the Read tool.
   ids, not local files).
 - Goal mode spends one short extra turn (the attachments message) before `/goal`. Accepted: the
   model sees the files before it plans, and a `/goal` typed while that turn runs is queued
-  (measured). Recorded as ADR-0019. Limit: `/goal` is typed after 1.5 s without terminal output
-  (the spinner redraws during a turn, so normally once that turn ended); should the attachments
-  turn outlast the goal-submit retries (about 75 s), the task is flagged as needing a person, as
-  any goal not taken is.
-- Non-image files open in a new tab (the browser shows or downloads them) rather than a viewer of
-  our own; images preview in the existing modal so the composer keeps its state.
+  (measured). Recorded as ADR-0019. Yulius types `/goal` after that turn's Stop hook, not after
+  quiet output (a silent tool call is quiet too), and lets that Stop end the turn without gates,
+  so the goal is typed once and between turns.
+- Images preview in the existing modal so the composer keeps its state. A tab opened from a blob
+  URL shares the page's origin and the CSP does not restrict scripts, so other files open only as
+  plain text or as types that cannot run script (PDF, audio, video); the rest download (review
+  finding).
+- Mentions are always quoted: Claude Code 2.1.292 reads an unquoted mention only up to its last
+  letter or digit and a `#` as a line range (read from its bundle; quoted mentions verified with the
+  mock API).
 
 ## Evidence
 
