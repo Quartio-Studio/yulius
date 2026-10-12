@@ -49,8 +49,8 @@ them all, because it forwards the click itself, not a Claude Code-specific actio
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
@@ -65,6 +65,9 @@ them all, because it forwards the click itself, not a Claude Code-specific actio
 - e2e (`e2e/tests/terminal.e2e.ts`, mock): click expands, click collapses, drag selects without
   toggling, read-only click sends nothing. The mock session (`mock.js`) expands a collapsed group on
   an SGR press of button 0 at its row, as Claude Code does.
+- The double-click rule: a real first click, then the second click's events with click count 2
+  dispatched in the page (the test mouse always presses with count 1); it must not collapse the
+  group. Checked by removing the rule: the test fails.
 - Unit (in the page): `clickReport` encodes SGR and X10 press/release.
 - Existing: the size-taking click test and the wheel test keep passing.
 

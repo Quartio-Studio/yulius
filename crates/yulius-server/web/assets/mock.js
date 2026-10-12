@@ -2440,7 +2440,7 @@ const GROUP_CLOSED = `${c(255, '⏺')} Searched for 2 patterns, read 1 file ${di
 const GROUP_OPEN = `${c(255, '⏺')} Searched for 2 patterns, read 1 file`;
 const GROUP_CALLS = [
   `  ${dim('⎿')}  ${bold('Search')}(pattern: "checkout", path: "src/")`,
-  `  ${dim('⎿')}  ${bold('Search')}(pattern: "tax_for", path: "src/")`,
+  `  ${dim('⎿')}  ${bold('Search')}(pattern: "loyalty_points", path: "src/")`,
   `  ${dim('⎿')}  ${bold('Read')}(src/api/tax.rs)`,
 ];
 

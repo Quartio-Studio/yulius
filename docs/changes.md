@@ -8,6 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Claude Code sessions in a task terminal no longer open Claude Code's diff side panel by themselves
   ("No changes this session" on the right); it still opens by hand within a session (SPEC-024).
+- A click on Claude Code's output in a task terminal reaches Claude Code, so a collapsed tool
+  group expands as in a native terminal; drags and double-clicks still select text (SPEC-027).
 - Ended worktrees holding only end-to-end output (`.e2e`), the APM cache (`apm_modules`) or Claude
   Code's own `.claude/` state are removed too (SPEC-019; seven were kept on the first deploy).
 - Agents meet fewer avoidable obstacles (SPEC-020):

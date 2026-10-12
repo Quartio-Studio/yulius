@@ -396,13 +396,23 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       open: (file, event) => fileLinks.open(file, event),
     }));
   }
-  // Claude Code draws full screen (the alternate buffer has no scrollback) and scrolls its own
-  // transcript with the mouse wheel. Text selection keeps the mouse from the app (mousefilter.js),
-  // so there only wheel turns go to the app, in its encoding; clicks still select. In the normal
-  // buffer xterm scrolls its own scrollback (#34).
+  // Claude Code draws full screen (the alternate buffer has no scrollback), scrolls its own
+  // transcript with the mouse wheel and expands a clicked tool group. Text selection keeps the
+  // mouse from the app (mousefilter.js), so there only wheel turns and plain clicks go to the app,
+  // in its encoding; drags and double-clicks still select. In the normal buffer xterm scrolls its
+  // own scrollback (#34, #25).
+  const reportsToApp = () => mouse.requested() && !mouse.appMouse() && term.buffer.active.type === 'alternate' && state.can_write;
+  /** The 1-based cell of the shown grid under the pointer (also when it is scaled to fit). */
+  function cellAt(event) {
+    const screen = host.querySelector('.xterm-screen') || host;
+    const box = screen.getBoundingClientRect();
+    const col = Math.min(term.cols, Math.max(1, 1 + Math.floor(((event.clientX - box.left) / Math.max(1, box.width)) * term.cols)));
+    const row = Math.min(term.rows, Math.max(1, 1 + Math.floor(((event.clientY - box.top) / Math.max(1, box.height)) * term.rows)));
+    return { col, row };
+  }
   let wheelRest = 0;
   term.attachCustomWheelEventHandler((event) => {
-    if (!mouse.requested() || mouse.appMouse() || term.buffer.active.type !== 'alternate' || !state.can_write) return true;
+    if (!reportsToApp()) return true;
     // Pinch-zoom (ctrl+wheel) and horizontal swipes stay with the browser (#78).
     if (event.ctrlKey || !event.deltaY) return true;
     event.preventDefault();
@@ -411,10 +421,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     const notches = Math.trunc(wheelRest / WHEEL_NOTCH_PX);
     if (!notches) return false;
     wheelRest -= notches * WHEEL_NOTCH_PX;
-    const screen = host.querySelector('.xterm-screen') || host;
-    const box = screen.getBoundingClientRect();
-    const col = Math.min(term.cols, Math.max(1, 1 + Math.floor(((event.clientX - box.left) / Math.max(1, box.width)) * term.cols)));
-    const row = Math.min(term.rows, Math.max(1, 1 + Math.floor(((event.clientY - box.top) / Math.max(1, box.height)) * term.rows)));
+    const { col, row } = cellAt(event);
     // Scrolling is not typing: it takes neither control nor the terminal size (#78).
     socket.sendInput(mouse.wheelReport(notches < 0, col, row).repeat(Math.min(Math.abs(notches), WHEEL_MAX_NOTCHES)), { scroll: true });
     return false;
@@ -615,18 +622,28 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   document.addEventListener('visibilitychange', updatePresence);
 
   // A click takes the size once it is clearly a click: no drag, no selection (a double- or
-  // triple-click selects), the pointer not on a link.
+  // triple-click selects), the pointer not on a link. A full-screen app that asked for the mouse
+  // gets the click at once, as in a native terminal (#25), but not the second click of a
+  // double-click, which selects a word.
   let press = null;
   let clickTimer = 0;
   host.addEventListener('pointerdown', (event) => {
     clearTimeout(clickTimer);
-    press = event.button === 0 ? { x: event.clientX, y: event.clientY } : null;
+    press = event.button === 0 ? { x: event.clientX, y: event.clientY, count: 0 } : null;
   }, true);
+  // Pointer events carry no click count; the mouse event that follows the press does (a touch's
+  // comes after its release: a tap counts as one click).
+  host.addEventListener('mousedown', (event) => { if (press) press.count = event.detail; }, true);
   host.addEventListener('pointerup', (event) => {
     const start = press;
     press = null;
     if (!start || event.button !== 0 || Math.abs(event.clientX - start.x) > 4 || Math.abs(event.clientY - start.y) > 4) return;
     if (host.querySelector('.xterm-cursor-pointer')) return; // a link click opens the link
+    if (start.count <= 1 && !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey && conn === 'open' && reportsToApp()) {
+      const { col, row } = cellAt(event);
+      // A click is not typing: like a wheel turn it does not take control; the settled click below does.
+      if (socket.sendInput(mouse.clickReport(col, row), { scroll: true })) used();
+    }
     clearTimeout(clickTimer);
     clickTimer = setTimeout(() => { if (!term.hasSelection()) claim(); }, CLICK_SETTLE_MS);
   }, true);

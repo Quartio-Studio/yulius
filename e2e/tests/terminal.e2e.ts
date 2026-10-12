@@ -262,7 +262,7 @@ test('a click on Claude Code’s output expands it, as in a native terminal; a d
   await app.open(mock('/s/studio/t/12'));
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns, read 1 file/);
   await holdStill(browser);
-  const expanded = /tax_for/;
+  const expanded = /loyalty_points/;
   const group = async () => {
     const point = await spot(browser, 'Searched for 2 patterns');
     expect(point, 'the group is on the screen').not.toBeNull();
@@ -281,10 +281,19 @@ test('a click on Claude Code’s output expands it, as in a native terminal; a d
   await clickAt(browser, await group());
   await expect(rows(browser)).not.toHaveText(expanded);
 
-  // A double-click selects a word and toggles the group once (its second click is not sent).
-  const point = await group();
-  await browser.mouse.dblclick(point.x, point.y);
+  // A double-click selects a word and toggles the group once: its first click is sent, its second
+  // (click count 2, dispatched in the page: the test mouse always presses with count 1) is not. The
+  // expanded group moved up (the transcript is bottom-aligned), so the second click aims at it again.
+  await clickAt(browser, await group());
   await expect(rows(browser)).toHaveText(expanded);
+  await browser.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y)!;
+    const at = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, detail: 2 };
+    target.dispatchEvent(new PointerEvent('pointerdown', { ...at, buttons: 1, isPrimary: true }));
+    target.dispatchEvent(new MouseEvent('mousedown', { ...at, buttons: 1 }));
+    target.dispatchEvent(new PointerEvent('pointerup', { ...at, buttons: 0, isPrimary: true }));
+    target.dispatchEvent(new MouseEvent('mouseup', { ...at, buttons: 0 }));
+  }, await group());
   await settle();
   await expect(rows(browser)).toHaveText(expanded);
 });
@@ -297,7 +306,7 @@ test('a read-only viewer’s click does not reach the program', async ({ app, br
   expect(point, 'the group is on the screen').not.toBeNull();
   await clickAt(browser, point!);
   await settle();
-  await expect(rows(browser)).not.toHaveText(/tax_for/);
+  await expect(rows(browser)).not.toHaveText(/loyalty_points/);
 });
 
 test('a click is reported in the program’s mouse encoding', async ({ app, browser }) => {
