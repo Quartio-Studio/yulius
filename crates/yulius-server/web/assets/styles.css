@@ -192,7 +192,8 @@ p { margin: 0; }
 .menu-from-top { top: 8px; }
 .menu-filter { flex: none; margin-bottom: 4px; }
 .menu-empty { padding: 4px 12px 6px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
-.menu-empty:empty { display: none; }
+/* Rendered while empty, so screen readers announce "No matches" when it is written. */
+.menu-empty:empty { padding: 0; }
 .menu-item {
   display: flex; align-items: center; gap: 12px; width: 100%; height: var(--control-md); padding: 0 12px;
   border: 0; border-radius: var(--radius-sm); background: transparent; text-align: left; cursor: pointer;

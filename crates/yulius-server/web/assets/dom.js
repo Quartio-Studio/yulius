@@ -578,7 +578,15 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     const anchorBottom = Math.min(Math.max(rect.bottom, 4), window.innerHeight - 12);
     const below = window.innerHeight - 8 - (anchorBottom + 4);
     const above = anchorTop - 4 - 8;
+    // Measured with every item shown: a filtered menu placed again must still fit once cleared.
+    const filtered = Boolean(filter && filter.value.trim());
+    if (filtered) {
+      for (const { el } of rows) el.hidden = false;
+      for (const divider of dividers) divider.hidden = false;
+      empty.textContent = '';
+    }
     const mh = menu.offsetHeight;
+    if (filtered) applyFilter();
     const up = mh > below && above > below;
     const room = up ? above : below;
     if (room < Math.min(mh, 120)) {

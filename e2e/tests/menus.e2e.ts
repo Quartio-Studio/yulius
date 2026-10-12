@@ -282,3 +282,24 @@ test('the Markdown slash menu filters too', async ({ app, browser, screen }) => 
   await filter.press('Enter');
   expect(await browser.evaluate(() => (document.querySelector('.md-block') as HTMLElement).dataset.type)).toBe('code');
 });
+
+test('a menu placed again while filtered still fits once the filter is cleared', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await app.open(mock('/s/studio', '&tasks=many'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  const filter = screen.getByRole('searchbox', 'Filter');
+  await filter.fill('checkout api');
+  await expect(screen.getByRole('menuitemradio')).toHaveCount(1);
+  await browser.evaluate(() => { (window as unknown as { __resized: boolean }).__resized = false; addEventListener('resize', () => { (window as unknown as { __resized: boolean }).__resized = true; }); });
+  await browser.setViewport({ width: 1280, height: 790 });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __resized: boolean }).__resized)).toBe(true);
+  await filter.fill('');
+  await expect(screen.getByRole('menuitemradio', /^Start now/)).toBeVisible();
+  const box = await browser.evaluate(() => {
+    const menu = document.querySelector('.menu')!.getBoundingClientRect();
+    return { top: menu.top, bottom: menu.bottom, height: innerHeight };
+  });
+  expect(box.top).toBeGreaterThanOrEqual(8);
+  expect(box.bottom).toBeLessThanOrEqual(box.height - 8);
+});

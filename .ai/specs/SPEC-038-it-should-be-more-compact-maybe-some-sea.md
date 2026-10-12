@@ -1,11 +1,11 @@
 ---
 yulius-task: 5f6c550e-a7bd-4adc-953e-8777cee33e4b
-status: draft
+status: done
 ---
 
 # SPEC-038: menus are compact and filter themselves when long
 
-Status: draft
+Status: done
 Date: 2026-10-12
 Owner: Yulius task #36
 Scope authorization: user request: "it should be more compact, maybe some search or something,
@@ -50,8 +50,10 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
 - [x] Every menu fits the window, with one-line descriptions and scrolling items
 - [x] A long menu has a filter box that narrows its items from the keyboard
 - [x] "Run after" lists tasks as one-line rows under one heading
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs, ADR and the changes log updated, delivered to dev
+- [x] Review rounds 1 and 2 in fresh sessions, findings fixed test-first
+- [x] The flaky local CI test reproduced and fixed
+- [x] Independent review round 3 approves the exact head
+- [x] Every gate green, docs, ADR and the changes log updated, delivered to dev
 
 ## Acceptance criteria
 
@@ -94,5 +96,28 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
   the tooltip moved from the item to its cut description, so screen readers do not hear it twice;
   the left edge is clamped with the final width; a disabled item's shown reason is searched. Not
   done: matching items by the header above them (no menu needs it; the user menu is short).
+- **Review round 3** (fresh session): fixed test-first: a menu placed again while filtered
+  measures its unfiltered height, so clearing the filter cannot push it past the window (major);
+  the "No matches" status stays rendered while empty, so it is announced. The third round is the
+  last by the delivery rules; its reviewer confirmed the fix on the final head.
+- **A flaky Rust test fixed on the way** (`local_ci`, `settle()`): a CI run records its end, then
+  publishes its commit status, so under load the test read "pending". Reproduced with a 300 ms
+  delay before the publish; `settle()` now also waits until no finished run's status is pending.
+  Kept in this change because it blocked the gate; it touches only the test helper.
 - **Native selects stay native**: the browser's list already has type-to-select and phone pickers;
   replacing them is a separate, larger change with no reported pain.
+
+## Evidence
+
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/menus.e2e.ts`: 18 passed (MNU-001..007,
+  the slash menu, the matching unit test, the review regressions).
+- Whole e2e suite (`npx e2e run`) at 576c714: 175 passed, 1 skipped (the model-driven agent
+  test, no key); rerun on the final head before delivery.
+- `scripts/dev ci` at 9c0784d: exit 0 (repository check, check, fmt, clippy, nextest 1173
+  passed / 16 skipped, deny, machete, doc). At 576c714 it failed once in
+  `local_ci::runs_jobs_in_parallel_publishes_statuses_and_gates_merges` ("pending" vs "failure"),
+  reproduced with a delay and fixed in 9c0784d; 20 isolated runs and 10 runs of the file passed.
+- Seen in the browser (mock, `tasks=many`, 1280×800): "Run after" opens above its chip with a
+  focused Filter and one-line rows; "check" leaves #12 Checkout API and #6 Fix flaky checkout test.
+- Not tested here: a real phone keyboard and touch screen (emulated by a height-only resize and
+  a `(pointer: coarse)` media query), and classic (non-overlay) scrollbars.

@@ -203,7 +203,8 @@ impl Fixture {
         call(&self.h.router, Method::POST, path, body, &self.alice).await
     }
 
-    /// Dispatches until no run is queued or running (the background loops do not run here).
+    /// Dispatches until no run is queued or running and every finished run's status is published
+    /// (the background loops do not run here).
     async fn settle(&self) -> BoxResult<()> {
         let deadline = tokio::time::Instant::now() + WAIT;
         loop {
