@@ -72,6 +72,24 @@ flowchart LR
   UI -->|"WS /api/shells/id/terminal"| SH
 ```
 
+## Web UI state
+
+The web UI is plain ES modules. Server state comes from the API and the UI event stream
+(`store.js`); what only one person's browser needs stays in `localStorage`: preferences (theme,
+column widths, model and effort), the notification history, and the new-task composer's drafts
+([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)). Sign-out removes the
+notification history and the drafts.
+
+```mermaid
+flowchart LR
+  C["Composer (taskview.js)"] -->|"edit, attach"| D["drafts.js (per user and sandbox)"]
+  C -->|"upload"| U["POST /api/sandboxes/:id/attachments"]
+  D -->|"debounced, on leave or hide"| LS[("localStorage yulius.draft.*")]
+  LS -->|"after a reload"| D
+  C -->|"task started: clear"| D
+  SO["Sign-out"] -->|"forget"| LS
+```
+
 ## Agent primitives
 
 Repository skills are APM primitives ([ADR-0016](decisions/0016-apm-for-agent-primitives.md),
