@@ -89,7 +89,7 @@ the request file in the sandbox home keeps the whole request
 [SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
 [SPEC-030](../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md),
 [decisions 0022](decisions/0022-native-task-attachments.md) and
-[0025](decisions/0025-attached-images-are-pasted.md)).
+[0026](decisions/0026-attached-images-are-pasted.md)).
 
 ```mermaid
 sequenceDiagram

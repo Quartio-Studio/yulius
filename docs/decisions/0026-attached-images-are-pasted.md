@@ -1,4 +1,4 @@
-# 0025. Attached images are pasted into the first message, not mentioned
+# 0026. Attached images are pasted into the first message, not mentioned
 
 ## Status
 

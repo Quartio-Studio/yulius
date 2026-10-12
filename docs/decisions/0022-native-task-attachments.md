@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; for images superseded by [0025](0025-attached-images-are-pasted.md) (an `@` mention of
+Accepted; for images superseded by [0026](0026-attached-images-are-pasted.md) (an `@` mention of
 an image reaches the model as a Read tool call, not as a pasted image). Specified in
 [SPEC-025](../../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md); replaces the
 "open each one with the Read tool" list of SPEC-014.

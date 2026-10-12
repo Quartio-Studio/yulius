@@ -85,7 +85,7 @@ not a path the session reads with a tool.
 - Images are pasted into the TUI, the only channel measured to attach an image natively. The
   alternatives were keeping `@` mentions (a Read tool call, the reported defect), a bare path in
   the CLI prompt (stays text), and Claude Code's `--file` (Files API ids only). Recorded as
-  ADR-0025, which supersedes ADR-0022's choice for images.
+  ADR-0026, which supersedes ADR-0022's choice for images.
 - Other files stay `@` mentions. That is how Claude Code attaches a text file natively; a pasted
   non-image path is only text.
 - Only a session with images gives up the CLI prompt. Typing races a person's keys and depends
@@ -100,9 +100,9 @@ not a path the session reads with a tool.
   - Typing did not stop when its attempt ended. It now checks before each paste and before
     Enter; there is no test, since the window is a few seconds of a replaced run.
   - A server restart during typing and a held first message resumed on another account lose
-    the message or its image. Rare; recorded in ADR-0025, follow-up issue #266.
+    the message or its image. Rare; recorded in ADR-0026, follow-up issue #266.
   - Mentions inside a long, collapsed paste: measured, still attached.
-  - A request starting with `/` plus an image is no longer a slash command (ADR-0025).
+  - A request starting with `/` plus an image is no longer a slash command (ADR-0026).
 - The text paste ends with a newline: the autocomplete otherwise takes the Enter when the text
   ends on a mention (measured). The alternative of mentions first is not attached after an image
   placeholder (measured).
