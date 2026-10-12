@@ -890,3 +890,64 @@ fn a_turn_interrupted_by_a_limit_resumes_without_a_typed_continue() -> TestResul
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-034: a turn the limit cut on the only subscription resumes when that subscription
+/// recovers, on the same subscription, past the limit: a native resume of the same session with
+/// no prompt, and nothing typed into the paused process (it used to get "Continue.").
+#[test]
+fn a_limit_on_the_only_subscription_resumes_past_the_limit_when_it_recovers() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        assert_eq!(
+            app.deps.store.open_pause(&id).await?.ok_or("pause")?.kind,
+            PauseKind::Limit
+        );
+
+        probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let _ = app.resume_round().await;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            attempts[1].account_id.as_ref().map(AccountId::as_str),
+            Some("a-first")
+        );
+        assert_eq!(
+            attempts[0].provider_session_id, attempts[1].provider_session_id,
+            "the same session"
+        );
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(!screen(&app, &id).contains("Continue."), "nothing typed");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
