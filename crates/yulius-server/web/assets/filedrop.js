@@ -504,10 +504,14 @@ export function attachPromptDrop(ctx, { box, prompt, label, upload, onAttach }) 
   });
 }
 
-/** The prompt text a task starts with: `text`, then the attached files' paths, one per line. */
+/**
+ * The prompt text a task starts with: `text`, then each attached file as an `@path` mention, one
+ * per line. Claude Code attaches a mentioned file itself, an image as an image, so the agent
+ * sees it without having to find and read it.
+ */
 export function withAttachments(text, attached) {
   if (!attached.length) return text;
-  return `${text}\n\nAttached files (read them by path):\n${attached.map((item) => shellQuote(item.path)).join('\n')}`;
+  return `${text}\n\n${attached.map((item) => `@${shellQuote(item.path)}`).join('\n')}`;
 }
 
 /** Uploads a file dropped on the new-task composer of a sandbox, before its task exists. */
