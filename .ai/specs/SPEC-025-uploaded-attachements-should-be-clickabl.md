@@ -41,14 +41,14 @@ content block), not as a path the agent has to open with the Read tool.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | ATT-001 | Each composer attachment chip is a button ("Open <name>"). An image opens in a preview dialog at full size (closed by Esc, × or a click outside). A text file (HTML, XML and scripts included) opens in a new tab as plain text, a PDF, audio or video as it is, anything else downloads: an attached file never runs as the Yulius site. The remove button only removes. | e2e `filedrop.e2e.ts` |
-| ATT-002 | A prompt-mode task's first message is its text followed by one mention per attached file on its own line, always quoted (`@"/path"`). A path no mention can carry (a `"` or `#`) is listed after "Open with the Read tool:" instead. An `@` line with a control character is not an attachment. | `request.rs` unit tests |
+| ATT-002 | A prompt-mode task's first message is its text followed by one mention per attached file on its own line, always quoted (`@"/path"`). A path no mention can carry (a `"` or `#`) is listed after "Open with the Read tool:" instead. An `@` line with a control character is not an attachment, and the text keeps no control character but newlines and tabs. | `request.rs` unit tests |
 | ATT-003 | A goal-mode task with attached files starts its session with a first message (the CLI prompt) that says the files belong to the task and its goal follows, then mentions each file as in ATT-002. `/goal` is typed once that turn's Stop hook arrived (at most 5 minutes later), and that Stop is not gated. Without attached files the session starts with no first message, as today. | `request.rs` unit tests; `task_done.rs` goal tests |
 | ATT-004 | The request file still lists the attached paths, saying they were given in the session's first message (open one again with the Read tool if needed). | `request.rs` unit test |
 
 ## Acceptance criteria
 
 - AC-ATT-1: clicking an image chip shows the image in a dialog; Esc closes it and the chip is still attached.
-- AC-ATT-2: a goal task created with `@/srv/shots/header.png` launches Claude Code with a prompt mentioning `@/srv/shots/header.png`, and its goal is still set.
+- AC-ATT-2: a goal task created with `@/srv/shots/header.png` launches Claude Code with a prompt mentioning `@"/srv/shots/header.png"`, and its goal is typed after that turn ended, once.
 - AC-ATT-3: a prompt-mode task's first message ends with the mention lines and has no Read-tool list.
 
 ## Plan
@@ -62,13 +62,17 @@ content block), not as a path the agent has to open with the Read tool.
 
 ## Test plan
 
-- Unit (`yulius-domain` `request.rs`): mention formatting (plain, whitespace-quoted), first message
-  of prompt mode, the goal-mode first message (`None` without files), the request file wording.
+- Unit (`yulius-domain` `request.rs`): quoted mentions, the Read-tool fallback (`"`, `#`), control
+  characters, the prompt-mode first message, the goal-mode first message (`None` without files),
+  the request file wording.
 - Integration (`crates/yulius/tests/task_done.rs`, fake agent): a goal task with an attached file
   is launched with a prompt carrying the mention (the fake harness records the launch mode in
-  `fake-launch.txt`) and its goal is still set; a goal task without files has no prompt.
+  `fake-launch.txt`) and its goal is set; a goal task without files has no prompt; with the fake
+  agent's `--session-start --opening-turn-ms 6000`, `/goal` is typed after `DONE opening`, once
+  (fails with the old quiet-output readiness).
 - Browser e2e (`e2e/tests/filedrop.e2e.ts`, mock server): clicking an image chip opens the preview
-  dialog, Esc closes it, the attachment stays; the remove button does not open the preview.
+  dialog, Esc closes it, the attachment stays; the remove button does not open the preview; a text
+  file opens in a new tab; an HTML file opens as `text/plain` and a zip downloads.
 - Manual, outside the gate: the mock-API driver against the installed Claude Code (Evidence).
 - Not covered: a live model answering about the image (needs a paid credential).
 
@@ -92,7 +96,31 @@ content block), not as a path the agent has to open with the Read tool.
 - Mentions are always quoted: Claude Code 2.1.292 reads an unquoted mention only up to its last
   letter or digit and a `#` as a line range (read from its bundle; quoted mentions verified with the
   mock API).
+- Known limit (review round 2): a person typing a draft into the terminal during the opening turn
+  still gets `/goal` typed after it, as during any goal submit. Skipping the goal instead would
+  misfire on focus and mouse reports, which count as typing today; follow-up issue #252.
+- Review: round 1 requested changes (an HTML attachment ran as a same-origin page; unquoted
+  mentions; `/goal` typed into the opening turn; control characters), all fixed test-first.
+  Round 2 approved; its minors (the opening flag's lifecycle, a held opening Stop, control
+  characters in the text, spec drift) were fixed, the draft case recorded above.
 
 ## Evidence
 
-(filled in at the end)
+- Mock-API driver (manual, scratch only, not committed): a Python HTTP server on 127.0.0.1 answering
+  `/v1/messages` with a fixed SSE reply and logging each request body; Claude Code 2.1.292 run in a
+  PTY (Python `pty`) with a scratch `HOME` (onboarding done, the folder trusted, the fake API key
+  approved), `ANTHROPIC_BASE_URL` set to the mock and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`;
+  the screen rendered with `pyte`. Results:
+  - `claude "describe this\n@/abs/red.png"`: the first user message holds an `image` block
+    (`image/png`); with `@/abs/notes.txt` as well, its content arrives as a Read result.
+  - `claude 'look\n@"/abs/sp ace/my shot.png"'`: an `image` block.
+  - A first message with mentions, then `/goal …` typed while that turn ran (6 s mock delay): the
+    goal is queued and set after the turn.
+  - An image path pasted into `/goal …`: no image block; the condition reads `…[Image #1]`.
+  - An image path pasted (bracketed paste) as a message: `[Image #1]` and an `image` block.
+  - An `@path` pasted at the end of the input box: the file autocomplete takes the Enter.
+- `cargo test -p yulius-domain --lib request`: 8 passed.
+- `cargo test -p yulius --test task_done`: 8 passed (both new goal tests included).
+- `npx e2e run tests/filedrop.e2e.ts`: 9 passed.
+- Screenshots of the chips and of the image preview in the mock UI (scratch), checked by eye.
+- Not tested here: a live model describing an attached image (no paid credential).
