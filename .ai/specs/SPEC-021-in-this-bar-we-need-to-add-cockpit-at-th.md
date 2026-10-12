@@ -1,11 +1,11 @@
 ---
 yulius-task: 245b6d60-1c11-48f6-a647-e3da81ae89b0
-status: in-progress
+status: done
 ---
 
 # SPEC-021: Cockpit, every user's permanent plain Claude session
 
-Status: in progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #19
 Scope authorization: user request: "In this bar we need to add "Cockpit" at the top - this should
@@ -75,11 +75,11 @@ flowchart LR
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A user's plain Cockpit session starts and resumes on a pool subscription (API, harness plan, tests)
-- [ ] The Cockpit is permanent and private: no close or rename, adopted after restart, reaped and resumed (tests)
-- [ ] Cockpit first in the sidebar opens its terminal (page, mock, e2e)
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] A user's plain Cockpit session starts and resumes on a pool subscription (API, harness plan, tests)
+- [x] The Cockpit is permanent and private: no close or rename, adopted after restart, reaped and resumed (tests)
+- [x] Cockpit first in the sidebar opens its terminal (page, mock, e2e)
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -128,3 +128,25 @@ flowchart LR
   Not changed: workspace git credentials of a Cockpit (and of every shell) adopted after a
   restart are not valid any more until it starts again, an existing shell limitation filed as #242;
   files dropped on a Cockpit go when its process ends, like a terminal's.
+
+## Evidence
+
+- `scripts/dev ci` (repository contracts, script tests, check, fmt, clippy `-D warnings`, nextest,
+  doctests, deny, machete, doc) at the review-round-1 head: exit 0, 1158 tests run, 1158 passed,
+  16 skipped.
+- `cargo test -p yulius --test cockpit`: 8 passed — one Cockpit for two concurrent opens, plain
+  launch (no flags, token only in the environment, config and trust settled, no bypass), not
+  listed/renamed/closed, not counted against terminals, no DELETE (405), private (404 for
+  another writer, 403 for a reader), attachments for the owner only, resume of the newest
+  conversation after `/exit` and after the idle reaper, a conversation that cannot be resumed
+  skipped next time, adoption as the Cockpit after a restart, 409 without a subscription or a
+  clone, 429 without capacity, a failed start after the shell was prepared leaving nothing, the
+  contained config paths (`/home/alice/.claude`, prepared and searched on the host).
+  The tests failed before the code (missing API; 404 on drop; the broken resume repeated).
+- `cargo test -p yulius-harness --test launch`: 7 passed, including `plan_cockpit`.
+- e2e (`npx e2e run`, mock): 32 files passed, 1 skipped (the live-model `agent.e2e.ts`); 134
+  tests passed, including `cockpit.e2e.ts` (4) and `navigation.e2e.ts` (Cockpit first). Without
+  the navigation entry the Cockpit test fails.
+- Not verified here: a real `claude` binary in a contained production sandbox (the tests use a
+  fake `claude` script and the real detached ptyhost; the contained case is checked on the
+  planned paths, not with bwrap).
