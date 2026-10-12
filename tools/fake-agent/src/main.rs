@@ -133,6 +133,8 @@ struct Options {
     hooks: Option<PathBuf>,
     goal_background: Option<u64>,
     goal_agent: Option<u64>,
+    goal_continue_ms: Option<u64>,
+    goal_continue_verdict: bool,
     goal_delay_ms: u64,
     opening_turn_ms: Option<u64>,
     echo_turn_ms: u64,
@@ -164,6 +166,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         hooks: None,
         goal_background: None,
         goal_agent: None,
+        goal_continue_ms: None,
+        goal_continue_verdict: false,
         goal_delay_ms: 0,
         opening_turn_ms: None,
         echo_turn_ms: 0,
@@ -218,6 +222,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 let seconds: u64 = parse_number(&flag, args.next())?;
                 options.goal_agent = Some(seconds.min(MAX_SLEEP_SECONDS));
             }
+            "--goal-continue-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.goal_continue_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
+            }
+            "--goal-continue-verdict" => options.goal_continue_verdict = true,
             "--goal-delay-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_delay_ms = ms.min(MAX_GOAL_DELAY_MS);
@@ -502,6 +511,28 @@ impl Transcript {
             "content": [{"type": "text", "text": INTERRUPT_LINE}]});
         self.last_uuid = Some(uuid);
         self.append(&[user])
+    }
+
+    /// An assistant line that is not a turn's end (a tool call), like Claude Code writes while
+    /// the agent works.
+    fn tool_use(&mut self) -> io::Result<()> {
+        self.turns += 1;
+        let n = self.turns;
+        let uuid = format!("fake-{}-{n}-tool", self.session_id);
+        let mut assistant = self.claude_envelope("assistant", &uuid, &rfc3339(now_ms()));
+        assistant["message"] = json!({
+            "id": format!("msg_fake_{n}"),
+            "type": "message",
+            "role": "assistant",
+            "model": "fake-model",
+            "content": [{"type": "tool_use", "id": format!("toolu_fake_{n}"),
+                "name": "Bash", "input": {"command": "true"}}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 8, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 6}
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[assistant])
     }
 
     /// A `goal_status` attachment shaped like Claude Code 2.1.292's.
@@ -926,6 +957,35 @@ fn goal_turn(
     // Claude Code's goal evaluator is a Stop hook: its record follows the turn's Stop hooks.
     if let Some(hooks) = hooks {
         hooks.stop()?;
+    }
+    // A turn the stop did not end: the evaluator says "not met" (`--goal-continue-verdict`) or
+    // another Stop hook continues it, and the agent works on with no new prompt.
+    if let Some(ms) = options.goal_continue_ms {
+        let write = |f: &dyn Fn(&mut Transcript) -> io::Result<()>| -> io::Result<()> {
+            if let Some(transcript) = transcript
+                && let Ok(mut t) = transcript.lock()
+            {
+                f(&mut t)?;
+            }
+            Ok(())
+        };
+        if options.goal_continue_verdict {
+            write(&|t| {
+                t.goal_status(json!({"type": "goal_status", "met": false,
+                    "condition": condition, "reason": "Not yet: the merge is pending."}))
+            })?;
+            say("GOAL NOT MET")?;
+            std::thread::sleep(Duration::from_millis(ms));
+            write(&|t| t.tool_use())?;
+        } else {
+            say("STOP CONTINUED")?;
+            std::thread::sleep(Duration::from_millis(1_000));
+            write(&|t| t.tool_use())?;
+            std::thread::sleep(Duration::from_millis(ms));
+        }
+        if let Some(hooks) = hooks {
+            hooks.stop()?;
+        }
     }
     if let Some(transcript) = transcript
         && let Ok(mut t) = transcript.lock()

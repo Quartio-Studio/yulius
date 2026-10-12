@@ -89,6 +89,36 @@ impl TranscriptFacts {
     }
 }
 
+/// What assistant work seen in the transcript (`at`) does to a running task's activity
+/// (STA-003, STA-005): after the last clean stop (`last_stop_ms`) it shows the session goes on, so
+/// an idle task is Working again (a Stop hook continued the turn, a wake-up started one); and
+/// after the notice that flagged it (`notice_ms`, 0 = none) it shows the person's answer arrived.
+/// Work without a time is not trusted: a line read late must not reopen a finished turn.
+#[must_use]
+pub fn activity_on_work(
+    current: Option<Activity>,
+    at: Option<yulius_domain::time::Timestamp>,
+    last_stop_ms: i64,
+    notice_ms: i64,
+) -> Option<Activity> {
+    let after = |ms: i64| at.is_some_and(|at| at.0 > ms);
+    match current {
+        Some(Activity::Waiting | Activity::Done) if after(last_stop_ms) => Some(Activity::Working),
+        Some(Activity::NeedsAttention) if notice_ms > 0 && after(notice_ms) => {
+            Some(Activity::Working)
+        }
+        _ => None,
+    }
+}
+
+/// What a goal verdict of "not met" does (STA-004): the session carries on, so an idle task is
+/// Working again. Claude Code's evaluator is a Stop hook that runs after Yulius's own, which has
+/// already made the task idle.
+#[must_use]
+pub fn activity_on_goal_not_met(current: Option<Activity>) -> Option<Activity> {
+    matches!(current, Some(Activity::Waiting | Activity::Done)).then_some(Activity::Working)
+}
+
 /// Whether a `UserPromptSubmit` prompt is one a person (or Yulius) typed, not a wake-up Claude
 /// Code generated itself (task notifications and other tagged prompts start with `<`).
 #[must_use]
@@ -173,8 +203,56 @@ impl App {
             .store(false, Ordering::SeqCst);
     }
 
+    /// The agent produced work (an assistant line that is not a turn's end, at `at`): when the
+    /// task does not say so, it is working (STA-003, STA-005, [`activity_on_work`]). Cheap while a
+    /// turn is known to be in progress and no notice flags the task.
+    pub(crate) async fn agent_worked(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        at: Option<yulius_domain::time::Timestamp>,
+    ) {
+        let runtime = self.runtime(task_id);
+        let notice_ms = runtime.notice_attention_ms.load(Ordering::SeqCst);
+        if notice_ms == 0 && runtime.turn_in_progress() {
+            return;
+        }
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        if task.status != TaskStatus::Running {
+            return;
+        }
+        let last_stop_ms = runtime.last_stop_ms.load(Ordering::SeqCst);
+        match activity_on_work(task.activity, at, last_stop_ms, notice_ms) {
+            Some(next) => self.resume_working(&task, next).await,
+            // Working already: the next lines need no look at the store.
+            None if task.activity == Some(Activity::Working) => runtime.start_turn(self.now()),
+            None => {}
+        }
+    }
+
+    /// The session goes on although the task read idle or flagged: it is `next` (Working).
+    async fn resume_working(self: &Arc<Self>, task: &crate::model::TaskRecord, next: Activity) {
+        tracing::info!(task = %task.id, was = ?task.activity, "the agent works on: the task is working");
+        let runtime = self.runtime(&task.id);
+        runtime.background_agents.store(0, Ordering::SeqCst);
+        runtime.start_turn(self.now());
+        if let Err(err) = self.set_task_activity(task, next).await {
+            tracing::warn!(task = %task.id, error = %err, "could not update the task's activity");
+        }
+    }
+
     /// Claude Code recorded the session goal's state.
     pub(crate) async fn goal_observed(self: &Arc<Self>, task_id: &TaskId, outcome: GoalOutcome) {
+        if outcome == GoalOutcome::NotMet
+            && let Ok(Some(task)) = self.deps.store.task(task_id).await
+            && task.status == TaskStatus::Running
+            && let Some(next) = activity_on_goal_not_met(task.activity)
+        {
+            // The evaluator sent the agent back to work after Yulius's own Stop hook ended the
+            // turn (STA-004).
+            self.resume_working(&task, next).await;
+        }
         let achieved = outcome == GoalOutcome::Met;
         self.runtime(task_id)
             .goal_submitted
@@ -492,6 +570,64 @@ mod tests {
             window_minutes: None,
         }]);
         assert_eq!(limit, TranscriptFacts::default());
+    }
+
+    /// STA-003, STA-005: assistant work reopens an idle task only when it is newer than the last
+    /// stop, and takes back a notice's flag only when it is newer than the notice.
+    #[test]
+    fn work_after_the_stop_or_the_notice_makes_the_task_working() {
+        use Activity as A;
+        let at = |ms| Some(Timestamp(ms));
+        // Idle tasks: a stop at 100 ms.
+        for idle in [A::Waiting, A::Done] {
+            assert_eq!(
+                activity_on_work(Some(idle), at(101), 100, 0),
+                Some(A::Working)
+            );
+            assert_eq!(
+                activity_on_work(Some(idle), at(100), 100, 0),
+                None,
+                "same instant: old turn"
+            );
+            assert_eq!(
+                activity_on_work(Some(idle), at(40), 100, 0),
+                None,
+                "read late"
+            );
+            assert_eq!(
+                activity_on_work(Some(idle), None, 100, 0),
+                None,
+                "no time, no trust"
+            );
+        }
+        // Flagged by a notice at 50 ms: the answer arrived.
+        assert_eq!(
+            activity_on_work(Some(A::NeedsAttention), at(60), 0, 50),
+            Some(A::Working)
+        );
+        assert_eq!(
+            activity_on_work(Some(A::NeedsAttention), at(50), 0, 50),
+            None
+        );
+        // Flagged by anything else (no notice recorded): not the work's to take back.
+        assert_eq!(
+            activity_on_work(Some(A::NeedsAttention), at(60), 0, 0),
+            None
+        );
+        // Already working, or not known: nothing to change.
+        assert_eq!(activity_on_work(Some(A::Working), at(60), 0, 0), None);
+        assert_eq!(activity_on_work(None, at(60), 0, 0), None);
+    }
+
+    /// STA-004: a goal "not met" makes an idle task Working; it leaves the others alone.
+    #[test]
+    fn a_goal_not_met_makes_an_idle_task_working() {
+        use Activity as A;
+        assert_eq!(activity_on_goal_not_met(Some(A::Waiting)), Some(A::Working));
+        assert_eq!(activity_on_goal_not_met(Some(A::Done)), Some(A::Working));
+        assert_eq!(activity_on_goal_not_met(Some(A::Working)), None);
+        assert_eq!(activity_on_goal_not_met(Some(A::NeedsAttention)), None);
+        assert_eq!(activity_on_goal_not_met(None), None);
     }
 
     #[test]

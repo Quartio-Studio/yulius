@@ -154,6 +154,10 @@ impl App {
                 if notification_needs_a_person(input) {
                     self.set_task_activity(&ctx.task, Activity::NeedsAttention)
                         .await?;
+                    // The agent's next work shows the person answered (STA-003).
+                    self.runtime(&ctx.task.id)
+                        .notice_attention_ms
+                        .store(self.now().0.max(1), Ordering::SeqCst);
                 }
                 Ok(HookReply::Output(HookOutput::default()))
             }
@@ -234,6 +238,11 @@ impl App {
     ) -> AppResult<()> {
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
             return Ok(());
+        }
+        if activity != Activity::NeedsAttention {
+            self.runtime(&task.id)
+                .notice_attention_ms
+                .store(0, Ordering::SeqCst);
         }
         self.deps
             .store
@@ -961,13 +970,25 @@ impl RepoDocs {
     }
 }
 
-/// Whether a `Notification` hook asks a person to act (a permission prompt or a question for
-/// the user) rather than reminding that the agent waits for input or reporting a sign-in.
+/// The `notification_type`s of Claude Code 2.1.292 that ask a person to act: a permission prompt
+/// (also of a worker), a question for the user (also a URL to open) and an agent that needs
+/// input. The others report something (the idle reminder, a sign-in, a background agent that
+/// finished, a push notification, a quota resume, a refusal fallback) and ask nobody: they are
+/// frequent and arrive while the agent works, so a type this list does not know is not one
+/// either (STA-002, SPEC-032).
+const NOTICES_ASKING_A_PERSON: [&str; 5] = [
+    "permission_prompt",
+    "worker_permission_prompt",
+    "elicitation_dialog",
+    "elicitation_url_dialog",
+    "agent_needs_input",
+];
+
+/// Whether a `Notification` hook asks a person to act ([`NOTICES_ASKING_A_PERSON`]).
 /// Without `notification_type` (older Claude Code) the idle reminder is known by its text.
 fn notification_needs_a_person(input: &HookInput) -> bool {
     match input.notification_type.as_deref() {
-        Some("idle_prompt" | "auth_success") => false,
-        Some(_) => true,
+        Some(kind) => NOTICES_ASKING_A_PERSON.contains(&kind),
         None => !input
             .message
             .as_deref()

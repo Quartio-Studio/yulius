@@ -656,6 +656,49 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
     Ok(())
 }
 
+/// STA-004, STA-005 (SPEC-032, task #24 between 15:55:22 and 15:55:30): Yulius's Stop hook ends
+/// the goal turn (the task is idle), then Claude Code sends the agent on: the evaluator's "not
+/// met" verdict, or another Stop hook that continues the turn. The task is Working while the
+/// agent goes on, and Done once its goal is achieved.
+#[test]
+fn a_stop_the_session_goes_on_from_does_not_leave_the_task_waiting() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let rt = runtime()?;
+    for (verdict, marker) in [(true, "GOAL NOT MET"), (false, "STOP CONTINUED")] {
+        let (_dir, data) = data_dir()?;
+        rt.block_on(async {
+            let agent = FakeAgentOptions {
+                transcript: true,
+                hooks: true,
+                goal_continue_ms: Some(6_000),
+                goal_continue_verdict: verdict,
+                ..FakeAgentOptions::default()
+            };
+            let (app, _) = start(&data, &fake, agent, 0).await?;
+            let (sandbox, user) = seed(&app, &data).await?;
+            let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+            wait_for(marker, Duration::from_secs(90), || {
+                screen_contains(&app, &id, marker)
+            })
+            .await?;
+            // Well before the agent's next record (the verdict case: 6 s), the task works.
+            wait_for(
+                "Working while the session goes on",
+                Duration::from_secs(4),
+                || async { activity(&app, &id).await == Some(Activity::Working) },
+            )
+            .await?;
+            wait_for("Done", Duration::from_secs(60), || async {
+                activity(&app, &id).await == Some(Activity::Done)
+            })
+            .await?;
+            stop(&app, &id).await
+        })?;
+    }
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// TSK-014 recovery: a restart replays the transcripts of reattached runs. A Done task stays Done
 /// (a replayed prompt used to put it back to Working), and a goal achieved while Yulius was down
 /// (its Stop hook unanswered) makes that task Done.
