@@ -90,9 +90,9 @@ event", rather than a misleading empty-list assertion. No production code or con
 - Fix the test, not the product: the event-after-store ordering is intended (see Design).
 - No separate failing unit test: the race is timing-dependent and cannot be forced
   deterministically without changing production code; the load reproduction stands in.
-- A different, load-sensitive test (`wiring::jev::tests::a_slow_answer_times_out_within_the_deadline`,
-  a 2 s wall-clock bound) failed once in a gate run made while the host load average was 20 to 28;
-  it passes alone and on rerun. It is out of scope here.
+- `wiring::jev::tests::a_slow_answer_times_out_within_the_deadline` (a 2 s wall-clock bound that
+  included building the client) failed once in a gate run at host load average 20 to 28. It was
+  first left out, then fixed in this PR when flaky tests began blocking every merge (FLK-004).
 - Review (fresh session) found no blocking problems. Open, not traced: two concurrent
   `publish_task` calls for one task could interleave and deliver a stale event after `closed`.
   The test would still pass (it stops at the first `closed` last-seen), and none of the load runs
