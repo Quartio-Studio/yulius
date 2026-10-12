@@ -12,6 +12,7 @@ use support::{
 };
 use yulius_app::model::TaskOrigin;
 use yulius_app::ports::store::TaskStore;
+use yulius_app::ports::store_ext::AutomationStore;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 
@@ -186,6 +187,10 @@ async fn an_agent_whose_creator_lost_access_changes_no_automation() -> TestResul
         .fetch_add(h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
     let refused = mcp_tool(&h, "tok-agent", "automation_create", daily).await?;
     assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        tool_text(&refused).to_string().contains("write access"),
+        "refused for its access: {refused}"
+    );
     let refused = mcp_tool(
         &h,
         "tok-agent",
@@ -194,6 +199,17 @@ async fn an_agent_whose_creator_lost_access_changes_no_automation() -> TestResul
     )
     .await?;
     assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        tool_text(&refused).to_string().contains("write access"),
+        "refused for its access: {refused}"
+    );
+    let stored = h.store.automation(&id).await?.ok_or("automation")?;
+    assert!(stored.enabled, "the refused update changed nothing");
+    assert_eq!(
+        h.store.automations(&SandboxId::parse("s1")?).await?.len(),
+        1,
+        "the refused create added nothing"
+    );
     Ok(())
 }
 

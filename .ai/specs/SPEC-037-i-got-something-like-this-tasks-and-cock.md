@@ -1,11 +1,11 @@
 ---
 yulius-task: 078576a3-bcd3-4546-8c85-ee0bd5d4c210
-status: in-progress
+status: done
 ---
 
 # SPEC-037: Tasks and the Cockpit create tasks and automations
 
-Status: in progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #35
 Scope authorization: user request: "I got something like this. Tasks and cockpit should be able to
@@ -100,8 +100,8 @@ flowchart LR
 - [x] The Cockpit is served the management tools under its own token
 - [x] The Cockpit launches with the Yulius MCP server
 - [x] Docs, ADR and architecture describe the managing Cockpit
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Test plan
 
@@ -161,3 +161,37 @@ flowchart LR
   capabilities, filed as follow-up issue #275.
 - Cockpits already running when the server is updated keep running without the tools until they
   are started again ("Start again", `/exit`, or the idle stop).
+- Review round 1 (fresh session, 799f762) approved with minor findings, all fixed in 1d8a897:
+  task agents' `automation_create`/`automation_update` did not recheck the creator's access
+  (now `manage_authority`, test-first: the new test failed before), wrong evidence files, missing
+  tests (disabled owner or creator, bearer accepted after a restart, `created_via`), the
+  read-only allowlist tied to the served tools by a test, small style and doc fixes. Round 2
+  (1d8a897) approved; its nits (two stale SPEC-021 lines, refusal assertions that did not check
+  why) are fixed. The second authority check on a Cockpit's creating calls stays: it is cheap
+  (cached access) and keeps every creating tool safe whoever calls it.
+- The full gate's first run here failed on `rustc` killed by SIGKILL. The reviewer's build in a
+  tmpfs target directory and this one exhausted memory on a host without swap. Not a code
+  failure: the rerun with nothing else building passed.
+
+## Evidence
+
+- Measured before the design (Claude Code 2.1.292, a local stub HTTP server): `claude
+  --mcp-config '{"mcpServers":{"yt":{"type":"http","url":"http://127.0.0.1:20117/mcp",
+  "headers":{"Authorization":"Bearer ${XYZ_TOK}"}}}}' -p hi` with `XYZ_TOK=secret123` and an
+  invalid OAuth token: the stub received `Authorization: Bearer secret123`. No model was called
+  (401 from the API).
+- Test-first: the `task_create` integration tests failed with the tool's dispatch removed (2 of 4;
+  the refusal tests were then tightened to fail for the wrong reason too). The
+  automation-access test failed before `manage_authority` (the update was accepted).
+- `cargo test -p yulius --test manage_tools`: 7 passed. `cargo test -p yulius --test cockpit`:
+  12 passed. `cargo test -p yulius-harness --test launch`: 9 passed. `cargo test -p yulius-app
+  --lib`: 143 passed (window unit test, Cockpit tool set). `cargo test -p yulius --test
+  automations --test mcp_coordination --test sessions`: passed.
+- `scripts/dev ci` on 1d8a897: exit 0. Repository checks, fmt, clippy `-D warnings`, nextest
+  (1186 run, 1186 passed, 16 skipped), doctests, cargo-deny, machete, docs.
+- Review: round 1 approved 799f762 (minor findings, fixed), round 2 approved 1d8a897 (nits,
+  fixed), round 3 on the final head.
+- Not tested here: a live model choosing `task_create` in a real Cockpit (needs a paid
+  credential), and a Cockpit contained by the sandbox isolation reaching `/mcp` (it uses the
+  same internal URL as contained task agents, which already reach it).
+- Follow-up: #275 (stop, archive or delete tasks and delete automations through MCP).

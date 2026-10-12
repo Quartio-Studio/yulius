@@ -89,12 +89,13 @@ flowchart LR
 - Another user of the same sandbox gets a different Cockpit and cannot attach to this one.
 - After `/exit` (or a server restart, or a day unwatched) opening the Cockpit continues the
   latest conversation.
-- No Yulius hook, MCP server or briefing reaches the Cockpit session.
+- No Yulius hook or briefing reaches the Cockpit session; its only Yulius MCP server is the
+  management one of SPEC-037.
 
 ## Test plan
 
-- Unit: `yulius-harness` `plan_cockpit` argv/env (no settings, MCP, hooks, bypass; token only
-  in secret env; `--resume` when given).
+- Unit: `yulius-harness` `plan_cockpit` argv/env (no settings, hooks, bypass, MCP other than
+  SPEC-037's Yulius server; tokens only in secret env; `--resume` when given).
 - Integration (`crates/yulius/tests/cockpit.rs`, real ptyhost, a fake `claude` script that
   prints its argv and whether the token is set): start, reuse, concurrency, privacy, read
   user refused, not listed/closable/renamable, resume after exit with the newest conversation,
