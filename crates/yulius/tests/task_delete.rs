@@ -136,3 +136,15 @@ async fn tasks_run_claude_code_only() -> TestResult {
     assert_eq!(settings.status, StatusCode::NOT_FOUND);
     Ok(())
 }
+
+/// SPEC-039: closing a finished task for its deletion when its session already ended by itself
+/// (between the Done check and the close) is not a conflict: the task rests and can go.
+#[tokio::test]
+async fn closing_a_task_whose_session_already_ended_is_not_a_conflict() -> TestResult {
+    let h = harness()?;
+    seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    h.app.close_task_and_wait(&TaskId::parse("t1")?).await?;
+    Ok(())
+}
