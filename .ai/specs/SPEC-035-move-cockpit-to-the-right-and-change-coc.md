@@ -140,8 +140,12 @@ flowchart LR
 - **Review round 4** (fresh session, narrow, APPROVE at 4277747 with minors): the wish to focus
   from opening the Agent now ends when its first screen shows, so a recovery long after (a reboot)
   leaves the keyboard on the page (mock `rebootCockpits()`); the slow-start guard got its test
-  (mock `&cockpit=slow`); SPEC-029 NAV-001 notes the move. Not changed: ADR-0025's title ("Six
+  (mock `holdCockpit`, a held answer, not a delay); SPEC-029 NAV-001 notes the move. Not changed: ADR-0025's title ("Six
   sandbox pages") is history, explained by its status note.
+- **Confirmation of the round 4 fixes** (fresh session, APPROVE at f1ce280 with test minors): the
+  two focus tests now wait until the terminal is shown (when a focus request lands) and the
+  slow-start test holds the answer instead of relying on a delay; a comment says how a refused
+  session keeps the keyboard.
 
 ## Evidence
 

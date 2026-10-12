@@ -202,11 +202,22 @@ test('an Agent recovered right after opening it has the keyboard', async ({ app,
 });
 
 // Review round 4: a slow start leaves the keyboard where the person put it in the meantime.
+type Holding = Window & { __yuliusMock: { holdCockpit?: Promise<void>; rebootCockpits(): void }; __release?: () => void };
+
 test('an Agent that starts slowly does not take the keyboard from the page', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&cockpit=slow'));
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdCockpit = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
   await screen.getByRole('button', 'Show Agent').click();
+  await expect(screen.getByRole('status')).toHaveText('Starting your Agent…');
+  // While it starts, the person goes back to the page.
   await screen.getByRole('textbox', 'Task prompt').click();
+  await browser.evaluate(() => (window as unknown as Holding).__release?.());
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+  // Shown (revealed) is when a terminal asked to focus would take the keyboard.
+  await expect(browser.locator(agentTerminal)).toBeVisible();
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
 });
 
@@ -221,9 +232,10 @@ test('an Agent recovered long after it was opened leaves the keyboard on the pag
   await expect(terminal).toHaveText(/Good question/);
   await browser.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
-  await browser.evaluate(() => (window as unknown as { __yuliusMock: { rebootCockpits(): void } }).__yuliusMock.rebootCockpits());
-  // A new session (the old conversation's output is gone from the screen).
+  await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.rebootCockpits());
+  // A new session (the old conversation's output is gone from the screen), shown.
   await expect(terminal).not.toHaveText(/Good question/);
   await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  await expect(terminal).toBeVisible();
   await expect.poll(() => browser.evaluate(() => Boolean(document.activeElement?.closest('.agent-term')))).toBe(false);
 });

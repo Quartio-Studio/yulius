@@ -69,8 +69,9 @@ export function createAgentView(ctx, sandbox) {
     recovering = true;
     try {
       const shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit`);
-      // The keyboard stays where it is: in the Agent if it was there (or was going there when the
-      // session turned out to be gone), else with the page beside it.
+      // The keyboard stays where it is: in the Agent if it was there (a refused session's terminal
+      // takes it when shown, before it is refused), or was going there when the connection dropped
+      // before the first screen; else with the page beside it.
       const keep = el.contains(document.activeElement) || (asked.focus && stayed(asked.from));
       if (alive && current && shell.id !== current.id) mount(shell, { focus: keep, from: asked.from });
     } catch {
