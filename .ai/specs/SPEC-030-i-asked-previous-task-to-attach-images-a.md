@@ -33,8 +33,10 @@ not a path the session reads with a tool.
   path into an image: a bare path stays text. SPEC-025's evidence checked that an `image` block was
   sent, not how; its tests check the launch argument only, so nothing caught the difference.
 - Claude Code takes a pasted path as an image when it matches `/\.(png|jpe?g|gif|webp)$/i` (read
-  from its bundle). Text in the same input can still carry `@"/path"` mentions of other files:
-  measured, the text file's content is attached and the Enter is not taken by the autocomplete.
+  from its bundle). Text in the same input can still carry `@"/path"` mentions of other files.
+  When the input ends on a mention, though, the file autocomplete opens and takes the Enter. It
+  replaced the mention with a bare path and nothing was sent. A newline after the text avoids
+  this (measured 4 of 4). Mentions placed right after `[Image #1]` are not attached.
 - Pastes written in one burst lose the image (measured): each paste has to be taken before the
   next one is written.
 
@@ -43,7 +45,7 @@ not a path the session reads with a tool.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | PIMG-001 | A task's attached file is an image when its path ends in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` (any case). Without images the first message is unchanged (SPEC-025 ATT-002/ATT-003). | `request.rs` unit tests |
-| PIMG-002 | A fresh session of a task with attached images starts with no CLI prompt. Once its TUI reads input, Yulius pastes each image's path as its own bracketed paste, waiting after each until the screen shows `[Image #N]` or the output settled (at most 5 s). It then pastes the text and sends Enter. In prompt mode the text is the request plus a quoted mention of each other file. In goal mode it is the SPEC-025 attachments message, with images left out of the mentions. | `request.rs` unit tests; `task_done.rs` tests |
+| PIMG-002 | A fresh session of a task with attached images starts with no CLI prompt. Once its TUI reads input, Yulius pastes each image's path as its own bracketed paste, waiting after each until the screen shows `[Image #N]` or the output settled (at most 5 s). It then pastes the text, ending in a newline so the cursor is never on a mention, and sends Enter. In prompt mode the text is the request plus a quoted mention of each other file. In goal mode it is the SPEC-025 attachments message, with images left out of the mentions. | `request.rs` unit tests; `task_done.rs` tests |
 | PIMG-003 | In goal mode, `/goal` is typed after the Stop hook of that typed first message (SPEC-025 ATT-003), and that Stop is not gated. | `task_done.rs` goal test |
 | PIMG-004 | No control character reaches a paste: attachment paths with one are not attachments, and the text keeps only newlines and tabs (as SPEC-025). | `request.rs` unit test |
 
@@ -90,6 +92,9 @@ not a path the session reads with a tool.
   after a change). It never waits on a fixed sleep and gives up after 5 s. Without that wait a
   burst of pastes loses the image (measured).
 - The first message is typed once, never retried: a retried paste could send the request twice.
+- The text paste ends with a newline: the autocomplete otherwise takes the Enter when the text
+  ends on a mention (measured). The alternative of mentions first is not attached after an image
+  placeholder (measured).
 
 ## Evidence
 
@@ -104,3 +109,8 @@ not a path the session reads with a tool.
     `look at this\nsecond line\n\n@"/abs/notes.txt"`, Enter (0.3 s apart): text
     `[Image #1] [Image #2]look at this…`, two `image` blocks, and the notes file's content attached.
   - The same pastes and Enter in one write: the image is lost.
+  - The goal-mode text ending on `@"/abs/notes.txt"`, Enter after a 0.6 s pause (and the waits
+    on `[Image #N]`): the autocomplete took the Enter and nothing was sent. With a newline after
+    the mention (2 to 2.5 s pause): sent, the image block and the file's content attached, 4 of 4.
+  - An image alone, then Enter: `[Image #1]` and an `image` block. An image then `Make it blue\n`:
+    `[Image #1]Make it blue` and an `image` block.
