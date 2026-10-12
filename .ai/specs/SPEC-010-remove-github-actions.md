@@ -1,11 +1,11 @@
 ---
 yulius-task: 03b375b6-03e3-42f4-965a-366b746a07ff
-status: in-progress
+status: done
 ---
 
 # SPEC-010: Remove GitHub Actions from this repository
 
-Status: in progress
+Status: done
 Date: 2026-10-12
 Owner: Yulius task #17
 Scope authorization: user request (issue #184, step 4; F 2026-10-10: "deleting GitHub Actions completely")
@@ -56,8 +56,8 @@ nothing depended on the removed files.
 
 ## Plan
 
-- [ ] Workflows, actionlint config and ruleset checks removed
-- [ ] Docs, SPEC-002 and changes log updated; `scripts/dev ci` green
+- [x] Workflows, actionlint config and ruleset checks removed
+- [x] Docs, SPEC-002 and changes log updated; `scripts/dev ci` green
 
 ## Decisions
 
