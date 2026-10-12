@@ -257,7 +257,7 @@ impl CiStore for SqliteStore {
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
                     Err(AppError::Conflict(
-                        "another CI run of this sandbox is running".into(),
+                        "a constraint refused the CI run's new state".into(),
                     ))
                 }
                 Err(err) => Err(db(err)),
@@ -470,11 +470,12 @@ mod tests {
                 .transition_ci_run("r1", &[RunState::Queued], RunState::Running, &start)
                 .await?
         );
-        // A second running run in the same sandbox is refused by the index.
-        let second = store
-            .transition_ci_run("r2", &[RunState::Queued], RunState::Running, &start)
-            .await;
-        assert!(matches!(second, Err(AppError::Conflict(_))));
+        // A second run of the sandbox may run too (lanes, SPEC-021 CI-106).
+        assert!(
+            store
+                .transition_ci_run("r2", &[RunState::Queued], RunState::Running, &start)
+                .await?
+        );
         // CAS: not queued any more.
         assert!(
             !store

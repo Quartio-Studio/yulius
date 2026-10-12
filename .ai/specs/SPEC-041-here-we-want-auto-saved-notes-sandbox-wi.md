@@ -76,7 +76,7 @@ without a reload. When two people type at the same time, neither text is lost wi
 
 ## Design
 
-**Storage.** Migration `0013_notes.sql` creates `notes(scope TEXT PRIMARY KEY, body TEXT NOT NULL,
+**Storage.** Migration `0014_notes.sql` creates `notes(scope TEXT PRIMARY KEY, body TEXT NOT NULL,
 revision INTEGER NOT NULL, updated_by TEXT NOT NULL, updated_at INTEGER NOT NULL)`. `scope` is `team` or
 `sandbox:<sid>`. `NoteStore` (in `store_ext.rs`) has two methods. `note(scope)` returns the stored
 note, if any. `put_note(scope, body, base_revision, by, at)` is a compare-and-set in one
@@ -199,6 +199,9 @@ sequenceDiagram
   `7e7ae29` with minors (fixed in `a38b810`), then approved `cdb8dd8` (the fixes, the spec and the
   merge of `origin/dev`). Accepted nit: on a very slow run the undo test's poll can pass on the
   first save's retry instead of the check; it then still passes rightly but proves less.
+- After #238 merged into dev (migration `0013_ci_lanes.sql`), dev was merged in again; the notes
+  migration became `0014_notes.sql`, applied after it. `cargo nextest` on `yulius-store`, `notes::`
+  and `local_ci::` passed (41 tests) on the merge.
 - Not tested here: two real browsers against a real server (the mock simulates the teammate),
   a real browser's `keepalive` request surviving a closed tab, and Safari.
 
