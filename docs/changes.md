@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Notes in the tools rail (SPEC-041, ADR-0029, task #40): a notepad for this sandbox and one for
+  the team, below Shell. They save by themselves while people type, with no Save button. Everyone
+  who can see the sandbox reads its notes, writers edit them, and everyone signed in shares the
+  team's. A teammate's edit appears without a reload. When two people type at once, the later save
+  is refused and that person picks Keep mine or Use theirs. API: `GET/PUT /api/notes` and
+  `/api/sandboxes/{sid}/notes`, event `note.updated`.
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
