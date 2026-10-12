@@ -1,12 +1,11 @@
-//! Task records, views, archive/restore, feedback and user messages (SPEC-001 §5.4, ANL-002,
+//! Task records, views, archive/restore, feedback (SPEC-001 §5.4, ANL-002,
 //! UI-006). Process lifecycle lives in the supervisor.
 
 use std::sync::Arc;
 
 use yulius_contracts::api::common::UserRef;
 use yulius_contracts::api::tasks::{
-    AttemptView, FeedbackView, MessageFrom, MessageView, Metrics, StepProgress, StepView,
-    SwitchView, TaskDetail, TaskSummary,
+    AttemptView, FeedbackView, Metrics, StepProgress, StepView, SwitchView, TaskDetail, TaskSummary,
 };
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::Action;
@@ -15,7 +14,7 @@ use yulius_domain::task::{Activity, TaskStatus};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::{FeedbackRecord, InboxEntry, MetricsRecord, StepRecord, TaskRecord};
+use crate::model::{FeedbackRecord, MetricsRecord, StepRecord, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
 
 /// Maximum title length derived from a prompt.
@@ -100,7 +99,6 @@ impl App {
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
         let steps = store.steps(&task.id).await?;
-        let unread = store.unread_count(&task.id).await?;
         let account_label = match store.live_attempt(&task.id).await? {
             Some(attempt) => match attempt.account_id {
                 Some(id) => store.account(&id).await?.map(|a| a.label),
@@ -125,7 +123,6 @@ impl App {
             created_at: rfc3339(task.created_at),
             updated_at: rfc3339(task.updated_at),
             steps: progress(&steps),
-            unread_messages: unread,
             archived: task.archived_at.is_some(),
             account_label,
             mode: task.mode.as_str().to_owned(),
@@ -423,50 +420,6 @@ impl App {
                 at: self.now(),
             })
             .await
-    }
-
-    /// Converts a stored message to its API view.
-    pub(crate) async fn message_view(&self, entry: &InboxEntry) -> AppResult<MessageView> {
-        let m = &entry.message;
-        let title = match (&m.from_task, &m.from_user) {
-            (Some(t), _) => match self.deps.store.task(t).await? {
-                Some(task) => format!("#{} {}", task.number, task.title),
-                None => "task".into(),
-            },
-            (None, Some(u)) => self.login_of(u).await,
-            (None, None) => "Yulius".into(),
-        };
-        let login = match &m.from_user {
-            Some(u) => Some(self.login_of(u).await),
-            None => None,
-        };
-        Ok(MessageView {
-            id: m.id.to_string(),
-            from: MessageFrom {
-                task_id: m.from_task.as_ref().map(ToString::to_string),
-                login,
-                title,
-            },
-            to_task_id: m.to_task.as_ref().map(ToString::to_string),
-            kind: m.kind.clone(),
-            subject: m.subject.clone(),
-            body: m.body.clone(),
-            created_at: rfc3339(m.created_at),
-            read: entry.read,
-        })
-    }
-
-    /// Messages involving a task.
-    ///
-    /// # Errors
-    /// Access errors.
-    pub async fn task_messages(&self, ctx: &AuthContext, id: &str) -> AppResult<Vec<MessageView>> {
-        let task = self.load_task(ctx, id, Action::View).await?;
-        let mut out = Vec::new();
-        for entry in self.deps.store.task_messages(&task.id, 200).await? {
-            out.push(self.message_view(&entry).await?);
-        }
-        Ok(out)
     }
 
     /// Whether a status counts toward "active" lists.

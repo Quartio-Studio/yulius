@@ -26,4 +26,5 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0020](0020-cockpit-as-a-plain-shell-session.md): The Cockpit is a plain Claude Code session on the shell runtime
 - [0021](0021-composer-drafts-in-the-browser.md): New-task drafts live in the browser, per user and sandbox
 - [0022](0022-native-task-attachments.md): Attached files reach Claude Code as `@path` mentions in its first message
-- [0023](0023-default-model-and-effort.md): Tasks default to Opus 5.5 at high effort
+- [0023](0023-no-messages-until-delivery-is-reliable.md): No messages until their delivery is reliable
+- [0024](0024-default-model-and-effort.md): Tasks default to Opus 5.5 at high effort

@@ -1,19 +1,17 @@
-//! Agent-side coordination: task awareness, messages and steps (SPEC-001 COM-001..003,
+//! Agent-side coordination: task awareness, scopes and steps (SPEC-001 COM-001, COM-003,
 //! STP-001/002). Callers are agents authenticated by their run's task token.
 
 use serde_json::{Value, json};
-use yulius_domain::ids::{MessageId, StepId, TaskId};
+use yulius_domain::ids::{StepId, TaskId};
 
 use crate::auth::rfc3339;
 use crate::context::App;
 use crate::discipline::{step_by_title, step_states};
 use crate::error::{AppError, AppResult};
-use crate::model::{AttemptRecord, MessageRecord, StepRecord, TaskRecord};
+use crate::model::{AttemptRecord, StepRecord, TaskRecord};
 use crate::tasks::progress;
 use yulius_domain::steps::{self as rules, By, PlannedStep, StepStatus};
 
-/// Message kinds agents may send.
-pub const MESSAGE_KINDS: [&str; 3] = ["info", "question", "request"];
 /// Step statuses.
 pub const STEP_STATUSES: [&str; 5] = ["pending", "in_progress", "done", "skipped", "blocked"];
 /// Maximum steps per task (a plan of similar-effort steps, STP-006).
@@ -169,123 +167,6 @@ impl App {
             .ok_or(AppError::NotFound)?;
         let context = self.briefing(&task, ctx.attempt.harness).await?;
         Ok(json!({ "context": context }))
-    }
-
-    /// `message_send`: the agent's message to the people using Yulius (`to="people"`, COM-005,
-    /// #46): shown in this task's Messages and in their notifications. Messages to other tasks
-    /// are gone (COM-002 withdrawn, MSG-001); notices come from Yulius itself (`tell_task`).
-    ///
-    /// # Errors
-    /// `Invalid` input.
-    pub async fn tool_message_send(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
-        if args.get("to").and_then(Value::as_str) != Some("people") {
-            return Err(AppError::Invalid(
-                "message_send only tells or asks the people using Yulius: pass to=\"people\" (messages to other tasks are not supported)".into(),
-            ));
-        }
-        let body = str_arg(args, "body")?.trim();
-        if body.is_empty() || body.len() > 16 * 1024 {
-            return Err(AppError::Invalid("body must be 1 byte to 16 KiB".into()));
-        }
-        let kind = args.get("kind").and_then(Value::as_str).unwrap_or("info");
-        if !MESSAGE_KINDS.contains(&kind) {
-            return Err(AppError::Invalid(format!(
-                "kind must be one of {MESSAGE_KINDS:?}"
-            )));
-        }
-        let subject: String = args
-            .get("subject")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .chars()
-            .take(200)
-            .collect();
-        let record = MessageRecord {
-            id: MessageId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
-            sandbox_id: ctx.task.sandbox_id.clone(),
-            from_task: Some(ctx.task.id.clone()),
-            from_user: None,
-            to_task: None,
-            kind: kind.to_owned(),
-            subject,
-            body: body.to_owned(),
-            created_at: self.now(),
-        };
-        self.deps.store.insert_message(&record, &[]).await?;
-        // No task receives it: the people see it in this task's thread and notifications.
-        let entry = crate::model::InboxEntry {
-            message: record.clone(),
-            delivered: false,
-            read: false,
-        };
-        if let Ok(view) = self.message_view(&entry).await {
-            self.events.publish(
-                Some(ctx.task.sandbox_id.clone()),
-                false,
-                yulius_contracts::events::UiEvent::Message {
-                    task_id: ctx.task.id.to_string(),
-                    message: view,
-                },
-            );
-        }
-        Ok(
-            json!({"sent": true, "message_id": record.id.as_str(), "to": "people", "shown": "in this task's Messages and in people's notifications"}),
-        )
-    }
-
-    /// A notice from Yulius itself to one task (a `request`: it reaches the agent at its next
-    /// turn end, and an agent waiting at its prompt is woken for it). Used to keep delivery
-    /// going without a person (F 2026-10-11: "the agent is autonomous").
-    pub async fn tell_task(&self, task: &crate::model::TaskRecord, subject: &str, body: String) {
-        let Ok(id) = MessageId::parse(&self.deps.crypto.new_id()) else {
-            return;
-        };
-        let message = MessageRecord {
-            id,
-            sandbox_id: task.sandbox_id.clone(),
-            from_task: None,
-            from_user: None,
-            to_task: Some(task.id.clone()),
-            kind: "request".into(),
-            subject: subject.to_owned(),
-            body,
-            created_at: self.now(),
-        };
-        match self
-            .deps
-            .store
-            .insert_message(&message, std::slice::from_ref(&task.id))
-            .await
-        {
-            Ok(()) => self.notify_message(&task.id).await,
-            Err(err) => tracing::warn!(error = %err, task = %task.id, "could not tell the task"),
-        }
-    }
-
-    pub(crate) async fn notify_message(&self, task: &TaskId) {
-        if let Some(waker) = self.message_waker.get() {
-            waker.message_arrived(task).await;
-        }
-    }
-
-    /// `messages_inbox`: messages to the agent; marks them read.
-    ///
-    /// # Errors
-    /// Store failures.
-    pub async fn tool_messages_inbox(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
-        let unread_only = args
-            .get("unread_only")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        let entries = self.deps.store.inbox(&ctx.task.id, unread_only, 50).await?;
-        let mut out = Vec::new();
-        for e in &entries {
-            let v = self.message_view(e).await?;
-            out.push(json!({"id": v.id, "from": v.from.title, "from_task_id": v.from.task_id, "kind": v.kind, "subject": v.subject, "body": v.body, "at": v.created_at}));
-        }
-        self.deps.store.mark_read(&ctx.task.id, self.now()).await?;
-        self.publish_task(&ctx.task.id).await;
-        Ok(json!({"messages": out}))
     }
 
     /// `steps_set`: replaces the task's plan (STP-001, STP-006): 1 to [`MAX_STEPS`] unique steps,
@@ -446,11 +327,4 @@ impl App {
         );
         self.publish_task(&task.id).await;
     }
-}
-
-/// Supervisor callback used to wake idle tasks when messages arrive (SPEC-001 COM-005).
-#[async_trait::async_trait]
-pub trait MessageWaker: Send + Sync {
-    /// A message was stored for `task`.
-    async fn message_arrived(&self, task: &TaskId);
 }

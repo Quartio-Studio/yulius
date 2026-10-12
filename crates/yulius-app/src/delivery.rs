@@ -834,17 +834,6 @@ impl Observed {
     }
 }
 
-/// What an agent does after Yulius opened its pull request (F 2026-10-11: "agent doesn't ask
-/// for help from the user, it handles ci, creates issues, pr and merge to dev").
-const DELIVER_ON_YOUR_OWN: &str = "Carry on without asking anyone. `ci_status` shows the gate on \
-the exact head; fix a failure test-first and commit (Yulius pushes it to the pull request); keep \
-the branch up to date with the integration branch. Get the independent review of the exact head \
-and call `delivery_merge`: on green it merges at once, while the checks still run it arms the \
-merge and Yulius merges when they pass. Then deploy and verify the environments after the \
-integration branch where the profile has them (`delivery_deploy`), and end with your summary. \
-Never promote unless the task asks for it. To wait, start `yulius wait` with run_in_background \
-and end your turn; Yulius also tells you when the checks finish.";
-
 impl App {
     async fn dlv_sandbox_of(&self, task: &TaskRecord) -> AppResult<SandboxRecord> {
         self.deps
@@ -2002,20 +1991,7 @@ impl App {
     /// retried for the same head.
     pub async fn auto_open_pr(&self, task_id: &TaskId) {
         match self.try_auto_open_pr(task_id).await {
-            Ok(Some(done)) => {
-                self.runtime(task_id).hub.notice(done.clone());
-                // The agent's turn has ended; its work has not: it delivers on its own.
-                if done.starts_with("Yulius opened")
-                    && let Ok(Some(task)) = self.deps.store.task(task_id).await
-                {
-                    self.tell_task(
-                        &task,
-                        "Your pull request is open: deliver it",
-                        format!("{done}\n\n{DELIVER_ON_YOUR_OWN}"),
-                    )
-                    .await;
-                }
-            }
+            Ok(Some(done)) => self.runtime(task_id).hub.notice(done),
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(task = %task_id, error = %err, "automatic pull request failed");
@@ -2247,7 +2223,7 @@ impl App {
                     .dlv_observe(sandbox, &task, &profile, Some(&token))
                     .await
                 {
-                    self.tell_checks(&task, &observed).await;
+                    self.retry_errored_checks(&task, &observed).await;
                     if let Ok(Some(after)) = store.delivery(&task.id).await
                         && after.stage != before
                     {
@@ -2258,143 +2234,36 @@ impl App {
         }
     }
 
-    /// Tells the agent, once per pull request head and result, that its checks finished: green
-    /// means merge now, red means fix it (F 2026-10-11: agents deliver without a person). A pull
-    /// request that conflicts with its base comes first: GitHub runs no checks on it, so without
-    /// this the agent would wait for checks that never come.
-    /// When the latest Yulius CI run at `sha` ended in an error (it could not run), its reason
-    /// and whether it was queued again now: an errored run is retried once by itself.
-    async fn ci_errored_at(&self, task: &TaskRecord, sha: &str) -> Option<(String, bool)> {
-        let runs = self
-            .deps
-            .store
-            .ci_runs_for_sha(&task.sandbox_id, sha)
-            .await
-            .ok()?;
-        let latest = runs.first()?;
-        if latest.state != yulius_domain::ci::RunState::Error {
-            return None;
-        }
-        let reason = latest
-            .reason
-            .clone()
-            .unwrap_or_else(|| "an infrastructure error".to_owned());
-        // Retried once: two errored runs at the same commit wait for a person or the agent.
+    /// Queues the latest Yulius CI run at `sha` again when it ended in an error (it could not
+    /// run): retried once by itself; two errored runs at one commit wait for the agent.
+    async fn retry_errored_run(&self, task: &TaskRecord, sha: &str) {
+        let Ok(runs) = self.deps.store.ci_runs_for_sha(&task.sandbox_id, sha).await else {
+            return;
+        };
+        let Some(latest) = runs.first() else {
+            return;
+        };
         let errored = runs
             .iter()
             .filter(|r| r.state == yulius_domain::ci::RunState::Error)
             .count();
-        let mut requeued = false;
-        if errored < 2
+        if latest.state == yulius_domain::ci::RunState::Error
+            && errored < 2
             && let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await
         {
-            requeued = self.ci_rerun(&sandbox, &latest.id, "yulius").await.is_ok();
+            let _ = self.ci_rerun(&sandbox, &latest.id, "yulius").await;
         }
-        Some((reason, requeued || runs.iter().any(|r| r.state.is_active())))
     }
 
-    async fn tell_checks(&self, task: &TaskRecord, observed: &Observed) {
+    /// An errored Yulius CI run at an open pull request's head (it could not run) is queued
+    /// again once by itself (SPEC-020); `yulius wait` and `ci_status` say the rest.
+    async fn retry_errored_checks(&self, task: &TaskRecord, observed: &Observed) {
         let Some(pull) = observed.pr.as_ref().filter(|p| is_open(p)) else {
             return;
         };
-        let conflicts = pull.mergeable == Some(false);
-        let errored = if observed.checks == ChecksState::Failure && !conflicts {
-            self.ci_errored_at(task, &pull.head_sha).await
-        } else {
-            None
-        };
-        let (subject, body) = match observed.checks {
-            _ if conflicts => (
-                "Your pull request conflicts with its base: resolve it",
-                format!(
-                    "Pull request #{} conflicts with `{}` at {}, so its checks do not run. Merge \
-                     `origin/{}` into the branch, resolve the conflicts keeping both sides' \
-                     intent, run the gates and commit: Yulius pushes it and the checks run \
-                     again. Do not ask anyone.",
-                    pull.number,
-                    pull.base,
-                    pull.head_sha.chars().take(9).collect::<String>(),
-                    pull.base
-                ),
-            ),
-            // F 2026-10-11: GitHub refuses a pull request behind its base under a strict
-            // ruleset ("required status checks are expected"), and an agent read that as a
-            // missing permission and stopped.
-            ChecksState::Success if pull.behind => (
-                "Your pull request is behind its base: update it",
-                format!(
-                    "The checks of pull request #{} passed at {}, but `{}` moved on and the \
-                     repository requires an up-to-date branch, so GitHub refuses the merge. Merge \
-                     `origin/{}` into the branch, run the gates and commit: Yulius pushes it, the \
-                     checks run again and Yulius tells you when they pass. Do not ask anyone.",
-                    pull.number,
-                    pull.head_sha.chars().take(9).collect::<String>(),
-                    pull.base,
-                    pull.base
-                ),
-            ),
-            ChecksState::Success => (
-                "Your pull request's checks are green: merge it",
-                format!(
-                    "The checks of pull request #{} passed at {}. Get the independent review of \
-                     that exact head if you have not, then merge it with `delivery_merge`, \
-                     deploy and verify the environments after the integration branch where the \
-                     profile has them, and end with your summary. Never promote unless the task \
-                     asks for it. Do not ask anyone.",
-                    pull.number,
-                    pull.head_sha.chars().take(9).collect::<String>()
-                ),
-            ),
-            // A run that could not run (disk quota, a lost runner, a timeout) is not the code's
-            // fault: it is queued again once by itself, and the agent is told so instead of
-            // "fix the cause test-first" (F 2026-10-12: agents chased infrastructure errors).
-            ChecksState::Failure if errored.is_some() => {
-                let (reason, requeued) = errored.unwrap_or_default();
-                (
-                    "Your pull request's checks could not run",
-                    format!(
-                        "The checks of pull request #{} could not run at {} ({reason}). That is \
-                         not your code. {} Wait with `yulius wait`; do not change code for it.",
-                        pull.number,
-                        pull.head_sha.chars().take(9).collect::<String>(),
-                        if requeued {
-                            "Yulius queued them again."
-                        } else {
-                            "Run them again with `ci_rerun` once the cause is gone."
-                        }
-                    ),
-                )
-            }
-            ChecksState::Failure => (
-                "Your pull request's checks failed: fix them",
-                format!(
-                    "The checks of pull request #{} failed at {}. Read why (`ci_status`, the \
-                     run's log), fix the cause test-first and commit: Yulius pushes it to the \
-                     pull request and the checks run again. Do not ask anyone.",
-                    pull.number,
-                    pull.head_sha.chars().take(9).collect::<String>()
-                ),
-            ),
-            _ => return,
-        };
-        let key = if conflicts {
-            format!("{}:conflicts", pull.head_sha)
-        } else if pull.behind && observed.checks == ChecksState::Success {
-            format!("{}:behind", pull.head_sha)
-        } else {
-            format!("{}:{:?}", pull.head_sha, observed.checks)
-        };
-        let runtime = self.runtime(&task.id);
-        {
-            let Ok(mut told) = runtime.checks_told.lock() else {
-                return;
-            };
-            if told.as_deref() == Some(key.as_str()) {
-                return;
-            }
-            *told = Some(key);
+        if observed.checks == ChecksState::Failure && pull.mergeable != Some(false) {
+            self.retry_errored_run(task, &pull.head_sha).await;
         }
-        self.tell_task(task, subject, body).await;
     }
 
     // ---------------------------------------------------------------- merge

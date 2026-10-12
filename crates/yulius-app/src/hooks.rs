@@ -1,4 +1,4 @@
-//! Agent hook events (SPEC-002 §7.5, §7.6): briefing, message digests, the Stop discipline gate,
+//! Agent hook events (SPEC-002 §7.5, §7.6): briefing, the Stop discipline gate,
 //! activity tracking, and the turn boundary where the subscription pool switches or pauses a
 //! task (SPEC-002 ADR-17). A pause holds the hook ([`HookReply::Hold`]): the agent waits at its
 //! boundary and is never told anything.
@@ -21,7 +21,7 @@ use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
-use crate::model::{InboxEntry, PauseKind, TaskMode, TaskRecord};
+use crate::model::{PauseKind, TaskMode, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
 
 /// Consecutive Stop-hook blocks per turn before the task needs attention (AC-DSC-3).
@@ -30,8 +30,6 @@ pub const MAX_GATE_BLOCKS: u32 = 3;
 const MAX_DOC_BYTES: u64 = 256 * 1024;
 /// Largest number of decision records read.
 const MAX_DECISION_FILES: usize = 200;
-/// Largest message digest injected into a turn.
-const MAX_DIGEST_BYTES: usize = 8 * 1024;
 
 /// Joins a repository-relative path, refusing absolute paths and `..` components.
 fn repo_path(root: &Path, relative: &str) -> Option<PathBuf> {
@@ -88,36 +86,6 @@ fn repo_doc_exists(root: &Path, relative: &str) -> bool {
             .is_some_and(|(root, path)| path.starts_with(root))
 }
 
-fn digest(entries: &[InboxEntry]) -> String {
-    let mut out = format!(
-        "You have {} new Yulius notice(s). Read them in full with the `messages_inbox` tool.\n",
-        entries.len()
-    );
-    for entry in entries {
-        let m = &entry.message;
-        let from = if m.from_user.is_some() {
-            "the user".to_owned()
-        } else {
-            m.from_task
-                .as_ref()
-                .map_or_else(|| "Yulius".to_owned(), |t| format!("task {t}"))
-        };
-        let body: String = m.body.chars().take(400).collect();
-        let line = format!(
-            "- [{}] from {from}: {} — {}\n",
-            m.kind,
-            m.subject,
-            body.replace('\n', " ")
-        );
-        if out.len() + line.len() > MAX_DIGEST_BYTES {
-            out.push_str("- (more messages in the inbox)\n");
-            break;
-        }
-        out.push_str(&line);
-    }
-    out
-}
-
 /// What a hook call answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookReply {
@@ -140,13 +108,6 @@ fn hold() -> HookReply {
 /// 256-colour text for the status line (the colours the web mock shows, HRN-005).
 fn colour(code: u8, text: &str) -> String {
     format!("\x1b[38;5;{code}m{text}\x1b[39m")
-}
-
-fn is_urgent(entry: &InboxEntry) -> bool {
-    !entry.read
-        && !entry.delivered
-        && (entry.message.from_user.is_some()
-            || matches!(entry.message.kind.as_str(), "question" | "request"))
 }
 
 impl App {
@@ -377,7 +338,6 @@ impl App {
                     .collect(),
             })
             .collect();
-        let unread = store.unread_count(&task.id).await?;
         let decisions = repo.decision_files();
         let input = BriefingInput {
             project_name: format!("{}/{}", sandbox.repo_owner, sandbox.repo_name),
@@ -401,7 +361,6 @@ impl App {
             changes_head: repo.changes.as_deref(),
             recent_changes,
             parallel_tasks,
-            unread_messages: usize::try_from(unread).unwrap_or(usize::MAX),
             port_base: sandbox.port_base,
             port_count: sandbox.port_count,
             repo_instructions: repo.instructions.clone(),
@@ -432,10 +391,6 @@ impl App {
         input: &HookInput,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
-        // Whatever was in the input box was submitted, a wake-up included.
-        self.runtime(&ctx.task.id)
-            .wake_typed_ms
-            .store(0, Ordering::SeqCst);
         // A prompt held for capacity stays held while its pause lasts (also across a restart).
         let refreshed;
         let ctx = match store.open_pause(&ctx.task.id).await? {
@@ -456,7 +411,7 @@ impl App {
             None => ctx,
         };
         // Scope discipline (TSK-013): a held prompt never reaches the agent, so nothing below
-        // (capacity, activity, message digests) happens for it. A prompt typed into a task held
+        // (capacity, activity) happens for it. A prompt typed into a task held
         // at its turn end (paused for capacity) is checked like any other.
         if let Some(held) = self.screen_prompt(ctx, input).await? {
             return Ok(HookReply::Output(held));
@@ -495,41 +450,12 @@ impl App {
             store.update_task(&ctx.task.id, &update, self.now()).await?;
         }
         self.set_task_activity(&ctx.task, Activity::Working).await?;
-        let pending: Vec<InboxEntry> = store
-            .inbox(&ctx.task.id, true, 50)
-            .await?
-            .into_iter()
-            .filter(|e| !e.delivered)
-            .collect();
-        if pending.is_empty() {
-            return Ok(HookReply::Output(HookOutput::default()));
-        }
-        store.mark_delivered(&ctx.task.id, self.now()).await?;
-        Ok(HookReply::Output(HookOutput::additional_context(
-            events::USER_PROMPT_SUBMIT,
-            digest(&pending),
-        )))
+        Ok(HookReply::Output(HookOutput::default()))
     }
 
-    /// The discipline gate's reasons at a turn end (urgent unread messages, the spec gate) and
-    /// whether urgent messages are among them.
-    async fn stop_reasons(&self, task: &TaskRecord) -> AppResult<(Vec<String>, bool)> {
-        let mut reasons = Vec::new();
-        let urgent: Vec<InboxEntry> = self
-            .deps
-            .store
-            .inbox(&task.id, true, 50)
-            .await?
-            .into_iter()
-            .filter(is_urgent)
-            .collect();
-        if !urgent.is_empty() {
-            reasons.push(digest(&urgent));
-        }
-        if let Some(problem) = self.spec_gate(task).await? {
-            reasons.push(problem);
-        }
-        Ok((reasons, !urgent.is_empty()))
+    /// The discipline gate's reasons at a turn end (the spec gate).
+    async fn stop_reasons(&self, task: &TaskRecord) -> AppResult<Vec<String>> {
+        Ok(self.spec_gate(task).await?.into_iter().collect())
     }
 
     /// The prompt for a session resumed on another subscription after a held turn: the gate's
@@ -539,12 +465,9 @@ impl App {
         if task.gate_blocks >= MAX_GATE_BLOCKS {
             return None;
         }
-        let (reasons, urgent) = self.stop_reasons(task).await.ok()?;
+        let reasons = self.stop_reasons(task).await.ok()?;
         if reasons.is_empty() {
             return None;
-        }
-        if urgent {
-            let _ = self.deps.store.mark_delivered(&task.id, self.now()).await;
         }
         Some(reasons.join("\n\n"))
     }
@@ -580,7 +503,7 @@ impl App {
         if let Err(err) = self.sync_steps_from_spec(task).await {
             tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
         }
-        let (reasons, has_urgent) = self.stop_reasons(task).await?;
+        let reasons = self.stop_reasons(task).await?;
         let gate_continues = !reasons.is_empty() && task.gate_blocks < MAX_GATE_BLOCKS;
         // Would the agent work on after this boundary (a gate block, or its goal)?
         let continues = gate_continues || task.mode == TaskMode::Goal;
@@ -604,9 +527,6 @@ impl App {
                 // The agent waits here while it moves; the resumed session gets the gate's
                 // reasons as its prompt when the gate would have kept it working.
                 let continuation = gate_continues.then(|| reasons.join("\n\n"));
-                if continuation.is_some() && has_urgent {
-                    store.mark_delivered(&task.id, self.now()).await?;
-                }
                 let app = Arc::clone(self);
                 let task_id = task.id.clone();
                 let reason = format!("{reason:?}");
@@ -677,9 +597,6 @@ impl App {
             ..TaskFieldUpdate::default()
         };
         store.update_task(&task.id, &update, self.now()).await?;
-        if has_urgent {
-            store.mark_delivered(&task.id, self.now()).await?;
-        }
         self.publish_task(&task.id).await;
         Ok(HookReply::Output(HookOutput::block(reasons.join("\n\n"))))
     }

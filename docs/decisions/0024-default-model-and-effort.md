@@ -1,4 +1,4 @@
-# 0023. Tasks default to Opus 5.5 at high effort
+# 0024. Tasks default to Opus 5.5 at high effort
 
 ## Status
 

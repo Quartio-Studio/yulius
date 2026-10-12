@@ -1,16 +1,15 @@
-// Right rail (Browser, Editor, Shell, Messages) and its resizable panel; each tool keeps the width
+// Right rail (Browser, Editor, Shell) and its resizable panel; each tool keeps the width
 // its user gave it (UI-044). The whole rail is hidden by default (F 2026-10-07) and shown with the
 // top-bar Tools toggle, remembered per browser; opening a panel from a link shows it.
 // Sandbox-scoped panels stay alive while hidden so the browser stream, editor and shell sessions
 // are not torn down on every toggle. A panel can be maximized over the center.
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, errorToast, placeholder, singleFlight, keepFocus, closableTabKeys } from './dom.js';
+import { h, icon, iconButton, setChildren, errorToast, singleFlight, closableTabKeys } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { createBrowserPanel } from './browser.js';
 import { createEditorView } from './editorview.js';
-import { messageView } from './actions.js';
 import { allows } from './status.js';
 import { readJson, writeJson } from './store.js';
 import { createSplitter, layoutPrefs } from './splitter.js';
@@ -28,7 +27,6 @@ const KINDS = [
   ['browser', 'globe', 'Browser'],
   ['editor', 'code', 'Editor'],
   ['shell', 'terminal', 'Shell'],
-  ['messages', 'mail', 'Messages'],
 ];
 
 /** Create the rail + panel. setContext(sandbox, task) on navigation; open(kind, opts). */
@@ -39,7 +37,7 @@ export function createPanelHost(ctx) {
   for (const [kind, iconName, label] of KINDS) {
     // Named, not icon-only, so a newcomer sees what each tool is (phones show icons only).
     const button = h('button', { type: 'button', class: 'btn-icon rail-btn', 'aria-label': label, title: label, 'aria-pressed': 'false', onClick: () => toggle(kind) }, icon(iconName, { size: 20 }), h('span', { class: 'rail-label' }, label));
-    const dot = h('span', { class: kind === 'messages' ? 'rail-badge' : 'rail-dot', hidden: true });
+    const dot = h('span', { class: 'rail-dot', hidden: true });
     button.append(dot);
     buttons.set(kind, button);
     badges.set(kind, dot);
@@ -144,7 +142,6 @@ export function createPanelHost(ctx) {
   ctx.refitPanel = refit;
 
   function viewKey(k) {
-    if (k === 'messages') return task ? `messages:${task.id}` : 'messages:none';
     return sandbox ? `${k}:${sandbox.id}` : `${k}:none`;
   }
 
@@ -153,7 +150,6 @@ export function createPanelHost(ctx) {
     if (k === 'browser') return createBrowserPanel(ctx, sandbox);
     if (k === 'editor') return createEditorView(ctx, sandbox, () => task);
     if (k === 'shell') return createShellView(ctx, sandbox, () => task);
-    if (k === 'messages') return task ? createMessagesView(ctx, sandbox, task) : simpleView(h('div', { class: 'panel-msg' }, 'Select a task to see its messages.'));
     return simpleView(h('div'));
   }
 
@@ -169,7 +165,7 @@ export function createPanelHost(ctx) {
     }
     for (const [otherKey, other] of views) other.wrapper.hidden = otherKey !== key;
     const label = KINDS.find(([name]) => name === k)[2];
-    title.textContent = k === 'messages' && task ? `Messages · #${task.number}` : label;
+    title.textContent = label;
     setChildren(headExtra, view.headExtra ? view.headExtra() : null);
     if (!railVisible) setRailVisible(true);
     if (panel.hidden) {
@@ -218,23 +214,17 @@ export function createPanelHost(ctx) {
   }
 
   function updateBadges() {
-    const unread = task && task.unread_messages ? task.unread_messages : 0;
-    const msgBadge = badges.get('messages');
-    msgBadge.hidden = !unread;
-    msgBadge.textContent = unread > 99 ? '99+' : unread ? String(unread) : '';
     const requests = sandbox ? ctx.store.state.actionRequests.get(sandbox.id) : null;
     badges.get('browser').hidden = !(requests && requests.size);
-    if (ctx.onToolsAttention) ctx.onToolsAttention(Boolean(requests && requests.size) || Boolean(unread));
+    if (ctx.onToolsAttention) ctx.onToolsAttention(Boolean(requests && requests.size));
     buttons.get('browser').title = requests && requests.size ? 'Browser — an agent needs your action' : 'Browser';
     buttons.get('browser').setAttribute('aria-label', requests && requests.size ? 'Browser, an agent needs your action' : 'Browser');
-    buttons.get('messages').setAttribute('aria-label', unread ? `Messages, ${unread} unread` : 'Messages');
     const write = sandbox && allows(sandbox.access, 'write');
     for (const k of ['browser', 'editor', 'shell']) {
       const button = buttons.get(k);
       button.disabled = !sandbox;
       button.classList.toggle('readonly', Boolean(sandbox) && !write);
     }
-    buttons.get('messages').disabled = !sandbox;
   }
 
   const offs = [
@@ -259,7 +249,6 @@ export function createPanelHost(ctx) {
       task = nextTask;
       if (sandboxChanged) destroyWhere(() => true);
       else if (taskChanged) {
-        destroyWhere((key) => key.startsWith('messages:'));
         for (const [key, view] of views) if (key.startsWith('editor:') && view.taskChanged) view.taskChanged();
       }
       if (!sandbox && !panel.hidden) close();
@@ -552,69 +541,6 @@ function createShellView(ctx, sandbox, getTask) {
       clearTimeout(syncTimer);
       for (const shell of shells) if (shell.view) shell.view.destroy();
     },
-  };
-}
-
-// ---------------------------------------------------------------- messages
-
-/**
- * A task's messages (COM-005, F 2026-10-10, F 2026-10-12): notices from Yulius (older rows from other
- * tasks still show) and its agent's messages to people. There is no composer: people talk to the agent in its
- * terminal, so a message where the agent asks people something offers "Reply in the terminal".
- */
-function createMessagesView(ctx, sandbox, task) {
-  const list = h('div', { class: 'msg-list', role: 'log', 'aria-live': 'polite', 'aria-label': 'Messages' }, placeholder('Loading messages…', 'loading'));
-  const el = h('div', { class: 'panel-view' }, list);
-  const messages = new Map();
-  const myLogin = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null;
-  // The agent asks people (message_send to="people"): the answer is typed in its
-  // terminal, like every other word to the agent.
-  const asksPeople = (m) => Boolean(m.from && m.from.task_id === task.id && !m.to_task_id && (m.kind === 'question' || m.kind === 'request'));
-  const replyable = allows(sandbox.access, 'write') && Boolean(ctx.replyInTerminal);
-  const view = (m) => messageView(ctx, m, myLogin, replyable && asksPeople(m) ? { onReply: () => ctx.replyInTerminal(task) } : {});
-
-  // New messages are appended, not the whole list rebuilt: focus and reading position stay, and the
-  // log announces only what is new.
-  const rendered = new Map(); // message id → element
-  function render() {
-    const sorted = [...messages.values()].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-    if (sorted.length === 0) { rendered.clear(); setChildren(list, placeholder('No messages yet. Notices about this task show here, and so do its agent’s messages to people. To talk to the agent, type in its terminal.')); return; }
-    const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 24;
-    const fresh = sorted.filter((m) => !rendered.has(m.id));
-    const last = sorted.filter((m) => rendered.has(m.id)).pop();
-    if (rendered.size && fresh.every((m) => !last || String(m.created_at) >= String(last.created_at))) {
-      for (const m of fresh) { const el = view(m); rendered.set(m.id, el); list.append(el); }
-    } else {
-      rendered.clear();
-      keepFocus(list, () => setChildren(list, sorted.map((m) => { const el = view(m); rendered.set(m.id, el); return el; })));
-    }
-    if (atBottom) list.scrollTop = list.scrollHeight;
-  }
-
-  async function load() {
-    try {
-      const data = await ctx.api.get(`/api/tasks/${enc(task.id)}/messages`);
-      messages.clear();
-      for (const m of Array.isArray(data) ? data : []) messages.set(m.id, m);
-      render();
-      list.scrollTop = list.scrollHeight;
-    } catch (error) {
-      rendered.clear();
-      setChildren(list, placeholder(error.message, 'error'));
-    }
-  }
-
-  const off = [
-    ctx.store.on('message', ({ task_id: taskId, message }) => {
-      const involved = taskId === task.id || (message && (message.to_task_id === task.id || (message.from && message.from.task_id === task.id)));
-      if (involved && message && message.id) { messages.set(message.id, message); render(); }
-    }),
-    ctx.store.on('resync', load),
-  ];
-  load();
-  return {
-    el,
-    destroy() { off.forEach((fn) => fn()); },
   };
 }
 

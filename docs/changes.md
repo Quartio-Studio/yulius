@@ -9,6 +9,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.
+- Messages are gone for now (SPEC-028, ADR-0023; task #26): no `message_send` or `messages_inbox`,
+  no stored notices, notice digest or "unread messages" stop reason, nothing typed into an idle
+  session, and no Messages panel, unread counts, message notifications or
+  `GET /api/tasks/{tid}/messages`. Agents learn about their checks, delivery and armed merges from
+  `yulius wait` (which now says how an armed merge ended), `ci_status` and `delivery_status`. The
+  stored messages stay as history. A `yulius wait` already running when the server updates exits
+  with "cannot be reached" once (its answer changed shape); start it again.
 - A file attached on the new-task composer opens when its chip is clicked (an image in a preview,
   another file in a new tab), and the task's Claude Code session receives attached files natively
   as `@path` mentions in its first message, an image as an image, instead of paths to open with the

@@ -1,6 +1,6 @@
 //! `yulius wait`, run by a task's agent (SPEC-011): blocks until the Yulius CI checks at the
-//! agent's head finish, its delivery moves (a merge Yulius made, a deploy) or Yulius sends it a
-//! notice, then says what happened in one line. Agents start it with `run_in_background` and end
+//! agent's head finish, its delivery moves (a merge Yulius made, a deploy) or a merge it armed is
+//! decided, then says what happened in one line. Agents start it with `run_in_background` and end
 //! their turn; Claude Code wakes them when it exits, so nobody polls.
 
 use std::io::Write;
@@ -59,33 +59,32 @@ pub fn run(out: &mut dyn Write, minutes: u64, env: &dyn Fn(&str) -> Option<Strin
 
 /// The line to end with when the wait is over, or `None` to keep waiting.
 fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
-    let unread_before = before.map_or(0, |b| b.unread);
-    if now.unread > unread_before {
-        return Some(format!(
-            "Yulius sent you {} unread notice{}{}: read {} with `messages_inbox` and act on {}.",
-            now.unread,
-            if now.unread == 1 { "" } else { "s" },
-            now.latest_notice
-                .as_deref()
-                .map(|s| format!(" (latest: \"{s}\")"))
-                .unwrap_or_default(),
-            if now.unread == 1 { "it" } else { "them" },
-            if now.unread == 1 { "it" } else { "them" },
-        ));
+    // How an armed merge ended (MSR-003): when it is decided during this wait, or already was
+    // at this head when the wait starts.
+    let decided = match before {
+        // Arming clears the outcome, so a real decision always brings a new one.
+        Some(before) => {
+            before.merge_armed && !now.merge_armed && now.merge_outcome != before.merge_outcome
+        }
+        None => {
+            !now.merge_armed
+                && !now.head.is_empty()
+                && now
+                    .merge_outcome_head
+                    .as_deref()
+                    .is_some_and(|h| h.starts_with(&now.head) || now.head.starts_with(h))
+        }
+    };
+    if decided && let Some(outcome) = &now.merge_outcome {
+        return Some(outcome.clone());
     }
-    if let Some(before) = before {
-        if now.stage != before.stage {
-            return Some(format!(
-                "Delivery moved: {} -> {}. Check `delivery_status` for what is left.",
-                before.stage, now.stage
-            ));
-        }
-        if before.merge_armed && !now.merge_armed {
-            return Some(
-                "The merge you armed was decided; Yulius's notice says how (`messages_inbox`)."
-                    .to_owned(),
-            );
-        }
+    if let Some(before) = before
+        && now.stage != before.stage
+    {
+        return Some(format!(
+            "Delivery moved: {} -> {}. Check `delivery_status` for what is left.",
+            before.stage, now.stage
+        ));
     }
     if now.checks_ended() && !now.merge_armed {
         let head = short(&now.head);
@@ -238,20 +237,47 @@ mod tests {
     }
 
     #[test]
-    fn a_new_notice_ends_the_wait() {
-        let before = state("running");
-        let now = WaitState {
-            unread: 1,
-            latest_notice: Some("Your pull request conflicts".into()),
+    fn a_decided_armed_merge_ends_the_wait_with_how() {
+        let armed = WaitState {
+            merge_armed: true,
             ..state("running")
         };
-        let line = settled(&now, Some(&before)).unwrap_or_default();
-        assert!(
-            line.contains("1 unread notice (latest: \"Your pull request conflicts\")"),
-            "{line}"
+        let dropped = WaitState {
+            merge_outcome: Some("The merge you armed was dropped: the branch moved on.".into()),
+            merge_outcome_head: Some("0123456789abcdef".into()),
+            ..state("running")
+        };
+        let line = settled(&dropped, Some(&armed)).unwrap_or_default();
+        assert_eq!(
+            line,
+            "The merge you armed was dropped: the branch moved on."
         );
-        // Already unread when the wait starts: said at once.
-        assert!(settled(&now, None).is_some());
+        // Merged: the outcome is said rather than the bare stage change.
+        let merged = WaitState {
+            stage: "merged_integration".into(),
+            merge_outcome: Some("Yulius merged pull request #1 into `dev`.".into()),
+            merge_outcome_head: Some("0123456789abcdef".into()),
+            ..state("passed")
+        };
+        let line = settled(&merged, Some(&armed)).unwrap_or_default();
+        assert!(line.starts_with("Yulius merged pull request #1"), "{line}");
+        // A wait started after the decision, at the decided head, is told at once.
+        let line = settled(&merged, None).unwrap_or_default();
+        assert!(line.starts_with("Yulius merged pull request #1"), "{line}");
+        // Unarmed with no outcome (taken back by an immediate merge): not a decision to report.
+        assert!(settled(&state("running"), Some(&armed)).is_none());
+        // An outcome already there while it read as armed is old news, not this decision.
+        let stale_armed = WaitState {
+            merge_armed: true,
+            ..dropped.clone()
+        };
+        assert!(settled(&dropped, Some(&stale_armed)).is_none());
+        // At another head, an old outcome is not news.
+        let elsewhere = WaitState {
+            merge_outcome_head: Some("fedcba987".into()),
+            ..dropped
+        };
+        assert!(settled(&elsewhere, None).is_none());
     }
 
     #[test]

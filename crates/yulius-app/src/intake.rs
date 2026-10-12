@@ -18,7 +18,7 @@ use yulius_contracts::api::intake::{
 use yulius_contracts::api::tasks::HeldPrompt;
 use yulius_contracts::hooks::{HookInput, HookOutput};
 use yulius_domain::harness::Provider;
-use yulius_domain::ids::{MessageId, SandboxId, TaskId, UserId};
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::intake::{
     self as policy, ChoiceAnswer, PromptClass, Proposal, SCOPE_QUESTION, SPLIT_QUESTION,
     SplitVerdict,
@@ -33,7 +33,7 @@ use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
 use crate::lifecycle::{MAX_PROMPT_BYTES, NewTask};
-use crate::model::{MessageRecord, TaskOrigin, TaskRecord};
+use crate::model::{TaskOrigin, TaskRecord};
 use crate::ports::intake::{ChoiceEvaluator, SplitProposer};
 use crate::ports::store::TaskFieldUpdate;
 
@@ -612,7 +612,7 @@ impl App {
         }
     }
 
-    /// Drops scope: the chosen open steps become `skipped`, the agent is told, and the new
+    /// Drops scope: the chosen open steps become `skipped` (with the user's note), and the new
     /// direction is chained after this task.
     async fn held_skip_after(
         self: &Arc<Self>,
@@ -653,35 +653,8 @@ impl App {
         if !chosen.is_empty() {
             self.publish_steps(d.task).await;
         }
-        let list = if chosen.is_empty() {
-            "No steps were marked skipped.".to_owned()
-        } else {
-            let names: Vec<String> = chosen.iter().map(|s| format!("- {}", s.title)).collect();
-            format!(
-                "These steps are now skipped; do not work on them:\n{}",
-                names.join("\n")
-            )
-        };
-        let body = format!(
-            "The user ruled out part of this task.\n{list}\n\nThe new direction runs as task #{} after this task is done:\n\"{}\"\n\nFinish the remaining steps of this task; tick skipped Plan items in the task spec as not done.",
-            created.number,
-            short(&d.hold.prompt, 1_500)
-        );
-        let message = MessageRecord {
-            id: MessageId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
-            sandbox_id: d.task.sandbox_id.clone(),
-            from_task: None,
-            from_user: Some(d.ctx.user.id.clone()),
-            to_task: Some(d.task.id.clone()),
-            kind: "request".into(),
-            subject: "Scope changed by the user".into(),
-            body,
-            created_at: now,
-        };
-        store
-            .insert_message(&message, std::slice::from_ref(&d.task.id))
-            .await?;
-        self.notify_message(&d.task.id).await;
+        // The skipped steps carry the change to the agent (their note says the user ruled them
+        // out); no message is stored (SPEC-028 MSR-002).
         let note = format!(
             "{} skipped; #{} runs after this task.",
             match chosen.len() {

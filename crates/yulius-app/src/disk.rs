@@ -1,7 +1,7 @@
 //! Disk upkeep without a person (SPEC-008, SPEC-001 NFR-009): build caches of tasks that do not
 //! work are removed, the worktrees of closed and cancelled tasks are cleaned up, and a sandbox
-//! near its quota gets the caches of idle tasks pruned too, before a start is refused. The
-//! agent of a task whose cache went is told what was freed.
+//! near its quota gets the caches of idle tasks pruned too, before a start is refused. Each
+//! removal is audited; the agents are not told (SPEC-028 MSR-002).
 //!
 //! Safety: only directories the rules name (recognised tooling or `[disk] caches` of the
 //! worktree's `yulius.toml`), never through a link, never `.git`; a working task is never
@@ -16,13 +16,13 @@ use yulius_domain::disk::{
     Candidate, Owner, bytes_to_free, cache_paths, human, job_cache_cap, only_rebuildable, owner_of,
     plan_prune,
 };
-use yulius_domain::ids::{MessageId, TaskId};
+use yulius_domain::ids::TaskId;
 use yulius_domain::spec_format::parse_yulius_toml_caches;
 use yulius_domain::task::{StopReason, TaskStatus};
 
 use crate::context::App;
 use crate::error::AppResult;
-use crate::model::{MessageRecord, SandboxRecord, TaskRecord};
+use crate::model::{SandboxRecord, TaskRecord};
 use crate::ports::isolation::SandboxRef;
 
 /// How often the upkeep runs.
@@ -366,7 +366,6 @@ impl App {
 
     async fn prune(&self, sandbox: &SandboxRecord, scan: &Scan, chosen: &[usize]) -> DiskReport {
         let mut report = DiskReport::default();
-        let mut per_task: Vec<(&TaskRecord, Vec<(String, u64)>)> = Vec::new();
         for &index in chosen {
             let item = &scan.found[index];
             // The scan can be minutes old (sizes of huge caches): a task that started working
@@ -404,27 +403,15 @@ impl App {
                 &format!("{} of {}: {}", item.relative, item.label, human(item.bytes)),
             )
             .await;
-            let Some(task) = &item.task else { continue };
-            match per_task.iter_mut().find(|(t, _)| t.id == task.id) {
-                Some((_, list)) => list.push((item.relative.clone(), item.bytes)),
-                None => per_task.push((task, vec![(item.relative.clone(), item.bytes)])),
-            }
         }
         // A closed or cancelled task's clean worktree goes whole (its branch keeps the work;
         // Continue recreates it).
-        let mut gone: Vec<&TaskId> = Vec::new();
         for (task, worktree) in &scan.ended {
             if !self.still_ended(&task.id).await {
                 continue;
             }
             if self.remove_ended_worktree(sandbox, task, worktree).await {
                 report.worktrees += 1;
-                gone.push(&task.id);
-            }
-        }
-        for (task, list) in per_task {
-            if !gone.contains(&&task.id) {
-                self.tell_freed(task, &list).await;
             }
         }
         report
@@ -522,42 +509,6 @@ impl App {
                 true
             }
             _ => false,
-        }
-    }
-
-    /// Tells the agent of `task` what Yulius freed.
-    async fn tell_freed(&self, task: &TaskRecord, freed: &[(String, u64)]) {
-        let list: Vec<String> = freed
-            .iter()
-            .map(|(path, bytes)| format!("`{path}` ({})", human(*bytes)))
-            .collect();
-        let body = format!(
-            "Yulius freed disk space in this sandbox: {} of this task's worktree {} removed. They are build caches; the next build creates them again.",
-            list.join(", "),
-            if freed.len() == 1 { "was" } else { "were" }
-        );
-        let Ok(id) = MessageId::parse(&self.deps.crypto.new_id()) else {
-            return;
-        };
-        let message = MessageRecord {
-            id,
-            sandbox_id: task.sandbox_id.clone(),
-            from_task: None,
-            from_user: None,
-            to_task: Some(task.id.clone()),
-            kind: "info".into(),
-            subject: "Yulius freed disk space".into(),
-            body,
-            created_at: self.now(),
-        };
-        if self
-            .deps
-            .store
-            .insert_message(&message, std::slice::from_ref(&task.id))
-            .await
-            .is_ok()
-        {
-            self.notify_message(&task.id).await;
         }
     }
 }

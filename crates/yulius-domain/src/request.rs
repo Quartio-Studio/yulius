@@ -244,7 +244,7 @@ pub fn request_markdown(
     out.push_str(
         "\n\n## Waiting\n\nWhen only Yulius CI or a person can move the task forward, start \
          `yulius wait` with `run_in_background` and end your turn: it returns when the checks at \
-         your head finish, your delivery changes or Yulius sends you a notice. Never poll with \
+         your head finish, your delivery changes or a merge you armed is decided. Never poll with \
          `sleep`, `pgrep -f` or monitor loops.\n",
     );
     out
