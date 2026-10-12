@@ -5,7 +5,7 @@ status: in-progress
 
 # SPEC-029: a shorter sandbox navigation with a "More" group
 
-Status: draft
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #27
 Scope authorization: user request (task #27): "Too much elements here. Only Cockpit, Tasks, Git,
@@ -39,8 +39,8 @@ away.
 | NAV-001 | The sandbox navigation shows, in this order, Cockpit, Tasks, Git, CI, Secrets and Dashboard as links, then a "More" button. | `navigation.e2e.ts` |
 | NAV-002 | "More" is a disclosure button (`aria-expanded`, `aria-controls`): collapsed by default it hides Sessions, Workflows, Skills, Automations and MCP; pressed it shows them below it, in that order, and pressed again hides them. | `navigation.e2e.ts` |
 | NAV-003 | The choice is remembered in this browser (`yulius.sidebarMoreOpen`) and survives a reload. | `navigation.e2e.ts` |
-| NAV-004 | Opening one of the More pages (a link, a deep link, a reload, the not-found page's links) expands the group, so the current page is always visible and marked as current. | `navigation.e2e.ts` |
-| NAV-005 | No WCAG 2.x A/AA violation in the sidebar either way; the toggle works from the keyboard like any button. | `navigation.e2e.ts` (axe) |
+| NAV-004 | Arriving at one of the More pages (a deep link, a reload, a move inside the app) shows the group expanded with that page marked current, for as long as that page is in view, without changing the remembered choice; closed there, it stays closed until another More page is opened. | `navigation.e2e.ts` |
+| NAV-005 | No WCAG 2.x A/AA violation in the sidebar either way; the toggle works from the keyboard (Enter, Space). | `navigation.e2e.ts` (axe) |
 
 ## Plan
 
@@ -71,8 +71,15 @@ away.
   marking as the primary ones, work on the phone drawer unchanged, and need no menu layer.
 - **Collapsed by default, remembered per browser**, like the Stopped group: a layout preference,
   not account data.
-- **A More page opens the group** instead of marking the closed More button as current: the
-  current page should never be hidden. The user can still close it; it then stays closed until
-  they open another More page.
+- **A More page opens the group for itself** instead of marking the closed More button as
+  current: the current page should not be hidden on arrival. It is shown for that page only and
+  never written to the remembered choice, so one visit does not undo the short sidebar. The user
+  can still close it there; it then stays closed until they open another More page (arriving from
+  a primary page counts as another).
 - **No CD entry yet**: there is no CD page to link to; it belongs in the primary list when it
   exists.
+- **Review round 1** (fresh session, APPROVE at 69aee79 with minors): opening a More page wrote
+  "open" to the remembered choice, so one deep link undid the short sidebar; it is now shown for
+  that page only (test: deep link, then Tasks and a reload stay collapsed). Tests now cover an
+  in-app move to a More page, closing it there from the keyboard (Enter, Space) and staying closed
+  within that page; the web README's `layout.js` row mentions More.

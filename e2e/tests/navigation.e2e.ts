@@ -77,13 +77,39 @@ test('the sandbox pages open from the sandbox navigation', async ({ app, browser
   }
 });
 
-test('a page under More opens with the group expanded and the page current', async ({ app, screen }) => {
+test('a page under More opens with the group expanded and the page current', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/mcp'));
   const nav = screen.getByRole('navigation', 'Sandbox');
+  const more = nav.getByRole('button', 'More');
+  const go = (path: string) => browser.evaluate((hash) => { location.hash = hash; }, `#${path}`);
 
-  await expect(nav.getByRole('button', 'More')).toHaveAttribute('aria-expanded', 'true');
+  await expect(more).toHaveAttribute('aria-expanded', 'true');
   await expect(nav.getByRole('link', 'MCP')).toBeVisible();
   await expect(nav.getByRole('link', 'MCP')).toHaveAttribute('aria-current', 'page');
+
+  // Shown for that page only: the remembered choice (collapsed) is unchanged.
+  await nav.getByRole('link', 'Tasks').click();
+  await expect(more).toHaveAttribute('aria-expanded', 'false');
+  await browser.reload();
+  await expect(more).toHaveAttribute('aria-expanded', 'false');
+
+  // Moving to a More page inside the app opens it too.
+  await go('/s/studio/skills');
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Skills');
+  await expect(more).toHaveAttribute('aria-expanded', 'true');
+  await expect(nav.getByRole('link', 'Skills')).toHaveAttribute('aria-current', 'page');
+
+  // Closed there from the keyboard, it stays closed within that page.
+  await more.press('Enter');
+  await expect(more).toHaveAttribute('aria-expanded', 'false');
+  await go('/s/studio/skills/nope');
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Skill not found');
+  await expect(more).toHaveAttribute('aria-expanded', 'false');
+  // Another More page opens it again.
+  await go('/s/studio/mcp');
+  await expect(more).toHaveAttribute('aria-expanded', 'true');
+  await more.press('Space');
+  await expect(more).toHaveAttribute('aria-expanded', 'false');
 });
 
 test('another sandbox opens from the sandbox tabs', async ({ app, browser, screen }) => {

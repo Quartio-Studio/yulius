@@ -16,7 +16,8 @@ Dashboard", with the other pages "to be expanded" (task #27).
 (Sessions, Workflows, Skills, Automations, MCP). After `NAV` comes a "More" disclosure button
 (`aria-expanded`, `aria-controls`) that shows the `NAV_MORE` links in place below it. It starts
 collapsed; its state is a per-browser preference (`yulius.sidebarMoreOpen`), like the Stopped
-task group. Opening a More page expands the group so the current page is never hidden. A CD page
+task group. Arriving at a More page shows the group expanded for that page only, without writing
+the preference, so the current page is not hidden and one visit does not undo the choice. A CD page
 would join `NAV` next to CI.
 
 ## Alternatives

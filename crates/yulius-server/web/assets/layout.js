@@ -538,18 +538,21 @@ export function createSidebar(ctx) {
   const moreLinks = NAV_MORE.map(navLink);
   const moreGroup = h('div', { class: 'nav-more', id: 'nav-more' }, moreLinks.map((link) => link.el));
   const moreChevron = h('span', { class: 'nav-more-chevron' });
-  let moreOpen = readJson(MORE_OPEN_KEY, false) === true;
+  let moreOpen = readJson(MORE_OPEN_KEY, false) === true; // the user's choice, kept
+  let moreShown = false; // opened for the More page in view only, never kept
   let morePage = null; // the More page last shown, so it opens the group once per visit
   const moreToggle = h('button', { type: 'button', class: 'nav-item nav-toggle', 'aria-controls': 'nav-more', onClick: () => {
-    moreOpen = !moreOpen;
+    moreOpen = !(moreOpen || moreShown);
+    moreShown = false;
     writeJson(MORE_OPEN_KEY, moreOpen);
     paintMore();
   } }, h('span', { class: 'nav-slot' }, icon('more', { size: 20 })), h('span', null, 'More'), moreChevron);
   nav.append(...primaryLinks.map((link) => link.el), moreToggle, moreGroup);
   function paintMore() {
-    moreGroup.hidden = !moreOpen;
-    moreToggle.setAttribute('aria-expanded', String(moreOpen));
-    setChildren(moreChevron, icon(moreOpen ? 'down' : 'right', { size: 12 }));
+    const open = moreOpen || moreShown;
+    moreGroup.hidden = !open;
+    moreToggle.setAttribute('aria-expanded', String(open));
+    setChildren(moreChevron, icon(open ? 'down' : 'right', { size: 12 }));
   }
   paintMore();
   const list = h('div', { class: 'task-list', 'aria-label': 'Active tasks' });
@@ -641,11 +644,11 @@ export function createSidebar(ctx) {
       link.classList.toggle('active', active);
       if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
     }
-    // A page under More opens the group, so the current page is never hidden (SPEC-029 NAV-004).
+    // A page under More opens the group while it is in view, so the current page is not hidden;
+    // the user's own choice stays as it was (SPEC-029 NAV-004).
     const current = routed && moreLinks.some((link) => link.page === route.page) ? route.page : null;
-    if (current && current !== morePage && !moreOpen) {
-      moreOpen = true;
-      writeJson(MORE_OPEN_KEY, moreOpen);
+    if (current !== morePage) {
+      moreShown = Boolean(current);
       paintMore();
     }
     morePage = current;
