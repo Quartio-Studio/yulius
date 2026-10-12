@@ -57,6 +57,7 @@ impl Line<'_> {
     fn limit(&self) -> bool {
         self.kind() == Some("assistant")
             && !self.sidechain()
+            && !self.answered()
             && observe_line(self.raw)
                 .iter()
                 .any(|o| matches!(o, Observed::LimitReached { .. }))
@@ -68,26 +69,37 @@ impl Line<'_> {
 }
 
 /// The transcript `text` stepped back over the usage limit that ended it; `None` when its tail
-/// holds no usage-limit record (nothing to change).
+/// holds no usage-limit record (nothing to change), or when a line it cannot read names a record it
+/// would remove (relinking it is impossible, and a dangling link would cut the history).
 #[must_use]
 pub fn step_back(text: &str) -> Option<String> {
-    let lines: Vec<Line<'_>> = text
-        .split_inclusive('\n')
-        .map(|raw| Line {
+    let raws: Vec<&str> = text.split_inclusive('\n').collect();
+    // Only the tail after the last answered assistant record can change: parse just that.
+    let mut tail: Vec<Line<'_>> = Vec::new();
+    for raw in raws.iter().rev() {
+        let line = Line {
             raw,
             record: parse_object(raw),
-        })
-        .collect();
-    let tail = lines.iter().rposition(Line::answered).map_or(0, |i| i + 1);
-    let first = tail + lines[tail..].iter().position(Line::limit)?;
+        };
+        if line.answered() {
+            break;
+        }
+        tail.push(line);
+    }
+    tail.reverse();
+    let first = tail.iter().position(Line::limit)?;
     // Removed record → its own parent (`None` for the root).
     let mut removed: HashMap<String, Option<String>> = HashMap::new();
-    let mut drop = vec![false; lines.len()];
-    for (i, line) in lines.iter().enumerate().skip(first) {
-        // A compaction boundary is history, not a notice about the limit.
+    let mut drop = vec![false; tail.len()];
+    for (i, line) in tail.iter().enumerate().skip(first) {
+        // A compaction boundary of any kind is history, not a notice about the limit.
         let notice = line.kind() == Some("system")
             && !line.sidechain()
-            && line.record.as_ref().and_then(|r| str_of(r, "subtype")) != Some("compact_boundary");
+            && !line
+                .record
+                .as_ref()
+                .and_then(|r| str_of(r, "subtype"))
+                .is_some_and(|subtype| subtype.ends_with("_boundary"));
         if notice || line.limit() {
             drop[i] = true;
             if let (Some(uuid), Some(record)) = (line.uuid(), &line.record) {
@@ -95,6 +107,12 @@ pub fn step_back(text: &str) -> Option<String> {
                 removed.insert(uuid.to_owned(), parent);
             }
         }
+    }
+    if tail
+        .iter()
+        .any(|l| l.record.is_none() && removed.keys().any(|id| l.raw.contains(id.as_str())))
+    {
+        return None;
     }
     let resolve = |mut id: String| -> Option<String> {
         // A chain is at most as long as the transcript; a cycle ends the walk.
@@ -107,8 +125,8 @@ pub fn step_back(text: &str) -> Option<String> {
         }
         None
     };
-    let mut out = String::with_capacity(text.len());
-    for (i, line) in lines.iter().enumerate() {
+    let mut out = raws[..raws.len() - tail.len()].concat();
+    for (i, line) in tail.iter().enumerate() {
         if drop[i] {
             continue;
         }
@@ -166,6 +184,12 @@ pub fn step_back_file(path: &Path) -> io::Result<bool> {
         mode,
     }
     .write()?;
+    // The new file was created under the umask: give it exactly the old permissions.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    }
     Ok(true)
 }
 
@@ -443,6 +467,36 @@ mod tests {
         assert_eq!(relinked["parentUuid"], Value::Null);
         assert_eq!(relinked["logicalParentUuid"], Value::Null);
         assert_eq!(relinked["message"]["content"], "again");
+        Ok(())
+    }
+
+    /// Review of SPEC-034: a line serde cannot read that names a removed record cannot be
+    /// relinked, so the transcript is left as it is rather than cutting the resumed history.
+    #[test]
+    fn step_back_never_strands_an_unreadable_line() {
+        let text = [
+            prompt("u1", "root", "hello"),
+            limit("e1", "u1"),
+            system("n1", "e1", "informational", "Usage limit reached"),
+            // A lone surrogate escape (a split emoji from Node's JSON.stringify) after n1.
+            "{\"type\":\"user\",\"uuid\":\"u2\",\"parentUuid\":\"n1\",\"message\":{\"role\":\"user\",\"content\":\"\\ud83d\"}}\n".to_owned(),
+        ]
+        .concat();
+        assert_eq!(step_back(&text), None);
+    }
+
+    /// Every compaction kind of boundary is history (`compact_boundary`,
+    /// `microcompact_boundary`, …), not a notice about the limit.
+    #[test]
+    fn step_back_keeps_every_boundary() -> Result<(), Box<dyn std::error::Error>> {
+        let text = [
+            prompt("u1", "root", "hello"),
+            limit("e1", "u1"),
+            system("m1", "e1", "microcompact_boundary", ""),
+        ]
+        .concat();
+        let stepped = step_back(&text).ok_or("a limit tail")?;
+        assert_eq!(uuids(&stepped), ["u1", "m1"]);
         Ok(())
     }
 
