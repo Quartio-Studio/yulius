@@ -1,11 +1,11 @@
 ---
 yulius-task: acd7ef52-4090-4440-b058-d9b436dee9ff
-status: in-progress
+status: done
 ---
 
 # SPEC-030: Attached images reach Claude Code as pasted images, not as paths
 
-Status: in progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #28
 Scope authorization: user request ("I asked previous task to attach images as files, natively, but
@@ -61,9 +61,9 @@ not a path the session reads with a tool.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Images reach Claude Code as pasted [Image #N] in both modes
-- [ ] Independent review, gates green and delivery to dev
+- [x] Write the fix spec and the regression test that fails
+- [x] Images reach Claude Code as pasted [Image #N] in both modes
+- [x] Independent review, gates green and delivery to dev
 
 ## Test plan
 
@@ -127,3 +127,16 @@ not a path the session reads with a tool.
     block and the file's content attached.
   - An image alone, then Enter: `[Image #1]` and an `image` block. An image then `Make it blue\n`:
     `[Image #1]Make it blue` and an `image` block.
+- `cargo test -p yulius-domain --lib request`: 12 passed (5 new). `cargo test -p yulius-app --lib
+  a_typed_first_message`: passed. `cargo test -p fake-agent`: passed.
+- `cargo test -p yulius --test task_done`: 9 passed. Before the fix (commit 35746c7) the two image
+  tests failed: the goal task launched with the mention, and the prompt task never showed
+  `[Image #1]`. With `typed_opening.is_some()` replaced by `false` in `opens_with_turn`, the goal
+  test fails ("the goal was typed during the turn on the first message").
+- `scripts/dev ci` on 5eb9a4f: exit 0. Repository checks, fmt, clippy `-D warnings`, nextest
+  (1173 run, 1173 passed, 16 skipped), doctests, cargo-deny (advisories, bans, licenses, sources
+  ok), machete, docs. An earlier run's doctest failure (a missing `rustls` rlib) came from a
+  concurrent build in the same target directory and did not recur.
+- Review: round 1 requested changes (see Decisions), round 2 approved 5eb9a4f.
+- Not tested here: a live model describing an attached image (no paid credential); the
+  `[Image #N]` behaviour was checked against the installed Claude Code 2.1.292 with the mock API.
