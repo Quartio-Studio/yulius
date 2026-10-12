@@ -2,9 +2,22 @@
 
 use std::fmt;
 
-/// The Claude model of a task that names none: the latest Opus (Claude Code's `opus` alias,
-/// F 2026-10-12: "it should be opus-5.5"). A subscription's own default would be Sonnet.
-pub const DEFAULT_CLAUDE_MODEL: &str = "opus";
+/// The Claude model of a task that names none: Opus 5.5 by its full id, not Claude Code's `opus`
+/// alias, which moves with each release (F 2026-10-12: "it should be opus-5.5"; task #21: "the
+/// default model is always opus 5.5"). A subscription's own default would be Sonnet.
+pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
+
+/// The effort of a task that names none (task #21), sent so Claude Code never picks its own.
+pub const DEFAULT_CLAUDE_EFFORT: &str = "high";
+
+/// The effort a task runs at: its own, else [`DEFAULT_CLAUDE_EFFORT`], except for a Haiku model,
+/// which takes no effort level.
+#[must_use]
+pub fn claude_effort<'a>(model: &str, effort: Option<&'a str>) -> Option<&'a str> {
+    effort.or_else(|| {
+        (!model.to_ascii_lowercase().contains("haiku")).then_some(DEFAULT_CLAUDE_EFFORT)
+    })
+}
 
 /// A coding-agent CLI Yulius can run as a task. Yulius runs only Claude Code
 /// (F 2026-10-08); another harness needs a variant here and an adapter (SPEC-001 TSK-003).

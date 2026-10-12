@@ -33,8 +33,8 @@ pub const BASH_TIMEOUT_ENV: [(&str, &str); 2] = [
     ("BASH_DEFAULT_TIMEOUT_MS", "600000"),
     ("BASH_MAX_TIMEOUT_MS", "1800000"),
 ];
-/// The model of a task that names none (the latest Opus).
-pub use yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
+/// The model and effort of a task that names none (Opus 5.5 at high effort).
+pub use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
 /// Name of the always-attached Yulius MCP server.
 pub const YULIUS_MCP_NAME: &str = "yulius";
 /// Hook events registered for Claude Code. `SessionEnd` tells Yulius at once why a session ends
@@ -518,15 +518,10 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         utf8(&mcp_path, "run_dir")?.to_owned(),
         "--strict-mcp-config".into(),
     ]);
-    argv.extend([
-        "--model".into(),
-        request
-            .model
-            .clone()
-            .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.to_owned()),
-    ]);
-    if let Some(effort) = &request.effort {
-        argv.extend(["--effort".into(), effort.clone()]);
+    let model = request.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
+    argv.extend(["--model".into(), model.to_owned()]);
+    if let Some(effort) = yulius_domain::harness::claude_effort(model, request.effort.as_deref()) {
+        argv.extend(["--effort".into(), effort.to_owned()]);
     }
     if request.contained {
         argv.push("--dangerously-skip-permissions".into());

@@ -485,7 +485,7 @@ export function mountComposer(ctx, sandbox) {
     afterChip.title = startRule ? `Starts by itself when ${startRule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
-    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: Claude Code’s default';
+    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Opus 5.5';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
     const effortless = Boolean(found && found.model.effort === false);
     effortChip.hidden = effortless;

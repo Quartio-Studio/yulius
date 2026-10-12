@@ -216,9 +216,12 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
             "--mcp-config",
             "/data/runs/a1/mcp.json",
             "--strict-mcp-config",
-            // No model named: the default, the latest Opus (F 2026-10-12).
+            // No model or effort named: Opus 5.5 at high effort, pinned so neither drifts with
+            // Claude Code's aliases or a subscription's defaults (task #21).
             "--model",
-            "opus",
+            "claude-opus-5-5",
+            "--effort",
+            "high",
             "--",
             "--continue after the limit",
         ]
@@ -377,5 +380,44 @@ fn planned_file_write_is_private_and_replaces_atomically() -> TestResult {
     };
     assert!(missing_parent.write().is_err());
     assert!(!format!("{missing_parent:?}").contains("SYNTHETIC"));
+    Ok(())
+}
+
+#[test]
+fn a_named_model_without_effort_runs_at_high_effort_unless_it_takes_none() -> TestResult {
+    let mut request = claude_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        false,
+    );
+    request.effort = None;
+    request.model = Some("claude-sonnet-5-5".into());
+    let argv = plan_launch(&request)?.argv;
+    let at = |flag: &str| argv.iter().position(|a| a == flag);
+    assert_eq!(
+        at("--effort")
+            .and_then(|i| argv.get(i + 1))
+            .map(String::as_str),
+        Some("high"),
+        "{argv:?}"
+    );
+    // Haiku takes no effort level: none is sent rather than one Claude Code refuses.
+    request.model = Some("claude-haiku-4-5".into());
+    let argv = plan_launch(&request)?.argv;
+    assert!(!argv.iter().any(|a| a == "--effort"), "{argv:?}");
+    // An effort the task chose is kept.
+    request.model = None;
+    request.effort = Some("max".into());
+    let argv = plan_launch(&request)?.argv;
+    assert!(
+        argv.windows(2).any(|w| w == ["--effort", "max"]),
+        "{argv:?}"
+    );
+    assert!(
+        argv.windows(2).any(|w| w == ["--model", "claude-opus-5-5"]),
+        "{argv:?}"
+    );
     Ok(())
 }
