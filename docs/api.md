@@ -795,8 +795,10 @@ resolves to nothing, the run gets the server without that variable or token.
     per user and sandbox (429); 409 before the repository is cloned. In an isolated sandbox
     (SPEC-002 ADR-22) the shell joins the sandbox's namespace holder (its own system layer, where
     `sudo apt-get install` persists, and private network); 409 when the sandbox is over its disk
-    quota (the message gives the figures); a task started then fails with that reason in its
-    terminal ("Could not start: …").
+    quota (the message gives the figures; Yulius first prunes the caches of tasks that do not
+    work); a task started then fails with that reason in its terminal ("Could not start: …").
+    `POST /api/tasks/{tid}/switch` answers 409 with the same reason, before it ends the running
+    session, when the new session could not start.
   - `PATCH /api/sandboxes/{sid}/shells/{id}` (write) `{"name"}` → `Shell`: 1–40 characters, no
     control characters (422). `DELETE /api/sandboxes/{sid}/shells/{id}` (write) → 204: the shell
     leaves the list at once and its process is ended (Ctrl-C, SIGTERM, SIGKILL). Both are 404 for

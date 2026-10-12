@@ -187,6 +187,16 @@ impl GitPort for GitAdapter {
         blocking(move || git.worktree_discard(&repo, &path, &root, branch.as_deref())).await
     }
 
+    async fn is_disposable(&self, worktree: &Path, relative: &str) -> AppResult<bool> {
+        let (git, wt, rel) = (self.git(), worktree.to_path_buf(), relative.to_owned());
+        blocking(move || git.is_ignored_and_untracked(&wt, &rel)).await
+    }
+
+    async fn has_ignored_files(&self, worktree: &Path) -> AppResult<bool> {
+        let (git, wt) = (self.git(), worktree.to_path_buf());
+        blocking(move || git.has_ignored_files(&wt)).await
+    }
+
     async fn has_changes(&self, worktree: &Path) -> AppResult<bool> {
         let (git, wt) = (self.git(), worktree.to_path_buf());
         blocking(move || git.has_changes(&wt)).await

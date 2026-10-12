@@ -118,7 +118,14 @@ pub struct TaskRuntime {
     /// The terminal already said that this task acts on GitHub as the App, not its creator
     /// (F 2026-10-11), so it is said once.
     pub(crate) acting_as_app_said: AtomicBool,
+    /// When a switch of this task was last refused before it started (ms, 0 = never): an
+    /// automatic switch waits [`SWITCH_COOLDOWN_MS`] before it tries again.
+    pub(crate) switch_refused_ms: AtomicI64,
 }
+
+/// After a switch was refused before it started, automatic switches of the task wait this long
+/// (the agent keeps working on its current subscription meanwhile).
+pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
 impl TaskRuntime {
     /// Whether a run is attached (a process can redraw the terminal).
@@ -152,6 +159,7 @@ impl TaskRuntime {
             hold_polled_ms: AtomicI64::new(0),
             nudged: Mutex::new(std::collections::BTreeSet::new()),
             acting_as_app_said: AtomicBool::new(false),
+            switch_refused_ms: AtomicI64::new(0),
         }
     }
 
@@ -1431,6 +1439,13 @@ impl App {
             .status
             .apply(TaskEvent::SwitchStarted)
             .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?;
+        // The new session must be able to start before the running one ends (ROT-014): a
+        // refusal leaves the task as it is.
+        if let Err(err) = self.preflight_start(&task, account.as_ref()).await {
+            self.refuse_switch(&task, account.as_ref(), reason, &err)
+                .await;
+            return Err(err);
+        }
         if !store
             .transition_task(task_id, Some(task.status), next, None, self.now())
             .await?
@@ -1516,6 +1531,7 @@ impl App {
                     store.set_switch_outcome(&decision_id, "waiting").await?;
                 } else {
                     store.set_switch_outcome(&decision_id, "completed").await?;
+                    runtime.switch_refused_ms.store(0, Ordering::SeqCst);
                     runtime
                         .hub
                         .notice("↻ The session continues where it left off.");
@@ -1524,6 +1540,11 @@ impl App {
             }
             Err(err) => {
                 store.set_switch_outcome(&decision_id, "failed").await?;
+                tracing::warn!(task = %task_id, error = %err, "the session could not continue after a switch");
+                runtime.hub.notice(format!(
+                    "↻ The session could not continue: {}",
+                    err.public_message()
+                ));
                 if let Ok(Some(current)) = store.task(task_id).await
                     && current.status == TaskStatus::Switching
                 {
@@ -1540,6 +1561,88 @@ impl App {
                 self.publish_task(task_id).await;
                 Err(err)
             }
+        }
+    }
+
+    /// What a launch would need, checked without changing anything: the repository, a usable
+    /// subscription credential and the sandbox's isolation (disk quota, holder). A switch runs
+    /// it before it ends the running session (ROT-014).
+    ///
+    /// # Errors
+    /// The reason the launch would be refused.
+    pub async fn preflight_start(
+        &self,
+        task: &TaskRecord,
+        requested: Option<&AccountId>,
+    ) -> AppResult<()> {
+        let sandbox = self
+            .deps
+            .store
+            .sandbox(&task.sandbox_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let worktree = self
+            .sandbox_dir(&sandbox.id)
+            .join("worktrees")
+            .join(task.id.as_str());
+        if !worktree.join(".git").exists() && !self.sandbox_repo(&sandbox.id).join(".git").exists()
+        {
+            return Err(AppError::Conflict(
+                "the sandbox repository is not cloned yet".into(),
+            ));
+        }
+        // No subscription with capacity is not a refusal: the switch pauses the task instead.
+        if let Some(account) = self.choose_account(task, requested).await? {
+            self.open_credential(&account)?;
+        }
+        self.isolation_join(&sandbox).await?;
+        Ok(())
+    }
+
+    /// Whether a switch of `task` was refused so recently that an automatic one waits.
+    pub(crate) fn switch_cooling(&self, task: &TaskId) -> bool {
+        let at = self.runtime(task).switch_refused_ms.load(Ordering::SeqCst);
+        at > 0 && self.now().0 - at < SWITCH_COOLDOWN_MS
+    }
+
+    /// Records and shows a switch that was refused before it ended the running session.
+    async fn refuse_switch(
+        &self,
+        task: &TaskRecord,
+        account: Option<&AccountId>,
+        reason: &str,
+        err: &AppError,
+    ) {
+        let message = err.public_message();
+        // A repeat of an automatic switch inside the cooldown is only logged: one record and
+        // one notice per cooldown, not one per retry.
+        let repeat = reason != "manual" && self.switch_cooling(&task.id);
+        self.runtime(&task.id)
+            .switch_refused_ms
+            .store(self.now().0, Ordering::SeqCst);
+        tracing::warn!(task = %task.id, error = %err, "switch refused; the running session stays");
+        if repeat {
+            return;
+        }
+        self.runtime(&task.id).hub.notice(format!(
+            "↻ Switching subscriptions was not possible, so this session stays as it is: {message}"
+        ));
+        let record = SwitchDecisionRecord {
+            id: self.deps.crypto.new_id(),
+            task_id: task.id.clone(),
+            at: self.now(),
+            reason: reason.to_owned(),
+            inputs: serde_json::json!({
+                "account": account.map(AccountId::as_str),
+                "refused": message,
+            })
+            .to_string(),
+            from_desc: self.account_desc(task.harness, None).await,
+            to_desc: self.account_desc(task.harness, account).await,
+            outcome: "refused".into(),
+        };
+        if let Err(err) = self.deps.store.insert_switch(&record).await {
+            tracing::warn!(task = %task.id, error = %err, "the refused switch was not recorded");
         }
     }
 

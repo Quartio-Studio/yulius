@@ -20,6 +20,7 @@ flowchart LR
   API --- APP --- DB
   APP --- SUP
   APP --- CI
+  APP -->|"prune caches, quota"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
     PH --> AG["claude TUI"]
@@ -45,6 +46,14 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | interface | `yulius-server` (axum routes, embedded web UI in `web/`) |
 | composition | `yulius` (configuration, wiring, subcommands) |
 | tooling | `tools/` (fake agent, xtask) |
+
+## Disk
+
+A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
+work every 5 minutes (ended tasks, then idle ones from 90 % of the quota), removes the worktrees
+of closed and cancelled tasks, and a switch checks the quota and the other start preconditions
+before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md),
+[decision 0017](decisions/0017-sandbox-disk-upkeep.md)).
 
 ## Agent primitives
 

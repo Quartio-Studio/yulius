@@ -578,7 +578,7 @@ pub struct SwitchDecisionRecord {
     pub from_desc: String,
     /// To description.
     pub to_desc: String,
-    /// `started`, `completed`, `failed`, `waiting`.
+    /// `started`, `completed`, `failed`, `waiting`, `refused`.
     pub outcome: String,
 }
 

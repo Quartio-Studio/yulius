@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use clap::Args;
 use yulius_app::error::{AppError, AppResult};
-use yulius_app::ports::isolation::{SandboxIsolation, SandboxJoin, SandboxRef};
+use yulius_app::ports::isolation::{DiskUsage, SandboxIsolation, SandboxJoin, SandboxRef};
 use yulius_domain::ids::SandboxId;
 use yulius_sandbox::cgroup::Limits;
 use yulius_sandbox::manager::{
@@ -231,6 +231,16 @@ pub fn delegation() -> Result<yulius_sandbox::cgroup::Delegation, String> {
     yulius_sandbox::cgroup::prepare(&unit).map_err(|e| format!("{}: {e}", unit.display()))
 }
 
+fn request_of(sandbox: &SandboxRef) -> SandboxRequest {
+    SandboxRequest {
+        id: sandbox.id.as_str().to_owned(),
+        hostname: sandbox.hostname.clone(),
+        dir: sandbox.dir.clone(),
+        port_first: sandbox.port_first,
+        port_last: sandbox.port_last,
+    }
+}
+
 /// [`SandboxIsolation`] over the manager.
 pub struct NamespaceIsolation {
     manager: Arc<Manager>,
@@ -253,14 +263,7 @@ impl NamespaceIsolation {
 #[async_trait]
 impl SandboxIsolation for NamespaceIsolation {
     async fn prepare(&self, sandbox: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
-        let request = SandboxRequest {
-            id: sandbox.id.as_str().to_owned(),
-            hostname: sandbox.hostname.clone(),
-            dir: sandbox.dir.clone(),
-            port_first: sandbox.port_first,
-            port_last: sandbox.port_last,
-        };
-        match self.manager.prepare(&request).await {
+        match self.manager.prepare(&request_of(sandbox)).await {
             Ok(Some(joined)) => {
                 let join = joined.join;
                 Ok(Some(SandboxJoin {
@@ -296,6 +299,16 @@ impl SandboxIsolation for NamespaceIsolation {
                 Ok(None)
             }
         }
+    }
+
+    async fn disk(&self, sandbox: &SandboxRef) -> Option<DiskUsage> {
+        let (used, limit) = self.manager.disk(sandbox.id.as_str()).await?;
+        Some(DiskUsage { used, limit })
+    }
+
+    async fn measure_disk(&self, sandbox: &SandboxRef) -> Option<DiskUsage> {
+        let (used, limit) = self.manager.measure_disk(&request_of(sandbox)).await?;
+        Some(DiskUsage { used, limit })
     }
 
     fn release(&self, sandbox: &SandboxId) {
