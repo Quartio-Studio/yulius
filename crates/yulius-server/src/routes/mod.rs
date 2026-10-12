@@ -118,6 +118,14 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/automations/{id}",
             put(automations::update).delete(automations::delete),
         )
+        .route(
+            "/api/sandboxes/{sid}/automation-templates",
+            get(automations::templates),
+        )
+        .route(
+            "/api/sandboxes/{sid}/automation-templates/{id}/enable",
+            post(automations::enable_template),
+        )
         .route("/api/automations/{id}/run", post(automations::run_now))
         .route("/api/automations/{id}/runs", get(automations::runs))
         .route("/api/sandboxes/{sid}/skills", get(skills::list))

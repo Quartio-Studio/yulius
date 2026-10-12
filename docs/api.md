@@ -586,6 +586,8 @@ read-only in the UI.
 | PUT/DELETE | `/api/automations/{id}` | write | PUT replaces the editable fields → `Automation`; DELETE → 204 (removes run history; tasks stay) |
 | POST | `/api/automations/{id}/run` | write | creates one run now (also when disabled) → `AutomationRun` |
 | GET | `/api/automations/{id}/runs` | read | `[AutomationRun]`, newest first (at most 100) |
+| GET | `/api/sandboxes/{sid}/automation-templates` | read | `[AutomationTemplate]`, the ready-made automations (SPEC-042) |
+| POST | `/api/sandboxes/{sid}/automation-templates/{id}/enable` | write | creates the automation from the template, enabled → 201 `Automation`; when the sandbox already has an automation of that name, enables it unchanged → 200 `Automation`; unknown template → 404 |
 | GET/POST | `/api/sandboxes/{sid}/mcp` | read/write | `McpServer` (sandbox + inherited instance servers); POST body `McpServerInput` → 201 |
 | PUT/DELETE | `/api/mcp/{id}` | write (instance: admin) | PUT `McpServerInput` → `McpServer`; DELETE → 204 |
 | POST | `/api/mcp/{id}/test` | write (instance: admin) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). |
@@ -597,6 +599,8 @@ Workflow = {"id","name","description","steps":["Write the spec","Implement","Tes
 Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","workflow_id|null",
               "harness":"claude","enabled":true,"created_via":"ui|agent",
               "next_run_at":"…|null","last_run":AutomationRun|null}
+AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_offset_minutes","prompt",
+                      "workflow_id|null","automation_id|null"}
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
                  "task_id|null","error|null"}
 McpServer = {"id","scope":"instance|sandbox","name","transport":"stdio|http","command|null",
@@ -617,7 +621,10 @@ kept as the instance workflow "Feature (custom)". The file format is SPEC-002 §
 catalog format". Automation `cron` is a five-field
 expression (`yulius-domain::cron`), `utc_offset_minutes` is within ±1080, and at most 100
 automations exist per sandbox. A run whose automation's previous task is still active is
-recorded as `skipped_previous_active`.
+recorded as `skipped_previous_active`. The ready-made automations are one file each in
+`catalog/automations/` of the running release; `automation_id` is the sandbox's automation with
+the same name (case-insensitive), which counts as the template's: a template is never linked or
+run by itself.
 
 MCP secrets are write-only: responses only list key names. On update, an omitted `env`/`headers`
 keeps the stored values; a given map replaces all values of that map (`{}` clears it). Names are
