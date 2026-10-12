@@ -124,8 +124,9 @@ export function statusInfo(task) {
   // decides: Start now or Cancel. It never starts by itself then.
   if (status === 'chained') {
     const after = task.after;
-    if (after && after.blocked) return { glyph: '!', icon: 'st-attention', tone: 'attention', label: `Needs you · after #${after.number}`, group: 'needs', detail: after.blocked };
-    return { glyph: '⛓', icon: 'st-chained', tone: 'queued', label: after ? `Queued after #${after.number}` : 'Queued after another task', group: 'working' };
+    if (after && after.blocked) return { glyph: '!', icon: 'st-attention', tone: 'attention', label: after.rule ? 'Needs you · start rule' : `Needs you · after #${after.number}`, group: 'needs', detail: after.blocked };
+    if (after && after.rule) return { glyph: '⛓', icon: 'st-chained', tone: 'queued', label: 'Queued by a rule', group: 'working' };
+    return { glyph: '⛓', icon: 'st-chained', tone: 'queued', label: after ? (after.rule ? `Queued: when ${after.rule}` : `Queued after #${after.number}`) : 'Queued after another task', group: 'working' };
   }
   if (status === 'closed') return { glyph: '✓', icon: 'st-closed', tone: 'closed', label: 'Closed', group: 'ended' };
   if (status === 'stopped_cancelled') return { glyph: '■', icon: 'st-stopped', tone: 'stopped', label: STOP_LABELS[status], group: 'ended' };
@@ -170,6 +171,7 @@ export function activityLine(task, info = statusInfo(task)) {
   if (task.status === 'chained') {
     const after = task.after;
     if (after && after.blocked) return after.blocked;
+    if (after && after.rule) return `Starts by itself when ${after.rule}`;
     return after ? `Starts by itself when #${after.number} is done` : info.label;
   }
   if (task.status === 'waiting_capacity') return pausedLine(task);

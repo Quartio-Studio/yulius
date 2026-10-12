@@ -17,6 +17,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   wait with `yulius wait` instead of polling; the briefing and notices end at the merge into
   `dev` (never promote unless asked) and fit Claude Code's hook limit; tasks run Opus by default
   with auto-compact on and 10-minute Bash timeouts.
+- Tasks can start by a logical rule: besides "run after #N", a new task can wait for a sentence such as `#12 done and #13 done` or `#12 done or #14 ended` (composer: Run after → "When a rule is true…", API `start_rule`); it starts the moment the sentence is true and goes to Needs you when it never can be ([SPEC-017](../.ai/specs/SPEC-017-task-start-rules.md), ADR-0018).
 - Sandboxes stay clean and background shells stay honest (SPEC-019): an idle task's caches go after
   4 hours whatever the quota, never while its background shells still run a build; ended tasks'
   worktrees go when only rebuildable directories are ignored; orphan worktrees and removed

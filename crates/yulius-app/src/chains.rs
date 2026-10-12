@@ -8,12 +8,15 @@
 //! it back to waiting. A chained task starts from its predecessor's branch until that branch is
 //! merged, then from the integration branch.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use yulius_contracts::api::tasks::{ChainLink, TaskSummary};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::Action;
+use yulius_domain::rule::{Facts, Rule, Truth};
 use yulius_domain::task::{TaskEvent, TaskStatus};
+use yulius_domain::time::Timestamp;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -85,7 +88,12 @@ impl App {
     }
 
     /// Records the link of a new chained task.
-    pub(crate) async fn link_chain(&self, task: &TaskRecord, after: &TaskRecord) -> AppResult<()> {
+    pub(crate) async fn link_chain(
+        &self,
+        task: &TaskRecord,
+        after: &TaskRecord,
+        rule: Option<&Rule>,
+    ) -> AppResult<()> {
         self.deps
             .store
             .insert_chain(&ChainRecord {
@@ -94,6 +102,7 @@ impl App {
                 after_number: after.number,
                 blocked_reason: None,
                 created_at: self.now(),
+                rule: rule.map(ToString::to_string),
             })
             .await
     }
@@ -118,6 +127,7 @@ impl App {
                     blocked: chain
                         .blocked_reason
                         .filter(|_| task.status == TaskStatus::Chained),
+                    rule: chain.rule,
                 }))
             }
             _ => None,
@@ -133,6 +143,7 @@ impl App {
                     blocked: chain
                         .blocked_reason
                         .filter(|_| successor.status == TaskStatus::Chained),
+                    rule: chain.rule,
                 });
             }
         }
@@ -142,12 +153,24 @@ impl App {
     /// Re-evaluates the tasks waiting for `predecessor`: starts them when it is Done, marks
     /// them as needing a person when it ended otherwise, leaves them waiting meanwhile.
     pub async fn advance_chains(self: &Arc<Self>, predecessor: &TaskId) {
+        // Waiting start rules may name this task anywhere (SPEC-017 RUL-005).
+        if let Ok(Some(before)) = self.deps.store.task(predecessor).await {
+            self.advance_rule_chains(&before.sandbox_id).await;
+        }
+        self.advance_after_chains(predecessor).await;
+    }
+
+    /// The tasks waiting for `predecessor` alone ("Run after #N", no rule).
+    async fn advance_after_chains(self: &Arc<Self>, predecessor: &TaskId) {
         let store = &self.deps.store;
         let Ok(chains) = store.chain_successors(predecessor).await else {
             return;
         };
         let mut waiting = Vec::new();
-        for chain in chains.into_iter().filter(|c| c.blocked_reason.is_none()) {
+        for chain in chains
+            .into_iter()
+            .filter(|c| c.blocked_reason.is_none() && c.rule.is_none())
+        {
             if let Ok(Some(task)) = store.task(&chain.task_id).await
                 && task.status == TaskStatus::Chained
             {
@@ -207,7 +230,8 @@ impl App {
             .await
             .unwrap_or_default()
         {
-            if let Ok(Some(task)) = self.deps.store.task(&chain.task_id).await
+            if chain.rule.is_none()
+                && let Ok(Some(task)) = self.deps.store.task(&chain.task_id).await
                 && task.status == TaskStatus::Chained
             {
                 self.block_chained(&task, &reason).await;
@@ -216,12 +240,18 @@ impl App {
     }
 
     async fn block_chained(&self, task: &TaskRecord, reason: &str) {
-        if self
-            .deps
-            .store
-            .set_chain_blocked(&task.id, Some(reason))
-            .await
-            .is_ok()
+        // Not a task that started meanwhile (Start now, a concurrent pass).
+        let waiting = matches!(
+            self.deps.store.task(&task.id).await,
+            Ok(Some(t)) if t.status == TaskStatus::Chained
+        );
+        if waiting
+            && self
+                .deps
+                .store
+                .set_chain_blocked(&task.id, Some(reason))
+                .await
+                .is_ok()
         {
             self.runtime(&task.id)
                 .hub
@@ -241,22 +271,34 @@ impl App {
             return;
         };
         let mut predecessors: Vec<TaskId> = Vec::new();
+        let mut sandboxes: Vec<SandboxId> = Vec::new();
         for task in chained {
             if let Ok(Some(chain)) = self.deps.store.chain(&task.id).await
                 && chain.blocked_reason.is_none()
-                && let Some(after) = chain.after_task_id
-                && !predecessors.contains(&after)
             {
-                predecessors.push(after);
+                if chain.rule.is_some() {
+                    if !sandboxes.contains(&task.sandbox_id) {
+                        sandboxes.push(task.sandbox_id.clone());
+                    }
+                } else if let Some(after) = chain.after_task_id
+                    && !predecessors.contains(&after)
+                {
+                    predecessors.push(after);
+                }
             }
         }
+        // One rule pass per sandbox per tick, however many rules wait there.
+        for sandbox in sandboxes {
+            self.advance_rule_chains(&sandbox).await;
+        }
         for predecessor in predecessors {
-            self.advance_chains(&predecessor).await;
+            self.advance_after_chains(&predecessor).await;
         }
     }
 
     /// The predecessor was continued: its waiting successors wait for it again.
     pub(crate) async fn unblock_successors(&self, predecessor: &TaskId) {
+        self.unblock_rule_chains(predecessor).await;
         for chain in self
             .deps
             .store
@@ -264,7 +306,7 @@ impl App {
             .await
             .unwrap_or_default()
             .into_iter()
-            .filter(|c| c.blocked_reason.is_some())
+            .filter(|c| c.blocked_reason.is_some() && c.rule.is_none())
         {
             if let Ok(Some(task)) = self.deps.store.task(&chain.task_id).await
                 && task.status == TaskStatus::Chained
@@ -274,6 +316,168 @@ impl App {
                     .set_chain_blocked(&task.id, None)
                     .await
                     .is_ok()
+            {
+                self.publish_task(&task.id).await;
+            }
+        }
+    }
+
+    /// What a rule can know about task `number` of `sandbox` (a missing task has ended), with
+    /// when that task was created: a number freed by deleting the newest task and given to a
+    /// later task never answers for a rule written before it.
+    async fn rule_facts(&self, sandbox: &SandboxId, number: u32) -> (Facts, Option<Timestamp>) {
+        // (the caller memoises per pass: this may ask GitHub)
+        let Ok(Some(task)) = self.deps.store.task_by_number(sandbox, number).await else {
+            return (
+                Facts {
+                    ended: true,
+                    ..Facts::default()
+                },
+                None,
+            );
+        };
+        // A sandbox's preparation task counts as done once the sandbox is ready (U-08).
+        let done = if task.origin == TaskOrigin::Onboarding {
+            self.refresh_onboarding(&task.sandbox_id)
+                .await
+                .is_ok_and(|state| {
+                    !crate::onboarding::OnboardingState::parse(&state)
+                        .is_some_and(crate::onboarding::OnboardingState::blocks_tasks)
+                })
+        } else {
+            self.task_is_done(&task).await
+        };
+        let facts = Facts {
+            done,
+            merged: self.task_merged(&task.id).await,
+            ended: matches!(
+                task.status,
+                TaskStatus::Closed | TaskStatus::Stopped(_) | TaskStatus::Failed(_)
+            ),
+        };
+        (facts, Some(task.created_at))
+    }
+
+    /// Checks that a new task's rule names tasks of `sandbox` only and returns the first one
+    /// (the chain's anchor for links and the briefing; a rule task branches from the
+    /// integration branch).
+    ///
+    /// # Errors
+    /// `Invalid` for an unknown task number or a full chain bound.
+    pub(crate) async fn rule_anchor(
+        &self,
+        sandbox: &SandboxId,
+        rule: &Rule,
+    ) -> AppResult<TaskRecord> {
+        let mut anchor = None;
+        for number in rule.numbers() {
+            let task = self
+                .deps
+                .store
+                .task_by_number(sandbox, number)
+                .await?
+                .ok_or_else(|| {
+                    AppError::Invalid(format!(
+                        "the rule names #{number}, which does not exist in this sandbox"
+                    ))
+                })?;
+            anchor.get_or_insert(task);
+        }
+        self.ensure_chain_room(sandbox).await?;
+        anchor.ok_or_else(|| AppError::Invalid("the rule names no task".into()))
+    }
+
+    /// Evaluates the start rule of every waiting chained task of `sandbox`: starts those whose
+    /// rule is true, marks those whose rule can no longer be true as needing a person.
+    pub async fn advance_rule_chains(self: &Arc<Self>, sandbox: &SandboxId) {
+        let Ok(tasks) = self.deps.store.tasks(sandbox, false).await else {
+            return;
+        };
+        // One reading of each named task per pass, however many rules name it.
+        let mut known: HashMap<u32, (Facts, Option<Timestamp>)> = HashMap::new();
+        for task in tasks
+            .into_iter()
+            .filter(|t| t.status == TaskStatus::Chained)
+        {
+            if let Ok(Some(chain)) = self.deps.store.chain(&task.id).await
+                && chain.blocked_reason.is_none()
+                && let Some(text) = chain.rule.as_deref()
+            {
+                self.evaluate_rule(&task, text, &mut known).await;
+            }
+        }
+    }
+
+    async fn evaluate_rule(
+        self: &Arc<Self>,
+        task: &TaskRecord,
+        text: &str,
+        known: &mut HashMap<u32, (Facts, Option<Timestamp>)>,
+    ) {
+        let rule = match Rule::parse(text) {
+            Ok(rule) => rule,
+            Err(err) => {
+                let reason =
+                    format!("Its start rule is invalid ({err}). Start this task now or cancel it.");
+                self.block_chained(task, &reason).await;
+                return;
+            }
+        };
+        for number in rule.numbers() {
+            if let std::collections::hash_map::Entry::Vacant(slot) = known.entry(number) {
+                slot.insert(self.rule_facts(&task.sandbox_id, number).await);
+            }
+        }
+        let ended = Facts {
+            ended: true,
+            ..Facts::default()
+        };
+        // Only tasks that existed when this task was created answer for its rule.
+        let facts: HashMap<u32, Facts> = known
+            .iter()
+            .map(|(n, (facts, created))| {
+                let current = created.is_some_and(|at| at <= task.created_at);
+                (*n, if current { *facts } else { ended })
+            })
+            .collect();
+        match rule.eval(&|n| facts.get(&n).copied().unwrap_or(ended)) {
+            Truth::True => {
+                if let Err(err) = self.release_chained(task).await {
+                    tracing::warn!(task = %task.id, error = %err, "task did not start on its rule");
+                }
+            }
+            Truth::False => {
+                let reason = format!(
+                    "Its start rule `{rule}` can no longer become true. Start this task now or cancel it."
+                );
+                self.block_chained(task, &reason).await;
+            }
+            Truth::Unknown => {}
+        }
+    }
+
+    /// A task named by waiting rules was continued: those rules wait for it again.
+    async fn unblock_rule_chains(&self, predecessor: &TaskId) {
+        let store = &self.deps.store;
+        let Ok(Some(before)) = store.task(predecessor).await else {
+            return;
+        };
+        let Ok(tasks) = store.tasks(&before.sandbox_id, false).await else {
+            return;
+        };
+        for task in tasks
+            .into_iter()
+            .filter(|t| t.status == TaskStatus::Chained)
+        {
+            if let Ok(Some(chain)) = store.chain(&task.id).await
+                && chain.blocked_reason.is_some()
+                && before.created_at <= task.created_at
+                && chain
+                    .rule
+                    .as_deref()
+                    .and_then(|text| Rule::parse(text).ok())
+                    .is_some_and(|rule| rule.numbers().contains(&before.number))
+                && store.set_chain_blocked(&task.id, None).await.is_ok()
             {
                 self.publish_task(&task.id).await;
             }
@@ -343,6 +547,11 @@ impl App {
     pub(crate) async fn chain_base(&self, task: &TaskRecord) -> Option<String> {
         let store = &self.deps.store;
         let chain = store.chain(&task.id).await.ok()??;
+        // A rule may be true because a task failed or never ran: it starts from the
+        // integration branch (SPEC-017).
+        if chain.rule.is_some() {
+            return None;
+        }
         let before = store.task(&chain.after_task_id?).await.ok()??;
         let branch = before.branch?;
         if self.task_merged(&before.id).await {
@@ -363,6 +572,11 @@ impl App {
             Some(id) => store.task(id).await.ok().flatten(),
             None => None,
         };
+        if let Some(rule) = &chain.rule {
+            return Some(format!(
+                "\n\n## Starts when a rule is true\n\nThis task was queued to start when `{rule}`. It started from the integration branch; look at those tasks' work (`tasks_list`, `task_get`) before you build on it.\n"
+            ));
+        }
         let title = before.as_ref().map_or("(deleted)", |t| t.title.as_str());
         let branch = before
             .as_ref()

@@ -8,6 +8,7 @@ use yulius_domain::auto_choice::AUTO;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::permission::Action;
+use yulius_domain::rule::Rule;
 use yulius_domain::task::TaskStatus;
 
 use crate::auth::AuthContext;
@@ -79,10 +80,31 @@ impl App {
         req: NewTask,
         after: Option<&TaskRecord>,
     ) -> AppResult<TaskRecord> {
+        self.create_task_ruled(req, after, None).await
+    }
+
+    /// [`App::create_task_with`], or waiting for a start `rule` over other tasks of the sandbox
+    /// instead of one predecessor (SPEC-017): the task starts by itself once the rule is true.
+    ///
+    /// # Errors
+    /// As [`App::create_task_with`]; `Invalid` for a rule naming an unknown task, or a rule
+    /// together with `after`.
+    pub async fn create_task_ruled(
+        self: &Arc<Self>,
+        req: NewTask,
+        after: Option<&TaskRecord>,
+        rule: Option<&Rule>,
+    ) -> AppResult<TaskRecord> {
         let store = &self.deps.store;
-        let after = match after {
-            Some(task) => Some(self.chain_predecessor(&req.sandbox, &task.id).await?),
-            None => None,
+        let after = match (after, rule) {
+            (Some(_), Some(_)) => {
+                return Err(AppError::Invalid(
+                    "give a task to run after or a start rule, not both".into(),
+                ));
+            }
+            (None, Some(rule)) => Some(self.rule_anchor(&req.sandbox, rule).await?),
+            (Some(task), None) => Some(self.chain_predecessor(&req.sandbox, &task.id).await?),
+            (None, None) => None,
         };
         let sandbox = store
             .sandbox(&req.sandbox)
@@ -152,7 +174,7 @@ impl App {
         };
         let task = store.insert_task(&record).await?;
         if let Some(before) = &after {
-            self.link_chain(&task, before).await?;
+            self.link_chain(&task, before, rule).await?;
         }
         let branch = branch_for(task.number, &task.title);
         store
@@ -253,6 +275,10 @@ impl App {
                 Some(self.chain_predecessor(&sid, &id).await?)
             }
         };
+        let rule = match req.start_rule.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(text) => Some(Rule::parse(text).map_err(|e| AppError::Invalid(e.to_string()))?),
+        };
         // Jev is asked only about a prompt the task accepts.
         let prompt = req.prompt.trim();
         if prompt.is_empty() || prompt.len() > MAX_PROMPT_BYTES {
@@ -262,7 +288,7 @@ impl App {
         }
         let choice = self.auto_choose(&sid, prompt, mode, workflow).await?;
         let task = self
-            .create_task_with(
+            .create_task_ruled(
                 NewTask {
                     sandbox: sid,
                     created_by: ctx.user.id.clone(),
@@ -283,6 +309,7 @@ impl App {
                     mode: choice.mode,
                 },
                 after.as_ref(),
+                rule.as_ref(),
             )
             .await?;
         if choice.is_auto() {

@@ -83,6 +83,20 @@ test('a short request starts at once and "Run after" chains it', async ({ app, b
   await expect(browser.locator('.strip-status')).toHaveText(/Queued after #12/);
 });
 
+test('"Run after" takes a logical rule; the task waits for it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('menuitemradio', /^When a rule is true/).click();
+  await screen.getByRole('textbox', /^Rule/).fill('#12 done and #4 done');
+  await screen.getByRole('button', 'Use this rule').click();
+  await expect(screen.getByRole('button', /Run after: When #12 done and #4 done/)).toBeVisible();
+  await screen.getByRole('textbox', 'Task prompt').fill('Write the checkout UI tests');
+  await screen.getByRole('button', 'Start task').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  await expect(browser.locator('.attention-bar')).toHaveText(/Queued by a rule\. It starts by itself when #12 done and #4 done\./);
+});
+
 test('a held prompt shows its choices; "Run after this task" chains a new task', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/4'));
   const card = screen.getByRole('region', 'Held prompt');

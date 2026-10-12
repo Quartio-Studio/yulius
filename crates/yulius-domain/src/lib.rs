@@ -20,6 +20,7 @@ pub mod permission;
 pub mod redact;
 pub mod request;
 pub mod rotation;
+pub mod rule;
 pub mod scope;
 pub mod spec_format;
 pub mod steps;
