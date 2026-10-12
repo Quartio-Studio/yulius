@@ -2,9 +2,10 @@
 //! attached files, the definition of done Yulius holds the task to, and the one-line `/goal`
 //! condition Claude Code keeps the session working towards.
 //!
-//! The request is written to a file the agent reads (no length limit, attachments listed as
-//! files to open), and the goal condition names it: Claude Code caps a goal condition at 500
-//! characters, so a long request is never the condition itself.
+//! The request is written to a file the agent reads (no length limit), and the goal condition
+//! names it: Claude Code caps a goal condition at 500 characters, so a long request is never the
+//! condition itself. Attached files are mentioned (`@path`) in the session's first message, which
+//! Claude Code attaches natively, an image as an image (SPEC-025, ADR-0019).
 
 /// Longest goal condition Yulius types (Claude Code caps goal conditions at 500 characters).
 pub const GOAL_MAX_CHARS: usize = 450;
@@ -49,19 +50,60 @@ impl Request {
         Self { text, attachments }
     }
 
-    /// The first message of a session that is not in goal mode: the text, then the attached
-    /// files to open.
+    /// The first message of a session that is not in goal mode: the text, then a mention of
+    /// each attached file.
     #[must_use]
     pub fn first_message(&self) -> String {
         if self.attachments.is_empty() {
             return self.text.clone();
         }
-        format!(
-            "{}\n\n{}",
-            self.text,
-            attachments_section(&self.attachments)
-        )
+        let mentions = mentions(&self.attachments);
+        if self.text.is_empty() {
+            return mentions;
+        }
+        format!("{}\n\n{mentions}", self.text)
     }
+
+    /// The first message of a goal-mode session, before Yulius types its `/goal`: the attached
+    /// files, mentioned so Claude Code attaches them. `None` without attached files.
+    #[must_use]
+    pub fn attachments_message(&self) -> Option<String> {
+        (!self.attachments.is_empty()).then(|| {
+            format!(
+                "The files attached to this task. Its goal follows in the next message; until \
+                 then, only look at them.\n\n{}",
+                mentions(&self.attachments)
+            )
+        })
+    }
+}
+
+/// One mention per line (`@/a/b.png`, `@"/a/b c.png"` with whitespace), which Claude Code
+/// attaches itself; a path no mention can carry (whitespace and a double quote, or a control
+/// character) is listed to open with the Read tool instead.
+fn mentions(paths: &[String]) -> String {
+    let mut lines = Vec::new();
+    let mut unmentionable = Vec::new();
+    for path in paths {
+        if path.chars().any(char::is_control) {
+            unmentionable.push(path);
+        } else if !path.chars().any(char::is_whitespace) {
+            lines.push(format!("@{path}"));
+        } else if path.contains('"') {
+            unmentionable.push(path);
+        } else {
+            lines.push(format!("@\"{path}\""));
+        }
+    }
+    if !unmentionable.is_empty() {
+        let mut list = String::from("Open with the Read tool:");
+        for path in unmentionable {
+            list.push_str("\n- ");
+            list.push_str(path);
+        }
+        lines.push(list);
+    }
+    lines.join("\n")
 }
 
 /// The path of an `@path` attachment line (`@/a/b.png` or `@'/a/b c.png'`), if the line is one.
@@ -98,7 +140,8 @@ fn attachment_path(line: &str) -> Option<String> {
 
 fn attachments_section(paths: &[String]) -> String {
     let mut out = String::from(
-        "Attached files: open each one with the Read tool (it shows images) before you start:",
+        "These files were attached to the session's first message; open one again with the Read \
+         tool (it shows images) if you need it:",
     );
     for path in paths {
         out.push_str("\n- ");
@@ -263,12 +306,31 @@ mod tests {
     }
 
     #[test]
-    fn the_first_message_lists_the_files_to_open() {
-        let request = Request::parse("Look\n@/srv/a.png");
-        let first = request.first_message();
-        assert!(first.starts_with("Look\n\nAttached files: open each one with the Read tool"));
-        assert!(first.ends_with("\n- /srv/a.png"));
+    fn the_first_message_mentions_the_files_so_claude_code_attaches_them() {
+        let request = Request::parse("Look\n@/srv/a.png\n@'/srv/my shot.png'");
+        assert_eq!(
+            request.first_message(),
+            "Look\n\n@/srv/a.png\n@\"/srv/my shot.png\""
+        );
+        assert_eq!(Request::parse("@/srv/a.png").first_message(), "@/srv/a.png");
         assert_eq!(Request::parse("Just text").first_message(), "Just text");
+        // A path no mention can carry (a quote and a space) is left for the Read tool.
+        let odd = Request::parse("Look\n@'/srv/say \"hi\".png'").first_message();
+        assert!(!odd.contains('@'), "{odd}");
+        assert!(odd.ends_with("Open with the Read tool:\n- /srv/say \"hi\".png"), "{odd}");
+    }
+
+    #[test]
+    fn a_goal_session_first_gets_the_attached_files_when_there_are_any() {
+        assert_eq!(Request::parse("Only text").attachments_message(), None);
+        let message = Request::parse("Make it blue\n@/srv/a.png\n@/srv/b.txt")
+            .attachments_message()
+            .unwrap_or_default();
+        assert!(
+            message.starts_with("The files attached to this task. Its goal follows in the next message"),
+            "{message}"
+        );
+        assert!(message.ends_with("\n\n@/srv/a.png\n@/srv/b.txt"), "{message}");
     }
 
     #[test]
@@ -320,7 +382,11 @@ mod tests {
         let file = request_markdown(17, "Speed\nup", "mkarp", &request, &done(&["dev"]));
         assert!(file.starts_with("# Task #17: Speed up\n\nRequested by mkarp."));
         assert!(file.contains("## Request\n\nMake it fast\nreally\n"));
-        assert!(file.contains("## Attached files\n\nAttached files: open each one"));
+        assert!(
+            file.contains("## Attached files\n\nThese files were attached to the session's first message"),
+            "{file}"
+        );
+        assert!(file.contains("\n- /srv/a.png\n"), "{file}");
         assert!(file.contains("`delivery_merge` on green Yulius CI"));
         assert!(file.contains("Then deploy to `dev` with `delivery_deploy`"));
         assert!(file.contains("**Never promote to `main`**"));
