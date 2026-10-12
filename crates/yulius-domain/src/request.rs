@@ -317,7 +317,10 @@ mod tests {
         // A path no mention can carry (a quote and a space) is left for the Read tool.
         let odd = Request::parse("Look\n@'/srv/say \"hi\".png'").first_message();
         assert!(!odd.contains('@'), "{odd}");
-        assert!(odd.ends_with("Open with the Read tool:\n- /srv/say \"hi\".png"), "{odd}");
+        assert!(
+            odd.ends_with("Open with the Read tool:\n- /srv/say \"hi\".png"),
+            "{odd}"
+        );
     }
 
     #[test]
@@ -327,10 +330,15 @@ mod tests {
             .attachments_message()
             .unwrap_or_default();
         assert!(
-            message.starts_with("The files attached to this task. Its goal follows in the next message"),
+            message.starts_with(
+                "The files attached to this task. Its goal follows in the next message"
+            ),
             "{message}"
         );
-        assert!(message.ends_with("\n\n@/srv/a.png\n@/srv/b.txt"), "{message}");
+        assert!(
+            message.ends_with("\n\n@/srv/a.png\n@/srv/b.txt"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -383,7 +391,9 @@ mod tests {
         assert!(file.starts_with("# Task #17: Speed up\n\nRequested by mkarp."));
         assert!(file.contains("## Request\n\nMake it fast\nreally\n"));
         assert!(
-            file.contains("## Attached files\n\nThese files were attached to the session's first message"),
+            file.contains(
+                "## Attached files\n\nThese files were attached to the session's first message"
+            ),
             "{file}"
         );
         assert!(file.contains("\n- /srv/a.png\n"), "{file}");
