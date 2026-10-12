@@ -39,5 +39,8 @@ Take the facts from Claude Code's own records instead of inferring them from the
 
 - A goal that is never met reads Working while Claude Code keeps asking the model, as it is.
 - Monitor tool streams are still not counted as background work (SPEC-016 limit).
-- Between Yulius's Stop hook and the goal verdict the task still reads "Your turn" for a moment.
+- Between Yulius's Stop hook and the goal verdict (or the turn record that counts pending agents)
+  the task still reads "Your turn" or Done for a moment; chain starts wait up to 3 s for the record.
+- A proactive subscription switch at a turn boundary cannot know a background agent is pending
+  and still ends it (shells are protected, SPEC-019).
 - The `background_shells` API field now means background work (shells and agents); the name stays.

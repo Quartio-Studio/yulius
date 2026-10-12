@@ -135,6 +135,7 @@ struct Options {
     goal_agent: Option<u64>,
     goal_continue_ms: Option<u64>,
     goal_continue_verdict: bool,
+    goal_continue_dies: bool,
     goal_delay_ms: u64,
     opening_turn_ms: Option<u64>,
     echo_turn_ms: u64,
@@ -168,6 +169,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         goal_agent: None,
         goal_continue_ms: None,
         goal_continue_verdict: false,
+        goal_continue_dies: false,
         goal_delay_ms: 0,
         opening_turn_ms: None,
         echo_turn_ms: 0,
@@ -227,6 +229,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.goal_continue_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
             }
             "--goal-continue-verdict" => options.goal_continue_verdict = true,
+            "--goal-continue-dies" => options.goal_continue_dies = true,
             "--goal-delay-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_delay_ms = ms.min(MAX_GOAL_DELAY_MS);
@@ -976,6 +979,11 @@ fn goal_turn(
             })?;
             say("GOAL NOT MET")?;
             std::thread::sleep(Duration::from_millis(ms));
+            if options.goal_continue_dies {
+                // An API error ended the continued turn: no Stop hook runs, the turn closes.
+                write(&|t| t.close_turn(ms, 0))?;
+                return say("CONTINUATION DIED");
+            }
             write(&|t| t.tool_use())?;
         } else {
             say("STOP CONTINUED")?;

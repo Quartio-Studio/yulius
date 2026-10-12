@@ -129,6 +129,12 @@ pub struct TaskRuntime {
     /// When (ms) a notice that asks a person to act flagged the task `needs_attention` (0 = no
     /// such flag): the agent's work after it shows the person answered (STA-003).
     pub(crate) notice_attention_ms: AtomicI64,
+    /// When (ms) the record that closes a turn was last seen: the background agents it counts
+    /// are known from then on (STA-001), which the chain and Done decisions wait for.
+    pub(crate) turn_record_ms: AtomicI64,
+    /// The task was made Working again by the goal verdict or by work after a stop, not by a
+    /// prompt: when the turn closes without any Stop hook (an error ended it) it is idle again.
+    pub(crate) resumed_turn: AtomicBool,
     /// The run was reattached after a restart: the transcript it already wrote is history.
     pub(crate) replay_transcript: AtomicBool,
     /// Why Claude Code said the current session ends (`SessionEnd` hook), until the run exits.
@@ -184,6 +190,8 @@ impl TaskRuntime {
             shells_since_ms: AtomicI64::new(0),
             background_agents: AtomicU32::new(0),
             notice_attention_ms: AtomicI64::new(0),
+            turn_record_ms: AtomicI64::new(0),
+            resumed_turn: AtomicBool::new(false),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
             hold_polled_ms: AtomicI64::new(0),
@@ -2209,6 +2217,8 @@ impl App {
         runtime.background_shells.store(-1, Ordering::SeqCst);
         runtime.background_agents.store(0, Ordering::SeqCst);
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
+        runtime.turn_record_ms.store(0, Ordering::SeqCst);
+        runtime.resumed_turn.store(false, Ordering::SeqCst);
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
         }
@@ -2415,6 +2425,7 @@ impl App {
                 self.hold_overtaken(task_id, at, Activity::Working).await;
                 runtime.background_agents.store(0, Ordering::SeqCst);
                 runtime.notice_attention_ms.store(0, Ordering::SeqCst);
+                runtime.resumed_turn.store(false, Ordering::SeqCst);
                 runtime.start_turn(self.now());
                 let _ = self
                     .deps
@@ -2440,6 +2451,7 @@ impl App {
             Observation::TurnEnded { background_agents } => {
                 self.background_agents_observed(task_id, background_agents.unwrap_or(0))
                     .await;
+                self.turn_record_seen(task_id).await;
             }
             Observation::AgentWork { at } => self.agent_worked(task_id, at).await,
             Observation::Session { .. } => {}

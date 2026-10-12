@@ -89,6 +89,30 @@ impl TranscriptFacts {
     }
 }
 
+/// The idle task's background work: the shell probe's count (`-1` = not known) and the background
+/// agents Claude Code counted. An unknown probe stays unknown without agents.
+#[must_use]
+pub(crate) fn combine_background(probe: i64, agents: u32) -> i64 {
+    if agents > 0 {
+        probe.max(i64::from(agents))
+    } else {
+        probe
+    }
+}
+
+/// Whether the record that closes the turn of a clean Stop (`stop_ms`, 0 = none) is still
+/// expected: not seen since (`record_ms`) and the Stop is younger than [`TURN_RECORD_WAIT`].
+#[must_use]
+pub(crate) fn turn_record_pending(stop_ms: i64, record_ms: i64, now_ms: i64) -> bool {
+    stop_ms > 0
+        && record_ms < stop_ms
+        && now_ms.saturating_sub(stop_ms) < TURN_RECORD_WAIT.as_millis() as i64
+}
+
+/// How long a decision at a clean Stop waits for the record that closes the turn, which says how
+/// many background agents are pending (it is written after the Stop hooks, about a poll later).
+const TURN_RECORD_WAIT: Duration = Duration::from_secs(3);
+
 /// What assistant work seen in the transcript (`at`) does to a running task's activity
 /// (STA-003, STA-005): after the last clean stop (`last_stop_ms`) it shows the session goes on, so
 /// an idle task is Working again (a Stop hook continued the turn, a wake-up started one); and
@@ -133,6 +157,7 @@ impl App {
     pub(crate) fn activity_after_clean_turn(&self, task_id: &TaskId) -> Activity {
         let runtime = self.runtime(task_id);
         runtime.last_stop_ms.store(self.now().0, Ordering::SeqCst);
+        runtime.resumed_turn.store(false, Ordering::SeqCst);
         Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst))
     }
 
@@ -236,6 +261,7 @@ impl App {
         tracing::info!(task = %task.id, was = ?task.activity, "the agent works on: the task is working");
         let runtime = self.runtime(&task.id);
         runtime.background_agents.store(0, Ordering::SeqCst);
+        runtime.resumed_turn.store(true, Ordering::SeqCst);
         runtime.start_turn(self.now());
         if let Err(err) = self.set_task_activity(task, next).await {
             tracing::warn!(task = %task.id, error = %err, "could not update the task's activity");
@@ -337,8 +363,49 @@ impl App {
         }
         self.probe_idle_shells(task_id).await;
         if next == Some(Activity::Done) {
-            // Tasks chained after this one start once it is Done (TSK-012).
-            self.advance_chains(task_id).await;
+            // Tasks chained after this one start once it is Done (TSK-012); not from this loop,
+            // which must go on reading the record that says what is still pending.
+            let (app, task_id) = (Arc::clone(self), task_id.clone());
+            tokio::spawn(async move { app.advance_chains(&task_id).await });
+        }
+    }
+
+    /// Waits (bounded) until the record that closes the turn of the last clean Stop was seen:
+    /// before it the task's background agents are not known, and a task with one pending is not
+    /// done. No wait without a recent Stop (a replay, a hookless run) or once the record came.
+    pub(crate) async fn await_turn_record(&self, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        let pending = || {
+            turn_record_pending(
+                runtime.last_stop_ms.load(Ordering::SeqCst),
+                runtime.turn_record_ms.load(Ordering::SeqCst),
+                self.now().0,
+            )
+        };
+        while pending() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// The record that closes a turn was seen (its background agents are applied already). A
+    /// turn the verdict or later work had resumed and that ends with no Stop hook (an error ended
+    /// it) leaves the task idle again, not Working for good.
+    pub(crate) async fn turn_record_seen(self: &Arc<Self>, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        runtime.turn_record_ms.store(self.now().0, Ordering::SeqCst);
+        if !runtime.resumed_turn.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        if task.status == TaskStatus::Running && task.activity == Some(Activity::Working) {
+            runtime.end_turn(self.now());
+            let next = Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst));
+            if let Err(err) = self.set_task_activity(&task, next).await {
+                tracing::warn!(task = %task_id, error = %err, "could not settle the task");
+            }
+            self.probe_idle_shells(task_id).await;
         }
     }
 
@@ -380,7 +447,7 @@ impl App {
         // in its turn record (STA-001). The count is the larger of the two views of the same
         // background work (a background Bash command is in both).
         let count = if idle {
-            count.max(i64::from(runtime.background_agents.load(Ordering::SeqCst)))
+            combine_background(count, runtime.background_agents.load(Ordering::SeqCst))
         } else {
             count
         };
@@ -398,8 +465,10 @@ impl App {
             }
             self.publish_task(task_id).await;
             if previous > 0 && count == 0 {
-                // The last shell ended: a done task is Done now, and its chain may start.
-                self.advance_chains(task_id).await;
+                // The last shell ended: a done task is Done now, and its chain may start (not
+                // from the watcher's loop: the chain waits for the turn record).
+                let (app, task_id) = (Arc::clone(self), task_id.clone());
+                tokio::spawn(async move { app.advance_chains(&task_id).await });
             }
         }
     }
@@ -628,6 +697,25 @@ mod tests {
         assert_eq!(activity_on_goal_not_met(Some(A::Working)), None);
         assert_eq!(activity_on_goal_not_met(Some(A::NeedsAttention)), None);
         assert_eq!(activity_on_goal_not_met(None), None);
+    }
+
+    /// STA-001 (review of SPEC-032): the idle count of background work keeps an unknown probe
+    /// unknown unless agents are pending, and the chain waits only for a record still expected.
+    #[test]
+    fn background_work_and_the_turn_record_wait() {
+        assert_eq!(combine_background(-1, 0), -1, "unknown stays unknown");
+        assert_eq!(combine_background(0, 0), 0);
+        assert_eq!(combine_background(-1, 2), 2);
+        assert_eq!(combine_background(1, 2), 2);
+        assert_eq!(combine_background(3, 2), 3);
+        // A Stop at 1000 ms: the record is expected until it came or 3 s passed.
+        assert!(turn_record_pending(1_000, 0, 1_200));
+        assert!(!turn_record_pending(1_000, 1_100, 1_200), "the record came");
+        assert!(!turn_record_pending(1_000, 0, 4_001), "gave up waiting");
+        assert!(
+            !turn_record_pending(0, 0, 10),
+            "no Stop of this run (replay, hookless)"
+        );
     }
 
     #[test]

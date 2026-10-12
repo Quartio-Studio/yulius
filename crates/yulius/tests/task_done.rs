@@ -670,7 +670,7 @@ fn a_stop_the_session_goes_on_from_does_not_leave_the_task_waiting() -> TestResu
             let agent = FakeAgentOptions {
                 transcript: true,
                 hooks: true,
-                goal_continue_ms: Some(6_000),
+                goal_continue_ms: Some(12_000),
                 goal_continue_verdict: verdict,
                 ..FakeAgentOptions::default()
             };
@@ -681,10 +681,10 @@ fn a_stop_the_session_goes_on_from_does_not_leave_the_task_waiting() -> TestResu
                 screen_contains(&app, &id, marker)
             })
             .await?;
-            // Well before the agent's next record (the verdict case: 6 s), the task works.
+            // Well before the agent's next record (the verdict case: 12 s), the task works.
             wait_for(
                 "Working while the session goes on",
-                Duration::from_secs(4),
+                Duration::from_secs(8),
                 || async { activity(&app, &id).await == Some(Activity::Working) },
             )
             .await?;
@@ -695,6 +695,48 @@ fn a_stop_the_session_goes_on_from_does_not_leave_the_task_waiting() -> TestResu
             stop(&app, &id).await
         })?;
     }
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// STA-004 (review of SPEC-032): the goal verdict "not met" sends the agent on, then an API error
+/// ends that turn and Claude Code runs no Stop hook. The task does not stay Working for good: the
+/// record that closes the turn makes it wait for the person again.
+#[test]
+fn a_continued_turn_that_dies_without_a_stop_leaves_the_task_waiting() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_continue_ms: Some(6_000),
+            goal_continue_verdict: true,
+            goal_continue_dies: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("the verdict", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL NOT MET")
+        })
+        .await?;
+        wait_for("Working", Duration::from_secs(4), || async {
+            activity(&app, &id).await == Some(Activity::Working)
+        })
+        .await?;
+        wait_for("the turn's death", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "CONTINUATION DIED")
+        })
+        .await?;
+        wait_for("Your turn again", Duration::from_secs(10), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
