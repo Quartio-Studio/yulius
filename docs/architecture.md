@@ -63,7 +63,7 @@ the CLI prompt argument, which Claude Code attaches natively (an image as an ima
 then gets its `/goal` typed into the terminal; the request file in the sandbox home keeps the
 whole request ([SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
 [SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
-[decision 0021](decisions/0021-native-task-attachments.md)).
+[decision 0022](decisions/0022-native-task-attachments.md)).
 
 ```mermaid
 sequenceDiagram
@@ -93,6 +93,24 @@ flowchart LR
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id]"]
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
+```
+
+## Web UI state
+
+The web UI is plain ES modules. Server state comes from the API and the UI event stream
+(`store.js`); what only one person's browser needs stays in `localStorage`: preferences (theme,
+column widths, model and effort), the notification history, and the new-task composer's drafts
+([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)). Sign-out removes the
+notification history and the drafts.
+
+```mermaid
+flowchart LR
+  C["Composer (taskview.js)"] -->|"edit, attach"| D["drafts.js (per user and sandbox)"]
+  C -->|"upload"| U["POST /api/sandboxes/:id/attachments"]
+  D -->|"debounced, on leave or hide"| LS[("localStorage yulius.draft.*")]
+  LS -->|"after a reload"| D
+  C -->|"task started: clear"| D
+  SO["Sign-out"] -->|"forget"| LS
 ```
 
 ## Agent primitives

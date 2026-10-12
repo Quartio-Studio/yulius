@@ -520,22 +520,24 @@ const VIEWABLE_TYPE = /^(application\/pdf|audio\/|video\/)/;
 const TEXT_TYPE = /^(text\/|application\/(json|xml|javascript|x-sh|x-yaml|yaml|toml)\b)/;
 
 /**
- * Opens a file attached on the new-task composer (SPEC-025). An image (it has a thumbnail URL)
- * previews in a dialog at full size. A text file opens in a new tab as plain text and a PDF, audio
- * or video as it is; anything else downloads. An attached file is untrusted: a tab opened from
- * this page shares its origin, so it never opens as a page. The tab's URL lives while the chip
- * does (`item.openUrl`, revoked when it is removed).
+ * Opens a file attached on the new-task composer (SPEC-025). An image previews in a dialog at
+ * full size (`image`: its URL, or a draft's stored thumbnail once the file is gone). Otherwise the
+ * file (`item.file`, this page only) opens in a new tab as plain text when it is text, as it is
+ * when it is a PDF, audio or video, and downloads when it is anything else. An attached file is
+ * untrusted: a tab opened from this page shares its origin, so it never opens as a page.
+ * `url(blob)` gives the object URL the caller keeps for the item (and revokes with it).
  */
-export function openAttachment(item) {
-  if (item.url) {
-    openModal({ title: item.name, wide: true, className: 'attachment-modal', body: h('img', { class: 'attachment-preview', src: item.url, alt: item.name }) });
+export function openAttachment(item, { image, url }) {
+  if (image) {
+    openModal({ title: item.name, wide: true, className: 'attachment-modal', body: h('img', { class: 'attachment-preview', src: image, alt: item.name }) });
     return;
   }
-  const type = item.file.type || '';
+  if (!item.file) return;
+  const type = item.type || item.file.type || '';
   const text = TEXT_TYPE.test(type);
-  if (!item.openUrl) item.openUrl = URL.createObjectURL(text ? new Blob([item.file], { type: 'text/plain;charset=utf-8' }) : item.file);
-  if (text || VIEWABLE_TYPE.test(type)) window.open(item.openUrl, '_blank', 'noopener');
-  else h('a', { href: item.openUrl, download: item.name }).click();
+  const href = url(text ? new Blob([item.file], { type: 'text/plain;charset=utf-8' }) : item.file);
+  if (text || VIEWABLE_TYPE.test(type)) window.open(href, '_blank', 'noopener');
+  else h('a', { href, download: item.name }).click();
 }
 
 /** Uploads a file dropped on the new-task composer of a sandbox, before its task exists. */

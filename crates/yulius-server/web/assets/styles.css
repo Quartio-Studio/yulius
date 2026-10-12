@@ -1245,7 +1245,8 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
   display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 0; border: 0;
   background: transparent; color: inherit; cursor: pointer;
 }
-.composer-attachment-open:has(img) { cursor: zoom-in; }
+button.composer-attachment-open:has(img) { cursor: zoom-in; }
+span.composer-attachment-open { cursor: default; }
 .composer-attachment-open:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: -2px; }
 .composer-attachment img { width: 100%; height: 100%; object-fit: cover; }
 .attachment-modal .modal-body { display: flex; justify-content: center; }
