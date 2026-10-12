@@ -17,10 +17,12 @@ autocomplete, which takes the Enter.
 
 ## Decision
 
-The attached files are mentioned (`@/path`, or `@"/path"` with whitespace) in the session's first
-message, given as the CLI prompt argument. In prompt mode that message is the request followed by
+The attached files are mentioned, always quoted (`@"/path"`), in the session's first message,
+given as the CLI prompt argument; a path a mention cannot carry (`"`, `#`) is listed for the Read
+tool. In prompt mode that message is the request followed by
 the mentions. In goal mode a task with attached files starts with a short message holding the
-mentions and saying the goal follows; Yulius then types `/goal` as before. The request file still
+mentions and saying the goal follows; Yulius types `/goal` once that turn's Stop hook arrived,
+and lets that Stop end the turn without gates. The request file still
 lists the paths.
 
 ## Alternatives

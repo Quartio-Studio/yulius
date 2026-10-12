@@ -74,7 +74,8 @@ sequenceDiagram
     UI->>S: create task (prompt + @path lines)
     S->>C: launch with first message: text (prompt mode) or "files attached" (goal mode) + @path mentions
     C-->>C: attaches each mentioned file (image block)
-    S->>C: types /goal <condition> once the TUI is quiet (goal mode)
+    C->>S: Stop hook of that turn (goal mode)
+    S->>C: types /goal <condition>
 ```
 
 ## Agent primitives
