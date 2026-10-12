@@ -54,6 +54,15 @@ pub struct SandboxJoin {
     pub system_group: Option<PathBuf>,
 }
 
+/// A sandbox's disk against its soft quota.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskUsage {
+    /// Bytes in use.
+    pub used: u64,
+    /// The quota in bytes.
+    pub limit: u64,
+}
+
 /// See the module docs.
 #[async_trait]
 pub trait SandboxIsolation: Send + Sync {
@@ -64,6 +73,17 @@ pub trait SandboxIsolation: Send + Sync {
     /// # Errors
     /// `Conflict` over the disk quota; `Upstream` when the holder cannot start.
     async fn prepare(&self, sandbox: &SandboxRef) -> AppResult<Option<SandboxJoin>>;
+
+    /// The last measurement of `sandbox` against its quota; `None` when unmeasured or without
+    /// a quota.
+    async fn disk(&self, _sandbox: &SandboxRef) -> Option<DiskUsage> {
+        None
+    }
+
+    /// Measures `sandbox` now (after space was freed) and keeps the reading.
+    async fn measure_disk(&self, _sandbox: &SandboxRef) -> Option<DiskUsage> {
+        None
+    }
 
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
     fn release(&self, sandbox: &SandboxId);
