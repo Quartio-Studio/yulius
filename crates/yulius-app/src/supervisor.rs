@@ -54,6 +54,8 @@ pub const WATCH_INTERVAL_MS: u64 = 1_000;
 pub const REATTACH_ATTEMPTS: u32 = 3;
 /// How long a closed run may take to be recorded as ended after the close escalation (SPEC-039).
 const CLOSE_SETTLE_MS: i64 = 5_000;
+/// How often a close waiting for its run looks again without an update (SPEC-039).
+const CLOSE_RECHECK: Duration = Duration::from_secs(1);
 
 /// Why Yulius is ending a run.
 enum EndIntent {
@@ -1761,20 +1763,26 @@ impl App {
     }
 
     /// Closes a finished, running task like [`Self::close_task_now`] and waits until its run has
-    /// ended and the task rests (SPEC-039), so its records and directories can go. The wait
-    /// follows the task's update events and is bounded by the close escalation, after which the
-    /// run is terminated and marked lost, plus [`CLOSE_SETTLE_MS`].
+    /// ended and the task rests (SPEC-039), so its records and directories can go. A run that
+    /// already ended by itself is not a conflict. The close and the wait are bounded together by
+    /// the close escalation, after which the run is terminated and marked lost, plus
+    /// [`CLOSE_SETTLE_MS`]; the wait follows the task's update events and looks again every
+    /// [`CLOSE_RECHECK`] in case an update is never published.
     ///
     /// # Errors
-    /// `Conflict` when the task is not running, or its run is still there at the bound.
+    /// `Conflict` when the run is still there at the bound.
     pub async fn close_task_and_wait(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
         // Subscribed before closing, so the update that says the run ended is never missed.
         let mut events = self.events.subscribe();
-        self.close_task_now(task_id).await?;
         let total =
             STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS + CLOSE_SETTLE_MS;
         let bound = Duration::from_millis(u64::try_from(total).unwrap_or(25_000));
         let ended = tokio::time::timeout(bound, async {
+            match self.close_task_now(task_id).await {
+                // Not running any more: whether it rests is checked below.
+                Ok(()) | Err(AppError::Conflict(_)) => {}
+                Err(err) => return Err(err),
+            }
             loop {
                 let store = &self.deps.store;
                 let rests = store
@@ -1785,17 +1793,17 @@ impl App {
                     return Ok::<bool, AppError>(true);
                 }
                 loop {
-                    match events.recv().await {
-                        Ok(envelope) => {
+                    match tokio::time::timeout(CLOSE_RECHECK, events.recv()).await {
+                        Ok(Ok(envelope)) => {
                             if matches!(&envelope.event, UiEvent::TaskUpdated { task }
                                 if task.id == task_id.as_str())
                             {
                                 break;
                             }
                         }
-                        // Updates were missed: look again.
-                        Err(broadcast::error::RecvError::Lagged(_)) => break,
-                        Err(broadcast::error::RecvError::Closed) => return Ok(false),
+                        // No update for a while, or updates were missed: look again.
+                        Err(_) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => break,
+                        Ok(Err(broadcast::error::RecvError::Closed)) => return Ok(false),
                     }
                 }
             }

@@ -845,7 +845,25 @@ fn a_done_task_can_be_deleted_its_session_is_closed_first() -> TestResult {
             .await?
             .ok_or("the Done task has no live session")?;
         let agent_pid = attempt.child_pid.ok_or("no agent pid")?;
+        let mut events = app.events.subscribe();
+        let started = Instant::now();
         app.delete_task(&ctx, id.as_str()).await?;
+        // Closed gracefully, not stopped and not lost through the 20 s escalation.
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "the close took {:?}",
+            started.elapsed()
+        );
+        let mut closed = false;
+        while let Ok(envelope) = events.try_recv() {
+            if let UiEvent::TaskUpdated { task } = envelope.event
+                && task.id == id.as_str()
+                && task.status == "closed"
+            {
+                closed = true;
+            }
+        }
+        assert!(closed, "the task was closed before it was deleted");
         assert!(
             app.deps.store.task(&id).await?.is_none(),
             "the task is deleted"

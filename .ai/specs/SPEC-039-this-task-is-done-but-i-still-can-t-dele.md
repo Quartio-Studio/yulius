@@ -50,9 +50,9 @@ user reported.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | DDL-001 | `DELETE /api/tasks/{tid}` on a running task that is Done (`task_is_done`, the sidebar's rule) closes its session (`EndIntent::Close`), waits until the run has ended and is reaped, then deletes the task as for a resting one (TSK-009): 204. | `task_done.rs` |
-| DDL-002 | The wait is bounded: it ends when the task's live attempt is gone, observed through the task's update events (no sleep loop), and at most the close escalation plus a margin (25 s). If the run is still there then, the answer is 409 "the task's session is still closing; try again" and nothing is deleted. | `task_done.rs`, unit reasoning in code |
+| DDL-002 | The close and the wait are bounded together: the wait ends when the task rests with no live attempt, observed through the task's update events (looking again every second in case an update is never published), and at most the close escalation plus a margin (25 s). A run that already ended by itself is not a conflict. If the run is still there at the bound, the answer is 409 "the task's session is still closing; try again" and nothing is deleted. | `task_done.rs` (closed well under the escalation), `task_delete.rs` (already ended) |
 | DDL-003 | A running task that is not Done (working, waiting for the user, background shell still running) is still refused with 409 and nothing changes; read users still get 403. | `task_delete.rs` |
-| DDL-004 | The task menu enables "Delete permanently…" for a Done task (the same rule as Archive). Its confirmation says the finished session is closed first. For a live task that is not Done, the disabled item says "Still running: stop the task before deleting it". The request may take the close's time (timeout above the server bound). | e2e `tasks.e2e.ts` or the closest menu test |
+| DDL-004 | The task menu enables "Delete permanently…" for a Done task (the same rule as Archive). Its confirmation says the finished session is closed first. For a live task that is not Done, the disabled item says "Still running: stop the task before deleting it". The request may take the close's time (timeout above the server bound). | e2e `task-done.e2e.ts` |
 | DDL-005 | SPEC-001 TSK-009 and TSK-014, `docs/api.md`, an ADR and `docs/changes.md` say that a Done task is closed as it is deleted. | review |
 
 ## Plan

@@ -19,8 +19,9 @@ A Done task is treated as finished: deleting it closes its session like Archive 
 (`close_task_now`, the task ends `closed`), then deletes it in the same request. The rule for Done
 is the one the sidebar and Archive use (`task_is_done`, `taskInfo(...).group === 'done'`).
 Deletion removes the worktree and run directories, so the server waits until the run has ended
-and the task rests before deleting. The wait follows the task's update events and is bounded by
-the close escalation (interrupt, TERM, kill: 20 s, after which the host is terminated and the run
+and the task rests before deleting; a run that already ended by itself is simply deleted. The
+close and the wait follow the task's update events (looking again every second) and are bounded
+together by the close escalation (interrupt, TERM, kill: 20 s, after which the host is terminated and the run
 marked lost) plus 5 s. If the run is still there then, the answer is 409 and nothing is deleted.
 The UI's delete request waits 40 s. Any other live task still has to be stopped first. Its menu
 item now reads "Still running: stop the task before deleting it".
@@ -37,7 +38,7 @@ item now reads "Still running: stop the task before deleting it".
 ## Consequences
 
 - Deleting a Done task can take a few seconds while its session shuts down; in the worst case the
-  request lasts up to 25 s.
+  close and its wait last up to 25 s, plus the usual deletion work.
 - Archive and Delete agree on which live tasks they accept.
 - If someone types into the session in that moment, it is still closed and deleted, as with
   Archive.
