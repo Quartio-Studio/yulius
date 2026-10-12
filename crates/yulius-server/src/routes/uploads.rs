@@ -104,6 +104,24 @@ pub async fn task_attachment(
     ))
 }
 
+/// `POST /api/sandboxes/{sid}/attachments?name`: a file dropped on the new-task composer.
+pub async fn draft_attachment(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Query(q): Query<AttachmentQuery>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult<(StatusCode, Json<UploadedFile>)> {
+    let upload = app
+        .begin_draft_attachment(&ctx, &sid, &q.name, declared_length(&headers))
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(receive(&app, upload, body).await?),
+    ))
+}
+
 /// `POST /api/sandboxes/{sid}/shells/{id}/attachments?name`.
 pub async fn shell_attachment(
     State(app): State<AppState>,

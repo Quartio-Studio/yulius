@@ -35,7 +35,8 @@
 //!   excluded (an `openat`-based resolution would close it). Names
 //!   keep letters, digits, `.`, `-`, `_` and `+` (anything else becomes `-`; no leading dot or
 //!   dash), so a path needs no quoting in a terminal; at most [`MAX_ATTACHMENTS_PER_FOLDER`] per
-//!   folder. A task's folder is removed with the task (TSK-009), a shell's when the shell ends and
+//!   folder. Files dropped on the new-task composer wait in `…/attachments/drafts/<user>/` and are
+//!   removed after a week; a task's folder is removed with the task (TSK-009), a shell's when the shell ends and
 //!   at start-up for shells that are gone;
 //! - every upload is audited (`file.uploaded`, `attachment.uploaded`).
 
@@ -72,6 +73,9 @@ const MAX_FREE_NAME_ATTEMPTS: u32 = 1000;
 const ATTACHMENTS_DIR: &str = "attachments";
 /// Shell attachment folders inspected at start-up.
 const MAX_PRUNED_ENTRIES: usize = 10_000;
+
+/// How long a file dropped on the composer waits for its task before it is removed.
+const DRAFT_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// Uploads in progress (the concurrency bound).
 pub struct UploadState {
@@ -387,6 +391,8 @@ async fn sync_dir(dir: &Path) {
 enum Owner<'a> {
     Task(&'a TaskId),
     Shell(&'a str),
+    /// Files dropped on the new-task composer, before any task exists (one folder per user).
+    Draft(&'a str),
 }
 
 impl Owner<'_> {
@@ -394,6 +400,7 @@ impl Owner<'_> {
         match self {
             Self::Task(id) => [ATTACHMENTS_DIR, "tasks", id.as_str()],
             Self::Shell(id) => [ATTACHMENTS_DIR, "shells", id],
+            Self::Draft(user) => [ATTACHMENTS_DIR, "drafts", user],
         }
     }
 
@@ -401,6 +408,7 @@ impl Owner<'_> {
         match self {
             Self::Task(id) => format!("task:{}", id.as_str()),
             Self::Shell(id) => format!("shell:{id}"),
+            Self::Draft(user) => format!("draft:{user}"),
         }
     }
 }
@@ -587,6 +595,62 @@ impl App {
             .await
     }
 
+    /// Starts an attachment for the new-task composer of `sandbox` (write access to it): the
+    /// file waits in the caller's drafts folder, outside every worktree, until the prompt that
+    /// names its path starts a task. Drafts older than a week are removed first.
+    ///
+    /// # Errors
+    /// As [`App::begin_task_attachment`], with `NotFound`/`Forbidden` for the sandbox.
+    pub async fn begin_draft_attachment(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+        name: &str,
+        declared: Option<u64>,
+    ) -> AppResult<Upload> {
+        let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        self.require(
+            &ctx.user,
+            &sandbox_id,
+            yulius_domain::permission::Action::Work,
+        )
+        .await?;
+        if ctx.user.disabled_at.is_some() {
+            return Err(AppError::Forbidden("this account is disabled".into()));
+        }
+        let user = ctx.user.id.as_str();
+        self.prune_old_drafts(&sandbox_id, user);
+        self.begin_attachment(ctx, &sandbox_id, &Owner::Draft(user), name, declared)
+            .await
+    }
+
+    /// Removes the files of a user's drafts folder that are older than [`DRAFT_MAX_AGE`].
+    fn prune_old_drafts(&self, sandbox: &SandboxId, user: &str) {
+        let Ok(dir) = std::fs::canonicalize(self.sandbox_dir(sandbox)) else {
+            return;
+        };
+        let owner = Owner::Draft(user);
+        let parts = owner.parts();
+        if !plain_dirs_exist(&dir, &parts) {
+            return;
+        }
+        let folder = parts.iter().fold(dir, |path, part| path.join(part));
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            return;
+        };
+        for entry in entries.flatten().take(MAX_PRUNED_ENTRIES) {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > DRAFT_MAX_AGE);
+            if old && entry.file_type().is_ok_and(|t| t.is_file()) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
     async fn begin_attachment(
         &self,
         ctx: &AuthContext,
@@ -607,7 +671,7 @@ impl App {
             .count();
         if count >= MAX_ATTACHMENTS_PER_FOLDER {
             return Err(AppError::Conflict(format!(
-                "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal"
+                "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal or draft"
             )));
         }
         let shown_dir = owner

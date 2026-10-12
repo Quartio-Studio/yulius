@@ -1491,6 +1491,10 @@ route('POST', `/api/tasks/${ID}/attachments`, ({ db, p, query, body }) => {
   needTaskWrite(db, task);
   return storeAttachment(db, task.sandbox_id, `tasks/${task.id}`, query, body);
 });
+route('POST', `/api/sandboxes/${ID}/attachments`, ({ db, p, query, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  return storeAttachment(db, p[0], `drafts/${db.me.user.id}`, query, body);
+});
 route('POST', `/api/sandboxes/${ID}/shells/${ID}/attachments`, ({ db, p, query, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   const shell = db.shells.get(p[1]);
