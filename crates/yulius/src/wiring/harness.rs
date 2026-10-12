@@ -97,9 +97,14 @@ impl HarnessPort for HarnessAdapter {
                 session_id: session_id.clone(),
                 prompt: prompt.clone(),
             },
-            SessionMode::Resume { session_id, prompt } => LaunchMode::Resume {
+            SessionMode::Resume {
+                session_id,
+                prompt,
+                continue_interrupted,
+            } => LaunchMode::Resume {
                 session_id: session_id.clone(),
                 prompt: prompt.clone(),
+                continue_interrupted: *continue_interrupted,
             },
         };
         let request = LaunchRequest {
@@ -126,6 +131,23 @@ impl HarnessPort for HarnessAdapter {
             .map_err(|e| {
                 AppError::Upstream(format!("cannot prepare the Claude Code config: {e}"))
             })?;
+        }
+        // The turn a usage limit cut goes on as if the limit never happened (SPEC-034): its
+        // error and notices leave the transcript before Claude Code reads it. A failed step back
+        // still resumes; Claude Code skips the error row itself while it is recent.
+        if let SessionMode::Resume {
+            session_id,
+            continue_interrupted: true,
+            ..
+        } = &l.mode
+        {
+            let transcript = self.claude_transcript(&l.sandbox_home, &l.worktree, session_id);
+            match yulius_harness::step_back::step_back_file(&transcript) {
+                Ok(changed) => {
+                    tracing::info!(changed, "transcript stepped back over a usage limit")
+                }
+                Err(err) => tracing::warn!(error = %err, "could not step the transcript back"),
+            }
         }
         let mut secret_env = plan.secret_env;
         secret_env.extend(extra_secrets);

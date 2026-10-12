@@ -84,8 +84,19 @@ pub enum LaunchMode {
         session_id: String,
         /// Continuation prompt.
         prompt: Option<String>,
+        /// Continue the turn the transcript left unfinished (SPEC-034): Claude Code resubmits an
+        /// unanswered prompt or goes on after a tool result by itself
+        /// ([`RESUME_INTERRUPTED_TURN_ENV`]); the prompt is not sent. The caller steps the
+        /// transcript back over a usage limit first ([`crate::step_back`]).
+        continue_interrupted: bool,
     },
 }
+
+/// Claude Code 2.1.292 continues an interrupted turn on `--resume` when this is set: an
+/// unanswered prompt at the end of the transcript is submitted again, and a turn cut after a tool
+/// result or a task notification goes on with a hidden "Continue from where you left off."
+/// (undocumented; verified against the CLI with a local fake API, SPEC-034).
+pub const RESUME_INTERRUPTED_TURN_ENV: (&str, &str) = ("CLAUDE_CODE_RESUME_INTERRUPTED_TURN", "1");
 
 /// Transport of an attached MCP server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,7 +334,9 @@ fn shell_quote(text: &str) -> String {
 fn validate(request: &LaunchRequest) -> Result<(), LaunchError> {
     let (session_id, prompt) = match &request.mode {
         LaunchMode::New { session_id, prompt } => (session_id.as_deref(), prompt.as_deref()),
-        LaunchMode::Resume { session_id, prompt } => (Some(session_id.as_str()), prompt.as_deref()),
+        LaunchMode::Resume {
+            session_id, prompt, ..
+        } => (Some(session_id.as_str()), prompt.as_deref()),
     };
     if let Some(id) = session_id {
         check(valid_session_id(id), "session_id")?;
@@ -497,16 +510,22 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     let mcp = json!({ "mcpServers": servers });
 
     let mut argv = vec![CLAUDE_PROGRAM.to_owned()];
-    let (session_id, prompt) = match &request.mode {
+    let (session_id, prompt, continue_interrupted) = match &request.mode {
         LaunchMode::New { session_id, prompt } => {
             if let Some(id) = session_id {
                 argv.extend(["--session-id".into(), id.clone()]);
             }
-            (session_id.clone(), prompt.as_deref())
+            (session_id.clone(), prompt.as_deref(), false)
         }
-        LaunchMode::Resume { session_id, prompt } => {
+        LaunchMode::Resume {
+            session_id,
+            prompt,
+            continue_interrupted,
+        } => {
             argv.extend(["--resume".into(), session_id.clone()]);
-            (Some(session_id.clone()), prompt.as_deref())
+            // Claude Code continues the cut turn itself: nothing is sent.
+            let prompt = prompt.as_deref().filter(|_| !continue_interrupted);
+            (Some(session_id.clone()), prompt, *continue_interrupted)
         }
     };
     // `--mcp-config` takes several values; a following option ends the list, so it is never
@@ -527,25 +546,32 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         argv.push("--dangerously-skip-permissions".into());
     }
     push_prompt(&mut argv, prompt);
+    let mut env = vec![
+        (
+            "CLAUDE_CONFIG_DIR".into(),
+            utf8(&config_dir, "sandbox_home")?.to_owned(),
+        ),
+        (YULIUS_URL_ENV.into(), base_url(request).to_owned()),
+        (
+            DISABLE_AUTOUPDATER_ENV.0.into(),
+            DISABLE_AUTOUPDATER_ENV.1.into(),
+        ),
+        // A cold build or a test run takes minutes: a 2-minute Bash default pushed such
+        // commands into the background mid-run, and agents then polled them (F 2026-10-12).
+        (BASH_TIMEOUT_ENV[0].0.into(), BASH_TIMEOUT_ENV[0].1.into()),
+        (BASH_TIMEOUT_ENV[1].0.into(), BASH_TIMEOUT_ENV[1].1.into()),
+    ];
+    if continue_interrupted {
+        env.push((
+            RESUME_INTERRUPTED_TURN_ENV.0.into(),
+            RESUME_INTERRUPTED_TURN_ENV.1.into(),
+        ));
+    }
 
     Ok(LaunchPlan {
         argv,
         cwd: request.worktree.clone(),
-        env: vec![
-            (
-                "CLAUDE_CONFIG_DIR".into(),
-                utf8(&config_dir, "sandbox_home")?.to_owned(),
-            ),
-            (YULIUS_URL_ENV.into(), base_url(request).to_owned()),
-            (
-                DISABLE_AUTOUPDATER_ENV.0.into(),
-                DISABLE_AUTOUPDATER_ENV.1.into(),
-            ),
-            // A cold build or a test run takes minutes: a 2-minute Bash default pushed such
-            // commands into the background mid-run, and agents then polled them (F 2026-10-12).
-            (BASH_TIMEOUT_ENV[0].0.into(), BASH_TIMEOUT_ENV[0].1.into()),
-            (BASH_TIMEOUT_ENV[1].0.into(), BASH_TIMEOUT_ENV[1].1.into()),
-        ],
+        env,
         secret_env: vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())],
         files: vec![
             PlannedFile {
