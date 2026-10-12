@@ -402,13 +402,18 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // in its encoding; drags and double-clicks still select. In the normal buffer xterm scrolls its
   // own scrollback (#34, #25).
   const reportsToApp = () => mouse.requested() && !mouse.appMouse() && term.buffer.active.type === 'alternate' && state.can_write;
-  /** The 1-based cell of the shown grid under the pointer (also when it is scaled to fit). */
+  /**
+   * The 1-based cell of the shown grid under the pointer (also when it is scaled to fit), clamped
+   * to the grid; `inside` says whether the pointer is on the grid rather than in a margin beside it
+   * (another viewer's grid is centred in this box).
+   */
   function cellAt(event) {
     const screen = host.querySelector('.xterm-screen') || host;
     const box = screen.getBoundingClientRect();
     const col = Math.min(term.cols, Math.max(1, 1 + Math.floor(((event.clientX - box.left) / Math.max(1, box.width)) * term.cols)));
     const row = Math.min(term.rows, Math.max(1, 1 + Math.floor(((event.clientY - box.top) / Math.max(1, box.height)) * term.rows)));
-    return { col, row };
+    const inside = event.clientX >= box.left && event.clientX < box.right && event.clientY >= box.top && event.clientY < box.bottom;
+    return { col, row, inside };
   }
   let wheelRest = 0;
   term.attachCustomWheelEventHandler((event) => {
@@ -640,9 +645,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     if (!start || event.button !== 0 || Math.abs(event.clientX - start.x) > 4 || Math.abs(event.clientY - start.y) > 4) return;
     if (host.querySelector('.xterm-cursor-pointer')) return; // a link click opens the link
     if (start.count <= 1 && !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey && conn === 'open' && reportsToApp()) {
-      const { col, row } = cellAt(event);
-      // A click is not typing: like a wheel turn it does not take control; the settled click below does.
-      if (socket.sendInput(mouse.clickReport(col, row), { scroll: true })) used();
+      const { col, row, inside } = cellAt(event);
+      // A click is not typing: like a wheel turn it does not take control; the settled click below
+      // does. A click in the margin beside the grid only takes the size.
+      if (inside && socket.sendInput(mouse.clickReport(col, row), { scroll: true })) used();
     }
     clearTimeout(clickTimer);
     clickTimer = setTimeout(() => { if (!term.hasSelection()) claim(); }, CLICK_SETTLE_MS);
