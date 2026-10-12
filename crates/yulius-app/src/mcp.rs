@@ -25,12 +25,12 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         "task_id": {"type": "string", "description": "Task id"},
         "number": {"type": "integer", "description": "Task number within this sandbox"}
     });
-    let mut message_props = task_ref.clone();
+    let mut message_props = json!({});
     if let Some(obj) = message_props.as_object_mut() {
-        obj.insert("to".into(), json!({"type": "string", "enum": ["all", "people"], "description": "\"all\" broadcasts to the other tasks of the sandbox; \"people\" tells or asks the people using Yulius something: it shows in this task's Messages and in their notifications, and they reply in this session's terminal"}));
+        obj.insert("to".into(), json!({"type": "string", "enum": ["people"], "description": "Required: \"people\" tells or asks the people using Yulius something: it shows in this task's Messages and in their notifications, and they reply in this session's terminal"}));
         obj.insert(
             "kind".into(),
-            json!({"type": "string", "enum": ["info", "question", "request", "scope"]}),
+            json!({"type": "string", "enum": ["info", "question", "request"]}),
         );
         obj.insert("subject".into(), json!({"type": "string"}));
         obj.insert("body".into(), json!({"type": "string"}));
@@ -73,17 +73,17 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "message_send".into(),
-            description: "Send a message to another task (by task_id or number), broadcast to the other tasks with to=\"all\", or tell or ask the people using Yulius something with to=\"people\" (they reply in this session's terminal, not by message). Use kind=scope to agree who works on which files.".into(),
-            input_schema: schema(message_props, &["body"]),
+            description: "Tell or ask the people using Yulius something with to=\"people\" (they reply in this session's terminal, not by message). Messages to other tasks are not supported.".into(),
+            input_schema: schema(message_props, &["to", "body"]),
         },
         ToolDescriptor {
             name: "messages_inbox".into(),
-            description: "Read messages sent to this task by other tasks; marks them read.".into(),
+            description: "Read the notices Yulius sent to this task; marks them read.".into(),
             input_schema: schema(json!({"unread_only": {"type": "boolean"}}), &[]),
         },
         ToolDescriptor {
             name: "scope_claim".into(),
-            description: "Claim repository paths this task is about to change, so parallel tasks avoid conflicts: path globs relative to the repository (* within a segment, ** across segments, a trailing / claims a directory, e.g. \"src/api/\", \"docs/**/*.md\"). Claims are advisory and never block files. Overlaps with other live tasks' claims are returned and reported to those tasks; agree who changes what with message_send kind=scope.".into(),
+            description: "Claim repository paths this task is about to change, so parallel tasks avoid conflicts: path globs relative to the repository (* within a segment, ** across segments, a trailing / claims a directory, e.g. \"src/api/\", \"docs/**/*.md\"). Claims are advisory and never block files. Overlaps with other live tasks' claims are returned to you; nobody else is told.".into(),
             input_schema: schema(json!({
                 "pattern": {"type": "string", "description": "One path glob"},
                 "patterns": {"type": "array", "items": {"type": "string"}, "maxItems": crate::scopes::MAX_PATTERNS_PER_CLAIM, "description": "Several path globs"},
@@ -158,7 +158,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_merge".into(),
-            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). Acts with the authority of the task's creator and is audited.".into(),
+            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass and tells you (start `yulius wait` with run_in_background and end your turn; never poll). Acts with the authority of the task's creator and is audited.".into(),
             input_schema: schema(json!({
                 "reviewed_head": {"type": "string", "description": "The commit SHA the independent reviewer approved (must be the branch head)"},
                 "review_summary": {"type": "string", "description": "One line: the reviewer's verdict and what it checked"}
@@ -171,7 +171,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_promote".into(),
-            description: "Promote the integration branch to production once every merged task's integration environments are done. With merge-commit promotion the first call opens the promotion pull request and a later call, after its checks passed, merges it; fast-forward promotes at once.".into(),
+            description: "Only when the task asks for a release to production (a person decides that, in its own task): promote the integration branch to production once every merged task's integration environments are done. With merge-commit promotion the first call opens the promotion pull request and a later call, after its checks passed, merges it; fast-forward promotes at once.".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
@@ -279,7 +279,7 @@ impl App {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, message_send to coordinate with other tasks, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
+                    "instructions": "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, message_send to tell or ask the people using Yulius something, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
                 }))
             }
             "ping" => Ok(json!({})),

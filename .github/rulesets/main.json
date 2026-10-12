@@ -36,16 +36,8 @@
       "parameters": {
         "required_status_checks": [
           {
-            "context": "Branch policy",
-            "integration_id": 15368
-          },
-          {
-            "context": "quality (ubuntu-latest)",
-            "integration_id": 15368
-          },
-          {
-            "context": "quality (macos-latest)",
-            "integration_id": 15368
+            "context": "yulius/ci",
+            "integration_id": 5225204
           }
         ],
         "strict_required_status_checks_policy": false,

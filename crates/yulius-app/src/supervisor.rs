@@ -56,6 +56,8 @@ pub const REATTACH_ATTEMPTS: u32 = 3;
 enum EndIntent {
     /// User or system stop.
     Cancel,
+    /// A finished task is closed (archived when Done): it ends as a clean exit, `closed`.
+    Close,
     /// Account/provider switch; the sender is told when the old run has exited.
     Switch(oneshot::Sender<()>),
 }
@@ -101,6 +103,15 @@ pub struct TaskRuntime {
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
     /// Claude Code recorded the session goal as achieved and no prompt came since (TSK-014).
     pub(crate) goal_achieved: AtomicBool,
+    /// Claude Code recorded something about the goal since the `/goal` was typed: it was
+    /// submitted, not left in the prompt box (a prompt alone proves nothing: it may be another).
+    pub(crate) goal_submitted: AtomicBool,
+    /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
+    /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
+    pub(crate) session_started: AtomicBool,
+    /// A merge `delivery_merge` armed while the checks still ran (SPEC-011): Yulius performs it
+    /// once they pass.
+    pub(crate) armed_merge: Mutex<Option<crate::agent_wait::ArmedMerge>>,
     /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
     /// transcript does not reopen it.
     pub(crate) last_stop_ms: AtomicI64,
@@ -152,6 +163,9 @@ impl TaskRuntime {
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
+            goal_submitted: AtomicBool::new(false),
+            session_started: AtomicBool::new(false),
+            armed_merge: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             replay_transcript: AtomicBool::new(false),
@@ -279,26 +293,21 @@ pub(crate) fn git_credential_env(exe: &Path) -> Vec<(String, String)> {
 
 /// Quiet time after the TUI's first output before the goal is typed.
 const GOAL_QUIET: Duration = Duration::from_millis(1500);
-/// Upper bound for waiting until the TUI is ready for the goal.
-const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(45);
-/// Longest prompt used as the goal itself (Claude Code caps goal conditions at 500 characters).
-const GOAL_INLINE_MAX: usize = 450;
-/// The goal of a task whose prompt is too long to be the goal: the prompt is the first message.
-const GOAL_FOR_LONG_PROMPTS: &str =
-    "Everything requested in the first message of this session is done and verified.";
-
-/// The prompt as a one-line goal (control characters and runs of whitespace become single
-/// spaces), or `None` when it is too long to be the goal.
-pub(crate) fn goal_text(prompt: &str) -> Option<String> {
-    let line = prompt
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    (line.chars().count() <= GOAL_INLINE_MAX).then_some(line)
-}
+/// Upper bound for waiting until the TUI is ready for the goal (its SessionStart hook and quiet
+/// output); a busy host starts Claude Code slowly.
+const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long Claude Code may take to record the goal after each submit before Yulius tries again:
+/// Enter alone (the Enter was lost), the line again over a cleared prompt box (the text was
+/// lost), then Enter alone, waiting longer each time.
+const GOAL_SUBMIT_WAITS: [Duration; 5] = [
+    Duration::from_secs(5),
+    Duration::from_secs(8),
+    Duration::from_secs(12),
+    Duration::from_secs(20),
+    Duration::from_secs(30),
+];
+/// The attempt (index into [`GOAL_SUBMIT_WAITS`]) that types the whole line again.
+const GOAL_RETYPE_ATTEMPT: usize = 2;
 
 /// Branch name for a task: `feat/<number>-<slug>`.
 #[must_use]
@@ -720,10 +729,13 @@ impl App {
                 LaunchKind::Resume,
             ),
             (RunStart::Resume { prompt }, None) | (RunStart::Fresh { prompt }, _) => {
-                // In goal mode a short task prompt arrives as the goal itself; a long one is the
-                // first message and the goal refers to it (Claude caps goal conditions).
+                // In goal mode the task starts with its `/goal` (the request and the definition
+                // of done, SPEC-011); otherwise the request is the first message, with its
+                // attached files to open.
                 let prompt = prompt.clone().or_else(|| {
-                    (!goal_mode || goal_text(&task.prompt).is_none()).then(|| task.prompt.clone())
+                    (!goal_mode).then(|| {
+                        yulius_domain::request::Request::parse(&task.prompt).first_message()
+                    })
                 });
                 (
                     SessionMode::New {
@@ -891,32 +903,97 @@ impl App {
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         if goal_mode {
-            self.spawn_goal(&task.id, &attempt_id, &task.prompt);
+            match self.write_task_request(&sandbox, &task, &home).await {
+                Ok(condition) => self.spawn_goal(&task.id, &attempt_id, &condition),
+                Err(err) => {
+                    tracing::error!(task = %task.id, error = %err, "could not write the task request");
+                    self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
+                        .await;
+                }
+            }
         }
         Ok(())
     }
 
-    /// Types `/goal <prompt>` into the attempt once its TUI is ready: after the first output
-    /// and [`GOAL_QUIET`] without new output, or at most [`GOAL_READY_TIMEOUT`] after the start.
-    fn spawn_goal(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId, prompt: &str) {
+    /// Writes the task's request file into the sandbox home (`.yulius/tasks/<number>.md`: the
+    /// request, its attached files and the definition of done, SPEC-011) and returns the `/goal`
+    /// condition that names it.
+    async fn write_task_request(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskRecord,
+        home: &Path,
+    ) -> AppResult<String> {
+        use yulius_domain::request::{DoneDefinition, Request, goal_condition, request_markdown};
+        let profile = crate::delivery::delivery_profile(sandbox);
+        let done = DoneDefinition {
+            integration_branch: profile.integration_branch.clone(),
+            production_branch: profile.production_branch.clone(),
+            integration_environments: profile
+                .environments
+                .iter()
+                .filter(|e| {
+                    e.after == yulius_domain::delivery::Stage::Integration && e.command.is_some()
+                })
+                .map(|e| e.name.clone())
+                .collect(),
+        };
+        let author = match self.deps.store.user(&task.created_by).await {
+            Ok(Some(user)) => user.github_login.unwrap_or(user.display_name),
+            _ => "a person".to_owned(),
+        };
+        let request = Request::parse(&task.prompt);
+        let dir = home.join(".yulius").join("tasks");
+        let path = dir.join(format!("{}.md", task.number));
+        let body = request_markdown(task.number, &task.title, &author, &request, &done);
+        let write_path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(&write_path, body)
+        })
+        .await
+        .map_err(AppError::internal)?
+        .map_err(AppError::internal)?;
+        Ok(goal_condition(&request, &path.to_string_lossy(), &done))
+    }
+
+    /// The goal was never taken by the session: the task needs a person, said in its terminal.
+    async fn goal_not_taken(&self, task_id: &TaskId, why: &str) {
+        self.runtime(task_id).hub.notice(format!(
+            "{why}. The task has no goal yet: type `/goal` and the request in the terminal, or stop \
+             and continue the task."
+        ));
+        if let Ok(Some(task)) = self.deps.store.task(task_id).await
+            && let Err(err) = self
+                .set_task_activity(&task, Activity::NeedsAttention)
+                .await
+        {
+            tracing::warn!(task = %task_id, error = %err, "could not flag the task");
+        }
+    }
+
+    /// Types `/goal <condition>` into the attempt once its TUI reads input: after Claude Code's
+    /// SessionStart hook arrived and [`GOAL_QUIET`] without new output (or at most
+    /// [`GOAL_READY_TIMEOUT`] after the start). The submit is confirmed by what Claude Code
+    /// records about the goal and retried with growing waits; a goal never taken flags the task.
+    fn spawn_goal(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId, condition: &str) {
         let app = Arc::clone(self);
         let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
-        let command = format!(
-            "/goal {}",
-            goal_text(prompt).unwrap_or_else(|| GOAL_FOR_LONG_PROMPTS.to_owned())
-        );
+        let command = format!("/goal {condition}");
         tokio::spawn(async move {
             let runtime = app.runtime(&task_id);
+            let live = || async {
+                matches!(
+                    app.deps.store.live_attempt(&task_id).await,
+                    Ok(Some(a)) if a.id == attempt_id
+                )
+            };
             let started = tokio::time::Instant::now();
             let mut last = runtime.hub.output_seq();
             let mut quiet_since = started;
             loop {
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                let live = matches!(
-                    app.deps.store.live_attempt(&task_id).await,
-                    Ok(Some(a)) if a.id == attempt_id
-                );
-                if !live {
+                if !live().await {
                     return;
                 }
                 let seq = runtime.hub.output_seq();
@@ -924,18 +1001,57 @@ impl App {
                     last = seq;
                     quiet_since = tokio::time::Instant::now();
                 }
-                let ready = last > 0 && quiet_since.elapsed() >= GOAL_QUIET;
+                // Without hooks (an old CLI) the first output is the only sign of life.
+                let hooked = runtime.session_started.load(Ordering::SeqCst)
+                    || started.elapsed() >= GOAL_READY_TIMEOUT / 2;
+                let ready = hooked && last > 0 && quiet_since.elapsed() >= GOAL_QUIET;
                 if ready || started.elapsed() >= GOAL_READY_TIMEOUT {
                     break;
                 }
             }
-            if let Err(err) = app.send_input(&task_id, command.as_bytes()).await {
-                tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
-                return;
+            runtime.goal_submitted.store(false, Ordering::SeqCst);
+            let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+            for (attempt, wait) in GOAL_SUBMIT_WAITS.iter().enumerate() {
+                // A person typing meanwhile owns the prompt box: nothing is cleared or retyped.
+                if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
+                    return;
+                }
+                let mut input = Vec::new();
+                if attempt == 0 || attempt == GOAL_RETYPE_ATTEMPT {
+                    if attempt > 0 {
+                        input.push(0x15); // Ctrl-U: clear what is in the prompt box
+                    }
+                    input.extend_from_slice(command.as_bytes());
+                }
+                if !input.is_empty()
+                    && let Err(err) = app.send_input(&task_id, &input).await
+                {
+                    tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
+                    return;
+                }
+                // A separate Enter, so the TUI sees typed text first and then a submit.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                if let Err(err) = app.send_input(&task_id, b"\r").await {
+                    tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
+                    return;
+                }
+                let waited = tokio::time::Instant::now();
+                while waited.elapsed() < *wait {
+                    if runtime.goal_submitted.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    if !live().await {
+                        return;
+                    }
+                }
+                tracing::warn!(task = %task_id, attempt, "the task goal was not taken; submitting again");
             }
-            // A separate Enter, so the TUI sees typed text first and then a submit.
-            tokio::time::sleep(Duration::from_millis(150)).await;
-            let _ = app.send_input(&task_id, b"\r").await;
+            if live().await && !runtime.goal_submitted.load(Ordering::SeqCst) {
+                tracing::error!(task = %task_id, "the task goal was never taken by the agent");
+                app.goal_not_taken(&task_id, "Claude Code did not take the task's goal")
+                    .await;
+            }
         });
     }
 
@@ -1224,6 +1340,7 @@ impl App {
             exit_reason: Some(match (&intent, exit.spawn_failed) {
                 (_, true) => "spawn_failed".into(),
                 (Some(EndIntent::Cancel), _) => "cancelled".into(),
+                (Some(EndIntent::Close), _) => "closed".into(),
                 (Some(EndIntent::Switch(_)), _) => "switched".into(),
                 (None, _) if exit.is_clean() => "exited".into(),
                 (None, _) => format!("exited code={:?} signal={:?}", exit.code, exit.signal),
@@ -1248,6 +1365,17 @@ impl App {
             Some(EndIntent::Switch(done)) => {
                 let _ = done.send(());
                 return; // the switch controller launches the next run and drains the queue
+            }
+            Some(EndIntent::Close) => {
+                // The task was finished: whatever the exit code of the ended session, it is
+                // closed, like a session the user left.
+                if let Ok(Some(task)) = store.task(task_id).await
+                    && let Ok(next) = task.status.apply(TaskEvent::Exited { normal: true })
+                {
+                    let _ = store
+                        .transition_task(task_id, Some(task.status), next, None, now)
+                        .await;
+                }
             }
             Some(EndIntent::Cancel) => {
                 if let Ok(Some(task)) = store.task(task_id).await
@@ -1355,6 +1483,51 @@ impl App {
                 }
             });
         }
+    }
+
+    /// Closes a finished, running task (TSK-014): its session is shut down gracefully and the
+    /// task ends `closed`, not stopped. It stays Running until the session is gone.
+    ///
+    /// # Errors
+    /// `Conflict` when the task is not running.
+    pub async fn close_task_now(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+        let task = self
+            .deps
+            .store
+            .task(task_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        if task.status != TaskStatus::Running {
+            return Err(AppError::Conflict(format!(
+                "task is {}",
+                task.status.as_str()
+            )));
+        }
+        let runtime = self.runtime(task_id);
+        if let Ok(mut intent) = runtime.intent.lock() {
+            *intent = Some(EndIntent::Close);
+        }
+        let total = STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS;
+        if let Some(run) = runtime.run.lock().await.as_mut() {
+            let _ = run
+                .writer
+                .shutdown(u32::try_from(STOP_INTERRUPT_GRACE_MS).unwrap_or(5000))
+                .await;
+        }
+        let app = self.clone();
+        let tid = task_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(
+                u64::try_from(total).unwrap_or(20_000),
+            ))
+            .await;
+            if let Ok(Some(attempt)) = app.deps.store.live_attempt(&tid).await {
+                tracing::warn!(task = %tid, "closed run did not exit after escalation; terminating host");
+                let _ = app.deps.session_host.terminate(Path::new(&attempt.run_dir));
+                app.mark_lost(&tid, &attempt.id, StopReason::Lost).await;
+            }
+        });
+        Ok(())
     }
 
     /// Stops a task: graceful shutdown with escalation, then (if needed) termination and `lost`.
@@ -1830,6 +2003,8 @@ impl App {
         runtime.active_ms.store(0, Ordering::SeqCst);
         // A new attempt (or the same one after a restart) learns the goal from its transcript.
         runtime.goal_achieved.store(false, Ordering::SeqCst);
+        runtime.goal_submitted.store(false, Ordering::SeqCst);
+        runtime.session_started.store(false, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
@@ -2182,20 +2357,6 @@ mod tests {
         assert_eq!(
             super::exit_event(&spawn, Some("prompt_input_exit")),
             crashed
-        );
-    }
-
-    #[test]
-    fn goals_are_one_line_and_short() {
-        assert_eq!(
-            super::goal_text("Build the\n  widget\tnow").as_deref(),
-            Some("Build the widget now")
-        );
-        assert_eq!(super::goal_text("a\u{1b}[31mb").as_deref(), Some("a [31mb"));
-        assert!(super::goal_text(&"x".repeat(450)).is_some());
-        assert!(
-            super::goal_text(&"x".repeat(451)).is_none(),
-            "long prompts go first"
         );
     }
 

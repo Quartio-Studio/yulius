@@ -218,8 +218,9 @@ function seed(params) {
     }
   }
   db.messages = [
-    { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_11', login: null, title: '#11 3D model viewer (claude)' }, to_task_id: 'tsk_studio_12', kind: 'scope', subject: 'Scope: src/viewer/**', body: 'I am working in src/viewer/** and public/models/**. Please avoid those paths; I will stay out of src/api/**.', created_at: iso(42 * MIN), read: true },
-    { id: 'msg_2', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_10', login: null, title: '#10 AWS login for deploy (claude)' }, to_task_id: 'tsk_studio_12', kind: 'question', subject: 'Which port does the API use?', body: 'Is the checkout API served on http://localhost:20003 in this sandbox? I need it for the deploy smoke test.', created_at: iso(8 * MIN), read: false },
+    // Notices from Yulius itself (delivery and disk notices, scope changes); tasks do not message each other.
+    { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: null, login: null, title: 'Yulius' }, to_task_id: 'tsk_studio_12', kind: 'request', subject: 'Scope changed by the user', body: 'The user dropped the invoice export from this task. Stop work on it and continue with the checkout API.', created_at: iso(42 * MIN), read: true },
+    { id: 'msg_2', task: 'tsk_studio_12', from: { task_id: null, login: null, title: 'Yulius' }, to_task_id: 'tsk_studio_12', kind: 'request', subject: 'Checks failed on the pull request', body: 'The CI gate failed on the head of your pull request. Fix it on this branch, test-first, then push.', created_at: iso(8 * MIN), read: false },
     // The agent asks people (message_send to="people"): they answer in its terminal (F 2026-10-10).
     { id: 'msg_3', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_12', login: null, title: '#12 Checkout API' }, to_task_id: null, kind: 'question', subject: 'Stripe keys', body: 'Should checkout use the Stripe test keys or the live ones? The AWS sign-in tab is open: ' + `${ORIGIN}/s/studio/browser?tab=tab-aws`, created_at: iso(3 * MIN), read: true },
   ];
@@ -309,8 +310,8 @@ function summary(task) {
 }
 
 /** Links `task` to run after `before` (TSK-012); both summaries show the chain. */
-function chainAfter(task, before) {
-  task.afterLink = { task_id: before.id, number: before.number, title: before.title, status: before.status, blocked: null };
+function chainAfter(task, before, rule = null) {
+  task.afterLink = { task_id: before.id, number: before.number, title: before.title, status: before.status, blocked: null, rule };
   before.nextLinks = [...(before.nextLinks || []), { task_id: task.id, number: task.number, title: task.title, status: task.status, blocked: null }];
 }
 
@@ -713,7 +714,18 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   // While the sandbox is being prepared a new task waits after the preparation task (U-08).
   const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
   const preparation = preparing ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null;
-  const before = body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : preparation;
+  // A start rule (SPEC-017): the mock checks the shape the server checks, and anchors the chain
+  // on the first task the rule names.
+  let rule = null;
+  if (body.start_rule && body.start_rule.trim()) {
+    if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
+    rule = body.start_rule.trim().replace(/\s+/g, ' ');
+    if (!/^[#\w\s()!&|]+$/.test(rule) || !/#\d/.test(rule)) fail(422, 'invalid', 'the rule must name tasks like #12');
+    const named = [...rule.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+    const missing = named.find((n) => !db.tasks.some((x) => x.sandbox_id === sandbox.id && x.number === n));
+    if (missing) fail(422, 'invalid', `the rule names #${missing}, which does not exist in this sandbox`);
+  }
+  const before = rule ? db.tasks.find((x) => x.sandbox_id === sandbox.id && x.number === Number(rule.match(/#(\d+)/)[1])) : body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : preparation;
   if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
   const task = {
     id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: before ? 'chained' : 'queued', activity: null,
@@ -727,7 +739,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   db.tasks.push(task);
   recount(db);
   if (before) {
-    chainAfter(task, before);
+    chainAfter(task, before, rule);
     emit(db, { type: 'task.updated', task: summary(before) });
     return json(201, summary(task));
   }
@@ -871,8 +883,11 @@ route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
 route('POST', `/api/tasks/${ID}/archive`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  if (LIVE.has(task.status)) fail(409, 'conflict', 'Stop the task before archiving it.');
-  touch(db, task, { archived: true });
+  // A finished task (Done by the sidebar's rule, the server's task_is_done) is closed as it is
+  // archived (TSK-014); any other live task has to be stopped first.
+  const finished = task.status === 'running' && taskInfo(summary(task), null, pullOf(task)).group === 'done';
+  if (LIVE.has(task.status) && !finished) fail(409, 'conflict', 'Stop the task before archiving it.');
+  touch(db, task, finished ? { archived: true, status: 'closed', activity: null } : { archived: true });
   return summary(task);
 });
 route('POST', `/api/tasks/${ID}/restore`, ({ db, p }) => {
@@ -2411,8 +2426,8 @@ const SCRIPT_CLAUDE = [
   `     ${c(114, 'test cart::discount_never_negative ... ok')}`,
   `     ${c(114, 'test result: ok. 14 passed; 0 failed')}`,
   `${c(255, '⏺')} The API is running at ${c(39, 'http://localhost:20003/api/cart')} — I opened it in the sandbox browser.`,
-  `${c(255, '⏺')} ${bold('yulius')} - message_send (MCP)(to: "#11", kind: "scope", subject: "I own src/api/**")`,
-  `  ${dim('⎿  Delivered to #11 3D model viewer')}`,
+  `${c(255, '⏺')} ${bold('yulius')} - scope_claim (MCP)(pattern: "src/api/**")`,
+  `  ${dim('⎿  Claimed src/api/**; no overlap with other tasks')}`,
   `${c(173, '✻')} ${c(173, 'Pondering…')} ${dim('(esc to interrupt)')}`,
   `${c(255, '⏺')} Done with this step. Anything else before I write the UI wiring?`,
 ];
@@ -2510,7 +2525,7 @@ class TermSession {
     const contained = !(this.db.me.instance && this.db.me.instance.contained === false);
     const extras = [];
     if (!this.exited && this.task.number % 2 === 0) extras.push(c(80, '1 shell'));
-    if (!this.exited && this.task.unread_messages) extras.push(dim(`← ${this.task.unread_messages === 1 ? '1 agent' : `${this.task.unread_messages} agents`}`));
+    if (!this.exited && this.task.unread_messages) extras.push(dim(`← ${this.task.unread_messages === 1 ? '1 notice' : `${this.task.unread_messages} notices`}`));
     const mode = contained
       ? ` ${c(204, '⏵⏵ bypass permissions on')}${extras.length ? '' : dim(' (shift+tab to cycle)')}`
       : ` ${dim('? for shortcuts')}`;
@@ -3237,6 +3252,8 @@ function startAmbient(db) {
 export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
+  // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
+  db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
   db.goOffline = () => {
     db.offline = true;

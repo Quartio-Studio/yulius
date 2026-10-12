@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Validate PR routing/names and require successful dev push CI before promotion."""
+"""Validate PR routing/names and require a successful yulius/ci status on the dev head before promotion."""
 import json
 import os
 from pathlib import Path
 import re
 import sys
-from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 TYPES = r"(?:feat|fix|refactor|perf|docs|test|build|ci|chore|revert)"
@@ -34,15 +33,16 @@ def validate_pr(pr, repository):
     return False
 
 
-def validate_dev_run(runs, sha):
-    matches = [run for run in runs if run.get("head_sha") == sha
-               and run.get("head_branch") == "dev" and run.get("event") == "push"]
-    if not matches:
-        raise ValueError("No dev push CI exists for this exact promotion head")
-    latest = max(matches, key=lambda run: run["id"])
-    if latest.get("status") != "completed" or latest.get("conclusion") != "success":
-        raise ValueError("Latest dev push CI for this head is not successful; wait/fix before promotion")
-    return latest["id"]
+def validate_dev_status(statuses, sha):
+    """Require Yulius CI's `yulius/ci` commit status of the exact dev head to be successful
+    (Yulius is the only CI, #184). Statuses come newest first; the newest one decides."""
+    mine = [status for status in statuses if status.get("context") == "yulius/ci"]
+    if not mine:
+        raise ValueError(f"No yulius/ci status exists for the promotion head {sha}")
+    latest = mine[0]
+    if latest.get("state") != "success":
+        raise ValueError(f"yulius/ci for {sha} is {latest.get('state')}; wait/fix before promotion")
+    return latest.get("id")
 
 
 def api(path):
@@ -66,10 +66,9 @@ def main():
         current = api(f"repos/{repository}/git/ref/heads/dev")["object"]["sha"]
         if current != sha:
             raise ValueError("dev advanced; use fresh promotion-head checks")
-        query = urlencode({"branch": "dev", "event": "push", "head_sha": sha, "per_page": 100})
-        runs = api(f"repos/{repository}/actions/workflows/ci.yml/runs?{query}")["workflow_runs"]
-        run_id = validate_dev_run(runs, sha)
-        print(f"Promotion evidence: successful dev push run {run_id}")
+        statuses = api(f"repos/{repository}/commits/{sha}/statuses?per_page=100")
+        status_id = validate_dev_status(statuses, sha)
+        print(f"Promotion evidence: successful yulius/ci status {status_id} on {sha}")
     print("Branch policy passed")
 
 

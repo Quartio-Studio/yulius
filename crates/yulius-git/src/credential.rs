@@ -340,11 +340,47 @@ fn http_post(
     body: &str,
     timeout: Duration,
 ) -> Result<HttpResponse, CredentialError> {
+    http_post_to(endpoint, CREDENTIAL_PATH, token, body, timeout)
+}
+
+/// Posts JSON to a task endpoint of the Yulius server the agent's session belongs to
+/// (`YULIUS_URL`, `YULIUS_TASK_TOKEN`), as the sandbox's `yulius` CLI does for `wait`: returns
+/// the HTTP status and body.
+///
+/// # Errors
+/// [`CredentialError`] for a missing environment, an unreachable server or a malformed answer.
+pub fn agent_post(
+    path: &str,
+    body: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+    timeout: Duration,
+) -> Result<(u16, Vec<u8>), CredentialError> {
+    let base = env("YULIUS_URL").ok_or(CredentialError::BadEnvironment("YULIUS_URL is not set"))?;
+    let token = env("YULIUS_TASK_TOKEN").ok_or(CredentialError::BadEnvironment(
+        "YULIUS_TASK_TOKEN is not set",
+    ))?;
+    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(CredentialError::BadEnvironment(
+            "YULIUS_TASK_TOKEN must be printable ASCII",
+        ));
+    }
+    let endpoint = LoopbackUrl::parse(&base)?;
+    let response = http_post_to(&endpoint, path, &token, body, timeout)?;
+    Ok((response.status, response.body))
+}
+
+fn http_post_to(
+    endpoint: &LoopbackUrl,
+    path: &str,
+    token: &str,
+    body: &str,
+    timeout: Duration,
+) -> Result<HttpResponse, CredentialError> {
     let deadline = Instant::now() + timeout;
     let mut stream = TcpStream::connect_timeout(&endpoint.address, timeout)
         .map_err(|e| transport("connect", &e))?;
     let request = format!(
-        "POST {}{CREDENTIAL_PATH} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\
+        "POST {}{path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\
          Content-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\n\
          Connection: close\r\nUser-Agent: yulius-git-credential\r\n\r\n{body}",
         endpoint.base_path,

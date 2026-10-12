@@ -168,14 +168,40 @@ impl App {
         match checks {
             "success" => {}
             "none" if !require_checks => {}
+            "failure" => {
+                return Err(AppError::Conflict(
+                    "merge on green only: the checks at the head failed; read why (`ci_status`), \
+                     fix it test-first and commit"
+                        .into(),
+                ));
+            }
             other => {
-                return Err(AppError::Conflict(format!(
-                    "merge on green only: the checks at the head are {other}; wait for them \
-                     (ci_status, delivery_status) or fix what fails"
-                )));
+                // Still running (or not known yet): Yulius merges this exact head by itself once
+                // its checks pass (SPEC-011), so the agent never polls for them.
+                self.arm_merge(&ctx.task, &head, &summary);
+                self.agent_audit(
+                    ctx,
+                    "delivery.agent.merge_armed",
+                    &format!("{}#{}", sandbox.slug, ctx.task.number),
+                    &format!("armed at head {head} (checks {other}); reviewed independently"),
+                )
+                .await;
+                return Ok(json!({
+                    "merged": false,
+                    "armed": true,
+                    "checks": other,
+                    "next": "Yulius merges this exact head as soon as its checks pass and tells \
+                             you (or why it could not). Start `yulius wait` with \
+                             run_in_background and end your turn; do not call delivery_merge \
+                             again for this head.",
+                }));
             }
         }
         let view = self.merge_task_pr_for_task(&auth, &task_id).await?;
+        // Merged now: nothing is left armed for this task.
+        if let Ok(mut armed) = self.runtime(&ctx.task.id).armed_merge.lock() {
+            *armed = None;
+        }
         self.agent_audit(
             ctx,
             "delivery.agent.merge",

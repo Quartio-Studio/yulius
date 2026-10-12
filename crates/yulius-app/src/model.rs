@@ -627,7 +627,7 @@ pub struct MessageRecord {
     pub from_task: Option<TaskId>,
     /// Sending user.
     pub from_user: Option<UserId>,
-    /// Recipient task (`None` = broadcast).
+    /// Recipient task (`None` = to people; a broadcast only in history).
     pub to_task: Option<TaskId>,
     /// `info`, `question`, `request`, `scope`.
     pub kind: String,

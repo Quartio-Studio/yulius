@@ -1,6 +1,8 @@
 //! Task records, views, archive/restore, feedback and user messages (SPEC-001 §5.4, ANL-002,
 //! UI-006). Process lifecycle lives in the supervisor.
 
+use std::sync::Arc;
+
 use yulius_contracts::api::common::UserRef;
 use yulius_contracts::api::tasks::{
     AttemptView, FeedbackView, MessageFrom, MessageView, Metrics, StepProgress, StepView,
@@ -265,18 +267,24 @@ impl App {
         })
     }
 
-    /// Archives a resting task (UI-006).
+    /// Archives a resting task (UI-006), or a finished one (TSK-014): Done by the sidebar's rule
+    /// (`task_is_done`: the goal achieved, or the plan complete with its pull request merged or
+    /// tested, and no background shell), so nothing is left to wait for and it is closed as it
+    /// is archived.
     ///
     /// # Errors
-    /// `Conflict` for live tasks.
+    /// `Conflict` for other live tasks.
     pub async fn archive_task(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         id: &str,
         archive: bool,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
-        if archive && !task.status.is_resting() {
+        let done = task.status == TaskStatus::Running && self.task_is_done(&task).await;
+        if archive && done {
+            self.close_task_now(&task.id).await?;
+        } else if archive && !task.status.is_resting() {
             return Err(AppError::Conflict(
                 "stop the task before archiving it".into(),
             ));
@@ -303,7 +311,7 @@ impl App {
     ///
     /// # Errors
     /// `NotFound`/`Forbidden` without access; `Conflict` while the task runs or starts.
-    pub async fn delete_task(&self, ctx: &AuthContext, id: &str) -> AppResult<()> {
+    pub async fn delete_task(self: &Arc<Self>, ctx: &AuthContext, id: &str) -> AppResult<()> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let starting = matches!(
             task.status,
@@ -337,9 +345,12 @@ impl App {
         }
         // Tasks waiting for this one need a person now (TSK-012).
         self.block_successors_deleted(&task).await;
+        let deleted_in = task.sandbox_id.clone();
         if !self.deps.store.delete_task(&task.id).await? {
             return Err(AppError::NotFound);
         }
+        // A start rule naming the deleted task now sees it as ended (SPEC-017).
+        self.advance_rule_chains(&deleted_in).await;
         let runs = self.config.data_dir.join("runs");
         for attempt in attempts {
             let dir = std::path::PathBuf::from(&attempt.run_dir);

@@ -3,9 +3,8 @@
 ## Bootstrap
 
 Supported development hosts: macOS and Linux. Python 3.11+, rustup, Git and a C linker
-are required. GitHub CI is configured on Ubuntu and macOS, and Yulius CI (`[[ci.jobs]]` in
-`yulius.toml`) runs the same gate on Linux; GitHub Actions are removed once Yulius CI reports
-commit statuses (macOS is then checked by running `scripts/dev ci` locally). Windows support for a
+are required. Yulius CI (`[[ci.jobs]]` in `yulius.toml`) is the only CI and runs the gate on
+Linux; macOS is checked by running `scripts/dev ci` on a Mac before promotion. Windows support for a
 future process supervisor is undecided; the shell entry point is not a Windows promise.
 
 ```sh
@@ -80,29 +79,10 @@ VS Code settings recommend rust-analyzer, Clippy and format-on-save. Other edito
 can use the same rust-analyzer component and toolchain. No global editor settings
 or agent permission overrides are installed.
 
-GitHub Actions uses full-commit action pins, read-only permissions and the same
-bootstrap/CI commands. `quality (ubuntu-latest)` runs on pull requests and dev/main
-pushes, plus a weekly advisory refresh. `quality (macos-latest)` runs on dev/main
-pushes, promotion pull requests into main, the weekly refresh and manual runs
-(`workflow_dispatch`, also the way to test a branch on macOS); on pull requests into
-dev it is skipped. `Branch policy` is its own workflow (`policy.yml`), so editing a
-pull request's title or description re-runs only the policy. The workflow is
-committed configuration; hosted execution is only proven when GitHub actually runs
-it. No deployment job is present. [Git delivery](git.md) defines promotion checks and
-post-merge evidence. Pinned tool binaries are cached per OS/architecture/tool pin;
-Rust dependencies are cached per OS (written by dev/main pushes, read by pull
-requests). Jobs run on [Blacksmith](https://docs.blacksmith.sh/) runners
-(`blacksmith-4vcpu-ubuntu-2404` for Linux checks, `blacksmith-6vcpu-macos-latest` for
-macOS, `blacksmith-2vcpu-ubuntu-2404` for the policy); the check names stay the ones
-the rulesets require, and Blacksmith serves `actions/cache` and `Swatinem/rust-cache`
-from its own cache without workflow changes. Without the Blacksmith app, switch
-`runs-on` back to `ubuntu-latest` / `macos-latest`. `Web UI e2e` (`e2e.yml`) runs the
-end-to-end suite when the UI, the suite or the workflow changes; it is advisory, not a
-required check, and gets no model key (agent steps are skipped).
-
-Projects that Yulius manages run their CI on Yulius itself, with no GitHub Actions
-([SPEC-002 ADR-18](../../.ai/specs/SPEC-002-yulius-architecture.md)). This repository still uses
-the workflows above. ADR-21 lists the steps to move it.
+Yulius CI is the only CI ([SPEC-002 ADR-18](../../.ai/specs/SPEC-002-yulius-architecture.md),
+ADR-21): there are no GitHub Actions. It runs `quality` and `e2e` (`[[ci.jobs]]`) and publishes
+the `yulius/ci` commit status, which the rulesets require. The `e2e` job gets no model key (agent
+steps are skipped). [Git delivery](git.md) defines promotion checks and post-merge evidence.
 
 ## Troubleshooting
 

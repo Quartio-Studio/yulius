@@ -205,7 +205,7 @@ limited to the agent's sandbox.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012) |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule` |
 | POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool}`: whether a new task mixes separate workstreams (TSK-011). `checked` is false — and the verdict `one` — for prompts under 40 words, without a Jev key and when Jev fails or takes over 2.5 s |
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
@@ -217,7 +217,7 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
-| GET | `/api/tasks/{tid}/messages` | read | → `[Message]`: messages between this task and other tasks (`message_send`) and its agent's messages to people (`to="people"`, `to_task_id` null). People talk to the agent in its terminal; there is no route that posts a person's message to it (removed 2026-10-10, `POST` is 405) |
+| GET | `/api/tasks/{tid}/messages` | read | → `[Message]`: notices from Yulius and its agent's messages to people; older task-to-task rows still show, but no new ones are created: `message_send` only accepts `to="people"` (`to_task_id` null). People talk to the agent in its terminal; there is no route that posts a person's message to it (removed 2026-10-10, `POST` is 405) |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
 | WS | `/api/tasks/{tid}/terminal` | read (input: write) | terminal protocol below |
 
@@ -272,7 +272,7 @@ TaskDetail = TaskSummary + {
   "delivery": Delivery, "switches": [{"at","reason","from","to"}]
 }
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
-Message = {"id","from":{"task_id|null","login|null","title"},"to_task_id|null","kind":"info|question|request|scope","subject","body","created_at","read":bool}
+Message = {"id","from":{"task_id|null","login|null","title"},"to_task_id|null","kind":"info|question|request (scope: older rows only)","subject","body","created_at","read":bool}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}
 ```
 

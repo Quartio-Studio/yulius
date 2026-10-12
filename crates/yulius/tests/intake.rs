@@ -869,3 +869,158 @@ async fn redirect_reverts_only_with_confirmation_and_keeps_the_work() -> TestRes
     assert!(!worktree.join("draft.txt").exists());
     Ok(())
 }
+
+/// SPEC-017 RUL-003/RUL-005: a task waits for a logical sentence over other tasks: `and` needs
+/// both, `or` either, `ended` fires when a task stops, a rule that can no longer be true needs a
+/// person, and every refusal is a 422 with a reason.
+#[tokio::test]
+async fn a_task_starts_when_its_start_rule_is_true() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(|c| c.max_live_sessions = 0)),
+        ..HarnessOptions::default()
+    })?;
+    let i = intake_with(h).await?;
+    let store = &i.h.store;
+    let create = "/api/sandboxes/s1/tasks";
+    let a = seed_task(&i.h, "t-a", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let b = seed_task(&i.h, "t-b", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let (na, nb) = (a.number, b.number);
+    let done = |id: TaskId| {
+        let now = i.h.app.now();
+        async move { store.set_activity(&id, Some(Activity::Done), now).await }
+    };
+    let rule_task = |rule: String| {
+        let i = &i;
+        async move {
+            let r = post(i, create, json!({"prompt": "ruled", "start_rule": rule})).await?;
+            assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+            Ok::<_, Box<dyn std::error::Error>>(r.body["id"].as_str().ok_or("id")?.to_owned())
+        }
+    };
+
+    // and: both must be Done.
+    let both = rule_task(format!("#{na} done and #{nb} finished")).await?;
+    let either = rule_task(format!("#{na} or #{nb}")).await?;
+    let shown = summary(&i, &both).await?;
+    assert_eq!(shown["status"], "chained");
+    assert_eq!(
+        shown["after"]["rule"],
+        format!("#{na} done and #{nb} done"),
+        "the canonical rule shows"
+    );
+    done(a.id.clone()).await?;
+    i.h.app.advance_chains(&a.id).await;
+    assert_eq!(summary(&i, &both).await?["status"], "chained", "needs both");
+    assert_eq!(
+        summary(&i, &either).await?["status"],
+        "queued",
+        "or: either"
+    );
+    done(b.id.clone()).await?;
+    i.h.app.advance_chains(&b.id).await;
+    assert_eq!(summary(&i, &both).await?["status"], "queued");
+
+    // A rule that can no longer be true needs a person; `ended` fires when a task stops.
+    let c = seed_task(&i.h, "t-c", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let d = seed_task(&i.h, "t-d", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let needs_c = rule_task(format!("#{} done and #{} done", c.number, d.number)).await?;
+    let on_end = rule_task(format!("#{} ended", c.number)).await?;
+    store
+        .transition_task(
+            &c.id,
+            Some(TaskStatus::Running),
+            TaskStatus::Stopped(StopReason::Crashed),
+            None,
+            i.h.app.now(),
+        )
+        .await?;
+    i.h.app.advance_chains(&c.id).await;
+    let blocked = summary(&i, &needs_c).await?;
+    assert_eq!(blocked["status"], "chained");
+    assert!(
+        blocked["after"]["blocked"]
+            .as_str()
+            .is_some_and(|r| r.contains("can no longer become true")),
+        "{blocked}"
+    );
+    assert_eq!(summary(&i, &on_end).await?["status"], "queued");
+    i.h.app.advance_all_chains().await;
+    assert_eq!(summary(&i, &needs_c).await?["status"], "chained");
+
+    // Refusals.
+    for (body, reason) in [
+        (json!({"prompt": "x", "start_rule": "#1 and"}), "ends"),
+        (json!({"prompt": "x", "start_rule": "#999 done"}), "#999"),
+        (
+            json!({"prompt": "x", "start_rule": "#1", "after_task_id": "t-a"}),
+            "not both",
+        ),
+    ] {
+        let r = post(&i, create, body).await?;
+        assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", r.body);
+        assert!(r.body.to_string().contains(reason), "{:?}", r.body);
+    }
+    Ok(())
+}
+
+/// SPEC-017: the background tick starts a task whose rule became true, Start now releases a
+/// rule task, and deleting a task a rule names counts as that task ending.
+#[tokio::test]
+async fn start_rules_follow_the_tick_start_now_and_deletions() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(|c| c.max_live_sessions = 0)),
+        ..HarnessOptions::default()
+    })?;
+    let i = intake_with(h).await?;
+    let store = &i.h.store;
+    let create = "/api/sandboxes/s1/tasks";
+    let a = seed_task(&i.h, "t-a", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let b = seed_task(&i.h, "t-b", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let mut ids = Vec::new();
+    for rule in [
+        format!("!#{} && (#{} || #{})", a.number, a.number, b.number),
+        format!("#{} ended", b.number),
+        format!("#{} done and #{} done", a.number, b.number),
+    ] {
+        let r = post(&i, create, json!({"prompt": "ruled", "start_rule": rule})).await?;
+        assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+        ids.push(r.body["id"].as_str().ok_or("id")?.to_owned());
+    }
+    // Nothing is true yet; the tick leaves them all waiting.
+    i.h.app.advance_all_chains().await;
+    for id in &ids {
+        assert_eq!(summary(&i, id).await?["status"], "chained");
+    }
+    // The tick alone starts a task whose rule became true (no event for the change).
+    store
+        .set_activity(&b.id, Some(Activity::Done), i.h.app.now())
+        .await?;
+    i.h.app.advance_all_chains().await;
+    assert_eq!(
+        summary(&i, &ids[0]).await?["status"],
+        "chained",
+        "a is still running"
+    );
+    // Deleting the task a rule names counts as it ending.
+    store
+        .transition_task(&b.id, None, TaskStatus::Closed, None, i.h.app.now())
+        .await?;
+    let r = call(
+        &i.h.router,
+        Method::DELETE,
+        "/api/tasks/t-b",
+        None,
+        &i.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.body);
+    assert_eq!(summary(&i, &ids[1]).await?["status"], "queued", "#b ended");
+    // The rule that needed the deleted task can never be true: it needs a person, who can
+    // still start it now.
+    let blocked = summary(&i, &ids[2]).await?;
+    assert!(blocked["after"]["blocked"].is_string(), "{blocked}");
+    let r = post(&i, &format!("/api/tasks/{}/start-now", ids[2]), json!({})).await?;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["status"], "queued");
+    Ok(())
+}

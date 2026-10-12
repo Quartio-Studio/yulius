@@ -14,9 +14,8 @@ implemented; do not invent features beyond them.
 Project map for Yulius, configured in [yulius.toml](yulius.toml): [product](docs/product.md),
 [architecture](docs/architecture.md), [decisions](docs/decisions/README.md), specs in
 [.ai/specs](.ai/specs), [changes](docs/changes.md). They summarise and point to the specs
-above; the rules in this file stay authoritative. Yulius CI
-runs the gate (`[[ci.jobs]]` in `yulius.toml`); GitHub Actions stay until the Yulius GitHub App
-may post commit statuses and change workflow files, then they are removed.
+above; the rules in this file stay authoritative. Yulius CI is the only CI: it runs the gate
+(`[[ci.jobs]]` in `yulius.toml`) and publishes the `yulius/ci` commit status; there are no GitHub Actions.
 
 ## Start here
 
@@ -46,7 +45,8 @@ merging. Every local branch, including `dev` and `main`, must have its own workt
 Create a typed branch and worktree together from `origin/dev` with `git worktree add -b`;
 never switch an existing worktree to another branch. Never work directly on
 `dev` or `main`. Author self-review + passing checks → squash PR to dev → verify
-post-merge dev CI → merge-commit promotion PR to main → verify post-merge main CI.
+post-merge dev CI: a task's work ends there. Promotion (merge-commit PR dev → main, then verify
+post-merge main) happens only when a task asks for a release (F 2026-10-12).
 No external reviewer approval is required. After merge, safely remove the task
 worktree before deleting its local branch; keep dev/main and their worktrees.
 Use `.agents/skills/yulius-git/SKILL.md` for authorized delivery.

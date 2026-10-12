@@ -14,16 +14,18 @@ These rules apply to features, fixes, documentation, tooling and policy changes.
    then **squash-merges their own PR**. No reviewer approval or waiting period is required.
 4. Delete the merged short-lived remote branch. Clean up its local branch/worktree
    after confirming it contains no unpublished work.
-5. Wait for the **push CI run on the resulting `dev` commit** to succeed. A passing
-   feature PR run does not replace this post-merge test. When a dev environment
-   exists, deployment and smoke tests belong here too.
+5. Wait for the **`yulius/ci` status of the resulting `dev` commit** (Yulius CI runs every
+   new `dev` commit). A passing feature PR run does not replace this post-merge test.
+   When a dev environment with a deploy command exists, deployment and smoke tests belong
+   here too; the standard profile has no manual dev checkpoint, so nobody confirms `dev` by
+   hand. A task's work ends here; promotion is a separate step a person asks for.
 6. Open a promotion PR **from `dev` into `main`**. Its exact head must have a successful
-   post-merge `dev` push run; promotion CI verifies this and tests the proposed merge.
+   `yulius/ci` status; the branch policy (`scripts/check_git_policy.py`, checked by hand
+   until #223) verifies this.
 7. The promotion PR's author merges it with a **merge commit**, after required checks
    pass. Keep `dev`: only short-lived branches are deleted.
-8. Wait for **push CI on the new `main` commit**. Delivery is finished only when it
-   passes. When a production environment exists, verify deployment and smoke tests
-   at this point. Today CI is the available validation, not evidence of deployment.
+8. `main` then has `dev`'s tested tree. When a production environment exists, verify
+   deployment and smoke tests at this point.
 
 No environments are configured yet. Until they are, complete the full sequence
 through `main` after each finished feature instead of stopping after integration.
@@ -91,8 +93,9 @@ chore(git): define delivery workflow
 Scopes use lowercase letters/digits/hyphens. `!` marks a breaking contract change;
 explain migration in the body. PR titles are limited to 100 characters. Promotion
 PRs use `release: promote dev to main` (optionally append a short release label).
-The branch policy check enforces names, PR titles and valid base/head combinations;
-intermediate commit wording is a convention, not an additional blocking check.
+The branch policy (`scripts/check_git_policy.py`) defines names, PR titles and valid base/head
+combinations; until Yulius's merge gate enforces it (#223) the author checks it by hand.
+Intermediate commit wording is a convention, not an additional blocking check.
 
 ## Keep history tidy with squash, not stash
 
@@ -123,7 +126,7 @@ cd ../yulius-worktrees/feat/task-cancellation
 scripts/dev ci
 git push -u origin HEAD
 gh pr create --base dev --title 'feat(tasks): add cancellation' --body-file /path/to/pr.md
-gh pr checks <number> --required --watch
+gh pr checks <number> --required --watch   # the required check is yulius/ci
 # Read the final diff, verify checks match the current head, then:
 gh pr merge <number> --squash --match-head-commit <verified-head-sha>
 ```
@@ -137,11 +140,10 @@ request follows the same steps; it does not wait for an unsolicited reviewer.
 Existing user authorization carries through this delivery workflow. It does not
 authorize unrelated deployments, account changes, paid work or messages.
 
-For post-merge evidence, select the `Engineering checks` workflow run with event
-`push`, the named branch and **the exact merged SHA**. Do not accept an old green
-badge or the PR's synthetic merge SHA. `gh run list --workflow ci.yml --branch dev
---event push --commit <dev-sha>` identifies the run; `gh run watch <run-id> --exit-status`
-waits for its outcome. A missing, cancelled, skipped or failed run is not success.
+For post-merge evidence, read the `yulius/ci` commit status of **the exact merged SHA** on the
+named branch (`gh api repos/{owner}/{repo}/commits/<sha>/status`, or the sandbox's CI page in
+Yulius). Do not accept an old green badge or the PR's synthetic merge SHA. A missing, pending,
+cancelled or failed status is not success.
 
 Then promote:
 
@@ -149,13 +151,13 @@ Then promote:
 gh pr create --base main --head dev --title 'release: promote dev to main' --body-file /path/to/release.md
 gh pr checks <number> --required --watch
 gh pr merge <number> --merge --match-head-commit <verified-dev-sha>
-# Observe the exact resulting main push run and require success.
+# Read the yulius/ci status of the exact resulting main commit and require success.
 ```
 
 Never pass `--delete-branch` for a promotion. Do not use `--admin` or bypass checks.
 A newer `dev` head requires fresh post-merge evidence and updated promotion checks.
-A promotion policy check started before the `dev` push run finishes may fail; after
-that exact push succeeds, rerun the failed promotion job (not a failed test blindly).
+Promote only after the `yulius/ci` status of the exact `dev` head is successful; rerun a
+failed status only after reading why it failed, never blindly.
 
 ## Cleanup, concurrency and recovery
 
@@ -200,14 +202,11 @@ branches or use forced ref updates to refresh a checked-out branch.
 ## Enforcement and maintenance
 
 [dev rules](../../.github/rulesets/dev.json) require squash PRs, linear history,
-no force pushes/deletion and successful `Branch policy`, `quality (ubuntu-latest)`
-and `quality (macos-latest)` checks. Feature branches must be up to date with `dev`.
-On pull requests into dev the macOS job is skipped, which GitHub counts as passed;
-dev pushes run it, and promotion requires a successful dev push run, so main never
-receives a change that macOS has not passed.
+no force pushes/deletion and a successful `yulius/ci` status (published by the Yulius GitHub
+App). Feature branches must be up to date with `dev`. macOS has no Yulius runner: run
+`scripts/dev ci` on a Mac before promotion.
 [main rules](../../.github/rulesets/main.json) require merge-commit PRs and the same
-checks; `Branch policy` admits only this repository's `dev` and checks its exact
-push result. Both have zero approval requirements and no bypass actors.
+check; main admits only this repository's `dev`, checked by hand until #223. Both have zero approval requirements and no bypass actors.
 
 `main` does not require `dev` to include main's promotion-only merge commits:
 PR CI tests the candidate merge, and main only accepts promotions from dev. Normal

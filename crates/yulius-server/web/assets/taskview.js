@@ -2,7 +2,7 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, openModal, field, statusMark, singleFlight, keepFocus } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround, shellsLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, chainCandidates, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
@@ -10,7 +10,7 @@ import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
-import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments } from './filedrop.js';
+import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments } from './filedrop.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -53,6 +53,7 @@ function emptyTerminalMessage(task) {
     case 'chained': {
       const after = task.after;
       if (after && after.blocked) return { title: 'Waiting for you', text: after.blocked };
+      if (after && after.rule) return { title: 'Queued by a rule', text: `It starts by itself when ${after.rule}.` };
       return { title: after ? `Queued after #${after.number}` : 'Queued after another task', text: after ? `It starts by itself when #${after.number} is done.` : 'It starts by itself when that task is done.' };
     }
     default: return null;
@@ -148,14 +149,16 @@ export function mountTaskView(ctx, sandbox, task) {
   // Where the user answers the agent: its terminal (the quick input on phones).
   const reply = () => (isPhone() ? quickInput.focus() : terminal.focus());
   function renderAttention() {
-    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
+    const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
+    const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     let content = null;
-    const can = taskActions(current, (ctx.store.sandboxById(sandbox.id) || sandbox).access);
+    const can = taskActions(current, (ctx.store.sandboxById(sandbox.id) || sandbox).access, pr);
     if (current.status === 'chained') {
       // Waiting in a chain (TSK-012): the way out is always here.
       const after = current.after;
       const label = after && after.blocked
         ? [h('strong', null, 'Waiting for you. '), after.blocked]
+        : after && after.rule ? [h('strong', null, 'Queued by a rule. '), `It starts by itself when ${after.rule}.`]
         : [h('strong', null, after ? `Queued after #${after.number}. ` : 'Queued. '), after ? `It starts by itself when #${after.number} is done.` : ''];
       content = [icon(after && after.blocked ? 'st-attention' : 'clock', { size: 16 }), h('span', { class: 'attention-text' }, label),
         can.startNow ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => startNow(ctx, current) }, 'Start now') : null,
@@ -168,12 +171,12 @@ export function mountTaskView(ctx, sandbox, task) {
     } else if (current.status === 'running' && current.activity === 'needs_attention') {
       content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent needs your attention. '), 'Its question is in the terminal below.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
-    } else if (current.status === 'running' && current.activity === 'waiting') {
+    } else if (current.status === 'running' && current.activity === 'waiting' && info.group === 'needs') {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
     }
     attention.hidden = !content;
-    attention.classList.toggle('waiting', !info.request && current.activity === 'waiting');
+    attention.classList.toggle('waiting', !info.request && current.activity === 'waiting' && info.group === 'needs');
     setChildren(attention, content);
   }
   // A browser request changes the bar and the state in the strip ("Needs you in the browser").
@@ -232,7 +235,9 @@ export function mountTaskView(ctx, sandbox, task) {
     const chainLink = (link, text, title) => (link.task_id
       ? h('a', { class: 'chip strip-extra chain-chip', href: href(`/s/${slug}/t/${link.number}`), dataset: { route: `/s/${slug}/t/${link.number}` }, title }, icon('branch', { size: 12 }), text)
       : h('span', { class: 'chip strip-extra chain-chip', title }, icon('branch', { size: 12 }), text));
-    const after = current.after ? chainLink(current.after, `After #${current.after.number}`, current.after.title ? `Runs after #${current.after.number} ${current.after.title}` : `#${current.after.number} was deleted`) : null;
+    const after = current.after ? (current.after.rule
+      ? chainLink(current.after, `When ${current.after.rule}`, `Starts by itself when ${current.after.rule}`)
+      : chainLink(current.after, `After #${current.after.number}`, current.after.title ? `Runs after #${current.after.number} ${current.after.title}` : `#${current.after.number} was deleted`)) : null;
     const next = (current.next || []).map((link) => chainLink(link, `Then #${link.number}`, `#${link.number} ${link.title || ''} runs after this task`));
     // How the task runs: "Auto → Goal · Feature" when Auto chose it (TSK-015), else Goal.
     const auto = autoChoiceLabel(current);
@@ -383,6 +388,8 @@ export function mountComposer(ctx, sandbox) {
   let workflows = [];
   // Run after another task of this sandbox (TSK-012): the new task waits until it is Done.
   let afterTaskId = '';
+  // Or wait for a logical sentence over the sandbox's tasks (SPEC-017), like `#12 done and #13 done`.
+  let startRule = '';
   let split = null; // the split card while it shows (TSK-011)
   let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
   let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
@@ -428,7 +435,23 @@ export function mountComposer(ctx, sandbox) {
       h('a', { class: 'composer-repo-link', href: sandbox.repo.url, target: '_blank', rel: 'noopener noreferrer', title: `Open ${sandbox.repo.owner}/${sandbox.repo.name} on GitHub` },
         icon('github', { size: 18 }), h('span', null, `${sandbox.repo.owner} / ${sandbox.repo.name}`)),
       h('span', { class: 'composer-branch', title: `New tasks branch from ${baseBranch}` }, icon('branch', { size: 16 }), h('span', null, baseBranch))) : null);
+  // Files added to the prompt wait here, shown as thumbnails; their paths join the text at start.
+  let attached = [];
+  const tray = h('ul', { class: 'composer-attachments', 'aria-label': 'Attached files', hidden: true });
+  function renderTray() {
+    for (const item of attached) if (!item.url && /^image\//.test(item.file.type)) item.url = URL.createObjectURL(item.file);
+    tray.hidden = !attached.length;
+    setChildren(tray, attached.map((item) => h('li', { class: 'composer-attachment', title: item.name },
+      item.url ? h('img', { src: item.url, alt: item.name }) : icon('file', { size: 20 }),
+      h('span', { class: 'composer-attachment-name' }, item.name),
+      iconButton('x', `Remove ${item.name}`, () => { dropAttached([item]); renderTray(); }, { class: 'composer-attachment-remove' }))));
+  }
+  function dropAttached(items) {
+    for (const item of items) if (item.url) URL.revokeObjectURL(item.url);
+    attached = attached.filter((item) => !items.includes(item));
+  }
   setChildren(box,
+    tray,
     prompt,
     previewEl,
     h('div', { class: 'composer-tools' }, modeChip, workflowChip, afterChip, h('div', { class: 'composer-right' }, previewButton, modelChip, effortChip, startButton)));
@@ -442,7 +465,7 @@ export function mountComposer(ctx, sandbox) {
       h('div', { class: 'composer-hint muted xs' }, modeHint, h('span', { class: 'composer-hint-sep', 'aria-hidden': 'true' }, ' · '), hint),
       intakeSlot));
   // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
-  attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id) });
+  attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items) => { attached.push(...items); renderTray(); } });
 
   function renderChips() {
     const m = MODES.find((x) => x.id === mode);
@@ -457,8 +480,9 @@ export function mountComposer(ctx, sandbox) {
     workflowChip.title = workflowId === AUTO ? 'Jev picks the workflow that fits, or none: features get a spec, research and questions do not' : wfLabel;
     const after = (ctx.store.tasksOf(sandbox.id) || []).find((t) => t.id === afterTaskId);
     if (afterTaskId && !after) afterTaskId = '';
-    setChildren(afterChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
-    afterChip.title = after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after';
+    const ruleLabel = startRule.length > 28 ? `${startRule.slice(0, 27)}…` : startRule;
+    setChildren(afterChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, startRule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
+    afterChip.title = startRule ? `Starts by itself when ${startRule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
     modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: Claude Code’s default';
@@ -490,10 +514,32 @@ export function mountComposer(ctx, sandbox) {
   function openAfterMenu(anchor) {
     const candidates = chainCandidates(ctx, sandbox);
     openMenu(anchor, [
-      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId, onSelect: () => { afterTaskId = ''; renderChips(); prompt.focus(); } },
+      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule, onSelect: () => { afterTaskId = ''; startRule = ''; renderChips(); prompt.focus(); } },
       candidates.length ? { separator: true } : null,
-      ...candidates.slice(0, 20).map((t) => ({ label: `After #${t.number} ${t.title}`, icon: 'branch', description: `Starts by itself when #${t.number} is done · ${statusInfo(t).label}`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; renderChips(); prompt.focus(); } })),
+      ...candidates.slice(0, 20).map((t) => ({ label: `After #${t.number} ${t.title}`, icon: 'branch', description: `Starts by itself when #${t.number} is done · ${statusInfo(t).label}`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = ''; renderChips(); prompt.focus(); } })),
+      { separator: true },
+      { label: 'When a rule is true…', icon: 'branch', description: 'For example #12 done and #13 done', checked: Boolean(startRule), onSelect: openRuleDialog },
     ]);
+  }
+
+  /** A start rule (SPEC-017): "#12 done and (#13 done or #14 ended)". The server checks it. */
+  function openRuleDialog() {
+    const input = h('input', { class: 'input mono', type: 'text', value: startRule, placeholder: '#12 done and #13 done', maxlength: 500, autocomplete: 'off', spellcheck: 'false' });
+    openModal({
+      title: 'Start when a rule is true',
+      body: h('div', { class: 'stack' },
+        field('Rule', input, 'Tasks are #numbers of this sandbox. States: done (default), merged, ended. Combine with and, or, not and parentheses.')),
+      actions: [
+        { label: 'Cancel', value: false },
+        { label: 'Use this rule', kind: 'primary', run: () => {
+          startRule = input.value.trim();
+          if (startRule) afterTaskId = '';
+          renderChips();
+          prompt.focus();
+        } },
+      ],
+    });
+    input.focus();
   }
 
   function openModelMenu(anchor) {
@@ -611,7 +657,7 @@ export function mountComposer(ctx, sandbox) {
 
   /** The request body of a new task with the composer's choices (`auto`: Jev decides, TSK-015). */
   function bodyFor(text, title) {
-    const body = { prompt: text, mode };
+    const body = { prompt: withAttachments(text, attached), mode };
     if (title) body.title = title;
     if (workflowId) body.workflow_id = workflowId;
     const found = findModel(modelId);
@@ -631,8 +677,11 @@ export function mountComposer(ctx, sandbox) {
 
   function opened(task) {
     prompt.value = '';
+    dropAttached([...attached]);
+    renderTray();
     fit();
     afterTaskId = '';
+    startRule = '';
     ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
   }
 
@@ -716,7 +765,7 @@ export function mountComposer(ctx, sandbox) {
     try {
       // A request mixing separate workstreams gets the split card first; a chosen "Run after"
       // already decided how the work is scheduled. The check never blocks for long (≤ 4 s).
-      if (!afterTaskId && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
+      if (!afterTaskId && !startRule && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
         working('Reading your request…');
         if (await looksSeveral(ctx, sandbox, text)) {
           showSplit(text);
@@ -726,6 +775,7 @@ export function mountComposer(ctx, sandbox) {
       working(autoStage());
       const body = bodyFor(text);
       if (afterTaskId) body.after_task_id = afterTaskId;
+      if (startRule) body.start_rule = startRule;
       opened(await createTask(body));
     } catch (error) {
       errorToast(error, 'Couldn’t start the task');

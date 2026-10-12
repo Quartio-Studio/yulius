@@ -90,7 +90,7 @@ fn repo_doc_exists(root: &Path, relative: &str) -> bool {
 
 fn digest(entries: &[InboxEntry]) -> String {
     let mut out = format!(
-        "You have {} new Yulius message(s). Read them in full with the `messages_inbox` tool and reply with `message_send` when an answer is expected.\n",
+        "You have {} new Yulius notice(s). Read them in full with the `messages_inbox` tool.\n",
         entries.len()
     );
     for entry in entries {
@@ -266,7 +266,11 @@ impl App {
         ))
     }
 
-    async fn set_task_activity(&self, task: &TaskRecord, activity: Activity) -> AppResult<()> {
+    pub(crate) async fn set_task_activity(
+        &self,
+        task: &TaskRecord,
+        activity: Activity,
+    ) -> AppResult<()> {
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
             return Ok(());
         }
@@ -296,6 +300,10 @@ impl App {
         if let Err(err) = self.sync_steps_from_spec(&ctx.task).await {
             tracing::warn!(error = %err, task = %ctx.task.id, "step sync from the spec failed");
         }
+        // The prompt box reads input from now on: the goal can be typed (TSK-010).
+        self.runtime(&ctx.task.id)
+            .session_started
+            .store(true, Ordering::SeqCst);
         let briefing = self.briefing(&ctx.task, ctx.attempt.harness).await?;
         Ok(HookOutput::additional_context(
             events::SESSION_START,
