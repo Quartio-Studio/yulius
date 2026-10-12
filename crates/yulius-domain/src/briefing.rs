@@ -550,8 +550,10 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          and end your turn. Never poll with `sleep`, `pgrep -f` loops or monitors, and never hide \
          an exit code behind `| tail`.\n\
          - File follow-up work, bugs and flaky tests as issues (`issue_create`) instead of \
-         widening this task. After the merge leave nothing stale (`repo_hygiene`, \
-         `repo_cleanup`).\n\
+         widening this task. When you confirm a bug (the one your task is about, or one you find \
+         on the way), report it with `issue_create` unless an open issue already tracks it (then \
+         reference that issue); a task told not to create issues comments on the existing issue \
+         instead. After the merge leave nothing stale (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
         branch = code(&input.task.branch, 200),
         preset = profile.preset.as_str(),
@@ -1050,6 +1052,8 @@ mod tests {
             "on green",
             "`delivery_merge`",
             "`issue_create`",
+            "When you confirm a bug",
+            "unless an open issue already tracks it",
             "`ci_status`",
         ] {
             assert!(text.contains(needle), "missing {needle}");

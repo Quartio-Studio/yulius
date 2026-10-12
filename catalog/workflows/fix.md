@@ -21,6 +21,11 @@ Follow `delivery-pipeline`; a fix is small, so keep it to one concern.
 - Reproduce first and find the cause, not the symptom, with `om-root-cause` (read-only): the
   failing input, the code path, and why the existing tests missed it. Search `sessions_search` and
   earlier specs for how the area was built.
+- Once the defect is confirmed, report it: `issue_create` with what you reproduced, unless an open
+  issue already tracks it (`gh issue list --state open --search "<words>"`); then reference that
+  issue and say `Fixes #<number>` in the pull request. A task told not to create issues comments on
+  the existing issue instead. A defect you cannot reproduce is reported back with the evidence,
+  not filed.
 - The spec can be short: symptom, root cause, the regression test, the fix, and what else the
   cause could break.
 - Fix with `om-fix`: commit the regression test first and show it fails, then the smallest fix
