@@ -56,3 +56,10 @@ confirmations, so a slow transcript cannot duplicate the text in practice.
 ## Decisions
 
 - Retry in place rather than restarting the session: the session is healthy, only the input was lost.
+
+## Evidence
+
+- `scripts/dev check`: finished clean (all crates compile).
+- `cargo test -p yulius --test task_done`: 5 passed, 0 failed (34.5 s), including
+  `a_goal_the_tui_dropped_is_submitted_again` (GSB-004) and the four existing goal tests.
+- Not run: the full `scripts/dev ci` gate and the e2e suite (no web UI change).
