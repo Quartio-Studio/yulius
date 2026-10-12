@@ -424,8 +424,8 @@ impl App {
             }
         };
         for number in rule.numbers() {
-            if !known.contains_key(&number) {
-                known.insert(number, self.rule_facts(&task.sandbox_id, number).await);
+            if let std::collections::hash_map::Entry::Vacant(slot) = known.entry(number) {
+                slot.insert(self.rule_facts(&task.sandbox_id, number).await);
             }
         }
         let ended = Facts {
