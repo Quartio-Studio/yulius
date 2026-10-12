@@ -101,29 +101,37 @@ enum Ended {
 }
 
 /// The directory of a job's persistent checkout: the definition's name, plus the matrix value's
-/// position for matrix jobs (siblings run in parallel and need their own).
-fn checkout_name(job: &CiJobRecord, siblings: &[CiJobRecord]) -> String {
+/// position for matrix jobs (siblings run in parallel and need their own), plus the lane past
+/// the first (two runs of a sandbox run in parallel and need their own too).
+fn checkout_name(job: &CiJobRecord, siblings: &[CiJobRecord], lane: u32) -> String {
     let same: Vec<&CiJobRecord> = siblings.iter().filter(|j| j.key == job.key).collect();
-    if same.len() <= 1 {
-        return job.key.clone();
+    let name = if same.len() <= 1 {
+        job.key.clone()
+    } else {
+        let index = same.iter().position(|j| j.id == job.id).unwrap_or(0) + 1;
+        format!("{}.{index}", job.key)
+    };
+    if lane == 0 {
+        name
+    } else {
+        format!("{name}@{lane}")
     }
-    let index = same.iter().position(|j| j.id == job.id).unwrap_or(0) + 1;
-    format!("{}.{index}", job.key)
 }
 
 impl App {
-    /// Executes one run (the dispatcher marked its sandbox busy); always releases it.
+    /// Executes one run in `lane` (the dispatcher marked it busy); always releases it.
     pub(super) async fn ci_execute(
         self: Arc<Self>,
         run: CiRunRecord,
         cancel: watch::Receiver<Option<String>>,
+        lane: u32,
     ) {
-        self.ci_execute_inner(&run, cancel).await;
+        self.ci_execute_inner(&run, cancel, lane).await;
         if let Ok(mut executing) = self.ci.executing.lock() {
             executing.remove(&run.id);
         }
         if let Ok(mut busy) = self.ci.busy.lock() {
-            busy.remove(run.sandbox_id.as_str());
+            busy.remove(&format!("{}/{lane}", run.sandbox_id.as_str()));
         }
         self.ci_wake();
     }
@@ -132,6 +140,7 @@ impl App {
         self: &Arc<Self>,
         run: &CiRunRecord,
         cancel: watch::Receiver<Option<String>>,
+        lane: u32,
     ) {
         let store = &self.deps.store;
         let start = CiRunUpdate {
@@ -184,7 +193,7 @@ impl App {
                 for job in &jobs {
                     let app = Arc::clone(self);
                     let (sandbox, run, job) = (Arc::clone(&sandbox), run.clone(), job.clone());
-                    let checkout = checkout_name(&job, &jobs);
+                    let checkout = checkout_name(&job, &jobs, lane);
                     let job_cancel = siblings.clone();
                     let stop_siblings = Arc::clone(&siblings_tx);
                     handles.push(tokio::spawn(async move {
@@ -724,8 +733,11 @@ mod tests {
             ended_at: None,
         };
         let jobs = vec![job("a", "lint"), job("b", "test"), job("c", "test")];
-        assert_eq!(checkout_name(&jobs[0], &jobs), "lint");
-        assert_eq!(checkout_name(&jobs[1], &jobs), "test.1");
-        assert_eq!(checkout_name(&jobs[2], &jobs), "test.2");
+        assert_eq!(checkout_name(&jobs[0], &jobs, 0), "lint");
+        assert_eq!(checkout_name(&jobs[1], &jobs, 0), "test.1");
+        assert_eq!(checkout_name(&jobs[2], &jobs, 0), "test.2");
+        // A second lane of the sandbox has checkouts of its own.
+        assert_eq!(checkout_name(&jobs[0], &jobs, 1), "lint@1");
+        assert_eq!(checkout_name(&jobs[2], &jobs, 1), "test.2@1");
     }
 }
