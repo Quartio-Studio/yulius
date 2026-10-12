@@ -3,7 +3,7 @@ yulius-task: 23ec195b-f092-4556-8e7f-01430aeb61d6
 status: done
 ---
 
-# SPEC-010: Images attached to a new task are seen, not shown as a path
+# SPEC-014: Images attached to a new task are seen, not shown as a path
 
 Status: implemented
 Date: 2026-10-12
