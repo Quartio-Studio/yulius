@@ -38,6 +38,8 @@ pub struct FakeAgentOptions {
     /// Run a turn of this many milliseconds first when the launch has a first message
     /// (`--opening-turn-ms`).
     pub opening_turn_ms: Option<u64>,
+    /// Each echoed message is a silent turn of this many milliseconds (`--echo-turn-ms`).
+    pub echo_turn_ms: Option<u64>,
     /// Also report these environment variables at start (`--report-env`: set and length, never
     /// the value).
     pub report_env: Vec<String>,
@@ -136,6 +138,9 @@ impl HarnessPort for FakeAgentHarness {
             yulius_app::ports::harness::SessionMode::New { prompt, .. }
             | yulius_app::ports::harness::SessionMode::Resume { prompt, .. } => prompt.is_some(),
         };
+        if let Some(ms) = self.options.echo_turn_ms {
+            argv.extend(["--echo-turn-ms".into(), ms.to_string()]);
+        }
         if let (Some(ms), true) = (self.options.opening_turn_ms, first_message) {
             argv.extend(["--opening-turn-ms".into(), ms.to_string()]);
         }

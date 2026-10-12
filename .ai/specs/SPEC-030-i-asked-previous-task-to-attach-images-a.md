@@ -71,10 +71,12 @@ not a path the session reads with a tool.
   images (typed: images and text, other files mentioned), without images (the CLI prompt as
   before), in goal mode (`None` without files); no control characters.
 - Integration (`crates/yulius/tests/task_done.rs`, fake agent): the fake agent learns bracketed
-  pastes like Claude Code (an image path becomes `[Image #N]`, text is kept). A prompt-mode task
-  with an image launches with no prompt and the agent answers `[Image #1] Make it blue`. A
-  goal-mode task with an image gets `[Image #1]` and then `GOAL SET`. Both fail before the fix:
-  the image is a mention in the launch prompt.
+  pastes like Claude Code (an image path becomes `[Image #N]`, text is kept), and
+  `--echo-turn-ms` makes the turn on a typed message last. A prompt-mode task with an image
+  launches with no prompt and the agent answers `[Image #1] Make it blue`. A goal-mode task with
+  an image gets `[Image #1]`, and its `/goal` only after that 4 s silent turn ended, then
+  `GOAL SET` once. Both fail before the fix, because the image is a mention in the launch
+  prompt. The goal test also fails when the typed opening does not set the opening turn.
 - Manual, outside the gate: the mock-API driver against the installed Claude Code (Evidence).
 - Not covered: a live model answering about the image (needs a paid credential).
 
@@ -92,6 +94,15 @@ not a path the session reads with a tool.
   after a change). It never waits on a fixed sleep and gives up after 5 s. Without that wait a
   burst of pastes loses the image (measured).
 - The first message is typed once, never retried: a retried paste could send the request twice.
+- Review round 1 (fresh session) requested changes:
+  - The goal test did not prove PIMG-003, because a pretend command-line turn cleared the
+    opening flag. It now uses a silent typed turn and fails with the flag not set (checked).
+  - Typing did not stop when its attempt ended. It now checks before each paste and before
+    Enter; there is no test, since the window is a few seconds of a replaced run.
+  - A server restart during typing and a held first message resumed on another account lose
+    the message or its image. Rare; recorded in ADR-0025, follow-up issue #266.
+  - Mentions inside a long, collapsed paste: measured, still attached.
+  - A request starting with `/` plus an image is no longer a slash command (ADR-0025).
 - The text paste ends with a newline: the autocomplete otherwise takes the Enter when the text
   ends on a mention (measured). The alternative of mentions first is not attached after an image
   placeholder (measured).
@@ -112,5 +123,7 @@ not a path the session reads with a tool.
   - The goal-mode text ending on `@"/abs/notes.txt"`, Enter after a 0.6 s pause (and the waits
     on `[Image #N]`): the autocomplete took the Enter and nothing was sent. With a newline after
     the mention (2 to 2.5 s pause): sent, the image block and the file's content attached, 4 of 4.
+  - An image, then 40 lines of text ending on a mention and a newline: the full text, an `image`
+    block and the file's content attached.
   - An image alone, then Enter: `[Image #1]` and an `image` block. An image then `Make it blue\n`:
     `[Image #1]Make it blue` and an `image` block.

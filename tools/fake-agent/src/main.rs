@@ -11,6 +11,7 @@
 //!            [--limit-after N] [--report-env NAME]... [--tui]
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
+//!            [--echo-turn-ms MS]
 //! ```
 //!
 //! Modes:
@@ -72,6 +73,9 @@
 //! `DONE opening` and its Stop hook) before it reads input. With the terminal's echo, a line typed
 //! during that turn shows before `DONE opening`.
 //!
+//! `--echo-turn-ms MS` makes each echoed message a turn that takes MS (≤ 60 s) before its `ECHO:`
+//! answer and Stop hook, silent meanwhile (a turn on a typed first message, SPEC-030).
+//!
 //! Bracketed pastes (`ESC [200~ … ESC [201~`) are read like Claude Code 2.1.292 reads them: a
 //! pasted path ending in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` becomes `[Image #N] ` (N
 //! counts the images of the message), other pasted text is kept as typed, newlines included; the
@@ -130,6 +134,7 @@ struct Options {
     goal_background: Option<u64>,
     goal_delay_ms: u64,
     opening_turn_ms: Option<u64>,
+    echo_turn_ms: u64,
     session_start: bool,
     drop_lines: u32,
     interrupts: bool,
@@ -159,6 +164,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         goal_background: None,
         goal_delay_ms: 0,
         opening_turn_ms: None,
+        echo_turn_ms: 0,
         session_start: false,
         drop_lines: 0,
         interrupts: false,
@@ -213,6 +219,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--drop-lines" => options.drop_lines = parse_number(&flag, args.next())?,
             "--interrupts" => options.interrupts = true,
             "--session-start" => options.session_start = true,
+            "--echo-turn-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.echo_turn_ms = ms.min(MAX_WORK_MS);
+            }
             "--opening-turn-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.opening_turn_ms = Some(ms.min(MAX_WORK_MS));
@@ -1005,6 +1015,7 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                     say(&format!("PROMPT BLOCKED: {reason}"))?;
                     continue;
                 }
+                std::thread::sleep(Duration::from_millis(options.echo_turn_ms));
                 let answer = format!("ECHO: {line}");
                 say(&answer)?;
                 turns += 1;

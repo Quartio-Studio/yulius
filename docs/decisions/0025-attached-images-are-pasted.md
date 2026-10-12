@@ -13,7 +13,7 @@ the path and `Read 1 file` in the task's terminal. Measured on Claude Code 2.1.2
 local mock of the Messages API, an `@` mention is attached as a synthetic Read tool call: a
 `Called the Read tool` reminder with the image as its result, and the path still in the text.
 Only a bracketed paste of an image's path into the TUI attaches it as a person pasting it would:
-`[Image #N]` in the prompt and an `image` block in the user message. Two other facts were
+`[Image #N]` in the prompt and an `image` block in the user message. Three other facts were
 measured:
 - The CLI prompt never turns a path into an image.
 - Pastes written in one burst lose the image.
@@ -49,4 +49,11 @@ Stop hook, as before. Tasks without images keep the CLI prompt.
 - A session with images depends on TUI readiness and paste handling. A person typing during
   start-up can mix their input into the first message. A first message the TUI lost is not
   retyped (the request file still lists the files).
+- Typing stops when its attempt ends, so a replacement session never gets half a message. A
+  server restart during the few seconds of typing loses the first message: the session waits at
+  its prompt.
+- A first message held for capacity and resumed on another account is carried as its text
+  (`[Image #1] …`), without the image. Both gaps: issue #266.
+- A request starting with `/` and an attached image is no longer run as a slash command: the text
+  follows the pasted image.
 - The mock-API driver in SPEC-030 checks the behaviour again after a Claude Code upgrade.

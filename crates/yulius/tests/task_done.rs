@@ -383,8 +383,10 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            // Claude Code runs a turn on the first message (the attached file).
-            opening_turn_ms: Some(0),
+            session_start: true,
+            // The turn on the typed first message (the attached image) is silent for longer
+            // than the quiet time after which a goal is otherwise typed (SPEC-030 PIMG-003).
+            echo_turn_ms: Some(4_000),
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
@@ -432,7 +434,10 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
             .find("ECHO: [Image #1] The files attached to this task.")
             .ok_or_else(|| screen.clone())?;
         let typed = screen.find("/goal ").ok_or_else(|| screen.clone())?;
-        assert!(pasted < typed, "the goal came first:\n{screen}");
+        assert!(
+            pasted < typed,
+            "the goal was typed during the turn on the first message:\n{screen}"
+        );
         assert!(!screen.contains("STOP BLOCKED"), "{screen}");
         assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
         assert!(request.contains("## Definition of done"), "{request}");

@@ -992,7 +992,7 @@ impl App {
                     .wait_input_ready(&task_id, &attempt_id, tokio::time::Instant::now(), false)
                     .await
                 {
-                    app.type_opening(&task_id, opening).await;
+                    app.type_opening(&task_id, &attempt_id, opening).await;
                 }
             });
         }
@@ -1109,10 +1109,19 @@ impl App {
     /// bracketed paste of its own, then the text as one paste, then Enter. Each paste is taken
     /// before the next is written (pastes written in one burst lose the image): the screen shows
     /// its `[Image #N]`, or the output changed and settled. Typed once, never retried, so the
-    /// request is never sent twice.
-    async fn type_opening(&self, task_id: &TaskId, (images, text): (Vec<String>, String)) {
+    /// request is never sent twice. Typing stops once the attempt is no longer live: input goes
+    /// to the task's current run, which would then be another session.
+    async fn type_opening(
+        &self,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        (images, text): (Vec<String>, String),
+    ) {
         let runtime = self.runtime(task_id);
         for (paste, shown) in opening_pastes(images, &text) {
+            if !self.attempt_live(task_id, attempt_id).await {
+                return;
+            }
             let before = runtime.hub.output_seq();
             if let Err(err) = self.send_input(task_id, &paste).await {
                 tracing::warn!(task = %task_id, error = %err, "could not type the first message");
@@ -1138,6 +1147,9 @@ impl App {
                     break;
                 }
             }
+        }
+        if !self.attempt_live(task_id, attempt_id).await {
+            return;
         }
         if let Err(err) = self.send_input(task_id, b"\r").await {
             tracing::warn!(task = %task_id, error = %err, "could not submit the first message");
@@ -1170,7 +1182,7 @@ impl App {
                 {
                     return;
                 }
-                app.type_opening(&task_id, opening).await;
+                app.type_opening(&task_id, &attempt_id, opening).await;
             }
             if !app
                 .wait_input_ready(&task_id, &attempt_id, started, true)
