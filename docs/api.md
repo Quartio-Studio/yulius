@@ -807,6 +807,18 @@ resolves to nothing, the run gets the server without that variable or token.
     else) speaks the terminal protocol (`state` has `attempt_seq` and `harness` `null`). A shell
     ends when its process exits (the server sends `exit` and closes), when it is closed, or after
     24 h without viewers; it keeps running across a server restart. Shells never change tasks.
+- Cockpit (SPEC-021, ADR-0019): every user's own plain Claude Code session per sandbox, a shell
+  of kind `cockpit`.
+  - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
+    running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
+    <newest conversation>]` in the sandbox repository, as the caller's sandbox identity, with the
+    token of the pool's best subscription and `CLAUDE_CONFIG_DIR=~/.claude`; no Yulius hooks,
+    MCP, settings or approval bypass. 409 before the repository is cloned or without a Claude
+    subscription, 429 while none has capacity. There is no delete: it is never in `GET …/shells`,
+    `PATCH`/`DELETE …/shells/{id}` answer 404 for it, and it does not count against the 8
+    terminals. Its terminal is `WS /api/shells/{id}/terminal`; files go to
+    `POST …/shells/{id}/attachments`. It ends when Claude Code exits or after 24 h without
+    viewers, keeps running across a restart, and the next call resumes its conversation.
 
 ## Administration, analytics, status
 
