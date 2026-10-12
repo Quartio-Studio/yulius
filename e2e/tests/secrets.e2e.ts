@@ -111,7 +111,8 @@ test('editing a team secret loads its current notes after a two-factor code', as
   await app.open(mock('/s/studio/secrets'));
   await screen.getByRole('button', 'Edit Shared Gmail').click();
   const edit = screen.getByRole('dialog', 'Edit Shared Gmail');
-  await expect(edit.getByText(/what you type replaces them/)).toBeVisible();
+  // The stored notes cannot be overwritten blindly: the box opens read-only until they are loaded.
+  await expect(browser.locator('dialog.modal textarea')).toHaveAttribute('readonly', '');
   await screen.getByRole('button', 'Edit current notes of Shared Gmail').click();
   await setUpTwoFactor(screen, browser);
   await expect(browser.locator('dialog.modal textarea')).toHaveValue(/User name: team@example\.test/);
