@@ -62,7 +62,7 @@ Principles:
    the superadmin owns the instance and has admin access to every sandbox without GitHub
    (ACC-012, F 2026-10-09).
 4. **Harness-independent coordination** through one Yulius MCP server and the hook protocol both
-   CLIs implement (COM-002, STP-001, DSC-003).
+   CLIs implement (COM-005, STP-001, DSC-003; no task-to-task messages, COM-002 withdrawn).
 5. **Everything bounded and owned**: each queue, stream, retry and wait has a limit and an owner
    (§9).
 
@@ -1540,7 +1540,7 @@ Schema version 1 (tables; columns abbreviated):
 | `switch_decisions` | id, task_id, at, reason, inputs (json), outcome |
 | `steps` | id, task_id, ordinal, title, status, note, updated_by, updated_at, effort (1-3, version 11, STP-006) |
 | `step_events` | step_id, at, actor, from_status, to_status, note; index (task_id, step_id) (version 11): start and finish times (STP-007) |
-| `messages` | id, sandbox_id, from_task, to_task (null = broadcast), kind, subject, body, created_at |
+| `messages` | id, sandbox_id, from_task (null = Yulius), to_task (null = to people; task-to-task rows are history only), kind, subject, body, created_at |
 | `message_receipts` | message_id, task_id, delivered_at, read_at |
 | `scope_claims` | id, task_id, pattern, note, created_at, released_at |
 | `workflows` | id, sandbox_id (null = instance), name, description, steps (json), instructions, gates (json) |
@@ -1852,7 +1852,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | --- | --- |
 | `project_context` | Project summary, architecture/decision index, recent changes, delivery rules (COM-004, DSC-009) |
 | `tasks_list`, `task_get` | Previous and parallel tasks: status, harness, branch, spec, steps, summary (COM-001) |
-| `message_send`, `messages_inbox` | Harness-independent messages, direct or broadcast (COM-002) |
+| `message_send`, `messages_inbox` | `message_send` tells or asks people (`to="people"` only, COM-005); `messages_inbox` reads Yulius's notices (COM-002 withdrawn, SPEC-012) |
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
@@ -1873,8 +1873,7 @@ Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails 
 Every tool result (and error) is redacted of the sandbox's agent secrets before it is returned
 (VLT-007).
 `scope_claim` takes one glob or up to 20, a task holds at most 50; claims of tasks that are no
-longer live are ignored, a repeated claim is kept once and messages nobody again, and each other
-task whose claim overlaps a new claim gets one `scope` message (which wakes it when idle).
+longer live are ignored, a repeated claim is kept once, and an overlap with another task's claim is returned to the claiming agent only (no message, SPEC-012).
 `scope_release` takes `pattern`, `patterns` or nothing (all) and refuses anything else. `spec_check` returns the Stop gate's verdict and fix-it message for
 the task spec plus the project-docs problems; `project_context` returns the briefing rebuilt now.
 
@@ -1922,7 +1921,7 @@ output) and is recorded. Responses:
   `hookSpecificOutput.updatedToolOutput` when it held an agent secret (ADR-20); without
   fingerprints in a Yulius run the result is withheld.
 
-Waking idle tasks (COM-005): when a direct message arrives for a `running` task with activity
+Waking idle tasks (COM-005): when a notice from Yulius arrives for a `running` task with activity
 `waiting` or `done` for ≥ 30 s and no viewer typed in the last 30 s, the supervisor types a short notice and
 Enter into the PTY (configurable per task; never during `needs_attention`).
 
@@ -2421,7 +2420,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Terminal size, clipboard and file links (UI-018, UI-019, AC-UI-10, AC-UI-11; F 2026-10-10) | `e2e/tests/terminal.e2e.ts` (mock): the key table per platform and the path forms (unit, in the page); Ctrl+C copies a selection and interrupts without one; paste types; the right-click menu; a read-only paste refused; another viewer's 90×30 grid fills the box, centred, never cut off, with a chip and no banner, and a click takes the size; file links in the task terminal (five forms linked, four kinds left plain, a web link kept) open the editor at file, line and column; a shell's `ls` output links. `live_ui_terminal.rs` (opt-in Chrome, real server and fake agent): copy with a selection keeps the agent running, the platform's paste key types the clipboard, two windows of different sizes (the active one sets the PTY, the other fills its box; a click moves the size; an idle window hands it back), and Ctrl+C without a selection interrupts the agent. |
 | User terminals (UI-016, AC-UI-8, AC-UI-37) | `shells.rs`: a shell's `folder` (where its paths resolve) and the OSC 7 working directory its `PROMPT_COMMAND` reports; many named shells per user and sandbox up to the bound, privacy between users and sandboxes (list, attach, rename, close), close ends the process, idle reaping; a shell keeps running when the server stops and the next server adopts it with its screen and process (unadoptable leftovers removed). `live_ui_terminal.rs` (opt-in Chrome): the Shell panel opens a working terminal without a click and "+" adds one. |
 | Task terminal appearance (UI-043, AC-UI-38) | `live_ui_terminal.rs` (opt-in Chrome, fake agent with `--tui`, 80 ms latency): zero visible font, grid or layout changes after the first frame, cold and on reload; before this change 2 (cold) and 1 (reload), plus a font-size change before the agent's text. |
-| Messages and steps (AC-COM-2, AC-STP-3) | `supervision.rs` wake test (notice typed into the idle recipient only); `agent_hooks.rs` plan-checklist → steps sync. No person → agent message route (2026-10-10, #110): `http_auth.rs` (`POST /api/tasks/{tid}/messages` is 405, the read routes still answer); `ui_contract.rs` (neither the UI nor the mock posts messages); `e2e/tests/messages.e2e.ts` (no composer, "Reply in the terminal" focuses the terminal). |
+| Messages and steps (AC-COM-2, AC-STP-3) | `supervision.rs` wake test (a Yulius notice typed into the idle task only); `mcp_coordination.rs` (`message_send` refuses tasks and `"all"`, scope overlaps send nothing); `agent_hooks.rs` plan-checklist → steps sync. No person → agent message route (2026-10-10, #110): `http_auth.rs` (`POST /api/tasks/{tid}/messages` is 405, the read routes still answer); `ui_contract.rs` (neither the UI nor the mock posts messages); `e2e/tests/messages.e2e.ts` (no composer, "Reply in the terminal" focuses the terminal). |
 | Unreadable GitHub checks (GIT-001, AC-GIT-1, #111) | `yulius-github`: `wire::tests::unreadable_sources_never_make_checks_green`; `tests/client.rs` against the fake GitHub: 403 on check runs and 200 on statuses (statuses and Actions runs decide, `head_sha` sent), Actions withheld too, nothing reported → unknown, nothing readable → unknown, 403 on statuses only (check runs decide, no Actions call), another 403 still fails. `tests/github_checks.rs`: the production adapter maps the report. `tests/delivery.rs`: one `checks_access` (settings link for the superadmin only), no note, unknown refuses the merge and the release with the reason, other GitHub errors become one note without a doubled prefix. Domain merge-gate tests with `ChecksState::Unknown`. Manifest test requests `statuses: read`. |
 | Operator CLI (AC-OPS-3) | `cli.rs`: `yulius backup` consistent copy, refuses an existing destination; `yulius doctor` fails on a too-long data dir. |
 | Hooks, briefing, discipline (COM-004, DSC-003) | `crates/yulius/tests/agent_hooks.rs` over the internal HTTP listener. |
@@ -2449,6 +2448,9 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-12 (F 2026-10-12): task-to-task messaging is removed (COM-002 withdrawn, SPEC-012):
+  `message_send` accepts only `to="people"`, `scope_claim` messages nobody, notices from Yulius
+  (`tell_task`, `tell_freed`, intake) and the inbox, digest, wake-up and panel are unchanged.
 - 2026-10-12 (F 2026-10-12): the wake-up notice (COM-005) is typed, then submitted with a separate
   Enter after a pause; a wake-up still unsent is only submitted, never typed again.
 - 2026-10-11 (F 2026-10-11): a pull request behind its base is told to update and refused by

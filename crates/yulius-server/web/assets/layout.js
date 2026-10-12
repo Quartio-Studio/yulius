@@ -692,7 +692,7 @@ export function createSidebar(ctx) {
     row.age.title = `Last change ${dateTime(task.updated_at)}`;
     row.unread.hidden = !task.unread_messages;
     setChildren(row.unread, task.unread_messages ? [String(task.unread_messages), h('span', { class: 'sr-only' }, ' unread')] : null);
-    row.unread.title = task.unread_messages ? `${task.unread_messages} unread message${task.unread_messages === 1 ? '' : 's'} from other agents` : '';
+    row.unread.title = task.unread_messages ? `${task.unread_messages} unread message${task.unread_messages === 1 ? '' : 's'}` : '';
   }
 
   function groupHead(group, size) {

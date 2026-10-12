@@ -218,8 +218,9 @@ function seed(params) {
     }
   }
   db.messages = [
-    { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_11', login: null, title: '#11 3D model viewer (claude)' }, to_task_id: 'tsk_studio_12', kind: 'scope', subject: 'Scope: src/viewer/**', body: 'I am working in src/viewer/** and public/models/**. Please avoid those paths; I will stay out of src/api/**.', created_at: iso(42 * MIN), read: true },
-    { id: 'msg_2', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_10', login: null, title: '#10 AWS login for deploy (claude)' }, to_task_id: 'tsk_studio_12', kind: 'question', subject: 'Which port does the API use?', body: 'Is the checkout API served on http://localhost:20003 in this sandbox? I need it for the deploy smoke test.', created_at: iso(8 * MIN), read: false },
+    // Notices from Yulius itself (delivery and disk notices, scope changes); tasks do not message each other.
+    { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: null, login: null, title: 'Yulius' }, to_task_id: 'tsk_studio_12', kind: 'request', subject: 'Scope changed by the user', body: 'The user dropped the invoice export from this task. Stop work on it and continue with the checkout API.', created_at: iso(42 * MIN), read: true },
+    { id: 'msg_2', task: 'tsk_studio_12', from: { task_id: null, login: null, title: 'Yulius' }, to_task_id: 'tsk_studio_12', kind: 'request', subject: 'Checks failed on the pull request', body: 'The CI gate failed on the head of your pull request. Fix it on this branch, test-first, then push.', created_at: iso(8 * MIN), read: false },
     // The agent asks people (message_send to="people"): they answer in its terminal (F 2026-10-10).
     { id: 'msg_3', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_12', login: null, title: '#12 Checkout API' }, to_task_id: null, kind: 'question', subject: 'Stripe keys', body: 'Should checkout use the Stripe test keys or the live ones? The AWS sign-in tab is open: ' + `${ORIGIN}/s/studio/browser?tab=tab-aws`, created_at: iso(3 * MIN), read: true },
   ];
@@ -2411,8 +2412,8 @@ const SCRIPT_CLAUDE = [
   `     ${c(114, 'test cart::discount_never_negative ... ok')}`,
   `     ${c(114, 'test result: ok. 14 passed; 0 failed')}`,
   `${c(255, '⏺')} The API is running at ${c(39, 'http://localhost:20003/api/cart')} — I opened it in the sandbox browser.`,
-  `${c(255, '⏺')} ${bold('yulius')} - message_send (MCP)(to: "#11", kind: "scope", subject: "I own src/api/**")`,
-  `  ${dim('⎿  Delivered to #11 3D model viewer')}`,
+  `${c(255, '⏺')} ${bold('yulius')} - scope_claim (MCP)(pattern: "src/api/**")`,
+  `  ${dim('⎿  Claimed src/api/**; no overlap with other tasks')}`,
   `${c(173, '✻')} ${c(173, 'Pondering…')} ${dim('(esc to interrupt)')}`,
   `${c(255, '⏺')} Done with this step. Anything else before I write the UI wiring?`,
 ];
@@ -2510,7 +2511,7 @@ class TermSession {
     const contained = !(this.db.me.instance && this.db.me.instance.contained === false);
     const extras = [];
     if (!this.exited && this.task.number % 2 === 0) extras.push(c(80, '1 shell'));
-    if (!this.exited && this.task.unread_messages) extras.push(dim(`← ${this.task.unread_messages === 1 ? '1 agent' : `${this.task.unread_messages} agents`}`));
+    if (!this.exited && this.task.unread_messages) extras.push(dim(`← ${this.task.unread_messages === 1 ? '1 notice' : `${this.task.unread_messages} notices`}`));
     const mode = contained
       ? ` ${c(204, '⏵⏵ bypass permissions on')}${extras.length ? '' : dim(' (shift+tab to cycle)')}`
       : ` ${dim('? for shortcuts')}`;

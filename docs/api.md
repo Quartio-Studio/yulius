@@ -217,7 +217,7 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
-| GET | `/api/tasks/{tid}/messages` | read | → `[Message]`: messages between this task and other tasks (`message_send`) and its agent's messages to people (`to="people"`, `to_task_id` null). People talk to the agent in its terminal; there is no route that posts a person's message to it (removed 2026-10-10, `POST` is 405) |
+| GET | `/api/tasks/{tid}/messages` | read | → `[Message]`: notices from Yulius and its agent's messages to people; older task-to-task rows still show, but no new ones are created: `message_send` only accepts `to="people"` (`to_task_id` null). People talk to the agent in its terminal; there is no route that posts a person's message to it (removed 2026-10-10, `POST` is 405) |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
 | WS | `/api/tasks/{tid}/terminal` | read (input: write) | terminal protocol below |
 
@@ -272,7 +272,7 @@ TaskDetail = TaskSummary + {
   "delivery": Delivery, "switches": [{"at","reason","from","to"}]
 }
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
-Message = {"id","from":{"task_id|null","login|null","title"},"to_task_id|null","kind":"info|question|request|scope","subject","body","created_at","read":bool}
+Message = {"id","from":{"task_id|null","login|null","title"},"to_task_id|null","kind":"info|question|request (scope: older rows only)","subject","body","created_at","read":bool}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}
 ```
 

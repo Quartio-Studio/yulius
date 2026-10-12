@@ -5,16 +5,16 @@ import { axeViolations, failOnPageErrors, mock } from './support.ts';
 failOnPageErrors();
 
 // F 2026-10-10 (#110): "here should be only messages received by other sessions/task. User sends
-// messages in Claude." The panel shows messages between tasks and the agent's messages to people;
-// people answer the agent in its terminal.
+// messages in Claude." F 2026-10-12: tasks no longer message each other. The panel shows notices
+// from Yulius and the agent's messages to people; people answer the agent in its terminal.
 test('Messages has no composer, and an agent question is answered in the terminal', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', /^Messages/).click();
 
   const log = screen.getByRole('log', 'Messages');
-  // From another task, and the agent of #12 asking people.
-  await expect(log.getByText('Which port does the API use?')).toBeVisible();
+  // A notice from Yulius, and the agent of #12 asking people.
+  await expect(log.getByText('Checks failed on the pull request')).toBeVisible();
   await expect(log.getByText('Stripe keys')).toBeVisible();
   // Nothing to type into: no text box and no Send button in the panel.
   expect(await browser.evaluate(() => {

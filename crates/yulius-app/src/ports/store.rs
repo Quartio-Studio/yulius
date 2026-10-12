@@ -413,7 +413,8 @@ pub trait CoordinationStore: Send + Sync {
     /// Inserts a message and receipts for the recipients.
     async fn insert_message(&self, message: &MessageRecord, recipients: &[TaskId])
     -> AppResult<()>;
-    /// Messages addressed to a task (direct or broadcast), newest last.
+    /// Messages addressed to a task (Yulius notices; older task-to-task messages stay as history),
+    /// newest last.
     async fn inbox(
         &self,
         task: &TaskId,
