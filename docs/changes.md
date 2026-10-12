@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Merging into `dev` no longer waits for a person: the `standard` delivery profile has no manual `dev` checkpoint, so after the merge on green checks the next action is promotion; stored profiles with the old checkpoint read as the new one (SPEC-011 DLV-009, DLV-010, #10).
 - A subscription whose only task is running but idle is read again: the usage round skipped every
   subscription with a running task, but an idle session reports nothing, so its reading went stale
   (5.6 h on production); it now skips only fresh readings (SPEC-007 USG-002, #4).

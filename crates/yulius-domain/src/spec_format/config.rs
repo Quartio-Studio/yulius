@@ -951,7 +951,7 @@ mod tests {
         assert_eq!(config.delivery.environments[1].verify, Verify::Manual);
         let cleared = parse_yulius_toml("[delivery]\nenvironments = []\n")?;
         assert!(cleared.delivery.environments.is_empty());
-        assert_eq!(cleared.delivery.preset, Preset::Custom);
+        assert_eq!(cleared.delivery.preset, Preset::Standard);
         assert_eq!(
             problem(
                 "[delivery]\nenvironments = []\n[[delivery.environments]]\nname = \"x\"\nafter = \"integration\"\n"

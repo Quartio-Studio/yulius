@@ -259,6 +259,12 @@ pub fn profile_from_contract(profile: &Profile) -> AppResult<DeliveryProfile> {
             verify,
         });
     }
+    // DLV-010: the manual `dev` checkpoint of the former standard preset is gone.
+    if preset == Preset::Standard
+        && matches!(environments.as_slice(), [only] if DeliveryProfile::is_legacy_standard_checkpoint(only))
+    {
+        environments.clear();
+    }
     let parsed = DeliveryProfile {
         preset,
         integration_branch: profile.integration_branch.trim().to_owned(),
@@ -3631,6 +3637,28 @@ mod tests {
             profile_from_contract(&unknown),
             Err(AppError::Invalid(_))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_standard_checkpoint_reads_as_the_new_standard() -> TestResult {
+        let mut legacy = profile_to_contract(&DeliveryProfile::standard());
+        legacy.environments = vec![EnvironmentView {
+            name: "dev".into(),
+            after: "integration".into(),
+            command: None,
+            verify: "manual".into(),
+        }];
+        assert_eq!(profile_from_contract(&legacy)?, DeliveryProfile::standard());
+
+        // A dev environment with a command is a deliberate choice and stays.
+        legacy.environments[0].command = Some("./deploy-dev.sh".into());
+        legacy.environments[0].verify = "command".into();
+        assert_eq!(profile_from_contract(&legacy)?.environments.len(), 1);
+
+        // Product keeps its manual checkpoints.
+        let product = profile_to_contract(&DeliveryProfile::product());
+        assert_eq!(profile_from_contract(&product)?, DeliveryProfile::product());
         Ok(())
     }
 

@@ -16,7 +16,8 @@ These rules apply to features, fixes, documentation, tooling and policy changes.
    after confirming it contains no unpublished work.
 5. Wait for the **push CI run on the resulting `dev` commit** to succeed. A passing
    feature PR run does not replace this post-merge test. When a dev environment
-   exists, deployment and smoke tests belong here too.
+   with a deploy command exists, deployment and smoke tests belong here too. The
+   standard profile has no manual dev checkpoint: nobody confirms `dev` by hand.
 6. Open a promotion PR **from `dev` into `main`**. Its exact head must have a successful
    post-merge `dev` push run; promotion CI verifies this and tests the proposed merge.
 7. The promotion PR's author merges it with a **merge commit**, after required checks
