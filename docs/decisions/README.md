@@ -28,3 +28,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0022](0022-native-task-attachments.md): Attached files reach Claude Code as `@path` mentions in its first message
 - [0023](0023-no-messages-until-delivery-is-reliable.md): No messages until their delivery is reliable
 - [0024](0024-default-model-and-effort.md): Tasks default to Opus 5.5 at high effort
+- [0025](0025-sandbox-navigation-more-group.md): Six sandbox pages in the sidebar, the rest under "More"

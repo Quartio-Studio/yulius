@@ -22,6 +22,8 @@ watching, steering and unblocking.
 - **Cockpit**: every user's own plain Claude Code session per sandbox, first in the sidebar, for
   quick questions and work that should not become a task; `/clear` starts over, it cannot be
   deleted and comes back with its conversation.
+- **Sidebar**: the sandbox pages used every day (Cockpit, Tasks, Git, CI, Secrets, Dashboard),
+  then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer

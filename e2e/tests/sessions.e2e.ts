@@ -9,6 +9,8 @@ failOnPageErrors();
 // task sessions and imported ones together, with filters and search; one opens read-only.
 test('Sessions lists task and imported sessions, filters and searches them', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  // Sessions is under More in the sandbox navigation (SPEC-029).
+  await screen.getByRole('navigation', 'Sandbox').getByRole('button', 'More').click();
   await screen.getByRole('navigation', 'Sandbox').getByRole('link', 'Sessions').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/sessions$/);
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sessions');
