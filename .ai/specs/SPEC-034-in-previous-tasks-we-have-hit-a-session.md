@@ -123,7 +123,8 @@ a PTY):
   2026-10-12; all four got `Continue.` (`origin: human`) after `usage_limit_reached`.
 - Claude Code 2.1.292 behaviour measured locally against a fake Anthropic API (table under
   Context). No paid request was made.
-- Regression first: `591e4e6` (originally `4ec61b6`) changed the reactive-switch and AC-ROT-10 tests.
+- Regression first: the commit "test(supervisor): a resume after a usage limit types no
+  Continue. (failing)" changed the reactive-switch and AC-ROT-10 tests.
   Before the fix both failed with `prompt: Some("Continue.")` and a limit record left in the
   transcript. The same-subscription test fails without the `limit` guard in `resume_paused` (no
   second run within 60 s, because the old code typed into the paused process). The manual-switch
@@ -133,10 +134,13 @@ a PTY):
 - `cargo test -p yulius-harness`: green (8 step-back unit tests, the launch test).
   `cargo test -p yulius --test pool_supervision`: 9 passed. `--test supervision`: 13 passed,
   1 ignored. `--test subscription_pool` and `--test update_supervision`: green.
-- `scripts/dev ci`: green; 1174 tests run, 1174 passed, 16 skipped (before the review fixes; rerun
-  at the final head, see the pull request).
-- Independent review in a fresh session (om-code-review): approved `03480ea` with no blocker or
-  major. Minors fixed test-first: the manual switch, the lost limit marker, the session index, the
+- `scripts/dev ci`: green after the review fixes and the rebase over #268; 1184 tests run, 1184
+  passed, 16 skipped.
+- Independent review in fresh sessions (om-code-review): round 1 approved with no blocker or
+  major; round 2 approved the head after the fixes and the rebase over #268, its remaining minors
+  are follow-up issues (a live CLI that continues by itself at the reset, a person's switch after a
+  refused limit switch, the step back off the async runtime, the untested paths below).
+  Round 1 minors fixed test-first: the manual switch, the lost limit marker, the session index, the
   unreadable line, tail-only parsing, the notice, boundaries, permissions under umask.
 - Not tested here: a real Claude Code session through Yulius end to end (the fake agent stands
   in), the goal-mode opening-turn wait after a continued turn, the process-gone `limit` pause, the

@@ -1645,7 +1645,7 @@ observation; the other is ignored (RUN-002).
 5. Launch new attempt with native resume; a prompt only when the turn must go on: the held prompt,
    the gate's reasons; after a reported limit no prompt: the transcript steps back over the limit
    and Claude Code continues the cut turn (SPEC-034; never words about accounts or limits).
-   No candidate → the task pauses (`start`).
+   No candidate → the task pauses (`start`; `limit` for a resume past a limit).
 6. Bridge viewers to the new attempt; write a one-line notice into the terminal stream.
 
 Idempotency: a task has at most one in-flight switch (row lock via task status CAS).
