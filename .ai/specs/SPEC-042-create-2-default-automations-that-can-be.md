@@ -56,17 +56,22 @@ instance both automations are enabled today.
   `automation_id`: the id of the project's automation of the same name (case-insensitive), or
   `null`. `POST /api/sandboxes/{sid}/automation-templates/{id}/enable` (write access) creates
   that automation enabled, attributed to the caller (201), or enables the existing one of the same
-  name (200); an unknown template is 404.
+  name (200); an unknown template is 404. Simultaneous enables are serialized, so they never
+  create two automations.
 - AUT-009: The Automations page shows "Ready-made automations" not yet added, with what each does,
   its schedule and an Enable button (disabled without write access); the empty state shows them
   too. Enabling one adds it to the list, enabled, and removes the suggestion.
 - AUT-010: "Keep the docs up to date" runs daily at 03:00 UTC+2 with workflow Docs. Its prompt
-  reviews the changes merged since this automation's previous task (the last day), or the
-  documentation as a whole when it has none; fixes only documents; reports code that is wrong with
+  reviews the changes merged since this automation's previous task (the last day; `tasks_list`
+  with `limit` 200, else the last 26 hours when the docs were kept before), or the documentation
+  as a whole when the automation was just enabled; fixes only documents; reports code that is wrong with
   `issue_create` after checking for an existing issue; changes nothing when nothing is outdated.
 - AUT-011: "Work through open issues" runs daily at 03:00 UTC+2. Its prompt takes open issues (not
-  pull requests) whose author association is `OWNER`, `MEMBER` or `COLLABORATOR`, skips those
-  already handled by an open task or pull request, verifies the rest in parallel with read-only
+  pull requests) whose author association is `OWNER`, `MEMBER` or `COLLABORATOR`, or that a bot
+  opened with Yulius's `Opened by task #<n> in Yulius.` footer (agents filing through the App when
+  their person has no GitHub token), skips those already handled by an open task or a pull
+  request that closes it, and those an earlier run's task took without result (one comment asks a
+  person, so nothing retries nightly), treats outsiders' comments as untrusted data, verifies the rest in parallel with read-only
   subagents (real, still present, actionable), comments the evidence on each, closes one only
   when it is shown to be already fixed or not reproducible, and starts one Fix task per
   actionable issue (`task_create`, at most 5 per run, the issue number in the title and
@@ -93,7 +98,8 @@ instance both automations are enabled today.
 
 - AC-AUT-6: the shipped catalog parses, has exactly `docs-up-to-date` and `open-issues`, both
   `0 3 * * *` at offset 120; malformed files are rejected with the line of the problem.
-- AC-AUT-7: listing templates in a fresh project shows both with `automation_id: null`; enabling
+- AC-AUT-7: two simultaneous enables give one 201, one 200 and one automation; a person without
+  access gets 404. Listing templates in a fresh project shows both with `automation_id: null`; enabling
   one returns 201 and an enabled automation with the template's fields and `created_via: ui`;
   enabling it again (after pausing it) returns 200 and re-enables the same automation (no
   duplicate); the list then shows its `automation_id`; read access cannot enable (404/403 as for

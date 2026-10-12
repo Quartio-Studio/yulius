@@ -48,7 +48,7 @@ export function mountAutomationsPage(ctx, sandbox) {
 
   function readyMade(templates) {
     return h('section', { class: 'stack-sm', 'aria-labelledby': 'automations-ready-made' },
-      h('h2', { class: 'page-section-title', id: 'automations-ready-made' }, 'Ready-made', h('span', { class: 'muted' }, 'enable in one click, edit it afterwards')),
+      h('h2', { class: 'page-section-title', id: 'automations-ready-made' }, 'Ready-made automations', h('span', { class: 'muted' }, 'enable in one click, edit it afterwards')),
       h('div', { class: 'item-list' }, templates.map((t) => itemCard({
         iconName: 'zap',
         title: t.name,

@@ -552,8 +552,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          - File follow-up work, bugs and flaky tests as issues (`issue_create`) instead of \
          widening this task. When you confirm a bug (the one your task is about, or one you find \
          on the way), report it with `issue_create` unless an open issue already tracks it (then \
-         reference that issue); a task told not to create issues comments on the existing issue \
-         instead. After the merge leave nothing stale (`repo_hygiene`, `repo_cleanup`).\n\
+         reference that issue). A task told not to create issues never does, whatever this \
+         briefing says; it comments on an existing issue or says it in its summary instead. \
+         After the merge leave nothing stale (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
         branch = code(&input.task.branch, 200),
         preset = profile.preset.as_str(),

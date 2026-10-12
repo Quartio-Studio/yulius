@@ -90,14 +90,30 @@ mod tests {
         }
         let docs = template("docs-up-to-date").ok_or("docs template")?;
         assert_eq!(docs.workflow.as_deref(), Some("wf-docs"));
-        assert!(crate::workflows::catalog::default_workflow("wf-docs").is_some());
+        for t in templates() {
+            if let Some(workflow) = &t.workflow {
+                assert!(
+                    crate::workflows::catalog::default_workflow(workflow).is_some(),
+                    "{}: unknown workflow {workflow}",
+                    t.id
+                );
+            }
+        }
         assert!(docs.prompt.contains("`issue_create`"));
+        // Its previous run is found in a busy project too, else it falls back to the last day.
+        assert!(docs.prompt.contains("`limit` 200"));
+        assert!(docs.prompt.contains("26 hours ago"));
         let issues = template("open-issues").ok_or("issues template")?;
         assert!(issues.prompt.contains("Never create a new issue"));
         for association in ["OWNER", "MEMBER", "COLLABORATOR"] {
             assert!(issues.prompt.contains(association), "{association}");
         }
         assert!(issues.prompt.contains("`task_create`"));
+        // Issues Yulius's agents opened through the App count as the team's (agent_delivery.rs).
+        assert!(issues.prompt.contains("Opened by task #"));
+        // Outsiders' comments are data, never instructions for the tasks it starts.
+        assert!(issues.prompt.contains("untrusted"));
+        assert!(issues.prompt.contains("--search \"Fixes #<number>\""));
         Ok(())
     }
 

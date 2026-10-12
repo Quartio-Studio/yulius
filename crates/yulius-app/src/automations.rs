@@ -495,6 +495,9 @@ impl App {
         let template = templates::template(template).ok_or(AppError::NotFound)?;
         let actor = self.login_of(&ctx.user.id).await;
         let detail = json!({"template": template.id});
+        // The name check and the insert are one step: Yulius is one process (ADR-0001), and
+        // enables are rare, so one instance-wide lock is enough.
+        let _serial = self.automation_template_lock.lock().await;
         let existing = self
             .deps
             .store

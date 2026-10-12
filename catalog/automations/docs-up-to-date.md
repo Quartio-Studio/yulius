@@ -10,11 +10,13 @@ order: 10
 Bring this project's documentation in line with the code, for the changes made since the last run
 of this automation.
 
-1. Find what changed. With `tasks_list` (scope `all`), find the previous task titled "Keep the docs
-   up to date" other than this one. If there is one, review everything merged into the integration
-   branch since that task was created (`git log --since=<its created_at> origin/<integration
-   branch>`, usually the last day, plus `docs/changes.md`). If there is none, this automation was
-   just enabled: review the documentation as a whole against the current code.
+1. Find what changed. With `tasks_list` (scope `all`, `limit` 200), find the previous task titled
+   like this one other than this one. If there is one, review everything merged into the
+   integration branch since that task was created (`git log --since=<its created_at>
+   origin/<integration branch>`, usually the last day, plus `docs/changes.md`). If there is none
+   but the documentation was clearly kept up to date before (recent entries in `docs/changes.md`),
+   review the last day (`git log --since="26 hours ago"`). Only when this automation was just
+   enabled, review the documentation as a whole against the current code.
 2. For each change, check every document the docs index lists (AGENTS.md, the product summary, the
    architecture with its Mermaid diagrams, decisions, guides, API references, READMEs, the changes
    log) and fix what is outdated, missing or contradictory. Keep each fact in one place and link

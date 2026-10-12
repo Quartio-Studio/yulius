@@ -28,6 +28,8 @@ use crate::workflow_format::{unquote, valid_workflow_id};
 pub const MAX_NAME_CHARS: usize = 100;
 /// Longest `description`, in characters.
 pub const MAX_DESCRIPTION_CHARS: usize = 300;
+/// Longest `cron` expression, in characters.
+pub const MAX_CRON_CHARS: usize = 200;
 /// Largest prompt, in bytes.
 pub const MAX_PROMPT_BYTES: usize = 16 * 1024;
 /// Largest file, in bytes.
@@ -140,13 +142,12 @@ pub fn parse_automation(
         *slot = Some((line.number, value));
     }
     let required = |field: Option<(usize, String)>, key: &str, max: usize| {
-        let (line, value) =
-            field
-                .filter(|(_, v)| !v.is_empty())
-                .ok_or_else(|| AutomationFormatError {
-                    line: 1,
-                    message: format!("the frontmatter needs `{key}`"),
-                })?;
+        let Some((line, value)) = field else {
+            return problem(1, format!("the frontmatter needs `{key}`"));
+        };
+        if value.is_empty() {
+            return problem(line, format!("`{key}` is empty"));
+        }
         if value.chars().count() > max {
             return problem(line, format!("`{key}` is longer than {max} characters"));
         }
@@ -154,7 +155,7 @@ pub fn parse_automation(
     };
     let (_, name) = required(name, "name", MAX_NAME_CHARS)?;
     let (_, description) = required(description, "description", MAX_DESCRIPTION_CHARS)?;
-    let (cron_line, cron) = required(cron, "cron", 200)?;
+    let (cron_line, cron) = required(cron, "cron", MAX_CRON_CHARS)?;
     let cron = match Schedule::parse(&cron) {
         Ok(schedule) => schedule.as_str().to_owned(),
         Err(err) => return problem(cron_line, format!("cron: {err}")),
@@ -275,6 +276,7 @@ mod tests {
         assert_eq!(line_of(&base.replace("name: N", "nmae: N")), 2);
         assert_eq!(line_of(&base.replace("name: N", "name: N\nname: M")), 3);
         assert_eq!(line_of(&base.replace("description: d\n", "")), 1);
+        assert_eq!(line_of(&base.replace("description: d", "description:")), 3);
         assert_eq!(line_of(&base.replace("0 3 * * *", "61 3 * * *")), 4);
         assert_eq!(
             line_of(&base.replace(

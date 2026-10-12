@@ -666,6 +666,43 @@ async fn enable_template(w: &World, who: &Creds, id: &str) -> Result<support::Re
     .await
 }
 
+/// AC-AUT-7 (SPEC-042): two Enables pressed at the same moment (two people, two tabs) still
+/// give one automation; a person without access to the project does not see the templates.
+#[tokio::test]
+async fn simultaneous_enables_never_duplicate_an_automation() -> TestResult {
+    let w = world().await?;
+    let (a, b) = tokio::join!(
+        enable_template(&w, &w.alice, "open-issues"),
+        enable_template(&w, &w.root, "open-issues")
+    );
+    let mut statuses = [a?.status, b?.status];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::CREATED]);
+    let all = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/automations",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(names(&all.body), ["Work through open issues"]);
+
+    let carol = user_with_token(&w.h, "u-carol", "carol", false).await?;
+    let hidden = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/automation-templates",
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+    let refused = enable_template(&w, &carol, "docs-up-to-date").await?;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND);
+    Ok(())
+}
+
 /// AC-AUT-7 (SPEC-042): the ready-made automations are listed in every project, enabled with one
 /// call (created, then re-enabled without a duplicate), recognised by name, and need write access.
 #[tokio::test]
